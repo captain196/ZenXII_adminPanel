@@ -622,7 +622,7 @@ document.addEventListener('DOMContentLoaded', function() {
 
 :root {
     --sa-navy:   #0c1e38;
-    --sa-blue:   #0f766e;
+    --sa-blue:   #BC5A3C;
     --sa-sky:    #e6f4f1;
     --sa-green:  #15803d;
     --sa-red:    #dc2626;
@@ -679,7 +679,7 @@ document.addEventListener('DOMContentLoaded', function() {
 .sa-field label .req { color:var(--sa-red); margin-left:2px; }
 
 .sa-input,.sa-select { height:40px; padding:0 12px; border:1.5px solid var(--sa-border); border-radius:8px; font-size:13.5px; color:var(--sa-text); background:#fafbff; outline:none; transition:border-color .14s,box-shadow .14s; font-family:'Instrument Sans',sans-serif; width:100%; }
-.sa-input:focus,.sa-select:focus { border-color:var(--sa-blue); box-shadow:0 0 0 3px rgba(15,118,110,.1); background:#fff; }
+.sa-input:focus,.sa-select:focus { border-color:var(--sa-blue); box-shadow:0 0 0 3px rgba(188,90,60,.1); background:#fff; }
 .sa-input[readonly] { background:#f1f5f9; color:var(--sa-muted); cursor:not-allowed; }
 .sa-select { appearance:none; background-image:url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='10' height='10' viewBox='0 0 10 10'%3E%3Cpath fill='%2364748b' d='M5 7L0 2h10z'/%3E%3C/svg%3E"); background-repeat:no-repeat; background-position:right 11px center; background-color:#fafbff; padding-right:30px; }
 
@@ -709,7 +709,7 @@ document.addEventListener('DOMContentLoaded', function() {
 .sa-btn { display:inline-flex; align-items:center; gap:7px; padding:10px 22px; border-radius:9px; font-size:13.5px; font-weight:600; cursor:pointer; border:none; text-decoration:none; transition:opacity .13s,transform .1s; font-family:'Instrument Sans',sans-serif; white-space:nowrap; }
 .sa-btn:hover { opacity:.86; transform:translateY(-1px); }
 .sa-btn:disabled { opacity:.5; cursor:not-allowed; transform:none; }
-.sa-btn-primary { background:var(--sa-blue); color:#fff; box-shadow:0 2px 10px rgba(15,118,110,.25); }
+.sa-btn-primary { background:var(--sa-blue); color:#fff; box-shadow:0 2px 10px rgba(188,90,60,.25); }
 .sa-btn-ghost { background:var(--sa-white); color:var(--sa-text); border:1.5px solid var(--sa-border); }
 .sa-btn-ghost:hover { border-color:var(--sa-blue); color:var(--sa-blue); }
 

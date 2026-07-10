@@ -385,7 +385,7 @@ document.addEventListener('DOMContentLoaded', function() {
 
       var icon = document.createElement('i');
       icon.className = 'fa ' + (opts.dangerous ? 'fa-exclamation-triangle' : 'fa-question-circle');
-      icon.style.cssText = 'font-size:20px;color:' + (opts.dangerous ? '#dc2626' : '#0f766e') + ';';
+      icon.style.cssText = 'font-size:20px;color:' + (opts.dangerous ? '#dc2626' : '#BC5A3C') + ';';
       header.appendChild(icon);
 
       var title = document.createElement('h4');
@@ -417,7 +417,7 @@ document.addEventListener('DOMContentLoaded', function() {
       btnConfirm.style.cssText =
         'padding:8px 16px;border-radius:8px;border:none;' +
         'color:#fff;font-weight:600;cursor:pointer;font-size:14px;' +
-        'background:' + (opts.dangerous ? '#dc2626' : '#0f766e') + ';';
+        'background:' + (opts.dangerous ? '#dc2626' : '#BC5A3C') + ';';
 
       // `infoOnly: true` hides Cancel and turns the dialog into a
       // non-actionable explanation surface (used when the admin can't
@@ -1066,7 +1066,7 @@ document.addEventListener('DOMContentLoaded', function() {
 /* ================================================================
    Fee Management — Refunds  |  fm-* prefix
    Fonts: Plus Jakarta Sans (body), Fraunces (headings)
-   Palette: Navy #0c1e38 / Teal #0f766e
+   Palette: Navy #0c1e38 / Teal #BC5A3C
    ================================================================ */
 @import url('https://fonts.googleapis.com/css2?family=Fraunces:opsz,wght@9..144,400;9..144,600;9..144,700&family=Plus+Jakarta+Sans:wght@400;500;600;700&display=swap');
 
@@ -1123,7 +1123,7 @@ document.addEventListener('DOMContentLoaded', function() {
   font-size: 1rem;
   flex-shrink: 0;
 }
-.fm-stat-total .fm-stat-icon   { background: rgba(15,118,110,.12); color: #0f766e; }
+.fm-stat-total .fm-stat-icon   { background: rgba(188,90,60,.12); color: #BC5A3C; }
 .fm-stat-pending .fm-stat-icon  { background: rgba(217,119,6,.12); color: #d97706; }
 .fm-stat-approved .fm-stat-icon { background: rgba(59,130,246,.12); color: #3b82f6; }
 .fm-stat-processed .fm-stat-icon{ background: rgba(21,128,61,.12); color: #15803d; }

@@ -73,7 +73,7 @@ ksort($filterSections);
 ?>
 
 <style>
-:root { --idc: var(--gold, #0f766e); --idc-lt: rgba(15,118,110,.1); }
+:root { --idc: var(--gold, #BC5A3C); --idc-lt: rgba(188,90,60,.1); }
 
 .idc-wrap { max-width:1280px; margin:0 auto; padding:24px 20px; }
 
@@ -414,7 +414,7 @@ ksort($filterSections);
         return [
             '*{margin:0;padding:0;box-sizing:border-box}',
             'body{font-family:sans-serif}',
-            ':root{--idc:#0f766e;--idc-lt:rgba(15,118,110,.1)}',
+            ':root{--idc:#BC5A3C;--idc-lt:rgba(188,90,60,.1)}',
             '.idc-card{width:260px;border-radius:10px;overflow:hidden;background:#fff;border:1px solid #ccc;page-break-inside:avoid}',
             '.idc-hdr{background:var(--idc);padding:10px 12px;display:flex;align-items:center;gap:8px}',
             '.idc-hdr-logo{width:36px;height:36px;border-radius:50%;object-fit:contain;background:#fff;padding:2px;flex-shrink:0}',

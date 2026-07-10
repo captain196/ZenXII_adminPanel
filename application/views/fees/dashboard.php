@@ -205,8 +205,8 @@ document.addEventListener('DOMContentLoaded', function(){
                 datasets: [{
                     label: 'Collection',
                     data: values,
-                    backgroundColor: 'rgba(15,118,110,.7)',
-                    borderColor: '#0f766e',
+                    backgroundColor: 'rgba(188,90,60,.7)',
+                    borderColor: '#BC5A3C',
                     borderWidth: 1,
                     borderRadius: 6,
                     maxBarThickness: 40,
@@ -244,7 +244,7 @@ document.addEventListener('DOMContentLoaded', function(){
     function renderModesChart(data) {
         var labels = Object.keys(data);
         var values = labels.map(function(k){ return data[k]; });
-        var colors = ['#0f766e','#2563eb','#d97706','#dc2626','#7c3aed','#059669','#db2777'];
+        var colors = ['#BC5A3C','#2563eb','#d97706','#dc2626','#7c3aed','#059669','#db2777'];
 
         var ctx = document.getElementById('chartModes').getContext('2d');
         if (chartModes) chartModes.destroy();
@@ -366,7 +366,7 @@ document.addEventListener('DOMContentLoaded', function(){
 }
 .fd-header-icon {
     width: 48px; height: 48px; border-radius: 12px;
-    background: linear-gradient(135deg, var(--gold, #0f766e), #14b8a6);
+    background: linear-gradient(135deg, var(--gold, #BC5A3C), #D4725C);
     display: flex; align-items: center; justify-content: center;
     color: #fff; font-size: 22px; flex-shrink: 0;
 }
@@ -381,8 +381,8 @@ document.addEventListener('DOMContentLoaded', function(){
     border-radius: 8px; border: none; cursor: pointer;
     text-decoration: none; transition: all .2s; font-family: inherit;
 }
-.fd-btn-primary { background: var(--gold, #0f766e); color: #fff; }
-.fd-btn-primary:hover { background: var(--gold2, #0d6b63); color: #fff; text-decoration: none; }
+.fd-btn-primary { background: var(--gold, #BC5A3C); color: #fff; }
+.fd-btn-primary:hover { background: var(--gold2, #9E4830); color: #fff; text-decoration: none; }
 .fd-btn-ghost { background: transparent; color: var(--t2, #4a6a60); border: 1px solid var(--border, #d1ddd8); }
 .fd-btn-ghost:hover { background: var(--bg3, #e6f4f1); color: var(--t1); text-decoration: none; }
 .fd-btn-sm { padding: 7px 12px; font-size: 12px; }
@@ -407,7 +407,7 @@ document.addEventListener('DOMContentLoaded', function(){
     display: flex; align-items: center; justify-content: center;
     font-size: 20px; flex-shrink: 0;
 }
-.fd-stat-teal .fd-stat-icon { background: rgba(15,118,110,.12); color: #0f766e; }
+.fd-stat-teal .fd-stat-icon { background: rgba(188,90,60,.12); color: #BC5A3C; }
 .fd-stat-red .fd-stat-icon { background: rgba(220,38,38,.12); color: #dc2626; }
 .fd-stat-blue .fd-stat-icon { background: rgba(37,99,235,.12); color: #2563eb; }
 .fd-stat-amber .fd-stat-icon { background: rgba(217,119,6,.12); color: #d97706; }
@@ -444,7 +444,7 @@ document.addEventListener('DOMContentLoaded', function(){
     font-size: 15px; font-weight: 700; color: var(--t1, #1a2e2a);
     margin-bottom: 16px; display: flex; align-items: center; gap: 8px;
 }
-.fd-card-title i { color: var(--gold, #0f766e); }
+.fd-card-title i { color: var(--gold, #BC5A3C); }
 
 /* Chart */
 .fd-chart-wrap { position: relative; height: 260px; }
@@ -463,7 +463,7 @@ document.addEventListener('DOMContentLoaded', function(){
     vertical-align: middle;
 }
 .fd-table tbody tr:last-child td { border-bottom: none; }
-.fd-table tbody tr:hover { background: rgba(15,118,110,.03); }
+.fd-table tbody tr:hover { background: rgba(188,90,60,.03); }
 .fd-num { text-align: right; font-weight: 600; font-variant-numeric: tabular-nums; }
 .fd-empty { text-align: center; color: var(--t3, #7a9a8e); padding: 24px !important; }
 
@@ -505,10 +505,10 @@ document.addEventListener('DOMContentLoaded', function(){
     text-decoration: none; transition: all .2s; font-size: 12px; font-weight: 600;
     text-align: center;
 }
-.fd-qlink i { font-size: 20px; color: var(--gold, #0f766e); }
+.fd-qlink i { font-size: 20px; color: var(--gold, #BC5A3C); }
 .fd-qlink:hover {
-    background: var(--gold, #0f766e); color: #fff; text-decoration: none;
-    transform: translateY(-2px); box-shadow: 0 4px 12px rgba(15,118,110,.25);
+    background: var(--gold, #BC5A3C); color: #fff; text-decoration: none;
+    transform: translateY(-2px); box-shadow: 0 4px 12px rgba(188,90,60,.25);
 }
 .fd-qlink:hover i { color: #fff; }
 

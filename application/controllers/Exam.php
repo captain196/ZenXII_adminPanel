@@ -860,26 +860,28 @@ class Exam extends MY_Controller
                 $prom = $ers->promoteExam($id, $actor, $from, $to, date('c'));
 
                 // ── HIGH-4 — fire the parent "results published" notification HERE
-                //    (at publish, not compute), PER STUDENT, so each event carries a
-                //    `student_id` and _resolve_recipient('parent') actually resolves.
-                //    Fire-and-forget (uses the direct Push_service/messageQueue path).
+                //    (at publish, not compute) via the universal CF dispatcher.
+                //    One RESULT_PUBLISHED doc carries every recipient studentId in
+                //    `userIds`; the dispatcher fans out to their parent devices
+                //    instantly (was previously the dormant messageQueue path).
                 $recipients = $prom['notify'] ?? [];
                 if (!empty($recipients)) {
-                    $this->load->library('Communication_helper', null, 'comm');
-                    $this->comm->init($this->firebase, $school, $this->session_year);
-                    $bulk = [];
+                    $sids = [];
+                    $examName = (string) ($meta['Name'] ?? $id);
                     foreach ($recipients as $rc) {
                         $sid = (string) ($rc['student_id'] ?? '');
-                        if ($sid === '') continue;
-                        $bulk[] = [
-                            'student_id' => $sid,
-                            'exam_id'    => $id,
-                            'exam_name'  => (string) ($rc['exam_name'] ?? ($meta['Name'] ?? $id)),
-                            'class'      => (string) ($rc['class'] ?? ''),
-                            'section'    => (string) ($rc['section'] ?? ''),
-                        ];
+                        if ($sid !== '') $sids[] = $sid;
+                        if (!empty($rc['exam_name'])) $examName = (string) $rc['exam_name'];
                     }
-                    if (!empty($bulk)) $this->comm->fire_event_bulk('exam_result', $bulk);
+                    $sids = array_values(array_unique($sids));
+                    if (!empty($sids)) {
+                        $this->emit_push('RESULT_PUBLISHED', 'result_' . $id, [
+                            'userIds' => $sids,
+                            'title'   => 'Result Published',
+                            'body'    => 'Results for ' . $examName . ' have been published.',
+                            'examId'  => $id,
+                        ]);
+                    }
                 }
             } catch (\Exception $e) {
                 log_message('error', "update_status: publish promotion/notify failed [{$id}]: " . $e->getMessage());

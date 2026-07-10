@@ -1031,7 +1031,7 @@
 .hr-pipe-stage[data-stage="Applied"] .hr-pipe-count{color:#4AB5E3}
 .hr-pipe-stage[data-stage="Shortlisted"] .hr-pipe-count{color:#d97706}
 .hr-pipe-stage[data-stage="Interviewed"] .hr-pipe-count{color:#8b5cf6}
-.hr-pipe-stage[data-stage="Selected"] .hr-pipe-count{color:#0f766e}
+.hr-pipe-stage[data-stage="Selected"] .hr-pipe-count{color:#BC5A3C}
 .hr-pipe-stage[data-stage="Hired"] .hr-pipe-count{color:#15803d}
 .hr-pipe-rejected .hr-pipe-count{color:#E05C6F}
 .hr-pipe-rejected{border-style:dashed}
@@ -1090,7 +1090,7 @@
 .hr-sal-dl dd{color:var(--t1);font-weight:600;margin:0;font-family:var(--font-m)}
 .hr-sal-dl-total{border-top:2px solid var(--border) !important;border-bottom:none !important;margin-top:4px;padding-top:8px !important}
 .hr-sal-dl-total dt{color:var(--t1);font-weight:700}
-.hr-sal-bd-net{display:flex;flex-direction:column;align-items:center;justify-content:center;background:linear-gradient(135deg,rgba(15,118,110,.06) 0%,rgba(12,30,56,.04) 100%);text-align:center}
+.hr-sal-bd-net{display:flex;flex-direction:column;align-items:center;justify-content:center;background:linear-gradient(135deg,rgba(188,90,60,.06) 0%,rgba(12,30,56,.04) 100%);text-align:center}
 .hr-sal-net-amount{font-size:28px;font-weight:800;color:var(--gold);font-family:var(--font-b);margin:8px 0 4px}
 .hr-sal-net-formula{font-size:12px;color:var(--t3);font-family:var(--font-m)}
 .hr-sal-net-formula strong{color:var(--gold)}
@@ -1139,17 +1139,17 @@
 @media(max-width:800px){.hr-slip-sections{grid-template-columns:1fr}}
 .hr-slip-section{border:1px solid var(--border);border-radius:8px;overflow:hidden}
 .hr-slip-section-hd{font:700 11px/1 var(--font-b);padding:8px 12px;text-transform:uppercase;letter-spacing:.5px;display:flex;align-items:center;gap:6px}
-.hr-slip-section-hd.earn{background:rgba(15,118,110,.08);color:#0f766e}
+.hr-slip-section-hd.earn{background:rgba(188,90,60,.08);color:#BC5A3C}
 .hr-slip-section-hd.deduct{background:rgba(220,38,38,.06);color:#b91c1c}
 .hr-slip-section-hd.info{background:rgba(100,116,139,.08);color:#475569}
 .hr-slip-section-hd.leave{background:rgba(124,58,237,.06);color:#6d28d9}
-.hr-slip-section-hd.pay{background:rgba(15,118,110,.1);color:#0f766e}
+.hr-slip-section-hd.pay{background:rgba(188,90,60,.1);color:#BC5A3C}
 .hr-slip-row{display:flex;justify-content:space-between;align-items:center;padding:6px 12px;border-bottom:1px solid var(--border)}
 .hr-slip-row:last-child{border-bottom:none}
 .hr-slip-row.total{background:var(--bg);font-weight:700;border-top:2px solid var(--border)}
 .hr-slip-label{color:var(--t2);font:400 12px/1.4 var(--font-m)}
 .hr-slip-value{color:var(--t1);font:600 12px/1.4 var(--font-m);text-align:right;font-variant-numeric:tabular-nums}
-.hr-slip-value.green{color:#0f766e}
+.hr-slip-value.green{color:#BC5A3C}
 .hr-slip-value.red{color:#dc2626}
 .hr-slip-value.amber{color:#d97706}
 .hr-slip-net-row{display:flex;justify-content:space-between;align-items:center;padding:12px 16px;margin-top:14px;border-radius:8px;background:var(--gold-dim);border:1px solid var(--gold-ring)}
@@ -1164,8 +1164,8 @@
 .hr-day-chip-value{font:700 20px/1 var(--font-b);font-variant-numeric:tabular-nums;color:var(--t1)}
 .hr-day-chip-sub{font:400 10.5px/1.3 var(--font-m);color:var(--t3);margin-top:3px}
 .hr-day-chip.working .hr-day-chip-label{color:#475569}
-.hr-day-chip.present .hr-day-chip-label,.hr-day-chip.present .hr-day-chip-value{color:#0f766e}
-.hr-day-chip.present{background:rgba(15,118,110,.04)}
+.hr-day-chip.present .hr-day-chip-label,.hr-day-chip.present .hr-day-chip-value{color:#BC5A3C}
+.hr-day-chip.present{background:rgba(188,90,60,.04)}
 .hr-day-chip.paid-leave .hr-day-chip-label,.hr-day-chip.paid-leave .hr-day-chip-value{color:#2563eb}
 .hr-day-chip.paid-leave{background:rgba(37,99,235,.04)}
 .hr-day-chip.lwp .hr-day-chip-label,.hr-day-chip.lwp .hr-day-chip-value{color:#dc2626}
@@ -1646,7 +1646,7 @@ document.addEventListener('DOMContentLoaded', function(){
               h += '<tr style="border-bottom:1px solid var(--border)">';
               h += '<td style="padding:6px 8px"><a href="<?= base_url("ats") ?>" style="color:var(--gold);text-decoration:none;font-weight:600">'+esc(j.title)+'</a></td>';
               h += '<td style="padding:6px 8px">'+j.filled_positions+' / '+j.total_positions+'<div style="height:4px;background:var(--border);border-radius:2px;margin-top:3px;width:80px"><div style="height:4px;background:var(--gold);border-radius:2px;width:'+progPct+'%"></div></div></td>';
-              h += '<td style="padding:6px 8px;font-weight:600;color:'+(j.remaining > 0 ? '#d97706' : '#0f766e')+'">'+j.remaining+'</td>';
+              h += '<td style="padding:6px 8px;font-weight:600;color:'+(j.remaining > 0 ? '#d97706' : '#BC5A3C')+'">'+j.remaining+'</td>';
               h += '<td style="padding:6px 8px">'+badgeHtml(j.status)+'</td>';
               h += '<td style="padding:6px 8px;color:var(--t3);font-size:11px">'+esc(j.deadline||'-')+'</td>';
               h += '</tr>';
@@ -2522,7 +2522,7 @@ document.addEventListener('DOMContentLoaded', function(){
           +'</div>').show();
         $btnBf.show();
       } else if(cov.total_staff > 0) {
-        $banner.html('<div style="padding:8px 16px;margin-bottom:12px;border-radius:8px;background:rgba(15,118,110,.06);border:1px solid rgba(15,118,110,.15);font:400 12px/1.5 var(--font-m);color:#0f766e;display:flex;align-items:center;gap:8px">'
+        $banner.html('<div style="padding:8px 16px;margin-bottom:12px;border-radius:8px;background:rgba(188,90,60,.06);border:1px solid rgba(188,90,60,.15);font:400 12px/1.5 var(--font-m);color:#BC5A3C;display:flex;align-items:center;gap:8px">'
           +'<i class="fa fa-check-circle"></i>'
           +'<span>All <strong>'+cov.total_staff+'</strong> staff members have salary structures. Payroll ready.</span>'
           +'</div>').show();
@@ -2563,7 +2563,7 @@ document.addEventListener('DOMContentLoaded', function(){
         var netTip='Gross: '+fmt(gross)+' - Deductions: '+fmt(deductions)+' = Net: '+fmt(net);
 
         h+='<tr class="hr-sal-row" data-salid="'+esc(k)+'" style="cursor:pointer" title="Click to view full breakdown">';
-        var srcTag = (s.source==='registration') ? ' <span style="font-size:9px;padding:1px 5px;border-radius:3px;background:rgba(217,119,6,.1);color:#d97706;font-weight:600">Auto</span>' : (s.source==='manual' ? ' <span style="font-size:9px;padding:1px 5px;border-radius:3px;background:rgba(15,118,110,.1);color:#0f766e;font-weight:600">HR</span>' : '');
+        var srcTag = (s.source==='registration') ? ' <span style="font-size:9px;padding:1px 5px;border-radius:3px;background:rgba(217,119,6,.1);color:#d97706;font-weight:600">Auto</span>' : (s.source==='manual' ? ' <span style="font-size:9px;padding:1px 5px;border-radius:3px;background:rgba(188,90,60,.1);color:#BC5A3C;font-weight:600">HR</span>' : '');
         h+='<td class="hr-num">'+i+'</td><td>'+esc(staffName(s.staff_id))+srcTag+'</td>';
         h+='<td class="hr-num">'+fmt(basic)+'</td>';
         h+='<td class="hr-num">'+fmt(hra)+'</td>';
@@ -2867,8 +2867,8 @@ document.addEventListener('DOMContentLoaded', function(){
 
   /* ── Build preflight success/warnings UI ── */
   function _renderPreflightOk(r){
-    var h='<div style="margin:14px 0;padding:14px;border-radius:8px;background:rgba(15,118,110,.07);border:1px solid rgba(15,118,110,.18)">';
-    h+='<div style="font:600 13px/1.4 var(--font-b);color:#0f766e;margin-bottom:6px"><i class="fa fa-check-circle"></i> Pre-flight Check Passed</div>';
+    var h='<div style="margin:14px 0;padding:14px;border-radius:8px;background:rgba(188,90,60,.07);border:1px solid rgba(188,90,60,.18)">';
+    h+='<div style="font:600 13px/1.4 var(--font-b);color:#BC5A3C;margin-bottom:6px"><i class="fa fa-check-circle"></i> Pre-flight Check Passed</div>';
     h+='<div style="font:400 12px/1.5 var(--font-m);color:var(--t2)">Staff covered: <strong>'+(r.staff_covered||0)+'</strong> / '+(r.staff_total||0)+'</div>';
     var w=r.warnings||[];
     if(w.length){

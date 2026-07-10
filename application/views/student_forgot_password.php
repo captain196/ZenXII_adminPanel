@@ -12,7 +12,7 @@
 <link href="https://fonts.googleapis.com/css2?family=Clash+Display:wght@400;500;600;700&family=Satoshi:wght@300;400;500;600;700&family=JetBrains+Mono:wght@400;500&display=swap" rel="stylesheet">
 <style>
 :root {
-    --brand:#0d9488;--brand2:#0f766e;--brand3:#2dd4bf;--brand-dim:rgba(13,148,136,.12);
+    --brand:#0d9488;--brand2:#BC5A3C;--brand3:#2dd4bf;--brand-dim:rgba(13,148,136,.12);
     --sans:'Satoshi','Plus Jakarta Sans',system-ui,sans-serif;
     --mono:'JetBrains Mono',ui-monospace,monospace;
     --display:'Clash Display','Satoshi',system-ui,sans-serif;

@@ -8,7 +8,7 @@ $statusColors = [
     'contacted'  => '#f59e0b',
     'interested' => '#8b5cf6',
     'approved'   => '#22c55e',
-    'admitted'   => '#0f766e',
+    'admitted'   => '#BC5A3C',
     'enrolled'   => '#059669',
     'rejected'   => '#ef4444',
 ];
@@ -31,7 +31,7 @@ $statusColors = [
     border-radius:10px 0 0 10px;
 }
 .aa-card.c-total::before  { background:#3b82f6; }
-.aa-card.c-admit::before  { background:#0f766e; }
+.aa-card.c-admit::before  { background:#BC5A3C; }
 .aa-card.c-conv::before   { background:#8b5cf6; }
 .aa-card.c-public::before { background:#f59e0b; }
 .aa-card.c-new::before    { background:#ef4444; }

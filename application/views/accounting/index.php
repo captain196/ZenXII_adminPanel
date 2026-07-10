@@ -13,7 +13,7 @@
 
 /* ── Theme vars with solid fallbacks ── */
 .ac-wrap {
-    --ac-primary: var(--gold, #0f766e);
+    --ac-primary: var(--gold, #BC5A3C);
     --ac-bg: var(--bg, #f0f7f5);
     --ac-bg2: var(--bg2, #ffffff);
     --ac-bg3: var(--bg3, #e6f4f1);
@@ -38,7 +38,7 @@
 }
 .ac-header-icon {
     width: 48px; height: 48px; border-radius: 12px;
-    background: linear-gradient(135deg, var(--ac-primary), #14b8a6);
+    background: linear-gradient(135deg, var(--ac-primary), #D4725C);
     display: flex; align-items: center; justify-content: center;
     color: #fff; font-size: 22px; flex-shrink: 0;
 }
@@ -64,10 +64,10 @@
     display: flex; align-items: center; gap: 7px;
     border-radius: 6px 6px 0 0;
 }
-.ac-tab:hover { color: var(--ac-text); background: rgba(15,118,110,.04); }
+.ac-tab:hover { color: var(--ac-text); background: rgba(188,90,60,.04); }
 .ac-tab.active {
     color: var(--ac-primary); border-bottom-color: var(--ac-primary);
-    background: rgba(15,118,110,.06);
+    background: rgba(188,90,60,.06);
 }
 .ac-tab i { font-size: 14px; }
 a.ac-tab { text-decoration: none; color: inherit; }
@@ -98,12 +98,12 @@ a.ac-tab.active { color: var(--ac-primary); }
     border-radius: 8px; border: none; cursor: pointer; transition: all .2s ease;
     text-decoration: none; line-height: 1.4;
 }
-.ac-btn-primary { background: var(--ac-primary, #0f766e); color: #fff; }
-.ac-btn-primary:hover { background: #0d6b63; transform: translateY(-1px); box-shadow: 0 2px 8px rgba(15,118,110,.3); }
+.ac-btn-primary { background: var(--ac-primary, #BC5A3C); color: #fff; }
+.ac-btn-primary:hover { background: #9E4830; transform: translateY(-1px); box-shadow: 0 2px 8px rgba(188,90,60,.3); }
 .ac-btn-danger { background: var(--ac-red, #dc2626); color: #fff; }
 .ac-btn-danger:hover { background: #b91c1c; }
-.ac-btn-ghost { background: transparent; color: var(--ac-primary, #0f766e); border: 1.5px solid var(--ac-primary, #0f766e); }
-.ac-btn-ghost:hover { background: var(--ac-primary, #0f766e); color: #fff; }
+.ac-btn-ghost { background: transparent; color: var(--ac-primary, #BC5A3C); border: 1.5px solid var(--ac-primary, #BC5A3C); }
+.ac-btn-ghost:hover { background: var(--ac-primary, #BC5A3C); color: #fff; }
 .ac-btn-sm { padding: 6px 12px; font-size: 12px; border-radius: 6px; }
 .ac-btn[disabled] { opacity: .45; cursor: not-allowed; pointer-events: none; }
 .ac-btn i.fa, .ac-btn .fa { font-family: FontAwesome !important; }
@@ -127,7 +127,7 @@ a.ac-tab.active { color: var(--ac-primary); }
 }
 .ac-fg input:focus, .ac-fg select:focus, .ac-fg textarea:focus {
     outline: none; border-color: var(--ac-primary);
-    box-shadow: 0 0 0 3px rgba(15,118,110,.1);
+    box-shadow: 0 0 0 3px rgba(188,90,60,.1);
 }
 
 /* ── Tables ── */
@@ -143,7 +143,7 @@ a.ac-tab.active { color: var(--ac-primary); }
     padding: 11px 14px; border-bottom: 1px solid var(--ac-border);
     color: var(--ac-text); vertical-align: middle;
 }
-.ac-table tbody tr:hover td { background: rgba(15,118,110,.04); }
+.ac-table tbody tr:hover td { background: rgba(188,90,60,.04); }
 .ac-table .ac-num { font-family: 'JetBrains Mono', monospace; text-align: right; font-size: 13px; }
 .ac-table .ac-dr { color: var(--ac-green); font-weight: 600; }
 .ac-table .ac-cr { color: var(--ac-red); font-weight: 600; }
@@ -167,7 +167,7 @@ a.ac-tab.active { color: var(--ac-primary); }
 
 /* Voucher type display */
 .ac-vtype-badge { display:inline-block; font-size:11px; padding:2px 8px; border-radius:4px; background:var(--ac-bg3); color:var(--ac-text2); font-weight:600; vertical-align:middle; }
-.ac-vtype-sub { display:inline-block; font-size:10px; padding:1px 6px; border-radius:3px; margin-left:4px; background:rgba(15,118,110,.1); color:#0f766e; font-weight:500; vertical-align:middle; }
+.ac-vtype-sub { display:inline-block; font-size:10px; padding:1px 6px; border-radius:3px; margin-left:4px; background:rgba(188,90,60,.1); color:#BC5A3C; font-weight:500; vertical-align:middle; }
 
 /* ── Modal ── */
 .ac-modal-overlay {
@@ -175,7 +175,7 @@ a.ac-tab.active { color: var(--ac-primary); }
     background: rgba(0,0,0,.45); z-index: 10000;
     align-items: center; justify-content: center;
     /* Inherit theme vars — modals sit outside .ac-wrap in the DOM */
-    --ac-primary: var(--gold, #0f766e);
+    --ac-primary: var(--gold, #BC5A3C);
     --ac-bg: var(--bg, #f0f7f5);
     --ac-bg2: var(--bg2, #ffffff);
     --ac-bg3: var(--bg3, #e6f4f1);
@@ -240,7 +240,7 @@ a.ac-tab.active { color: var(--ac-primary); }
 .ac-modal .ac-fg select:focus,
 .ac-modal .ac-fg textarea:focus {
     border-color: var(--ac-primary);
-    box-shadow: 0 0 0 3px rgba(15,118,110,.12);
+    box-shadow: 0 0 0 3px rgba(188,90,60,.12);
     outline: none;
 }
 .ac-modal .ac-fg input::placeholder { color: var(--ac-text3, #94a3b8); }
@@ -270,7 +270,7 @@ a.ac-tab.active { color: var(--ac-primary); }
 #journalModal .ac-table select:focus,
 #journalModal .ac-table input[type="number"]:focus {
     outline: none; border-color: var(--ac-primary);
-    box-shadow: 0 0 0 3px rgba(15,118,110,.12);
+    box-shadow: 0 0 0 3px rgba(188,90,60,.12);
 }
 #journalModal .ac-table tfoot td { background: var(--ac-bg3, #e6f4f1); }
 #journalModal .ac-table tfoot .ac-num { font-size: 14px; }
@@ -303,7 +303,7 @@ a.ac-tab.active { color: var(--ac-primary); }
     background: var(--ac-bg, #f8fafc); cursor: pointer; transition: all .15s;
     font-size: 13px; font-weight: 600; color: var(--ac-text2);
 }
-.ac-check-row:hover { border-color: var(--ac-primary); background: rgba(15,118,110,.04); }
+.ac-check-row:hover { border-color: var(--ac-primary); background: rgba(188,90,60,.04); }
 .ac-check-row input[type="checkbox"] {
     width: 18px; height: 18px; accent-color: var(--ac-primary);
     cursor: pointer; margin: 0; flex-shrink: 0;
@@ -479,7 +479,7 @@ a.ac-tab.active { color: var(--ac-primary); }
         </div>
         <div class="ac-stats" id="cbStats"></div>
         <div id="cbAccountHeader" style="display:none;padding:12px 18px;background:var(--ac-bg3);border:1px solid var(--ac-border);border-radius:var(--ac-r);margin-bottom:14px;display:flex;align-items:center;gap:12px;">
-            <div style="width:38px;height:38px;border-radius:8px;background:var(--ac-primary,#0f766e);display:flex;align-items:center;justify-content:center;color:#fff;font-size:15px;flex-shrink:0"><i class="fa fa-book"></i></div>
+            <div style="width:38px;height:38px;border-radius:8px;background:var(--ac-primary,#BC5A3C);display:flex;align-items:center;justify-content:center;color:#fff;font-size:15px;flex-shrink:0"><i class="fa fa-book"></i></div>
             <div>
                 <div id="cbAcctName" style="font:700 15px/1.3 var(--font-b);color:var(--ac-text)"></div>
                 <div id="cbAcctCode" style="font:400 12px/1.3 var(--font-m);color:var(--ac-text3)"></div>
@@ -1730,7 +1730,7 @@ a.ac-tab.active { color: var(--ac-primary); }
         function _src(s, sys) {
             var labels = {income:'Receipt',expense:'Payment',HR_Payroll:'Payroll',manual:'Manual',fees:'Fees'};
             var label = labels[s]||s||'Manual';
-            var bg = sys ? 'rgba(15,118,110,.1)' : 'var(--ac-bg3)';
+            var bg = sys ? 'rgba(188,90,60,.1)' : 'var(--ac-bg3)';
             var fg = sys ? 'var(--ac-primary)' : 'var(--ac-text3)';
             return '<span style="font-size:9px;padding:2px 6px;border-radius:3px;background:'+bg+';color:'+fg+';font-weight:600">'+label+'</span>';
         }
@@ -1897,7 +1897,7 @@ a.ac-tab.active { color: var(--ac-primary); }
         function _srcBadge(src, isSystem) {
             var labels = {income:'Receipt',expense:'Payment',HR_Payroll:'Payroll',manual:'Manual',fees:'Fees'};
             var label = labels[src]||src||'Manual';
-            var bg = isSystem ? 'rgba(15,118,110,.1)' : 'var(--ac-bg3)';
+            var bg = isSystem ? 'rgba(188,90,60,.1)' : 'var(--ac-bg3)';
             var fg = isSystem ? 'var(--ac-primary)' : 'var(--ac-text3)';
             return '<span style="font-size:9px;padding:2px 6px;border-radius:3px;background:'+bg+';color:'+fg+';font-weight:600">' + label + '</span>';
         }

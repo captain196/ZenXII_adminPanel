@@ -170,8 +170,8 @@ body {
     cursor: pointer; font-size: 13px; font-family: sans-serif;
     font-weight: 600;
 }
-.btn-print { background: #0f766e; color: #fff; }
-.btn-print:hover { background: #0d6b63; }
+.btn-print { background: #BC5A3C; color: #fff; }
+.btn-print:hover { background: #9E4830; }
 .btn-close { background: #eee; color: #333; }
 .btn-close:hover { background: #ddd; }
 

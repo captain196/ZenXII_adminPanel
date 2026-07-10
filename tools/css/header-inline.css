@@ -2,22 +2,22 @@
    moved to an external, cacheable, gzip-able file. Pure CSS, no PHP. Linked
    at the same position in the document so cascade order is unchanged. */
         :root {
-            --gold:#0f766e;--gold2:#0d6b63;--gold3:#14b8a6;
-            --gold-dim:rgba(15,118,110,.10);--gold-ring:rgba(15,118,110,.22);--gold-glow:rgba(15,118,110,.18);
+            --gold:#BC5A3C;--gold2:#9E4830;--gold3:#D4725C;
+            --gold-dim:rgba(188,90,60,.10);--gold-ring:rgba(188,90,60,.22);--gold-glow:rgba(188,90,60,.18);
             --green:#15803d;--blue:#4AB5E3;--rose:#E05C6F;--amber:#d97706;
             --sw:248px;--hh:58px;--r:12px;--r-sm:8px;
             --ease:.22s cubic-bezier(.4,0,.2,1);
             --font-d:'Syne',sans-serif;--font-b:'Plus Jakarta Sans',sans-serif;--font-m:'JetBrains Mono',monospace;
         }
         :root,[data-theme="night"],body[data-theme="night"]{
-            --bg:#070f1c;--bg2:#0c1e38;--bg3:#0f2545;--bg4:#1a3555;
-            --card:rgba(12,30,56,.92);--border:rgba(15,118,110,.12);--brd2:rgba(15,118,110,.25);
-            --t1:#e6f4f1;--t2:#94c9c3;--t3:#5a9e98;--t4:#2e6b65;--sh:0 4px 32px rgba(0,0,0,.55);
+            --bg:#17100C;--bg2:#201711;--bg3:#271A14;--bg4:#3A2A20;
+            --card:rgba(32,23,17,.92);--border:rgba(188,90,60,.14);--brd2:rgba(188,90,60,.26);
+            --t1:#F4E9E2;--t2:#C9B3A8;--t3:#9E8578;--t4:#6E5B50;--sh:0 4px 32px rgba(0,0,0,.55);
         }
         [data-theme="day"],body[data-theme="day"]{
-            --bg:#f0f7f5;--bg2:#ffffff;--bg3:#e6f4f1;--bg4:#cce9e4;--card:#ffffff;
-            --border:rgba(15,118,110,.15);--brd2:rgba(15,118,110,.28);
-            --t1:#0c1e38;--t2:#1a5c56;--t3:#5a9e98;--t4:#94c9c3;--sh:0 2px 16px rgba(0,0,0,.08);
+            --bg:#F7F2ED;--bg2:#ffffff;--bg3:#F3E9E2;--bg4:#ECDCCF;--card:#ffffff;
+            --border:rgba(188,90,60,.16);--brd2:rgba(188,90,60,.28);
+            --t1:#2A1C14;--t2:#6B5346;--t3:#9E8578;--t4:#C2A89A;--sh:0 2px 16px rgba(0,0,0,.08);
         }
         /* ── Unified breadcrumb across Exam / Result / Examination modules ──
            One consistent style overriding the per-page *-breadcrumb classes
@@ -52,47 +52,59 @@
         /* shared button loading state (works with [data-spin] + zxBtnLoad helper) */
         .zx-btn-loading { opacity:.75 !important; cursor:progress !important; pointer-events:none !important; }
         .zx-btn-loading .fa-spinner { margin-right:5px; }
-        /* ── Day mode: light teal-mint sidebar — matches the day theme.
-           Soft mint tint (deeper than the #f0f7f5 content bg) so the sidebar
-           reads as a distinct panel; crisper teal edge + shadow for float.
-           Text/icons/hover/active inherit the native day teal palette; only
-           --t4 is nudged so the section micro-labels stay legible on the tint. ── */
+        /* ── Day mode: darker-terracotta sidebar rail (matches dashboard hero).
+           Text/icons/section-labels are re-tinted to light-on-clay by scoping the
+           --t1..--t4 + --gold tokens locally, so the base !important nav rules
+           inherit white-ish colors; the active item becomes a solid white pill. ── */
         [data-theme="day"] .main-sidebar {
-            --t4: #6fb3aa;
-            background: linear-gradient(180deg, #eef7f4 0%, #e1efeb 100%) !important;
-            border-right: 1px solid var(--brd2) !important;
-            box-shadow: 3px 0 18px rgba(15,118,110,.10) !important;
+            --t1:#ffffff; --t2:#F6E4DB; --t3:#EAC7B4; --t4:#E7C4B4;
+            --gold:#ffffff; --gold-dim:rgba(255,255,255,.14); --gold-ring:rgba(255,255,255,.28);
+            --border:rgba(255,255,255,.14); --brd2:rgba(255,255,255,.22);
+            background: linear-gradient(180deg, #9E4830 0%, #8A3E28 100%) !important;
+            border-right: 1px solid rgba(0,0,0,.10) !important;
+            box-shadow: 3px 0 18px rgba(158,72,48,.22) !important;
         }
         [data-theme="day"] .main-sidebar .g-sb-foot {
-            background: rgba(15,118,110,.06) !important;
-            border-top-color: var(--brd2) !important;
+            background: rgba(255,255,255,.08) !important;
+            border-top-color: rgba(255,255,255,.18) !important;
         }
-        /* ::after top accent + ::before dot texture inherit the base teal styling */
+        /* white pill for the active nav item on the terracotta day rail */
+        [data-theme="day"] .main-sidebar .sidebar-menu>li.active>a,
+        [data-theme="day"] .main-sidebar .sidebar-menu>li.active>a:hover,
+        [data-theme="day"] .main-sidebar .treeview-menu>li.active>a {
+            background:#ffffff !important; color:#9E4830 !important; font-weight:600 !important;
+        }
+        [data-theme="day"] .main-sidebar .sidebar-menu>li.active>a>i,
+        [data-theme="day"] .main-sidebar .sidebar-menu>li.active>a>.fa {
+            color:#9E4830 !important;
+        }
+        [data-theme="day"] .main-sidebar .sidebar-menu>li.active>a::before { display:none !important; }
+        /* ::after top accent + ::before dot texture inherit the base clay styling */
         /* ── Day mode: navbar search bar polish ── */
         [data-theme="day"] .g-search {
-            background: #f5fbf9 !important;
-            border: 1.5px solid rgba(15,118,110,.28) !important;
-            box-shadow: 0 1px 6px rgba(15,118,110,.10), inset 0 1px 2px rgba(15,118,110,.04) !important;
+            background: #FBF6F1 !important;
+            border: 1.5px solid rgba(188,90,60,.28) !important;
+            box-shadow: 0 1px 6px rgba(188,90,60,.10), inset 0 1px 2px rgba(188,90,60,.04) !important;
         }
         [data-theme="day"] .g-search i {
-            color: #0d6b63 !important;
+            color: #9E4830 !important;
         }
         [data-theme="day"] .g-search input {
-            color: #0c1e38 !important;
+            color: #2A1C14 !important;
         }
         [data-theme="day"] .g-search input::placeholder {
-            color: #5a9e98 !important;
+            color: #9E8578 !important;
         }
         [data-theme="day"] .g-search:focus-within {
-            border-color: rgba(15,118,110,.55) !important;
-            box-shadow: 0 0 0 3px rgba(15,118,110,.12), 0 1px 6px rgba(15,118,110,.12) !important;
+            border-color: rgba(188,90,60,.55) !important;
+            box-shadow: 0 0 0 3px rgba(188,90,60,.12), 0 1px 6px rgba(188,90,60,.12) !important;
         }
         /* ── Night mode: sidebar slightly deeper than navbar for layered depth ── */
         [data-theme="night"] .main-sidebar {
-            background: #091729 !important;
+            background: #140D0A !important;
         }
         [data-theme="night"] .main-sidebar .g-sb-foot {
-            background: #091729 !important;
+            background: #140D0A !important;
         }
         html,body,.main-header,.main-sidebar,.content-wrapper,.main-footer,.box,.modal-content,.form-control,.btn{
             transition:background-color var(--ease),background var(--ease),border-color var(--ease),color var(--ease),box-shadow var(--ease) !important;
@@ -105,7 +117,7 @@
 
         /* HEADER */
         .main-header{position:fixed !important;top:0;left:0;right:0;height:var(--hh) !important;background:var(--bg2) !important;border-bottom:1px solid var(--border) !important;box-shadow:var(--sh) !important;z-index:1040 !important;display:flex !important;align-items:center !important;}
-        .main-header::after{content:'';position:absolute;bottom:0;left:0;right:0;height:2px;background:linear-gradient(90deg,var(--gold) 0%,rgba(15,118,110,.25) 60%,transparent 100%);}
+        .main-header::after{content:'';position:absolute;bottom:0;left:0;right:0;height:2px;background:linear-gradient(90deg,var(--gold) 0%,rgba(188,90,60,.25) 60%,transparent 100%);}
         .main-header .logo{width:var(--sw) !important;height:var(--hh) !important;background:var(--bg2) !important;border-right:1px solid var(--border) !important;border-bottom:none !important;display:flex !important;align-items:center !important;padding:0 12px 0 16px !important;flex-shrink:0;transition:width var(--ease) !important;justify-content:space-between !important;gap:0 !important;}
         .g-logo-link{display:flex !important;align-items:center !important;gap:10px !important;flex:1 !important;min-width:0 !important;text-decoration:none !important;}
         .g-mark{width:44px;height:44px;border-radius:50%;object-fit:contain;background:transparent;box-shadow:none;flex-shrink:0;}
@@ -135,7 +147,7 @@
         .sidebar-toggle{width:34px !important;height:34px !important;border-radius:8px !important;background:transparent !important;border:1px solid var(--border) !important;display:inline-flex !important;align-items:center !important;justify-content:center !important;color:var(--t3) !important;font-size:13px !important;margin-right:16px !important;flex-shrink:0;transition:all var(--ease) !important;}
         .sidebar-toggle:hover{background:var(--gold-dim) !important;color:var(--gold) !important;border-color:var(--gold-ring) !important;}
         .g-search{flex:1;max-width:480px;margin:0 auto !important;display:flex;align-items:center;background:var(--bg3) !important;border:1px solid var(--brd2) !important;border-radius:10px !important;padding:0 12px !important;height:36px;transition:all var(--ease);}
-        .g-search:focus-within{border-color:rgba(15,118,110,.45) !important;box-shadow:0 0 0 3px var(--gold-glow) !important;}
+        .g-search:focus-within{border-color:rgba(188,90,60,.45) !important;box-shadow:0 0 0 3px var(--gold-glow) !important;}
         .g-search i{color:var(--t3);font-size:12px;margin-right:8px;flex-shrink:0;}
         .g-search input{background:none !important;border:none !important;outline:none !important;color:var(--t1) !important;font-family:var(--font-b) !important;font-size:13px !important;flex:1;min-width:0;}
         .g-search input::placeholder{color:var(--t4) !important;}
@@ -197,16 +209,16 @@
         .g-task-pri{font:600 9px/1 var(--font-m);padding:2px 6px;border-radius:3px;flex-shrink:0;}
         .g-task-pri.high{background:rgba(220,38,38,.1);color:#dc2626;}
         .g-task-pri.medium{background:rgba(217,119,6,.1);color:#d97706;}
-        .g-task-pri.low{background:rgba(15,118,110,.1);color:#0f766e;}
+        .g-task-pri.low{background:rgba(188,90,60,.1);color:#BC5A3C;}
         .g-bell-list{max-height:290px;overflow-y:auto;}
         .g-bell-list::-webkit-scrollbar{width:3px;}
         .g-bell-list::-webkit-scrollbar-thumb{background:var(--bg4);border-radius:3px;}
         .g-bell-item{padding:11px 15px;border-bottom:1px solid var(--border);display:flex;gap:10px;align-items:flex-start;cursor:pointer;transition:background .12s;text-decoration:none !important;}
         .g-bell-item:last-child{border-bottom:none;}
         .g-bell-item:hover{background:var(--bg3);}
-        .g-bell-item.unread{background:rgba(15,118,110,.06);}
+        .g-bell-item.unread{background:rgba(188,90,60,.06);}
         .g-bld{width:7px;height:7px;border-radius:50%;flex-shrink:0;margin-top:4px;}
-        .g-bld.new{background:var(--gold);box-shadow:0 0 6px rgba(15,118,110,.55);}
+        .g-bld.new{background:var(--gold);box-shadow:0 0 6px rgba(188,90,60,.55);}
         .g-bld.old{background:var(--bg4);}
         .g-bell-nt{font-size:12.5px;font-weight:600;color:var(--t1);white-space:nowrap;overflow:hidden;text-overflow:ellipsis;max-width:238px;}
         .g-bell-nd{font-size:11.5px;color:var(--t2);overflow:hidden;white-space:nowrap;text-overflow:ellipsis;max-width:238px;margin-top:2px;}
@@ -233,8 +245,8 @@
 
         /* SIDEBAR */
         .main-sidebar{position:fixed !important;top:var(--hh) !important;left:0 !important;bottom:0 !important;width:var(--sw) !important;background:var(--bg2) !important;border-right:1px solid var(--border) !important;z-index:1038 !important;display:flex !important;flex-direction:column !important;overflow:hidden !important;transition:width var(--ease),background var(--ease) !important;}
-        .main-sidebar::after{content:'';position:absolute;top:0;left:0;right:0;height:2px;background:linear-gradient(90deg,var(--gold),rgba(15,118,110,.2),transparent);}
-        .main-sidebar::before{content:'';position:absolute;inset:0;z-index:0;pointer-events:none;background-image:radial-gradient(circle,rgba(15,118,110,.04) 1px,transparent 1px);background-size:22px 22px;}
+        .main-sidebar::after{content:'';position:absolute;top:0;left:0;right:0;height:2px;background:linear-gradient(90deg,var(--gold),rgba(188,90,60,.2),transparent);}
+        .main-sidebar::before{content:'';position:absolute;inset:0;z-index:0;pointer-events:none;background-image:radial-gradient(circle,rgba(188,90,60,.04) 1px,transparent 1px);background-size:22px 22px;}
         /* Sidebar scrollbar — slim, translucent overlay that sits naturally
            on the gold (day) / navy (night) sidebar surface. Matches the
            white-on-coloured text treatment instead of clashing with it.
@@ -253,10 +265,10 @@
         [data-theme="night"] .sidebar::-webkit-scrollbar-thumb:hover{background:rgba(255,255,255,.32) !important;background-clip:padding-box !important;}
         [data-theme="night"] .sidebar::-webkit-scrollbar-thumb:active{background:rgba(255,255,255,.46) !important;background-clip:padding-box !important;}
         /* Day theme: light sidebar — translucent teal thumb (white would vanish on white) */
-        [data-theme="day"] .sidebar{scrollbar-color:rgba(15,118,110,.38) transparent;}
-        [data-theme="day"] .sidebar::-webkit-scrollbar-thumb{background:rgba(15,118,110,.30) !important;border:2px solid transparent !important;background-clip:padding-box !important;}
-        [data-theme="day"] .sidebar::-webkit-scrollbar-thumb:hover{background:rgba(15,118,110,.48) !important;background-clip:padding-box !important;}
-        [data-theme="day"] .sidebar::-webkit-scrollbar-thumb:active{background:rgba(15,118,110,.64) !important;background-clip:padding-box !important;}
+        [data-theme="day"] .sidebar{scrollbar-color:rgba(188,90,60,.38) transparent;}
+        [data-theme="day"] .sidebar::-webkit-scrollbar-thumb{background:rgba(188,90,60,.30) !important;border:2px solid transparent !important;background-clip:padding-box !important;}
+        [data-theme="day"] .sidebar::-webkit-scrollbar-thumb:hover{background:rgba(188,90,60,.48) !important;background-clip:padding-box !important;}
+        [data-theme="day"] .sidebar::-webkit-scrollbar-thumb:active{background:rgba(188,90,60,.64) !important;background-clip:padding-box !important;}
         .user-panel{display:none !important;}
         .sidebar-menu{list-style:none !important;margin:0 !important;padding:6px 0 4px !important;}
         /* Section micro-label — modern, airy, uppercase */
@@ -292,7 +304,7 @@
         .treeview-menu .g-sub-sec:first-child{padding-top:3px !important;}
         .treeview-menu .fa-circle-o{display:none !important;}
         .g-sb-foot{position:relative;z-index:1;border-top:1px solid var(--border);padding:12px 14px;display:flex;align-items:center;gap:11px;background:var(--bg2);transition:background var(--ease);}
-        .g-av{width:36px;height:36px;border-radius:10px;flex-shrink:0;background:var(--gold);display:flex;align-items:center;justify-content:center;font-family:var(--font-d);font-size:14px;font-weight:800;color:#ffffff;box-shadow:0 2px 8px rgba(15,118,110,.25);}
+        .g-av{width:36px;height:36px;border-radius:10px;flex-shrink:0;background:var(--gold);display:flex;align-items:center;justify-content:center;font-family:var(--font-d);font-size:14px;font-weight:800;color:#ffffff;box-shadow:0 2px 8px rgba(188,90,60,.25);}
         .g-av-name{font-size:13px;font-weight:700;color:var(--t1);white-space:nowrap;overflow:hidden;text-overflow:ellipsis;max-width:120px;}
         .g-av-role{font-size:9.5px;color:var(--t3);font-family:var(--font-m);text-transform:uppercase;letter-spacing:.5px;}
         .g-av-out{margin-left:auto;width:30px;height:30px;border-radius:8px;background:transparent;border:1px solid var(--border);display:flex;align-items:center;justify-content:center;color:var(--t3);font-size:13px;cursor:pointer;transition:all var(--ease);flex-shrink:0;}
@@ -307,12 +319,12 @@
            Keep their content-wrapper light in night theme so there is no dark gap.
            The dark dashboard uses .db-root with its OWN scoped dark --bg, so it is
            excluded here and stays dark. */
-        [data-theme="night"] .content-wrapper:not(.db-root){background:#f0f7f5 !important;color:#1a2332 !important;}
+        [data-theme="night"] .content-wrapper:not(.db-root){background:#F7F2ED !important;color:#2A1C14 !important;}
         /* Base html/body also light in night theme so the INTER-PAGE navigation gap
            (shown before content paints) is light, not near-black. Chrome elements use
            --bg2/--bg3 (still dark); the dashboard uses .db-root (its own dark bg). */
-        html[data-theme="night"]{background:#f0f7f5 !important;}
-        [data-theme="night"] body{background:#f0f7f5 !important;}
+        html[data-theme="night"]{background:#F7F2ED !important;}
+        [data-theme="night"] body{background:#F7F2ED !important;}
         .main-footer{background:var(--bg2) !important;border-top:1px solid var(--border) !important;color:var(--t3) !important;font-size:12px !important;margin-left:var(--sw) !important;padding:11px 24px !important;transition:background var(--ease),margin-left var(--ease) !important;}
 
         /* ── FIX: Neutralize AdminLTE transform on content-wrapper ──
@@ -504,14 +516,14 @@
         .box-danger{border-top:3px solid var(--rose) !important;}
         .box-info{border-top:3px solid var(--blue) !important;}
         .form-control{background:var(--bg3) !important;border:1px solid var(--brd2) !important;color:var(--t1) !important;border-radius:var(--r-sm) !important;height:40px !important;font-size:13.5px !important;font-family:var(--font-b) !important;}
-        .form-control:focus{border-color:rgba(15,118,110,.5) !important;box-shadow:0 0 0 3px var(--gold-glow) !important;background:var(--bg3) !important;color:var(--t1) !important;}
+        .form-control:focus{border-color:rgba(188,90,60,.5) !important;box-shadow:0 0 0 3px var(--gold-glow) !important;background:var(--bg3) !important;color:var(--t1) !important;}
         .form-control::placeholder{color:var(--t4) !important;}
         textarea.form-control{height:auto !important;}
         select.form-control option{background:var(--bg3);color:var(--t1);}
         label,.control-label{font-size:12.5px !important;font-weight:700 !important;color:var(--t2) !important;text-transform:uppercase !important;letter-spacing:.5px !important;}
         .btn{border-radius:var(--r-sm) !important;font-size:13px !important;font-weight:600 !important;font-family:var(--font-b) !important;padding:7px 16px !important;}
         .btn-primary{background:var(--gold) !important;color:#ffffff !important;border:none !important;}
-        .btn-primary:hover{background:var(--gold2) !important;box-shadow:0 4px 14px rgba(15,118,110,.4) !important;}
+        .btn-primary:hover{background:var(--gold2) !important;box-shadow:0 4px 14px rgba(188,90,60,.4) !important;}
         .btn-success{background:rgba(61,214,140,.12) !important;color:var(--green) !important;border:1px solid rgba(61,214,140,.25) !important;}
         .btn-danger{background:rgba(224,92,111,.12) !important;color:var(--rose) !important;border:1px solid rgba(224,92,111,.25) !important;}
         .btn-default{background:var(--bg3) !important;color:var(--t2) !important;border:1px solid var(--border) !important;}
@@ -521,7 +533,7 @@
         .table{color:var(--t1) !important;font-size:13px !important;}
         .table>thead>tr>th{background:var(--bg3) !important;color:var(--t3) !important;font-size:10.5px !important;font-weight:700 !important;text-transform:uppercase !important;letter-spacing:.6px !important;border-bottom:1px solid var(--border) !important;}
         .table>tbody>tr>td{border-color:var(--border) !important;vertical-align:middle !important;}
-        .table-striped>tbody>tr:nth-of-type(odd){background:rgba(15,118,110,.03) !important;}
+        .table-striped>tbody>tr:nth-of-type(odd){background:rgba(188,90,60,.03) !important;}
         .table-hover>tbody>tr:hover{background:var(--gold-dim) !important;}
         /* ── Fees module font-size floor — prevents tiny text across all fee views ── */
         .fc-wrap,.fm-wrap,.sfr-page,.fr-wrap,.cf-wrap,.fd-wrap,
@@ -590,8 +602,8 @@
         .content-header .breadcrumb>li.active{color:var(--t3) !important;}
         ::-webkit-scrollbar{width:5px;height:5px;}
         ::-webkit-scrollbar-track{background:var(--bg);}
-        ::-webkit-scrollbar-thumb{background:rgba(15,118,110,.20);border-radius:4px;}
-        ::-webkit-scrollbar-thumb:hover{background:rgba(15,118,110,.40);}
+        ::-webkit-scrollbar-thumb{background:rgba(188,90,60,.20);border-radius:4px;}
+        ::-webkit-scrollbar-thumb:hover{background:rgba(188,90,60,.40);}
         /* ── Session Switcher ──────────────────────────────────────────────── */
         .g-sess-wrap{position:relative;}
         .g-sess-panel{position:absolute;top:calc(100% + 8px);right:0;min-width:176px;background:var(--bg2);border:1px solid var(--brd2);border-radius:12px;box-shadow:var(--sh);z-index:1050;display:none;overflow:hidden;}

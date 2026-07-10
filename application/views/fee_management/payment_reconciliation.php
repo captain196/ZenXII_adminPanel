@@ -305,7 +305,7 @@ function itemCard(it,actions){
 }
 
 function statusBadge(s){
-  var colors={paid:'background:rgba(15,118,110,.1);color:#0f766e',fees_failed:'background:rgba(220,38,38,.1);color:#dc2626',created:'background:rgba(59,130,246,.1);color:#2563eb',verified:'background:rgba(124,58,237,.1);color:#7c3aed',processing:'background:rgba(217,119,6,.1);color:#d97706'};
+  var colors={paid:'background:rgba(188,90,60,.1);color:#BC5A3C',fees_failed:'background:rgba(220,38,38,.1);color:#dc2626',created:'background:rgba(59,130,246,.1);color:#2563eb',verified:'background:rgba(124,58,237,.1);color:#7c3aed',processing:'background:rgba(217,119,6,.1);color:#d97706'};
   return '<span style="font-size:10px;padding:2px 8px;border-radius:4px;font-weight:700;text-transform:uppercase;'+(colors[s]||'')+'">'+(s||'unknown')+'</span>';
 }
 
@@ -368,7 +368,7 @@ function retryPayment(recordId,btn){
   btn.disabled=true;btn.innerHTML='<i class="fa fa-spinner fa-spin"></i>';
   post('fee_management/retry_payment_processing',{order_record_id:recordId}).then(function(r){
     if(r.status==='success'){
-      btn.innerHTML='<i class="fa fa-check"></i> Done';btn.style.color='#0f766e';btn.style.borderColor='#0f766e';
+      btn.innerHTML='<i class="fa fa-check"></i> Done';btn.style.color='#BC5A3C';btn.style.borderColor='#BC5A3C';
       setTimeout(loadRecon,1000);
     } else {
       alert(r.message||'Retry failed.');btn.disabled=false;btn.innerHTML='<i class="fa fa-refresh"></i> Retry';

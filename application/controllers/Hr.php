@@ -2528,7 +2528,7 @@ class Hr extends MY_Controller
         $details = '';
         $row = function($icon, $label, $value) use (&$details) {
             if (trim($value) === '') return;
-            $details .= "<tr><td style=\"padding:8px 12px;width:36px;text-align:center;color:#0f766e;font-size:16px;\"><i class=\"fa {$icon}\"></i></td>"
+            $details .= "<tr><td style=\"padding:8px 12px;width:36px;text-align:center;color:#BC5A3C;font-size:16px;\"><i class=\"fa {$icon}\"></i></td>"
                        . "<td style=\"padding:8px 0;font-size:13px;color:#64748b;width:130px;\">{$label}</td>"
                        . "<td style=\"padding:8px 0;font-size:14px;color:#1e293b;font-weight:600;\">{$value}</td></tr>";
         };
@@ -2542,15 +2542,15 @@ class Hr extends MY_Controller
 
         $descHtml = '';
         if ($desc !== '') {
-            $descHtml = "<div style=\"margin-top:20px;padding:14px 18px;background:#f0fdf4;border-left:4px solid #0f766e;border-radius:0 8px 8px 0;\">"
-                      . "<div style=\"font-size:12px;font-weight:700;color:#0f766e;text-transform:uppercase;letter-spacing:.5px;margin-bottom:6px;\">About the Role</div>"
+            $descHtml = "<div style=\"margin-top:20px;padding:14px 18px;background:#f0fdf4;border-left:4px solid #BC5A3C;border-radius:0 8px 8px 0;\">"
+                      . "<div style=\"font-size:12px;font-weight:700;color:#BC5A3C;text-transform:uppercase;letter-spacing:.5px;margin-bottom:6px;\">About the Role</div>"
                       . "<div style=\"font-size:13.5px;color:#334155;line-height:1.6;white-space:pre-line;\">{$desc}</div></div>";
         }
 
         return <<<HTML
 <div style="font-family:'Segoe UI',system-ui,-apple-system,sans-serif;max-width:600px;margin:0 auto;background:#ffffff;border-radius:16px;overflow:hidden;border:1px solid #e2e8f0;">
   <!-- Header -->
-  <div style="background:linear-gradient(135deg,#0f766e 0%,#14b8a6 100%);padding:32px 28px 26px;text-align:center;position:relative;">
+  <div style="background:linear-gradient(135deg,#BC5A3C 0%,#D4725C 100%);padding:32px 28px 26px;text-align:center;position:relative;">
     <div style="font-size:13px;font-weight:600;letter-spacing:1.5px;text-transform:uppercase;color:rgba(255,255,255,.75);margin-bottom:6px;">{$schoolName}</div>
     <div style="display:inline-block;padding:6px 20px;background:rgba(255,255,255,.2);border-radius:20px;margin-bottom:14px;">
       <span style="font-size:11px;font-weight:700;letter-spacing:2px;text-transform:uppercase;color:#fff;">We Are Hiring</span>
@@ -2565,7 +2565,7 @@ class Hr extends MY_Controller
 
     <!-- CTA -->
     <div style="margin-top:24px;text-align:center;">
-      <div style="display:inline-block;padding:12px 36px;background:linear-gradient(135deg,#0f766e,#14b8a6);color:#fff;font-size:15px;font-weight:700;border-radius:10px;letter-spacing:.5px;">
+      <div style="display:inline-block;padding:12px 36px;background:linear-gradient(135deg,#BC5A3C,#D4725C);color:#fff;font-size:15px;font-weight:700;border-radius:10px;letter-spacing:.5px;">
         Apply Now
       </div>
       <div style="margin-top:10px;font-size:12.5px;color:#64748b;">Contact the school administration for application details</div>
@@ -4218,33 +4218,23 @@ HTML;
             );
         }
 
-        // FCM — notify the staff member about the decision (best-effort, never fatal)
-        try {
-            $this->load->library('push_service');
-            $fromDate = (string) ($request['from_date'] ?? '');
-            $toDate   = (string) ($request['to_date'] ?? '');
-            $halfTag  = $isHalfDay ? ' (half-day)' : '';
-            $title    = "Leave {$decision}";
-            $body     = ($decision === 'Approved')
-                ? "Your {$ltCode} leave from {$fromDate} to {$toDate}{$halfTag} has been approved."
-                : ("Your {$ltCode} leave was rejected" . ($remarks !== '' ? ": {$remarks}" : '.'));
-            $this->push_service->sendToUser($staffId, [
-                'title' => $title,
-                'body'  => $body,
-                'data'  => [
-                    'type'       => 'leave_' . strtolower($decision),
-                    'requestId'  => $id,
-                    'decision'   => $decision,
-                    'fromDate'   => $fromDate,
-                    'toDate'     => $toDate,
-                    'leaveType'  => $ltCode,
-                    'halfDay'    => $isHalfDay ? '1' : '0',
-                    'remarks'    => $remarks,
-                ],
-            ]);
-        } catch (\Exception $e) {
-            log_message('warning', 'decide_leave FCM push failed for ' . $staffId . ': ' . $e->getMessage());
-        }
+        // FCM — notify the staff member about the decision (universal CF dispatcher).
+        $fromDate = (string) ($request['from_date'] ?? '');
+        $toDate   = (string) ($request['to_date'] ?? '');
+        $halfTag  = $isHalfDay ? ' (half-day)' : '';
+        $title    = "Leave {$decision}";
+        $body     = ($decision === 'Approved')
+            ? "Your {$ltCode} leave from {$fromDate} to {$toDate}{$halfTag} has been approved."
+            : ("Your {$ltCode} leave was rejected" . ($remarks !== '' ? ": {$remarks}" : '.'));
+        $this->emit_push('STAFF_LEAVE_DECIDED', 'staffleave_' . $id . '_' . strtolower((string) $decision), [
+            'staffId'   => $staffId,
+            'pushType'  => 'leave_' . strtolower((string) $decision),
+            'title'     => $title,
+            'body'      => $body,
+            'leaveId'   => $id,
+            'startDate' => $fromDate,
+            'endDate'   => $toDate,
+        ]);
 
         // Audit log
         $this->_log_leave_audit([
@@ -6344,16 +6334,16 @@ HTML;
         $css = 'body{font-family:sans-serif;font-size:11px;color:#1a2e2a;margin:0;padding:20px 30px}
         table{width:100%;border-collapse:collapse}
         .hdr{text-align:center;margin-bottom:16px}
-        .hdr h1{font-size:16px;margin:0;color:#0f766e}
+        .hdr h1{font-size:16px;margin:0;color:#BC5A3C}
         .hdr p{margin:2px 0;color:#4a6a60;font-size:10px}
-        .hdr .period{font-size:13px;font-weight:700;color:#0f766e;margin-top:8px}
+        .hdr .period{font-size:13px;font-weight:700;color:#BC5A3C;margin-top:8px}
         .info td{padding:4px 8px;font-size:10px;border:1px solid #d1ddd8}
         .info .lbl{font-weight:700;color:#4a6a60;width:25%}
-        .section{font-size:11px;font-weight:700;color:#0f766e;padding:8px 0 4px;border-bottom:2px solid #0f766e;margin-top:14px}
+        .section{font-size:11px;font-weight:700;color:#BC5A3C;padding:8px 0 4px;border-bottom:2px solid #BC5A3C;margin-top:14px}
         .pay td{padding:5px 8px;border:1px solid #d1ddd8;font-size:10px}
         .pay .r{text-align:right;font-family:monospace}
-        .pay .total{font-weight:700;background:#e6f4f1}
-        .net{text-align:center;font-size:14px;font-weight:700;color:#0f766e;padding:12px;background:#e6f4f1;border-radius:6px;margin:14px 0}
+        .pay .total{font-weight:700;background:#F3E9E2}
+        .net{text-align:center;font-size:14px;font-weight:700;color:#BC5A3C;padding:12px;background:#F3E9E2;border-radius:6px;margin:14px 0}
         .footer{font-size:9px;color:#7a9a8e;text-align:center;margin-top:20px;border-top:1px solid #d1ddd8;padding-top:8px}';
 
         $h = '<!DOCTYPE html><html><head><meta charset="UTF-8"><style>' . $css . '</style></head><body>';

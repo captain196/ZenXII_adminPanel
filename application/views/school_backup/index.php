@@ -73,7 +73,7 @@
 .sb-b-green{background:rgba(22,163,74,.12);color:#16a34a}
 .sb-b-blue{background:rgba(59,130,246,.12);color:#3b82f6}
 .sb-b-amber{background:rgba(217,119,6,.12);color:#d97706}
-.sb-b-teal{background:rgba(15,118,110,.12);color:var(--gold)}
+.sb-b-teal{background:rgba(188,90,60,.12);color:var(--gold)}
 .sb-b-gray{background:rgba(107,114,128,.12);color:#6b7280}
 
 /* Empty */

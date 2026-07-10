@@ -101,10 +101,13 @@
 <script>
 /* Native DOM + fetch (NO jQuery). jQuery loads in the footer AFTER this inline
    script, so any $() here would throw and kill the page (blank list, dead tabs).
-   The .../list and .../decide routes are in csrf_exclude_uris, so no token needed. */
+   `list` stays CSRF-excluded (read-only, also hit by the Approvals badge); the
+   state-changing `decide` is CSRF-protected, so every POST carries the token. */
 (function () {
     var LIST_URL   = '<?= site_url('attendance/staff_regularization/list') ?>';
     var DECIDE_URL = '<?= site_url('attendance/staff_regularization/decide') ?>';
+    var CSRF_NAME  = '<?= $this->security->get_csrf_token_name() ?>';
+    var CSRF_HASH  = '<?= $this->security->get_csrf_hash() ?>';
     var state = { status: 'pending' };
     var listEl = document.getElementById('srList');
 
@@ -117,6 +120,9 @@
     function post(url, params){
         var body = new URLSearchParams();
         Object.keys(params).forEach(function(k){ body.append(k, params[k]); });
+        // Always attach the CSRF token — required by the protected `decide`
+        // route, harmlessly ignored by the excluded `list` route.
+        if (CSRF_NAME) body.append(CSRF_NAME, CSRF_HASH);
         return fetch(url, {
             method: 'POST',
             headers: { 'Content-Type':'application/x-www-form-urlencoded', 'X-Requested-With':'XMLHttpRequest' },
@@ -195,7 +201,15 @@
         var card = btn.closest('.sr-card');
         var remarksEl = card.querySelector('.sr-remarks'), markEl = card.querySelector('.sr-mark');
         var remarks = remarksEl ? remarksEl.value : '', mark = markEl ? markEl.value : '';
+        // Loading feedback: disable both buttons and show a spinner on the one
+        // that was clicked until the decide round-trip resolves.
+        var btnOrig = btn.innerHTML;
         card.querySelectorAll('.sr-btn').forEach(function(b){ b.disabled = true; });
+        btn.innerHTML = '<i class="fa fa-spinner fa-spin"></i> ' + (decision === 'approve' ? 'Approving…' : 'Rejecting…');
+        function restoreBtns(){
+            card.querySelectorAll('.sr-btn').forEach(function(b){ b.disabled = false; });
+            btn.innerHTML = btnOrig;
+        }
         post(DECIDE_URL, { batch_id: bid, decision: decision, remarks: remarks, mark: mark }).then(function(res){
             if (res && res.status === 'success'){
                 // appliedCount / skippedCount are TOP-LEVEL (json_success merge), not res.data.*
@@ -205,11 +219,11 @@
                 load();
             } else {
                 toast((res && res.message) || 'Action failed');
-                card.querySelectorAll('.sr-btn').forEach(function(b){ b.disabled = false; });
+                restoreBtns();
             }
         }).catch(function(){
             toast('Action failed');
-            card.querySelectorAll('.sr-btn').forEach(function(b){ b.disabled = false; });
+            restoreBtns();
         });
     });
 

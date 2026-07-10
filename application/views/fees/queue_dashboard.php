@@ -1,7 +1,7 @@
 <?php defined('BASEPATH') or exit('No direct script access allowed'); ?>
 <style>
 :root{--qd-bg:#f7f8fb;--qd-card:#fff;--qd-border:#e5e7eb;--qd-text:#1f2937;
-  --qd-muted:#6b7280;--qd-teal:#0f766e;--qd-blue:#1d4ed8;--qd-amber:#b45309;
+  --qd-muted:#6b7280;--qd-teal:#BC5A3C;--qd-blue:#1d4ed8;--qd-amber:#b45309;
   --qd-red:#b91c1c;--qd-green:#047857;}
 .qd-wrap{background:var(--qd-bg);padding:14px 18px;color:var(--qd-text);font:13px/1.45 system-ui,sans-serif;}
 .qd-hd{display:flex;align-items:center;gap:10px;margin-bottom:12px;}

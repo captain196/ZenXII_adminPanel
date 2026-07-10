@@ -145,12 +145,12 @@
 /* Day | Time corner cell */
 .day-time-head { border-radius: 8px; overflow: hidden; }
 .day-time-head span { height: 100%; display: flex; align-items: center; justify-content: center; font-size: 11px; font-weight: 700; font-family: var(--font-b); letter-spacing: .4px; }
-.day-label { background: linear-gradient(135deg, var(--gold) 0%, #0d6b63 100%); color: #fff; }
+.day-label { background: linear-gradient(135deg, var(--gold) 0%, #9E4830 100%); color: #fff; }
 .time-label { background: var(--bg3); color: var(--t3); border: 1px solid var(--border); }
 
 /* Period time header cells */
 .time-head {
-    background: linear-gradient(135deg, var(--gold) 0%, #0d6b63 100%);
+    background: linear-gradient(135deg, var(--gold) 0%, #9E4830 100%);
     color: #fff;
     font-size: 11px;
     font-weight: 600;
@@ -188,10 +188,10 @@
     background: var(--gold-dim);
 }
 .timetable-wrapper.edit-mode .subject:hover {
-    background: rgba(15,118,110,.22);
+    background: rgba(188,90,60,.22);
     border-color: var(--gold);
     transform: translateY(-1px);
-    box-shadow: 0 3px 10px rgba(15,118,110,.2);
+    box-shadow: 0 3px 10px rgba(188,90,60,.2);
 }
 
 /* ── Break cells ── */
@@ -205,7 +205,7 @@
     color: var(--gold) !important;
     font-weight: 700;
     font-size: 11px;
-    border: 1px solid rgba(15,118,110,.35) !important;
+    border: 1px solid rgba(188,90,60,.35) !important;
 }
 
 /* ── Footer buttons ── */
@@ -226,8 +226,8 @@
     font-family: var(--font-b);
 }
 .timetable-footer .btn-warning {
-    background: linear-gradient(135deg, var(--gold) 0%, #0d6b63 100%);
-    color: #fff; border: none; box-shadow: 0 2px 8px rgba(15,118,110,.3);
+    background: linear-gradient(135deg, var(--gold) 0%, #9E4830 100%);
+    color: #fff; border: none; box-shadow: 0 2px 8px rgba(188,90,60,.3);
 }
 .timetable-footer .btn-warning:hover { opacity: .88; color: #fff; transform: translateY(-1px); }
 .timetable-footer .btn-success {
@@ -265,7 +265,7 @@
     display: flex;
     flex-direction: column;
     align-items: flex-start;
-    background: linear-gradient(135deg, var(--gold) 0%, #0d6b63 100%);
+    background: linear-gradient(135deg, var(--gold) 0%, #9E4830 100%);
     border-radius: 16px 16px 0 0;
     position: relative;
 }
@@ -313,9 +313,9 @@
 }
 .subject-item:hover { background: var(--gold-dim); color: var(--gold); border-color: var(--gold); }
 .subject-item.selected {
-    background: linear-gradient(135deg, var(--gold) 0%, #0d6b63 100%);
+    background: linear-gradient(135deg, var(--gold) 0%, #9E4830 100%);
     border-color: var(--gold); color: #fff; font-weight: 700;
-    box-shadow: 0 2px 8px rgba(15,118,110,.3);
+    box-shadow: 0 2px 8px rgba(188,90,60,.3);
 }
 
 @media (max-width: 576px) {

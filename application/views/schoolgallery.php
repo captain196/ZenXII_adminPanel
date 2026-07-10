@@ -5,8 +5,8 @@
    School Gallery — Themed with global CSS vars (day + night mode)
    ═══════════════════════════════════════════════════════════════════════ */
 :root {
-    --sg-teal:    var(--gold, #0f766e);
-    --sg-teal-lt: var(--gold-dim, rgba(15,118,110,.10));
+    --sg-teal:    var(--gold, #BC5A3C);
+    --sg-teal-lt: var(--gold-dim, rgba(188,90,60,.10));
     --sg-navy:    var(--t1, #1a2332);
     --sg-text:    var(--t1, #1a2332);
     --sg-muted:   var(--t3, #6b7280);
@@ -373,7 +373,7 @@
                         <span style="font-size:12px;font-weight:600;color:var(--sg-text);">Storage Usage</span>
                         <span style="font-size:11px;color:var(--sg-muted);" id="sgQuotaText">—</span>
                     </div>
-                    <div style="height:6px;background:rgba(15,118,110,.1);border-radius:3px;overflow:hidden;">
+                    <div style="height:6px;background:rgba(188,90,60,.1);border-radius:3px;overflow:hidden;">
                         <div id="sgQuotaBar" style="height:100%;width:0%;border-radius:3px;background:var(--sg-teal);transition:width .5s;"></div>
                     </div>
                 </div>
@@ -530,7 +530,7 @@
 <div id="sgUploadPicker" style="display:none;position:fixed;inset:0;background:rgba(15,23,42,.55);z-index:9998;align-items:center;justify-content:center;">
     <div style="background:#fff;width:min(480px,92vw);max-height:82vh;border-radius:14px;overflow:hidden;display:flex;flex-direction:column;box-shadow:0 16px 50px rgba(0,0,0,.35);">
         <div style="display:flex;align-items:center;justify-content:space-between;padding:15px 18px;border-bottom:1px solid #e5e7eb;">
-            <strong style="font-size:16px;color:var(--sg-navy,#0f172a);"><i class="fa fa-cloud-upload" style="color:var(--sg-teal,#0f766e);margin-right:7px;"></i>Upload Event Photos</strong>
+            <strong style="font-size:16px;color:var(--sg-navy,#0f172a);"><i class="fa fa-cloud-upload" style="color:var(--sg-teal,#BC5A3C);margin-right:7px;"></i>Upload Event Photos</strong>
             <button onclick="closeEventUploadPicker()" style="background:none;border:none;font-size:24px;line-height:1;cursor:pointer;color:#64748b;">&times;</button>
         </div>
         <div style="padding:14px 18px 8px;">
@@ -705,7 +705,7 @@ function renderAlbums() {
         if (isDef && !album.cover) {
             // Stylized placeholder for default albums
             var defIcon = album.icon || (isPhotos ? 'fa-camera' : 'fa-video-camera');
-            var defColor = isPhotos ? 'linear-gradient(135deg,#0f766e,#14b8a6)' : 'linear-gradient(135deg,#d97706,#f59e0b)';
+            var defColor = isPhotos ? 'linear-gradient(135deg,#BC5A3C,#D4725C)' : 'linear-gradient(135deg,#d97706,#f59e0b)';
             cover = '<div class="sg-album-placeholder" style="background:' + defColor + ';"><i class="fa ' + defIcon + '" style="font-size:36px;color:#fff;"></i></div>';
         } else if (album.cover) {
             cover = '<img loading="lazy" src="' + sgEsc(album.cover) + '" alt="' + sgEsc(album.title) + '">';
@@ -715,7 +715,7 @@ function renderAlbums() {
 
         var badge;
         if (isDef) {
-            badge = '<span class="sg-badge sg-badge-teal" style="background:' + (isPhotos ? 'rgba(15,118,110,.12)' : 'rgba(217,119,6,.12)') + ';color:' + (isPhotos ? '#0f766e' : '#d97706') + ';">' + (isPhotos ? 'Photos' : 'Videos') + '</span>';
+            badge = '<span class="sg-badge sg-badge-teal" style="background:' + (isPhotos ? 'rgba(188,90,60,.12)' : 'rgba(217,119,6,.12)') + ';color:' + (isPhotos ? '#BC5A3C' : '#d97706') + ';">' + (isPhotos ? 'Photos' : 'Videos') + '</span>';
         } else if (album.category === 'general') {
             badge = '<span class="sg-badge sg-badge-muted">Legacy</span>';
         } else if (album.status === 'completed') {
@@ -726,12 +726,12 @@ function renderAlbums() {
 
         var dateStr = (album.start_date && album.start_date !== '9999-99-99') ? formatDate(album.start_date) : '';
 
-        var cardStyle = isDef ? 'border:2px solid ' + (isPhotos ? 'rgba(15,118,110,.3)' : 'rgba(217,119,6,.3)') + ';' : '';
+        var cardStyle = isDef ? 'border:2px solid ' + (isPhotos ? 'rgba(188,90,60,.3)' : 'rgba(217,119,6,.3)') + ';' : '';
 
         return '<div class="sg-album-card" style="' + cardStyle + '" data-id="' + sgEsc(album.event_id) + '" data-title="' + sgEsc(String(album.title).toLowerCase()) + '" onclick="openAlbum(\'' + sgEsc(album.event_id) + '\')">'
             + '<div class="sg-album-cover">' + cover + '</div>'
             + '<div class="sg-album-info">'
-            +   '<div class="sg-album-name">' + (isDef ? '<i class="fa ' + sgEsc(album.icon||'fa-folder') + '" style="margin-right:5px;color:' + (isPhotos?'#0f766e':'#d97706') + ';"></i>' : '') + sgEsc(album.title) + '</div>'
+            +   '<div class="sg-album-name">' + (isDef ? '<i class="fa ' + sgEsc(album.icon||'fa-folder') + '" style="margin-right:5px;color:' + (isPhotos?'#BC5A3C':'#d97706') + ';"></i>' : '') + sgEsc(album.title) + '</div>'
             +   '<div class="sg-album-counts">'
             +       '<span><i class="fa fa-picture-o"></i> ' + album.image_count + '</span>'
             +       '<span><i class="fa fa-film"></i> ' + album.video_count + '</span>'

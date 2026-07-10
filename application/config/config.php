@@ -205,10 +205,10 @@ $config['csrf_exclude_uris'] = [
     // Teacher app attendance POSTs (Bearer-token authenticated via _bearer_auth_bridge)
     'attendance/save',
     'attendance/correction/submit',
-    // Admin-panel staff-regularization AJAX (session + role gated in the controller;
-    // the page's fetch/decide POSTs were silently CSRF-403'd → blank list).
+    // Admin-panel staff-regularization LIST (read-only AJAX, also hit by the
+    // Approvals badge). `decide` is deliberately NOT excluded — it stamps payroll
+    // marks, so it stays CSRF-protected; the view sends the token on every POST.
     'attendance/staff_regularization/list',
-    'attendance/staff_regularization/decide',
 ];
 
 $config['compress_output'] = FALSE;

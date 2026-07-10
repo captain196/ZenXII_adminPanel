@@ -604,7 +604,7 @@
   animation: ex-slide-in .3s ease;
   min-width: 240px;
 }
-.ex-toast-success { background: #0f766e; }
+.ex-toast-success { background: #BC5A3C; }
 .ex-toast-error   { background: #dc2626; }
 .ex-toast-warning { background: #d97706; }
 .ex-toast-info    { background: #2563eb; }

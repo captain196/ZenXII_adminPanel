@@ -287,8 +287,8 @@ $activeTab = $active_tab ?? 'pipeline';
 .ats-lane[data-stage="Shortlisted"] .ats-lane-count{background:rgba(217,119,6,.12);color:#d97706}
 .ats-lane[data-stage="Interviewed"] .ats-lane-head{border-top:3px solid #8b5cf6}
 .ats-lane[data-stage="Interviewed"] .ats-lane-count{background:rgba(139,92,246,.12);color:#8b5cf6}
-.ats-lane[data-stage="Selected"] .ats-lane-head{border-top:3px solid #0f766e}
-.ats-lane[data-stage="Selected"] .ats-lane-count{background:rgba(15,118,110,.12);color:#0f766e}
+.ats-lane[data-stage="Selected"] .ats-lane-head{border-top:3px solid #BC5A3C}
+.ats-lane[data-stage="Selected"] .ats-lane-count{background:rgba(188,90,60,.12);color:#BC5A3C}
 .ats-lane[data-stage="Hired"] .ats-lane-head{border-top:3px solid #15803d}
 .ats-lane[data-stage="Hired"] .ats-lane-count{background:rgba(21,128,61,.12);color:#15803d}
 
@@ -297,7 +297,7 @@ $activeTab = $active_tab ?? 'pipeline';
 .ats-stage.Applied{background:rgba(74,181,227,.12);color:#4AB5E3}
 .ats-stage.Shortlisted{background:rgba(217,119,6,.12);color:#d97706}
 .ats-stage.Interviewed{background:rgba(139,92,246,.12);color:#8b5cf6}
-.ats-stage.Selected{background:rgba(15,118,110,.12);color:#0f766e}
+.ats-stage.Selected{background:rgba(188,90,60,.12);color:#BC5A3C}
 .ats-stage.Hired{background:rgba(21,128,61,.12);color:#15803d}
 .ats-stage.rejected{background:rgba(224,92,111,.12);color:#E05C6F}
 
@@ -385,7 +385,7 @@ $activeTab = $active_tab ?? 'pipeline';
 .ats-tl-meta{font:400 11px/1 var(--font-m);color:var(--t3)}
 
 /* ── Convert banner ─────────────────────────────────────────────── */
-.ats-convert-banner{background:linear-gradient(135deg,rgba(15,118,110,.08),rgba(21,128,61,.08));border:1.5px solid rgba(15,118,110,.25);border-radius:10px;padding:18px 20px;margin:16px 0;display:flex;align-items:center;justify-content:space-between;flex-wrap:wrap;gap:12px}
+.ats-convert-banner{background:linear-gradient(135deg,rgba(188,90,60,.08),rgba(21,128,61,.08));border:1.5px solid rgba(188,90,60,.25);border-radius:10px;padding:18px 20px;margin:16px 0;display:flex;align-items:center;justify-content:space-between;flex-wrap:wrap;gap:12px}
 .ats-convert-banner p{font:500 14px/1.4 var(--font-b);color:var(--t1);margin:0;display:flex;align-items:center;gap:8px}
 .ats-convert-banner p i{font-size:18px}
 
@@ -446,7 +446,7 @@ var CSRF_HASH = '<?= $this->security->get_csrf_hash() ?>';
 
 var STAGES      = ['Applied','Shortlisted','Interviewed','Selected','Hired'];
 var STAGE_ICONS  = {Applied:'fa-inbox',Shortlisted:'fa-filter',Interviewed:'fa-comments',Selected:'fa-check-circle',Hired:'fa-user-plus'};
-var STAGE_COLORS = {Applied:'#4AB5E3',Shortlisted:'#d97706',Interviewed:'#8b5cf6',Selected:'#0f766e',Hired:'#15803d'};
+var STAGE_COLORS = {Applied:'#4AB5E3',Shortlisted:'#d97706',Interviewed:'#8b5cf6',Selected:'#BC5A3C',Hired:'#15803d'};
 
 var _allApplicants = [];
 var _jobs = {};

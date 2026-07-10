@@ -1252,7 +1252,7 @@ function __rfInitRedFlags() {
             amber:  '#d97706',
             blue:   '#2563eb',
             green:  '#16a34a',
-            teal:   '#0f766e',
+            teal:   '#BC5A3C',
             rose:   '#e05c6f',
             purple: '#7c3aed',
             gray:   '#6b7280',
@@ -1264,7 +1264,7 @@ function __rfInitRedFlags() {
     }
 
     function gridColor() {
-        return getComputedStyle(document.documentElement).getPropertyValue('--border').trim() || 'rgba(15,118,110,.12)';
+        return getComputedStyle(document.documentElement).getPropertyValue('--border').trim() || 'rgba(188,90,60,.12)';
     }
 
     function destroyChart(key) {

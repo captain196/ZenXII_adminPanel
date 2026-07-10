@@ -45,8 +45,8 @@
             <div class="att-kpi-label">Staff Present Today</div>
         </div>
         <div class="att-kpi att-kpi-purple att-kpi--clickable" id="attCorrectionsCard"
-             onclick="window.location='<?= base_url('attendance/control') ?>#corrections'"
-             title="Open Control Panel — Corrections tab">
+             onclick="window.location='<?= base_url('attendance/approvals') ?>#corrections'"
+             title="Open Approvals — Student Corrections">
             <div class="att-kpi-icon"><i class="fa fa-flag-checkered"></i></div>
             <div class="att-kpi-value" id="attStatCorrections"><div class="att-kpi-loading"></div></div>
             <div class="att-kpi-label">Pending Corrections</div>
@@ -58,22 +58,22 @@
         <a href="<?= base_url('attendance/control') ?>" class="att-btn att-btn-primary">
             <i class="fa fa-shield"></i> Attendance Control Panel
         </a>
-        <a href="<?= base_url('attendance/student') ?>" class="att-btn att-btn-outline">
+        <a href="<?= base_url('attendance/mark') ?>#student" class="att-btn att-btn-outline">
             <i class="fa fa-users"></i> Mark Student Attendance
         </a>
-        <a href="<?= base_url('attendance/staff') ?>" class="att-btn att-btn-outline">
+        <a href="<?= base_url('attendance/mark') ?>#staff" class="att-btn att-btn-outline">
             <i class="fa fa-id-badge"></i> Mark Staff Attendance
         </a>
-        <a href="<?= base_url('attendance/scan') ?>" class="att-btn att-btn-outline">
+        <a href="<?= base_url('attendance/mark') ?>#scan" class="att-btn att-btn-outline">
             <i class="fa fa-qrcode"></i> QR Scan
         </a>
-        <a href="<?= base_url('attendance/analytics') ?>" class="att-btn att-btn-outline">
+        <a href="<?= base_url('attendance/reports') ?>#analytics" class="att-btn att-btn-outline">
             <i class="fa fa-bar-chart"></i> View Analytics
         </a>
-        <a href="<?= base_url('attendance/audit') ?>" class="att-btn att-btn-outline">
+        <a href="<?= base_url('attendance/reports') ?>#audit" class="att-btn att-btn-outline">
             <i class="fa fa-history"></i> Audit Log
         </a>
-        <a href="<?= base_url('attendance/staff_regularization') ?>" class="att-btn att-btn-outline">
+        <a href="<?= base_url('attendance/approvals') ?>#regularization" class="att-btn att-btn-outline">
             <i class="fa fa-user-clock"></i> Regularization Requests
         </a>
     </div>

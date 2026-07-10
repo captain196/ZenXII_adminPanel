@@ -296,8 +296,8 @@ function loadDueFees() {
                 + '<i class="fa fa-exclamation-triangle" style="font-size:28px;color:#d97706;display:block;margin-bottom:10px"></i>'
                 + '<strong style="font-size:14px;color:var(--t1)">No Fee Structure Found</strong>'
                 + '<p style="font-size:12.5px;color:var(--t3);margin:6px 0 14px">' + (data.message || 'Set up fee titles and chart first.') + '</p>'
-                + '<a href="' + SITE_URL + '/fee_management/categories" style="display:inline-block;padding:7px 16px;border-radius:6px;background:var(--gold,#0f766e);color:#fff;text-decoration:none;font-size:12px;font-weight:600;margin-right:8px"><i class="fa fa-list"></i> Fee Categories</a>'
-                + '<a href="' + SITE_URL + '/fees/fees_chart" style="display:inline-block;padding:7px 16px;border-radius:6px;border:1.5px solid var(--gold,#0f766e);color:var(--gold,#0f766e);text-decoration:none;font-size:12px;font-weight:600"><i class="fa fa-table"></i> Fee Chart</a>'
+                + '<a href="' + SITE_URL + '/fee_management/categories" style="display:inline-block;padding:7px 16px;border-radius:6px;background:var(--gold,#BC5A3C);color:#fff;text-decoration:none;font-size:12px;font-weight:600;margin-right:8px"><i class="fa fa-list"></i> Fee Categories</a>'
+                + '<a href="' + SITE_URL + '/fees/fees_chart" style="display:inline-block;padding:7px 16px;border-radius:6px;border:1.5px solid var(--gold,#BC5A3C);color:var(--gold,#BC5A3C);text-decoration:none;font-size:12px;font-weight:600"><i class="fa fa-table"></i> Fee Chart</a>'
                 + '</div></td></tr>';
             cfToast('No fee structure found. Set up Fee Titles & Chart first.', 'error');
             return;

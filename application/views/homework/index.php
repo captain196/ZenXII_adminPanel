@@ -1010,17 +1010,17 @@ function destroyChart(id) { if (_charts[id]) { _charts[id].destroy(); delete _ch
 function getChartColors() {
     var cs = getComputedStyle(document.documentElement);
     return {
-        primary: cs.getPropertyValue('--gold').trim() || '#0f766e',
+        primary: cs.getPropertyValue('--gold').trim() || '#BC5A3C',
         green: '#16a34a', red: '#dc2626', amber: '#d97706', blue: '#2563eb',
         purple: '#7c3aed', gray: '#6b7280',
         t1: cs.getPropertyValue('--t1').trim() || '#e6f4f1',
         t3: cs.getPropertyValue('--t3').trim() || '#5a9e98',
-        border: cs.getPropertyValue('--border').trim() || 'rgba(15,118,110,0.12)',
+        border: cs.getPropertyValue('--border').trim() || 'rgba(188,90,60,0.12)',
         bg3: cs.getPropertyValue('--bg3').trim() || '#0f2545',
     };
 }
 
-var PALETTE = ['#0f766e','#2563eb','#d97706','#7c3aed','#dc2626','#16a34a','#db2777','#ea580c','#0891b2','#4f46e5','#059669','#be123c'];
+var PALETTE = ['#BC5A3C','#2563eb','#d97706','#7c3aed','#dc2626','#16a34a','#db2777','#ea580c','#0891b2','#4f46e5','#059669','#be123c'];
 
 /* ── Gauge renderer ───────────────────────────────────────── */
 function drawGauge(canvasId, pct) {

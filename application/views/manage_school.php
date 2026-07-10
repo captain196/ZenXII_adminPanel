@@ -536,7 +536,7 @@ document.getElementById('addSchoolForm').addEventListener('submit', function(e) 
     cursor: pointer; border: none; text-decoration: none; transition: all .18s;
 }
 .ms-btn-primary { background: var(--ms-teal); color: #fff; }
-.ms-btn-primary:hover { background: #0f766e; }
+.ms-btn-primary:hover { background: #BC5A3C; }
 .ms-btn-danger  { background: var(--ms-red);  color: #fff; }
 .ms-btn-danger:hover  { background: #b91c1c; }
 .ms-btn-edit    { background: var(--ms-navy); color: #fff; }

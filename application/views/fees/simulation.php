@@ -83,10 +83,10 @@ function renderParallelResults(r,el){
   // Summary stats
   h+='<div style="display:grid;grid-template-columns:repeat(auto-fit,minmax(120px,1fr));gap:10px;margin-bottom:16px">';
   h+=statCard('Schools',s.total_schools,'var(--t1)');
-  h+=statCard('Passed',s.schools_passed,'#0f766e');
-  h+=statCard('Failed',s.schools_failed,s.schools_failed>0?'#dc2626':'#0f766e');
+  h+=statCard('Passed',s.schools_passed,'#BC5A3C');
+  h+=statCard('Failed',s.schools_failed,s.schools_failed>0?'#dc2626':'#BC5A3C');
   h+=statCard('Operations',s.total_operations,'var(--t1)');
-  h+=statCard('Success',s.success_rate,'#0f766e');
+  h+=statCard('Success',s.success_rate,'#BC5A3C');
   h+=statCard('Avg School',s.avg_school_ms+'ms','var(--gold)');
   h+=statCard('Max School',s.max_school_ms+'ms',parseFloat(s.max_school_ms)>5000?'#dc2626':'var(--t1)');
   h+=statCard('Total Time',fmt(s.total_duration_ms)+'ms','var(--t1)');
@@ -99,7 +99,7 @@ function renderParallelResults(r,el){
     h+='<div style="font:700 13px/1.3 var(--font-b);margin-bottom:8px"><i class="fa fa-layer-group" style="color:var(--gold)"></i> Batch Progress</div>';
     h+='<div style="display:flex;gap:6px;flex-wrap:wrap">';
     batches.forEach(function(b){
-      var c=b.failed>0?'#dc2626':'#0f766e';
+      var c=b.failed>0?'#dc2626':'#BC5A3C';
       h+='<div style="padding:6px 12px;border-radius:6px;background:var(--bg);border:1px solid var(--border);font-size:11px;text-align:center">';
       h+='<div style="font-weight:700;color:'+c+'">Batch '+b.batch+'</div>';
       h+='<div style="color:var(--t3)">'+b.schools+' | '+fmt(b.time_ms)+'ms</div>';
@@ -119,7 +119,7 @@ function renderParallelResults(r,el){
       var ok=sc.status==='PASSED';
       h+='<tr style="border-bottom:1px solid var(--border)">';
       h+='<td style="padding:5px 10px;font-weight:600">'+esc(sc.school||'?')+'</td>';
-      h+='<td style="padding:5px 10px;text-align:center"><span style="font-size:10px;padding:2px 8px;border-radius:4px;font-weight:700;background:'+(ok?'rgba(15,118,110,.1)':'rgba(220,38,38,.1)')+';color:'+(ok?'#0f766e':'#dc2626')+'">'+esc(sc.status)+'</span></td>';
+      h+='<td style="padding:5px 10px;text-align:center"><span style="font-size:10px;padding:2px 8px;border-radius:4px;font-weight:700;background:'+(ok?'rgba(188,90,60,.1)':'rgba(220,38,38,.1)')+';color:'+(ok?'#BC5A3C':'#dc2626')+'">'+esc(sc.status)+'</span></td>';
       h+='<td style="padding:5px 10px;text-align:right">'+esc(''+sc.operations)+'</td>';
       h+='<td style="padding:5px 10px;text-align:right;color:'+(sc.errors>0?'#dc2626':'var(--t1)')+'">'+esc(''+sc.errors)+'</td>';
       h+='<td style="padding:5px 10px;text-align:right;color:var(--t3)">'+fmt(sc.duration_ms)+'ms</td>';
@@ -132,7 +132,7 @@ function renderParallelResults(r,el){
   var v=r.validation||{};
   if(v.checks){
     h+='<div style="background:var(--bg2);border:1px solid var(--border);border-radius:10px;padding:14px 16px;margin-bottom:14px">';
-    h+='<div style="font:700 13px/1.3 var(--font-b);margin-bottom:8px"><i class="fa '+(v.status==='PASSED'?'fa-check-circle':'fa-times-circle')+'" style="color:'+(v.status==='PASSED'?'#0f766e':'#dc2626')+'"></i> Global Validation: '+esc(v.status||'?')+'</div>';
+    h+='<div style="font:700 13px/1.3 var(--font-b);margin-bottom:8px"><i class="fa '+(v.status==='PASSED'?'fa-check-circle':'fa-times-circle')+'" style="color:'+(v.status==='PASSED'?'#BC5A3C':'#dc2626')+'"></i> Global Validation: '+esc(v.status||'?')+'</div>';
     h+='<div style="display:grid;grid-template-columns:repeat(auto-fit,minmax(140px,1fr));gap:6px">';
     for(var ck in v.checks){
       var cv=v.checks[ck];var cc=(ck.indexOf('negative')>=0||ck.indexOf('orphan')>=0||ck.indexOf('stuck')>=0)&&cv>0?'#dc2626':'var(--t1)';
@@ -190,8 +190,8 @@ function renderResults(r,el){
   h+=statCard('Operations',s.total_operations,'var(--t1)');
   h+=statCard('Avg Time',s.avg_time_ms+'ms','var(--gold)');
   h+=statCard('Max Time',s.max_time_ms+'ms',parseFloat(s.max_time_ms)>1000?'#dc2626':'var(--t1)');
-  h+=statCard('Errors',s.errors,s.errors>0?'#dc2626':'#0f766e');
-  h+=statCard('Success',s.success_rate,'#0f766e');
+  h+=statCard('Errors',s.errors,s.errors>0?'#dc2626':'#BC5A3C');
+  h+=statCard('Success',s.success_rate,'#BC5A3C');
   h+=statCard('Duration',fmt(r.duration_ms)+'ms','var(--t1)');
   h+='</div>';
 
@@ -202,7 +202,7 @@ function renderResults(r,el){
     var passed=t.status==='complete'||t.status==='PASSED';
     h+='<div style="background:var(--bg2);border:1px solid var(--border);border-radius:10px;margin-bottom:10px;overflow:hidden">';
     h+='<div style="padding:12px 16px;font:700 13px/1.3 var(--font-b);display:flex;align-items:center;gap:8px;border-bottom:1px solid var(--border)">';
-    h+='<i class="fa '+(passed?'fa-check-circle':'fa-times-circle')+'" style="color:'+(passed?'#0f766e':'#dc2626')+'"></i>';
+    h+='<i class="fa '+(passed?'fa-check-circle':'fa-times-circle')+'" style="color:'+(passed?'#BC5A3C':'#dc2626')+'"></i>';
     h+=esc(name.replace(/_/g,' ').toUpperCase());
     h+='<span style="margin-left:auto;font-size:11px;color:var(--t3)">'+fmt(t.time_ms)+'ms</span>';
     h+='</div>';
@@ -217,7 +217,7 @@ function renderResults(r,el){
           h+='<div style="display:flex;justify-content:space-between;padding:3px 0;border-bottom:1px solid var(--border)"><span style="color:var(--t3)">'+esc(kk.replace(/_/g,' '))+'</span><strong style="color:'+c+'">'+esc(''+vv)+'</strong></div>';
         }
       } else {
-        var c2=(k.indexOf('mismatch')>=0||k.indexOf('error')>=0)&&v>0?'#dc2626':k==='balance_correct'?(v?'#0f766e':'#dc2626'):'var(--t1)';
+        var c2=(k.indexOf('mismatch')>=0||k.indexOf('error')>=0)&&v>0?'#dc2626':k==='balance_correct'?(v?'#BC5A3C':'#dc2626'):'var(--t1)';
         h+='<div style="display:flex;justify-content:space-between;padding:3px 0;border-bottom:1px solid var(--border)"><span style="color:var(--t3)">'+esc(k.replace(/_/g,' '))+'</span><strong style="color:'+c2+'">'+esc(''+v)+'</strong></div>';
       }
     }

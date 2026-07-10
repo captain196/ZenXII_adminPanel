@@ -13,7 +13,7 @@
 <style>
 :root {
     --brand:     #0d9488;
-    --brand2:    #0f766e;
+    --brand2:    #BC5A3C;
     --brand3:    #2dd4bf;
     --brand-dim: rgba(13,148,136,.12);
     --sans:      'Satoshi','Plus Jakarta Sans',system-ui,sans-serif;

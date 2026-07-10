@@ -204,7 +204,7 @@ class Notifications extends MY_Controller
             $tasks[] = [
                 'id'       => 'att_student_' . $now->format('Ymd'),
                 'icon'     => 'fa-calendar-check-o',
-                'color'    => '#0f766e',
+                'color'    => '#BC5A3C',
                 'title'    => 'Mark student attendance',
                 'detail'   => 'Daily student attendance for ' . $now->format('d M Y'),
                 'action'   => 'attendance/student',

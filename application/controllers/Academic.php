@@ -1538,7 +1538,7 @@ class Academic extends MY_Controller
             // call safe_path_segment unconditionally; it 400s on empty input
             // and would block the modern path where assignments[] is supplied).
             // The service runs sanitization only when actually using the legacy path.
-            return $this->json_success($this->_substitute_svc()->saveSubstitute(
+            $res = $this->_substitute_svc()->saveSubstitute(
                 trim($this->input->post('id')   ?? ''),
                 trim($this->input->post('date') ?? ''),
                 trim($this->input->post('absentTeacherId')   ?? $this->input->post('absent_teacher_id')   ?? ''),
@@ -1550,7 +1550,41 @@ class Academic extends MY_Controller
                 trim($this->input->post('class_section') ?? ''),
                 trim($this->input->post('subject') ?? ''),
                 $this->input->post('periods')
-            ));
+            );
+
+            // ── Universal push: notify the assigned substitute teacher(s) ──
+            // Reached only after saveSubstitute() commits (it throws on failure,
+            // caught below). Collects substitute staff ids from the modern
+            // assignments[] array plus the legacy top-level field.
+            try {
+                $staffIds = [];
+                $assignments = $this->input->post('assignments');
+                if (is_array($assignments)) {
+                    foreach ($assignments as $a) {
+                        $sid = trim(($a['substituteTeacherId'] ?? $a['substitute_teacher_id'] ?? ''));
+                        if ($sid !== '') $staffIds[] = $sid;
+                    }
+                }
+                $legacySub = trim($this->input->post('substituteTeacherId') ?? $this->input->post('substitute_teacher_id') ?? '');
+                if ($legacySub !== '') $staffIds[] = $legacySub;
+                $staffIds = array_values(array_unique(array_filter($staffIds)));
+
+                if (!empty($staffIds)) {
+                    $subDate = trim($this->input->post('date') ?? '');
+                    $subId   = trim($this->input->post('id') ?? '');
+                    $dedupe  = 'substitute_' . ($subId !== '' ? $subId : ($subDate . '_' . substr(md5(implode(',', $staffIds)), 0, 8)));
+                    $this->emit_push('SUBSTITUTE_ASSIGNED', $dedupe, [
+                        'recipientStaffIds' => $staffIds,
+                        'title' => 'Substitute Assigned',
+                        'body'  => 'You have been assigned as a substitute teacher' . ($subDate !== '' ? " on {$subDate}" : '') . '.',
+                        'date'  => $subDate,
+                    ]);
+                }
+            } catch (\Throwable $e) {
+                log_message('error', 'save_substitute push emit failed: ' . $e->getMessage());
+            }
+
+            return $this->json_success($res);
         } catch (Service_exception $e) {
             return $this->json_error($e->getMessage());
         }

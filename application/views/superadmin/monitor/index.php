@@ -54,7 +54,7 @@ $school_login_count  = $school_login_count  ?? 0;
             <div style="background:var(--bg2);border:1px solid var(--border);border-radius:12px;padding:16px 14px;">
                 <div style="font-size:10.5px;color:var(--t3);font-family:var(--font-m);margin-bottom:5px;text-transform:uppercase;letter-spacing:.5px;">API Calls</div>
                 <div style="font-size:22px;font-weight:800;color:var(--t1);font-family:var(--font-d);"><?= $api_count ?></div>
-                <div style="margin-top:6px;font-size:10px;color:var(--t4);"><i class="fa fa-exchange" style="color:#14b8a6;margin-right:3px;"></i> Tracked today</div>
+                <div style="margin-top:6px;font-size:10px;color:var(--t4);"><i class="fa fa-exchange" style="color:#D4725C;margin-right:3px;"></i> Tracked today</div>
             </div>
         </div>
 
@@ -115,7 +115,7 @@ $school_login_count  = $school_login_count  ?? 0;
                     <div style="display:flex;gap:12px;flex-wrap:wrap;margin-top:10px;">
                         <span style="font-size:11px;color:var(--t3);font-family:var(--font-m);display:flex;align-items:center;gap:4px;"><span style="width:10px;height:10px;border-radius:2px;background:#8b5cf6;display:inline-block;"></span>SA Activity</span>
                         <span style="font-size:11px;color:var(--t3);font-family:var(--font-m);display:flex;align-items:center;gap:4px;"><span style="width:10px;height:10px;border-radius:2px;background:#3b82f6;display:inline-block;"></span>School Logins</span>
-                        <span style="font-size:11px;color:var(--t3);font-family:var(--font-m);display:flex;align-items:center;gap:4px;"><span style="width:10px;height:10px;border-radius:2px;background:#14b8a6;display:inline-block;"></span>API Calls</span>
+                        <span style="font-size:11px;color:var(--t3);font-family:var(--font-m);display:flex;align-items:center;gap:4px;"><span style="width:10px;height:10px;border-radius:2px;background:#D4725C;display:inline-block;"></span>API Calls</span>
                         <span style="font-size:11px;color:var(--t3);font-family:var(--font-m);display:flex;align-items:center;gap:4px;"><span style="width:10px;height:10px;border-radius:2px;background:#ef4444;display:inline-block;"></span>Errors</span>
                     </div>
                 </div>
@@ -133,7 +133,7 @@ $school_login_count  = $school_login_count  ?? 0;
                             <strong><?= $school_login_count ?></strong>
                         </div>
                         <div style="display:flex;justify-content:space-between;padding:8px 0;border-bottom:1px solid var(--border);">
-                            <span><i class="fa fa-exchange" style="color:#14b8a6;margin-right:5px;width:14px;"></i>API Calls</span>
+                            <span><i class="fa fa-exchange" style="color:#D4725C;margin-right:5px;width:14px;"></i>API Calls</span>
                             <strong><?= $api_count ?></strong>
                         </div>
                         <div style="display:flex;justify-content:space-between;padding:8px 0;border-bottom:1px solid var(--border);">
@@ -237,7 +237,7 @@ $school_login_count  = $school_login_count  ?? 0;
                                 <strong><?= $activity_count ?></strong>
                             </div>
                             <div style="display:flex;justify-content:space-between;">
-                                <span><i class="fa fa-exchange" style="color:#14b8a6;margin-right:5px;"></i>API calls today</span>
+                                <span><i class="fa fa-exchange" style="color:#D4725C;margin-right:5px;"></i>API calls today</span>
                                 <strong><?= $api_count ?></strong>
                             </div>
                             <div style="display:flex;justify-content:space-between;">
@@ -440,7 +440,7 @@ function buildApiChart(days){
             datasets:[{
                 label:'API Calls',
                 data: days.map(function(d){ return d.api_calls; }),
-                borderColor:'#14b8a6', backgroundColor:'rgba(20,184,166,.12)',
+                borderColor:'#D4725C', backgroundColor:'rgba(20,184,166,.12)',
                 borderWidth:2, tension:.35, fill:true, pointRadius:4,
             }]
         },

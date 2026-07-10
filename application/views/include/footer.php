@@ -7,11 +7,23 @@
 /* Night mode */
 [data-theme="night"] .phone-pfx,[data-bs-theme="dark"] .phone-pfx{background:var(--bg3,#1a2540);border-color:var(--border,#2a3350);color:var(--t2,#8892aa)}
 /* Footer academic-session badge (dynamic — reflects selected session) */
-.giq-foot-sess{display:inline-flex;align-items:center;gap:5px;font-family:var(--font-m,monospace);font-size:11.5px;font-weight:600;color:var(--gold,#0a7d6b);background:rgba(10,125,107,.08);border:1px solid rgba(10,125,107,.18);border-radius:4px;padding:2px 8px;white-space:nowrap}
+.giq-foot-sess{display:inline-flex;align-items:center;gap:5px;font-family:var(--font-m,monospace);font-size:11.5px;font-weight:600;color:var(--gold,#0a7d6b);background:rgba(188,90,60,.08);border:1px solid rgba(188,90,60,.18);border-radius:4px;padding:2px 8px;white-space:nowrap}
 .giq-foot-sess i{font-size:10px;opacity:.8}
 [data-theme="night"] .giq-foot-sess,[data-bs-theme="dark"] .giq-foot-sess{color:var(--gold,#3dd7bf);background:rgba(61,215,191,.10);border-color:rgba(61,215,191,.22)}
 </style>
 
+<?php
+// The Attendance module runs chrome-light — its sections already suppress the
+// site header. Hide the site footer on every Attendance section too so it stays
+// clean end to end (only the visual <footer> is skipped; the script includes
+// below still load for every controller). Keyed on the controller so all
+// Attendance pages — overview, mark, approvals, reports, settings, embedded
+// sub-pages — are covered by this one rule.
+$__ci_ftr =& get_instance();
+$__ctrl_ftr = $__ci_ftr ? strtolower((string) $__ci_ftr->router->fetch_class()) : '';
+$__hide_site_footer = in_array($__ctrl_ftr, ['attendance', 'staff_attendance'], true);
+?>
+<?php if (!$__hide_site_footer): ?>
 <footer class="main-footer giq-footer">
     <div class="giq-foot-inner">
 
@@ -53,6 +65,7 @@
 
     </div>
 </footer>
+<?php endif; /* $__hide_site_footer */ ?>
 
 <!-- Control Sidebar (hidden, keep for AdminLTE compatibility) -->
 <aside class="control-sidebar control-sidebar-dark" style="display:none;"></aside>
@@ -74,13 +87,26 @@
    longer parser-blocking) without changing execution order (defer preserves
    document order). jQuery ABOVE is intentionally NOT deferred: the inline
    $(document).ajaxComplete handler further down runs during parse and needs $. */ ?>
+<?php
+    /* Embed mode (?embed=1) hosts attendance sub-pages inside iframes. Each iframe
+       is a full document, so it re-parses this whole script bundle. The chart /
+       widget / export libraries below (raphael, morris, sparkline, knob,
+       daterangepicker, crypto-js, datatables, jszip, pdfmake+vfs_fonts ~1.5MB) are
+       NOT used by any embedded attendance page — skipping them in embed mode cuts
+       ~2MB of per-tab JS parse and is the main load-time fix for the tab shells. */
+    $att_embed = ($this->input->get('embed') === '1');
+?>
 <script defer src="<?= base_url() ?>tools/bower_components/bootstrap/dist/js/bootstrap.min.js"></script>
+<?php if (!$att_embed): ?>
 <script defer src="<?= base_url() ?>tools/bower_components/raphael/raphael.min.js"></script>
 <script defer src="<?= base_url() ?>tools/bower_components/morris.js/morris.min.js"></script>
 <script defer src="<?= base_url() ?>tools/bower_components/jquery-sparkline/dist/jquery.sparkline.min.js"></script>
 <script defer src="<?= base_url() ?>tools/bower_components/jquery-knob/dist/jquery.knob.min.js"></script>
+<?php endif; ?>
 <script defer src="<?= base_url() ?>tools/bower_components/moment/min/moment.min.js"></script>
+<?php if (!$att_embed): ?>
 <script defer src="<?= base_url() ?>tools/bower_components/bootstrap-daterangepicker/daterangepicker.js"></script>
+<?php endif; ?>
 <script defer src="<?= base_url() ?>tools/bower_components/bootstrap-datepicker/dist/js/bootstrap-datepicker.min.js"></script>
 <script defer src="<?= base_url() ?>tools/bower_components/jquery-slimscroll/jquery.slimscroll.min.js"></script>
 <script defer src="<?= base_url() ?>tools/bower_components/fastclick/lib/fastclick.js"></script>
@@ -110,12 +136,14 @@
         smartConfirmEnabled:  <?= (!$_fv2_phase3 && ($_fv2_unified || $_fv2_uiEnabled)) ? 'true' : 'false' ?>
     };
 </script>
+<?php if (!$att_embed): ?>
 <script defer src="<?= base_url() ?>tools/js/fees_v2_smart_confirm.js"></script>
 
 <!-- Crypto + DataTables — deferred (used only in ready()/click handlers).
      defer preserves document order, so jszip->excel and pdfmake->vfs_fonts
      dependency ordering is retained, and DataTables Buttons' available()
-     checks still see jszip/pdfmake at init time (all run before DOMContentLoaded). -->
+     checks still see jszip/pdfmake at init time (all run before DOMContentLoaded).
+     Skipped in embed mode (attendance iframes never use export/print). -->
 <script defer src="https://cdnjs.cloudflare.com/ajax/libs/crypto-js/4.1.1/crypto-js.min.js"></script>
 <script defer src="https://cdn.datatables.net/2.0.8/js/dataTables.js"></script>
 <script defer src="https://cdn.datatables.net/buttons/3.0.2/js/dataTables.buttons.js"></script>
@@ -125,6 +153,7 @@
 <script defer src="https://cdnjs.cloudflare.com/ajax/libs/pdfmake/0.2.7/vfs_fonts.js"></script>
 <script defer src="https://cdn.datatables.net/buttons/3.0.2/js/buttons.html5.min.js"></script>
 <script defer src="https://cdn.datatables.net/buttons/3.0.2/js/buttons.print.min.js"></script>
+<?php endif; ?>
 
 <script>
     /* ── Global 401/403 handler: redirect to login on session expiry ── */
@@ -261,7 +290,7 @@
         left: 0;
         right: 0;
         height: 1px;
-        background: linear-gradient(90deg, var(--gold, #0f766e) 0%, rgba(15, 118, 110, .2) 60%, transparent 100%);
+        background: linear-gradient(90deg, var(--gold, #BC5A3C) 0%, rgba(188,90,60, .2) 60%, transparent 100%);
     }
 
     .giq-foot-inner {
@@ -284,7 +313,7 @@
         width: 22px;
         height: 22px;
         border-radius: 5px;
-        background: var(--gold, #0f766e);
+        background: var(--gold, #BC5A3C);
         display: flex;
         align-items: center;
         justify-content: center;
@@ -292,7 +321,7 @@
         font-size: 11px;
         font-weight: 800;
         color: #ffffff;
-        box-shadow: 0 0 8px rgba(15, 118, 110, .3);
+        box-shadow: 0 0 8px rgba(188,90,60, .3);
         flex-shrink: 0;
     }
 
@@ -308,19 +337,19 @@
     }
 
     .giq-foot-copy a {
-        color: var(--gold, #0f766e) !important;
+        color: var(--gold, #BC5A3C) !important;
         font-weight: 700;
         text-decoration: none !important;
         transition: color .15s;
     }
 
     .giq-foot-copy a:hover {
-        color: var(--gold2, #0d6b63) !important;
+        color: var(--gold2, #9E4830) !important;
     }
 
     /* Separator */
     .giq-foot-sep {
-        color: var(--border, rgba(15, 118, 110, .09));
+        color: var(--border, rgba(188,90,60, .09));
         font-size: 14px;
         margin: 0 2px;
     }
@@ -342,7 +371,7 @@
     }
 
     .giq-foot-dev span {
-        color: var(--gold, #0f766e);
+        color: var(--gold, #BC5A3C);
     }
 
     .giq-foot-tag {
@@ -351,9 +380,9 @@
         font-family: var(--font-m, 'JetBrains Mono', monospace);
         padding: 2px 8px;
         border-radius: 4px;
-        background: rgba(15, 118, 110, .09);
-        color: var(--gold, #0f766e);
-        border: 1px solid rgba(15, 118, 110, .22);
+        background: rgba(188,90,60, .09);
+        color: var(--gold, #BC5A3C);
+        border: 1px solid rgba(188,90,60, .22);
         letter-spacing: .3px;
     }
 

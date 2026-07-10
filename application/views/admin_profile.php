@@ -94,7 +94,7 @@ $initials = mb_substr($initials, 0, 2);
 }
 .ap-input:focus{
     border-color:var(--gold);
-    box-shadow:0 0 0 3px var(--gold-ring,rgba(15,118,110,.15));
+    box-shadow:0 0 0 3px var(--gold-ring,rgba(188,90,60,.15));
     outline:none;
 }
 select.ap-input{padding-right:30px;-webkit-appearance:none;appearance:none;
@@ -117,7 +117,7 @@ select.ap-input{padding-right:30px;-webkit-appearance:none;appearance:none;
     transition:all .2s var(--ease,ease);
 }
 .ap-btn-primary{background:var(--gold);color:#fff;}
-.ap-btn-primary:hover{background:var(--gold2);color:#fff;transform:translateY(-1px);box-shadow:0 4px 12px var(--gold-glow,rgba(15,118,110,.25));}
+.ap-btn-primary:hover{background:var(--gold2);color:#fff;transform:translateY(-1px);box-shadow:0 4px 12px var(--gold-glow,rgba(188,90,60,.25));}
 .ap-btn-outline{background:transparent;color:var(--gold);border:1.5px solid var(--gold);}
 .ap-btn-outline:hover{background:var(--gold-dim);color:var(--gold);}
 .ap-stat-badge{

@@ -387,11 +387,11 @@ function toast(msg, err) {
 @import url('https://fonts.googleapis.com/css2?family=Plus+Jakarta+Sans:wght@400;500;600;700&family=Fraunces:wght@600;700&display=swap');
 
 .ap-wrap {
-    --ap-teal: var(--gold, #0f766e);
-    --ap-teal2: var(--gold2, #0d6b63);
-    --ap-sky: var(--gold-dim, rgba(15,118,110,.10));
-    --ap-ring: var(--gold-ring, rgba(15,118,110,.22));
-    --ap-glow: var(--gold-glow, rgba(15,118,110,.18));
+    --ap-teal: var(--gold, #BC5A3C);
+    --ap-teal2: var(--gold2, #9E4830);
+    --ap-sky: var(--gold-dim, rgba(188,90,60,.10));
+    --ap-ring: var(--gold-ring, rgba(188,90,60,.22));
+    --ap-glow: var(--gold-glow, rgba(188,90,60,.18));
     --ap-navy: var(--t1, #0f1f3d);
     --ap-text: var(--t1, #1a2940);
     --ap-muted: var(--t3, #64748b);

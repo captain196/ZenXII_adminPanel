@@ -15,10 +15,10 @@ $displayName = $profile['display_name'] ?? $school_name;
     <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.5.0/css/all.min.css">
     <style>
         :root {
-            --gold:#0f766e; --gold2:#0d6b63; --gold3:#14b8a6;
-            --gold-dim:rgba(15,118,110,.10); --gold-ring:rgba(15,118,110,.22);
+            --gold:#BC5A3C; --gold2:#9E4830; --gold3:#D4725C;
+            --gold-dim:rgba(188,90,60,.10); --gold-ring:rgba(188,90,60,.22);
             --bg:#f0f7f5; --bg2:#ffffff; --bg3:#e6f4f1;
-            --border:rgba(15,118,110,.15);
+            --border:rgba(188,90,60,.15);
             --t1:#0c1e38; --t2:#1a5c56; --t3:#5a9e98;
             --r:12px;
             --font-d:'Syne',sans-serif; --font-b:'Plus Jakarta Sans',sans-serif; --font-m:'JetBrains Mono',monospace;

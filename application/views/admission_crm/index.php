@@ -162,10 +162,10 @@ html { font-size:16px !important; }
                 <?php
                 $maxVal = max($stats['total_inquiries'], 1);
                 $funnelData = [
-                    ['Inquiries', $stats['total_inquiries'], '#0f766e'],
-                    ['Applications', $stats['total_applications'], '#14b8a6'],
+                    ['Inquiries', $stats['total_inquiries'], '#BC5A3C'],
+                    ['Applications', $stats['total_applications'], '#D4725C'],
                     ['Approved', $stats['approved'], '#15803d'],
-                    ['Enrolled', $stats['enrolled'], '#0d6b63'],
+                    ['Enrolled', $stats['enrolled'], '#9E4830'],
                 ];
                 foreach ($funnelData as $f):
                     $pct = round(($f[1] / $maxVal) * 100);

@@ -1079,7 +1079,7 @@ document.addEventListener('DOMContentLoaded', function() {
         container.innerHTML = '';
         _selectedSubjects.forEach(function(s){
             var chip = document.createElement('span');
-            chip.style.cssText = 'display:inline-flex;align-items:center;gap:4px;padding:4px 10px;background:rgba(15,118,110,.1);color:#0f766e;border-radius:14px;font-size:12px;font-weight:500;';
+            chip.style.cssText = 'display:inline-flex;align-items:center;gap:4px;padding:4px 10px;background:rgba(188,90,60,.1);color:#BC5A3C;border-radius:14px;font-size:12px;font-weight:500;';
             var btn = document.createElement('button');
             btn.type = 'button';
             btn.style.cssText = 'background:none;border:none;color:inherit;cursor:pointer;font-weight:700;padding:0 2px;';
@@ -1172,7 +1172,7 @@ function submitEditForm() {
 :root {
     --nsa-navy:   #0c1e38;
     --nsa-green:  #0d7a5f;
-    --nsa-teal:   #0f766e;
+    --nsa-teal:   #BC5A3C;
     --nsa-sky:    #e6f4f1;
     --nsa-dark:   #15803d;
     --nsa-red:    #dc2626;
@@ -1324,7 +1324,7 @@ function submitEditForm() {
 }
 .nsa-input:focus, .nsa-select:focus {
     border-color: var(--nsa-teal);
-    box-shadow: 0 0 0 3px rgba(15,118,110,.1);
+    box-shadow: 0 0 0 3px rgba(188,90,60,.1);
     background: #fff;
 }
 .nsa-input[readonly] { background: #f1f5f9; color: var(--nsa-muted); cursor: not-allowed; }
@@ -1345,7 +1345,7 @@ function submitEditForm() {
     display: flex; align-items: center; justify-content: space-between;
     padding: 12px 18px;
     background: linear-gradient(135deg, var(--nsa-sky) 0%, #d1fae5 100%);
-    border: 1.5px solid rgba(15,118,110,.25);
+    border: 1.5px solid rgba(188,90,60,.25);
     border-radius: 10px;
 }
 .nsa-net-label { font-size: 13px; font-weight: 600; color: var(--nsa-teal); display:flex; align-items:center; gap:8px; }
@@ -1400,7 +1400,7 @@ function submitEditForm() {
 .nsa-current-doc-card {
     display: flex; align-items: center; gap: 12px;
     padding: 10px 14px;
-    background: #f0fdf8; border: 1.5px solid rgba(15,118,110,.2);
+    background: #f0fdf8; border: 1.5px solid rgba(188,90,60,.2);
     border-radius: 8px; margin-bottom: 4px;
 }
 .nsa-doc-thumb {
@@ -1468,7 +1468,7 @@ function submitEditForm() {
 }
 .nsa-btn:hover { opacity: .86; transform: translateY(-1px); }
 .nsa-btn:disabled { opacity: .5; cursor: not-allowed; transform: none; }
-.nsa-btn-primary { background: var(--nsa-teal); color: #fff; box-shadow: 0 2px 10px rgba(15,118,110,.28); }
+.nsa-btn-primary { background: var(--nsa-teal); color: #fff; box-shadow: 0 2px 10px rgba(188,90,60,.28); }
 .nsa-btn-ghost   { background: var(--nsa-white); color: var(--nsa-text); border: 1.5px solid var(--nsa-border); }
 .nsa-btn-ghost:hover { border-color: var(--nsa-teal); color: var(--nsa-teal); }
 
@@ -1501,13 +1501,13 @@ function submitEditForm() {
 .nsa-role-chip {
     display: inline-flex; align-items: center; gap: 4px;
     padding: 4px 10px; border-radius: 16px; font-size: 12px; font-weight: 600;
-    background: var(--nsa-sky, #e6f4f1); color: var(--nsa-teal, #0f766e);
-    border: 1px solid rgba(15,118,110,.2); cursor: pointer; transition: all .15s;
+    background: var(--nsa-sky, #e6f4f1); color: var(--nsa-teal, #BC5A3C);
+    border: 1px solid rgba(188,90,60,.2); cursor: pointer; transition: all .15s;
 }
-.nsa-role-chip:hover { background: rgba(15,118,110,.15); }
+.nsa-role-chip:hover { background: rgba(188,90,60,.15); }
 .nsa-role-chip.nsa-role-primary {
-    background: var(--nsa-teal, #0f766e); color: #fff;
-    border-color: var(--nsa-teal, #0f766e);
+    background: var(--nsa-teal, #BC5A3C); color: #fff;
+    border-color: var(--nsa-teal, #BC5A3C);
 }
 .nsa-role-remove {
     background: none; border: none; color: inherit; font-size: 14px; font-weight: 700;

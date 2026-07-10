@@ -922,16 +922,21 @@ class Entity_firestore_sync
     /**
      * Patch an album's coverImage only (merge). Used by Schools::setEventCover.
      */
-    public function updateGalleryAlbumCover(string $albumId, string $coverImage): bool
+    public function updateGalleryAlbumCover(string $albumId, string $coverImage, ?bool $pinned = null): bool
     {
         if (!$this->ready || $albumId === '') return false;
         $docId = "{$this->schoolId}_{$albumId}";
-        return $this->_write('galleryAlbums', $docId, [
+        $doc = [
             'schoolId'   => $this->schoolId,
             'albumId'    => $albumId,
             'coverImage' => $coverImage,
             'updatedAt'  => date('c'),
-        ]);
+        ];
+        // coverPinned = true when an admin deliberately chose this cover
+        // (setEventCover) so later uploads don't auto-advance it; false releases
+        // the pin so the cover resumes tracking the latest media. null leaves it.
+        if ($pinned !== null) $doc['coverPinned'] = $pinned;
+        return $this->_write('galleryAlbums', $docId, $doc);
     }
 
     /**

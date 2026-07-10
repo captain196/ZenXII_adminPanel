@@ -12,9 +12,9 @@
  * %-bars / avatars and by inline var(--sa-*) references in the markup + JS.
  * ========================================================================== */
 :root {
-    --sa-primary: var(--gold, #0f766e);
-    --sa-primary-dim: var(--gold-dim, rgba(15,118,110,.10));
-    --sa-primary-ring: var(--gold-ring, rgba(15,118,110,.22));
+    --sa-primary: var(--gold, #BC5A3C);
+    --sa-primary-dim: var(--gold-dim, rgba(188,90,60,.10));
+    --sa-primary-ring: var(--gold-ring, rgba(188,90,60,.22));
     --sa-bg: var(--bg, #f0f7f5);
     --sa-bg2: var(--bg2, #ffffff);
     --sa-bg3: var(--bg3, #e6f4f1);
@@ -121,7 +121,7 @@
     color:#fff; flex-shrink:0; text-transform:uppercase;
     background:var(--sa-primary);
 }
-.sa-avatar.av-1 { background:#0f766e; }
+.sa-avatar.av-1 { background:#BC5A3C; }
 .sa-avatar.av-2 { background:#7c3aed; }
 .sa-avatar.av-3 { background:#2563eb; }
 .sa-avatar.av-4 { background:#dc2626; }
@@ -1212,7 +1212,7 @@
                 }
                 $link.className = 'att-stage-link danger';
                 $link.textContent = 'Request Correction ↗';
-                $link.href = BASE + 'attendance/control#corrections';
+                $link.href = BASE + 'attendance/approvals#corrections';
                 break;
             default:
                 cls = 'unknown';

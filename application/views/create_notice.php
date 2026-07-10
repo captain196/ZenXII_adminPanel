@@ -117,7 +117,7 @@
                                         'All School'   => ['fa-globe',           '#e05c6f'],
                                         'All Students' => ['fa-graduation-cap',  '#3dd68c'],
                                         'All Teachers' => ['fa-chalkboard-teacher','#4ab5e3'],
-                                        'All Admins'   => ['fa-shield',          '#0f766e'],
+                                        'All Admins'   => ['fa-shield',          '#BC5A3C'],
                                     ];
                                     foreach ($bulkOpts as $opt => [$icon, $color]):
                                     ?>
@@ -271,7 +271,7 @@
                             </div>
                         </div>
                         <div class="cn-path-item">
-                            <span class="cn-path-dot" style="background:#0f766e"></span>
+                            <span class="cn-path-dot" style="background:#BC5A3C"></span>
                             <div>
                                 <div class="cn-path-label">Teacher / Admin</div>
                                 <div class="cn-path-desc">Teachers / Admins → {id} → Received</div>
@@ -353,12 +353,12 @@
         if (/^All School/.test(key))    return '#e05c6f';
         if (/^All Students/.test(key))  return '#3dd68c';
         if (/^All Teachers/.test(key))  return '#4ab5e3';
-        if (/^All Admins/.test(key))    return '#0f766e';
+        if (/^All Admins/.test(key))    return '#BC5A3C';
         if (/^All/.test(key))           return '#e05c6f';
         if (/^STU/.test(key))           return '#3dd68c';
         if (/^STA/.test(key))           return '#4ab5e3';
-        if (/^ADM/.test(key))           return '#0f766e';
-        return '#0f766e'; // class/section
+        if (/^ADM/.test(key))           return '#BC5A3C';
+        return '#BC5A3C'; // class/section
     }
 
     /* ── Add tag ─────────────────────────────────────────────── */
@@ -548,7 +548,7 @@
     });
 
     /* ── Priority / Category colour maps ─────────────────────── */
-    var PRIORITY_COLORS = { High: '#e05c6f', Normal: '#0f766e', Low: '#94a3b8' };
+    var PRIORITY_COLORS = { High: '#e05c6f', Normal: '#BC5A3C', Low: '#94a3b8' };
     var CATEGORY_COLORS = {
         General: '#64748b', Academic: '#2563eb', Administrative: '#7c3aed',
         Holiday: '#d97706', Exam: '#e05c6f', Event: '#059669'
@@ -579,7 +579,7 @@
 
                     var pri     = n.Priority || 'Normal';
                     var cat     = n.Category || '';
-                    var priCol  = PRIORITY_COLORS[pri]  || '#0f766e';
+                    var priCol  = PRIORITY_COLORS[pri]  || '#BC5A3C';
                     var catCol  = CATEGORY_COLORS[cat]  || '#64748b';
 
                     if (d >= today)   todayCnt++;
@@ -620,10 +620,10 @@
    Create Notice Page — ERP theme (teal/navy global vars)
 ═══════════════════════════════════════════════════════ */
 .cn-wrap {
-    --gold:      #0f766e;
-    --gold2:     #0d6b63;
-    --gold-dim:  rgba(15,118,110,.10);
-    --gold-ring: rgba(15,118,110,.22);
+    --gold:      #BC5A3C;
+    --gold2:     #9E4830;
+    --gold-dim:  rgba(188,90,60,.10);
+    --gold-ring: rgba(188,90,60,.22);
     --green:     #3dd68c;
     --blue:      #4ab5e3;
     --rose:      #e05c6f;
@@ -888,7 +888,7 @@
 .cn-result:hover { background: var(--gold-dim); color: var(--t1, #111); }
 .cn-result-text { flex: 1; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
 .cn-badge { font-size: 9px; font-weight: 700; padding: 2px 6px; border-radius: 4px; flex-shrink: 0; }
-.cn-badge-admin   { background: rgba(15,118,110,.15); color: var(--gold); }
+.cn-badge-admin   { background: rgba(188,90,60,.15); color: var(--gold); }
 .cn-badge-teacher { background: rgba(74,181,227,.15);  color: #2a8fbf; }
 .cn-badge-student { background: rgba(61,214,140,.15);  color: #1fa86a; }
 .cn-no-results { padding: 10px 12px; font-size: 12px; color: var(--muted); text-align: center; }
@@ -988,7 +988,7 @@
     margin-top: 18px;
     transition: background .18s, box-shadow .18s, transform .12s;
 }
-.cn-submit:hover { background: var(--gold2); box-shadow: 0 5px 18px rgba(15,118,110,.3); transform: translateY(-1px); }
+.cn-submit:hover { background: var(--gold2); box-shadow: 0 5px 18px rgba(188,90,60,.3); transform: translateY(-1px); }
 .cn-submit:disabled { opacity: .55; cursor: not-allowed; transform: none; }
 
 /* ── Recent notices list ───────────────────────────── */

@@ -249,8 +249,8 @@
 /* Grade colors */
 .epa-grade-aplus{background:#16a34a;}
 .epa-grade-a{background:#22c55e;}
-.epa-grade-bplus{background:#0f766e;}
-.epa-grade-b{background:#14b8a6;}
+.epa-grade-bplus{background:#BC5A3C;}
+.epa-grade-b{background:#D4725C;}
 .epa-grade-c{background:#d97706;}
 .epa-grade-d{background:#ea580c;}
 .epa-grade-f{background:#dc2626;}
@@ -267,14 +267,14 @@
 .epa-table th.epa-sorted-asc .epa-sort-icon,
 .epa-table th.epa-sorted-desc .epa-sort-icon{opacity:1;color:var(--gold);}
 .epa-table td{padding:8px 10px;border-bottom:1px solid var(--border);color:var(--t1);}
-.epa-table tbody tr:nth-child(odd){background:rgba(15,118,110,.03);}
+.epa-table tbody tr:nth-child(odd){background:rgba(188,90,60,.03);}
 .epa-table tbody tr:hover{background:var(--gold-dim);}
 .epa-table tbody tr:last-child td{border-bottom:none;}
 
 /* Pass rate badges */
 .epa-rate{display:inline-block;padding:2px 9px;border-radius:20px;font-size:9.5px;font-weight:700;font-family:var(--font-m);}
 .epa-rate-green{background:rgba(22,163,74,.12);color:#16a34a;}
-.epa-rate-teal{background:rgba(15,118,110,.12);color:#0f766e;}
+.epa-rate-teal{background:rgba(188,90,60,.12);color:#BC5A3C;}
 .epa-rate-amber{background:rgba(217,119,6,.12);color:#d97706;}
 .epa-rate-red{background:rgba(220,38,38,.12);color:#dc2626;}
 
@@ -420,7 +420,7 @@ document.addEventListener('DOMContentLoaded', function(){
 
     // gauge rotation: 0% = -90deg, 100% = 0deg
     var gaugeRot = -90 + (avg/100)*90;
-    var avgColor = avg>=80?'#16a34a':avg>=60?'#0f766e':avg>=40?'#d97706':'#dc2626';
+    var avgColor = avg>=80?'#16a34a':avg>=60?'#BC5A3C':avg>=40?'#d97706':'#dc2626';
 
     var html = '';
 
@@ -436,7 +436,7 @@ document.addEventListener('DOMContentLoaded', function(){
           + '</div>';
 
     // Card 2 — Pass Rate
-    var prColor = passRate>=80?'#16a34a':passRate>=60?'#0f766e':passRate>=40?'#d97706':'#dc2626';
+    var prColor = passRate>=80?'#16a34a':passRate>=60?'#BC5A3C':passRate>=40?'#d97706':'#dc2626';
     html += '<div class="epa-card">'
           +   '<div class="epa-card-icon"><i class="fa fa-check-circle"></i></div>'
           +   '<div class="epa-card-value" style="color:'+prColor+'">'+passRate.toFixed(1)+'%</div>'

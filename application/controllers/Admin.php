@@ -946,22 +946,12 @@ class Admin extends MY_Controller
             log_message('error', '_send_birthday_wish_core: audit write failed — ' . $e->getMessage());
         }
 
-        // 2. FCM push
-        $pushSent = 0;
-        try {
-            $this->load->library('push_service');
-            $pushSent = (int) $this->push_service->sendToUser($studentId, [
-                'title' => $title,
-                'body'  => $body,
-                'data'  => [
-                    'type'      => 'birthday_wish',
-                    'studentId' => $studentId,
-                    'wishId'    => $wishId,
-                ],
-            ]);
-        } catch (\Exception $e) {
-            log_message('error', '_send_birthday_wish_core: push failed — ' . $e->getMessage());
-        }
+        // 2. FCM push via the universal CF dispatcher (BIRTHDAY mark).
+        $pushSent = $this->emit_push('BIRTHDAY', 'birthday_' . $wishId, [
+            'studentId' => $studentId,
+            'title'     => $title,
+            'body'      => $body,
+        ]) ? 1 : 0;
 
         // 3. Parent-app inbox entry — CircularDoc canonical shape so the
         //    Parent + Teacher app CommunicationFirestoreRepository surfaces

@@ -25,7 +25,7 @@
 .dm-kpi-num{font-size:28px;font-weight:800;font-family:var(--font-b);line-height:1;color:var(--t1)}
 .dm-kpi-lbl{font-size:10.5px;color:var(--t3);margin-top:5px;text-transform:uppercase;letter-spacing:.4px;font-family:var(--font-m)}
 .dm-kpi-icon{width:36px;height:36px;border-radius:8px;display:flex;align-items:center;justify-content:center;margin:0 auto 10px;font-size:16px}
-.dm-kpi-icon.teal{background:rgba(15,118,110,.12);color:var(--gold)}
+.dm-kpi-icon.teal{background:rgba(188,90,60,.12);color:var(--gold)}
 .dm-kpi-icon.blue{background:rgba(59,130,246,.12);color:#3b82f6}
 .dm-kpi-icon.rose{background:rgba(220,38,38,.10);color:#dc2626}
 .dm-kpi-icon.amber{background:rgba(217,119,6,.12);color:#d97706}
@@ -46,7 +46,7 @@
 
 /* Badges */
 .dm-badge{display:inline-block;padding:3px 10px;border-radius:20px;font-size:10.5px;font-weight:600;letter-spacing:.3px}
-.dm-b-teal{background:rgba(15,118,110,.12);color:var(--gold)}
+.dm-b-teal{background:rgba(188,90,60,.12);color:var(--gold)}
 .dm-b-blue{background:rgba(59,130,246,.12);color:#3b82f6}
 .dm-b-amber{background:rgba(217,119,6,.12);color:#d97706}
 .dm-b-green{background:rgba(22,163,74,.12);color:#16a34a}
@@ -535,7 +535,7 @@ function renderDistroChart(dist){
             datasets: [{
                 label: 'Users',
                 data: [dist['1']||0, dist['2']||0, dist['3+']||0],
-                backgroundColor: ['rgba(15,118,110,.6)', 'rgba(59,130,246,.6)', 'rgba(220,38,38,.5)'],
+                backgroundColor: ['rgba(188,90,60,.6)', 'rgba(59,130,246,.6)', 'rgba(220,38,38,.5)'],
                 borderRadius: 6,
                 borderSkipped: false
             }]
@@ -545,7 +545,7 @@ function renderDistroChart(dist){
             maintainAspectRatio: false,
             plugins:{legend:{display:false}},
             scales:{
-                y:{beginAtZero:true, ticks:{stepSize:1, color:'var(--t3)',font:{family:'Plus Jakarta Sans',size:11}}, grid:{color:'rgba(15,118,110,.08)'}},
+                y:{beginAtZero:true, ticks:{stepSize:1, color:'var(--t3)',font:{family:'Plus Jakarta Sans',size:11}}, grid:{color:'rgba(188,90,60,.08)'}},
                 x:{ticks:{color:'var(--t3)',font:{family:'Plus Jakarta Sans',size:11}}, grid:{display:false}}
             }
         }

@@ -60,6 +60,10 @@ class Attendance extends MY_Controller
         'admin_login/check_credentials',
         'admin_login/get_server_date',
         'attendance/api_punch',
+        // Nightly auto-lock cron — self-authenticates via X-Cron-Token
+        // (_require_cron_token). Without this it was blocked by the session
+        // guard BEFORE the token check, so the 18:00 lock never ran. (BE-H2)
+        'attendance/cron_auto_lock',
     ];
 
     /** Valid attendance mark characters */
@@ -68,9 +72,11 @@ class Attendance extends MY_Controller
     public function __construct()
     {
         parent::__construct();
-        // Skip RBAC for API routes (auth handled separately)
+        // Skip RBAC for token-authenticated routes (api_punch = Bearer,
+        // cron_auto_lock = X-Cron-Token). Both self-authenticate inside the
+        // method; forcing the module permission here would 403 them.
         $method = strtolower($this->router->fetch_method());
-        if ($method !== 'api_punch') {
+        if ($method !== 'api_punch' && $method !== 'cron_auto_lock') {
             require_permission('Attendance');
         }
 
@@ -96,9 +102,14 @@ class Attendance extends MY_Controller
      * to the base role check. The per-method self::MANAGE_ROLES/MARK_ROLES/
      * VIEW_ROLES arguments are retained but no longer restrict RBAC holders.
      */
-    protected function _require_role(array $allowed, string $action = ''): void
+    protected function _require_role(array $allowed, string $action = '', bool $strict = false): void
     {
-        if (has_permission('Attendance')) {
+        // The coarse `Attendance` module permission grants view + marking. It must
+        // NOT auto-grant sensitive administrative actions (locks, correction /
+        // regularization approvals, device-key rotation, policy/settings) — those
+        // require an actual management role. $strict bypasses the module shortcut
+        // so those endpoints fall through to the real role allow-list. (BE-C1)
+        if (!$strict && has_permission('Attendance')) {
             return;
         }
         parent::_require_role($allowed, $action);
@@ -148,6 +159,102 @@ class Attendance extends MY_Controller
         $this->load->view('include/footer');
     }
 
+    /* ─────────────────────────────────────────────────────────────────
+     * Phase 2 IA — tab-shell pages. Each hosts existing attendance pages
+     * in isolated ?embed=1 iframes (see views/attendance/_shell.php). No
+     * page logic is duplicated; the shell is pure navigation chrome.
+     * ───────────────────────────────────────────────────────────────── */
+
+    /** Mark Attendance shell — Student · Staff · QR Scan. */
+    public function mark()
+    {
+        $this->_require_role(self::VIEW_ROLES, 'attendance/mark');
+        $data['shell'] = [
+            'title'    => 'Mark Attendance',
+            'subtitle' => "Take and edit today's attendance for students and staff",
+            'icon'     => 'fa-check-square-o',
+            'tabs'     => [
+                ['key' => 'student', 'label' => 'Student Attendance', 'icon' => 'fa-users',    'url' => base_url('attendance/student') . '?embed=1'],
+                ['key' => 'staff',   'label' => 'Staff Attendance',   'icon' => 'fa-id-badge', 'url' => base_url('attendance/staff')   . '?embed=1'],
+                ['key' => 'scan',    'label' => 'QR Scan',            'icon' => 'fa-qrcode',   'url' => base_url('attendance/scan')    . '?embed=1'],
+            ],
+        ];
+        $this->load->view('include/header', $data);
+        $this->load->view('attendance/_shell', $data);
+        $this->load->view('include/footer');
+    }
+
+    /** Approvals shell — Student Corrections · Staff Regularization · Student Leave. */
+    public function approvals()
+    {
+        $this->_require_role(self::VIEW_ROLES, 'attendance/approvals');
+        // Combined + per-tab pending badges are populated client-side from the
+        // three existing list endpoints (all same-origin, same session).
+        $extra = <<<JS
+        (function(){
+            function api(path){ return fetch(BASE_ATT + path, {credentials:'same-origin'})
+                .then(function(r){ return r.json(); }).catch(function(){ return null; }); }
+            function setBadge(key, n){
+                var el = document.getElementById('shbadge-' + key);
+                if (!el) return;
+                el.textContent = n > 99 ? '99+' : n;
+                el.style.display = n > 0 ? 'inline-flex' : 'none';
+            }
+            // Corrections (GET) → { requests:[...] }
+            api('correction/list?status=pending&limit=100').then(function(r){
+                if (r) setBadge('corrections', ((r.requests)||[]).length);
+            });
+            // Student leaves (GET) → { leaves:[...] } | { requests:[...] }
+            api('list_student_leaves?status=pending').then(function(r){
+                if (r) setBadge('leaves', ((r.leaves||r.requests)||[]).length);
+            });
+            // Staff regularization (POST) → { count } | { batches:{} }
+            fetch(BASE_ATT + 'staff_regularization/list', {
+                method:'POST', credentials:'same-origin',
+                headers:{'Content-Type':'application/x-www-form-urlencoded','X-Requested-With':'XMLHttpRequest'},
+                body:'status=pending'
+            }).then(function(r){ return r.json(); }).then(function(r){
+                if (!r) return;
+                var n = (typeof r.count === 'number') ? r.count : Object.keys(r.batches||{}).length;
+                setBadge('regularization', n);
+            }).catch(function(){});
+        })();
+JS;
+        $data['shell'] = [
+            'title'    => 'Approvals',
+            'subtitle' => 'Review and decide pending attendance requests',
+            'icon'     => 'fa-check-circle-o',
+            'extra_js' => "var BASE_ATT='" . base_url('attendance/') . "';\n" . $extra,
+            'tabs'     => [
+                ['key' => 'corrections',    'label' => 'Student Corrections',  'icon' => 'fa-exchange',    'url' => base_url('attendance/control') . '?embed=1&only=corrections', 'badge' => true],
+                ['key' => 'regularization', 'label' => 'Staff Regularization', 'icon' => 'fa-user-clock',  'url' => base_url('attendance/staff_regularization') . '?embed=1', 'badge' => true],
+                ['key' => 'leaves',         'label' => 'Student Leave',        'icon' => 'fa-plane',       'url' => base_url('attendance/student_leaves') . '?embed=1', 'badge' => true],
+            ],
+        ];
+        $this->load->view('include/header', $data);
+        $this->load->view('attendance/_shell', $data);
+        $this->load->view('include/footer');
+    }
+
+    /** Reports & Logs shell — Analytics · Audit Trail · Punch Log. */
+    public function reports()
+    {
+        $this->_require_role(self::VIEW_ROLES, 'attendance/reports');
+        $data['shell'] = [
+            'title'    => 'Reports & Logs',
+            'subtitle' => 'Analytics, governance audit trail and raw punch forensics',
+            'icon'     => 'fa-bar-chart',
+            'tabs'     => [
+                ['key' => 'analytics', 'label' => 'Analytics',   'icon' => 'fa-line-chart', 'url' => base_url('attendance/analytics') . '?embed=1'],
+                ['key' => 'audit',     'label' => 'Audit Trail',  'icon' => 'fa-history',    'url' => base_url('attendance/audit')     . '?embed=1'],
+                ['key' => 'punch',     'label' => 'Punch Log',    'icon' => 'fa-map-marker', 'url' => base_url('attendance/punch_log') . '?embed=1'],
+            ],
+        ];
+        $this->load->view('include/header', $data);
+        $this->load->view('attendance/_shell', $data);
+        $this->load->view('include/footer');
+    }
+
     /**
      * Dashboard stats — today's actual attendance counts (students + staff).
      * Reads today's mark (single character) from each student/staff attendance string.
@@ -168,14 +275,18 @@ class Attendance extends MY_Controller
 
         $school  = $this->school_name;
         $session = $this->session_year;
-        $today   = (int) date('j');           // day of month (1-31)
-        $month   = date('F');                 // "March"
-        $year    = (int) date('Y');           // 2026
+        // Resolve "today" in the SCHOOL's timezone (matches the Phase-2 write
+        // path). Server-local date() drifts near midnight / for non-IST schools,
+        // making the dashboard report the wrong day's counts (audit BE-M3).
+        $nowSchool = $this->_server_now();
+        $today   = (int) $nowSchool->format('j'); // day of month (1-31)
+        $month   = $nowSchool->format('F');       // "March"
+        $year    = (int) $nowSchool->format('Y'); // 2026
         $attKey  = "{$month} {$year}";
 
         // ── Student stats — Firestore FIRST ──
         $stuP = 0; $stuA = 0; $stuT = 0; $stuL = 0; $stuTotal = 0;
-        $todayDate = date('Y-m-d');
+        $todayDate = $nowSchool->format('Y-m-d');
 
         // (a) Try per-day attendance records
         try {
@@ -199,7 +310,7 @@ class Attendance extends MY_Controller
         if ($stuTotal === 0) {
             try {
                 $attSummaryDocs = $this->fs->schoolWhere('attendanceSummary', [
-                    ['month', '==', date('Y-m')],
+                    ['month', '==', $nowSchool->format('Y-m')],
                 ]);
             } catch (\Exception $e) {
                 log_message('error', 'Attendance::dashboard_stats attSummaryDocs Firestore read failed: ' . $e->getMessage());
@@ -252,7 +363,7 @@ class Attendance extends MY_Controller
         if ($staffTotal === 0) {
             try {
                 $staffSummaryDocs = $this->fs->schoolWhere('staffAttendanceSummary', [
-                    ['month', '==', date('Y-m')],
+                    ['month', '==', $nowSchool->format('Y-m')],
                 ]);
             } catch (\Exception $e) {
                 log_message('error', 'Attendance::dashboard_stats staffAttendanceSummary Firestore read failed: ' . $e->getMessage());
@@ -288,7 +399,7 @@ class Attendance extends MY_Controller
         }
 
         return $this->json_success([
-            'date'     => date('Y-m-d'),
+            'date'     => $nowSchool->format('Y-m-d'),
             'month'    => $month,
             'year'     => $year,
             'day'      => $today,
@@ -377,7 +488,7 @@ class Attendance extends MY_Controller
      */
     public function settings()
     {
-        $this->_require_role(self::MANAGE_ROLES, 'att_settings');
+        $this->_require_role(self::MANAGE_ROLES, 'att_settings', true);
         $this->load->view('include/header');
         $this->load->view('attendance/settings');
         $this->load->view('include/footer');
@@ -1175,6 +1286,13 @@ class Attendance extends MY_Controller
                 'holiday'    => $holiday,
                 'tardy'      => $tardy,
                 'percentage' => $pct,
+                // Denominator fields the Parent app reads for its "N school days"
+                // label + %-derivation. The per-day/staff writers set these; this
+                // bulk writer omitted them, so grid-saved classes showed no school-
+                // day count in the Parent app (audit PAR-M3). V = unmarked/pad.
+                'totalDays'  => strlen($cleanStr),
+                'vacation'   => substr_count($cleanStr, 'V'),
+                'workingDays'=> max(0, strlen($cleanStr) - $holiday - substr_count($cleanStr, 'V')),
                 // Per-day arrival times for tardy marks: {day:int → {time:str}}
                 'lateTimes'  => $lateMap,
                 'updatedAt'  => date('c'),
@@ -2213,7 +2331,7 @@ class Attendance extends MY_Controller
      */
     public function get_settings()
     {
-        $this->_require_role(self::MANAGE_ROLES, 'get_settings');
+        $this->_require_role(self::MANAGE_ROLES, 'get_settings', true);
 
         // Firestore-canonical (Phase 6B): read via the shared settings helper
         // (read-through cache). Return only the general-settings keys so the
@@ -2237,7 +2355,7 @@ class Attendance extends MY_Controller
      */
     public function save_settings()
     {
-        $this->_require_role(self::MANAGE_ROLES, 'save_settings');
+        $this->_require_role(self::MANAGE_ROLES, 'save_settings', true);
         $allowed = [
             'late_threshold_student', 'late_threshold_staff',
             'working_days', 'biometric_enabled', 'rfid_enabled', 'face_recognition_enabled',
@@ -2291,7 +2409,7 @@ class Attendance extends MY_Controller
      */
     public function get_attendance_policy()
     {
-        $this->_require_role(self::MANAGE_ROLES, 'get_attendance_policy');
+        $this->_require_role(self::MANAGE_ROLES, 'get_attendance_policy', true);
 
         $schoolDoc = $this->fs->get('schools', $this->school_id);
         $policy = (is_array($schoolDoc) && is_array($schoolDoc['attendancePolicy'] ?? null))
@@ -2322,7 +2440,7 @@ class Attendance extends MY_Controller
      */
     public function save_attendance_policy()
     {
-        $this->_require_role(self::MANAGE_ROLES, 'save_attendance_policy');
+        $this->_require_role(self::MANAGE_ROLES, 'save_attendance_policy', true);
         $this->load->helper('geofence');
 
         $raw = $this->input->post('policy');
@@ -2508,7 +2626,7 @@ class Attendance extends MY_Controller
      */
     public function fetch_devices()
     {
-        $this->_require_role(self::MANAGE_ROLES, 'fetch_devices');
+        $this->_require_role(self::MANAGE_ROLES, 'fetch_devices', true);
 
         $list = [];
 
@@ -2545,7 +2663,7 @@ class Attendance extends MY_Controller
      */
     public function register_device()
     {
-        $this->_require_role(self::MANAGE_ROLES, 'register_device');
+        $this->_require_role(self::MANAGE_ROLES, 'register_device', true);
         $name     = trim((string) $this->input->post('name'));
         $type     = trim((string) $this->input->post('type'));
         $location = trim((string) $this->input->post('location'));
@@ -2609,7 +2727,7 @@ class Attendance extends MY_Controller
      */
     public function update_device()
     {
-        $this->_require_role(self::MANAGE_ROLES, 'update_device');
+        $this->_require_role(self::MANAGE_ROLES, 'update_device', true);
         $deviceId = trim((string) $this->input->post('device_id'));
         if (!$deviceId || !preg_match('/^[A-Za-z0-9_]+$/', $deviceId)) {
             return $this->json_error('Invalid device ID.');
@@ -2653,7 +2771,7 @@ class Attendance extends MY_Controller
      */
     public function delete_device()
     {
-        $this->_require_role(self::MANAGE_ROLES, 'delete_device');
+        $this->_require_role(self::MANAGE_ROLES, 'delete_device', true);
         $deviceId = trim((string) $this->input->post('device_id'));
         if (!$deviceId || !preg_match('/^[A-Za-z0-9_]+$/', $deviceId)) {
             return $this->json_error('Invalid device ID.');
@@ -2686,7 +2804,7 @@ class Attendance extends MY_Controller
      */
     public function regenerate_key()
     {
-        $this->_require_role(self::MANAGE_ROLES, 'regenerate_key');
+        $this->_require_role(self::MANAGE_ROLES, 'regenerate_key', true);
         $deviceId = trim((string) $this->input->post('device_id'));
         if (!$deviceId || !preg_match('/^[A-Za-z0-9_]+$/', $deviceId)) {
             return $this->json_error('Invalid device ID.');
@@ -4182,6 +4300,62 @@ class Attendance extends MY_Controller
      * Teachers see leaves for their assigned classes only.
      * Admins see all.
      */
+    /**
+     * GET /attendance/approval_badge_counts
+     * Live pending counts for the sidebar badges (and, later, the Approvals page
+     * tabs). Read-only, VIEW-gated, no CSRF (GET) so it can be polled cheaply.
+     * De-dupes the two HR-leave queries by doc id (a staff request can match both
+     * type==request and applicantType==staff).
+     *
+     * Response:
+     *   attendance: { corrections, regularizations, studentLeaves, total }
+     *   leave:      { requests, total }
+     */
+    public function approval_badge_counts()
+    {
+        $this->_require_role(self::VIEW_ROLES, 'approval_badge_counts');
+
+        // Returns a set of matching doc ids (keyed) so unions de-dupe for free.
+        $idset = function (string $collection, array $conds): array {
+            try {
+                $rows = $this->fs->schoolWhere($collection, $conds, null, 'ASC', 1000);
+                $out  = [];
+                foreach ((array) $rows as $r) {
+                    $id = is_array($r) ? (string) ($r['id'] ?? '') : '';
+                    if ($id !== '') $out[$id] = true;
+                }
+                return $out;
+            } catch (\Exception $e) {
+                log_message('error', 'approval_badge_counts ' . $collection . ' failed: ' . $e->getMessage());
+                return [];
+            }
+        };
+
+        $corrections     = count($idset('attendanceCorrectionRequests', [['status', '==', 'pending']]));
+        $regularizations = count($idset('attendanceRegularizations',   [['status', '==', 'pending'], ['personType', '==', 'staff']]));
+        $studentLeaves   = count($idset('leaveApplications',           [['status', '==', 'pending'], ['applicantType', '==', 'student']]));
+
+        // HR / teacher leave requests: HR-created (type==request) OR teacher-app
+        // (applicantType==staff). Union by id so an overlapping doc counts once.
+        $hrLeave = count(
+            $idset('leaveApplications', [['status', '==', 'pending'], ['type', '==', 'request']])
+            + $idset('leaveApplications', [['status', '==', 'pending'], ['applicantType', '==', 'staff']])
+        );
+
+        return $this->json_success([
+            'attendance' => [
+                'corrections'     => $corrections,
+                'regularizations' => $regularizations,
+                'studentLeaves'   => $studentLeaves,
+                'total'           => $corrections + $regularizations + $studentLeaves,
+            ],
+            'leave' => [
+                'requests' => $hrLeave,
+                'total'    => $hrLeave,
+            ],
+        ]);
+    }
+
     public function list_student_leaves()
     {
         $this->_require_role(self::VIEW_ROLES, 'list_student_leaves');
@@ -4384,23 +4558,17 @@ class Attendance extends MY_Controller
             log_message('error', "Leave {$leaveId} approved but attendance stamp failed; reconciler will retry.");
         }
 
-        // 3. Fire push notification to parent
-        try {
-            $this->load->library('push_service');
-            $studentName = $leave['applicantName'] ?? $studentId;
-            $this->push_service->sendToUser($studentId, [
-                'title' => 'Leave Approved',
-                'body'  => "Leave for {$studentName} ({$startDate} to {$endDate}) has been approved.",
-                'data'  => [
-                    'type'      => 'leave_approved',
-                    'leave_id'  => $leaveId,
-                    'startDate' => $startDate,
-                    'endDate'   => $endDate,
-                ],
-            ]);
-        } catch (\Exception $e) {
-            log_message('error', 'Leave approval push failed: ' . $e->getMessage());
-        }
+        // 3. Fire push notification to parent (universal CF dispatcher).
+        $studentName = $leave['applicantName'] ?? $studentId;
+        $this->emit_push('LEAVE_DECIDED', 'leave_' . $leaveId . '_approved', [
+            'studentId' => $studentId,
+            'pushType'  => 'leave_approved',
+            'title'     => 'Leave Approved',
+            'body'      => "Leave for {$studentName} ({$startDate} to {$endDate}) has been approved.",
+            'leaveId'   => $leaveId,
+            'startDate' => $startDate,
+            'endDate'   => $endDate,
+        ]);
 
         return $this->json_success([
             'message'     => "Leave approved. {$daysUpdated} attendance day(s) marked as Leave.",
@@ -4458,22 +4626,17 @@ class Attendance extends MY_Controller
             return $this->json_error('Failed to update leave status: ' . $e->getMessage());
         }
 
-        // Push notification to parent
-        try {
-            $this->load->library('push_service');
-            $studentName = $leave['applicantName'] ?? $studentId;
-            $this->push_service->sendToUser($studentId, [
-                'title' => 'Leave Rejected',
-                'body'  => "Leave for {$studentName} ({$leave['startDate']} to {$leave['endDate']}) was rejected. Reason: {$remarks}",
-                'data'  => [
-                    'type'      => 'leave_rejected',
-                    'leave_id'  => $leaveId,
-                    'remarks'   => $remarks,
-                ],
-            ]);
-        } catch (\Exception $e) {
-            log_message('error', 'Leave rejection push failed: ' . $e->getMessage());
-        }
+        // Push notification to parent (universal CF dispatcher).
+        $studentName = $leave['applicantName'] ?? $studentId;
+        $this->emit_push('LEAVE_DECIDED', 'leave_' . $leaveId . '_rejected', [
+            'studentId' => $studentId,
+            'pushType'  => 'leave_rejected',
+            'title'     => 'Leave Rejected',
+            'body'      => "Leave for {$studentName} ({$leave['startDate']} to {$leave['endDate']}) was rejected. Reason: {$remarks}",
+            'leaveId'   => $leaveId,
+            'startDate' => $leave['startDate'] ?? '',
+            'endDate'   => $leave['endDate'] ?? '',
+        ]);
 
         return $this->json_success(['message' => 'Leave rejected.']);
     }
@@ -5444,7 +5607,7 @@ class Attendance extends MY_Controller
      */
     public function lock_staff_attendance()
     {
-        $this->_require_role(self::MANAGE_ROLES, 'lock_staff_att');
+        $this->_require_role(self::MANAGE_ROLES, 'lock_staff_att', true);
         $month = trim((string) $this->input->post('month'));
         if (!$month) return $this->json_error('Month is required.');
 
@@ -5490,7 +5653,7 @@ class Attendance extends MY_Controller
      */
     public function unlock_staff_attendance()
     {
-        $this->_require_role(self::MANAGE_ROLES, 'unlock_staff_att');
+        $this->_require_role(self::MANAGE_ROLES, 'unlock_staff_att', true);
         $month = trim((string) $this->input->post('month'));
         if (!$month) return $this->json_error('Month is required.');
 
@@ -5636,26 +5799,23 @@ class Attendance extends MY_Controller
                 log_message('error', "Attendance direct notification failed: " . $e->getMessage());
             }
 
-            // ── PATH 3: Real-time FCM push (Phase C — 2026-04-08) ──
-            // Fires immediately so the parent gets a notification even if
-            // no trigger is configured AND process_queue cron hasn't run yet.
-            $pushed = 0;
-            try {
-                $this->load->library('push_service');
-                $pushed = $this->push_service->sendToUser($studentId, [
-                    'title' => "Attendance: {$statusLabel}",
-                    'body'  => "{$studentName} was marked {$statusLabel} on " . date('d M Y'),
-                    'data'  => [
-                        'type'       => $eventType,
-                        'student_id' => $studentId,
-                        'class'      => $class,
-                        'section'    => $section,
-                        'date'       => $date,
-                    ],
-                ]);
-            } catch (\Exception $e) {
-                log_message('error', "Attendance FCM push failed: " . $e->getMessage());
-            }
+            // ── PATH 3: Real-time FCM push via the universal CF dispatcher ──
+            // Emits an ATTENDANCE_MARKED pushRequests doc; the Cloud Function
+            // resolves the parent's devices and delivers instantly (works when
+            // the app is killed). The enclosing attendanceEventsFired dedup seal
+            // guarantees one emit per student+date+mark; the deterministic docId
+            // makes any redelivery idempotent.
+            $pushed = 1;
+            $this->emit_push('ATTENDANCE_MARKED', 'att_' . $studentId . '_' . $date . '_' . $mark, [
+                'studentId' => $studentId,
+                'pushType'  => $eventType,   // student_absent | student_late
+                'title'     => "Attendance: {$statusLabel}",
+                'body'      => "{$studentName} was marked {$statusLabel} on " . date('d M Y'),
+                'class'     => $class,
+                'section'   => $section,
+                'day'       => (string) $day,
+                'month'     => $attKey,
+            ]);
 
             // ── Mark as fired — Firestore-only dedup seal (Phase 6G) ──
             $dedupRecord = [
@@ -7237,7 +7397,7 @@ class Attendance extends MY_Controller
      */
     public function lock_set()
     {
-        $this->_require_role(self::MANAGE_ROLES, 'lock_set');
+        $this->_require_role(self::MANAGE_ROLES, 'lock_set', true);
 
         $class   = trim((string) $this->input->post('class'));
         $section = trim((string) $this->input->post('section'));
@@ -7811,7 +7971,7 @@ class Attendance extends MY_Controller
      */
     public function staff_regularization_decide()
     {
-        $this->_require_role(self::STAFF_REG_DECIDE_ROLES, 'staff_regularization_decide');
+        $this->_require_role(self::STAFF_REG_DECIDE_ROLES, 'staff_regularization_decide', true);
 
         $docId    = trim((string) $this->input->post('doc_id'));
         $batchId  = trim((string) $this->input->post('batch_id'));
@@ -7963,7 +8123,7 @@ class Attendance extends MY_Controller
      */
     public function correction_decide()
     {
-        $this->_require_role(self::MANAGE_ROLES, 'correction_decide');
+        $this->_require_role(self::MANAGE_ROLES, 'correction_decide', true);
 
         $reqId    = trim((string) $this->input->post('requestId'));
         $decision = strtolower(trim((string) $this->input->post('decision')));

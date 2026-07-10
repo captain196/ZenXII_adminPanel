@@ -710,10 +710,10 @@ document.addEventListener('DOMContentLoaded', function() {
 :root {
   --fm-navy: var(--t1, #0f1f3d);
   --fm-navy-light: var(--t2, #1a2d52);
-  --fm-teal: var(--gold, #0f766e);
-  --fm-teal-light: var(--gold2, #0d6b63);
+  --fm-teal: var(--gold, #BC5A3C);
+  --fm-teal-light: var(--gold2, #9E4830);
   --fm-teal-dim: var(--gold-dim, rgba(13,115,119,.10));
-  --fm-sky: var(--gold-dim, rgba(15,118,110,.10));
+  --fm-sky: var(--gold-dim, rgba(188,90,60,.10));
   --fm-gold: #d97706;
   --fm-gold-dim: rgba(217,119,6,.10);
   --fm-red: #E05C6F;

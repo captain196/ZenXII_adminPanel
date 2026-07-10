@@ -8,13 +8,13 @@
            DESIGN TOKENS
         ══════════════════════════════════════════════ */
         .db-root {
-            --brand:       #0f766e;
-            --brand2:      #0d6b63;
-            --brand3:      #14b8a6;
-            --brand-light: #99f6e4;
-            --brand-dim:   rgba(15, 118, 110, 0.08);
-            --brand-glow:  rgba(15, 118, 110, 0.22);
-            --brand-ring:  rgba(15, 118, 110, 0.16);
+            --brand:       #BC5A3C;
+            --brand2:      #9E4830;
+            --brand3:      #D4725C;
+            --brand-light: #EBC3B4;
+            --brand-dim:   rgba(188,90,60, 0.08);
+            --brand-glow:  rgba(188,90,60, 0.22);
+            --brand-ring:  rgba(188,90,60, 0.16);
             --blue:    #3b82f6;
             --green:   #22c55e;
             --rose:    #f43f5e;
@@ -32,46 +32,46 @@
         /* ── DARK THEME ── */
         .db-root,
         [data-theme="night"] .db-root {
-            --bg:       #0b1121;
-            --bg2:      #111827;
-            --bg3:      #1f2937;
-            --bg4:      #374151;
-            --card:     #111827;
-            --card-alt: #1a2332;
+            --bg:       #17100C;
+            --bg2:      #201711;
+            --bg3:      #271A14;
+            --bg4:      #3A2A20;
+            --card:     #201711;
+            --card-alt: #271A14;
             --border:   rgba(255, 255, 255, 0.06);
             --border2:  rgba(255, 255, 255, 0.10);
-            --text:     #f9fafb;
-            --text2:    #d1d5db;
-            --muted:    #9ca3af;
-            --muted2:   #6b7280;
+            --text:     #F4E9E2;
+            --text2:    #D8C6BA;
+            --muted:    #A89A90;
+            --muted2:   #7A6A5E;
             --heading:  #ffffff;
             --shadow:   0 1px 3px rgba(0,0,0,.3), 0 1px 2px rgba(0,0,0,.2);
             --shadow-md: 0 4px 6px -1px rgba(0,0,0,.3), 0 2px 4px -2px rgba(0,0,0,.2);
             --shadow-lg: 0 10px 15px -3px rgba(0,0,0,.3), 0 4px 6px -4px rgba(0,0,0,.2);
             --chart-grid:  rgba(255, 255, 255, 0.04);
-            --chart-tick:  #9ca3af;
+            --chart-tick:  #A89A90;
         }
 
         /* ── LIGHT THEME ── */
         [data-theme="day"] .db-root {
-            --bg:       #f1f5f9;
+            --bg:       #F7F2ED;
             --bg2:      #ffffff;
-            --bg3:      #f8fafc;
-            --bg4:      #e2e8f0;
+            --bg3:      #FAF5F0;
+            --bg4:      #ECDCCF;
             --card:     #ffffff;
-            --card-alt: #f8fafc;
+            --card-alt: #FAF5F0;
             --border:   rgba(0, 0, 0, 0.06);
             --border2:  rgba(0, 0, 0, 0.10);
-            --text:     #1e293b;
-            --text2:    #475569;
-            --muted:    #94a3b8;
-            --muted2:   #cbd5e1;
-            --heading:  #0f172a;
+            --text:     #33261F;
+            --text2:    #6B5346;
+            --muted:    #9E8578;
+            --muted2:   #C2A89A;
+            --heading:  #22160F;
             --shadow:   0 1px 3px rgba(0,0,0,.06), 0 1px 2px rgba(0,0,0,.04);
             --shadow-md: 0 4px 6px -1px rgba(0,0,0,.07), 0 2px 4px -2px rgba(0,0,0,.05);
             --shadow-lg: 0 10px 15px -3px rgba(0,0,0,.08), 0 4px 6px -4px rgba(0,0,0,.05);
             --chart-grid:  rgba(0, 0, 0, 0.04);
-            --chart-tick:  #94a3b8;
+            --chart-tick:  #9E8578;
         }
 
         /* ── TRANSITIONS ── */
@@ -427,7 +427,7 @@
             display: flex; align-items: center; justify-content: center;
             font-size: 16px; flex-shrink: 0;
         }
-        .stat-icon.c-brand  { background: rgba(15,118,110,.15); color: var(--brand); border: 1px solid rgba(15,118,110,.18); }
+        .stat-icon.c-brand  { background: rgba(188,90,60,.15); color: var(--brand); border: 1px solid rgba(188,90,60,.18); }
         .stat-icon.c-green  { background: rgba(34,197,94,.15);  color: var(--green); border: 1px solid rgba(34,197,94,.18); }
         .stat-icon.c-blue   { background: rgba(59,130,246,.15); color: var(--blue);  border: 1px solid rgba(59,130,246,.18); }
         .stat-icon.c-rose   { background: rgba(244,63,94,.15);  color: var(--rose);  border: 1px solid rgba(244,63,94,.18); }
@@ -590,7 +590,7 @@
             align-items: center; justify-content: center;
             font-size: 13px;
         }
-        .evt-icon.upcoming { background: rgba(15,118,110,.1); color: var(--brand); }
+        .evt-icon.upcoming { background: rgba(188,90,60,.1); color: var(--brand); }
         .evt-icon.ongoing  { background: rgba(34,197,94,.1);  color: var(--green); }
         .evt-info { flex: 1; min-width: 0; }
         .evt-name {
@@ -652,7 +652,7 @@
         /* Quick action color variants */
         .quick-btn.qb-brand  { border-color: var(--brand-ring); }
         .quick-btn.qb-brand  i { color: var(--brand); }
-        .quick-btn.qb-brand:hover  { border-color: var(--brand); color: var(--brand); box-shadow: 0 4px 16px rgba(15,118,110,.12); }
+        .quick-btn.qb-brand:hover  { border-color: var(--brand); color: var(--brand); box-shadow: 0 4px 16px rgba(188,90,60,.12); }
 
         .quick-btn.qb-amber  { border-color: rgba(245,158,11,.15); }
         .quick-btn.qb-amber  i { color: var(--amber); }
@@ -724,7 +724,7 @@
         .cal-day.today {
             background: var(--brand); color: #fff;
             font-weight: 700;
-            box-shadow: 0 2px 8px rgba(15,118,110,.35);
+            box-shadow: 0 2px 8px rgba(188,90,60,.35);
         }
         .cal-day.has-event { position: relative; font-weight: 600; }
         .cal-day.has-event::after {
@@ -765,7 +765,7 @@
         }
         .db-task-badge.high   { background: rgba(239,68,68,.12); color: #ef4444; }
         .db-task-badge.medium { background: rgba(245,158,11,.12); color: #f59e0b; }
-        .db-task-badge.low    { background: rgba(15,118,110,.1);  color: #0f766e; }
+        .db-task-badge.low    { background: rgba(188,90,60,.1);  color: #BC5A3C; }
 
         /* ══════════════════════════════════════════════
            ALERTS
@@ -1651,7 +1651,7 @@
             var href = it.action ? (base + it.action) : '#';
             var rel  = relativeTime(it.time);
             html += '<a class="activity-item" href="' + escHtml(href) + '" style="text-decoration:none;">'
-                +   '<div class="activity-icon" style="background:' + (it.color || '#0f766e') + '">'
+                +   '<div class="activity-icon" style="background:' + (it.color || '#BC5A3C') + '">'
                 +     '<i class="fa ' + (it.icon || 'fa-circle') + '"></i>'
                 +   '</div>'
                 +   '<div class="activity-body">'
@@ -1859,7 +1859,7 @@
         el.innerHTML = tasks.map(function(t) {
             var href = t.action ? (BASE + '/' + t.action) : '#';
             return '<a class="db-task-item" href="' + _esc(href) + '">'
-              + '<div class="db-task-icon" style="background:' + _esc(t.color || '#0f766e') + '"><i class="fa ' + _esc(t.icon || 'fa-tasks') + '"></i></div>'
+              + '<div class="db-task-icon" style="background:' + _esc(t.color || '#BC5A3C') + '"><i class="fa ' + _esc(t.icon || 'fa-tasks') + '"></i></div>'
               + '<div class="db-task-body">'
               + '<div class="db-task-title">' + _esc(t.title) + '</div>'
               + '<div class="db-task-detail">' + _esc(t.detail || '') + '</div>'
@@ -2092,10 +2092,10 @@
                         var chart = context.chart;
                         var ctx2 = chart.ctx;
                         var area = chart.chartArea;
-                        if (!area) return 'rgba(15,118,110,0.7)';
+                        if (!area) return 'rgba(188,90,60,0.7)';
                         var gradient = ctx2.createLinearGradient(0, area.bottom, 0, area.top);
-                        gradient.addColorStop(0, 'rgba(15,118,110,0.4)');
-                        gradient.addColorStop(1, 'rgba(15,118,110,0.85)');
+                        gradient.addColorStop(0, 'rgba(188,90,60,0.4)');
+                        gradient.addColorStop(1, 'rgba(188,90,60,0.85)');
                         return gradient;
                     },
                     borderRadius: 6,
@@ -2119,7 +2119,7 @@
                 scales: {
                     x: { grid: { display: false }, ticks: { color: 'var(--chart-tick)', font: { size: 11, family: 'Inter' } } },
                     y: {
-                        grid: { color: 'rgba(15,118,110,0.06)', drawBorder: false },
+                        grid: { color: 'rgba(188,90,60,0.06)', drawBorder: false },
                         ticks: { color: 'var(--chart-tick)', font: { size: 10, family: 'Inter' }, callback: function(v) { return fmtINR(v); } },
                         border: { display: false }
                     }
@@ -2167,7 +2167,7 @@
                     }
                 },
                 scales: {
-                    x: { grid: { color: 'rgba(15,118,110,0.06)', drawBorder: false }, ticks: { color: 'var(--chart-tick)', font: { size: 10 } }, border: { display: false } },
+                    x: { grid: { color: 'rgba(188,90,60,0.06)', drawBorder: false }, ticks: { color: 'var(--chart-tick)', font: { size: 10 } }, border: { display: false } },
                     y: { grid: { display: false }, ticks: { color: 'var(--chart-tick)', font: { size: 11, weight: 500 } } }
                 }
             }
@@ -2181,7 +2181,7 @@
 
         var labels = ['Male', 'Female', 'Other'];
         var values = [gender.Male || 0, gender.Female || 0, gender.Other || 0];
-        var colors = ['#0f766e', '#f43f5e', '#f59e0b'];
+        var colors = ['#BC5A3C', '#f43f5e', '#f59e0b'];
 
         var legendEl = document.getElementById('genderLegend');
         if (legendEl) {

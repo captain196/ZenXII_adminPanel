@@ -31,7 +31,7 @@ $at = $active_tab ?? 'dashboard';
 .cm-stat-grid{display:grid;grid-template-columns:repeat(auto-fit,minmax(200px,1fr));gap:16px;margin-bottom:24px}
 .cm-stat{background:var(--card,var(--bg2));border:1px solid var(--border);border-radius:var(--r,10px);padding:20px;display:flex;align-items:center;gap:16px}
 .cm-stat-icon{width:48px;height:48px;border-radius:12px;display:flex;align-items:center;justify-content:center;font-size:20px}
-.cm-stat-icon.teal{background:rgba(15,118,110,.12);color:var(--gold)}
+.cm-stat-icon.teal{background:rgba(188,90,60,.12);color:var(--gold)}
 .cm-stat-icon.blue{background:rgba(59,130,246,.12);color:#3b82f6}
 .cm-stat-icon.amber{background:rgba(245,158,11,.12);color:#f59e0b}
 .cm-stat-icon.rose{background:rgba(239,68,68,.12);color:#ef4444}

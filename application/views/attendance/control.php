@@ -575,6 +575,21 @@ if (!empty($Classes) && is_array($Classes)) {
         }
 
         function decide(decision, force){
+            // Loading feedback: disable both actions and spin the clicked one until
+            // the decide round-trip resolves. Restore on every non-success path
+            // (drift-409, server error, network reject) so the modal stays usable.
+            var actBtn   = decision === 'approve' ? $('#ap-approve') : $('#ap-reject');
+            var otherBtn = decision === 'approve' ? $('#ap-reject')  : $('#ap-approve');
+            var actOrig  = actBtn ? actBtn.innerHTML : '';
+            function restore(){
+                if (actBtn)   { actBtn.disabled = false; actBtn.innerHTML = actOrig; }
+                if (otherBtn) { otherBtn.disabled = false; }
+            }
+            if (otherBtn) otherBtn.disabled = true;
+            if (actBtn) {
+                actBtn.disabled = true;
+                actBtn.innerHTML = '<i class="fa fa-spinner fa-spin"></i> ' + (decision === 'approve' ? 'Approving…' : 'Rejecting…');
+            }
             var body = { 'requestId': rid, 'decision': decision, 'note': $('#ap-note').value.trim() };
             if (force) body.force = 'true';
             api('POST', 'correction/decide', body).then(function(res){
@@ -586,14 +601,18 @@ if (!empty($Classes) && is_array($Classes)) {
                         + '<b>Expected:</b> ' + fmtMark(res.body.expected) + '<br>'
                         + '<b>Now:</b> '       + fmtMark(res.body.current);
                     $('#ap-force-label').style.display = 'block';
+                    restore();
                     return;
                 }
-                if (!res.ok) return toast(res.body.message || 'Failed.', 'error');
+                if (!res.ok) { restore(); return toast(res.body.message || 'Failed.', 'error'); }
                 $('#modal-approve').classList.remove('open');
                 toast('Decision: ' + (res.body.decision || decision));
                 cursorState = null;
                 loadCorrections(false);
                 refreshPendingBadge();
+            }).catch(function(){
+                restore();
+                toast('Request failed. Please retry.', 'error');
             });
         }
         $('#ap-approve').onclick = function(){ decide('approve', $('#ap-force').checked); };
@@ -602,6 +621,25 @@ if (!empty($Classes) && is_array($Classes)) {
     }
 
     // ── boot ─────────────────────────────────────────────────────
-    loadDashboard();
+    // Phase-2 IA: Corrections moved to the Approvals shell.
+    //  • ?only=corrections  → Approvals embed: show ONLY the Corrections tab AND
+    //    skip loadDashboard() (which fetches a summary for EVERY class-section —
+    //    pure waste when only Corrections is shown; this was the slow/blank frame).
+    //  • otherwise (standalone Oversight) → hide the Corrections tab so Control
+    //    reads as Summary + Locks, and boot the dashboard as before.
+    (function(){
+        var qs   = new URLSearchParams(location.search || '');
+        var only = (qs.get('only') || '').trim();
+        function tabBtn(k){ return document.querySelector('.att-tab[data-tab="' + k + '"]'); }
+        if (only === 'corrections') {
+            ['dashboard','locks'].forEach(function(k){ var b = tabBtn(k); if (b) b.style.display = 'none'; });
+            var c = tabBtn('corrections'); if (c) c.click();   // fires loadCorrections() only
+            return;
+        }
+        loadDashboard();                                       // full Control page
+        var cb = tabBtn('corrections'); if (cb) cb.style.display = 'none';   // moved to Approvals
+        var h = (location.hash || '').replace('#','').trim();
+        if (h && h !== 'corrections') { var t = tabBtn(h); if (t) t.click(); }
+    })();
 })();
 </script>

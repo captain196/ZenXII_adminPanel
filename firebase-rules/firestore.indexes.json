@@ -1,6 +1,21 @@
 {
   "indexes": [
     {
+      "_comment": "Universal push (2026-07-11) — onStoryCreated CF resolves scoped-story recipients: storyAudience where schoolId== AND classKeys array-contains-any [story audience keys]. Required for class/section-scoped story push fan-out.",
+      "collectionGroup": "storyAudience",
+      "queryScope": "COLLECTION",
+      "fields": [
+        {
+          "fieldPath": "schoolId",
+          "order": "ASCENDING"
+        },
+        {
+          "fieldPath": "classKeys",
+          "arrayConfig": "CONTAINS"
+        }
+      ]
+    },
+    {
       "collectionGroup": "stories",
       "queryScope": "COLLECTION",
       "fields": [

@@ -115,3 +115,25 @@ defined('EXIT__AUTO_MAX')      OR define('EXIT__AUTO_MAX', 125); // highest auto
 | absorbs any short-lived divergence.
 */
 defined('ANALYTICS_VIA_FUNCTION') OR define('ANALYTICS_VIA_FUNCTION', false);
+
+/*
+| ffmpeg / ffprobe absolute paths for server-side video poster generation
+| (Schools::uploadMedia). Resolved to an absolute path so PHP shell_exec works
+| even when the web server runs with a stripped PATH that omits /usr/bin.
+| Environment-aware: prod Lightsail = /usr/bin (apt), local mac = homebrew.
+| On Lightsail install with `sudo apt-get install -y ffmpeg`.
+*/
+if (!defined('FFMPEG_PATH')) {
+    $__ff = null;
+    foreach (['/usr/bin/ffmpeg', '/usr/local/bin/ffmpeg', '/opt/homebrew/bin/ffmpeg'] as $__p) {
+        if (@is_file($__p)) { $__ff = $__p; break; }
+    }
+    define('FFMPEG_PATH', $__ff ?: 'ffmpeg');
+}
+if (!defined('FFPROBE_PATH')) {
+    $__fp = null;
+    foreach (['/usr/bin/ffprobe', '/usr/local/bin/ffprobe', '/opt/homebrew/bin/ffprobe'] as $__p) {
+        if (@is_file($__p)) { $__fp = $__p; break; }
+    }
+    define('FFPROBE_PATH', $__fp ?: 'ffprobe');
+}

@@ -1,21 +1,24 @@
 /**
- * SchoolSync real-time push dispatcher.
+ * SchoolSync UNIVERSAL push dispatcher.
  *
- * Triggered on every new `pushRequests/{docId}` doc. Handles the marks that
- * need real-time, admin-independent delivery:
- *   - NOTICE_CREATED / CIRCULAR_CREATED / EVENT_CREATED  (broadcast by audience)
- *   - MESSAGE_RECEIVED                                   (per-conversation)
- *   - PTM_CLASS_TEACHER                                  (per class-teacher)
- *   - FLAG_CREATED                                       (per-student → parent)
+ * Single delivery path for the whole platform. Triggered on every new
+ * `pushRequests/{docId}` doc; every module — any PHP controller or either
+ * app — signals a push by writing ONE doc { schoolId, mark, ...audience }.
+ * The mark's row in MARK_REGISTRY below drives recipient resolution + payload.
  *
- * The mark-space is PARTITIONED with the admin panel's PHP poller
- * (MY_Controller::_auto_process_push_requests), which owns the homework /
- * leave / attendance marks (source=teacher / homework_* / teacher_leave_*).
- * NEVER handle the same mark in both — that double-sends.
+ * To add push to a new module: add a row to MARK_REGISTRY and have the
+ * producer write the doc. No new send code, auth, or token plumbing.
  *
- * Fan-out strategy:
- *   target_group → audience (role broadcast OR class/section students' parents)
- *   → userDevices query → fcmToken list → FCM multicast.
+ * MIGRATION IN PROGRESS: the legacy senders (MY_Controller PHP poller,
+ * inline Push_service calls, and the messageQueue engine) are being retired
+ * onto this dispatcher module-by-module. HARD RULE: when a module starts
+ * writing a mark here, its old sender MUST be disabled in the same change —
+ * a mark handled in two places double-sends.
+ *
+ * Audience modes (see AUDIENCE): BROADCAST (target_group → roles OR
+ * class/section students' parents) and USERS (explicit id list). Both resolve
+ * to a userDevices query → fcmToken list → FCM multicast (notification + data,
+ * high priority, no channel_id so each app's manifest default channel wins).
  */
 
 const admin = require('firebase-admin');
@@ -26,31 +29,123 @@ if (!admin.apps.length) admin.initializeApp();
 const db = admin.firestore();
 const messaging = admin.messaging();
 
-// Marks recognised by this dispatcher. Each mark drives a different
-// recipient-resolution path (see the branches inside the trigger below).
+// ─── UNIVERSAL MARK REGISTRY ───────────────────────────────────────
+// Single source of truth for every push in the platform. To add push to
+// a new module you add ONE row here + have the producer (PHP controller or
+// app) write a `pushRequests` doc with { schoolId, mark, ...audience fields }.
+// NOTHING else sends push — the PHP poller / inline Push_service / messageQueue
+// senders are being retired onto this dispatcher (see migration notes in repo).
 //
-//   NOTICE_CREATED, CIRCULAR_CREATED — broadcast by role (target_group).
-//   MESSAGE_RECEIVED                 — per-userId push (recipientIds).
-//   PTM_CLASS_TEACHER                — per-staffId push for the specific
-//                                      class teachers of a PTM's sections.
-//                                      Replaces the previous "All Teachers"
-//                                      overshoot for class-specific PTMs.
-const MARKS_HANDLED = new Set([
-  'NOTICE_CREATED',
-  'CIRCULAR_CREATED',
-  'EVENT_CREATED',        // Event published by admin → notify audience
-  'MESSAGE_RECEIVED',
-  'PTM_CLASS_TEACHER',
-  'FLAG_CREATED',         // Red Flag raised by teacher → notify parent
-]);
+// Each mark declares:
+//   type        default data.type the apps switch on (doc.pushType overrides —
+//               lets one mark cover approved/rejected, absent/late, etc.)
+//   audience    BROADCAST (target_group → roles or class/section parents)
+//               USERS     (explicit id list from `idField` + generic `userIds`)
+//   idField     (USERS)  doc field holding the recipient id(s); string or array
+//   idKey       (BROADCAST) resource-id field echoed into data for deep-linking
+//   fTitle/fBody fallback title/body when the doc omits title/body
+//   dataKeys    extra doc fields echoed verbatim into the data payload
+//   notify(doc) OPTIONAL — derive {title,body} from fields (legacy flag/message)
+//   data(doc)   OPTIONAL — derive extra data fields (paired with notify)
+const AUDIENCE = { BROADCAST: 'broadcast', USERS: 'users' };
 
-// The broadcast marks share one recipient-resolution path (target_group →
-// audience). Each maps to the data.type + id field the apps switch on.
-const BROADCAST_MARKS = {
-  NOTICE_CREATED:   { type: 'notice_created',   idKey: 'noticeId',   fTitle: 'New Notice',    fBody: 'A new notice has been posted' },
-  CIRCULAR_CREATED: { type: 'circular_created', idKey: 'circularId', fTitle: 'New Circular',  fBody: 'A new circular has been posted' },
-  EVENT_CREATED:    { type: 'event_created',    idKey: 'eventId',    fTitle: 'New Event',     fBody: 'Tap to view details' },
+const MARK_REGISTRY = {
+  // ── Broadcast (role / class-section) ──────────────────────────────
+  NOTICE_CREATED:    { audience: AUDIENCE.BROADCAST, type: 'notice_created',   idKey: 'noticeId',    fTitle: 'New Notice',      fBody: 'A new notice has been posted',      dataKeys: ['category'] },
+  CIRCULAR_CREATED:  { audience: AUDIENCE.BROADCAST, type: 'circular_created', idKey: 'circularId',  fTitle: 'New Circular',    fBody: 'A new circular has been posted',    dataKeys: ['category'] },
+  EVENT_CREATED:     { audience: AUDIENCE.BROADCAST, type: 'event_created',    idKey: 'eventId',     fTitle: 'New Event',       fBody: 'Tap to view details',               dataKeys: ['category'] },
+  GALLERY_ADDED:     { audience: AUDIENCE.BROADCAST, type: 'gallery_added',    idKey: 'albumId',     fTitle: 'New Photos',      fBody: 'New photos have been added',        dataKeys: ['category', 'mediaCount'] },
+  STORY_POSTED:      { audience: AUDIENCE.BROADCAST, type: 'story_created',    idKey: 'storyId',     fTitle: 'New Story',       fBody: 'Tap to view',                       dataKeys: ['category'] },
+  TIMETABLE_CHANGED: { audience: AUDIENCE.BROADCAST, type: 'timetable_changed',idKey: 'timetableId', fTitle: 'Timetable Update',fBody: 'Your timetable has changed',        dataKeys: ['category', 'day'] },
+  EXAM_SCHEDULE:     { audience: AUDIENCE.BROADCAST, type: 'exam_schedule',    idKey: 'examId',      fTitle: 'Exam Schedule',   fBody: 'A new exam schedule is available',  dataKeys: ['category'] },
+  // NOTE: Homework (create/review) is intentionally NOT registered here. The
+  // Teacher app writes those pushRequests docs with mark=HOMEWORK_CREATED/
+  // HOMEWORK_REVIEWED *and* a legacy `source`, and the PHP poller already
+  // owns them (it resolves the class→parents audience correctly). Registering
+  // them here would DOUBLE-SEND and, for HOMEWORK_CREATED, over-broadcast to
+  // the whole school (the app's doc has class/section, not target_group).
+  // App-originated events (homework, and app-side leave/attendance) stay on
+  // the poller until a future pass migrates the app producer + audience map.
+
+  // ── Explicit-recipient (single user or list) ──────────────────────
+  MESSAGE_RECEIVED:  {
+    audience: AUDIENCE.USERS, idField: 'recipientIds', type: 'message',
+    notify: (d) => ({ title: String(d.senderName || 'New message').slice(0, 80), body: String(d.body || '').slice(0, 180) }),
+    data:   (d) => ({ senderName: String(d.senderName || 'New message').slice(0, 80), senderId: String(d.senderId || ''), message: String(d.body || '').slice(0, 180), conversationId: String(d.conversationId || '') }),
+  },
+  PTM_CLASS_TEACHER: { audience: AUDIENCE.USERS, idField: 'recipientStaffIds', type: 'ptm_class_teacher', fTitle: 'Parent-Teacher Meeting', fBody: '', dataKeys: ['ptmEventId', 'noticeId', 'category'] },
+  FLAG_CREATED:      {
+    audience: AUDIENCE.USERS, idField: 'studentId', type: 'red_flag',
+    notify: (d) => {
+      const severity = String(d.severity || 'low').toLowerCase();
+      const studentName = String(d.studentName || '').slice(0, 80);
+      const flagType = String(d.flagType || d.type || '').toLowerCase();
+      const message = String(d.message || '').slice(0, 180);
+      const teacherName = String(d.teacherName || '').slice(0, 80);
+      const subjectStr = String(d.subject || '').slice(0, 40);
+      const sevLabel = severity === 'high' ? '🔴 Red Flag' : severity === 'medium' ? '🟠 Concern' : 'ℹ️  Note';
+      return {
+        title: [sevLabel, studentName].filter(Boolean).join(' · ') || 'New flag from school',
+        body: (subjectStr ? `${subjectStr}: ` : '') + (message || `${teacherName} raised a ${flagType || 'flag'}`),
+      };
+    },
+    data: (d) => ({ flagId: String(d.flagId || ''), studentId: String(d.studentId || ''), severity: String(d.severity || 'low').toLowerCase(), flagType: String(d.flagType || d.type || '').toLowerCase() }),
+  },
+  LEAVE_DECIDED:       { audience: AUDIENCE.USERS, idField: 'studentId', type: 'leave_update', fTitle: 'Leave Update', fBody: '', dataKeys: ['leaveId', 'startDate', 'endDate'] },
+  STAFF_LEAVE_DECIDED: { audience: AUDIENCE.USERS, idField: 'staffId',   type: 'leave_update', fTitle: 'Leave Update', fBody: '', dataKeys: ['leaveId', 'startDate', 'endDate'] },
+  ATTENDANCE_MARKED:   { audience: AUDIENCE.USERS, idField: 'studentId', type: 'student_absent', fTitle: 'Attendance', fBody: '', dataKeys: ['day', 'month', 'class', 'section', 'mark'] },
+  SUBSTITUTE_ASSIGNED: { audience: AUDIENCE.USERS, idField: 'recipientStaffIds', type: 'substitute_assigned', fTitle: 'Substitute Assigned', fBody: 'You have been assigned as a substitute teacher', dataKeys: ['date', 'periods', 'class', 'section'] },
+  RESULT_PUBLISHED:    { audience: AUDIENCE.USERS, idField: 'studentId', type: 'exam_result', fTitle: 'Result Published', fBody: 'Your result has been published', dataKeys: ['examId', 'resultId'] },
+  FEE_PAID:            { audience: AUDIENCE.USERS, idField: 'studentId', type: 'fee_payment_confirmed', fTitle: 'Payment Received', fBody: 'Your fee payment has been received', dataKeys: ['amount', 'receiptId'] },
+  FEE_DUE:             { audience: AUDIENCE.USERS, idField: 'studentId', type: 'fee_reminder', fTitle: 'Fee Reminder', fBody: 'You have a pending fee payment', dataKeys: ['amount', 'dueDate'] },
+  BIRTHDAY:            { audience: AUDIENCE.USERS, idField: 'studentId', type: 'birthday_wish', fTitle: 'Happy Birthday!', fBody: 'Wishing you a wonderful day!', dataKeys: [] },
+  SALARY_PROCESSED:    { audience: AUDIENCE.USERS, idField: 'staffId',   type: 'salary_processed', fTitle: 'Salary Processed', fBody: 'Your salary has been processed', dataKeys: ['amount', 'month'] },
 };
+
+// ── Payload/recipient helpers (used by the generic dispatcher below) ──
+
+// Gather recipient userIds for a USERS-audience mark: from the mark's `idField`
+// (string → single, array → many) PLUS the always-supported generic `userIds`.
+function collectUserIds(doc, idField) {
+  const out = [];
+  const add = (v) => { const s = String(v == null ? '' : v).trim(); if (s) out.push(s); };
+  const raw = idField ? doc[idField] : null;
+  if (Array.isArray(raw)) raw.forEach(add); else if (raw) add(raw);
+  if (Array.isArray(doc.userIds)) doc.userIds.forEach(add);
+  return [...new Set(out)];
+}
+
+// FCM requires every data value to be a string; drop nulls.
+function stringifyData(obj) {
+  const out = {};
+  Object.keys(obj).forEach((k) => { if (obj[k] != null) out[k] = String(obj[k]); });
+  return out;
+}
+
+// Build the { notification, dataPayload } for a mark from its spec + doc.
+// doc.title/body and doc.pushType override the registry defaults.
+function buildPayload(spec, doc, schoolId) {
+  const type = String(doc.pushType || spec.type || '');
+  if (spec.notify) {
+    const n = spec.notify(doc);
+    const data = { type, schoolId, title: n.title, body: n.body, ...(spec.data ? spec.data(doc) : {}) };
+    return { notification: { title: n.title, body: n.body }, dataPayload: stringifyData(data) };
+  }
+  const title = String(doc.title || spec.fTitle || '').slice(0, 120);
+  const body = String(doc.body || spec.fBody || '').slice(0, 240);
+  const data = { type, schoolId, title, body };
+  if (spec.idKey) data[spec.idKey] = String(doc[spec.idKey] || doc.source_id || '');
+  (spec.dataKeys || []).forEach((k) => { if (doc[k] != null) data[k] = doc[k]; });
+  // Echo single-id routing fields so the apps can deep-link even if not listed.
+  ['studentId', 'staffId'].forEach((k) => { if (doc[k] != null && data[k] == null) data[k] = doc[k]; });
+  return { notification: { title, body }, dataPayload: stringifyData(data) };
+}
+
+function markError(snap, msg) {
+  return snap.ref
+    .set({ status: 'error', error: String(msg).slice(0, 400), processedAt: new Date().toISOString() }, { merge: true })
+    .catch(() => {});
+}
 
 /**
  * Resolve target_group → list of appRole(s) to query.
@@ -226,135 +321,57 @@ exports.dispatchNoticeAndCircularPushes = onDocumentCreated(
     const doc = snap.data() || {};
     const mark = doc.mark || '';
 
-    if (!MARKS_HANDLED.has(mark)) {
-      // Not ours — leave it for the other CF (e.g. HOMEWORK_CREATED).
+    const spec = MARK_REGISTRY[mark];
+    if (!spec) {
+      // Not a registered mark — ignore. (Legacy source-only docs, if any,
+      // are drained by the retiring PHP poller until fully migrated.)
       return;
     }
 
     const schoolId = doc.schoolId || '';
     if (!schoolId) {
       logger.warn(`[${mark}] missing schoolId — dropping`, { id: snap.id });
-      await snap.ref.set({ status: 'error', error: 'missing schoolId', processedAt: new Date().toISOString() }, { merge: true });
+      await markError(snap, 'missing schoolId');
       return;
     }
 
-    // ── Branch per mark ─────────────────────────────────────────────
-    let tokens = [];
-    let notification;
-    let dataPayload;
-
-    if (mark === 'MESSAGE_RECEIVED') {
-      // Per-conversation: fetch recipients from participantIds minus sender.
-      const convId  = String(doc.conversationId || '');
-      const senderId = String(doc.senderId || '');
-      const recipientIds = Array.isArray(doc.recipientIds) ? doc.recipientIds : [];
-      if (!recipientIds.length || !convId) {
-        logger.warn(`[${mark}] missing conversationId or recipientIds`, { id: snap.id });
-        await snap.ref.set({ status: 'error', error: 'missing conversationId/recipientIds', processedAt: new Date().toISOString() }, { merge: true });
-        return;
-      }
-      tokens = await tokensForUsers(schoolId, recipientIds);
-      const senderName = String(doc.senderName || 'New message').slice(0, 80);
-      const msgBody    = String(doc.body || '').slice(0, 180);
-      notification = { title: senderName, body: msgBody };
-      dataPayload = {
-        type: 'message',
-        senderName,
-        senderId,
-        message: msgBody,
-        conversationId: convId,
-        schoolId,
-      };
-      logger.info(`[${mark}] conv=${convId} recipients=${recipientIds.length} tokens=${tokens.length}`);
-    } else if (mark === 'FLAG_CREATED') {
-      // Red Flag raised on a specific student. Parents authenticate with
-      // their child's studentId as the Firebase Auth UID, so targeting
-      // the parent is the same as targeting the studentId.
-      const studentId   = String(doc.studentId   || '');
-      const studentName = String(doc.studentName || '').slice(0, 80);
-      const flagId      = String(doc.flagId      || '');
-      const severity    = String(doc.severity    || 'low').toLowerCase();
-      const flagType    = String(doc.flagType    || doc.type || '').toLowerCase();
-      const message     = String(doc.message     || '').slice(0, 180);
-      const teacherName = String(doc.teacherName || '').slice(0, 80);
-
-      if (!studentId || !flagId) {
-        logger.warn(`[${mark}] missing studentId/flagId — dropping`, { id: snap.id });
-        await snap.ref.set({ status: 'error', error: 'missing studentId/flagId', processedAt: new Date().toISOString() }, { merge: true });
-        return;
-      }
-      tokens = await tokensForUsers(schoolId, [studentId]);
-
-      // Title varies by severity; body shows teacher + first line of message.
-      const sevLabel = severity === 'high'   ? '🔴 Red Flag'
-                     : severity === 'medium' ? '🟠 Concern'
-                     :                         'ℹ️  Note';
-      const subjectStr = String(doc.subject || '').slice(0, 40);
-      const titlePieces = [sevLabel, studentName].filter(Boolean);
-      notification = {
-        title: titlePieces.join(' · ') || 'New flag from school',
-        body:  (subjectStr ? `${subjectStr}: ` : '') + (message || `${teacherName} raised a ${flagType || 'flag'}`),
-      };
-      dataPayload = {
-        type:        'red_flag',
-        flagId,
-        studentId,
-        severity,
-        flagType,
-        schoolId,
-      };
-      logger.info(`[${mark}] school=${schoolId} student=${studentId} sev=${severity} tokens=${tokens.length}`);
-    } else if (mark === 'PTM_CLASS_TEACHER') {
-      // Per-staffId targeting for the section's class teachers. Replaces
-      // the legacy "All Teachers" overshoot — only the specific teachers
-      // who own a section in the PTM get the push.
-      const recipientStaffIds = Array.isArray(doc.recipientStaffIds) ? doc.recipientStaffIds : [];
-      if (!recipientStaffIds.length) {
-        logger.warn(`[${mark}] missing recipientStaffIds`, { id: snap.id });
-        await snap.ref.set({ status: 'error', error: 'missing recipientStaffIds', processedAt: new Date().toISOString() }, { merge: true });
-        return;
-      }
-      tokens = await tokensForUsers(schoolId, recipientStaffIds);
-      const title = String(doc.title || 'Parent-Teacher Meeting').slice(0, 120);
-      const body  = String(doc.body  || '').slice(0, 240);
-      notification = { title, body };
-      dataPayload = {
-        type:       'ptm_class_teacher',
-        ptmEventId: String(doc.ptmEventId || ''),
-        noticeId:   String(doc.noticeId   || ''),
-        category:   'meeting',
-        schoolId,
-      };
-      logger.info(`[${mark}] school=${schoolId} staffIds=${recipientStaffIds.length} tokens=${tokens.length}`);
-    } else {
-      // Broadcast marks: NOTICE_CREATED / CIRCULAR_CREATED / EVENT_CREATED.
-      const spec = BROADCAST_MARKS[mark];
-      const resourceId = String(doc[spec.idKey] || doc.source_id || '');
-
-      const title = String(doc.title || spec.fTitle).slice(0, 120);
-      const body  = String(doc.body  || spec.fBody).slice(0, 240);
-
-      // Class/section-scoped → resolve to that group's students' parents so we
-      // don't over-broadcast to the whole school. Otherwise fan out by role.
-      const cs = classSectionTarget(doc.target_group);
-      if (cs) {
-        tokens = await tokensForParentsOfClassSection(schoolId, cs);
-        logger.info(`[${mark}] school=${schoolId} target="${doc.target_group}" → ${cs.sectionKey ? 'section ' + cs.sectionKey : 'class ' + cs.className} → recipients=${tokens.length}`);
-      } else {
-        const roles = rolesForTarget(doc.target_group);
-        tokens = await tokensForSchool(schoolId, roles);
-        logger.info(`[${mark}] school=${schoolId} target="${doc.target_group}" → roles=${roles.join(',')} recipients=${tokens.length}`);
-      }
-      notification = { title, body };
-      dataPayload = {
-        type: spec.type,
-        [spec.idKey]: resourceId,
-        category: String(doc.category || ''),
-        schoolId,
-      };
-    }
-
     try {
+      // ── Resolve recipients ──
+      // An explicit `userIds` list ALWAYS wins, whatever the mark's declared
+      // mode — lets a producer (e.g. a scoped story) name exact recipients on
+      // any mark. Otherwise fall back to the mark's audience mode.
+      let tokens = [];
+      const explicitIds = Array.isArray(doc.userIds)
+        ? [...new Set(doc.userIds.map((x) => String(x == null ? '' : x).trim()).filter(Boolean))]
+        : [];
+      if (explicitIds.length) {
+        tokens = await tokensForUsers(schoolId, explicitIds);
+        logger.info(`[${mark}] school=${schoolId} explicit userIds=${explicitIds.length} tokens=${tokens.length}`);
+      } else if (spec.audience === AUDIENCE.BROADCAST) {
+        // Class/section-scoped → that group's students' parents; else by role.
+        const cs = classSectionTarget(doc.target_group);
+        if (cs) {
+          tokens = await tokensForParentsOfClassSection(schoolId, cs);
+          logger.info(`[${mark}] school=${schoolId} target="${doc.target_group}" → ${cs.sectionKey ? 'section ' + cs.sectionKey : 'class ' + cs.className} → recipients=${tokens.length}`);
+        } else {
+          const roles = rolesForTarget(doc.target_group);
+          tokens = await tokensForSchool(schoolId, roles);
+          logger.info(`[${mark}] school=${schoolId} target="${doc.target_group}" → roles=${roles.join(',')} recipients=${tokens.length}`);
+        }
+      } else {
+        // USERS: explicit recipient id(s) from the mark's idField + generic userIds.
+        const ids = collectUserIds(doc, spec.idField);
+        if (!ids.length) {
+          logger.warn(`[${mark}] no recipients (idField=${spec.idField})`, { id: snap.id });
+          await markError(snap, 'no recipients');
+          return;
+        }
+        tokens = await tokensForUsers(schoolId, ids);
+        logger.info(`[${mark}] school=${schoolId} recipients=${ids.length} tokens=${tokens.length}`);
+      }
+
+      // ── Build notification + data and send ──
+      const { notification, dataPayload } = buildPayload(spec, doc, schoolId);
       const result = await sendToTokens(tokens, notification, dataPayload);
 
       await snap.ref.set({
@@ -366,11 +383,7 @@ exports.dispatchNoticeAndCircularPushes = onDocumentCreated(
       }, { merge: true });
     } catch (err) {
       logger.error(`[${mark}] dispatch failed:`, err);
-      await snap.ref.set({
-        status: 'error',
-        error: String(err.message || err).slice(0, 400),
-        processedAt: new Date().toISOString(),
-      }, { merge: true });
+      await markError(snap, String(err.message || err));
     }
   }
 );
@@ -380,6 +393,12 @@ exports.dispatchNoticeAndCircularPushes = onDocumentCreated(
 const stories = require("./storiesCleanup");
 exports.onStoryDeleted       = stories.onStoryDeleted;
 exports.sweepExpiredStories  = stories.sweepExpiredStories;
+
+// ─── Story posted → push fan-out (universal dispatcher, Phase 1) ────
+// Fires on stories/{storyId} create (covers app- AND admin-created stories)
+// and writes a STORY_POSTED pushRequests doc. See ./onStoryCreated.js.
+const storyPush = require("./onStoryCreated");
+exports.onStoryCreated = storyPush.onStoryCreated;
 
 // ─── Stories engagement counters (SEC-4, 2026-07-08) ───────────────
 // Server-authoritative viewCount / reactionCounts off the tenant-guarded

@@ -1042,7 +1042,7 @@ document.addEventListener('DOMContentLoaded', function() {
 
 :root {
     --sa-navy:   #0c1e38;
-    --sa-blue:   #0f766e;
+    --sa-blue:   #BC5A3C;
     --sa-sky:    #e6f4f1;
     --sa-green:  #15803d;
     --sa-red:    #dc2626;
@@ -1227,7 +1227,7 @@ document.addEventListener('DOMContentLoaded', function() {
 }
 .sa-input:focus, .sa-select:focus {
     border-color: var(--sa-blue);
-    box-shadow: 0 0 0 3px rgba(15,118,110,.1);
+    box-shadow: 0 0 0 3px rgba(188,90,60,.1);
     background: #fff;
 }
 .sa-input[readonly] {
@@ -1354,7 +1354,7 @@ document.addEventListener('DOMContentLoaded', function() {
 }
 .sa-btn:hover { opacity: .86; transform: translateY(-1px); }
 .sa-btn:disabled { opacity: .5; cursor: not-allowed; transform: none; }
-.sa-btn-primary { background: var(--sa-blue); color: #fff; box-shadow: 0 2px 10px rgba(15,118,110,.25); }
+.sa-btn-primary { background: var(--sa-blue); color: #fff; box-shadow: 0 2px 10px rgba(188,90,60,.25); }
 .sa-btn-ghost   { background: var(--sa-white); color: var(--sa-text); border: 1.5px solid var(--sa-border); }
 .sa-btn-ghost:hover { border-color: var(--sa-blue); color: var(--sa-blue); }
 .sa-btn-success { background: var(--sa-green); color: #fff; }
@@ -1423,7 +1423,7 @@ document.addEventListener('DOMContentLoaded', function() {
 .sa-prev-badge {
     padding: 3px 11px; border-radius: 20px;
     font-size: 12px; font-weight: 600;
-    background: rgba(15,118,110,.1); color: var(--sa-blue);
+    background: rgba(188,90,60,.1); color: var(--sa-blue);
     border: 1px solid rgba(24,71,194,.2);
 }
 

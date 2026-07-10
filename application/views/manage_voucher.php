@@ -573,7 +573,7 @@
         --ab-sky: #e0f2fe;
         --ab-green: #16a34a;
         --ab-red: #dc2626;
-        --ab-amber: #0f766e;
+        --ab-amber: #BC5A3C;
         --ab-text: #1e293b;
         --ab-muted: #64748b;
         --ab-border: #e2e8f0;

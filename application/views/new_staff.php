@@ -1380,7 +1380,7 @@ document.addEventListener('DOMContentLoaded', function() {
         container.innerHTML = '';
         _selectedSubjects.forEach(function(s){
             var chip = document.createElement('span');
-            chip.style.cssText = 'display:inline-flex;align-items:center;gap:4px;padding:4px 10px;background:var(--gold-dim,rgba(15,118,110,.1));color:var(--gold,#0f766e);border-radius:14px;font-size:12px;font-weight:500;';
+            chip.style.cssText = 'display:inline-flex;align-items:center;gap:4px;padding:4px 10px;background:var(--gold-dim,rgba(188,90,60,.1));color:var(--gold,#BC5A3C);border-radius:14px;font-size:12px;font-weight:500;';
             chip.innerHTML = s + ' <button type="button" style="background:none;border:none;color:inherit;cursor:pointer;font-weight:700;padding:0 2px;" onclick="removeSubject(\'' + s.replace(/'/g,"\\'") + '\')">&times;</button>';
             container.appendChild(chip);
         });
@@ -1416,7 +1416,7 @@ document.addEventListener('DOMContentLoaded', function() {
 :root {
     --nsa-navy:   #0c1e38;
     --nsa-green:  #0d7a5f;
-    --nsa-teal:   #0f766e;
+    --nsa-teal:   #BC5A3C;
     --nsa-sky:    #e6f4f1;
     --nsa-dark:   #15803d;
     --nsa-red:    #dc2626;
@@ -1565,7 +1565,7 @@ html, body, .content-wrapper { background: var(--nsa-bg) !important; }
 }
 .nsa-input:focus, .nsa-select:focus {
     border-color: var(--nsa-teal);
-    box-shadow: 0 0 0 3px rgba(15,118,110,.1);
+    box-shadow: 0 0 0 3px rgba(188,90,60,.1);
     background: #fff;
 }
 .nsa-input[readonly] {
@@ -1593,7 +1593,7 @@ html, body, .content-wrapper { background: var(--nsa-bg) !important; }
     display: flex; align-items: center; justify-content: space-between;
     padding: 12px 18px;
     background: linear-gradient(135deg, var(--nsa-sky) 0%, #d1fae5 100%);
-    border: 1.5px solid rgba(15,118,110,.25);
+    border: 1.5px solid rgba(188,90,60,.25);
     border-radius: 10px;
 }
 .nsa-net-label { font-size: 13px; font-weight: 600; color: var(--nsa-teal); display:flex; align-items:center; gap:8px; }
@@ -1664,7 +1664,7 @@ html, body, .content-wrapper { background: var(--nsa-bg) !important; }
 }
 .nsa-btn:hover { opacity: .86; transform: translateY(-1px); }
 .nsa-btn:disabled { opacity: .5; cursor: not-allowed; transform: none; }
-.nsa-btn-primary { background: var(--nsa-teal); color: #fff; box-shadow: 0 2px 10px rgba(15,118,110,.28); }
+.nsa-btn-primary { background: var(--nsa-teal); color: #fff; box-shadow: 0 2px 10px rgba(188,90,60,.28); }
 .nsa-btn-ghost   { background: var(--nsa-white); color: var(--nsa-text); border: 1.5px solid var(--nsa-border); }
 .nsa-btn-ghost:hover { border-color: var(--nsa-teal); color: var(--nsa-teal); }
 .nsa-btn-success { background: var(--nsa-dark); color: #fff; }
@@ -1731,8 +1731,8 @@ html, body, .content-wrapper { background: var(--nsa-bg) !important; }
 .nsa-prev-badge {
     padding: 3px 11px; border-radius: 20px;
     font-size: 12px; font-weight: 600;
-    background: rgba(15,118,110,.1); color: var(--nsa-teal);
-    border: 1px solid rgba(15,118,110,.2);
+    background: rgba(188,90,60,.1); color: var(--nsa-teal);
+    border: 1px solid rgba(188,90,60,.2);
 }
 
 .nsa-modal-body { padding: 22px 26px; }
@@ -1805,8 +1805,8 @@ html, body, .content-wrapper { background: var(--nsa-bg) !important; }
 
 /* ── ATS Prefill Banner ── */
 .nsa-ats-banner {
-    background: linear-gradient(135deg, rgba(15,118,110,.10), rgba(21,128,61,.10));
-    border: 1.5px solid rgba(15,118,110,.25);
+    background: linear-gradient(135deg, rgba(188,90,60,.10), rgba(21,128,61,.10));
+    border: 1.5px solid rgba(188,90,60,.25);
     border-radius: 10px;
     padding: 12px 18px;
     margin-bottom: 16px;
@@ -1814,7 +1814,7 @@ html, body, .content-wrapper { background: var(--nsa-bg) !important; }
     color: var(--nsa-dark, #0c1e38);
     display: flex; align-items: center; gap: 8px;
 }
-.nsa-ats-banner i { color: #0f766e; font-size: 16px; }
+.nsa-ats-banner i { color: #BC5A3C; font-size: 16px; }
 
 /* ── Staff Role Picker ── */
 .nsa-field-full { grid-column: 1 / -1; }
@@ -1827,13 +1827,13 @@ html, body, .content-wrapper { background: var(--nsa-bg) !important; }
 .nsa-role-chip {
     display: inline-flex; align-items: center; gap: 4px;
     padding: 4px 10px; border-radius: 16px; font-size: 12px; font-weight: 600;
-    background: var(--nsa-sky, #e6f4f1); color: var(--nsa-teal, #0f766e);
-    border: 1px solid rgba(15,118,110,.2); cursor: pointer; transition: all .15s;
+    background: var(--nsa-sky, #e6f4f1); color: var(--nsa-teal, #BC5A3C);
+    border: 1px solid rgba(188,90,60,.2); cursor: pointer; transition: all .15s;
 }
-.nsa-role-chip:hover { background: rgba(15,118,110,.15); }
+.nsa-role-chip:hover { background: rgba(188,90,60,.15); }
 .nsa-role-chip.nsa-role-primary {
-    background: var(--nsa-teal, #0f766e); color: #fff;
-    border-color: var(--nsa-teal, #0f766e);
+    background: var(--nsa-teal, #BC5A3C); color: #fff;
+    border-color: var(--nsa-teal, #BC5A3C);
 }
 .nsa-role-remove {
     background: none; border: none; color: inherit; font-size: 14px; font-weight: 700;
@@ -1858,7 +1858,7 @@ html, body, .content-wrapper { background: var(--nsa-bg) !important; }
 .staff-confirm-box h2 { margin:0 0 6px;font-size:1.2rem;color:var(--t1,#111); }
 .staff-confirm-box .sf-sub { color:var(--t3,#888);font-size:.9rem;margin-bottom:20px; }
 .sf-cred-card {
-    background:var(--bg3,#f5f5f5);border:1.5px solid var(--gold,#0f766e);
+    background:var(--bg3,#f5f5f5);border:1.5px solid var(--gold,#BC5A3C);
     border-radius:12px;padding:18px 20px;text-align:left;margin-bottom:20px;
 }
 .sf-cred-row { display:flex;justify-content:space-between;align-items:center;padding:6px 0;border-bottom:1px solid var(--border,#e5e7eb);font-size:.92rem; }
@@ -1869,7 +1869,7 @@ html, body, .content-wrapper { background: var(--nsa-bg) !important; }
 .staff-confirm-box .sf-note { font-size:.8rem;color:var(--t3,#888);background:var(--bg3,#f5f5f5);padding:10px 14px;border-radius:8px;margin-bottom:18px;text-align:left; }
 .staff-confirm-box .sf-actions { display:flex;gap:10px;justify-content:center; }
 .staff-confirm-box .sf-btn { padding:10px 24px;border-radius:8px;border:none;cursor:pointer;font-size:.9rem;font-weight:600;transition:all .15s; }
-.sf-btn-print { background:var(--gold,#0f766e);color:#fff; }
+.sf-btn-print { background:var(--gold,#BC5A3C);color:#fff; }
 .sf-btn-print:hover { opacity:.85; }
 .sf-btn-done { background:var(--bg3,#f5f5f5);color:var(--t1,#111);border:1px solid var(--border,#ddd); }
 .sf-btn-done:hover { background:var(--bg2,#eee); }
@@ -1893,7 +1893,7 @@ function showStaffConfirmation(res) {
                 '<div class="sf-cred-row"><span class="sf-label">Position</span><span class="sf-value">' + nsaEsc(res.position || '') + '</span></div>' +
             '</div>' +
             '<div class="sf-note">' +
-                '<i class="fa fa-info-circle" style="margin-right:5px;color:var(--gold,#0f766e);"></i>' +
+                '<i class="fa fa-info-circle" style="margin-right:5px;color:var(--gold,#BC5A3C);"></i>' +
                 'Staff can login using <strong>Staff ID</strong> and <strong>Password</strong> in the ZenXii Teacher App.' +
             '</div>' +
             '<div class="sf-actions">' +

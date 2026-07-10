@@ -40,7 +40,7 @@
 .sum-chip.ok{background:#dcfce7;color:#166534;} .sum-chip.warn{background:#fef3c7;color:#92400e;}
 .sum-chip.err{background:#fee2e2;color:#991b1b;} .sum-chip.tot{background:var(--bg3,#f3f4f6);color:var(--t2,#374151);}
 .imp-btn { padding:9px 18px; border:none; border-radius:7px; cursor:pointer; font-size:.9rem; font-weight:600; text-decoration:none; display:inline-flex; align-items:center; gap:7px; }
-.imp-btn.primary { background:var(--gold,#0f766e); color:#fff; }
+.imp-btn.primary { background:var(--gold,#BC5A3C); color:#fff; }
 .imp-btn.primary:disabled { opacity:.5; cursor:not-allowed; }
 .imp-btn.ghost { background:var(--bg3,#f3f4f6); color:var(--t2,#374151); border:1px solid var(--border,#e5e7eb); }
 .imp-btn.green { background:#16a34a; color:#fff; }
@@ -56,7 +56,7 @@
 
     <div class="imp-hdr">
         <div>
-            <h1><i class="fa fa-table" style="color:var(--gold,#0f766e);margin-right:8px;"></i>Map &amp; Preview Staff Import</h1>
+            <h1><i class="fa fa-table" style="color:var(--gold,#BC5A3C);margin-right:8px;"></i>Map &amp; Preview Staff Import</h1>
             <div class="sub">File: <b><?= htmlspecialchars($fileName, ENT_QUOTES, 'UTF-8') ?></b>
                 — <?= count($rows) ?> data row<?= count($rows) === 1 ? '' : 's' ?> detected<?php if (!empty($capped)): ?>
                 <span style="color:#b45309;">(showing first <?= (int) $capLimit ?>; split larger files)</span><?php endif; ?>

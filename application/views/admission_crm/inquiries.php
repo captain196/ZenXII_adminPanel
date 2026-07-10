@@ -77,7 +77,7 @@ html { font-size:16px !important; }
 .ac-badge-new { background:rgba(22,163,74,.12); color:#16a34a; }
 .ac-badge-contacted { background:rgba(37,99,235,.12); color:#2563eb; }
 .ac-badge-follow { background:rgba(217,119,6,.12); color:#d97706; }
-.ac-badge-converted { background:rgba(15,118,110,.12); color:#0f766e; }
+.ac-badge-converted { background:rgba(188,90,60,.12); color:#BC5A3C; }
 .ac-badge-lost { background:rgba(220,38,38,.12); color:#dc2626; }
 
 /* ── Action Buttons ── */

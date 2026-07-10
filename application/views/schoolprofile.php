@@ -549,7 +549,7 @@ if (!is_array($activities)) $activities = [];
 }
 
 .sp-btn-primary:hover {
-    background: #0f766e;
+    background: #BC5A3C;
 }
 
 .sp-btn-ghost {

@@ -35,9 +35,9 @@
     --mm-purple-dim: rgba(124,58,237,.10);
     --mm-rose: #e05c6f;
     --mm-rose-dim: rgba(224,92,111,.10);
-    --mm-teal: #0f766e;
-    --mm-teal-dim: rgba(15,118,110,.15);
-    --mm-teal-bright: #14b8a6;
+    --mm-teal: #BC5A3C;
+    --mm-teal-dim: rgba(188,90,60,.15);
+    --mm-teal-bright: #D4725C;
 }
 
 .mm-wrap { padding: 24px 28px 40px; font-family: var(--font-b, 'Plus Jakarta Sans', sans-serif); }
@@ -327,7 +327,7 @@
 .mm-bubble-row.teacher .mm-bubble {
     background: var(--mm-teal-dim); color: var(--mm-t1);
     border-bottom-right-radius: 4px;
-    border: 1px solid rgba(15,118,110,.2);
+    border: 1px solid rgba(188,90,60,.2);
 }
 .mm-bubble-row.parent .mm-bubble {
     background: var(--mm-bg2); color: var(--mm-t1);
@@ -397,7 +397,7 @@
     font-size: 13px; color: var(--mm-t1); line-height: 1.5;
 }
 .mm-search-text mark {
-    background: rgba(15,118,110,.3); color: var(--mm-teal-bright);
+    background: rgba(188,90,60,.3); color: var(--mm-teal-bright);
     padding: 1px 3px; border-radius: 3px;
 }
 
@@ -930,13 +930,13 @@ MM.renderDashVolumeChart = function(data) {
             datasets: [{
                 label: 'Messages',
                 data: values,
-                borderColor: '#14b8a6',
+                borderColor: '#D4725C',
                 backgroundColor: 'rgba(20,184,166,.08)',
                 borderWidth: 2,
                 fill: true,
                 tension: 0.4,
                 pointRadius: 3,
-                pointBackgroundColor: '#14b8a6',
+                pointBackgroundColor: '#D4725C',
                 pointBorderColor: '#fff',
                 pointBorderWidth: 1
             }]
@@ -952,18 +952,18 @@ MM.renderDashVolumeChart = function(data) {
                     bodyFont: { size: 12 },
                     padding: 10,
                     cornerRadius: 8,
-                    borderColor: 'rgba(15,118,110,.3)',
+                    borderColor: 'rgba(188,90,60,.3)',
                     borderWidth: 1
                 }
             },
             scales: {
                 x: {
-                    grid: { color: 'rgba(15,118,110,.06)' },
+                    grid: { color: 'rgba(188,90,60,.06)' },
                     ticks: { color: '#5a9e98', font: { size: 10 }, maxTicksLimit: 10 }
                 },
                 y: {
                     beginAtZero: true,
-                    grid: { color: 'rgba(15,118,110,.06)' },
+                    grid: { color: 'rgba(188,90,60,.06)' },
                     ticks: { color: '#5a9e98', font: { size: 10 } }
                 }
             }
@@ -1365,14 +1365,14 @@ MM.renderDailyChart = function(data) {
             datasets: [{
                 label: 'Messages',
                 data: values,
-                borderColor: '#14b8a6',
+                borderColor: '#D4725C',
                 backgroundColor: 'rgba(20,184,166,.08)',
                 borderWidth: 2,
                 fill: true,
                 tension: 0.4,
                 pointRadius: 2,
                 pointHoverRadius: 5,
-                pointBackgroundColor: '#14b8a6'
+                pointBackgroundColor: '#D4725C'
             }]
         },
         options: {
@@ -1383,12 +1383,12 @@ MM.renderDailyChart = function(data) {
                 tooltip: {
                     backgroundColor: 'rgba(7,15,28,.95)',
                     padding: 10, cornerRadius: 8,
-                    borderColor: 'rgba(15,118,110,.3)', borderWidth: 1
+                    borderColor: 'rgba(188,90,60,.3)', borderWidth: 1
                 }
             },
             scales: {
-                x: { grid: { color: 'rgba(15,118,110,.06)' }, ticks: { color: '#5a9e98', font: { size: 10 }, maxTicksLimit: 10 } },
-                y: { beginAtZero: true, grid: { color: 'rgba(15,118,110,.06)' }, ticks: { color: '#5a9e98', font: { size: 10 } } }
+                x: { grid: { color: 'rgba(188,90,60,.06)' }, ticks: { color: '#5a9e98', font: { size: 10 }, maxTicksLimit: 10 } },
+                y: { beginAtZero: true, grid: { color: 'rgba(188,90,60,.06)' }, ticks: { color: '#5a9e98', font: { size: 10 } } }
             }
         }
     });
@@ -1432,12 +1432,12 @@ MM.renderHourlyChart = function(data) {
                 tooltip: {
                     backgroundColor: 'rgba(7,15,28,.95)',
                     padding: 10, cornerRadius: 8,
-                    borderColor: 'rgba(15,118,110,.3)', borderWidth: 1
+                    borderColor: 'rgba(188,90,60,.3)', borderWidth: 1
                 }
             },
             scales: {
                 x: { grid: { display: false }, ticks: { color: '#5a9e98', font: { size: 9 }, maxRotation: 45 } },
-                y: { beginAtZero: true, grid: { color: 'rgba(15,118,110,.06)' }, ticks: { color: '#5a9e98', font: { size: 10 } } }
+                y: { beginAtZero: true, grid: { color: 'rgba(188,90,60,.06)' }, ticks: { color: '#5a9e98', font: { size: 10 } } }
             }
         }
     });
@@ -1456,7 +1456,7 @@ MM.renderClassPie = function(data) {
     var labels = data.map(function(d) { return d.class_name || d.label || 'Unknown'; });
     var values = data.map(function(d) { return d.count || d.value || 0; });
     var colors = [
-        '#14b8a6', '#2563eb', '#d97706', '#dc2626', '#7c3aed',
+        '#D4725C', '#2563eb', '#d97706', '#dc2626', '#7c3aed',
         '#16a34a', '#e05c6f', '#0ea5e9', '#f59e0b', '#8b5cf6',
         '#06b6d4', '#a855f7', '#ec4899', '#84cc16', '#f97316'
     ];
@@ -1483,7 +1483,7 @@ MM.renderClassPie = function(data) {
                 tooltip: {
                     backgroundColor: 'rgba(7,15,28,.95)',
                     padding: 10, cornerRadius: 8,
-                    borderColor: 'rgba(15,118,110,.3)', borderWidth: 1
+                    borderColor: 'rgba(188,90,60,.3)', borderWidth: 1
                 }
             },
             cutout: '55%'

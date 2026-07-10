@@ -494,7 +494,7 @@ document.getElementById('sfUserId').addEventListener('keydown', function(e) {
 :root {
     --sfr-navy:    var(--bg4, #1a2332);
     --sfr-teal:    var(--gold, #0d9488);
-    --sfr-teal2:   var(--gold2, #0f766e);
+    --sfr-teal2:   var(--gold2, #BC5A3C);
     --sfr-sky:     var(--gold-dim, #f0fdfa);
     --sfr-green:   #16a34a;
     --sfr-red:     #dc2626;

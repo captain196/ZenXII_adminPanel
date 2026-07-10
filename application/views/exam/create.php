@@ -1812,7 +1812,7 @@ html { font-size: 16px !important; }
 .ex-btn-del:hover { opacity:.85; }
 .ex-toast-wrap { position:fixed; bottom:24px; right:24px; display:flex; flex-direction:column; gap:10px; z-index:9999; }
 .ex-toast { padding:11px 18px; border-radius:8px; font-size:.86rem; font-weight:500; color:#fff; display:flex; align-items:center; gap:8px; box-shadow:0 4px 18px rgba(0,0,0,.22); animation:ex-slide-in .3s ease; min-width:240px; }
-.ex-toast-success { background:#0f766e; }
+.ex-toast-success { background:#BC5A3C; }
 .ex-toast-error   { background:#dc2626; }
 .ex-toast-warning { background:#d97706; }
 .ex-toast-info    { background:#2563eb; }

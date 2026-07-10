@@ -76,7 +76,7 @@
     ?>
     <div class="nsa-stat-strip">
         <div class="nsa-stat-card">
-            <div class="nsa-stat-icon" style="background:rgba(15,118,110,.12);color:var(--nsa-teal);">
+            <div class="nsa-stat-icon" style="background:rgba(188,90,60,.12);color:var(--nsa-teal);">
                 <i class="fa fa-users"></i>
             </div>
             <div>
@@ -303,7 +303,7 @@
                                 if (is_array($teachSubs) && !empty($teachSubs)):
                                     foreach ($teachSubs as $ts):
                             ?>
-                                <span style="display:inline-block;padding:1px 6px;margin:1px;border-radius:4px;background:rgba(15,118,110,.08);color:var(--nsa-teal);font-size:10px;font-weight:600"><?= htmlspecialchars($ts) ?></span>
+                                <span style="display:inline-block;padding:1px 6px;margin:1px;border-radius:4px;background:rgba(188,90,60,.08);color:var(--nsa-teal);font-size:10px;font-weight:600"><?= htmlspecialchars($ts) ?></span>
                             <?php endforeach; else: ?>
                                 <span style="color:var(--nsa-muted);font-size:11px">—</span>
                             <?php endif; ?>
@@ -810,7 +810,7 @@ function resetAllFilters() {
 
 :root {
     --nsa-navy:   #0c1e38;
-    --nsa-teal:   #0f766e;
+    --nsa-teal:   #BC5A3C;
     --nsa-sky:    #e6f4f1;
     --nsa-green:  #0d7a5f;
     --nsa-dark:   #15803d;
@@ -944,7 +944,7 @@ function resetAllFilters() {
 }
 .nsa-search-input:focus {
     border-color: var(--nsa-teal);
-    box-shadow: 0 0 0 3px rgba(15,118,110,.1);
+    box-shadow: 0 0 0 3px rgba(188,90,60,.1);
 }
 .nsa-search-clear {
     position: absolute; right: 8px;
@@ -1047,7 +1047,7 @@ function resetAllFilters() {
     border-radius: 20px;
     font-size: 12px; font-weight: 700;
     letter-spacing: .3px;
-    border: 1px solid rgba(15,118,110,.2);
+    border: 1px solid rgba(188,90,60,.2);
 }
 
 /* ── Name cell ── */
@@ -1157,7 +1157,7 @@ function resetAllFilters() {
 }
 .nsa-btn:hover { opacity: .86; transform: translateY(-1px); }
 .nsa-btn-sm { padding: 6px 14px; font-size: 12.5px; }
-.nsa-btn-primary { background: var(--nsa-teal); color: #fff; box-shadow: 0 2px 10px rgba(15,118,110,.28); }
+.nsa-btn-primary { background: var(--nsa-teal); color: #fff; box-shadow: 0 2px 10px rgba(188,90,60,.28); }
 .nsa-btn-amber   { background: #d97706; color: #fff; box-shadow: 0 2px 10px rgba(217,119,6,.22); }
 .nsa-btn-ghost   { background: var(--nsa-white); color: var(--nsa-text); border: 1.5px solid var(--nsa-border); }
 .nsa-btn-ghost:hover { border-color: var(--nsa-teal); color: var(--nsa-teal); opacity: 1; }

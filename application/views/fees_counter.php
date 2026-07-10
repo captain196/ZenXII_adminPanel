@@ -1318,7 +1318,7 @@ $accounts          = $accounts          ?? [];
             // it's a one-time annual charge (not a 13th month).
             var nameLabel = isYearly
                 ? 'Annual Fee'
-                  + '<div style="font-size:10px;color:#0f766e;font-weight:500;margin-top:1px">(One-time)</div>'
+                  + '<div style="font-size:10px;color:#BC5A3C;font-weight:500;margin-top:1px">(One-time)</div>'
                 : m;
             tile.innerHTML =
                 '<div class="fc-month-name">' + nameLabel + '</div>' +
@@ -1534,9 +1534,9 @@ $accounts          = $accounts          ?? [];
                             + '<p style="font-size:13px;color:var(--fc-muted,#64748b);margin:0 0 16px;max-width:360px;display:inline-block">'
                             + (d.message || 'Please set up fee titles and chart for this class/section before collecting fees.') + '</p>'
                             + '<div style="display:flex;gap:10px;justify-content:center;flex-wrap:wrap">'
-                            + '<a href="' + SITE_URL + '/fee_management/categories" style="display:inline-flex;align-items:center;gap:6px;padding:9px 18px;border-radius:8px;background:var(--fc-teal,#0f766e);color:#fff;text-decoration:none;font-size:13px;font-weight:600">'
+                            + '<a href="' + SITE_URL + '/fee_management/categories" style="display:inline-flex;align-items:center;gap:6px;padding:9px 18px;border-radius:8px;background:var(--fc-teal,#BC5A3C);color:#fff;text-decoration:none;font-size:13px;font-weight:600">'
                             + '<i class="fa fa-list"></i> Fee Categories</a>'
-                            + '<a href="' + SITE_URL + '/fees/fees_chart" style="display:inline-flex;align-items:center;gap:6px;padding:9px 18px;border-radius:8px;border:1.5px solid var(--fc-teal,#0f766e);color:var(--fc-teal,#0f766e);background:transparent;text-decoration:none;font-size:13px;font-weight:600">'
+                            + '<a href="' + SITE_URL + '/fees/fees_chart" style="display:inline-flex;align-items:center;gap:6px;padding:9px 18px;border-radius:8px;border:1.5px solid var(--fc-teal,#BC5A3C);color:var(--fc-teal,#BC5A3C);background:transparent;text-decoration:none;font-size:13px;font-weight:600">'
                             + '<i class="fa fa-table"></i> Fee Chart</a>'
                             + '</div></div>';
                         document.getElementById('paymentCard').style.display = 'none';
@@ -2770,7 +2770,7 @@ $accounts          = $accounts          ?? [];
     }
 
     .fc-card-head i {
-        color: #0f766e;
+        color: #BC5A3C;
         flex-shrink: 0;
         font-size: 14px;
     }
@@ -2857,8 +2857,8 @@ $accounts          = $accounts          ?? [];
 
     .fc-input:focus,
     .fc-select:focus {
-        border-color: #0f766e;
-        box-shadow: 0 0 0 3px rgba(15, 118, 110, .14);
+        border-color: #BC5A3C;
+        box-shadow: 0 0 0 3px rgba(188,90,60, .14);
         background: #fff;
     }
 
@@ -2877,7 +2877,7 @@ $accounts          = $accounts          ?? [];
     }
 
     .fc-input-primary {
-        border-color: #0f766e;
+        border-color: #BC5A3C;
         font-weight: 600;
         background: #f0fdfa;
     }
@@ -3024,12 +3024,12 @@ $accounts          = $accounts          ?? [];
     }
     .fc-month-tile.yearly:hover:not(.paid) {
         background: #ccfbf1;
-        border-color: #14b8a6;
+        border-color: #D4725C;
     }
     .fc-month-tile.yearly.selected {
         border-style: solid;
-        border-color: #0f766e;
-        box-shadow: 0 0 0 2px rgba(15, 118, 110, .25);
+        border-color: #BC5A3C;
+        box-shadow: 0 0 0 2px rgba(188,90,60, .25);
     }
 
     /* Yearly — teal accent so the cashier knows it's the once-per-session
@@ -3042,12 +3042,12 @@ $accounts          = $accounts          ?? [];
     }
     .fc-month-tile.yearly:hover:not(.paid) {
         background: #ccfbf1;
-        border-color: #14b8a6;
+        border-color: #D4725C;
     }
     .fc-month-tile.yearly.selected {
         border-style: solid;
-        border-color: #0f766e;
-        box-shadow: 0 0 0 2px rgba(15, 118, 110, .25);
+        border-color: #BC5A3C;
+        box-shadow: 0 0 0 2px rgba(188,90,60, .25);
     }
 
     .fc-month-name {
@@ -3331,11 +3331,11 @@ $accounts          = $accounts          ?? [];
         font-size: 10px; font-weight: 700; padding: 2px 7px; border-radius: 4px;
         text-transform: uppercase; letter-spacing: .5px;
     }
-    .fc-alloc-item .alloc-tag.cleared-tag { background: rgba(15,118,110,.1); color: var(--fc-teal); }
+    .fc-alloc-item .alloc-tag.cleared-tag { background: rgba(188,90,60,.1); color: var(--fc-teal); }
     .fc-alloc-item .alloc-tag.partial-tag { background: rgba(217,119,6,.1); color: #d97706; }
     .fc-alloc-advance {
         margin-top: 8px; padding: 8px 12px; border-radius: 6px;
-        background: rgba(15,118,110,.08); border: 1px solid rgba(15,118,110,.2);
+        background: rgba(188,90,60,.08); border: 1px solid rgba(188,90,60,.2);
         font-size: 12.5px; color: var(--fc-teal); font-weight: 600;
     }
 
@@ -3384,9 +3384,9 @@ $accounts          = $accounts          ?? [];
     }
 
     .fc-btn-primary {
-        background: linear-gradient(135deg, #0f766e 0%, #0d5a55 100%);
+        background: linear-gradient(135deg, #BC5A3C 0%, #0d5a55 100%);
         color: #fff;
-        box-shadow: 0 2px 8px rgba(15, 118, 110, .25);
+        box-shadow: 0 2px 8px rgba(188,90,60, .25);
     }
 
     .fc-btn-amber {
@@ -3402,8 +3402,8 @@ $accounts          = $accounts          ?? [];
     }
 
     .fc-btn-ghost:hover {
-        border-color: #0f766e;
-        color: #0f766e;
+        border-color: #BC5A3C;
+        color: #BC5A3C;
         background: #f0fdfa;
         opacity: 1;
     }
@@ -3414,16 +3414,16 @@ $accounts          = $accounts          ?? [];
     }
 
     .fc-btn-submit {
-        background: linear-gradient(135deg, #0f766e 0%, #0d5a55 100%);
+        background: linear-gradient(135deg, #BC5A3C 0%, #0d5a55 100%);
         color: #fff;
-        box-shadow: 0 4px 12px rgba(15, 118, 110, .3);
+        box-shadow: 0 4px 12px rgba(188,90,60, .3);
         font-size: 14px;
         padding: 10px 24px;
     }
 
     .fc-btn-submit:hover {
         opacity: .94;
-        box-shadow: 0 6px 16px rgba(15, 118, 110, .4);
+        box-shadow: 0 6px 16px rgba(188,90,60, .4);
     }
 
     /* Alert */
@@ -3499,7 +3499,7 @@ $accounts          = $accounts          ?? [];
         display: flex;
         align-items: center;
         gap: 9px;
-        background: linear-gradient(135deg, rgba(255,212,121,.12) 0%, rgba(15,118,110,.10) 100%);
+        background: linear-gradient(135deg, rgba(255,212,121,.12) 0%, rgba(188,90,60,.10) 100%);
     }
     .fc-summary-head i { color: #ffd479; }
 
@@ -3713,7 +3713,7 @@ $accounts          = $accounts          ?? [];
     .fc-grant-link {
         background: none;
         border: none;
-        color: #0f766e;
+        color: #BC5A3C;
         font-weight: 700;
         font-size: 12.5px;
         cursor: pointer;
@@ -3811,8 +3811,8 @@ $accounts          = $accounts          ?? [];
     }
     .grant-input:focus {
         outline: none;
-        border-color: #0f766e;
-        box-shadow: 0 0 0 3px rgba(15,118,110,.14);
+        border-color: #BC5A3C;
+        box-shadow: 0 0 0 3px rgba(188,90,60,.14);
     }
     .grant-hint {
         font-size: 11px;
@@ -3897,7 +3897,7 @@ $accounts          = $accounts          ?? [];
     .fc-grant-link {
         background: none;
         border: none;
-        color: #0f766e;
+        color: #BC5A3C;
         font-weight: 700;
         font-size: 12.5px;
         cursor: pointer;
@@ -3995,8 +3995,8 @@ $accounts          = $accounts          ?? [];
     }
     .grant-input:focus {
         outline: none;
-        border-color: #0f766e;
-        box-shadow: 0 0 0 3px rgba(15,118,110,.14);
+        border-color: #BC5A3C;
+        box-shadow: 0 0 0 3px rgba(188,90,60,.14);
     }
     .grant-hint {
         font-size: 11px;
@@ -4138,18 +4138,18 @@ $accounts          = $accounts          ?? [];
         padding: 11px 22px;
         border: none;
         border-radius: 10px;
-        background: linear-gradient(135deg, #0f766e 0%, #0d5a55 100%);
+        background: linear-gradient(135deg, #BC5A3C 0%, #0d5a55 100%);
         color: #fff;
         font-family: 'DM Sans', sans-serif;
         font-size: 13.5px;
         font-weight: 700;
         cursor: pointer;
-        box-shadow: 0 4px 12px rgba(15, 118, 110, .35);
+        box-shadow: 0 4px 12px rgba(188,90,60, .35);
         transition: transform .12s ease, box-shadow .15s ease;
     }
     .qpb-btn:hover {
         transform: translateY(-1px);
-        box-shadow: 0 6px 16px rgba(15, 118, 110, .45);
+        box-shadow: 0 6px 16px rgba(188,90,60, .45);
     }
     .qpb-btn:active { transform: translateY(0); }
     .qpb-btn:disabled {
@@ -4300,18 +4300,18 @@ $accounts          = $accounts          ?? [];
         padding: 11px 22px;
         border: none;
         border-radius: 10px;
-        background: linear-gradient(135deg, #0f766e 0%, #0d5a55 100%);
+        background: linear-gradient(135deg, #BC5A3C 0%, #0d5a55 100%);
         color: #fff;
         font-family: 'DM Sans', sans-serif;
         font-size: 13.5px;
         font-weight: 700;
         cursor: pointer;
-        box-shadow: 0 4px 12px rgba(15, 118, 110, .35);
+        box-shadow: 0 4px 12px rgba(188,90,60, .35);
         transition: transform .12s ease, box-shadow .15s ease;
     }
     .qpb-btn:hover {
         transform: translateY(-1px);
-        box-shadow: 0 6px 16px rgba(15, 118, 110, .45);
+        box-shadow: 0 6px 16px rgba(188,90,60, .45);
     }
     .qpb-btn:active { transform: translateY(0); }
     .qpb-btn:disabled {
@@ -4444,7 +4444,7 @@ $accounts          = $accounts          ?? [];
         color: #0f1f3a;
     }
     .pay-section-head i {
-        color: #0f766e;
+        color: #BC5A3C;
         font-size: 13px;
     }
     .pay-section-head .fc-req {
@@ -4470,8 +4470,8 @@ $accounts          = $accounts          ?? [];
     }
     .pay-mode-select:focus {
         outline: none;
-        border-color: #0f766e;
-        box-shadow: 0 0 0 3px rgba(15,118,110,.12);
+        border-color: #BC5A3C;
+        box-shadow: 0 0 0 3px rgba(188,90,60,.12);
     }
     .pay-mode-select:invalid {
         color: #94a3b8;
@@ -4499,13 +4499,13 @@ $accounts          = $accounts          ?? [];
     }
     .pay-chip i { font-size: 12px; }
     .pay-chip-primary {
-        background: #0f766e;
+        background: #BC5A3C;
         color: #fff;
     }
     .pay-chip-primary:hover {
         background: #115e59;
         transform: translateY(-1px);
-        box-shadow: 0 4px 10px rgba(15,118,110,.25);
+        box-shadow: 0 4px 10px rgba(188,90,60,.25);
     }
     .pay-chip-amber {
         background: #fff;
@@ -4551,20 +4551,20 @@ $accounts          = $accounts          ?? [];
     }
     .pay-input:focus {
         outline: none;
-        border-color: #0f766e;
-        box-shadow: 0 0 0 3px rgba(15,118,110,.12);
+        border-color: #BC5A3C;
+        box-shadow: 0 0 0 3px rgba(188,90,60,.12);
     }
     .pay-input::placeholder { color: #cbd5e1; font-weight: 400; }
     .pay-input-primary {
         font-weight: 700;
         font-size: 16px;
         color: #0f1f3a;
-        border-color: #0f766e;
+        border-color: #BC5A3C;
         background: #f0fdfa;
     }
     .pay-input-primary:focus {
         background: #fff;
-        box-shadow: 0 0 0 3px rgba(15,118,110,.18);
+        box-shadow: 0 0 0 3px rgba(188,90,60,.18);
     }
 
     /* ── Calculation strip ──────────────────────────────────────────── */
@@ -4621,8 +4621,8 @@ $accounts          = $accounts          ?? [];
     /* ── Allocation preview ─────────────────────────────────────────── */
     .pay-alloc {
         background: #f0fdfa;
-        border: 1px solid #99f6e4;
-        border-left: 4px solid #0f766e;
+        border: 1px solid #EBC3B4;
+        border-left: 4px solid #BC5A3C;
         border-radius: 10px;
         padding: 14px 16px;
     }
@@ -4633,7 +4633,7 @@ $accounts          = $accounts          ?? [];
         margin-bottom: 10px;
         font-size: 12.5px;
         font-weight: 700;
-        color: #0f766e;
+        color: #BC5A3C;
         text-transform: uppercase;
         letter-spacing: .4px;
     }
@@ -4641,7 +4641,7 @@ $accounts          = $accounts          ?? [];
     .pay-alloc-hint {
         font-size: 10.5px;
         font-weight: 500;
-        color: #14b8a6;
+        color: #D4725C;
         text-transform: none;
         letter-spacing: 0;
         margin-left: 2px;
@@ -4679,14 +4679,14 @@ $accounts          = $accounts          ?? [];
         border-color: #94a3b8;
     }
     .pay-btn-submit {
-        background: linear-gradient(135deg, #0f766e 0%, #0d5a55 100%);
+        background: linear-gradient(135deg, #BC5A3C 0%, #0d5a55 100%);
         color: #fff;
-        box-shadow: 0 4px 12px rgba(15,118,110,.25);
+        box-shadow: 0 4px 12px rgba(188,90,60,.25);
     }
     .pay-btn-submit:hover {
         background: linear-gradient(135deg, #115e59 0%, #0a4744 100%);
         transform: translateY(-1px);
-        box-shadow: 0 6px 16px rgba(15,118,110,.35);
+        box-shadow: 0 6px 16px rgba(188,90,60,.35);
     }
     .pay-btn-submit:active { transform: translateY(0); }
     .pay-btn-submit:disabled {
@@ -4804,7 +4804,7 @@ $accounts          = $accounts          ?? [];
         color: #0f1f3a;
     }
     .pay-section-head i {
-        color: #0f766e;
+        color: #BC5A3C;
         font-size: 13px;
     }
     .pay-section-head .fc-req {
@@ -4830,8 +4830,8 @@ $accounts          = $accounts          ?? [];
     }
     .pay-mode-select:focus {
         outline: none;
-        border-color: #0f766e;
-        box-shadow: 0 0 0 3px rgba(15,118,110,.12);
+        border-color: #BC5A3C;
+        box-shadow: 0 0 0 3px rgba(188,90,60,.12);
     }
     .pay-mode-select:invalid {
         color: #94a3b8;
@@ -4859,13 +4859,13 @@ $accounts          = $accounts          ?? [];
     }
     .pay-chip i { font-size: 12px; }
     .pay-chip-primary {
-        background: #0f766e;
+        background: #BC5A3C;
         color: #fff;
     }
     .pay-chip-primary:hover {
         background: #115e59;
         transform: translateY(-1px);
-        box-shadow: 0 4px 10px rgba(15,118,110,.25);
+        box-shadow: 0 4px 10px rgba(188,90,60,.25);
     }
     .pay-chip-amber {
         background: #fff;
@@ -4911,20 +4911,20 @@ $accounts          = $accounts          ?? [];
     }
     .pay-input:focus {
         outline: none;
-        border-color: #0f766e;
-        box-shadow: 0 0 0 3px rgba(15,118,110,.12);
+        border-color: #BC5A3C;
+        box-shadow: 0 0 0 3px rgba(188,90,60,.12);
     }
     .pay-input::placeholder { color: #cbd5e1; font-weight: 400; }
     .pay-input-primary {
         font-weight: 700;
         font-size: 16px;
         color: #0f1f3a;
-        border-color: #0f766e;
+        border-color: #BC5A3C;
         background: #f0fdfa;
     }
     .pay-input-primary:focus {
         background: #fff;
-        box-shadow: 0 0 0 3px rgba(15,118,110,.18);
+        box-shadow: 0 0 0 3px rgba(188,90,60,.18);
     }
 
     /* ── Calculation strip ──────────────────────────────────────────── */
@@ -4980,8 +4980,8 @@ $accounts          = $accounts          ?? [];
     /* ── Allocation preview ─────────────────────────────────────────── */
     .pay-alloc {
         background: #f0fdfa;
-        border: 1px solid #99f6e4;
-        border-left: 4px solid #0f766e;
+        border: 1px solid #EBC3B4;
+        border-left: 4px solid #BC5A3C;
         border-radius: 10px;
         padding: 14px 16px;
     }
@@ -4992,7 +4992,7 @@ $accounts          = $accounts          ?? [];
         margin-bottom: 10px;
         font-size: 12.5px;
         font-weight: 700;
-        color: #0f766e;
+        color: #BC5A3C;
         text-transform: uppercase;
         letter-spacing: .4px;
     }
@@ -5000,7 +5000,7 @@ $accounts          = $accounts          ?? [];
     .pay-alloc-hint {
         font-size: 10.5px;
         font-weight: 500;
-        color: #14b8a6;
+        color: #D4725C;
         text-transform: none;
         letter-spacing: 0;
         margin-left: 2px;
@@ -5038,14 +5038,14 @@ $accounts          = $accounts          ?? [];
         border-color: #94a3b8;
     }
     .pay-btn-submit {
-        background: linear-gradient(135deg, #0f766e 0%, #0d5a55 100%);
+        background: linear-gradient(135deg, #BC5A3C 0%, #0d5a55 100%);
         color: #fff;
-        box-shadow: 0 4px 12px rgba(15,118,110,.25);
+        box-shadow: 0 4px 12px rgba(188,90,60,.25);
     }
     .pay-btn-submit:hover {
         background: linear-gradient(135deg, #115e59 0%, #0a4744 100%);
         transform: translateY(-1px);
-        box-shadow: 0 6px 16px rgba(15,118,110,.35);
+        box-shadow: 0 6px 16px rgba(188,90,60,.35);
     }
     .pay-btn-submit:active { transform: translateY(0); }
     .pay-btn-submit:disabled {
@@ -5186,8 +5186,8 @@ $accounts          = $accounts          ?? [];
     }
     .hist-kpi-input { border-left-color: #2563eb; }
     .hist-kpi-input .hist-kpi-val { color: #1d4ed8; }
-    .hist-kpi-alloc { border-left-color: #0f766e; }
-    .hist-kpi-alloc .hist-kpi-val { color: #0f766e; }
+    .hist-kpi-alloc { border-left-color: #BC5A3C; }
+    .hist-kpi-alloc .hist-kpi-val { color: #BC5A3C; }
     .hist-kpi-rem   { border-left-color: #dc2626; }
     .hist-kpi-rem   .hist-kpi-val { color: #dc2626; }
 
@@ -5250,7 +5250,7 @@ $accounts          = $accounts          ?? [];
         margin-top: 2px;
         line-height: 1.2;
     }
-    .hist-num-tag.carry-tag { color: #0f766e; }
+    .hist-num-tag.carry-tag { color: #BC5A3C; }
 
     /* ── PILLS ──────────────────────────────────────────────────────── */
     .hist-rcpt {
@@ -5315,7 +5315,7 @@ $accounts          = $accounts          ?? [];
     }
     .hist-month-chip.yearly {
         background: #ccfbf1;
-        color: #0f766e;
+        color: #BC5A3C;
     }
 
     /* ── TOTAL ROW ──────────────────────────────────────────────────── */

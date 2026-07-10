@@ -82,13 +82,13 @@
 .ta-row .ta-label{color:var(--t3);font-weight:600;font-size:12px}
 .ta-row .ta-val{color:var(--t1);font-family:var(--font-m);font-size:12px;text-align:right;max-width:60%;word-break:break-all}
 .ta-badge{font-size:10px;font-weight:700;padding:2px 8px;border-radius:4px;text-transform:uppercase}
-.ta-badge.success{background:rgba(15,118,110,.1);color:#0f766e}
+.ta-badge.success{background:rgba(188,90,60,.1);color:#BC5A3C}
 .ta-badge.processing{background:rgba(217,119,6,.1);color:#d97706}
 .ta-badge.error{background:rgba(220,38,38,.1);color:#dc2626}
 .ta-badge.pending{background:rgba(59,130,246,.1);color:#2563eb}
 .ta-steps{display:flex;flex-wrap:wrap;gap:4px;padding:8px 0}
 .ta-step{font-size:10px;padding:3px 8px;border-radius:4px;background:var(--bg);color:var(--t2);font-weight:600}
-.ta-step:last-child{background:rgba(15,118,110,.1);color:#0f766e}
+.ta-step:last-child{background:rgba(188,90,60,.1);color:#BC5A3C}
 .ta-issue{display:flex;align-items:center;justify-content:space-between;padding:10px 14px;border:1px solid var(--border);border-radius:8px;margin-bottom:8px;font-size:13px;background:var(--bg2)}
 .ta-issue .ta-issue-info{flex:1}
 .ta-issue .ta-issue-age{font-size:11px;color:var(--t3);margin-top:2px}
@@ -290,7 +290,7 @@ function renderAuditResults(r,el){
     if(al.advance_credit>0) h+='<div class="ta-row"><span class="ta-label">Advance</span><span class="ta-val" style="color:#d97706">Rs '+fmt(al.advance_credit)+'</span></div>';
     h+='<table style="width:100%;border-collapse:collapse;margin-top:10px;font-size:12px"><thead><tr style="border-bottom:2px solid var(--border)"><th style="text-align:left;padding:5px 8px;font-size:11px;color:var(--t3)">Period</th><th style="text-align:left;padding:5px 8px;font-size:11px;color:var(--t3)">Fee Head</th><th style="text-align:right;padding:5px 8px;font-size:11px;color:var(--t3)">Amount</th><th style="text-align:left;padding:5px 8px;font-size:11px;color:var(--t3)">Status</th></tr></thead><tbody>';
     al.allocations.forEach(function(a){
-      var sc=a.new_status==='paid'?'color:#0f766e':'color:#d97706';
+      var sc=a.new_status==='paid'?'color:#BC5A3C':'color:#d97706';
       h+='<tr style="border-bottom:1px solid var(--border)"><td style="padding:5px 8px">'+esc(a.period)+'</td><td style="padding:5px 8px">'+esc(a.fee_head)+'</td><td style="padding:5px 8px;text-align:right;font-family:var(--font-m)">'+fmt(a.amount)+'</td><td style="padding:5px 8px;'+sc+';font-weight:600;text-transform:uppercase;font-size:11px">'+esc(a.new_status)+'</td></tr>';
     });
     h+='</tbody></table></div></div>';
@@ -376,7 +376,7 @@ function loadStale(){
 
     // Stats
     h+='<div style="display:grid;grid-template-columns:repeat(auto-fit,minmax(150px,1fr));gap:12px;margin-bottom:18px">';
-    h+='<div class="ta-card" style="margin:0;text-align:center"><div class="ta-card-bd"><div style="font-size:22px;font-weight:700;color:'+(r.total_issues>0?'#dc2626':'#0f766e')+'">'+r.total_issues+'</div><div style="font-size:11px;color:var(--t3);font-weight:600">Total Issues</div></div></div>';
+    h+='<div class="ta-card" style="margin:0;text-align:center"><div class="ta-card-bd"><div style="font-size:22px;font-weight:700;color:'+(r.total_issues>0?'#dc2626':'#BC5A3C')+'">'+r.total_issues+'</div><div style="font-size:11px;color:var(--t3);font-weight:600">Total Issues</div></div></div>';
     h+='<div class="ta-card" style="margin:0;text-align:center"><div class="ta-card-bd"><div style="font-size:22px;font-weight:700;color:var(--t1)">'+r.stale_processing.length+'</div><div style="font-size:11px;color:var(--t3);font-weight:600">Stale Processing</div></div></div>';
     h+='<div class="ta-card" style="margin:0;text-align:center"><div class="ta-card-bd"><div style="font-size:22px;font-weight:700;color:var(--t1)">'+r.stale_pending.length+'</div><div style="font-size:11px;color:var(--t3);font-weight:600">Pending Fees</div></div></div>';
     h+='<div class="ta-card" style="margin:0;text-align:center"><div class="ta-card-bd"><div style="font-size:22px;font-weight:700;color:var(--t1)">'+r.active_locks.length+'</div><div style="font-size:11px;color:var(--t3);font-weight:600">Active Locks</div></div></div>';
@@ -384,7 +384,7 @@ function loadStale(){
     h+='</div>';
 
     if(r.total_issues===0&&r.active_locks.length===0){
-      h+='<div style="text-align:center;padding:30px 0;color:#0f766e"><i class="fa fa-check-circle" style="font-size:28px;display:block;margin-bottom:8px"></i>All clear. No stale transactions detected.</div>';
+      h+='<div style="text-align:center;padding:30px 0;color:#BC5A3C"><i class="fa fa-check-circle" style="font-size:28px;display:block;margin-bottom:8px"></i>All clear. No stale transactions detected.</div>';
     }
 
     function issueList(items,title,icon,defaultAction,type){
@@ -469,7 +469,7 @@ function diagnoseIssue(idempKey,receiptNo,studentId){
     var h='<div style="font:700 12px/1.3 var(--font-b);color:var(--gold);margin-bottom:8px"><i class="fa fa-stethoscope"></i> Diagnosis Result</div>';
 
     // Recommendation banner
-    var recColor = r.recommendation==='clean_clear'?'#0f766e':r.recommendation==='mark_complete'?'#2563eb':'#d97706';
+    var recColor = r.recommendation==='clean_clear'?'#BC5A3C':r.recommendation==='mark_complete'?'#2563eb':'#d97706';
     h+='<div style="padding:8px 12px;border-radius:6px;border-left:3px solid '+recColor+';background:var(--bg2);margin-bottom:10px;color:var(--t1)">'+esc(r.recommendation_text)+'</div>';
 
     // Write status table
@@ -478,7 +478,7 @@ function diagnoseIssue(idempKey,receiptNo,studentId){
       h+='<thead><tr><th style="text-align:left;padding:4px 8px;font-size:11px;color:var(--t3);border-bottom:1px solid var(--border)">Record</th><th style="text-align:left;padding:4px 8px;font-size:11px;color:var(--t3);border-bottom:1px solid var(--border)">Status</th></tr></thead><tbody>';
       for(var ck in r.checks){
         var cv=r.checks[ck];
-        var sc=cv==='written'||cv==='finalized'||cv==='exists'?'color:#0f766e':cv==='missing'||cv==='cleared'||cv==='free'?'color:#dc2626':'color:#d97706';
+        var sc=cv==='written'||cv==='finalized'||cv==='exists'?'color:#BC5A3C':cv==='missing'||cv==='cleared'||cv==='free'?'color:#dc2626':'color:#d97706';
         var icon=cv==='written'||cv==='finalized'?'fa-check-circle':cv==='missing'||cv==='cleared'||cv==='free'?'fa-times-circle':'fa-exclamation-circle';
         h+='<tr style="border-bottom:1px solid var(--border)"><td style="padding:4px 8px;text-transform:capitalize">'+esc(ck.replace(/_/g,' '))+'</td>';
         h+='<td style="padding:4px 8px;font-weight:600;'+sc+'"><i class="fa '+icon+'" style="margin-right:4px"></i>'+esc(cv)+'</td></tr>';
@@ -556,7 +556,7 @@ function confirmResolve(action,key,label){
 
       // Show feedback toast
       var toast=document.createElement('div');
-      toast.style.cssText='position:fixed;bottom:20px;right:20px;padding:12px 20px;background:#0f766e;color:#fff;border-radius:8px;font-size:13px;font-weight:600;z-index:10000;box-shadow:0 4px 12px rgba(0,0,0,.2)';
+      toast.style.cssText='position:fixed;bottom:20px;right:20px;padding:12px 20px;background:#BC5A3C;color:#fff;border-radius:8px;font-size:13px;font-weight:600;z-index:10000;box-shadow:0 4px 12px rgba(0,0,0,.2)';
       toast.innerHTML='<i class="fa fa-check-circle" style="margin-right:6px"></i>'+esc(msg);
       document.body.appendChild(toast);
       setTimeout(function(){toast.remove();},4000);

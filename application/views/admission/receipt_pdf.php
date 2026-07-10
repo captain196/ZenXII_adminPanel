@@ -76,24 +76,24 @@ $paymentLine  = $payStatus === 'paid'
   .ar-page { padding: 24px 28px; }
 
   /* ── Header ──────────────────────────────────────────────────── */
-  .ar-hdr { display: table; width: 100%; border-bottom: 2px solid #0f766e; padding-bottom: 12px; margin-bottom: 16px; }
+  .ar-hdr { display: table; width: 100%; border-bottom: 2px solid #BC5A3C; padding-bottom: 12px; margin-bottom: 16px; }
   .ar-hdr-l { display: table-cell; vertical-align: middle; width: 70px; }
   .ar-hdr-c { display: table-cell; vertical-align: middle; padding-left: 14px; }
   .ar-hdr-r { display: table-cell; vertical-align: middle; text-align: right; width: 160px; }
   .ar-logo { width: 64px; height: 64px; border: 1px solid #cbd5e1; border-radius: 6px; }
-  .ar-school-name { font-size: 16px; font-weight: 800; color: #0f766e; }
+  .ar-school-name { font-size: 16px; font-weight: 800; color: #BC5A3C; }
   .ar-school-meta { font-size: 10px; color: #475569; margin-top: 2px; }
-  .ar-receipt-tag { font-size: 9px; letter-spacing: 1.5px; color: #0f766e; font-weight: 700; }
+  .ar-receipt-tag { font-size: 9px; letter-spacing: 1.5px; color: #BC5A3C; font-weight: 700; }
   .ar-app-id { font-size: 14px; font-weight: 800; color: #1f2937; margin-top: 2px; }
 
   /* ── Status banner ──────────────────────────────────────────── */
-  .ar-banner { background: #f0fdfa; border: 1px solid #99f6e4; border-radius: 6px;
+  .ar-banner { background: #f0fdfa; border: 1px solid #EBC3B4; border-radius: 6px;
                padding: 10px 14px; margin-bottom: 16px; }
-  .ar-banner b { color: #0f766e; }
+  .ar-banner b { color: #BC5A3C; }
 
   /* ── Section card ───────────────────────────────────────────── */
   .ar-sec { margin-bottom: 14px; }
-  .ar-sec-hdr { background: #0f766e; color: #fff; padding: 5px 12px;
+  .ar-sec-hdr { background: #BC5A3C; color: #fff; padding: 5px 12px;
                 font-weight: 700; font-size: 11px; letter-spacing: 0.5px;
                 border-radius: 4px 4px 0 0; }
   .ar-tbl { width: 100%; border-collapse: collapse; border: 1px solid #cbd5e1;

@@ -610,18 +610,54 @@ class Schools extends MY_Controller
             if (!empty($m['isArchived'])) continue;
             $aid = (string) ($m['albumId'] ?? '');
             if ($aid === '') continue;
-            if (!isset($out[$aid])) $out[$aid] = ['img' => 0, 'vid' => 0, 'cover' => ''];
-            if ((string) ($m['type'] ?? '') === 'video') {
-                $out[$aid]['vid']++;
-                if ($out[$aid]['cover'] === '' && !empty($m['thumbnail'])) {
-                    $out[$aid]['cover'] = (string) $m['thumbnail'];
-                }
-            } else {
-                $out[$aid]['img']++;
-                if ($out[$aid]['cover'] === '') $out[$aid]['cover'] = (string) ($m['url'] ?? '');
+            if (!isset($out[$aid])) $out[$aid] = ['img' => 0, 'vid' => 0, 'cover' => '', 'cover_ts' => -1, 'urls' => []];
+
+            $isVideo   = (string) ($m['type'] ?? '') === 'video';
+            $candidate = $isVideo ? (string) ($m['thumbnail'] ?? '') : (string) ($m['url'] ?? '');
+            $ts        = strtotime((string) ($m['uploadedAt'] ?? '')) ?: 0;
+
+            if ($isVideo) $out[$aid]['vid']++; else $out[$aid]['img']++;
+
+            // Track every live cover-eligible URL so a stale album coverImage
+            // (one pointing at a since-deleted/expired file) can be detected.
+            if (!empty($m['url']))       $out[$aid]['urls'][(string) $m['url']]       = true;
+            if (!empty($m['thumbnail'])) $out[$aid]['urls'][(string) $m['thumbnail']] = true;
+
+            // Cover = the LATEST media (by uploadedAt) that has a usable image.
+            if ($candidate !== '' && $ts >= $out[$aid]['cover_ts']) {
+                $out[$aid]['cover']    = $candidate;
+                $out[$aid]['cover_ts'] = $ts;
             }
         }
         return $out;
+    }
+
+    /**
+     * Resolve the cover to show for an album under the "always latest" policy:
+     * the cover tracks the most recent media UNLESS an admin pinned a specific
+     * one via setEventCover (coverPinned) and that pinned file still exists.
+     * When the displayed cover differs from the canonical galleryAlbums.coverImage
+     * we self-heal that field (and release a dead pin) so the apps — which read
+     * coverImage directly — match the grid and never show a stale/blank thumbnail.
+     */
+    private function _resolve_album_cover(string $albumId, array $agg, array $albumDoc): string
+    {
+        $computed = (string) ($agg['cover'] ?? '');   // latest media (by uploadedAt)
+        $explicit = (string) ($albumDoc['coverImage'] ?? '');
+        $pinned   = !empty($albumDoc['coverPinned']);
+        $urls     = (array)  ($agg['urls'] ?? []);
+
+        // A live pin wins.
+        if ($pinned && $explicit !== '' && isset($urls[$explicit])) return $explicit;
+
+        // Otherwise track the latest media, healing the canonical field when it
+        // drifted (legacy first-image cover, a since-deleted cover, or a released
+        // pin). Only write when we actually have a live replacement.
+        if ($computed !== '' && $explicit !== $computed) {
+            try { $this->_entity_sync()->updateGalleryAlbumCover($albumId, $computed, false); }
+            catch (\Throwable $e) { log_message('error', "Schools::_resolve_album_cover heal [{$albumId}] failed: " . $e->getMessage()); }
+        }
+        return $computed !== '' ? $computed : $explicit;
     }
 
     public function fetchGalleryAlbums()
@@ -725,10 +761,9 @@ class Schools extends MY_Controller
         $consumedMediaKeys = ['__photos__' => true, '__videos__' => true];
         foreach ($events as $id => $evt) {
             $consumedMediaKeys[$id] = true;
-            $agg      = $mediaByAlbum[$id] ?? ['img' => 0, 'vid' => 0, 'cover' => ''];
+            $agg      = $mediaByAlbum[$id] ?? ['img' => 0, 'vid' => 0, 'cover' => '', 'urls' => []];
             $imgCount = (int) $agg['img']; $vidCount = (int) $agg['vid'];
-            $cover    = (string) $agg['cover'];
-            if (!empty($fsAlbums[$id]['coverImage'])) $cover = (string) $fsAlbums[$id]['coverImage'];
+            $cover    = $this->_resolve_album_cover($id, $agg, $fsAlbums[$id] ?? []);
 
             // Grid shows only event albums that actually HAVE media. Empty events
             // live in the upload picker instead.
@@ -759,8 +794,7 @@ class Schools extends MY_Controller
             if ($rid === '' || isset($consumedMediaKeys[$rid])) continue;
             $imgCount = (int) $agg['img']; $vidCount = (int) $agg['vid'];
             if ($imgCount + $vidCount === 0) continue;
-            $cover = (string) $agg['cover'];
-            if (!empty($fsAlbums[$rid]['coverImage'])) $cover = (string) $fsAlbums[$rid]['coverImage'];
+            $cover = $this->_resolve_album_cover($rid, $agg, $fsAlbums[$rid] ?? []);
 
             $totalImages += $imgCount;
             $totalVideos += $vidCount;
@@ -906,6 +940,83 @@ class Schools extends MY_Controller
         echo json_encode(['images' => $images, 'videos' => $videos]);
     }
 
+    /**
+     * True when a Firebase Storage object path belongs to the CALLER's school,
+     * across every scheme a school's media can live under. This is the single
+     * cross-tenant gate for gallery delete / cover operations — every branch is
+     * anchored to the caller's own {schoolId} (or, for the legacy events tree,
+     * school_name == SCH id), so it can never authorize another tenant's file.
+     *
+     * Schemes (see firebase-rules/storage.rules + Storage_path_map):
+     *   schools/{schoolId}/...             admin-panel uploads (canonical)
+     *   {schoolId}/Events/...              legacy RTDB event media
+     *   galleryMedia/{schoolId}/...        Teacher/Parent app gallery uploads
+     *   stories/{schoolId}/...             app story media surfaced in a gallery album
+     *   stories/admin/{schoolId}/...       admin story media
+     */
+    private function _storage_path_owned_by_caller(string $filePath): bool
+    {
+        $sid  = (string) $this->school_id;
+        $name = (string) $this->school_name;
+
+        if ($sid !== '') {
+            if (strpos($filePath, "schools/{$sid}/")       === 0) return true;
+            if (strpos($filePath, "galleryMedia/{$sid}/")  === 0) return true;
+            if (strpos($filePath, "stories/{$sid}/")       === 0) return true;
+            if (strpos($filePath, "stories/admin/{$sid}/") === 0) return true;
+        }
+        if ($name !== '' && strpos($filePath, "{$name}/Events/") === 0) return true;
+
+        return false;
+    }
+
+    /**
+     * Repoint an album's cover at its latest remaining media when the current
+     * galleryAlbums.coverImage no longer matches any live media in the album
+     * (e.g. the covering photo/video was just deleted, or it referenced an
+     * expired story file). Clears the cover when nothing is left. No-op when the
+     * cover is still valid, so an admin's explicit setEventCover choice stands.
+     * Video covers use the poster thumbnail; images use the url. Latest wins.
+     */
+    private function _reset_album_cover_if_stale(string $albumId): void
+    {
+        if ($albumId === '' || in_array($albumId, ['__legacy__', '__photos__', '__videos__'], true)) return;
+
+        try {
+            $albumDoc = $this->firebase->firestoreGet('galleryAlbums', "{$this->school_id}_{$albumId}");
+            $cover    = is_array($albumDoc) ? (string) ($albumDoc['coverImage'] ?? '') : '';
+            if ($cover === '') return; // nothing set — grid computes a cover from media
+
+            $liveUrls  = [];   // every cover-eligible URL still in the album
+            $newCover  = '';   // latest remaining, as fallback
+            $latestTs  = -1;
+            foreach ((array) $this->firebase->firestoreQuery('galleryMedia', [
+                        ['schoolId', '==', $this->school_id],
+                        ['albumId',  '==', $albumId],
+                    ]) as $row) {
+                $m = (is_array($row) && isset($row['data']) && is_array($row['data'])) ? $row['data'] : (is_array($row) ? $row : []);
+                if (!empty($m['isArchived'])) continue;
+                $isVideo   = (string) ($m['type'] ?? '') === 'video';
+                $candidate = $isVideo ? (string) ($m['thumbnail'] ?? '') : (string) ($m['url'] ?? '');
+                if (!empty($m['url']))       $liveUrls[(string) $m['url']]       = true;
+                if (!empty($m['thumbnail'])) $liveUrls[(string) $m['thumbnail']] = true;
+                if ($candidate === '') continue;
+                $ts = strtotime((string) ($m['uploadedAt'] ?? '')) ?: 0;
+                if ($ts >= $latestTs) { $latestTs = $ts; $newCover = $candidate; }
+            }
+
+            // Cover still points at a live media item → leave it (respects a
+            // deliberate setEventCover pick).
+            if (isset($liveUrls[$cover])) return;
+
+            // Stale cover → repoint at latest remaining (or '' clears it) and
+            // release any pin, since the pinned file no longer exists.
+            $this->_entity_sync()->updateGalleryAlbumCover($albumId, $newCover, false);
+        } catch (\Throwable $e) {
+            log_message('error', "Schools::_reset_album_cover_if_stale [{$albumId}] failed: " . $e->getMessage());
+        }
+    }
+
     // ── Gallery: delete media ───────────────────────────────────────────
     public function deleteMedia()
     {
@@ -939,18 +1050,12 @@ class Schools extends MY_Controller
 
             // FIX-1 (CROSS-TENANT DELETE IDOR): the Admin SDK delete bypasses
             // Storage rules, so we MUST assert the extracted path belongs to the
-            // caller's school before touching anything. Accept the canonical
-            // ID-keyed prefix OR the legacy name-rooted Events prefix. Anything
-            // else is a cross-tenant probe: reject, log, delete NOTHING.
-            $canonicalPrefix = "schools/{$this->school_id}/";
-            $legacyPrefix    = "{$this->school_name}/Events/";
-            // Teacher/Parent apps upload gallery media to galleryMedia/{schoolId}/{albumId}/...
-            // (GalleryMediaUploader.kt); this prefix is schoolId-namespaced so the
-            // tenant check still holds. Without it, admins can't delete app-uploaded photos.
-            $appGalleryPrefix = "galleryMedia/{$this->school_id}/";
-            $ownedByCaller   = ($this->school_id   !== '' && strpos($filePath, $canonicalPrefix)  === 0)
-                            || ($this->school_name !== '' && strpos($filePath, $legacyPrefix)     === 0)
-                            || ($this->school_id   !== '' && strpos($filePath, $appGalleryPrefix) === 0);
+            // caller's school before touching anything. A gallery album can
+            // reference media stored under ANY of the school's Storage schemes
+            // (admin uploads, legacy events, app gallery uploads, or a story the
+            // photo was sourced from), so we validate against every school-owned
+            // scheme. Anything else is a cross-tenant probe: reject, log, delete NOTHING.
+            $ownedByCaller = $this->_storage_path_owned_by_caller($filePath);
 
             if (!$ownedByCaller) {
                 // Mirror Homework::CROSS_TENANT_PROBE telemetry pattern.
@@ -1052,6 +1157,12 @@ class Schools extends MY_Controller
                     log_message('error', 'Schools::deleteMedia Firestore gallery sync failed [' . $eventId . '/' . $fsMediaKey . ']: ' . $e->getMessage());
                 }
             }
+
+            // If the media we just removed was the album's cover, the canonical
+            // galleryAlbums.coverImage now points at a dead file — the apps and
+            // gallery grid would render a blank thumbnail. Repoint it at the
+            // latest remaining media (or clear it when the album is now empty).
+            $this->_reset_album_cover_if_stale($eventId);
 
             echo json_encode(['status' => 'success', 'message' => 'File deleted successfully']);
         } catch (Exception $e) {
@@ -1289,14 +1400,18 @@ class Schools extends MY_Controller
                 'uploadedAt' => $mediaData['uploaded_at'],
             ]);
 
-            // Atomic mediaCount++ and default cover on first image.
+            // Atomic mediaCount++. The album cover then tracks the LATEST upload
+            // (this one) so the thumbnail is always the most recent photo/video —
+            // UNLESS an admin pinned a specific cover via setEventCover
+            // (coverPinned). Images use their url; videos use the poster thumbnail
+            // (a video with no extractable poster leaves the cover unchanged).
             $sync->bumpGalleryAlbumCount($eventId, 1);
-            if (($fileType == '1')) {
-                // Seed coverImage only if the album has none yet (merge-safe:
-                // syncGalleryAlbum skips empty, so we only set on first image).
+            $newCover = ($fileType == '1') ? $downloadUrl : (string) ($mediaData['thumbnail'] ?? '');
+            if ($newCover !== '') {
                 $existingAlbum = $this->firebase->firestoreGet('galleryAlbums', "{$this->school_id}_{$eventId}");
-                if (!is_array($existingAlbum) || empty($existingAlbum['coverImage'])) {
-                    $sync->updateGalleryAlbumCover($eventId, $downloadUrl);
+                $pinned = is_array($existingAlbum) && !empty($existingAlbum['coverPinned']);
+                if (!$pinned) {
+                    $sync->updateGalleryAlbumCover($eventId, $newCover);
                 }
             }
         } catch (\Throwable $e) {
@@ -1313,6 +1428,22 @@ class Schools extends MY_Controller
             }
             echo json_encode(['status' => 'error', 'message' => 'Upload could not be saved. Please try again.']);
             return;
+        }
+
+        // ── Universal push: notify parents when an album first gets content ──
+        // uploadMedia() runs once PER FILE, so gate on the pre-upload count
+        // ($albumFileCount === 0 = this is the album's first media) to fire
+        // exactly one "New Photos" push per album instead of one per photo.
+        // The deterministic docId ({schoolId}_gallery_{albumId}) further
+        // coalesces any races. Gallery is school-wide → parents.
+        if ((int) $albumFileCount === 0) {
+            $this->emit_push('GALLERY_ADDED', 'gallery_' . $eventId, [
+                'target_group' => 'All Parents',
+                'albumId'      => $eventId,
+                'title'        => 'New Photos',
+                'body'         => 'New photos have been added' . (!empty($meta['title']) ? ' to ' . $meta['title'] : '') . '.',
+                'category'     => $meta['category'] ?? '',
+            ]);
         }
 
         echo json_encode([
@@ -1355,12 +1486,7 @@ class Schools extends MY_Controller
         // album cover at another tenant's file (canonical ID prefix or legacy
         // name-rooted Events prefix). Mirrors the deleteMedia ownership guard.
         $coverPath = $this->extract_firebase_storage_path($coverUrl);
-        $ownedByCaller = $coverPath !== null && (
-            ($this->school_id   !== '' && strpos($coverPath, "schools/{$this->school_id}/") === 0)
-            || ($this->school_name !== '' && strpos($coverPath, "{$this->school_name}/Events/") === 0)
-            // App-uploaded gallery media (galleryMedia/{schoolId}/...) — schoolId-namespaced.
-            || ($this->school_id   !== '' && strpos($coverPath, "galleryMedia/{$this->school_id}/") === 0)
-        );
+        $ownedByCaller = $coverPath !== null && $this->_storage_path_owned_by_caller($coverPath);
         if (!$ownedByCaller) {
             log_message('error', "Schools::setEventCover cross-tenant cover rejected — school=[{$this->school_id}] path=[{$coverPath}]");
             echo json_encode(['status' => 'error', 'message' => 'That cover image is not allowed.']);
@@ -1370,8 +1496,10 @@ class Schools extends MY_Controller
         // Canonical write: the cover lives on the galleryAlbums doc, which both
         // the apps and the admin gallery read. (Legacy RTDB Events/List write
         // removed — nothing reads it anymore; Critical C2 de-RTDB.)
+        // Pin it: a deliberate admin choice must survive later uploads, which
+        // otherwise auto-advance the cover to the latest media.
         try {
-            $this->_entity_sync()->updateGalleryAlbumCover($eventId, (string) $coverUrl);
+            $this->_entity_sync()->updateGalleryAlbumCover($eventId, (string) $coverUrl, true);
         } catch (\Throwable $e) {
             log_message('error', 'Schools::setEventCover Firestore gallery sync failed [' . $eventId . ']: ' . $e->getMessage());
             echo json_encode(['status' => 'error', 'message' => 'Could not set cover. Please try again.']);

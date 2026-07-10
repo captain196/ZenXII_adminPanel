@@ -421,8 +421,8 @@ html { font-size: 16px !important; }
   width: 28px; height: 28px; border-radius: 6px; font-size: .82rem;
   text-decoration: none; margin: 0 2px; transition: background .15s;
 }
-.rcr-act-rc { background: rgba(15,118,110,.12); color: #0f766e; }
-.rcr-act-rc:hover { background: #0f766e; color: #fff; }
+.rcr-act-rc { background: rgba(188,90,60,.12); color: #BC5A3C; }
+.rcr-act-rc:hover { background: #BC5A3C; color: #fff; }
 .rcr-act-sr { background: rgba(37,99,235,.10); color: #2563eb; }
 .rcr-act-sr:hover { background: #2563eb; color: #fff; }
 .rcr-act-pdf { background: rgba(220,38,38,.10); color: #dc2626; }

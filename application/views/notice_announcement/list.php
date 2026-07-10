@@ -42,7 +42,7 @@ $totalCount = count($noticesList);
     align-items: center;
     gap: 10px;
 }
-.an-page-head-left h2 i { color: var(--gold, #0f766e); }
+.an-page-head-left h2 i { color: var(--gold, #BC5A3C); }
 
 .an-breadcrumb {
     display: flex;
@@ -56,7 +56,7 @@ $totalCount = count($noticesList);
 }
 .an-breadcrumb li::after { content: '/'; margin-left: 6px; opacity: .4; }
 .an-breadcrumb li:last-child::after { display: none; }
-.an-breadcrumb a { color: var(--gold, #0f766e); text-decoration: none; }
+.an-breadcrumb a { color: var(--gold, #BC5A3C); text-decoration: none; }
 .an-breadcrumb a:hover { text-decoration: underline; }
 
 .an-create-btn {
@@ -65,19 +65,19 @@ $totalCount = count($noticesList);
     gap: 7px;
     padding: 10px 18px;
     border-radius: 10px;
-    background: var(--gold, #0f766e);
+    background: var(--gold, #BC5A3C);
     color: #fff;
     font-size: 13px;
     font-weight: 600;
     text-decoration: none;
     transition: background .2s, transform .15s, box-shadow .2s;
-    box-shadow: 0 4px 12px rgba(15,118,110,.25);
+    box-shadow: 0 4px 12px rgba(188,90,60,.25);
     white-space: nowrap;
 }
 .an-create-btn:hover {
-    background: var(--gold2, #0d6b63);
+    background: var(--gold2, #9E4830);
     transform: translateY(-1px);
-    box-shadow: 0 6px 18px rgba(15,118,110,.35);
+    box-shadow: 0 6px 18px rgba(188,90,60,.35);
     color: #fff;
     text-decoration: none;
 }
@@ -99,11 +99,11 @@ $totalCount = count($noticesList);
     font-size: 12px;
     font-family: 'JetBrains Mono', monospace;
     font-weight: 600;
-    border: 1px solid var(--border, rgba(15,118,110,.18));
+    border: 1px solid var(--border, rgba(188,90,60,.18));
     background: var(--bg3, #0f2545);
     color: var(--t2, #94c9c3);
 }
-.an-stat-pill i { color: var(--gold, #0f766e); }
+.an-stat-pill i { color: var(--gold, #BC5A3C); }
 .an-stat-pill span { color: var(--t1, #fff); }
 
 /* ── Filter bar ── */
@@ -115,7 +115,7 @@ $totalCount = count($noticesList);
     flex-wrap: wrap;
     padding: 14px 16px;
     background: var(--bg2, #0c1e38);
-    border: 1px solid var(--border, rgba(15,118,110,.14));
+    border: 1px solid var(--border, rgba(188,90,60,.14));
     border-radius: 12px;
 }
 .an-search-wrap {
@@ -135,7 +135,7 @@ $totalCount = count($noticesList);
     width: 100%;
     padding: 9px 12px 9px 33px;
     border-radius: 8px;
-    border: 1px solid var(--border, rgba(15,118,110,.18));
+    border: 1px solid var(--border, rgba(188,90,60,.18));
     background: var(--bg3, #0f2545);
     color: var(--t1, #fff);
     font-size: 13px;
@@ -143,13 +143,13 @@ $totalCount = count($noticesList);
     transition: border-color .2s;
     box-sizing: border-box;
 }
-.an-search:focus { border-color: var(--gold, #0f766e); }
+.an-search:focus { border-color: var(--gold, #BC5A3C); }
 .an-search::placeholder { color: var(--t3, #7A6E54); }
 
 .an-filter-select {
     padding: 9px 12px;
     border-radius: 8px;
-    border: 1px solid var(--border, rgba(15,118,110,.18));
+    border: 1px solid var(--border, rgba(188,90,60,.18));
     background: var(--bg3, #0f2545);
     color: var(--t2, #94c9c3);
     font-size: 12.5px;
@@ -158,7 +158,7 @@ $totalCount = count($noticesList);
     min-width: 130px;
 }
 .an-filter-select option { background: #0c1e38; }
-.an-filter-select:focus { border-color: var(--gold, #0f766e); }
+.an-filter-select:focus { border-color: var(--gold, #BC5A3C); }
 
 .an-filter-count {
     font-size: 11.5px;
@@ -166,7 +166,7 @@ $totalCount = count($noticesList);
     color: var(--t3, #7A6E54);
     white-space: nowrap;
 }
-.an-filter-count strong { color: var(--gold, #0f766e); }
+.an-filter-count strong { color: var(--gold, #BC5A3C); }
 
 /* ── Notice list ── */
 .an-list {
@@ -178,8 +178,8 @@ $totalCount = count($noticesList);
 /* ── Notice card ── */
 .an-card {
     background: var(--bg2, #0c1e38);
-    border: 1px solid var(--border, rgba(15,118,110,.12));
-    border-left: 4px solid var(--gold, #0f766e);
+    border: 1px solid var(--border, rgba(188,90,60,.12));
+    border-left: 4px solid var(--gold, #BC5A3C);
     border-radius: 14px;
     overflow: hidden;
     display: flex;
@@ -191,7 +191,7 @@ $totalCount = count($noticesList);
     transform: translateY(-2px);
 }
 .an-card[data-priority="High"]   { border-left-color: #E05C6F; }
-.an-card[data-priority="Normal"] { border-left-color: #0f766e; }
+.an-card[data-priority="Normal"] { border-left-color: #BC5A3C; }
 .an-card[data-priority="Low"]    { border-left-color: #6B8DB8; }
 
 .an-card-inner { padding: 18px 20px; flex: 1; }
@@ -233,7 +233,7 @@ $totalCount = count($noticesList);
     letter-spacing: .3px;
 }
 .an-badge-pri.high   { background: rgba(224,92,111,.12); color: #E05C6F; border: 1px solid rgba(224,92,111,.25); }
-.an-badge-pri.normal { background: rgba(15,118,110,.12); color: #0f766e; border: 1px solid rgba(15,118,110,.25); }
+.an-badge-pri.normal { background: rgba(188,90,60,.12); color: #BC5A3C; border: 1px solid rgba(188,90,60,.25); }
 .an-badge-pri.low    { background: rgba(107,141,184,.12); color: #6B8DB8; border: 1px solid rgba(107,141,184,.25); }
 
 /* Category badge */
@@ -248,7 +248,7 @@ $totalCount = count($noticesList);
     font-family: 'DM Sans', sans-serif;
 }
 .an-badge-cat.cat-general        { background: rgba(107,114,128,.12); color: #9CA3AF; border: 1px solid rgba(107,114,128,.2); }
-.an-badge-cat.cat-academic       { background: rgba(15,118,110,.12); color: #0f766e; border: 1px solid rgba(15,118,110,.2); }
+.an-badge-cat.cat-academic       { background: rgba(188,90,60,.12); color: #BC5A3C; border: 1px solid rgba(188,90,60,.2); }
 .an-badge-cat.cat-administrative { background: rgba(124,58,237,.12); color: #A78BFA; border: 1px solid rgba(124,58,237,.2); }
 .an-badge-cat.cat-holiday        { background: rgba(217,119,6,.12); color: #D97706; border: 1px solid rgba(217,119,6,.2); }
 .an-badge-cat.cat-exam           { background: rgba(224,92,111,.12); color: #E05C6F; border: 1px solid rgba(224,92,111,.2); }
@@ -279,7 +279,7 @@ $totalCount = count($noticesList);
     font-family: 'JetBrains Mono', monospace;
     color: var(--t3, #7A6E54);
 }
-.an-meta-item i { color: var(--gold, #0f766e); font-size: 11px; }
+.an-meta-item i { color: var(--gold, #BC5A3C); font-size: 11px; }
 
 .an-recipients-tags {
     display: flex;
@@ -296,15 +296,15 @@ $totalCount = count($noticesList);
     font-size: 10px;
     font-family: 'JetBrains Mono', monospace;
     font-weight: 600;
-    background: var(--gold-dim, rgba(15,118,110,.10));
-    color: var(--gold3, #14b8a6);
-    border: 1px solid var(--gold-ring, rgba(15,118,110,.18));
+    background: var(--gold-dim, rgba(188,90,60,.10));
+    color: var(--gold3, #D4725C);
+    border: 1px solid var(--gold-ring, rgba(188,90,60,.18));
 }
 
 /* ── Card footer ── */
 .an-card-foot {
     padding: 11px 20px;
-    border-top: 1px solid var(--border, rgba(15,118,110,.08));
+    border-top: 1px solid var(--border, rgba(188,90,60,.08));
     display: flex;
     align-items: center;
     justify-content: space-between;
@@ -320,7 +320,7 @@ $totalCount = count($noticesList);
     align-items: center;
     gap: 5px;
 }
-.an-card-id strong { color: var(--gold3, #14b8a6); }
+.an-card-id strong { color: var(--gold3, #D4725C); }
 
 .an-delete-btn {
     display: inline-flex;
@@ -350,12 +350,12 @@ $totalCount = count($noticesList);
 .an-empty-icon {
     width: 68px; height: 68px;
     border-radius: 50%;
-    background: var(--gold-dim, rgba(15,118,110,.08));
-    border: 1px solid var(--gold-ring, rgba(15,118,110,.18));
+    background: var(--gold-dim, rgba(188,90,60,.08));
+    border: 1px solid var(--gold-ring, rgba(188,90,60,.18));
     display: flex; align-items: center; justify-content: center;
     margin: 0 auto 16px;
     font-size: 28px;
-    color: var(--gold, #0f766e);
+    color: var(--gold, #BC5A3C);
 }
 .an-empty h4 {
     font-family: var(--font-b, 'Fraunces', serif);
@@ -389,7 +389,7 @@ $totalCount = count($noticesList);
 .an-modal-overlay.open { display: flex; }
 .an-modal {
     background: var(--bg2, #0c1e38);
-    border: 1px solid var(--border, rgba(15,118,110,.18));
+    border: 1px solid var(--border, rgba(188,90,60,.18));
     border-radius: 16px;
     padding: 28px 28px 22px;
     max-width: 380px;
@@ -431,7 +431,7 @@ $totalCount = count($noticesList);
     flex: 1;
     padding: 10px;
     border-radius: 8px;
-    border: 1px solid var(--border, rgba(15,118,110,.18));
+    border: 1px solid var(--border, rgba(188,90,60,.18));
     background: var(--bg3, #0f2545);
     color: var(--t2, #94c9c3);
     font-size: 13px;

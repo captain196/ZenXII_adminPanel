@@ -77,7 +77,7 @@
 .sl-reason {
     font-size:13px; color:var(--t2); padding:10px 14px;
     background:var(--bg); border-radius:8px; margin-bottom:14px;
-    border-left:3px solid var(--gold-dim,rgba(15,118,110,.2));
+    border-left:3px solid var(--gold-dim,rgba(188,90,60,.2));
 }
 .sl-approver { font-size:12px; color:var(--t3); margin-bottom:12px; }
 .sl-approver em { color:var(--t2); }
@@ -187,7 +187,7 @@
 <script>
 (function() {
     var csrfToken = '<?= $this->security->get_csrf_hash() ?>';
-    var AVATAR_COLORS = ['#0f766e','#2563eb','#7c3aed','#c2410c','#0891b2','#4f46e5','#059669','#b91c1c'];
+    var AVATAR_COLORS = ['#BC5A3C','#2563eb','#7c3aed','#c2410c','#0891b2','#4f46e5','#059669','#b91c1c'];
 
     function postData(url, params) {
         params.csrf_token = csrfToken;
@@ -313,8 +313,16 @@
     function approveLeave(leaveId) {
         var remarks = document.querySelector('.sl-remarks-input[data-id="' + leaveId + '"]');
         var remarksVal = remarks ? remarks.value.trim() : '';
-        var btns = document.querySelectorAll('.sl-card[data-id="' + leaveId + '"] .sl-btn');
+        var card = document.querySelector('.sl-card[data-id="' + leaveId + '"]');
+        var btns = card ? card.querySelectorAll('.sl-btn') : [];
+        var actBtn = card ? card.querySelector('.sl-btn-approve') : null;
+        var actOrig = actBtn ? actBtn.innerHTML : '';
         btns.forEach(function(b) { b.disabled = true; });
+        if (actBtn) actBtn.innerHTML = '<i class="fa fa-spinner fa-spin" aria-hidden="true"></i> Approving…';
+        function restore() {
+            btns.forEach(function(b) { b.disabled = false; });
+            if (actBtn) actBtn.innerHTML = actOrig;
+        }
 
         postData('attendance/approve_student_leave', {
             leave_id: leaveId,
@@ -325,11 +333,11 @@
                 loadLeaves();
             } else {
                 showToast(res ? res.message : 'Failed to approve.', 'error');
-                btns.forEach(function(b) { b.disabled = false; });
+                restore();
             }
         }).catch(function() {
             showToast('Network error.', 'error');
-            btns.forEach(function(b) { b.disabled = false; });
+            restore();
         });
     };
 
@@ -341,8 +349,16 @@
             if (remarks) { remarks.focus(); remarks.style.borderColor = '#dc2626'; }
             return;
         }
-        var btns = document.querySelectorAll('.sl-card[data-id="' + leaveId + '"] .sl-btn');
+        var card = document.querySelector('.sl-card[data-id="' + leaveId + '"]');
+        var btns = card ? card.querySelectorAll('.sl-btn') : [];
+        var actBtn = card ? card.querySelector('.sl-btn-reject') : null;
+        var actOrig = actBtn ? actBtn.innerHTML : '';
         btns.forEach(function(b) { b.disabled = true; });
+        if (actBtn) actBtn.innerHTML = '<i class="fa fa-spinner fa-spin" aria-hidden="true"></i> Rejecting…';
+        function restore() {
+            btns.forEach(function(b) { b.disabled = false; });
+            if (actBtn) actBtn.innerHTML = actOrig;
+        }
 
         postData('attendance/reject_student_leave', {
             leave_id: leaveId,
@@ -353,11 +369,11 @@
                 loadLeaves();
             } else {
                 showToast(res ? res.message : 'Failed to reject.', 'error');
-                btns.forEach(function(b) { b.disabled = false; });
+                restore();
             }
         }).catch(function() {
             showToast('Network error.', 'error');
-            btns.forEach(function(b) { b.disabled = false; });
+            restore();
         });
     }
 

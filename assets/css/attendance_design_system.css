@@ -51,7 +51,7 @@
 
     /* Semantic accents */
     --att-green:  #16a34a;
-    --att-teal:   #0f766e;
+    --att-teal:   #BC5A3C;
     --att-blue:   #2563eb;
     --att-amber:  #d97706;
     --att-red:    #dc2626;
@@ -60,7 +60,7 @@
 
     /* Soft (12%) accent fills */
     --att-green-bg:  rgba(22,163,74,.12);
-    --att-teal-bg:   rgba(15,118,110,.12);
+    --att-teal-bg:   rgba(188,90,60,.12);
     --att-blue-bg:   rgba(37,99,235,.12);
     --att-amber-bg:  rgba(217,119,6,.12);
     --att-red-bg:    rgba(220,38,38,.12);
@@ -313,7 +313,7 @@
 .att-tag-red   { background: rgba(192,57,43,.12); color: #c0392b; border: 1px solid rgba(192,57,43,.25); }
 .att-tag-amber { background: rgba(217,119,6,.12); color: #d97706; border: 1px solid rgba(217,119,6,.25); }
 .att-tag-blue  { background: rgba(37,99,235,.12); color: #2563eb; border: 1px solid rgba(37,99,235,.25); }
-.att-tag-teal  { background: var(--att-teal-bg); color: var(--att-teal); border: 1px solid rgba(15,118,110,.25); }
+.att-tag-teal  { background: var(--att-teal-bg); color: var(--att-teal); border: 1px solid rgba(188,90,60,.25); }
 .att-tag-gray  { background: var(--att-bg3); color: var(--att-t3); border: 1px solid var(--att-border); }
 /* Soft square-ish badge (for metrics/counts) */
 .att-badge {
@@ -323,7 +323,7 @@
     background: var(--att-bg3); color: var(--att-t2); border: 1px solid var(--att-border);
 }
 .att-badge-green  { background: var(--att-green-bg);  color: var(--att-green);  border-color: rgba(22,163,74,.25); }
-.att-badge-teal   { background: var(--att-teal-bg);   color: var(--att-teal);   border-color: rgba(15,118,110,.25); }
+.att-badge-teal   { background: var(--att-teal-bg);   color: var(--att-teal);   border-color: rgba(188,90,60,.25); }
 .att-badge-amber  { background: var(--att-amber-bg);  color: var(--att-amber);  border-color: rgba(217,119,6,.25); }
 .att-badge-red    { background: var(--att-red-bg);    color: var(--att-red);    border-color: rgba(220,38,38,.25); }
 .att-badge-blue   { background: var(--att-blue-bg);   color: var(--att-blue);   border-color: rgba(37,99,235,.25); }

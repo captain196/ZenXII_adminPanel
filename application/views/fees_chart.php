@@ -631,7 +631,7 @@ function _doSaveUpdatedFees(cls, sec) {
 
 :root {
     --fm-navy:   #0c1e38;
-    --fm-teal:   #0f766e;
+    --fm-teal:   #BC5A3C;
     --fm-sky:    #e6f4f1;
     --fm-green:  #15803d;
     --fm-amber:  #d97706;
@@ -704,7 +704,7 @@ function _doSaveUpdatedFees(cls, sec) {
 .fm-card-head-right { margin-left: auto; }
 .fm-sum-pill {
     background: var(--fm-sky);
-    border: 1px solid rgba(15,118,110,.2);
+    border: 1px solid rgba(188,90,60,.2);
     color: var(--fm-teal);
     padding: 4px 12px; border-radius: 20px;
     font-size: 13px;
@@ -739,7 +739,7 @@ function _doSaveUpdatedFees(cls, sec) {
     appearance: none;
     transition: border-color .14s, box-shadow .14s;
 }
-.fm-select:focus { border-color: var(--fm-teal); box-shadow: 0 0 0 3px rgba(15,118,110,.1); }
+.fm-select:focus { border-color: var(--fm-teal); box-shadow: 0 0 0 3px rgba(188,90,60,.1); }
 .fm-select:disabled { background: var(--fm-bg); cursor: not-allowed; color: var(--fm-muted); }
 .fm-select-arrow {
     position: absolute; right: 10px; top: 50%;
@@ -753,7 +753,7 @@ function _doSaveUpdatedFees(cls, sec) {
     margin-top: 12px;
     display: flex; align-items: center; gap: 8px;
     padding: 8px 14px;
-    background: #d1fae5; border: 1px solid rgba(15,118,110,.25);
+    background: #d1fae5; border: 1px solid rgba(188,90,60,.25);
     border-radius: 8px;
     font-size: 13px; color: var(--fm-green); font-weight: 600;
     width: fit-content;
@@ -772,7 +772,7 @@ function _doSaveUpdatedFees(cls, sec) {
 }
 .fm-btn:hover:not(:disabled) { opacity: .86; transform: translateY(-1px); }
 .fm-btn:disabled { opacity: .45; cursor: not-allowed; transform: none; }
-.fm-btn-primary { background: var(--fm-teal);  color: #fff; box-shadow: 0 2px 10px rgba(15,118,110,.28); }
+.fm-btn-primary { background: var(--fm-teal);  color: #fff; box-shadow: 0 2px 10px rgba(188,90,60,.28); }
 .fm-btn-amber   { background: var(--fm-amber); color: #fff; box-shadow: 0 2px 10px rgba(217,119,6,.22); }
 .fm-btn-success { background: var(--fm-green); color: #fff; box-shadow: 0 2px 10px rgba(21,128,61,.22); }
 
@@ -831,7 +831,7 @@ function _doSaveUpdatedFees(cls, sec) {
 }
 .fm-num-input:focus {
     border-color: var(--fm-teal);
-    box-shadow: 0 0 0 2px rgba(15,118,110,.12);
+    box-shadow: 0 0 0 2px rgba(188,90,60,.12);
     background: #fff;
 }
 

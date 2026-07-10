@@ -21,10 +21,10 @@ $esc = function($v) { return htmlspecialchars($v, ENT_QUOTES, 'UTF-8'); };
     <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.5.0/css/all.min.css">
     <style>
         :root {
-            --gold:#0f766e; --gold2:#0d6b63; --gold3:#14b8a6;
-            --gold-dim:rgba(15,118,110,.10); --gold-ring:rgba(15,118,110,.22);
+            --gold:#BC5A3C; --gold2:#9E4830; --gold3:#D4725C;
+            --gold-dim:rgba(188,90,60,.10); --gold-ring:rgba(188,90,60,.22);
             --bg:#f0f7f5; --bg2:#ffffff; --bg3:#e6f4f1;
-            --border:rgba(15,118,110,.15);
+            --border:rgba(188,90,60,.15);
             --t1:#0c1e38; --t2:#1a5c56; --t3:#5a9e98;
             --r:12px;
             --font-d:'Syne',sans-serif; --font-b:'Plus Jakarta Sans',sans-serif;
@@ -316,7 +316,7 @@ $esc = function($v) { return htmlspecialchars($v, ENT_QUOTES, 'UTF-8'); };
              to the parent via the SMS notification. -->
         <div id="receiptSection" style="display:none;margin-top:20px;">
             <a id="receiptLink" target="_blank" rel="noopener"
-               style="display:inline-block;padding:12px 22px;background:#0f766e;color:#fff;border-radius:8px;text-decoration:none;font-weight:600;font-size:14px;">
+               style="display:inline-block;padding:12px 22px;background:#BC5A3C;color:#fff;border-radius:8px;text-decoration:none;font-weight:600;font-size:14px;">
                 <i class="fa-solid fa-file-pdf" style="margin-right:6px;"></i> Download Receipt (PDF)
             </a>
             <p style="font-size:12px;color:var(--t3);margin-top:8px;">
@@ -330,7 +330,7 @@ $esc = function($v) { return htmlspecialchars($v, ENT_QUOTES, 'UTF-8'); };
                 <p style="font-size:13px;color:var(--t2);margin-bottom:8px;"><span id="payLabel">Admission fee</span> required:</p>
                 <p style="font-size:1.5rem;font-weight:800;color:var(--gold);">&#8377;<span id="payAmount">0</span></p>
             </div>
-            <button id="payBtn" class="pf-submit" style="background:#0f766e;max-width:320px;margin:0 auto;" onclick="initiatePayment()">
+            <button id="payBtn" class="pf-submit" style="background:#BC5A3C;max-width:320px;margin:0 auto;" onclick="initiatePayment()">
                 <i class="fa-solid fa-credit-card"></i> Pay Now
             </button>
         </div>
@@ -488,7 +488,7 @@ function launchRazorpay(order) {
             app_id:    window._appId,
             payment_id: order.payment_id
         },
-        theme: { color: '#0f766e' },
+        theme: { color: '#BC5A3C' },
         // Razorpay calls this on success. We then verify the signature
         // server-side via payment_callback — never trust the client.
         handler: function(response) {

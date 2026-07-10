@@ -486,7 +486,7 @@ function tbl(){
 
         // Cycle badge
         var cyc=p.billing_cycle||'annual';
-        var cycC=cyc==='monthly'?'#2563eb':(cyc==='quarterly'?'#8b5cf6':'#0f766e');
+        var cycC=cyc==='monthly'?'#2563eb':(cyc==='quarterly'?'#8b5cf6':'#BC5A3C');
 
         // Period
         var per='—';

@@ -40,7 +40,7 @@
 
 /* Badges */
 .al-badge{display:inline-block;padding:3px 10px;border-radius:20px;font-size:10.5px;font-weight:600;letter-spacing:.3px}
-.al-b-teal{background:rgba(15,118,110,.12);color:var(--gold)}
+.al-b-teal{background:rgba(188,90,60,.12);color:var(--gold)}
 .al-b-blue{background:rgba(59,130,246,.12);color:#3b82f6}
 .al-b-amber{background:rgba(217,119,6,.12);color:#d97706}
 .al-b-green{background:rgba(22,163,74,.12);color:#16a34a}

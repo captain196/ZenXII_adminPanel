@@ -355,7 +355,7 @@
     /* Resolve DS tokens once for the charts. */
     var PALETTE = {
         green:   cssVar('--att-green', '#16a34a'),
-        teal:    cssVar('--att-teal', '#0f766e'),
+        teal:    cssVar('--att-teal', '#BC5A3C'),
         amber:   cssVar('--att-amber', '#d97706'),
         red:     cssVar('--att-red', '#dc2626'),
         blue:    cssVar('--att-blue', '#2563eb'),

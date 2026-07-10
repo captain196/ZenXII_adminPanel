@@ -33,8 +33,12 @@
     # Prevent MIME-type sniffing
     Header always set X-Content-Type-Options "nosniff"
 
-    # Clickjacking protection
-    Header always set X-Frame-Options "DENY"
+    # Clickjacking protection. Default DENY; the attendance tab-shell hosts
+    # pages in a SAME-ORIGIN iframe via ?embed=1, so those requests (and only
+    # those) are relaxed to SAMEORIGIN — mirrors MY_Controller's PHP branch.
+    SetEnvIfExpr "%{QUERY_STRING} =~ /(^|&)embed=1(&|$)/" ATT_EMBED=1
+    Header always set X-Frame-Options "DENY" env=!ATT_EMBED
+    Header always set X-Frame-Options "SAMEORIGIN" env=ATT_EMBED
 
     # Disable server signature leakage
     Header always unset X-Powered-By

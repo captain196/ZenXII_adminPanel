@@ -18,7 +18,7 @@
   <div class="fm-subtabs" style="display:flex;gap:4px;margin:4px 0 16px;border-bottom:1px solid var(--border,#e5e7eb);">
     <a href="<?= base_url('fee_management/discounts') ?>"
        class="fm-subtab fm-subtab--active"
-       style="padding:10px 18px;border-bottom:2px solid var(--gold,#0f766e);color:var(--gold,#0f766e);font-weight:600;text-decoration:none;">
+       style="padding:10px 18px;border-bottom:2px solid var(--gold,#BC5A3C);color:var(--gold,#BC5A3C);font-weight:600;text-decoration:none;">
       <i class="fa fa-tags"></i> Discounts
     </a>
     <a href="<?= base_url('fee_management/scholarships') ?>"
@@ -288,10 +288,10 @@
 :root {
   --fm-navy: var(--t1, #0f1f3d);
   --fm-navy2: var(--t2, #1a2d52);
-  --fm-teal: var(--gold, #0f766e);
+  --fm-teal: var(--gold, #BC5A3C);
   --fm-teal-dim: var(--gold-dim, rgba(13,115,119,.10));
   --fm-teal-ring: var(--gold-ring, rgba(13,115,119,.22));
-  --fm-sky: var(--gold-dim, rgba(15,118,110,.10));
+  --fm-sky: var(--gold-dim, rgba(188,90,60,.10));
   --fm-gold: #d97706;
   --fm-red: #E05C6F;
   --fm-green: #15803d;

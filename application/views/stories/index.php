@@ -24,7 +24,7 @@
 .st-stat{background:var(--card,var(--bg2));border:1px solid var(--border);border-radius:var(--r,10px);padding:18px;display:flex;align-items:center;gap:14px;transition:transform .15s,box-shadow .15s}
 .st-stat:hover{transform:translateY(-2px);box-shadow:var(--sh)}
 .st-stat-icon{width:44px;height:44px;border-radius:11px;display:flex;align-items:center;justify-content:center;font-size:18px;flex-shrink:0}
-.st-stat-icon.teal{background:rgba(15,118,110,.12);color:var(--gold)}
+.st-stat-icon.teal{background:rgba(188,90,60,.12);color:var(--gold)}
 .st-stat-icon.blue{background:rgba(59,130,246,.12);color:#3b82f6}
 .st-stat-icon.amber{background:rgba(245,158,11,.12);color:#f59e0b}
 .st-stat-icon.rose{background:rgba(239,68,68,.12);color:#ef4444}
@@ -68,7 +68,7 @@
 .st-badge-rose{background:rgba(239,68,68,.12);color:#ef4444}
 .st-badge-purple{background:rgba(139,92,246,.12);color:#8b5cf6}
 .st-badge-gray{background:rgba(156,163,175,.12);color:#9ca3af}
-.st-badge-teal{background:rgba(15,118,110,.12);color:var(--gold)}
+.st-badge-teal{background:rgba(188,90,60,.12);color:var(--gold)}
 
 /* Story Grid */
 .st-grid{display:grid;grid-template-columns:repeat(auto-fill,minmax(260px,1fr));gap:16px}
@@ -97,7 +97,7 @@
 .st-story-caption{font-size:12px;color:var(--t2);line-height:1.4;display:-webkit-box;-webkit-line-clamp:2;-webkit-box-orient:vertical;overflow:hidden;margin-bottom:8px;min-height:34px}
 .st-story-audience{display:inline-flex;align-items:center;gap:4px;font-size:10px;color:var(--t2);background:var(--bg3);border:1px solid var(--border);border-radius:6px;padding:2px 7px;margin-bottom:8px;max-width:100%;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
 /* Admin-upload indeterminate "Publishing…" bar (server-side Storage+Firestore phase after bytes reach 100%). */
-#asProgressBar.as-indeterminate{width:100%!important;background:repeating-linear-gradient(90deg,#0f766e 0,#14b8a6 12px,#0f766e 24px);background-size:48px 100%;animation:asStripe 1s linear infinite}
+#asProgressBar.as-indeterminate{width:100%!important;background:repeating-linear-gradient(90deg,#BC5A3C 0,#D4725C 12px,#BC5A3C 24px);background-size:48px 100%;animation:asStripe 1s linear infinite}
 #asProgressBar.as-indeterminate ~ *,.as-indeterminate-hide{display:none}
 @keyframes asStripe{from{background-position:0 0}to{background-position:48px 0}}
 .st-story-meta{display:flex;align-items:center;justify-content:space-between;font-size:10px;color:var(--t3);font-family:var(--font-m)}
@@ -287,7 +287,7 @@
                     <span id="asProgressLabel">Uploading</span> <span id="asProgressPct">0</span><span class="as-pct-sign">%</span>
                 </div>
                 <div style="height:6px;background:#e2e8f0;border-radius:3px;overflow:hidden;">
-                    <div id="asProgressBar" style="height:100%;background:linear-gradient(90deg,#0f766e,#14b8a6);width:0%;transition:width .2s;"></div>
+                    <div id="asProgressBar" style="height:100%;background:linear-gradient(90deg,#BC5A3C,#D4725C);width:0%;transition:width .2s;"></div>
                 </div>
             </div>
 
@@ -297,7 +297,7 @@
                     Cancel
                 </button>
                 <button type="submit" id="asSubmitBtn" onclick="ST.submitUpload()"
-                        style="padding:10px 22px;background:linear-gradient(135deg,#0f766e,#0d5a55);color:#fff;border:none;border-radius:8px;font-weight:700;cursor:pointer;box-shadow:0 4px 12px rgba(15,118,110,.25);">
+                        style="padding:10px 22px;background:linear-gradient(135deg,#BC5A3C,#0d5a55);color:#fff;border:none;border-radius:8px;font-weight:700;cursor:pointer;box-shadow:0 4px 12px rgba(188,90,60,.25);">
                     <i class="fa fa-paper-plane"></i> Publish Story
                 </button>
             </div>
@@ -1188,8 +1188,8 @@ ST.renderDailyChart = function(data) {
             datasets: [{
                 label: 'Stories',
                 data: values,
-                backgroundColor: 'rgba(15,118,110,.35)',
-                borderColor: '#0f766e',
+                backgroundColor: 'rgba(188,90,60,.35)',
+                borderColor: '#BC5A3C',
                 borderWidth: 1,
                 borderRadius: 4,
                 maxBarThickness: 24
@@ -1215,7 +1215,7 @@ ST.renderViewDistChart = function(dist) {
 
     var buckets = ['0', '1-10', '11-50', '51-100', '100+'];
     var values = buckets.map(function(b) { return dist[b] || 0; });
-    var colors = ['#9ca3af', '#3b82f6', '#0f766e', '#f59e0b', '#ef4444'];
+    var colors = ['#9ca3af', '#3b82f6', '#BC5A3C', '#f59e0b', '#ef4444'];
 
     ST.charts.viewDist = new Chart(ctx, {
         type: 'doughnut',

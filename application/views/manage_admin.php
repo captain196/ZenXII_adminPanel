@@ -705,7 +705,7 @@
 .ma-card-head {
     display: flex; align-items: center; justify-content: space-between;
     padding: 0 24px; height: 48px;
-    background: linear-gradient(90deg, var(--ma-gold) 0%, var(--gold2,#0d6b63) 100%);
+    background: linear-gradient(90deg, var(--ma-gold) 0%, var(--gold2,#9E4830) 100%);
     color: #ffffff;
     font-size: 13px; font-weight: 700; font-family: var(--font-b);
 }
@@ -720,7 +720,7 @@
 .ma-tbl-wrap { overflow-x: auto; }
 .ma-tbl { width: 100%; border-collapse: collapse; font-size: 13px; }
 .ma-tbl thead th {
-    background: linear-gradient(90deg, var(--ma-gold) 0%, var(--gold2,#0d6b63) 100%);
+    background: linear-gradient(90deg, var(--ma-gold) 0%, var(--gold2,#9E4830) 100%);
     color: #ffffff; padding: 13px 16px;
     font-size: 12px; font-weight: 700; font-family: var(--font-b);
     text-align: left; white-space: nowrap;
@@ -743,7 +743,7 @@
 .ma-role-badge {
     display: inline-block; padding: 3px 10px;
     background: var(--ma-dim); color: var(--ma-gold);
-    border: 1px solid rgba(15,118,110,.3);
+    border: 1px solid rgba(188,90,60,.3);
     border-radius: 20px; font-size: 11px; font-weight: 700;
     font-family: var(--font-b);
 }
@@ -836,7 +836,7 @@
 }
 .ma-btn:disabled { opacity: .5; cursor: not-allowed; }
 .ma-btn-primary {
-    background: linear-gradient(135deg, var(--ma-gold) 0%, var(--gold2,#0d6b63) 100%);
+    background: linear-gradient(135deg, var(--ma-gold) 0%, var(--gold2,#9E4830) 100%);
     color: #ffffff;
 }
 .ma-btn-primary:not(:disabled):hover { opacity: .9; transform: translateY(-1px); }
@@ -890,7 +890,7 @@
     display: flex; align-items: center; justify-content: space-between;
     padding: 16px 24px;
     background: linear-gradient(130deg, #0c1e38 0%, #070f1c 100%);
-    border-bottom: 1px solid rgba(15,118,110,.2);
+    border-bottom: 1px solid rgba(188,90,60,.2);
     position: sticky; top: 0; z-index: 2;
 }
 .ma-modal-title { font-size: 14px; font-weight: 700; color: #e6f4f1; display: flex; align-items: center; gap: 8px; }

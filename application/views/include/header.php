@@ -95,6 +95,7 @@
         // (for CI's built-in csrf_protection which reads $_POST, not headers).
         (function () {
             var _fetch = window.fetch;
+            var LOGIN_URL = '<?= base_url("admin_login") ?>';
             window.fetch = function (input, init) {
                 init = init || {};
                 if ((init.method || 'GET').toUpperCase() === 'POST') {
@@ -114,14 +115,55 @@
                         init.body += '&' + csrfName + '=' + encodeURIComponent(csrfToken);
                     }
                 }
-                return _fetch.call(this, input, init);
+                // Session-expiry guard for fetch() (the jQuery ajaxComplete handler
+                // in the footer never fires for fetch, and every attendance page
+                // uses fetch). On a 401/403 whose body reads as an auth failure,
+                // break OUT of any embed iframe to the login page. (FE-C1)
+                return _fetch.call(this, input, init).then(function (res) {
+                    if (res && (res.status === 401 || res.status === 403)) {
+                        res.clone().text().then(function (txt) {
+                            var msg = '';
+                            try { msg = (JSON.parse(txt || '{}').message) || ''; } catch (e) {}
+                            if (/session|expired|log\s*in|deactivat|subscription|unauthor/i.test(msg)) {
+                                try { (window.top || window).location.href = LOGIN_URL; }
+                                catch (e) { window.location.href = LOGIN_URL; }
+                            }
+                        }).catch(function () {});
+                    }
+                    return res;
+                });
             };
         }());
     </script>
+<?php
+    /* Embed mode — when a page is loaded with ?embed=1 (used by the attendance
+       tab-shell pages that host each sub-page in an isolated <iframe>), emit the
+       full <head> assets + scripts but hide the topbar / sidebar / footer chrome
+       and zero the AdminLTE content offset. The hosted page keeps ALL its own JS
+       and element IDs — no DOM merge, no collisions. Read straight off the query
+       string so NO controller method has to change. */
+    $att_embed = ($this->input->get('embed') === '1');
+?>
+<?php if ($att_embed): ?>
+    <style id="att-embed-css">
+        html, body { background: transparent !important; }
+        .main-header, .main-sidebar, .main-footer, .control-sidebar, .control-sidebar-bg,
+        #zxLoaderOverlay { display: none !important; }
+        /* No sidebar offset AND no topbar offset — the panel reserves a top margin
+           for the fixed topbar; with the topbar hidden that margin would expose the
+           dark body strip behind it (the "dark bar"). Zero both. */
+        .content-wrapper { margin-left: 0 !important; margin-top: 0 !important; box-shadow: none !important; }
+        body.att-embed { overflow-x: hidden !important; background: transparent !important; }
+        /* Breadcrumb is redundant inside a shell tab — the tab already names the page. */
+        body.att-embed .att-breadcrumb { display: none !important; }
+        body.att-embed .content > .container-fluid,
+        body.att-embed .content { padding-top: 14px !important; }
+    </style>
+<?php endif; ?>
 </head>
 
 
-<body class="hold-transition skin-blue sidebar-mini">
+<body class="hold-transition skin-blue sidebar-mini<?= $att_embed ? ' att-embed' : '' ?>">
 <script>
   /* Restore persisted sidebar-collapse state before paint (desktop only —
      on mobile AdminLTE uses the off-canvas 'sidebar-open' model instead). */
@@ -136,6 +178,7 @@
 <?php $this->load->view('include/zenxii_loader'); ?>
 
 <!-- ═══════════════════ TOP NAVBAR ═══════════════════ -->
+<?php if (!$att_embed): ?>
 <header class="main-header">
     <div class="logo">
         <a href="<?= base_url('admin') ?>" class="g-logo-link">
@@ -268,9 +311,16 @@
         </div>
     </nav>
 </header>
+<?php else: ?>
+<!-- Embed mode (attendance tab-shell iframes): topbar suppressed. Previously this
+     full navbar (logo, global search, bell + its pollers, session switcher, user
+     menu) was built then hidden with CSS in every iframe. Empty shell kept so
+     AdminLTE Layout/PushMenu selectors resolve to a no-op instead of nothing. -->
+<header class="main-header" aria-hidden="true"></header>
+<?php endif; ?>
 
 <!-- ── Create Session Modal — at body level so Bootstrap stacking works ── -->
-<?php if (in_array(($admin_role ?? ''), ['Super Admin', 'School Super Admin'])): ?>
+<?php if (!$att_embed && in_array(($admin_role ?? ''), ['Super Admin', 'School Super Admin'])): ?>
 <div class="modal fade" id="gCreateSessModal" tabindex="-1" role="dialog">
     <div class="modal-dialog modal-sm modal-dialog-centered" role="document">
         <div class="modal-content">
@@ -300,18 +350,21 @@
 <?php endif; ?>
 
 <!-- ═══════════════════ SUBSCRIPTION WARNING BANNER ═══════════════════ -->
-<?php if (!empty($subscription_warning)): ?>
+<?php /* Embed mode: skip the fixed-position banner — the host attendance shell page
+         (non-embed) already renders it; inside an iframe it would double up and its
+         position:fixed anchors to the iframe, not the viewport. */ ?>
+<?php if (!$att_embed && !empty($subscription_warning)): ?>
 <div id="subWarnBanner" style="
     position:fixed;top:var(--hh);left:0;right:0;z-index:1039;
-    background:linear-gradient(90deg,#053d38,#0a5c55,#053d38);
-    border-bottom:1px solid rgba(15,118,110,.4);
+    background:linear-gradient(90deg,#3A1811,#5A2A1C,#3A1811);
+    border-bottom:1px solid rgba(188,90,60,.4);
     padding:8px 20px;display:flex;align-items:center;gap:10px;
     font-family:var(--font-b);font-size:12.5px;color:#b2e0da;
     box-shadow:0 2px 12px rgba(0,0,0,.35);">
-    <i class="fa fa-exclamation-triangle" style="color:#14b8a6;font-size:14px;flex-shrink:0;"></i>
+    <i class="fa fa-exclamation-triangle" style="color:#D4725C;font-size:14px;flex-shrink:0;"></i>
     <span style="flex:1;"><?= htmlspecialchars($subscription_warning, ENT_QUOTES, 'UTF-8') ?></span>
     <a href="<?= base_url('admin_login/logout') ?>"
-       style="background:rgba(15,118,110,.25);border:1px solid rgba(15,118,110,.5);color:#14b8a6;
+       style="background:rgba(188,90,60,.25);border:1px solid rgba(188,90,60,.5);color:#D4725C;
               padding:3px 10px;border-radius:6px;font-size:11.5px;font-weight:700;white-space:nowrap;
               text-decoration:none;">
         Renew Now
@@ -353,6 +406,7 @@
 <?php endif; ?>
 
 <!-- ═══════════════════ SIDEBAR ═══════════════════ -->
+<?php if (!$att_embed): ?>
 <aside class="main-sidebar">
     <section class="sidebar">
         <?php
@@ -428,13 +482,13 @@
 
             <?php if (isset($school_features) && in_array('Staff Management', $school_features) && $can('HR')): ?>
             <li class="treeview">
-                <a href="#"><i class="fa fa-id-card-o"></i><span>HR &amp; Payroll</span><span class="pull-right-container"><i class="fa fa-angle-left pull-right"></i></span></a>
+                <a href="#"><i class="fa fa-id-card-o"></i><span>HR &amp; Payroll</span><span class="pull-right-container"><small class="label pull-right bg-red approval-badge" id="badgeHr" style="display:none">0</small><i class="fa fa-angle-left pull-right"></i></span></a>
                 <ul class="treeview-menu">
                     <li><a href="<?= base_url('hr') ?>"><i class="fa fa-circle-o"></i>Dashboard</a></li>
                     <li><a href="<?= base_url('hr/departments') ?>"><i class="fa fa-circle-o"></i>Departments</a></li>
                     <li><a href="<?= base_url('hr/recruitment') ?>"><i class="fa fa-circle-o"></i>Recruitment</a></li>
                     <li><a href="<?= base_url('ats') ?>"><i class="fa fa-circle-o"></i>Applicant Tracking</a></li>
-                    <li><a href="<?= base_url('hr/leaves') ?>"><i class="fa fa-circle-o"></i>Leave Management</a></li>
+                    <li><a href="<?= base_url('hr/leaves') ?>"><i class="fa fa-circle-o"></i>Leave Management<small class="label pull-right bg-red" id="badgeLeaveMgmt" style="display:none">0</small></a></li>
                     <li><a href="<?= base_url('hr/payroll') ?>"><i class="fa fa-circle-o"></i>Payroll</a></li>
                     <li><a href="<?= base_url('hr/appraisals') ?>"><i class="fa fa-circle-o"></i>Appraisals</a></li>
                 </ul>
@@ -548,15 +602,17 @@
             <li class="g-sec">Daily Operations</li>
             <li class="treeview">
                 <a href="#"><i class="fa fa-calendar-check-o"></i><span>Attendance</span>
-                    <span class="pull-right-container"><i class="fa fa-angle-left pull-right"></i></span>
+                    <span class="pull-right-container"><small class="label pull-right bg-red approval-badge" id="badgeAttendance" style="display:none">0</small><i class="fa fa-angle-left pull-right"></i></span>
                 </a>
                 <ul class="treeview-menu">
+                    <!-- Phase 2 IA: 6 job-based pages. Mark / Approvals / Reports
+                         are tab-shells hosting the former sub-pages as tabs, so the
+                         flat 11-item list collapses to these six. -->
                     <li><a href="<?= base_url('attendance') ?>"><i class="fa fa-circle-o"></i>Dashboard</a></li>
-                    <li><a href="<?= base_url('attendance/student') ?>"><i class="fa fa-circle-o"></i>Student Attendance</a></li>
-                    <li><a href="<?= base_url('attendance/staff') ?>"><i class="fa fa-circle-o"></i>Staff Attendance</a></li>
-                    <li><a href="<?= base_url('attendance/scan') ?>"><i class="fa fa-circle-o"></i>QR Scan</a></li>
-                    <li><a href="<?= base_url('attendance/analytics') ?>"><i class="fa fa-circle-o"></i>Analytics</a></li>
-                    <li><a href="<?= base_url('attendance/student_leaves') ?>"><i class="fa fa-circle-o"></i>Student Leave</a></li>
+                    <li><a href="<?= base_url('attendance/mark') ?>"><i class="fa fa-circle-o"></i>Mark Attendance</a></li>
+                    <li><a href="<?= base_url('attendance/approvals') ?>"><i class="fa fa-circle-o"></i>Approvals<small class="label pull-right bg-red" id="badgeApprovals" style="display:none">0</small></a></li>
+                    <li><a href="<?= base_url('attendance/control') ?>"><i class="fa fa-circle-o"></i>Control &amp; Locks</a></li>
+                    <li><a href="<?= base_url('attendance/reports') ?>"><i class="fa fa-circle-o"></i>Reports &amp; Logs</a></li>
                     <li><a href="<?= base_url('attendance/settings') ?>"><i class="fa fa-circle-o"></i>Settings</a></li>
                 </ul>
             </li>
@@ -752,6 +808,13 @@
         <a href="<?= base_url('admin_login/logout') ?>" class="g-av-out" title="Logout"><i class="fa fa-sign-out"></i></a>
     </div>
 </aside>
+<?php else: ?>
+<!-- Embed mode: sidebar suppressed. Skips the entire RBAC menu tree render (the
+     $can() permission check per <li>, all base_url() calls) plus its DOM — the
+     largest per-iframe cost. Empty shell kept so AdminLTE Tree/Layout selectors
+     ('.main-sidebar', '[data-widget="tree"]') no-op safely; CSS already hid it. -->
+<aside class="main-sidebar" aria-hidden="true"><section class="sidebar"></section></aside>
+<?php endif; ?>
 
         <!-- ═══════════════════ THEME + BELL SCRIPT ═══════════════════ -->
 <script>
@@ -941,10 +1004,17 @@
     // Shared tasks fetch — the dashboard panel (home.php) reuses the SAME
     // promise instead of refiring the endpoint, eliminating a duplicate
     // 10-second call on every dashboard load.
-    window.__graderTasksPromise = window.__graderTasksPromise || fetch(
-        '<?= base_url("notifications/get_tasks") ?>',
-        {cache:'no-store'}
-    ).then(function(r){return r.json();});
+    // Embed mode (attendance tab-shell iframes): do NOT fire the tasks endpoint —
+    // the bell/topbar that consumes it is suppressed. Resolve to an empty object so
+    // any caller (e.g. home.php dashboard reuse) stays safe. Function defs unchanged.
+    window.__graderTasksPromise = window.__graderTasksPromise || (
+        <?= $att_embed ? 'true' : 'false' ?>
+            ? Promise.resolve({})
+            : fetch(
+                '<?= base_url("notifications/get_tasks") ?>',
+                {cache:'no-store'}
+              ).then(function(r){return r.json();})
+    );
 
     function fetchTasks(){
         window.__graderTasksPromise
@@ -967,7 +1037,7 @@
         tData.slice(0,8).forEach(function(t){
             var href=t.action?(base+t.action):'#';
             h+='<a class="g-task-item" href="'+esc(href)+'">'
-              +'<div class="g-task-icon" style="background:'+(t.color||'#0f766e')+'"><i class="fa '+(t.icon||'fa-tasks')+'"></i></div>'
+              +'<div class="g-task-icon" style="background:'+(t.color||'#BC5A3C')+'"><i class="fa '+(t.icon||'fa-tasks')+'"></i></div>'
               +'<div style="flex:1;min-width:0">'
               +'<div class="g-task-title">'+esc(t.title)+'</div>'
               +'<div class="g-task-detail">'+esc(t.detail||'')+'</div>'
@@ -1018,13 +1088,59 @@
     //     Saves another ~80 % of background calls in practice.
     //   - Refresh is also re-fired on tab-visible so a returning user
     //     sees an up-to-date count immediately (no stale cache).
-    fetchBell();
-    fetchTasks();
-    var _bellTimer  = setInterval(function(){ if(!document.hidden) fetchBell();  }, 300000); // 5 min
-    var _tasksTimer = setInterval(function(){ if(!document.hidden) fetchTasks(); }, 360000); // 6 min
-    document.addEventListener('visibilitychange', function(){
-        if (!document.hidden) { fetchBell(); fetchTasks(); }
-    });
+    // Embed mode: skip the bell/tasks network kickoffs AND the pollers entirely —
+    // the topbar bell UI they populate is suppressed in iframes. All function defs
+    // above are left intact; we only avoid firing the fetches/intervals here.
+    if (!<?= $att_embed ? 'true' : 'false' ?>) {
+        fetchBell();
+        fetchTasks();
+        var _bellTimer  = setInterval(function(){ if(!document.hidden) fetchBell();  }, 300000); // 5 min
+        var _tasksTimer = setInterval(function(){ if(!document.hidden) fetchTasks(); }, 360000); // 6 min
+        document.addEventListener('visibilitychange', function(){
+            if (!document.hidden) { fetchBell(); fetchTasks(); }
+        });
+    }
+})();
+</script>
+
+<!-- Live pending-approval badges (Attendance ▸ Approvals, HR ▸ Leave Management).
+     When a module treeview is COLLAPSED the parent badge shows the count; when
+     it's OPEN the parent badge hides and the count "moves" to the sub-item. -->
+<style>
+.sidebar-menu .treeview.menu-open > a .approval-badge { display: none !important; }
+</style>
+<script>
+(function(){
+    // Embed mode: the sidebar holding the badge targets is suppressed, so this
+    // poller would no-op via the check below anyway — return first to guarantee
+    // zero network per iframe.
+    if (<?= $att_embed ? 'true' : 'false' ?>) return;
+    var URL = '<?= base_url("attendance/approval_badge_counts") ?>';
+    // Only poll when the user can actually see these menus (badge targets exist).
+    if (!document.getElementById('badgeAttendance') && !document.getElementById('badgeHr')) return;
+
+    function setBadge(id, n){
+        var el = document.getElementById(id);
+        if (!el) return;
+        if (n > 0){ el.textContent = (n > 99 ? '99+' : String(n)); el.style.display = ''; }
+        else      { el.textContent = '0'; el.style.display = 'none'; }
+    }
+    function poll(){
+        fetch(URL, { cache: 'no-store', credentials: 'same-origin' })
+            .then(function(r){ return r.ok ? r.json() : null; })
+            .then(function(j){
+                if (!j || j.status !== 'success') return;
+                var a = j.attendance || {}, l = j.leave || {};
+                setBadge('badgeAttendance', a.total || 0);
+                setBadge('badgeApprovals',  a.total || 0);
+                setBadge('badgeHr',         l.total || 0);
+                setBadge('badgeLeaveMgmt',  l.total || 0);
+            })
+            .catch(function(){});
+    }
+    poll();
+    setInterval(function(){ if (!document.hidden) poll(); }, 30000);
+    document.addEventListener('visibilitychange', function(){ if (!document.hidden) poll(); });
 })();
 </script>
 

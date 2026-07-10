@@ -10,7 +10,7 @@
    ───────────────────────────────────────────────────────────────────────── */
 :root {
     --nsa-navy:   #0c1e38;
-    --nsa-teal:   #0f766e;
+    --nsa-teal:   #BC5A3C;
     --nsa-sky:    #e6f4f1;
     --nsa-green:  #0d7a5f;
     --nsa-red:    #dc2626;
@@ -76,7 +76,7 @@
     font-family: 'Instrument Sans', sans-serif; outline: none;
     transition: border-color .14s, box-shadow .14s;
 }
-.nsa-search-input:focus { border-color: var(--nsa-teal); box-shadow: 0 0 0 3px rgba(15,118,110,.1); }
+.nsa-search-input:focus { border-color: var(--nsa-teal); box-shadow: 0 0 0 3px rgba(188,90,60,.1); }
 .nsa-search-clear {
     position: absolute; right: 8px; background: none; border: none; cursor: pointer;
     color: var(--nsa-muted); font-size: 12px; display: flex; align-items: center; justify-content: center;
@@ -131,7 +131,7 @@
 .nsa-id-badge {
     display: inline-block; padding: 3px 9px; background: var(--nsa-sky); color: var(--nsa-teal);
     border-radius: 20px; font-size: 12px; font-weight: 700; letter-spacing: .3px;
-    border: 1px solid rgba(15,118,110,.2);
+    border: 1px solid rgba(188,90,60,.2);
 }
 
 /* ── Name cell ── */
@@ -210,7 +210,7 @@
 }
 .nsa-btn:hover { opacity: .86; transform: translateY(-1px); }
 .nsa-btn-sm { padding: 6px 14px; font-size: 12.5px; }
-.nsa-btn-primary { background: var(--nsa-teal); color: #fff; box-shadow: 0 2px 10px rgba(15,118,110,.28); }
+.nsa-btn-primary { background: var(--nsa-teal); color: #fff; box-shadow: 0 2px 10px rgba(188,90,60,.28); }
 .nsa-btn-amber   { background: #d97706; color: #fff; box-shadow: 0 2px 10px rgba(217,119,6,.22); }
 .nsa-btn-ghost   { background: var(--nsa-white); color: var(--nsa-text); border: 1.5px solid var(--nsa-border); }
 .nsa-btn-ghost:hover { border-color: var(--nsa-teal); color: var(--nsa-teal); opacity: 1; }

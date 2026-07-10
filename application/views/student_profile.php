@@ -738,7 +738,7 @@ if (!empty($student['Doc']) && is_array($student['Doc'])) {
 /* ── Hero — always dark with gold accent ── */
 .sp-hero {
     background: linear-gradient(130deg, #0c1e38 0%, #070f1c 100%);
-    border: 1px solid rgba(15,118,110,.20);
+    border: 1px solid rgba(188,90,60,.20);
     border-radius: var(--r, 14px);
     padding: 28px 32px;
     display: flex;
@@ -755,7 +755,7 @@ if (!empty($student['Doc']) && is_array($student['Doc'])) {
     position: absolute;
     top: 0; left: 0; right: 0;
     height: 2px;
-    background: linear-gradient(90deg, var(--gold) 0%, rgba(15,118,110,.1) 100%);
+    background: linear-gradient(90deg, var(--gold) 0%, rgba(188,90,60,.1) 100%);
 }
 .sp-hero::after {
     content: '';
@@ -763,7 +763,7 @@ if (!empty($student['Doc']) && is_array($student['Doc'])) {
     right: -60px; top: -60px;
     width: 240px; height: 240px;
     border-radius: 50%;
-    background: rgba(15,118,110,.04);
+    background: rgba(188,90,60,.04);
     pointer-events: none;
 }
 
@@ -772,7 +772,7 @@ if (!empty($student['Doc']) && is_array($student['Doc'])) {
     border-radius: 50%;
     object-fit: cover;
     border: 3px solid var(--gold);
-    box-shadow: 0 4px 18px rgba(0,0,0,.4), 0 0 0 5px rgba(15,118,110,.12);
+    box-shadow: 0 4px 18px rgba(0,0,0,.4), 0 0 0 5px rgba(188,90,60,.12);
     flex-shrink: 0;
     position: relative;
     z-index: 1;
@@ -799,7 +799,7 @@ if (!empty($student['Doc']) && is_array($student['Doc'])) {
     font-weight: 500;
     background: rgba(255,255,255,.07);
     color: #94c9c3;
-    border: 1px solid rgba(15,118,110,.20);
+    border: 1px solid rgba(188,90,60,.20);
     font-family: var(--font-b);
 }
 .sp-badge-gold {
@@ -837,7 +837,7 @@ if (!empty($student['Doc']) && is_array($student['Doc'])) {
 .sp-btn:hover { transform: translateY(-1px); text-decoration: none; }
 
 .sp-btn-blue  { background: var(--gold); color: #ffffff; }
-.sp-btn-blue:hover  { background: var(--gold2, #0d6b63); box-shadow: 0 4px 14px rgba(15,118,110,.4); color: #ffffff; }
+.sp-btn-blue:hover  { background: var(--gold2, #9E4830); box-shadow: 0 4px 14px rgba(188,90,60,.4); color: #ffffff; }
 
 .sp-btn-green { background: var(--green, #3DD68C); color: #ffffff; }
 .sp-btn-green:hover { opacity: .88; }
@@ -845,9 +845,9 @@ if (!empty($student['Doc']) && is_array($student['Doc'])) {
 .sp-btn-ghost {
     background: rgba(255,255,255,.08);
     color: #94c9c3;
-    border: 1px solid rgba(15,118,110,.25);
+    border: 1px solid rgba(188,90,60,.25);
 }
-.sp-btn-ghost:hover { background: rgba(15,118,110,.12); color: var(--gold); border-color: var(--gold); }
+.sp-btn-ghost:hover { background: rgba(188,90,60,.12); color: var(--gold); border-color: var(--gold); }
 
 /* ── Tabs ── */
 .sp-tabs {
@@ -882,7 +882,7 @@ if (!empty($student['Doc']) && is_array($student['Doc'])) {
     background: var(--gold);
     color: #ffffff;
     font-weight: 700;
-    box-shadow: 0 2px 10px rgba(15,118,110,.3);
+    box-shadow: 0 2px 10px rgba(188,90,60,.3);
 }
 
 /* ── Panels ── */
@@ -945,7 +945,7 @@ if (!empty($student['Doc']) && is_array($student['Doc'])) {
 .sp-chip {
     background: var(--gold-dim);
     color: var(--gold);
-    border: 1px solid var(--gold-ring, rgba(15,118,110,.22));
+    border: 1px solid var(--gold-ring, rgba(188,90,60,.22));
     border-radius: 20px;
     padding: 4px 13px;
     font-size: 12px;
@@ -968,9 +968,9 @@ if (!empty($student['Doc']) && is_array($student['Doc'])) {
     transition: box-shadow var(--ease), transform var(--ease), border-color var(--ease);
 }
 .sp-doc-card:hover {
-    box-shadow: 0 4px 18px rgba(15,118,110,.15);
+    box-shadow: 0 4px 18px rgba(188,90,60,.15);
     transform: translateY(-2px);
-    border-color: var(--gold-ring, rgba(15,118,110,.22));
+    border-color: var(--gold-ring, rgba(188,90,60,.22));
 }
 .sp-doc-icon {
     width: 46px; height: 46px;
@@ -1020,7 +1020,7 @@ if (!empty($student['Doc']) && is_array($student['Doc'])) {
     transition: all var(--ease);
     font-family: var(--font-b);
 }
-.sp-doc-link:hover { background: var(--gold2, #0d6b63); color: #ffffff; text-decoration: none; }
+.sp-doc-link:hover { background: var(--gold2, #9E4830); color: #ffffff; text-decoration: none; }
 
 /* ── Tables ── */
 .sp-tbl-wrap { overflow-x: auto; }
@@ -1031,7 +1031,7 @@ if (!empty($student['Doc']) && is_array($student['Doc'])) {
     font-family: var(--font-b);
 }
 .sp-tbl th {
-    background: linear-gradient(90deg, var(--gold) 0%, var(--gold2, #0d6b63) 100%);
+    background: linear-gradient(90deg, var(--gold) 0%, var(--gold2, #9E4830) 100%);
     color: #ffffff;
     padding: 10px 13px;
     text-align: left;
@@ -1143,7 +1143,7 @@ if (!empty($student['Doc']) && is_array($student['Doc'])) {
 }
 .sp-disc-row input:focus {
     border-color: var(--gold);
-    box-shadow: 0 0 0 3px rgba(15,118,110,.15);
+    box-shadow: 0 0 0 3px rgba(188,90,60,.15);
 }
 
 /* ── Modal ── */

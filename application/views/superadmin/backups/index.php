@@ -58,7 +58,7 @@ $sch_cron_key  = $schedule['cron_key']    ?? '—';
             <div style="background:var(--bg2);border:1px solid var(--border);border-radius:12px;padding:16px 14px;">
                 <div style="font-size:10.5px;color:var(--t3);font-family:var(--font-m);margin-bottom:5px;text-transform:uppercase;letter-spacing:.5px;">Scheduled</div>
                 <div id="kpiAuto" style="font-size:24px;font-weight:800;color:var(--t1);font-family:var(--font-d);">—</div>
-                <div style="margin-top:5px;font-size:10px;color:var(--t4);"><i class="fa fa-clock-o" style="color:#14b8a6;margin-right:3px;"></i>Auto backups</div>
+                <div style="margin-top:5px;font-size:10px;color:var(--t4);"><i class="fa fa-clock-o" style="color:#D4725C;margin-right:3px;"></i>Auto backups</div>
             </div>
         </div>
         <div class="col-xs-6 col-sm-4 col-lg-2" style="margin-bottom:14px;">

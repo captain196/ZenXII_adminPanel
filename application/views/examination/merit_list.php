@@ -208,7 +208,7 @@
 .eml-th-rank{width:60px;text-align:center}
 .eml-th-num{text-align:right;width:90px}
 .eml-table td{padding:12px 16px;color:var(--t1);border-bottom:1px solid var(--border)}
-.eml-table tbody tr:nth-child(odd){background:rgba(15,118,110,.03)}
+.eml-table tbody tr:nth-child(odd){background:rgba(188,90,60,.03)}
 .eml-table tbody tr:hover{background:var(--gold-dim)}
 .eml-table tbody tr:last-child td{border-bottom:none}
 
@@ -248,7 +248,7 @@
   letter-spacing:.5px;padding:10px 16px;text-align:left;border-bottom:1px solid var(--border);
 }
 .eml-subj-table td{padding:10px 16px;color:var(--t1);border-bottom:1px solid var(--border)}
-.eml-subj-table tbody tr:nth-child(odd){background:rgba(15,118,110,.03)}
+.eml-subj-table tbody tr:nth-child(odd){background:rgba(188,90,60,.03)}
 .eml-subj-name{display:flex;align-items:center;gap:6px}
 .eml-subj-name i{color:var(--gold);font-size:12px}
 

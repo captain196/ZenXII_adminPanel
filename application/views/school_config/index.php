@@ -1067,7 +1067,7 @@
                             <input type="text" id="rccAccentHex" class="rcc-hex" value="#1a3a6b" maxlength="7" spellcheck="false">
                             <div class="rcc-swatches" id="rccSwatches">
                                 <button type="button" class="rcc-sw" data-c="#1a3a6b" style="background:#1a3a6b" title="Navy"></button>
-                                <button type="button" class="rcc-sw" data-c="#0f766e" style="background:#0f766e" title="Teal"></button>
+                                <button type="button" class="rcc-sw" data-c="#BC5A3C" style="background:#BC5A3C" title="Teal"></button>
                                 <button type="button" class="rcc-sw" data-c="#7c2d12" style="background:#7c2d12" title="Maroon"></button>
                                 <button type="button" class="rcc-sw" data-c="#4338ca" style="background:#4338ca" title="Indigo"></button>
                                 <button type="button" class="rcc-sw" data-c="#166534" style="background:#166534" title="Green"></button>
@@ -1789,7 +1789,7 @@ function _typeToConfirmDialog(opts) {
         hdr.style.cssText = 'padding:14px 18px;border-bottom:1px solid #e5e7eb;background:' + (opts.dangerous ? '#fef2f2' : '#f8fafc') + ';display:flex;align-items:center;gap:10px;';
         var icon = document.createElement('i');
         icon.className = 'fa ' + (opts.dangerous ? 'fa-exclamation-triangle' : 'fa-question-circle');
-        icon.style.cssText = 'font-size:20px;color:' + (opts.dangerous ? '#dc2626' : '#0f766e') + ';';
+        icon.style.cssText = 'font-size:20px;color:' + (opts.dangerous ? '#dc2626' : '#BC5A3C') + ';';
         hdr.appendChild(icon);
         var title = document.createElement('h4');
         title.style.cssText = 'margin:0;font-size:15px;font-weight:600;color:#0f172a;';
@@ -1822,7 +1822,7 @@ function _typeToConfirmDialog(opts) {
         btnConfirm.textContent = opts.confirmText || 'Confirm';
         btnConfirm.disabled = true;
         btnConfirm.style.cssText = 'padding:8px 16px;border-radius:8px;border:none;color:#fff;font-weight:600;cursor:pointer;'
-            + 'background:' + (opts.dangerous ? '#dc2626' : '#0f766e') + ';opacity:.5;';
+            + 'background:' + (opts.dangerous ? '#dc2626' : '#BC5A3C') + ';opacity:.5;';
         ftr.appendChild(btnCancel);
         ftr.appendChild(btnConfirm);
 
@@ -1900,7 +1900,7 @@ function _confirmModal(opts) {
         hdr.style.cssText = 'padding:14px 18px;border-bottom:1px solid #e5e7eb;background:' + (opts.dangerous ? '#fef2f2' : '#f8fafc') + ';display:flex;align-items:center;gap:10px;';
         var icon = document.createElement('i');
         icon.className = 'fa ' + (opts.dangerous ? 'fa-exclamation-triangle' : 'fa-info-circle');
-        icon.style.cssText = 'font-size:20px;color:' + (opts.dangerous ? '#dc2626' : '#0f766e') + ';';
+        icon.style.cssText = 'font-size:20px;color:' + (opts.dangerous ? '#dc2626' : '#BC5A3C') + ';';
         hdr.appendChild(icon);
         var title = document.createElement('h4');
         title.style.cssText = 'margin:0;font-size:15px;font-weight:600;color:#0f172a;';
@@ -1926,7 +1926,7 @@ function _confirmModal(opts) {
         btnConfirm.type = 'button';
         btnConfirm.textContent = opts.alertOnly ? 'OK' : (opts.confirmText || 'Confirm');
         btnConfirm.style.cssText = 'padding:8px 16px;border-radius:8px;border:none;color:#fff;font-weight:600;cursor:pointer;'
-            + 'background:' + (opts.dangerous ? '#dc2626' : '#0f766e') + ';';
+            + 'background:' + (opts.dangerous ? '#dc2626' : '#BC5A3C') + ';';
         ftr.appendChild(btnConfirm);
 
         card.appendChild(hdr);

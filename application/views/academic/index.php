@@ -70,7 +70,7 @@ html{font-size:16px !important}
 .ac-badge-hol{background:rgba(220,38,38,.12);color:#dc2626}
 .ac-badge-exam{background:rgba(37,99,235,.12);color:#2563eb}
 .ac-badge-meet{background:rgba(234,88,12,.12);color:#ea580c}
-.ac-badge-event{background:rgba(15,118,110,.12);color:var(--gold)}
+.ac-badge-event{background:rgba(188,90,60,.12);color:var(--gold)}
 .ac-badge-act{background:rgba(139,92,246,.12);color:#8b5cf6}
 .ac-badge-asgn{background:rgba(37,99,235,.12);color:#2563eb}
 .ac-badge-comp{background:rgba(22,163,74,.12);color:#16a34a}
@@ -161,7 +161,7 @@ html{font-size:16px !important}
 .ac-cal-dot.holiday{background:rgba(220,38,38,.15);color:#dc2626}
 .ac-cal-dot.exam{background:rgba(37,99,235,.15);color:#2563eb}
 .ac-cal-dot.meeting{background:rgba(234,88,12,.15);color:#ea580c}
-.ac-cal-dot.event{background:rgba(15,118,110,.15);color:var(--gold)}
+.ac-cal-dot.event{background:rgba(188,90,60,.15);color:var(--gold)}
 .ac-cal-dot.activity{background:rgba(139,92,246,.15);color:#8b5cf6}
 
 /* ── Progress Bar ── */
@@ -806,7 +806,7 @@ function _confirmModal(opts) {
         hdr.style.cssText = 'padding:14px 18px;border-bottom:1px solid #e5e7eb;background:' + (opts.dangerous ? '#fef2f2' : '#f8fafc') + ';display:flex;align-items:center;gap:10px;';
         var icon = document.createElement('i');
         icon.className = 'fa ' + (opts.dangerous ? 'fa-exclamation-triangle' : 'fa-info-circle');
-        icon.style.cssText = 'font-size:20px;color:' + (opts.dangerous ? '#dc2626' : '#0f766e') + ';';
+        icon.style.cssText = 'font-size:20px;color:' + (opts.dangerous ? '#dc2626' : '#BC5A3C') + ';';
         hdr.appendChild(icon);
         var title = document.createElement('h4');
         title.style.cssText = 'margin:0;font-size:15px;font-weight:600;color:#0f172a;';
@@ -832,7 +832,7 @@ function _confirmModal(opts) {
         btnConfirm.type = 'button';
         btnConfirm.textContent = opts.alertOnly ? 'OK' : (opts.confirmText || 'Confirm');
         btnConfirm.style.cssText = 'padding:8px 16px;border-radius:8px;border:none;color:#fff;font-weight:600;cursor:pointer;'
-            + 'background:' + (opts.dangerous ? '#dc2626' : '#0f766e') + ';';
+            + 'background:' + (opts.dangerous ? '#dc2626' : '#BC5A3C') + ';';
         ftr.appendChild(btnConfirm);
 
         card.appendChild(hdr);
@@ -2167,7 +2167,7 @@ AC.tt = {
     view:'class', // 'class' or 'teacher'
     filter:'',    // class filter
     _subColors:{},
-    _colorPalette:['#0f766e','#2563eb','#9333ea','#ea580c','#dc2626','#0891b2','#65a30d','#c026d3','#d97706','#4f46e5','#059669','#be185d','#6d28d9','#0284c7','#ca8a04'],
+    _colorPalette:['#BC5A3C','#2563eb','#9333ea','#ea580c','#dc2626','#0891b2','#65a30d','#c026d3','#d97706','#4f46e5','#059669','#be185d','#6d28d9','#0284c7','#ca8a04'],
     _conflicts:{teacher:[],period_limit:[],duplicate:[]},
     _conflictMap:{}, // label → day → period → [{type,severity,message}]
 

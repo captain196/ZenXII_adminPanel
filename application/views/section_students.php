@@ -1523,7 +1523,7 @@
     .section-students-page { background: var(--bg); padding: 24px; }
 
     /* ── Gold header ─────────────────────────────── */
-    .ss-header { background: linear-gradient(135deg, var(--gold) 0%, #0d6b63 100%); border-radius: 14px; padding: 20px 24px; margin-bottom: 24px; }
+    .ss-header { background: linear-gradient(135deg, var(--gold) 0%, #9E4830 100%); border-radius: 14px; padding: 20px 24px; margin-bottom: 24px; }
     .ss-header-inner { display: flex; align-items: center; justify-content: space-between; flex-wrap: wrap; gap: 14px; }
     .ss-header-left  { display: flex; align-items: center; gap: 12px; }
     .ss-header-icon  { width: 40px; height: 40px; background: rgba(255,255,255,.18); border-radius: 10px; display: flex; align-items: center; justify-content: center; flex-shrink: 0; }
@@ -1545,7 +1545,7 @@
     .students-card-header h2 { font: 700 18px/1.2 var(--font-b); color: var(--t1); margin: 0; }
     .students-actions { display: flex; align-items: center; gap: 10px; flex-wrap: wrap; }
 
-    .ss-toggle-btn { background: linear-gradient(135deg, var(--gold) 0%, #0d6b63 100%); color: #fff; border: none; border-radius: 8px; padding: 8px 16px; font: 600 13px/1 var(--font-b); transition: opacity var(--ease); }
+    .ss-toggle-btn { background: linear-gradient(135deg, var(--gold) 0%, #9E4830 100%); color: #fff; border: none; border-radius: 8px; padding: 8px 16px; font: 600 13px/1 var(--font-b); transition: opacity var(--ease); }
     .ss-toggle-btn:hover { opacity: .88; color: #fff; }
     .ss-back-to-class-btn { display: inline-flex; align-items: center; gap: 6px; background: var(--bg3); border: 1px solid var(--border); color: var(--t2); border-radius: 8px; padding: 7px 14px; font: 600 13px/1 var(--font-b); text-decoration: none; transition: all var(--ease); white-space: nowrap; }
     .ss-back-to-class-btn:hover { background: var(--gold-dim); color: var(--gold); border-color: var(--gold); text-decoration: none; }
@@ -1556,7 +1556,7 @@
         height: 42px; font-size: 14px; padding-left: 14px; padding-right: 42px;
         border-radius: 22px; background: var(--bg); border: 1px solid var(--border); color: var(--t1);
     }
-    .search-box-lg input:focus { border-color: var(--gold); box-shadow: 0 0 0 3px rgba(15,118,110,.15); }
+    .search-box-lg input:focus { border-color: var(--gold); box-shadow: 0 0 0 3px rgba(188,90,60,.15); }
     .search-box-lg .search-icon { position: absolute; right: 14px; top: 50%; transform: translateY(-50%); font-size: 16px; color: var(--t3); pointer-events: none; }
 
     .icon-btn { border: none; background: var(--gold); color: #fff; width: 42px; height: 42px; border-radius: 8px; font-size: 18px; display: flex; align-items: center; justify-content: center; cursor: pointer; transition: opacity var(--ease); }
@@ -1604,7 +1604,7 @@
     .break-cell { background: var(--gold-dim) !important; color: var(--gold) !important; font-weight: 700; font-size: 10px; }
     .break-vertical { background: var(--gold-dim); color: var(--gold); font-weight: 700; font-size: 12px; display: flex; align-items: center; justify-content: center; writing-mode: vertical-rl; transform: rotate(180deg); border-radius: 8px; }
     .subject { background: var(--bg3); color: var(--t2); }
-    .timetable-wrapper.edit-mode .subject { cursor: pointer; outline: 2px dashed rgba(15,118,110,.6); }
+    .timetable-wrapper.edit-mode .subject { cursor: pointer; outline: 2px dashed rgba(188,90,60,.6); }
 
     /* ── Subject select modal ────────────────────── */
     .subject-dialog { max-width: 960px; }
@@ -1634,7 +1634,7 @@
     /* ── Section settings modal ──────────────────── */
     .section-settings-modal { background: var(--bg2); border: 1px solid var(--border); border-radius: 20px; box-shadow: var(--sh); }
     .header-wrap { display: flex; align-items: center; gap: 14px; }
-    .icon-wrap { width: 46px; height: 46px; border-radius: 14px; background: linear-gradient(135deg, var(--gold), #0d6b63); color: #fff; display: flex; align-items: center; justify-content: center; font-size: 20px; }
+    .icon-wrap { width: 46px; height: 46px; border-radius: 14px; background: linear-gradient(135deg, var(--gold), #9E4830); color: #fff; display: flex; align-items: center; justify-content: center; font-size: 20px; }
     .section-settings-modal .modal-title { font-size: 18px; font-weight: 700; margin: 0; color: var(--t1); font-family: var(--font-b); }
     .modal-subtitle { font-size: 13px; color: var(--t3); margin: 2px 0 0; font-family: var(--font-b); }
     .close-btn { font-size: 22px; opacity: 0.5; color: var(--t1); }
@@ -1642,7 +1642,7 @@
     .section-settings-modal .modal-body { padding: 20px 18px 10px; }
     .input-label { font-size: 13px; font-weight: 600; margin-bottom: 6px; display: block; color: var(--t2); font-family: var(--font-b); }
     .strength-input { height: 46px; border-radius: 14px; font-size: 18px; font-weight: 600; text-align: center; border: 1px solid var(--border); background: var(--bg); color: var(--t1); }
-    .strength-input:focus { border-color: var(--gold); box-shadow: 0 0 0 3px rgba(15,118,110,.18); }
+    .strength-input:focus { border-color: var(--gold); box-shadow: 0 0 0 3px rgba(188,90,60,.18); }
     .strength-input::placeholder { color: var(--t3); }
     .section-settings-modal .modal-footer { border-top: 1px solid var(--border); padding: 10px 18px 18px; display: flex; justify-content: flex-end; gap: 10px; }
 </style>

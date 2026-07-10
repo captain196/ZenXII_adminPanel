@@ -92,7 +92,7 @@
 .fh-msg{text-align:center;padding:30px 14px;color:var(--t3);font-size:13px}
 
 /* Next step bar */
-.fh-next{display:flex;align-items:center;gap:12px;padding:14px 18px;margin-top:18px;background:var(--gold-dim);border:1px solid rgba(15,118,110,.2);border-radius:var(--r,10px);font-size:12.5px;color:var(--t2)}
+.fh-next{display:flex;align-items:center;gap:12px;padding:14px 18px;margin-top:18px;background:var(--gold-dim);border:1px solid rgba(188,90,60,.2);border-radius:var(--r,10px);font-size:12.5px;color:var(--t2)}
 .fh-next i{color:var(--gold);font-size:14px;flex-shrink:0}
 .fh-next a{color:var(--gold);font-weight:700;text-decoration:none}
 .fh-next a:hover{text-decoration:underline}

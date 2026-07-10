@@ -15,8 +15,8 @@
     .scan-actions { display: flex; gap: 10px; margin-top: 12px; }
     .scan-btn { flex: 1; padding: 12px 16px; border: none; border-radius: 8px; cursor: pointer;
                 font-weight: 600; font-size: .9rem; }
-    .scan-btn.primary { background: #0f766e; color: #fff; }
-    .scan-btn.primary:hover { background: #115e59; }
+    .scan-btn.primary { background: var(--gold, #BC5A3C); color: #fff; }
+    .scan-btn.primary:hover { background: #9c4a30; }   /* darker clay (was a leftover teal #115e59) */
     .scan-btn.ghost { background: var(--bg3); color: var(--t2); border: 1px solid var(--border); }
 
     .scan-result { margin-top: 18px; padding: 14px 16px; border-radius: 8px; display: none;

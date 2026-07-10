@@ -60,7 +60,7 @@
     border-radius: 6px; padding: 0 12px; border: 1px solid var(--att-border);
     background: var(--att-bg); color: var(--att-text); transition: var(--att-ease);
 }
-.att-filter-bar select:focus { outline: none; border-color: var(--att-primary); box-shadow: 0 0 0 3px rgba(15,118,110,.15); }
+.att-filter-bar select:focus { outline: none; border-color: var(--att-primary); box-shadow: 0 0 0 3px rgba(188,90,60,.15); }
 .att-filter-bar select { min-width: 150px; cursor: pointer; }
 .att-btn {
     font-family: var(--att-font); font-size: 13px; font-weight: 600;
@@ -275,24 +275,24 @@
 <section class="content">
 <div class="container-fluid">
 
-    <!-- Page Header -->
-    <div style="margin-bottom:18px;">
-        <h4 style="font-family:var(--att-font);font-weight:700;color:var(--att-text);margin:0 0 4px;">
-            <i class="fa fa-id-badge" style="color:var(--att-primary);margin-right:6px;"></i>
-            Staff Attendance
-        </h4>
-        <p style="font-family:var(--att-font);font-size:13px;color:var(--att-text3);margin:0;">
-            Mark daily attendance for staff members
-        </p>
-        <ol style="list-style:none;display:flex;flex-wrap:wrap;gap:6px;margin:6px 0 0;padding:0;font-size:12px;color:#8a8a8a;">
-            <li><a href="<?= base_url('admin') ?>" style="color:var(--gold,#c9a24b);text-decoration:none;">Dashboard</a></li>
-            <li>/&nbsp;<a href="<?= base_url('attendance') ?>" style="color:var(--gold,#c9a24b);text-decoration:none;">Attendance</a></li>
-            <li>/&nbsp;Staff Attendance</li>
-        </ol>
+    <!-- Page Header — shared .att-header card (consistent with Student Attendance) -->
+    <div class="att-header">
+        <div class="att-header-left">
+            <div class="att-header-icon"><i class="fa fa-id-badge"></i></div>
+            <div>
+                <div class="att-page-title">Staff Attendance</div>
+                <div class="att-subtitle">Mark and manage daily attendance for staff members</div>
+                <ul class="att-breadcrumb">
+                    <li><a href="<?= base_url('admin') ?>">Dashboard</a></li>
+                    <li><a href="<?= base_url('attendance') ?>">Attendance</a></li>
+                    <li>Staff Attendance</li>
+                </ul>
+            </div>
+        </div>
     </div>
 
-    <!-- Filter Bar -->
-    <div class="att-filter-bar">
+    <!-- Filter Card — shared .att-toolbar (consistent with Student Attendance) -->
+    <div class="att-toolbar">
         <div class="att-fg">
             <label for="attMonth">Month</label>
             <select id="attMonth">
@@ -331,7 +331,7 @@
         </div>
         <div class="att-fg" style="align-self:flex-end;">
             <button type="button" class="att-btn att-btn-primary" id="attLoadBtn">
-                <i class="fa fa-search"></i> Load
+                <i class="fa fa-search"></i> Load Attendance
             </button>
         </div>
     </div>

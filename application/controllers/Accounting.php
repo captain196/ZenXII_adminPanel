@@ -4354,18 +4354,18 @@ class Accounting extends MY_Controller
     {
         $css = '
         body{font-family:sans-serif;font-size:11px;color:#1a2e2a;margin:0;padding:20px 30px;}
-        h1{font-size:18px;margin:0 0 2px;color:#0f766e;}
+        h1{font-size:18px;margin:0 0 2px;color:#BC5A3C;}
         .sub{font-size:12px;color:#4a6a60;margin:0 0 4px;}
         .date{font-size:10px;color:#7a9a8e;margin:0 0 16px;}
         table{width:100%;border-collapse:collapse;margin-bottom:16px;}
-        th{background:#e6f4f1;color:#0f766e;font-size:10px;text-transform:uppercase;letter-spacing:.5px;
-           padding:6px 8px;text-align:left;border-bottom:2px solid #b8cec6;}
+        th{background:#F3E9E2;color:#BC5A3C;font-size:10px;text-transform:uppercase;letter-spacing:.5px;
+           padding:6px 8px;text-align:left;border-bottom:2px solid #D9C4B8;}
         td{padding:5px 8px;border-bottom:1px solid #d1ddd8;font-size:10px;}
         .r{text-align:right;font-family:monospace;}
         .b{font-weight:bold;}
-        .green{color:#16a34a;} .red{color:#dc2626;} .teal{color:#0f766e;}
-        .total-row td{font-weight:bold;border-top:2px solid #0f766e;background:#f0f7f5;}
-        .section{font-size:13px;font-weight:bold;color:#0f766e;margin:14px 0 6px;padding-bottom:4px;border-bottom:1px solid #b8cec6;}
+        .green{color:#16a34a;} .red{color:#dc2626;} .teal{color:#BC5A3C;}
+        .total-row td{font-weight:bold;border-top:2px solid #BC5A3C;background:#F7F2ED;}
+        .section{font-size:13px;font-weight:bold;color:#BC5A3C;margin:14px 0 6px;padding-bottom:4px;border-bottom:1px solid #D9C4B8;}
         .footer{margin-top:20px;font-size:9px;color:#7a9a8e;text-align:center;border-top:1px solid #d1ddd8;padding-top:8px;}
         .sub-row td{font-size:9px;color:#666;font-style:italic;padding:2px 8px 2px 24px;}
         ';

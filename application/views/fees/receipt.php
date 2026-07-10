@@ -118,8 +118,8 @@ body {
     padding:10px 22px; border:none; border-radius:6px; cursor:pointer;
     font-size:14px; font-family:inherit; font-weight:600;
 }
-.btn-print { background:#0f766e; color:#fff; }
-.btn-print:hover { background:#0d6b63; }
+.btn-print { background:#BC5A3C; color:#fff; }
+.btn-print:hover { background:#9E4830; }
 .btn-close { background:#e5e7eb; color:#374151; }
 .btn-close:hover { background:#d1d5db; }
 
@@ -127,7 +127,7 @@ body {
 .receipt-header {
     display:flex; align-items:center; gap:16px;
     padding:22px 28px 18px;
-    border-bottom:3px solid #0f766e;
+    border-bottom:3px solid #BC5A3C;
 }
 .receipt-logo {
     width:60px; height:60px; object-fit:contain; flex-shrink:0;
@@ -147,7 +147,7 @@ body {
 }
 .receipt-title-band h2 {
     font-size:14px; font-weight:700; text-transform:uppercase;
-    letter-spacing:1.5px; color:#0f766e;
+    letter-spacing:1.5px; color:#BC5A3C;
 }
 .receipt-title-band-right {
     display:flex; align-items:center; gap:14px;
@@ -239,7 +239,7 @@ body {
 .fee-table .head-tag {
     display:inline-block;
     background:#ccfbf1;
-    color:#0f766e;
+    color:#BC5A3C;
     font-size:10px; font-weight:700;
     padding:1px 7px;
     border-radius:10px;
@@ -292,8 +292,8 @@ body {
 .advance-block {
     margin-bottom:14px;
     background:#f0fdfa;
-    border:1px solid #99f6e4;
-    border-left:4px solid #0f766e;
+    border:1px solid #EBC3B4;
+    border-left:4px solid #BC5A3C;
     border-radius:6px;
     padding:11px 14px;
     font-size:12.5px;
@@ -304,12 +304,12 @@ body {
     padding:2px 0; font-variant-numeric:tabular-nums;
 }
 .advance-block .ad-row.split {
-    border-top:1px dashed #99f6e4;
+    border-top:1px dashed #EBC3B4;
     margin-top:5px; padding-top:6px;
     font-weight:700;
-    color:#0f766e;
+    color:#BC5A3C;
 }
-.advance-block .ad-row .lbl { color:#0f766e; font-weight:600; }
+.advance-block .ad-row .lbl { color:#BC5A3C; font-weight:600; }
 
 /* Payment mode strip */
 .payment-info {
@@ -331,7 +331,7 @@ body {
     background:#f0fdfa;
     border:1px solid #ccfbf1;
     border-radius:6px;
-    font-size:12.5px; color:#0f766e; font-weight:600;
+    font-size:12.5px; color:#BC5A3C; font-weight:600;
     margin-bottom:18px;
 }
 

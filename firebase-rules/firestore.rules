@@ -190,6 +190,19 @@ service cloud.firestore {
       );
     }
 
+    // A parent authenticates as ONE child (auth.uid == child A's studentId) but
+    // can switch the active child in-app and then request child B's docs. Allow
+    // when the requested doc's student is LINKED to the same parent — the
+    // students doc's parentDbKey must equal the parent's `parent_db_key` claim
+    // (server-signed, non-forgeable). Mirrors the /submissions sibling fix so
+    // multi-child households aren't 403'd on a linked sibling's attendance.
+    function isLinkedChild() {
+      return isAuth()
+        && resource != null
+        && request.auth.token.get('parent_db_key', '') != ''
+        && get(/databases/$(database)/documents/students/$(resource.data.get('schoolId','') + '_' + resource.data.get('studentId',''))).data.get('parentDbKey','') == request.auth.token.parent_db_key;
+    }
+
     // Convenience: read is allowed when caller is staff (sees all
     // school records) OR the same school AND the doc belongs to
     // their own student. The `resource == null` arm covers parents
@@ -274,14 +287,14 @@ service cloud.firestore {
     //   • Parent → only own child's docs (auth.uid == studentId).
     match /attendance/{docId} {
       allow read:  if (isStaff() && isSameSchool())
-                   || (isAuth() && isSameSchool() && isOwnStudent());
+                   || (isAuth() && isSameSchool() && (isOwnStudent() || isLinkedChild()));
       allow write: if false;   // PHP service account bypasses
     }
 
     // ── Attendance Summary (Phase 3 — same scoping as attendance) ─
     match /attendanceSummary/{docId} {
       allow read:  if (isStaff() && isSameSchool())
-                   || (isAuth() && isSameSchool() && isOwnStudent());
+                   || (isAuth() && isSameSchool() && (isOwnStudent() || isLinkedChild()));
       allow write: if false;
     }
 
@@ -1415,11 +1428,18 @@ service cloud.firestore {
                          // (a) STAFF decides someone ELSE's pending request.
                          //     No self-approval; cannot pre-stamp attendance
                          //     (the service-account poller owns the 'L' stamp).
+                         //     A teacher may decide STUDENT leave, but a staff
+                         //     member's own PAYROLL-bearing leave may only be
+                         //     decided by an admin/principal — closes the
+                         //     "any peer approves my paid leave" hole (staff-
+                         //     leave approval normally runs via the panel's
+                         //     Admin SDK, which bypasses these rules anyway).
                          ( isStaff()
                            && resource.data.applicantId != request.auth.uid
                            && resource.data.status == 'pending'
                            && request.resource.data.status in ['approved', 'rejected']
-                           && request.resource.data.attendanceStamped != true )
+                           && request.resource.data.attendanceStamped != true
+                           && ( resource.data.applicantType == 'student' || isAdmin() ) )
                          // (b) OWNER cancels their own pending/approved request.
                          || ( resource.data.applicantId == request.auth.uid
                               && resource.data.status in ['pending', 'approved']
@@ -1523,9 +1543,13 @@ service cloud.firestore {
     }
 
     // ── Attendance Events Fired (push dedup) ─────────────────
+    // SERVER-ONLY ledger written exclusively by the Admin SDK (Attendance.php
+    // _fire_* dedup). No app reads or writes it. Previously world-open to any
+    // authenticated user across ALL tenants (cross-tenant PII list + parents'
+    // absence-push suppression by pre-seeding the seal) — locked to deny.
     match /attendanceEventsFired/{docId} {
-      allow read: if isAuth();
-      allow write: if isAuth();
+      allow read: if false;
+      allow write: if false;
     }
 
     // ── HR Jobs (recruitment) ───────────────────────────────────

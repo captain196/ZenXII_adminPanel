@@ -23,7 +23,7 @@
     </a>
     <a href="<?= base_url('fee_management/scholarships') ?>"
        class="fm-subtab fm-subtab--active"
-       style="padding:10px 18px;border-bottom:2px solid var(--gold,#0f766e);color:var(--gold,#0f766e);font-weight:600;text-decoration:none;">
+       style="padding:10px 18px;border-bottom:2px solid var(--gold,#BC5A3C);color:var(--gold,#BC5A3C);font-weight:600;text-decoration:none;">
         <i class="fa fa-graduation-cap"></i> Scholarships
     </a>
 </div>
@@ -729,10 +729,10 @@ document.addEventListener('DOMContentLoaded', function() {
 /* ── Variables (maps to global theme vars) ── */
 :root {
     --fm-navy: var(--t1, #0c1e38);
-    --fm-teal: var(--gold, #0f766e);
-    --fm-teal2: var(--gold2, #0d6b63);
-    --fm-teal3: var(--gold3, #14b8a6);
-    --fm-sky: var(--gold-dim, rgba(15,118,110,.10));
+    --fm-teal: var(--gold, #BC5A3C);
+    --fm-teal2: var(--gold2, #9E4830);
+    --fm-teal3: var(--gold3, #D4725C);
+    --fm-sky: var(--gold-dim, rgba(188,90,60,.10));
     --fm-gold: #d97706;
     --fm-red: #E05C6F;
     --fm-green: #15803d;
@@ -740,8 +740,8 @@ document.addEventListener('DOMContentLoaded', function() {
     --fm-bg2: var(--bg2, #0c1e38);
     --fm-bg3: var(--bg3, #0f2545);
     --fm-card: var(--bg2, rgba(12,30,56,.92));
-    --fm-border: var(--border, rgba(15,118,110,.12));
-    --fm-brd2: rgba(15,118,110,.25);
+    --fm-border: var(--border, rgba(188,90,60,.12));
+    --fm-brd2: rgba(188,90,60,.25);
     --fm-t1: var(--t1, #e6f4f1);
     --fm-t2: var(--t2, #94c9c3);
     --fm-t3: var(--t3, #5a9e98);
@@ -838,7 +838,7 @@ document.addEventListener('DOMContentLoaded', function() {
     flex-shrink: 0;
 }
 .fm-stat-icon--navy  { background: rgba(12,30,56,.35); color: var(--fm-sky); }
-.fm-stat-icon--teal  { background: rgba(15,118,110,.15); color: var(--fm-teal); }
+.fm-stat-icon--teal  { background: rgba(188,90,60,.15); color: var(--fm-teal); }
 .fm-stat-icon--gold  { background: rgba(217,119,6,.12); color: var(--fm-gold); }
 .fm-stat-icon--green { background: rgba(21,128,61,.12); color: var(--fm-green); }
 .fm-stat-body {
@@ -999,7 +999,7 @@ document.addEventListener('DOMContentLoaded', function() {
 }
 .fm-input:focus {
     border-color: var(--fm-teal);
-    box-shadow: 0 0 0 3px rgba(15,118,110,.15);
+    box-shadow: 0 0 0 3px rgba(188,90,60,.15);
 }
 .fm-input--ro {
     opacity: .7;
@@ -1092,7 +1092,7 @@ document.addEventListener('DOMContentLoaded', function() {
 }
 .fm-btn--primary:hover {
     background: var(--fm-teal2);
-    box-shadow: 0 2px 12px rgba(15,118,110,.35);
+    box-shadow: 0 2px 12px rgba(188,90,60,.35);
 }
 .fm-btn--ghost {
     background: transparent;
@@ -1143,7 +1143,7 @@ document.addEventListener('DOMContentLoaded', function() {
     vertical-align: middle;
 }
 .fm-table tbody tr:hover {
-    background: rgba(15,118,110,.04);
+    background: rgba(188,90,60,.04);
 }
 .fm-table tbody tr:last-child td {
     border-bottom: none;
@@ -1188,11 +1188,11 @@ document.addEventListener('DOMContentLoaded', function() {
 }
 .fm-act-btn:active { transform: scale(.9); }
 .fm-act-btn--edit {
-    background: rgba(15,118,110,.12);
+    background: rgba(188,90,60,.12);
     color: var(--fm-teal);
 }
 .fm-act-btn--edit:hover {
-    background: rgba(15,118,110,.25);
+    background: rgba(188,90,60,.25);
 }
 .fm-act-btn--del {
     background: rgba(224,92,111,.1);
@@ -1221,7 +1221,7 @@ document.addEventListener('DOMContentLoaded', function() {
     text-transform: uppercase;
     white-space: nowrap;
 }
-.fm-badge--teal  { background: rgba(15,118,110,.15); color: var(--fm-teal); }
+.fm-badge--teal  { background: rgba(188,90,60,.15); color: var(--fm-teal); }
 .fm-badge--navy  { background: rgba(74,181,227,.12); color: var(--fm-sky); }
 .fm-badge--green { background: rgba(21,128,61,.12); color: var(--fm-green); }
 .fm-badge--red   { background: rgba(224,92,111,.12); color: var(--fm-red); }

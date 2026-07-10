@@ -1660,7 +1660,7 @@ class Sis extends MY_Controller
 
                     // Keep the HTML error (this is a printable page, not JSON).
                     $this->output->set_status_header(403);
-                    echo '<!DOCTYPE html><html><head><title>TC Withheld</title><style>body{font:15px/1.5 system-ui;padding:60px;color:#334155;text-align:center;}h1{color:#dc2626;}a{color:#0f766e;}</style></head><body>'
+                    echo '<!DOCTYPE html><html><head><title>TC Withheld</title><style>body{font:15px/1.5 system-ui;padding:60px;color:#334155;text-align:center;}h1{color:#dc2626;}a{color:#BC5A3C;}</style></head><body>'
                        . '<h1>Transfer Certificate Withheld</h1>'
                        . '<p>' . htmlspecialchars($message) . '</p>'
                        . '<p><a href="' . base_url('sis/tc_list') . '">← Back to TC list</a></p>'

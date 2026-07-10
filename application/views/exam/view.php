@@ -877,7 +877,7 @@ html { font-size: 16px !important; }
 /* ── Toast ── */
 .ev-toast-wrap { position: fixed; bottom: 24px; right: 24px; display: flex; flex-direction: column; gap: 10px; z-index: 9999; }
 .ev-toast { padding: 11px 18px; border-radius: 8px; font-size: .86rem; font-weight: 500; color: #fff; display: flex; align-items: center; gap: 8px; box-shadow: 0 4px 20px rgba(0,0,0,.25); animation: ev-slide-in .3s ease; min-width: 240px; }
-.ev-toast-success { background: #0f766e; }
+.ev-toast-success { background: #BC5A3C; }
 .ev-toast-error   { background: #dc2626; }
 .ev-toast-warning { background: #d97706; }
 .ev-toast-info    { background: #2563eb; }

@@ -367,9 +367,9 @@ document.addEventListener('DOMContentLoaded', function() {
 /* ── Gateway: Variables ── */
 .fm-wrap {
     --fm-navy: var(--t1, #0f1f3d);
-    --fm-teal: var(--gold, #0f766e);
-    --fm-teal2: var(--gold2, #0d6b63);
-    --fm-sky: var(--gold-dim, rgba(15,118,110,.10));
+    --fm-teal: var(--gold, #BC5A3C);
+    --fm-teal2: var(--gold2, #9E4830);
+    --fm-sky: var(--gold-dim, rgba(188,90,60,.10));
     --fm-gold: #d97706;
     --fm-red: #E05C6F;
     --fm-green: #15803d;

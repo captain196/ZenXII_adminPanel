@@ -19,11 +19,11 @@
   .batch-toolbar {
     position: sticky; top: 0; z-index: 100;
     display: flex; align-items: center; gap: 14px;
-    padding: 10px 20px; background: #0f766e; color: #fff;
+    padding: 10px 20px; background: #BC5A3C; color: #fff;
     font-family: 'Segoe UI', sans-serif;
   }
   .batch-toolbar button {
-    padding: 7px 18px; background: #fff; color: #0f766e;
+    padding: 7px 18px; background: #fff; color: #BC5A3C;
     border: none; border-radius: 6px; font-weight: 700;
     font-size: .9rem; cursor: pointer;
   }
@@ -115,7 +115,7 @@
 <div style="max-width:600px;margin:60px auto;padding:30px;background:#fff;border-radius:8px;text-align:center;font-family:sans-serif;">
   <h3 style="color:#b91c1c;">No Report Cards Available</h3>
   <p style="color:#6b7280;">No computed results found for this class/section. Please compute results first.</p>
-  <button onclick="window.history.back()" style="margin-top:16px;padding:8px 24px;background:#0f766e;color:#fff;border:none;border-radius:6px;cursor:pointer;">Go Back</button>
+  <button onclick="window.history.back()" style="margin-top:16px;padding:8px 24px;background:#BC5A3C;color:#fff;border:none;border-radius:6px;cursor:pointer;">Go Back</button>
 </div>
 <?php else: ?>
 

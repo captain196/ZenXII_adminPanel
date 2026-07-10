@@ -195,7 +195,14 @@ class MY_Controller extends CI_Controller
         // running them N times across concurrent requests is pure double-work
         // that serializes/duplicates on the session lock. Cheap session-based
         // expiry enforcement still runs for these routes.
-        $skip_periodic_checks = $is_bearer_route || in_array($route_key, [
+        // Attendance tab-shell embeds each section in a same-origin <iframe>
+        // (?embed=1). The parent shell page already ran these throttled checks on
+        // its own full-page load; re-running them for every embedded iframe is the
+        // same pure double-work as the dashboard fan-out above and makes each tab
+        // feel slow. Skip them for embed requests (session-expiry enforcement below
+        // still runs).
+        $is_embed_request = (isset($_GET['embed']) && $_GET['embed'] === '1');
+        $skip_periodic_checks = $is_bearer_route || $is_embed_request || in_array($route_key, [
             'admin/get_dashboard_data',
             'admin/get_dashboard_charts',
             'admin/get_dashboard_activity',
@@ -513,10 +520,15 @@ class MY_Controller extends CI_Controller
      */
     private function _send_security_headers(): void
     {
+        // Embed mode (?embed=1) — an attendance tab-shell page hosts this page in
+        // a SAME-ORIGIN <iframe>. Framing must be allowed for embed requests only;
+        // every other response keeps the strict DENY / frame-ancestors 'none'.
+        $embed = (isset($_GET['embed']) && $_GET['embed'] === '1');
+
         header('Cache-Control: no-store, no-cache, must-revalidate, max-age=0');
         header('Cache-Control: post-check=0, pre-check=0', false);
         header('Pragma: no-cache');
-        header('X-Frame-Options: DENY');
+        header('X-Frame-Options: ' . ($embed ? 'SAMEORIGIN' : 'DENY'));
         header('X-Content-Type-Options: nosniff');
         header('X-XSS-Protection: 1; mode=block');
         header('Referrer-Policy: strict-origin-when-cross-origin');
@@ -539,7 +551,7 @@ class MY_Controller extends CI_Controller
             . "font-src 'self' https://fonts.gstatic.com https://cdnjs.cloudflare.com https://cdn.fontshare.com; "
             . "img-src 'self' data: blob: https://*.googleapis.com https://*.firebasestorage.googleapis.com; "
             . "connect-src 'self' https://*.firebaseio.com https://*.firebasedatabase.app https://cdnjs.cloudflare.com https://cdn.jsdelivr.net; "
-            . "frame-ancestors 'none'; "
+            . ($embed ? "frame-ancestors 'self'; " : "frame-ancestors 'none'; ")
             . "base-uri 'self'; "
             . "form-action 'self';";
 
@@ -1367,6 +1379,46 @@ class MY_Controller extends CI_Controller
                 'staff attendance finalised: school=%s scanned=%d updated=%d daysFilled=%d skipped=%d',
                 $this->school_id, $res['scanned'], $res['updated'], $res['daysFilled'], $res['skipped']
             ));
+        }
+    }
+
+    /**
+     * Emit a standardized `pushRequests` doc for the UNIVERSAL Cloud Function
+     * dispatcher (functions/index.js → MARK_REGISTRY). Any controller can call
+     * this to fire a push for any module; the CF resolves recipients + payload
+     * from the mark. This is the ONE way to send push going forward.
+     *
+     * The docId is deterministic (`{schoolId}_{$dedupeKey}`) so repeat emits for
+     * the same logical event COALESCE (idempotent) instead of duplicating —
+     * e.g. keying on the album id makes a 20-file gallery upload one push.
+     *
+     * IMPORTANT: do NOT pass a `source` value handled by the legacy poller
+     * switch in _auto_process_push_requests() (teacher / teacher_leave_* /
+     * homework_*). Those marks are still poller-owned until Phase 2 retires
+     * them; a doc processed by BOTH the poller and the CF double-sends.
+     *
+     * @param string $mark      registry key, e.g. 'GALLERY_ADDED'
+     * @param string $dedupeKey stable per-event token (appended to schoolId)
+     * @param array  $fields    audience + payload fields (title, body,
+     *                          target_group | userIds | studentId | staffId |
+     *                          recipientStaffIds, and any deep-link ids)
+     */
+    protected function emit_push(string $mark, string $dedupeKey, array $fields): bool
+    {
+        if (!isset($this->fs) || !$this->school_id) return false;
+        try {
+            $reqId = $this->fs->docId($dedupeKey);
+            $payload = array_merge([
+                'schoolId'  => $this->school_id,
+                'mark'      => $mark,
+                'status'    => 'pending',
+                'markedBy'  => isset($this->admin_name) ? $this->admin_name : '',
+                'createdAt' => date('c'),
+            ], $fields);
+            return (bool) $this->fs->set('pushRequests', $reqId, $payload, false);
+        } catch (\Throwable $e) {
+            log_message('error', "emit_push({$mark}) failed: " . $e->getMessage());
+            return false;
         }
     }
 

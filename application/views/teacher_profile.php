@@ -63,7 +63,7 @@ $defaultPic = base_url('tools/image/default-school.jpeg');
 .tp-hero {
     background: linear-gradient(130deg, var(--bg4, #0c1e38) 0%, var(--bg, #070f1c) 100%);
     border-radius: var(--tp-r);
-    border: 1px solid rgba(15,118,110,.20);
+    border: 1px solid rgba(188,90,60,.20);
     box-shadow: var(--tp-sh);
     margin-bottom: 4px;
     position: relative;
@@ -72,7 +72,7 @@ $defaultPic = base_url('tools/image/default-school.jpeg');
 .tp-hero::before {
     content: '';
     position: absolute; top: 0; left: 0; right: 0; height: 3px;
-    background: linear-gradient(90deg, var(--tp-gold), var(--gold2, #0d6b63));
+    background: linear-gradient(90deg, var(--tp-gold), var(--gold2, #9E4830));
 }
 .tp-hero-inner {
     display: flex;
@@ -87,14 +87,14 @@ $defaultPic = base_url('tools/image/default-school.jpeg');
     width: 108px; height: 108px;
     border-radius: 50%;
     object-fit: cover;
-    border: 3px solid rgba(15,118,110,.5);
-    box-shadow: 0 0 0 5px rgba(15,118,110,.12);
+    border: 3px solid rgba(188,90,60,.5);
+    box-shadow: 0 0 0 5px rgba(188,90,60,.12);
     background: var(--bg3, #0c1e38);
 }
 .tp-avatar-badge {
     position: absolute; bottom: 4px; right: 4px;
     width: 26px; height: 26px;
-    background: linear-gradient(135deg, var(--tp-gold), var(--gold2, #0d6b63));
+    background: linear-gradient(135deg, var(--tp-gold), var(--gold2, #9E4830));
     color: #ffffff;
     border-radius: 50%;
     display: flex; align-items: center; justify-content: center;
@@ -116,8 +116,8 @@ $defaultPic = base_url('tools/image/default-school.jpeg');
 .tp-chip {
     display: inline-flex; align-items: center; gap: 5px;
     padding: 4px 12px;
-    background: rgba(15,118,110,.15);
-    border: 1px solid rgba(15,118,110,.30);
+    background: rgba(188,90,60,.15);
+    border: 1px solid rgba(188,90,60,.30);
     border-radius: 20px;
     font-size: 12px; color: var(--tp-t1);
     font-family: var(--font-b);
@@ -128,8 +128,8 @@ $defaultPic = base_url('tools/image/default-school.jpeg');
 /* Stats strip */
 .tp-stats {
     display: flex; align-items: center; gap: 0;
-    background: rgba(15,118,110,.08);
-    border: 1px solid rgba(15,118,110,.18);
+    background: rgba(188,90,60,.08);
+    border: 1px solid rgba(188,90,60,.18);
     border-radius: 10px;
     padding: 10px 16px;
     width: fit-content;
@@ -146,7 +146,7 @@ $defaultPic = base_url('tools/image/default-school.jpeg');
     text-transform: uppercase; letter-spacing: .6px;
     margin-top: 2px;
 }
-.tp-stat-div { width: 1px; height: 32px; background: rgba(15,118,110,.25); }
+.tp-stat-div { width: 1px; height: 32px; background: rgba(188,90,60,.25); }
 
 /* ══════════════════════════════════════════
    TAB BAR
@@ -263,7 +263,7 @@ $defaultPic = base_url('tools/image/default-school.jpeg');
 }
 .tp-sal-cell--net {
     background: linear-gradient(130deg, var(--bg4, #0c1e38) 0%, var(--bg, #070f1c) 100%);
-    border-left: 1px solid rgba(15,118,110,.2);
+    border-left: 1px solid rgba(188,90,60,.2);
 }
 .tp-sal-lbl {
     font-size: 10px; font-weight: 700;
@@ -311,7 +311,7 @@ $defaultPic = base_url('tools/image/default-school.jpeg');
 .tp-doc-btn {
     display: inline-flex; align-items: center; gap: 5px;
     padding: 6px 14px;
-    background: linear-gradient(135deg, var(--tp-gold), var(--gold2, #0d6b63));
+    background: linear-gradient(135deg, var(--tp-gold), var(--gold2, #9E4830));
     color: #ffffff;
     border-radius: 20px;
     font-size: 11px; font-weight: 700;
