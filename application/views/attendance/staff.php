@@ -80,12 +80,17 @@
 
 /* ── Toolbar ── */
 .att-toolbar {
-    display: none; flex-wrap: wrap; gap: 10px; align-items: center;
+    display: flex; flex-wrap: wrap; gap: 10px; align-items: center;
     padding: 14px 20px; border-radius: var(--att-r);
     background: var(--att-card); border: 1px solid var(--att-border);
     box-shadow: var(--att-shadow); margin-bottom: 16px;
 }
-.att-toolbar.visible { display: flex; }
+/* Only the EDIT toolbar (#attToolbar) is collapsed until a month loads; the
+   filter card shares the .att-toolbar class and must stay visible. Scoping the
+   hide to the id (not the class) prevents that collision — see student.php,
+   which never hides .att-toolbar. JS toggles #attToolbar.visible after load. */
+#attToolbar { display: none; }
+#attToolbar.visible { display: flex; }
 .att-toolbar-section { display: flex; gap: 8px; align-items: center; }
 .att-toolbar-divider { width: 1px; height: 28px; background: var(--att-border); margin: 0 6px; }
 .att-day-picker {
