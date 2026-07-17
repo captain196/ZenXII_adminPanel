@@ -79,6 +79,7 @@ class Auth_claims_backfill extends CI_Controller
         'school_code', 'schoolCode',
         'parent_db_key', 'parentDbKey',
         'student_id', 'student_ids',
+        'staffId', 'roleTier',
     ];
 
     private $stats = [
@@ -258,6 +259,10 @@ class Auth_claims_backfill extends CI_Controller
             'parent_db_key' => $parentDbKey,
             'student_id'    => $studentId,
             'student_ids'   => $studentIds,
+            // Staff/admin tokens (no student in scope) carry staffId == uid so the
+            // re-mint ADDS the staffId claim rather than dropping it. Students/
+            // parents pass '' → builder stays lean for them.
+            'staff_id'      => ($studentId === '' ? $uid : ''),
             'extra'         => $extra,
         ];
 

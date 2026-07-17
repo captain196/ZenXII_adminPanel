@@ -864,6 +864,23 @@ class Firebase
             $claims['student_ids'] = array_values(array_unique(array_map('strval', $ctx['student_ids'])));
         }
 
+        // Staff/admin identity + coarse role tier. Emitted ONLY for staff/admin
+        // tokens (no student in scope), so parent/student tokens stay lean and
+        // byte-for-byte unchanged. staffId (== the Auth uid) backs the Firestore
+        // owner-filters (own payslip/attendance/leave) and the staffCapabilities
+        // lookup; roleTier is a coarse band for cheap rule gates. Both are strictly
+        // ADDITIVE — they never touch the 8 dual-cased tenant keys above.
+        if ($studentId === '') {
+            $staffId = trim((string) ($ctx['staff_id'] ?? ''));
+            if ($staffId !== '') {
+                $claims['staffId'] = $staffId;
+            }
+            $roleTier = trim((string) ($ctx['role_tier'] ?? ''));
+            if ($roleTier !== '') {
+                $claims['roleTier'] = $roleTier;
+            }
+        }
+
         // Per-site extras (must_change_password, password_reset_at/by, …).
         if (!empty($ctx['extra']) && is_array($ctx['extra'])) {
             $claims = array_merge($claims, $ctx['extra']);
@@ -883,6 +900,12 @@ class Firebase
      */
     public function setCanonicalClaims(string $uid, array $ctx): bool
     {
+        // Staff/admin tokens carry their own staffId (== the Auth uid). Inject it
+        // so buildCanonicalClaims emits the staffId claim (owner-filters +
+        // staffCapabilities). Parent/student tokens (student_id in ctx) stay lean.
+        if (!isset($ctx['staff_id']) && empty($ctx['student_id'])) {
+            $ctx['staff_id'] = $uid;
+        }
         return $this->setFirebaseClaims($uid, $this->buildCanonicalClaims($ctx));
     }
 

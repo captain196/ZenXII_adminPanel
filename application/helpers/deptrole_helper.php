@@ -47,7 +47,7 @@ if (!function_exists('set_role_access')) {
      * role's identity/HR fields are untouched. Permissions are whitelisted to
      * $modules (so a stray/sentinel value like '_none_' is dropped → cleared).
      */
-    function set_role_access(array $staffRoles, string $roleRef, array $permissions, array $modules): ?array
+    function set_role_access(array $staffRoles, string $roleRef, array $permissions, array $modules, ?array $levels = null): ?array
     {
         $rid = isset($staffRoles[$roleRef]) && is_array($staffRoles[$roleRef]) ? $roleRef : null;
         if ($rid === null) {
@@ -59,11 +59,30 @@ if (!function_exists('set_role_access')) {
 
         $clean = array_values(array_intersect($permissions, $modules));
         $staffRoles[$rid]['permissions'] = $clean;
+
+        // Optional graded levels (parallel to the flat permissions[]). Only keep
+        // entries for granted modules with a valid level; anything unset defaults
+        // (at read time) to 'manage', i.e. legacy-equivalent. When $levels is null
+        // the caller is level-agnostic (legacy path) — leave permissionLevels as-is
+        // so the role continues to behave as manage-on-any-held-module.
+        $cleanLevels = null;
+        if (is_array($levels)) {
+            $valid = defined('RBAC_LEVELS') ? RBAC_LEVELS : ['view' => 1, 'edit' => 2, 'manage' => 3];
+            $cleanLevels = [];
+            foreach ($clean as $m) {
+                $lvl = $levels[$m] ?? 'manage';
+                if (!isset($valid[$lvl])) $lvl = 'manage';
+                $cleanLevels[$m] = $lvl;
+            }
+            $staffRoles[$rid]['permissionLevels'] = $cleanLevels;
+        }
+
         return [
             'staffRoles'  => $staffRoles,
             'rid'         => $rid,
             'label'       => (string) ($staffRoles[$rid]['label'] ?? $rid),
             'permissions' => $clean,
+            'levels'      => $cleanLevels,
         ];
     }
 }

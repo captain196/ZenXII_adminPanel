@@ -27,6 +27,11 @@ define('RBAC_MODULES', [
     // just 'Library', a Transport Manager just 'Transport', etc.
     'Library','Transport','Hostel','Inventory','Assets',
     'Academic','Reports','Configuration','Admin Users','Stories','Homework',
+    // Red Flags — student discipline/behaviour flags. Grantable so Principal /
+    // Vice Principal / Academic Coordinator / Teacher roles can be given access
+    // (scoped to their own classes by Red_flags::_teacher_can_access). Was
+    // previously unregistered, so only the 3 bypass roles could reach it.
+    'Red Flags',
 ]);
 
 /**
@@ -45,15 +50,73 @@ define('RBAC_MODULE_CHILDREN', [
  */
 define('RBAC_BYPASS_ROLES', ['Super Admin', 'School Super Admin', 'Admin']);
 
+/**
+ * Graded access levels (monotonic: manage ⊇ edit ⊇ view). A role grants a level
+ * PER MODULE via the parallel `permissionLevels` map on the role; the flat
+ * `permissions[]` list still governs module PRESENCE (unchanged). A held module
+ * with no explicit level defaults to 'manage' — so before any level backfill the
+ * system behaves exactly as the legacy all-or-nothing model.
+ */
+define('RBAC_LEVELS', ['view' => 1, 'edit' => 2, 'manage' => 3]);
+
+/**
+ * Ordinal rank of a level string (unknown → 'view' floor).
+ */
+function rbac_level_rank(string $level): int
+{
+    return RBAC_LEVELS[$level] ?? RBAC_LEVELS['view'];
+}
+
+/**
+ * The level at which the caller holds $module, or NULL if not held at all.
+ * Encapsulates the same presence + umbrella-inheritance logic as has_permission,
+ * plus the level lookup. A held-but-unleveled module defaults to 'manage'
+ * (legacy-equivalent). Umbrella-inherited access carries the parent's/child's
+ * level (default 'manage').
+ */
+function rbac_granted_level(string $module, array $permissions, array $levels): ?string
+{
+    // Direct grant.
+    if (in_array($module, $permissions, true)) {
+        return $levels[$module] ?? 'manage';
+    }
+    // Child inherits from its umbrella parent (e.g. 'Operations' grants 'Library').
+    foreach (RBAC_MODULE_CHILDREN as $parent => $children) {
+        if (in_array($module, $children, true) && in_array($parent, $permissions, true)) {
+            return $levels[$parent] ?? 'manage';
+        }
+    }
+    // Umbrella parent is "present" when any child is held — carry the strongest
+    // child level so the parent group renders and enforces sanely.
+    if (isset(RBAC_MODULE_CHILDREN[$module])) {
+        $best = null;
+        foreach (RBAC_MODULE_CHILDREN[$module] as $child) {
+            if (in_array($child, $permissions, true)) {
+                $lvl = $levels[$child] ?? 'manage';
+                if ($best === null || rbac_level_rank($lvl) > rbac_level_rank($best)) {
+                    $best = $lvl;
+                }
+            }
+        }
+        return $best; // NULL if no child held
+    }
+    return null;
+}
+
 // ─── Core functions ──────────────────────────────────────────────────────────
 
 /**
- * Check if the current user has permission for a module.
+ * Check if the current user has permission for a module at (at least) a level.
  *
  * @param  string $module  One of RBAC_MODULES (e.g. 'Fees', 'HR')
+ * @param  string $level   Required level: 'view' | 'edit' | 'manage' (default 'view').
+ *                         Monotonic — a 'manage' grant satisfies an 'edit'/'view'
+ *                         requirement. Omitting the level = a presence/view check,
+ *                         which (with the manage default for unleveled grants) is
+ *                         byte-for-byte the legacy behaviour.
  * @return bool
  */
-function has_permission(string $module): bool
+function has_permission(string $module, string $level = 'view'): bool
 {
     $CI =& get_instance();
     $role = $CI->session->userdata('admin_role') ?? '';
@@ -70,31 +133,19 @@ function has_permission(string $module): bool
         return false;
     }
 
-    // Direct grant.
-    if (in_array($module, $permissions, true)) {
-        return true;
+    $levels = $CI->session->userdata('rbac_levels');
+    if (!is_array($levels)) {
+        $levels = []; // legacy session (pre-levels): every held module → 'manage'
     }
 
-    // Child inherits access from its umbrella parent (e.g. 'Operations' grants
-    // 'Library'). Keeps every legacy Operations-only role fully working.
-    foreach (RBAC_MODULE_CHILDREN as $parent => $children) {
-        if (in_array($module, $children, true) && in_array($parent, $permissions, true)) {
-            return true;
-        }
+    // Resolve the level at which the module is held (NULL = not held), applying
+    // the same direct + umbrella-inheritance rules as before.
+    $granted = rbac_granted_level($module, $permissions, $levels);
+    if ($granted === null) {
+        return false;
     }
 
-    // An umbrella parent is "present" (its sidebar group renders) when the role
-    // holds any one of its children — so a Library-only staffer still sees the
-    // Operations group, with only Library enabled inside it.
-    if (isset(RBAC_MODULE_CHILDREN[$module])) {
-        foreach (RBAC_MODULE_CHILDREN[$module] as $child) {
-            if (in_array($child, $permissions, true)) {
-                return true;
-            }
-        }
-    }
-
-    return false;
+    return rbac_level_rank($granted) >= rbac_level_rank($level);
 }
 
 /**
@@ -104,11 +155,12 @@ function has_permission(string $module): bool
  *
  * @param  string $module  One of RBAC_MODULES
  * @param  string $action  Optional human-readable label for logging
+ * @param  string $level   Required level: 'view' | 'edit' | 'manage' (default 'view').
  * @return void
  */
-function require_permission(string $module, string $action = ''): void
+function require_permission(string $module, string $action = '', string $level = 'view'): void
 {
-    if (has_permission($module)) {
+    if (has_permission($module, $level)) {
         return;
     }
 
@@ -119,7 +171,7 @@ function require_permission(string $module, string $action = ''): void
     $label    = $action ? " ({$action})" : '';
 
     log_message('error',
-        "RBAC denied: module=[{$module}] role=[{$role}] admin=[{$admin_id}]"
+        "RBAC denied: module=[{$module}] level=[{$level}] role=[{$role}] admin=[{$admin_id}]"
         . " school=[{$school}]{$label}"
     );
 
@@ -156,53 +208,93 @@ function require_permission(string $module, string $action = ''): void
  */
 function load_role_permissions($firebase, string $school_id, string $role): array
 {
-    // Bypass roles don't need to load — they have full access
-    if (in_array($role, RBAC_BYPASS_ROLES, true)) {
-        return RBAC_MODULES; // return all for sidebar rendering
+    return resolve_role_access($firebase, $school_id, $role)['modules'];
+}
+
+/**
+ * Resolve the effective ACCESS for one role OR the UNION of several roles
+ * (a staff member's `staff_roles[]`). Returns both the flat module presence list
+ * (backward-compatible with load_role_permissions) AND the per-module level map:
+ *
+ *   ['modules' => ['Fees','HR',...], 'levels' => ['Fees'=>'edit','HR'=>'manage',...]]
+ *
+ * Union semantics: a module is present if ANY role grants it; its level is the
+ * MAX across granting roles. A granting role with no `permissionLevels` entry for
+ * a held module contributes 'manage' (legacy-equivalent) — so before any level
+ * backfill this yields the same all-or-nothing access as the flat model.
+ *
+ * @param  object       $firebase  Unused; kept for signature parity.
+ * @param  string       $school_id Firestore `schools` doc id (SCH_XXXXXX).
+ * @param  string|array $roles     A single role label/ROLE_* id, or an array of them.
+ * @return array{modules: string[], levels: array<string,string>}
+ */
+function resolve_role_access($firebase, string $school_id, $roles): array
+{
+    $roleList = is_array($roles) ? $roles : [$roles];
+    $roleList = array_values(array_filter(array_map(function ($r) { return (string) $r; }, $roleList),
+        function ($r) { return $r !== ''; }));
+
+    // Any bypass role in the set ⇒ full access (all modules at 'manage').
+    foreach ($roleList as $r) {
+        if (in_array($r, RBAC_BYPASS_ROLES, true)) {
+            return ['modules' => RBAC_MODULES, 'levels' => array_fill_keys(RBAC_MODULES, 'manage')];
+        }
     }
 
-    if (empty($school_id) || empty($role)) {
-        return [];
+    if (empty($school_id) || empty($roleList)) {
+        return ['modules' => [], 'levels' => []];
     }
+
+    $modules = []; // module => true (presence set, order-preserving via keys)
+    $levels  = []; // module => max level string
 
     try {
         $CI =& get_instance();
         if (!isset($CI->fs)) {
-            log_message('error', 'RBAC load_role_permissions: fs library not loaded');
-            return [];
+            log_message('error', 'RBAC resolve_role_access: fs library not loaded');
+            return ['modules' => [], 'levels' => []];
         }
 
-        $schoolDoc = $CI->fs->get('schools', $school_id);
+        $schoolDoc  = $CI->fs->get('schools', $school_id);
+        $staffRoles = (is_array($schoolDoc) && is_array($schoolDoc['staffRoles'] ?? null)) ? $schoolDoc['staffRoles'] : [];
+        $legacyRbac = (is_array($schoolDoc) && is_array($schoolDoc['roles'] ?? null))      ? $schoolDoc['roles']      : [];
 
-        // PRIMARY: the unified role catalogue (schools.staffRoles) is the single
-        // source of truth. An admin's claim carries the role LABEL, so resolve by
-        // matching label (or the ROLE_* id, for forward-compat if a claim ever
-        // carries the id). Each unified role carries its own permissions[].
-        $staffRoles = (is_array($schoolDoc) && isset($schoolDoc['staffRoles']) && is_array($schoolDoc['staffRoles']))
-                      ? $schoolDoc['staffRoles']
-                      : [];
-        foreach ($staffRoles as $rid => $r) {
-            if (!is_array($r)) continue;
-            if ((string) ($r['label'] ?? '') === $role || (string) $rid === $role) {
-                $perms = is_array($r['permissions'] ?? null) ? $r['permissions'] : [];
-                return array_values(array_intersect($perms, RBAC_MODULES));
+        foreach ($roleList as $role) {
+            $matched = false;
+
+            // PRIMARY: unified catalogue, matched by label OR ROLE_* id.
+            foreach ($staffRoles as $rid => $r) {
+                if (!is_array($r)) continue;
+                if ((string) ($r['label'] ?? '') === $role || (string) $rid === $role) {
+                    $matched = true;
+                    $perms  = is_array($r['permissions'] ?? null)
+                              ? array_values(array_intersect($r['permissions'], RBAC_MODULES)) : [];
+                    $rlvls  = is_array($r['permissionLevels'] ?? null) ? $r['permissionLevels'] : [];
+                    foreach ($perms as $m) {
+                        $modules[$m] = true;
+                        $lvl = (isset($rlvls[$m]) && isset(RBAC_LEVELS[$rlvls[$m]])) ? $rlvls[$m] : 'manage';
+                        if (!isset($levels[$m]) || rbac_level_rank($lvl) > rbac_level_rank($levels[$m])) {
+                            $levels[$m] = $lvl;
+                        }
+                    }
+                    break; // this role resolved
+                }
+            }
+            if ($matched) continue;
+
+            // FALLBACK: legacy schools.roles[name] (read-only) for un-folded tenants.
+            $rd = $legacyRbac[$role] ?? null;
+            if (is_array($rd) && is_array($rd['permissions'] ?? null)) {
+                foreach (array_intersect($rd['permissions'], RBAC_MODULES) as $m) {
+                    $modules[$m] = true;
+                    if (!isset($levels[$m])) $levels[$m] = 'manage'; // legacy has no level signal
+                }
             }
         }
-
-        // FALLBACK: legacy RBAC map (schools.roles[name]) for any tenant not yet
-        // folded into the unified catalogue. Kept read-only for safety.
-        $roles     = (is_array($schoolDoc) && isset($schoolDoc['roles']) && is_array($schoolDoc['roles']))
-                     ? $schoolDoc['roles']
-                     : [];
-        $role_data = $roles[$role] ?? null;
-
-        if (is_array($role_data) && isset($role_data['permissions']) && is_array($role_data['permissions'])) {
-            // Whitelist against known modules
-            return array_values(array_intersect($role_data['permissions'], RBAC_MODULES));
-        }
     } catch (Exception $e) {
-        log_message('error', 'RBAC load_role_permissions failed: ' . $e->getMessage());
+        log_message('error', 'RBAC resolve_role_access failed: ' . $e->getMessage());
+        return ['modules' => [], 'levels' => []];
     }
 
-    return [];
+    return ['modules' => array_keys($modules), 'levels' => $levels];
 }

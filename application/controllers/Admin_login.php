@@ -319,7 +319,9 @@ class Admin_login extends CI_Controller
         // broader role). If left, MY_Controller sees a populated array and skips
         // the reload — so the new role would inherit the old role's access.
         // Bypass roles re-seed it below; every other role lazy-loads it fresh.
-        $this->session->unset_userdata('rbac_permissions');
+        // Clear the parallel level map + any staff_roles union set from a prior
+        // login too, so graded access never bleeds across accounts in one browser.
+        $this->session->unset_userdata(['rbac_permissions', 'rbac_levels', 'staff_roles']);
 
         $adminName    = (string) ($staffDoc['name'] ?? $staffDoc['Name'] ?? $adminId);
         $displayRole  = $roleLabel !== '' ? $roleLabel : $roleRaw;

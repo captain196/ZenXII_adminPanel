@@ -477,17 +477,27 @@ class MY_Controller extends CI_Controller
             || !$this->input->is_ajax_request()
             || ($rbacNow - $rbacTs) >= 5;
         if ($rbacStale) {
-            $fresh = load_role_permissions(
-                $this->firebase,
-                $this->school_name,
-                $this->admin_role ?? ''
+            // Resolve the UNION of the caller's roles: their primary role LABEL
+            // (from the claim) plus any staff_roles[] captured at login. Before
+            // staff_roles is seeded this is just [admin_role] — identical to the
+            // legacy single-role resolution — but it lights up the union the moment
+            // login populates staff_roles. Returns the flat module list AND the
+            // per-module level map (rbac_levels).
+            $staffRolesSess = $this->session->userdata('staff_roles');
+            $roleSet = array_merge(
+                [$this->admin_role ?? ''],
+                is_array($staffRolesSess) ? $staffRolesSess : []
             );
+            $fresh        = resolve_role_access($this->firebase, $this->school_name, $roleSet);
+            $freshModules = $fresh['modules'];
+            $freshLevels  = $fresh['levels'];
             // Guard against a transient Firestore blip (which returns []) wiping a
             // user's access mid-session: accept an empty result only when we have
             // no prior perms. A genuine full-revoke still applies on re-login.
-            if (!empty($fresh) || !is_array($rbac_permissions)) {
-                $rbac_permissions = $fresh;
+            if (!empty($freshModules) || !is_array($rbac_permissions)) {
+                $rbac_permissions = $freshModules;
                 $this->session->set_userdata('rbac_permissions', $rbac_permissions);
+                $this->session->set_userdata('rbac_levels', $freshLevels);
             }
             $this->session->set_userdata('rbac_ts', $rbacNow);
         }
@@ -505,7 +515,8 @@ class MY_Controller extends CI_Controller
             'admin_name'           => $this->admin_name,
             'admin_role'           => $this->admin_role,
             'school_features'      => $this->school_features,
-            'rbac_permissions'     => $rbac_permissions,           // [RBAC] module permissions
+            'rbac_permissions'     => $rbac_permissions,           // [RBAC] module presence list
+            'rbac_levels'          => $this->session->userdata('rbac_levels') ?: [], // [RBAC] per-module level map
             'subscription_warning' => $this->session->userdata('subscription_warning'),
         ]);
     }
