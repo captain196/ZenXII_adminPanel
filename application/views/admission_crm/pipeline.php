@@ -144,10 +144,13 @@ var pipelineData = {}, stagesData = {};
 document.addEventListener('DOMContentLoaded', function() { loadPipeline(); });
 
 function loadPipeline() {
+    // C7 — class filter is applied SERVER-SIDE (index #9) so bounded columns stay
+    // correct; the board is no longer a full-scan grouped in the browser.
+    var cf = document.getElementById('filterClass').value || '';
     fetch(BASE + 'admission_crm/fetch_pipeline', {
         method: 'POST',
         headers: { 'Content-Type': 'application/x-www-form-urlencoded', 'X-Requested-With': 'XMLHttpRequest' },
-        body: ''
+        body: new URLSearchParams({ 'class': cf }).toString()
     })
     .then(function(r) { return r.json(); })
     .then(function(data) {
@@ -158,12 +161,34 @@ function loadPipeline() {
         }
     })
     .catch(function() {
-        document.getElementById('pipelineBoard').innerHTML = '<div style="text-align:center;padding:80px 0;color:var(--t3);width:100%;font-size:13px;"><i class="fa fa-exclamation-triangle" style="font-size:2rem;display:block;margin-bottom:8px;"></i>Failed to load pipeline</div>';
+        document.getElementById('pipelineBoard').innerHTML = '<div style="text-align:center;padding:80px 0;color:var(--t3);width:100%;font-size:13px;"><i class="fa fa-exclamation-triangle" style="font-size:2rem;display:block;margin-bottom:8px;"></i>Failed to load pipeline <button class="ac-btn ac-btn-ghost ac-btn-sm" style="margin-left:10px;" onclick="loadPipeline()"><i class="fa fa-refresh"></i> Retry</button></div>';
     });
 }
 
+// Load one more bounded page for a single column (per-column pagination).
+function loadMoreColumn(sk) {
+    var stage = pipelineData[sk];
+    if (!stage || !stage.hasMore || !stage.nextCursor) return;
+    var cf = document.getElementById('filterClass').value || '';
+    var btn = document.getElementById('lmcol_' + sk);
+    if (btn) { btn.disabled = true; btn.innerHTML = '<i class="fa fa-spinner fa-spin"></i> Loading…'; }
+    fetch(BASE + 'admission_crm/fetch_pipeline_column', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/x-www-form-urlencoded', 'X-Requested-With': 'XMLHttpRequest' },
+        body: new URLSearchParams({ stage: sk, 'class': cf, cursor_created_at: stage.nextCursor.created_at || '', cursor_id: stage.nextCursor.id || '' }).toString()
+    })
+    .then(function(r) { return r.json(); })
+    .then(function(d) {
+        if (d.status !== 'success') { if (btn) { btn.disabled = false; btn.innerHTML = 'Load More'; } return; }
+        stage.items = (stage.items || []).concat(d.items || []);
+        stage.hasMore = !!d.hasMore;
+        stage.nextCursor = d.nextCursor || null;
+        renderPipeline();
+    })
+    .catch(function() { if (btn) { btn.disabled = false; btn.innerHTML = 'Load More'; } });
+}
+
 function renderPipeline() {
-    var cf = document.getElementById('filterClass').value;
     var board = document.getElementById('pipelineBoard');
 
     var colors = {
@@ -176,13 +201,13 @@ function renderPipeline() {
 
     stageKeys.forEach(function(sk) {
         var stage = pipelineData[sk];
-        var items = (stage.items || []).filter(function(i) { return !cf || i.class === cf; });
+        var items = stage.items || []; // server already applied the class filter
         var color = colors[sk] || 'var(--gold)';
 
         html += '<div class="ac-col">';
         html += '<div class="ac-col-hdr" style="border-top:3px solid ' + color + ';border-top-left-radius:10px;border-top-right-radius:10px;">';
         html += '<span class="ac-col-title">' + esc(stage.label) + '</span>';
-        html += '<span class="ac-col-count">' + items.length + '</span>';
+        html += '<span class="ac-col-count">' + items.length + (stage.hasMore ? '+' : '') + '</span>';
         html += '</div><div class="ac-col-body">';
 
         if (items.length === 0) {
@@ -221,6 +246,11 @@ function renderPipeline() {
             });
         }
 
+        // Per-column "Load More" — the column is bounded server-side (index #8/#9).
+        if (stage.hasMore) {
+            html += '<button class="ac-pipe-btn" id="lmcol_' + esc(sk) + '" onclick="loadMoreColumn(\'' + esc(sk) + '\')" style="width:100%;margin-top:8px;justify-content:center;"><i class="fa fa-angle-double-down"></i> Load More</button>';
+        }
+
         html += '</div></div>';
     });
 
@@ -246,5 +276,8 @@ function showAlert(msg, type) {
     el.textContent = msg; el.style.display = 'block';
     setTimeout(function() { el.style.display = 'none'; }, 3000);
 }
-function esc(s) { var d = document.createElement('div'); d.textContent = s || ''; return d.innerHTML; }
+// Quote-safe HTML escaper (attribute AND text context). Reuses the project's
+// proven implementation (admin_forgot_password.php) — escapes & < > " ' and is
+// null-safe. Module-consistent with the rest of Admission CRM (C6).
+function esc(s){return String(s==null?'':s).replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;').replace(/"/g,'&quot;').replace(/'/g,'&#39;');}
 </script>

@@ -281,7 +281,7 @@ function renderTable(items) {
 
     filtered.forEach(function(i) {
         var bc = badgeMap[i.status] || 'ac-badge-new';
-        html += '<tr data-name="' + (i.student_name || '').toLowerCase() + '" data-phone="' + (i.phone || '') + '">';
+        html += '<tr data-name="' + esc((i.student_name || '').toLowerCase()) + '" data-phone="' + esc(i.phone || '') + '">';
         html += '<td style="font-family:var(--font-m);font-size:11px;">' + esc(i.inquiry_id || i.id) + '</td>';
         html += '<td style="font-weight:600;">' + esc(i.student_name) + '</td>';
         html += '<td>' + esc(i.parent_name) + '</td>';
@@ -304,7 +304,10 @@ function renderTable(items) {
 }
 
 function filterTable() {
-    var q = document.getElementById('filterSearch').value.toLowerCase();
+    // Escape the query the SAME way data-name/data-phone are now escaped, so
+    // search still matches (no-op for plain alphanumerics; keeps special-char
+    // names/phones searchable). Preserves user-visible behaviour.
+    var q = esc(document.getElementById('filterSearch').value.toLowerCase());
     var rows = document.querySelectorAll('.ac-table tbody tr');
     rows.forEach(function(row) {
         var name = row.getAttribute('data-name') || '';
@@ -420,5 +423,8 @@ function showAlert(msg, type) {
     setTimeout(function() { el.style.display = 'none'; }, 4000);
 }
 
-function esc(s) { var d = document.createElement('div'); d.textContent = s || ''; return d.innerHTML; }
+// Quote-safe HTML escaper (attribute AND text context). Reuses the project's
+// proven implementation (admin_forgot_password.php) — escapes & < > " ' and is
+// null-safe. Replaces the prior textContent-based esc (unsafe in attributes, C6).
+function esc(s){return String(s==null?'':s).replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;').replace(/"/g,'&quot;').replace(/'/g,'&#39;');}
 </script>

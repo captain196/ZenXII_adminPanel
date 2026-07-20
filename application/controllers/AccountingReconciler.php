@@ -203,6 +203,10 @@ class AccountingReconciler extends CI_Controller
         $refundStats  = $this->_sweepRefundJournalDrift();
         $this->_writeHeartbeat('sweep_refund_drift_done');
 
+        // Admission ledger-orphan re-drive (mirrors the refund sweep; reuse-only).
+        $admStats     = $this->_sweepAdmissionJournalDrift();
+        $this->_writeHeartbeat('sweep_admission_drift_done');
+
         $indexStats   = $this->_sweepIndexDrift();    // R-P4
         $this->_writeHeartbeat('sweep_index_drift_done');
 
@@ -218,6 +222,10 @@ class AccountingReconciler extends CI_Controller
             'refundDriftRepaired' => $refundStats['repaired'],
             'refundDriftFailed'   => $refundStats['failed'],
             'refundDriftSuspended'=> $refundStats['suspended'],
+            'admDriftFound'       => $admStats['found'],
+            'admDriftRepaired'    => $admStats['repaired'],
+            'admDriftFailed'      => $admStats['failed'],
+            'admDriftSuspended'   => $admStats['suspended'],
             // Phase 2 — R-P4 / Phase 4 V-MED-5 index drift
             'indexScanned'           => $indexStats['scanned'],
             'indexMissing'           => $indexStats['missing'],
@@ -1262,6 +1270,130 @@ class AccountingReconciler extends CI_Controller
             }
         } catch (\Throwable $e) {
             log_message('error', 'ACC_RECON_DRIFT_ERROR: ' . $e->getMessage());
+        }
+        return $stats;
+    }
+
+    // ─────────────────────────────────────────────────────────────────
+    //  ADMISSION JOURNAL DRIFT (mirrors _sweepRefundJournalDrift)
+    //
+    //  Symptom: Admission_collection::record_payment collected the fee
+    //  (ADM receipt minted, money captured) but create_fee_journal
+    //  returned null — period-lock at collection time, missing/inactive
+    //  income or cash/bank account, or an idempotency in-progress race.
+    //  The receipt carries journalPosted=false (SAME convention as the
+    //  refund path). Without this sweep the collection stays receipted
+    //  but ledger-orphaned. Re-drive is idempotent: the deterministic
+    //  JE_FEE_{receiptKey} slot dedups, so a receipt whose journal DID
+    //  land between our read and the call simply re-attaches its entryId.
+    //  Reuse-only — no admission-specific accounting logic here.
+    // ─────────────────────────────────────────────────────────────────
+    private function _sweepAdmissionJournalDrift(): array
+    {
+        $stats  = ['found' => 0, 'repaired' => 0, 'failed' => 0, 'suspended' => 0];
+        $cutoff = date('c', time() - self::DRIFT_AGE_SEC);
+
+        try {
+            // 3 equality terms, no orderBy ⇒ no composite index required
+            // (same minimal-index shape as the refund sweep). Receipts predating
+            // this change lack `journalPosted` and are correctly excluded — we
+            // never re-post a historic journal.
+            $receipts = (array) $this->firebase->firestoreQuery('admissionReceipts', [
+                ['schoolId',      '==', $this->schoolFs],
+                ['session',       '==', $this->sessionYear],
+                ['journalPosted', '==', false],
+            ], null, 'ASC', self::MAX_DRIFT_SCAN);
+
+            $opsAcct = null;
+
+            foreach ($receipts as $r) {
+                $d          = is_array($r['data'] ?? null) ? $r['data'] : [];
+                $receiptKey = (string) ($d['receiptKey'] ?? ($r['id'] ?? ''));
+                $amount     = round((float) ($d['amount'] ?? 0), 2);
+                if ($receiptKey === '' || $amount <= 0) continue;
+
+                // Give the primary path room to land its own attempt first.
+                $lastAttempt = (string) ($d['journalLastAttemptAt'] ?? $d['updatedAt'] ?? '');
+                if ($lastAttempt !== '' && $lastAttempt >= $cutoff) continue;
+
+                $stats['found']++;
+
+                $retries = (int) ($d['journalRetryCount'] ?? 0);
+                if ($retries >= 5) {
+                    log_message('error',
+                        "ACC_RECON_ADM_SUSPENDED receipt={$receiptKey} retries={$retries} "
+                        . "lastError=" . (string) ($d['journalLastError'] ?? '')
+                        . " — operator must inspect.");
+                    $stats['suspended']++;
+                    $stats['failed']++;
+                    continue;
+                }
+
+                log_message('error',
+                    "ACC_RECON_ADM_DRIFT receipt={$receiptKey} retries={$retries} "
+                    . "lastError=" . (string) ($d['journalLastError'] ?? ''));
+
+                if ($opsAcct === null) {
+                    $this->load->library('Operations_accounting', null, 'opsAcctAdm');
+                    $this->opsAcctAdm->init(
+                        $this->firebase, $this->schoolName, $this->sessionYear,
+                        'SYSTEM_RECONCILER', $this);
+                    $opsAcct = $this->opsAcctAdm;
+                }
+
+                $now = date('Y-m-d H:i:s');
+                try {
+                    // Same payload shape Admission_collection posts — deterministic
+                    // JE_FEE_{receiptKey} makes this idempotent.
+                    $entryId = (string) ($opsAcct->create_fee_journal([
+                        'school_name'      => $this->schoolFs,
+                        'session_year'     => $this->sessionYear,
+                        'date'             => (string) ($d['date'] ?? date('Y-m-d')),
+                        'amount'           => $amount,
+                        'payment_mode'     => strtolower((string) ($d['accountingMode'] ?? 'cash')),
+                        'bank_code'        => (string) ($d['bankLedgerCode'] ?? ''),
+                        'receipt_no'       => $receiptKey,
+                        'student_name'     => (string) ($d['studentName'] ?? ''),
+                        'student_id'       => (string) ($d['appId'] ?? ''),
+                        'admin_id'         => 'SYSTEM_RECONCILER',
+                        'allocations'      => [[
+                            'fee_head' => (string) ($d['feeHead'] ?? 'Admission Fee'),
+                            'category' => 'Admission',
+                            'amount'   => $amount,
+                        ]],
+                        'fine_amount'      => 0,
+                        'discount_amount'  => 0,
+                        'collection_type'  => 'admission',
+                        'journal_entry_id' => "JE_FEE_{$receiptKey}",
+                    ]) ?? '');
+                } catch (\Throwable $e) {
+                    $entryId = '';
+                    log_message('error', "ACC_RECON_ADM_REPAIR_FAILED receipt={$receiptKey} error=" . $e->getMessage());
+                }
+
+                if ($entryId !== '') {
+                    $this->firebase->firestoreSet('admissionReceipts', "{$this->schoolFs}_{$receiptKey}", [
+                        'journalPosted'        => true,
+                        'journalEntryId'       => $entryId,
+                        'journalLastError'     => '',
+                        'journalRetryCount'    => $retries + 1,
+                        'journalLastAttemptAt' => date('c'),
+                        'updatedAt'            => $now,
+                    ], true);
+                    log_message('error', "ACC_RECON_ADM_REPAIRED receipt={$receiptKey} entryId={$entryId}");
+                    $stats['repaired']++;
+                } else {
+                    $this->firebase->firestoreSet('admissionReceipts', "{$this->schoolFs}_{$receiptKey}", [
+                        'journalRetryCount'    => $retries + 1,
+                        'journalLastError'     => 'reconciler re-drive returned null',
+                        'journalLastAttemptAt' => date('c'),
+                        'updatedAt'            => $now,
+                    ], true);
+                    $stats['failed']++;
+                }
+            }
+        } catch (\Throwable $e) {
+            log_message('error', 'ACC_RECON_ADM_DRIFT_ERROR: ' . $e->getMessage());
         }
         return $stats;
     }

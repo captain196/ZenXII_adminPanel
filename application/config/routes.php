@@ -574,6 +574,9 @@ $route['admission_crm/applications']            = 'Sis/applications';
 $route['admission_crm/fetch_applications']      = 'Sis/fetch_applications';
 $route['admission_crm/save_application']        = 'Sis/save_application';
 $route['admission_crm/get_application']         = 'Sis/get_application';
+$route['admission_crm/collect_admission_fee']   = 'Sis/collect_admission_fee';
+$route['admission_crm/admission_receipt']       = 'Sis/admission_receipt';
+$route['admission_crm/poster']                  = 'Sis/admission_poster';
 $route['admission_crm/delete_application']      = 'Sis/delete_application';
 $route['admission_crm/pipeline']                = 'Sis/pipeline';
 $route['admission_crm/fetch_pipeline']          = 'Sis/fetch_pipeline';
@@ -604,10 +607,14 @@ $route['admission_crm/fetch_analytics']         = 'Sis/fetch_analytics';
 $route['admission/form/(:any)']                 = 'Admission_public/form/$1';
 $route['admission/submit/(:any)']               = 'Admission_public/submit/$1';
 $route['admission/pay/(:any)']                  = 'Admission_public/initiate_payment/$1';
+$route['admission/choose_offline/(:any)']       = 'Admission_public/choose_offline/$1';
 $route['admission/payment_callback/(:any)']     = 'Admission_public/payment_callback/$1';
+$route['admission/payment_webhook/(:any)']      = 'Admission_public/payment_webhook/$1';
 $route['admission/payment_status/(:any)']       = 'Admission_public/payment_status/$1';
 // Receipt — `admission/receipt/{schoolId}/{appId}/{token}` (Tier-A QW #1).
 $route['admission/receipt/(:any)/(:any)/(:any)'] = 'Admission_public/receipt/$1/$2/$3';
+// FEE receipt (paid, ADM…) — `admission/fee_receipt/{schoolId}/{receiptNo}/{token}`.
+$route['admission/fee_receipt/(:any)/(:any)/(:any)'] = 'Admission_public/fee_receipt/$1/$2/$3';
 
 // ─── Attendance Management ───
 $route['attendance']                         = 'Attendance/index';

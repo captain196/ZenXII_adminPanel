@@ -443,11 +443,23 @@ class School_config extends MY_Controller
             $this->session->set_userdata('school_display_name', $data['display_name']);
         }
 
+        // Ensure this school has a readable public admission slug so the QR /
+        // shareable link parents see is `…/admission/form/st-marys-school`
+        // instead of the raw SCH_ id. Centralized + self-healing (see
+        // ensure_admission_slug in public_url_helper). Non-fatal: a slug
+        // failure must never block a profile save (raw-id URL always works).
+        $admissionSlug = '';
+        if (!empty($data['display_name'])) {
+            $this->load->helper('public_url');
+            $admissionSlug = ensure_admission_slug($this->firebase, $school_id, $data['display_name']);
+        }
+
         log_audit('Configuration', 'save_profile', $school, 'Updated school profile');
 
         $this->json_success([
-            'message'      => 'Profile saved successfully.',
-            'display_name' => $data['display_name'] ?? null, // let the page update the header live
+            'message'          => 'Profile saved successfully.',
+            'display_name'     => $data['display_name'] ?? null, // let the page update the header live
+            'admission_slug'   => $admissionSlug !== '' ? $admissionSlug : null,
         ]);
     }
 
@@ -586,6 +598,17 @@ class School_config extends MY_Controller
         // guard ensures we never delete the file we just uploaded.
         if ($prevPath !== '' && $prevPath !== $remotePath) {
             $this->firebase->deleteStorageFile($prevPath);
+        }
+
+        // M4: evict the PREVIOUS logo's render-cache entry immediately. The new
+        // URL already maps to a new cache key (auto-miss → re-fetch), so this is
+        // a best-effort cleanup, not a correctness requirement. Disposable cache.
+        if ($prevUrl !== '') {
+            try {
+                $this->load->helper('public_url');
+                $this->load->driver('cache', ['adapter' => 'file']);
+                $this->cache->delete(school_logo_cache_key($school_id, $prevUrl));
+            } catch (\Throwable $_) { /* non-fatal */ }
         }
 
         log_audit('Configuration', 'upload_logo', $school, 'Uploaded school logo');
@@ -4605,12 +4628,44 @@ class School_config extends MY_Controller
         $fsSchool = $this->fs->get('schools', $this->fs->schoolId());
         $config = (is_array($fsSchool['admissionFee'] ?? null)) ? $fsSchool['admissionFee'] : [];
 
+        // Parent-facing link → canonical PRODUCTION origin (www.zenxii.com), never
+        // the admin's current request host. A QR/link a school prints & shares must
+        // resolve publicly even though the admin may be on localhost/LAN/ngrok.
+        // Prefer the readable slug (…/admission/form/st-marys-school) over the raw
+        // SCH_ id; both resolve, the slug is just professional-looking.
+        $this->load->helper('public_url');
+        $admissionRef = trim((string) ($fsSchool['admissionSlug'] ?? ''));
+        if ($admissionRef === '') {
+            // Self-heal: school has a name but no slug yet (name may have been set
+            // via the School Profile page or SA onboarding — not this Config tab).
+            // Mint it now so the link/QR is professional regardless of save path.
+            $nm = trim((string) ($fsSchool['name'] ?? ''));
+            if ($nm !== '' && $nm !== $school) {
+                $admissionRef = ensure_admission_slug($this->firebase, $school, $nm);
+            }
+            if ($admissionRef === '') $admissionRef = $school;
+        }
+        $public_form_url = public_admission_form_url($admissionRef);
+
+        // Render the QR locally as a data: URI (NOT an external QR API — those are
+        // blocked by our CSP img-src and fail offline). Reuses the same canonical
+        // local renderer as the SIS ID-card / attendance QR flow.
+        $this->load->helper('qr_token');
+        $admission_qr_svg = qr_svg_data_uri($public_form_url);
+
+        // Is the branding (name/logo/address) filled in? Drives an inline nudge
+        // next to the QR so the school knows a blank poster/form == blank profile.
+        $profileName = trim((string) ($fsSchool['name'] ?? ''));
+        $profileNameConfigured = ($profileName !== '' && $profileName !== $school);
+
         $data = [
-            'config'       => $config,
-            'school_name'  => $school,
-            'school_id'    => $this->school_id,
-            'session_year' => $this->session_year,
-            'public_form_url' => base_url('admission/form/' . urlencode($school)),
+            'config'           => $config,
+            'school_name'      => $school,
+            'school_id'        => $this->school_id,
+            'session_year'     => $this->session_year,
+            'public_form_url'  => $public_form_url,
+            'admission_qr_svg' => $admission_qr_svg,
+            'name_configured'  => $profileNameConfigured,
         ];
 
         $this->load->view('include/header');

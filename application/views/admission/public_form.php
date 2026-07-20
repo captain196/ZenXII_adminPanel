@@ -302,48 +302,71 @@ $esc = function($v) { return htmlspecialchars($v, ENT_QUOTES, 'UTF-8'); };
         </form>
     </div>
 
-    <!-- Success Panel (shown after submission) -->
+    <!-- Payment step — shown after submit ONLY when a fee is required.
+         Deliberately does NOT say "Application Submitted" yet: the parent only
+         sees the application confirmed AFTER they pay (or choose Pay at School). -->
+    <div class="pf-success" id="paymentPanel">
+        <i class="fa-solid fa-indian-rupee-sign" style="color:var(--gold);"></i>
+        <h2>One Last Step</h2>
+        <p>Complete the admission fee to submit your application.</p>
+
+        <div style="background:var(--bg3);padding:16px;border-radius:8px;border:1px solid var(--border);margin:16px auto 12px;max-width:360px;">
+            <p style="font-size:13px;color:var(--t2);margin-bottom:8px;"><span id="payLabel">Admission fee</span> required:</p>
+            <p style="font-size:1.5rem;font-weight:800;color:var(--gold);">&#8377;<span id="payAmount">0</span></p>
+        </div>
+        <div style="background:#fff7ed;border:1px solid #fed7aa;color:#9a3412;padding:10px 14px;border-radius:8px;font-size:12.5px;margin:0 auto 16px;max-width:360px;display:flex;gap:8px;align-items:flex-start;text-align:left;">
+            <i class="fa-solid fa-circle-info" style="margin-top:2px;"></i>
+            <span>The <strong>Admission Fee is Non-Refundable</strong>. Please review your details before paying.</span>
+        </div>
+        <p style="font-size:13px;font-weight:600;color:var(--t1);margin-bottom:10px;">Choose how you want to pay</p>
+        <div style="display:flex;flex-direction:column;gap:10px;max-width:360px;margin:0 auto;">
+            <button id="payOnlineBtn" class="pf-submit" style="background:#0f766e;" onclick="initiatePayment()">
+                <i class="fa-solid fa-credit-card"></i> Pay Online (Card / UPI / Net-banking)
+            </button>
+            <button id="payOfflineBtn" class="pf-submit" style="background:#fff;color:#0f766e;border:1.5px solid #0f766e;" onclick="chooseOffline()">
+                <i class="fa-solid fa-building-columns"></i> Pay at School (Cash / Cheque / UPI at office)
+            </button>
+        </div>
+    </div>
+
+    <!-- Final confirmation — "Application Submitted". Shown AFTER payment, or
+         immediately when no fee is required. Carries the app id + receipt. -->
     <div class="pf-success" id="successPanel">
         <i class="fa-solid fa-circle-check"></i>
         <h2>Application Submitted!</h2>
         <p>Your application ID: <strong id="appIdDisplay"></strong></p>
-        <p>The school will review your application and contact you shortly.</p>
+        <p id="successSubtext">The school will review your application and contact you shortly.</p>
 
-        <!-- Receipt download (Tier-A QW #1). The link is populated by the
-             submit-handler JS from data.receipt_url; same URL is also sent
-             to the parent via the SMS notification. -->
+        <!-- Receipt download. Populated by JS: the paid FEE receipt after payment,
+             or the application acknowledgement when no fee is required. -->
         <div id="receiptSection" style="display:none;margin-top:20px;">
             <a id="receiptLink" target="_blank" rel="noopener"
                style="display:inline-block;padding:12px 22px;background:#0f766e;color:#fff;border-radius:8px;text-decoration:none;font-weight:600;font-size:14px;">
-                <i class="fa-solid fa-file-pdf" style="margin-right:6px;"></i> Download Receipt (PDF)
+                <i class="fa-solid fa-file-pdf" style="margin-right:6px;"></i> <span id="receiptLabel">Download Receipt (PDF)</span>
             </a>
             <p style="font-size:12px;color:var(--t3);margin-top:8px;">
                 A copy of this link has been sent to your phone via SMS.
             </p>
-        </div>
-
-        <!-- Payment button (shown only if school requires admission fee) -->
-        <div id="paymentSection" style="display:none;margin-top:20px;">
-            <div style="background:var(--bg3);padding:16px;border-radius:8px;border:1px solid var(--border);margin-bottom:16px;">
-                <p style="font-size:13px;color:var(--t2);margin-bottom:8px;"><span id="payLabel">Admission fee</span> required:</p>
-                <p style="font-size:1.5rem;font-weight:800;color:var(--gold);">&#8377;<span id="payAmount">0</span></p>
-            </div>
-            <button id="payBtn" class="pf-submit" style="background:#0f766e;max-width:320px;margin:0 auto;" onclick="initiatePayment()">
-                <i class="fa-solid fa-credit-card"></i> Pay Now
-            </button>
         </div>
         <button onclick="location.reload()" style="margin-top:16px;padding:10px 24px;background:var(--bg3);color:var(--t2);border:1px solid var(--border);border-radius:8px;cursor:pointer;font-size:13px;font-weight:600;">
             <i class="fa-solid fa-plus" style="margin-right:6px;"></i> Submit Another
         </button>
     </div>
 
-    <!-- Payment Success Panel -->
-    <div class="pf-success" id="paymentSuccessPanel" style="display:none;">
-        <i class="fa-solid fa-check-circle" style="color:#22c55e;"></i>
-        <h2>Payment Successful!</h2>
-        <p>Your admission fee has been received.</p>
-        <p style="margin-top:4px;">Application <strong id="paidAppId"></strong> is now <strong style="color:#22c55e;">Awaiting school review</strong>.</p>
-        <p style="font-size:12px;color:var(--t3);margin-top:8px;">The school will verify your details and contact you with next steps. Please keep your application ID for reference.</p>
+    <!-- Pay-at-School confirmation — application IS submitted; fee due at office. -->
+    <div class="pf-success" id="offlinePanel">
+        <i class="fa-solid fa-circle-check"></i>
+        <h2>Application Submitted!</h2>
+        <p>Your application ID: <strong id="offAppId"></strong></p>
+        <p style="font-size:13px;color:var(--t2);margin-top:6px;">Please pay the admission fee of <strong>&#8377;<span id="offAmount">0</span></strong> at the school office.</p>
+        <div style="background:var(--bg3);border:1px solid var(--border);border-radius:8px;padding:12px 16px;margin:14px auto;max-width:320px;">
+            <p style="font-size:12px;color:var(--t3);">Your reference number</p>
+            <p style="font-size:1.2rem;font-weight:800;color:var(--gold);" id="offRef">-</p>
+        </div>
+        <p style="font-size:12px;color:var(--t3);">Show this reference at the reception desk. The office will collect the fee and issue an official receipt.</p>
+        <button onclick="location.reload()" style="margin-top:16px;padding:10px 24px;background:var(--bg3);color:var(--t2);border:1px solid var(--border);border-radius:8px;cursor:pointer;font-size:13px;font-weight:600;">
+            <i class="fa-solid fa-plus" style="margin-right:6px;"></i> Submit Another
+        </button>
     </div>
 
     <div class="pf-footer">Powered by ZenXii ERP</div>
@@ -360,6 +383,22 @@ function showAlert(msg, isError) {
     el.className = 'pf-alert ' + (isError ? 'pf-alert-err' : 'pf-alert-ok');
     el.style.display = 'block';
     el.scrollIntoView({ behavior: 'smooth', block: 'center' });
+}
+
+// Reveal the final "Application Submitted!" panel with the app id + a receipt
+// link. Called AFTER payment (fee receipt) or immediately when no fee is due
+// (acknowledgement). Never called straight from form submit when a fee is due.
+function showSubmitted(appId, receiptUrl, label) {
+    document.getElementById('paymentPanel').style.display = 'none';
+    document.getElementById('appIdDisplay').textContent = appId || 'Submitted';
+    if (receiptUrl) {
+        document.getElementById('receiptLink').setAttribute('href', receiptUrl);
+        if (label) document.getElementById('receiptLabel').textContent = label;
+        document.getElementById('receiptSection').style.display = 'block';
+    }
+    var panel = document.getElementById('successPanel');
+    panel.style.display = 'block';
+    panel.scrollIntoView({ behavior: 'smooth', block: 'center' });
 }
 
 document.getElementById('admissionForm').addEventListener('submit', function(e) {
@@ -385,25 +424,25 @@ document.getElementById('admissionForm').addEventListener('submit', function(e) 
         // Refresh CSRF token from server response
         if (data.csrf_token) csrfToken = data.csrf_token;
         if (data.status === 'success') {
-            document.getElementById('formCard').style.display = 'none';
-            document.getElementById('successPanel').style.display = 'block';
-            document.getElementById('appIdDisplay').textContent = data.app_id || 'Submitted';
-            // Store for payment flow
             window._appId = data.app_id;
-            // Receipt link — Tier-A QW #1. Hidden by default; revealed when
-            // the server returns a receipt_url (always returned for new
-            // submissions; absent on legacy responses to keep this safe).
-            if (data.receipt_url) {
-                document.getElementById('receiptLink').setAttribute('href', data.receipt_url);
-                document.getElementById('receiptSection').style.display = 'block';
-            }
-            // Show payment button if required
+            window._appReceiptUrl = data.receipt_url || ''; // application acknowledgement (fallback)
+            document.getElementById('formCard').style.display = 'none';
+
             if (data.payment_required && data.payment_amount > 0) {
-                document.getElementById('paymentSection').style.display = 'block';
+                // Fee required → go STRAIGHT to the payment step. The application
+                // is NOT shown as "submitted" until the parent pays or chooses
+                // Pay at School (fixes the premature "submitted" confirmation).
+                window._payAmount = data.payment_amount;
                 document.getElementById('payAmount').textContent = parseFloat(data.payment_amount).toLocaleString('en-IN');
                 if (data.payment_label) {
                     document.getElementById('payLabel').textContent = data.payment_label;
                 }
+                var pp = document.getElementById('paymentPanel');
+                pp.style.display = 'block';
+                pp.scrollIntoView({ behavior: 'smooth', block: 'center' });
+            } else {
+                // No fee → the application is complete immediately.
+                showSubmitted(data.app_id, data.receipt_url, 'Download Acknowledgement (PDF)');
             }
         } else {
             showAlert(data.message || 'Submission failed. Please try again.', true);
@@ -418,9 +457,46 @@ document.getElementById('admissionForm').addEventListener('submit', function(e) 
     });
 });
 
-// ── Payment Flow ──────────────────────────────────────────────────────
+// ── Pay at School (offline) ───────────────────────────────────────────
+function chooseOffline() {
+    var btn = document.getElementById('payOfflineBtn');
+    btn.disabled = true;
+    var oldHtml = btn.innerHTML;
+    btn.innerHTML = '<i class="fa-solid fa-spinner fa-spin"></i> Please wait...';
+
+    var fd = new URLSearchParams({ app_id: window._appId });
+    fd.append(csrfName, csrfToken);
+
+    fetch('<?= base_url("admission/choose_offline/" . urlencode($school_id)) ?>', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/x-www-form-urlencoded', 'X-Requested-With': 'XMLHttpRequest' },
+        body: fd.toString()
+    })
+    .then(function(r) { return r.json(); })
+    .then(function(res) {
+        if (res.csrf_token) csrfToken = res.csrf_token;
+        if (res.status === 'success') {
+            document.getElementById('paymentPanel').style.display = 'none';
+            document.getElementById('offAppId').textContent = window._appId || 'Submitted';
+            document.getElementById('offAmount').textContent = parseFloat(res.amount || window._payAmount || 0).toLocaleString('en-IN');
+            document.getElementById('offRef').textContent = res.reference || window._appId;
+            var op = document.getElementById('offlinePanel');
+            op.style.display = 'block';
+            op.scrollIntoView({ behavior: 'smooth', block: 'center' });
+        } else {
+            alert(res.message || 'Could not record your choice. Please try again.');
+            btn.disabled = false; btn.innerHTML = oldHtml;
+        }
+    })
+    .catch(function() {
+        alert('Network error. Please try again.');
+        btn.disabled = false; btn.innerHTML = oldHtml;
+    });
+}
+
+// ── Payment Flow (online) ─────────────────────────────────────────────
 function initiatePayment() {
-    var btn = document.getElementById('payBtn');
+    var btn = document.getElementById('payOnlineBtn');
     btn.disabled = true;
     btn.innerHTML = '<i class="fa-solid fa-spinner fa-spin"></i> Processing...';
 
@@ -464,7 +540,7 @@ function initiatePayment() {
 function launchRazorpay(order) {
     if (typeof Razorpay === 'undefined') {
         alert('Razorpay SDK failed to load. Check your internet connection and try again.');
-        var btn = document.getElementById('payBtn');
+        var btn = document.getElementById('payOnlineBtn');
         btn.disabled = false;
         btn.innerHTML = '<i class="fa-solid fa-credit-card"></i> Pay Now';
         return;
@@ -507,12 +583,11 @@ function launchRazorpay(order) {
             .then(function(result) {
                 if (result.csrf_token) csrfToken = result.csrf_token;
                 if (result.status === 'success') {
-                    document.getElementById('successPanel').style.display = 'none';
-                    document.getElementById('paymentSuccessPanel').style.display = 'block';
-                    document.getElementById('paidAppId').textContent = window._appId;
+                    // NOW show "Application Submitted!" + the paid FEE receipt.
+                    showSubmitted(window._appId, result.fee_receipt_url || window._appReceiptUrl, 'Download Fee Receipt (PDF)');
                 } else {
                     alert('Payment verification failed: ' + (result.message || 'Unknown error'));
-                    var btn = document.getElementById('payBtn');
+                    var btn = document.getElementById('payOnlineBtn');
                     btn.disabled = false;
                     btn.innerHTML = '<i class="fa-solid fa-credit-card"></i> Retry Payment';
                 }
@@ -526,7 +601,7 @@ function launchRazorpay(order) {
             // the Pay Now button so they can try again. The server-side
             // admissionPayments doc stays in `created` state, harmless.
             ondismiss: function() {
-                var btn = document.getElementById('payBtn');
+                var btn = document.getElementById('payOnlineBtn');
                 btn.disabled = false;
                 btn.innerHTML = '<i class="fa-solid fa-credit-card"></i> Pay Now';
             }
@@ -535,7 +610,7 @@ function launchRazorpay(order) {
 
     rzp.on('payment.failed', function(resp) {
         alert('Payment failed: ' + (resp.error && resp.error.description ? resp.error.description : 'Unknown error'));
-        var btn = document.getElementById('payBtn');
+        var btn = document.getElementById('payOnlineBtn');
         btn.disabled = false;
         btn.innerHTML = '<i class="fa-solid fa-credit-card"></i> Retry Payment';
     });
@@ -569,12 +644,11 @@ function simulateMockPayment(order) {
             // Refresh CSRF token from server response
             if (result.csrf_token) csrfToken = result.csrf_token;
             if (result.status === 'success') {
-                document.getElementById('successPanel').style.display = 'none';
-                document.getElementById('paymentSuccessPanel').style.display = 'block';
-                document.getElementById('paidAppId').textContent = window._appId;
+                // NOW show "Application Submitted!" + the paid FEE receipt.
+                showSubmitted(window._appId, result.fee_receipt_url || window._appReceiptUrl, 'Download Fee Receipt (PDF)');
             } else {
                 alert('Payment verification failed: ' + (result.message || 'Unknown error'));
-                var btn = document.getElementById('payBtn');
+                var btn = document.getElementById('payOnlineBtn');
                 btn.disabled = false;
                 btn.innerHTML = '<i class="fa-solid fa-credit-card"></i> Retry Payment';
             }

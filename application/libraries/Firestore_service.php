@@ -471,6 +471,34 @@ class Firestore_service
         return $this->where($collection, $conditions, $orderBy, $direction, $limit);
     }
 
+    /**
+     * DETERMINISTIC cursor pagination scoped to the current school + session (C7).
+     * Mandatory schoolId + session isolation; extra equality / array-contains
+     * filters and the page cursor pass through to
+     * FirestoreRestClient::queryCursor (order created_at DESC, __name__ DESC;
+     * fail-loud on missing index). Does NOT use the legacy where()/query() path.
+     *
+     * @param array      $extraConditions [[field,op,value],…] — status/class/stage/source == or searchTokens array-contains
+     * @param int        $limit           page size
+     * @param array|null $cursor          ['created_at'=>string,'id'=>docId] or null (page 1)
+     * @return array ['items'=>[{id,data}…], 'nextCursor'=>…|null, 'hasMore'=>bool]
+     * @throws \RuntimeException on missing index / query failure
+     */
+    public function cursorQuery(string $collection, array $extraConditions, int $limit, ?array $cursor = null): array
+    {
+        if ($this->client === null) {
+            throw new \RuntimeException('CRM_QUERY_FAILED:CLIENT_UNAVAILABLE');
+        }
+        $conditions = array_merge(
+            [
+                ['schoolId', '==', $this->schoolId],
+                ['session',  '==', $this->session],
+            ],
+            $extraConditions
+        );
+        return $this->client->queryCursor($collection, $conditions, $limit, $cursor);
+    }
+
     // ══════════════════════════════════════════════════════════════════
     //  CONVENIENCE: Flatten query results
     // ══════════════════════════════════════════════════════════════════
@@ -722,6 +750,27 @@ class Firestore_service
     public function removeEntity(string $collection, string $entityId): bool
     {
         return $this->remove($collection, $this->docId($entityId));
+    }
+
+    /**
+     * M7-B — Concurrency-safe append to a BOUNDED recent-cache array on a
+     * school-scoped document, writing $businessFields in the SAME atomic commit.
+     * Delegates to the CAS primitive (currentDocument.updateTime) on the client.
+     * The array is a recent display cache; the permanent trail is in auditLogs.
+     *
+     * @return array ['ok'=>bool,'deduped'=>bool,'retries'=>int,'fellback'=>bool]
+     */
+    public function casAppendBounded(string $collection, string $entityId, string $arrayField, array $newEntry, int $cap, array $businessFields = [], string $dedupeKey = ''): array
+    {
+        if ($this->client === null || !method_exists($this->client, 'casAppendBounded')) {
+            return ['ok' => false, 'deduped' => false, 'retries' => 0, 'fellback' => false];
+        }
+        // Mirror the *Entity writers: stamp updatedAt so the doc tracks the write.
+        $businessFields['updatedAt'] = date('c');
+        $t = microtime(true);
+        $res = $this->client->casAppendBounded($collection, $this->docId($entityId), $arrayField, $newEntry, $cap, $businessFields, $dedupeKey);
+        $this->_track(microtime(true) - $t, empty($res['ok']));
+        return $res;
     }
 
     // ══════════════════════════════════════════════════════════════════

@@ -561,12 +561,12 @@ class Sis extends MY_Controller
             $now = date('Y-m-d H:i:s');
             $lead = $this->fs->get('crmApplications', $this->fs->docId($leadId));
             if (is_array($lead)) {
-                $history = $lead['history'] ?? [];
-                $history[] = ['action' => "Converted to student {$userId}", 'by' => $this->admin_name, 'timestamp' => $now];
-                $this->fs->update('crmApplications', $this->fs->docId($leadId), [
-                    'status' => 'admitted', 'stage' => 'enrolled',
-                    'student_id' => $userId, 'updated_at' => $now, 'history' => $history,
-                ]);
+                // M7-B: single CAS-atomic write (conversion fields + bounded history), concurrency-safe.
+                $this->load->helper('admission_crm');
+                $this->fs->casAppendBounded('crmApplications', $leadId, 'history',
+                    ['action' => "Converted to student {$userId}", 'by' => $this->admin_name, 'timestamp' => $now],
+                    crm_history_cap(),
+                    ['status' => 'admitted', 'stage' => 'enrolled', 'student_id' => $userId, 'updated_at' => $now]);
             }
         }
 
@@ -5181,8 +5181,14 @@ class Sis extends MY_Controller
     /** List all docs in a CRM collection, keyed by entity ID. */
     private function _crm_list(string $collection): array
     {
+        // SCALE (closure item I): bound the scan to the CURRENT session instead of
+        // reading every document across all historical sessions. Every _crm_list
+        // caller (analytics / dashboard / inquiries / waitlist) already discards
+        // non-current-session rows in PHP, so this is behaviour-identical while
+        // preventing unbounded all-history accumulation. schoolId + session are two
+        // equality filters (zig-zag merge) — no composite index required.
         try {
-            $docs = $this->fs->schoolWhere($collection, []);
+            $docs = $this->fs->schoolWhere($collection, [['session', '==', $this->session_year]]);
         } catch (\Exception $e) {
             log_message('error', "CRM list {$collection} failed: " . $e->getMessage());
             return [];
@@ -5198,6 +5204,121 @@ class Sis extends MY_Controller
             if ($id !== '') $result[$id] = $r;
         }
         return $result;
+    }
+
+    /**
+     * C7 — server-side, index-backed, cursor-paginated CRM query. Replaces the
+     * unbounded _crm_list() full-scan for the Applications / Leads grids. School
+     * + session isolation is enforced INSIDE Firestore_service::cursorQuery().
+     *
+     * Search picks exactly ONE indexed strategy so every path is backed by a
+     * deployed index and FAILS LOUD on a missing index instead of silently
+     * full-scanning: exact application-ID (doc get), exact phone (equality query,
+     * zig-zag merge — no composite index), or name token (searchTokens
+     * array-contains, composite index #5). During an active search, the
+     * status/class/source filters are intentionally NOT applied — no deployed
+     * index combines them with searchTokens, and adding one is out of C7 scope.
+     *
+     * @param array      $filters ['status'|'class'|'source'|'stage' => value]
+     * @param string     $search  raw search text (name | appID | phone)
+     * @param int        $limit   page size (clamped 1..100)
+     * @param array|null $cursor  opaque ['created_at','id'] from a prior page
+     * @return array ['items'=>[{...,id}], 'nextCursor'=>?, 'hasMore'=>bool, 'mode'=>string, 'error'=>?]
+     */
+    private function _crm_page(array $filters, string $search, int $limit, ?array $cursor): array
+    {
+        $this->load->helper('admission_search');
+        $limit  = max(1, min(100, (int) $limit));
+        $search = trim($search);
+
+        // Each allowed equality-filter combo maps to exactly one deployed index
+        // (#1-#4, #6-#9). Any other combo is rejected — never silently degraded
+        // to a full scan.
+        static $ALLOWED_COMBOS = ['', 'status', 'class', 'class|status', 'source', 'source|status', 'stage', 'class|stage'];
+
+        $prefix = $this->school_id . '_';
+        $strip = function (array $items) use ($prefix): array {
+            $out = [];
+            foreach ($items as $it) {
+                $r = is_array($it['data'] ?? null) ? $it['data'] : $it;
+                $rawId = (string) ($it['id'] ?? '');
+                $r['id'] = (strpos($rawId, $prefix) === 0) ? substr($rawId, strlen($prefix)) : $rawId;
+                $out[] = $r;
+            }
+            return $out;
+        };
+
+        // ── SEARCH MODES (mutually exclusive; browse filters ignored) ──
+        if ($search !== '') {
+            // (a) Exact application-ID — IDs start with "APP".
+            if (preg_match('/^APP[_A-Za-z0-9]+$/i', $search)) {
+                $doc   = $this->_crm_get('crmApplications', $search);
+                $items = is_array($doc) ? [['id' => $prefix . $search, 'data' => $doc]] : [];
+                return ['items' => $strip($items), 'nextCursor' => null, 'hasMore' => false, 'mode' => 'appid'];
+            }
+            // (b) Exact phone — predominantly digits, >=6 after normalization.
+            $digits = preg_replace('/[^0-9]/', '', $search);
+            $bare   = preg_replace('/\s/', '', $search);
+            if (strlen($digits) >= 6 && strlen($digits) >= (int) floor(strlen($bare) * 0.6)) {
+                $rows = $this->fs->where('crmApplications', [
+                    ['schoolId', '==', $this->school_id],
+                    ['session',  '==', $this->session_year],
+                    ['phone_norm', '==', $digits],
+                ], null, 'ASC', $limit);
+                $rows = is_array($rows) ? $rows : [];
+                usort($rows, fn($a, $b) => strcmp(($b['data']['created_at'] ?? ''), ($a['data']['created_at'] ?? '')));
+                return ['items' => $strip($rows), 'nextCursor' => null, 'hasMore' => false, 'mode' => 'phone'];
+            }
+            // (c) Name token — searchTokens array-contains (composite index #5).
+            $token = admission_search_query_token($search);
+            if ($token === '') {
+                return ['items' => [], 'nextCursor' => null, 'hasMore' => false, 'mode' => 'name'];
+            }
+            try {
+                $res = $this->fs->cursorQuery('crmApplications', [['searchTokens', 'array-contains', $token]], $limit, $cursor);
+            } catch (\Exception $e) {
+                log_message('error', 'CRM name-search failed: ' . $e->getMessage());
+                return ['items' => [], 'nextCursor' => null, 'hasMore' => false, 'mode' => 'name', 'error' => 'search_failed'];
+            }
+            return ['items' => $strip($res['items']), 'nextCursor' => $res['nextCursor'], 'hasMore' => $res['hasMore'], 'mode' => 'name'];
+        }
+
+        // ── BROWSE (no search) — indexed equality filters + cursor ──
+        $conds = [];
+        $keys  = [];
+        foreach (['status', 'class', 'source', 'stage'] as $f) {
+            $raw = $filters[$f] ?? '';
+            if (is_array($raw)) {
+                // Disjunctive filter (e.g. leads "New" bucket -> [new, pending]).
+                // Uses the SAME composite index as the equality filter.
+                $vals = array_values(array_filter($raw, fn($x) => trim((string) $x) !== ''));
+                if (!empty($vals)) { $conds[] = [$f, 'in', $vals]; $keys[] = $f; }
+            } else {
+                $v = trim((string) $raw);
+                if ($v !== '') { $conds[] = [$f, '==', $v]; $keys[] = $f; }
+            }
+        }
+        sort($keys);
+        if (!in_array(implode('|', $keys), $ALLOWED_COMBOS, true)) {
+            return ['items' => [], 'nextCursor' => null, 'hasMore' => false, 'mode' => 'browse', 'error' => 'unsupported_filter'];
+        }
+        try {
+            $res = $this->fs->cursorQuery('crmApplications', $conds, $limit, $cursor);
+        } catch (\Exception $e) {
+            log_message('error', 'CRM browse query failed: ' . $e->getMessage());
+            return ['items' => [], 'nextCursor' => null, 'hasMore' => false, 'mode' => 'browse', 'error' => 'query_failed'];
+        }
+        return ['items' => $strip($res['items']), 'nextCursor' => $res['nextCursor'], 'hasMore' => $res['hasMore'], 'mode' => 'browse'];
+    }
+
+    /** Reconstruct the opaque pagination cursor from request input (null = page 1). */
+    private function _crm_cursor_from_input(): ?array
+    {
+        $ca = trim((string) $this->input->get_post('cursor_created_at'));
+        $id = trim((string) $this->input->get_post('cursor_id'));
+        if ($ca === '' || $id === '') return null;
+        if (!preg_match('/^[A-Za-z0-9_\-]+$/', $id)) return null; // opaque doc id
+        return ['created_at' => $ca, 'id' => $id];
     }
 
     /** Get a single CRM doc. */
@@ -5289,21 +5410,62 @@ class Sis extends MY_Controller
     public function fetch_leads()
     {
         $this->_require_role(self::VIEW_ROLES, 'crm_view');
-        $applications = $this->_crm_list('crmApplications');
-        if (!is_array($applications)) $applications = [];
+        // C7 — server-side paginated + filtered + searched (was: full-scan +
+        // client-side filter). The Leads grid's status dropdown uses NORMALIZED
+        // buckets; expand each to the raw statuses it folds in (legacy spellings)
+        // so an `in` filter surfaces them all — parity with the old client-side
+        // normalizeStatus().
+        $statusFilter = $this->_crm_lead_status_bucket((string) $this->input->get_post('status'));
+        $page = $this->_crm_page(
+            ['status' => $statusFilter, 'source' => $this->input->get_post('source')],
+            (string) $this->input->get_post('search'),
+            (int) ($this->input->get_post('limit') ?: 25),
+            $this->_crm_cursor_from_input()
+        );
+        return $this->json_success([
+            'leads'      => $page['items'],
+            'nextCursor' => $page['nextCursor'],
+            'hasMore'    => $page['hasMore'],
+            'mode'       => $page['mode'],
+            'error'      => $page['error'] ?? null,
+        ]);
+    }
 
-        $session = $this->session_year;
-        $leads = [];
-        foreach ($applications as $id => $app) {
-            if (!is_array($app)) continue;
-            // Show all leads for current session (both public and CRM)
-            if (($app['session'] ?? '') !== $session) continue;
-            $app['id'] = $id;
-            $leads[] = $app;
-        }
-        // Newest first
-        usort($leads, fn($a, $b) => strcmp($b['created_at'] ?? '', $a['created_at'] ?? ''));
-        return $this->json_success(['leads' => $leads]);
+    /** Expand a normalized Leads status bucket to the raw statuses it folds in. */
+    private function _crm_lead_status_bucket(string $bucket)
+    {
+        $bucket = trim($bucket);
+        if ($bucket === '') return '';
+        static $MAP = [
+            'new'       => ['new', 'pending'],
+            'contacted' => ['contacted', 'interested'],
+            'approved'  => ['approved'],
+            'enrolled'  => ['enrolled', 'admitted'],
+            'rejected'  => ['rejected'],
+        ];
+        return $MAP[$bucket] ?? $bucket; // unknown -> exact match
+    }
+
+    /**
+     * C7 — Leads funnel counts via server-side COUNT aggregation (no document
+     * reads, no full scan). Replaces the old client-side tally over the full
+     * dataset. Reuses Firestore_service::count (runAggregationQuery); legacy
+     * status spellings are folded to match the grid's normalized buckets.
+     */
+    public function fetch_leads_stats()
+    {
+        $this->_require_role(self::VIEW_ROLES, 'crm_view');
+        $base = [['schoolId', '==', $this->school_id], ['session', '==', $this->session_year]];
+        $cnt  = fn($status) => $this->fs->count('crmApplications', array_merge($base, [['status', '==', $status]]));
+        $stats = [
+            'total'     => $this->fs->count('crmApplications', $base),
+            'new'       => $cnt('new') + $cnt('pending'),
+            'contacted' => $cnt('contacted') + $cnt('interested'),
+            'approved'  => $cnt('approved'),
+            'enrolled'  => $cnt('enrolled') + $cnt('admitted'),
+            'rejected'  => $cnt('rejected'),
+        ];
+        return $this->json_success(['stats' => $stats]);
     }
 
     // LEAD SYSTEM — Single lead detail (AJAX)
@@ -5336,17 +5498,15 @@ class Sis extends MY_Controller
         if (!is_array($lead)) return $this->json_error('Lead not found.');
 
         $now = date('Y-m-d H:i:s');
-        $history = $lead['history'] ?? [];
-        $history[] = ['action' => "Status changed to {$status}", 'by' => $this->admin_name, 'timestamp' => $now];
-
-        $this->_crm_update("crmApplications", $leadId, [
-            'status'     => $status,
-            'updated_at' => $now,
-            'history'    => $history,
-        ]);
-        // Firestore dual-write: lead status update
-        try { $this->fs->updateEntity('crmApplications', $leadId, ['status' => $status, 'updated_at' => $now]); } catch (\Exception $e) { log_message('error', "Firestore dual-write update_lead_status failed: " . $e->getMessage()); }
-        log_audit('CRM', 'update_lead_status', $leadId, "Lead status changed to '{$status}' for " . ($lead['student_name'] ?? ''));
+        // M7-B: single CAS-atomic write — business fields (status) + bounded history
+        // in one commit; concurrency-safe (no lost update); one Firestore write (M3).
+        $this->load->helper('admission_crm');
+        $this->fs->casAppendBounded('crmApplications', $leadId, 'history',
+            ['action' => "Status changed to {$status}", 'by' => $this->admin_name, 'timestamp' => $now],
+            crm_history_cap(),
+            ['status' => $status, 'updated_at' => $now]);
+        log_audit('CRM', 'update_lead_status', $leadId, "Lead status changed to '{$status}' for " . ($lead['student_name'] ?? ''),
+            ['appId' => $leadId, 'entityType' => 'application', 'meta' => ['status' => $status]]);
         return $this->json_success(['message' => 'Status updated.']);
     }
 
@@ -5556,8 +5716,10 @@ class Sis extends MY_Controller
             if (!is_array($existing)) return $this->json_error('Inquiry not found');
             $data = array_merge($existing, compact('student_name','parent_name','phone','email','class','source','notes','status','follow_up_date') + ['updated_at'=>$now]);
             $this->_crm_set("crmInquiries", $id, $data);
-            // Firestore dual-write: update inquiry
-            try { $this->fs->setEntity('crmInquiries', $id, $data); } catch (\Exception $e) { log_message('error', "Firestore dual-write crmInquiries failed for {$id}: " . $e->getMessage()); }
+            // M3: _crm_set is the single canonical Firestore write (removed redundant dual-write).
+            // M7-A: permanent audit (canonical auditLogs).
+            log_audit('CRM', 'update_inquiry', $id, "Updated inquiry for {$student_name}",
+                ['entityType' => 'inquiry', 'meta' => ['status' => $status]]);
         } else {
             $id = $this->_crm_next_id('Inquiry', 'INQ', 5);
             $data = compact('student_name','parent_name','phone','email','class','source','notes','status','follow_up_date') + [
@@ -5565,8 +5727,10 @@ class Sis extends MY_Controller
             ];
             $this->_crm_set("crmInquiries", $id, $data);
             // Counter managed by _crm_next_id — no separate write needed.
-            // Firestore dual-write: new inquiry
-            try { $this->fs->setEntity('crmInquiries', $id, $data); } catch (\Exception $e) { log_message('error', "Firestore dual-write crmInquiries failed for {$id}: " . $e->getMessage()); }
+            // M3: _crm_set is the single canonical Firestore write (removed redundant dual-write).
+            // M7-A: permanent audit (canonical auditLogs).
+            log_audit('CRM', 'create_inquiry', $id, "Created inquiry for {$student_name}",
+                ['entityType' => 'inquiry', 'meta' => ['source' => $source]]);
         }
         return $this->json_success(['id' => $id]);
     }
@@ -5578,8 +5742,9 @@ class Sis extends MY_Controller
         if (!$id) return $this->json_error('Inquiry ID required');
         $safeId = $this->safe_path_segment($id, 'id');
         $this->_crm_delete('crmInquiries', $safeId);
-        // Firestore dual-write: delete inquiry
-        try { $this->fs->removeEntity('crmInquiries', $safeId); } catch (\Exception $e) { log_message('error', "Firestore dual-write delete crmInquiries failed: " . $e->getMessage()); }
+        // M3: _crm_delete is the single canonical Firestore delete (removed redundant dual-write).
+        // M7-A: permanent audit (canonical auditLogs).
+        log_audit('CRM', 'delete_inquiry', $safeId, "Deleted inquiry {$safeId}", ['entityType' => 'inquiry']);
         return $this->json_success();
     }
 
@@ -5605,14 +5770,16 @@ class Sis extends MY_Controller
             'father_name'=>$inquiry['parent_name']??'', 'mother_name'=>'', 'documents'=>[], 'notes'=>$inquiry['notes']??'',
             'history'=>[['action'=>'Application created from inquiry '.$inquiry_id, 'by'=>$this->admin_name, 'timestamp'=>$now]],
         ];
+        $this->load->helper('admission_search');
+        $application['searchTokens'] = admission_search_tokens($application['student_name'] ?? '');
         $this->_crm_set("crmApplications", $app_id, $application);
         // Counter managed by _crm_next_id — no separate write needed.
         $this->_crm_update("crmInquiries", $inquiry_id, ['status'=>'converted','application_id'=>$app_id,'updated_at'=>$now]);
-        // Firestore dual-write: new application + inquiry status update
-        try {
-            $this->fs->setEntity('crmApplications', $app_id, $application);
-            $this->fs->updateEntity('crmInquiries', $inquiry_id, ['status'=>'converted','application_id'=>$app_id,'updated_at'=>$now]);
-        } catch (\Exception $e) { log_message('error', "Firestore dual-write convert_to_application failed: " . $e->getMessage()); }
+        // M3: _crm_set/_crm_update above are the single canonical Firestore writes
+        // (removed redundant dual-write of identical application + inquiry data).
+        // M7-A: permanent audit (canonical auditLogs).
+        log_audit('CRM', 'convert_inquiry', $app_id, "Converted inquiry {$inquiry_id} to application for " . ($application['student_name'] ?? ''),
+            ['appId' => $app_id, 'entityType' => 'application', 'meta' => ['from_inquiry' => $inquiry_id]]);
         return $this->json_success(['application_id' => $app_id]);
     }
 
@@ -5629,17 +5796,21 @@ class Sis extends MY_Controller
     public function fetch_applications()
     {
         $this->_require_role(self::VIEW_ROLES, 'crm_fetch');
-        $applications = $this->_crm_list('crmApplications');
-        if (!is_array($applications)) $applications = [];
-        $session = $this->session_year;
-        $result = [];
-        foreach ($applications as $id => $app) {
-            if (!is_array($app) || ($app['session'] ?? '') !== $session) continue;
-            $app['id'] = $id;
-            $result[] = $app;
-        }
-        usort($result, fn($a,$b) => strcmp($b['created_at']??'',$a['created_at']??''));
-        return $this->json_success(['applications' => $result]);
+        // C7 — server-side paginated + filtered + searched (was: full-scan +
+        // client-side filter). session/school isolation enforced in _crm_page.
+        $page = $this->_crm_page(
+            ['status' => $this->input->get_post('status'), 'class' => $this->input->get_post('class')],
+            (string) $this->input->get_post('search'),
+            (int) ($this->input->get_post('limit') ?: 25),
+            $this->_crm_cursor_from_input()
+        );
+        return $this->json_success([
+            'applications' => $page['items'],
+            'nextCursor'   => $page['nextCursor'],
+            'hasMore'      => $page['hasMore'],
+            'mode'         => $page['mode'],
+            'error'        => $page['error'] ?? null,
+        ]);
     }
 
     public function save_application()
@@ -5658,16 +5829,27 @@ class Sis extends MY_Controller
         if ($data['phone'] !== '' && !preg_match('/^\+?\d{10,15}$/', preg_replace('/[\s\-]/','',$data['phone']))) return $this->json_error('Invalid phone number format');
         if ($data['email'] !== '' && !filter_var($data['email'], FILTER_VALIDATE_EMAIL)) return $this->json_error('Invalid email address');
 
+        // C7 — regenerate searchTokens from the (possibly edited) student name.
+        // Applies to BOTH the update and create branches below; array_merge in the
+        // create branch preserves this key.
+        $this->load->helper('admission_search');
+        $data['searchTokens'] = admission_search_tokens($data['student_name']);
+
         if ($id) {
             $existing = $this->_crm_get('crmApplications', $id);
             if (!is_array($existing)) return $this->json_error('Application not found');
             $data['updated_at'] = $now;
-            $history = $existing['history'] ?? [];
-            $history[] = ['action'=>'Application updated','by'=>$this->admin_name,'timestamp'=>$now];
-            $data['history'] = $history;
-            $this->_crm_update("crmApplications", $id, $data);
-            // Firestore dual-write: update application
-            try { $this->fs->setEntity('crmApplications', $id, $data); } catch (\Exception $e) { log_message('error', "Firestore dual-write crmApplications update failed for {$id}: " . $e->getMessage()); }
+            // M7-B: single CAS-atomic write — the full edit payload (incl.
+            // searchTokens) + bounded history in ONE commit; concurrency-safe; one
+            // write (M3). schoolId/session preserved by the merge/patch.
+            $this->load->helper('admission_crm');
+            $this->fs->casAppendBounded('crmApplications', $id, 'history',
+                ['action'=>'Application updated','by'=>$this->admin_name,'timestamp'=>$now],
+                crm_history_cap(),
+                $data);
+            // M7-A: permanent audit (canonical auditLogs).
+            log_audit('CRM', 'edit_application', $id, "Edited application for " . ($data['student_name'] ?? ''),
+                ['appId' => $id, 'entityType' => 'application']);
             return $this->json_success(['id' => $id]);
         } else {
             $app_id = $this->_crm_next_id('Application', 'APP', 5);
@@ -5680,8 +5862,10 @@ class Sis extends MY_Controller
                 'history'=>[['action'=>'Application created directly','by'=>$this->admin_name,'timestamp'=>$now]]]);
             $this->_crm_set("crmApplications", $app_id, $data);
             // Counter managed by _crm_next_id — no separate write needed.
-            // Firestore dual-write: new application
-            try { $this->fs->setEntity('crmApplications', $app_id, $data); } catch (\Exception $e) { log_message('error', "Firestore dual-write crmApplications create failed for {$app_id}: " . $e->getMessage()); }
+            // M3: _crm_set is the single canonical Firestore write (removed redundant dual-write).
+            // M7-A: permanent audit (canonical auditLogs).
+            log_audit('CRM', 'create_application', $app_id, "Created application for " . ($data['student_name'] ?? '') . " (class " . ($data['class'] ?? '') . ")",
+                ['appId' => $app_id, 'entityType' => 'application', 'meta' => ['source' => 'admin']]);
             return $this->json_success(['id' => $app_id]);
         }
     }
@@ -5698,6 +5882,280 @@ class Sis extends MY_Controller
         return $this->json_success(['application' => $app]);
     }
 
+    /**
+     * M7-B — Full permanent audit trail for one application, for the "View Full
+     * Audit History" affordance. The crmApplications.history[]/timeline[] arrays
+     * are bounded recent caches; this reads the COMPLETE trail from the canonical
+     * auditLogs + auditArchive (M7-A) via the shared reader. Role-guarded +
+     * tenant-scoped (audit_trail_for_app is schoolId-scoped internally).
+     */
+    public function admission_audit_trail()
+    {
+        $this->_require_role(self::VIEW_ROLES, 'crm_fetch');
+        $appId = trim($this->input->get_post('app_id') ?? '');
+        if ($appId === '') return $this->json_error('Application ID required');
+        $appId = $this->safe_path_segment($appId, 'app_id');
+        $trail = function_exists('audit_trail_for_app') ? audit_trail_for_app($appId, 500) : [];
+        return $this->json_success(['trail' => $trail, 'appId' => $appId]);
+    }
+
+    /**
+     * POST — Admission counter: collect the admission fee OFFLINE.
+     *
+     * Cash / UPI / Cheque / DD / Bank Transfer / POS-Card. The amount is
+     * SERVER-resolved (from the application; never the client) and NON-EDITABLE.
+     * Reuses the SINGLE shared receipt + accounting path (Admission_collection)
+     * — the same one the online flow uses — so there is no duplicate receipt or
+     * accounting logic. Posts to the configured admission income account, tagged
+     * collection_type='admission'. Hard period-lock pre-check (commercial-correct).
+     */
+    public function collect_admission_fee()
+    {
+        $this->_require_role(self::MANAGE_ROLES, 'crm_manage');
+
+        $id       = trim($this->input->post('app_id') ?? $this->input->post('id') ?? '');
+        $mode     = trim((string) $this->input->post('payment_mode'));
+        $bankCode = trim((string) $this->input->post('bank_ledger_code'));
+        $bankRef  = trim((string) $this->input->post('bank_reference'));
+        $remarks  = trim((string) $this->input->post('remarks'));
+
+        if (!$id)          return $this->json_error('Application ID required.');
+        if ($mode === '')  return $this->json_error('Payment mode required.');
+        $id  = $this->safe_path_segment($id, 'id');
+        $app = $this->_crm_get('crmApplications', $id);
+        if (!is_array($app)) return $this->json_error('Application not found.');
+        if (($app['payment_status'] ?? '') === 'paid') {
+            return $this->json_error('Admission fee has already been collected for this application.');
+        }
+
+        // ── Server-resolved amount (NEVER from the client) ──
+        // Fix D — use the SINGLE canonical resolver shared with the online flow, so
+        // the counter charges the exact same CLASS-SPECIFIC admission fee
+        // (feeStructures → global schools.admissionFee). Previously the offline path
+        // read only $app['fee_amount'] (unset for admin-created apps) then fell back
+        // to the GLOBAL flat fee, silently under/over-charging where a class-specific
+        // fee exists.
+        $schoolDoc = $this->firebase->firestoreGet('schools', $this->school_name) ?? [];
+        $this->load->helper('admission_crm');
+        $feeInfo = admission_resolve_fee($this->fs, is_array($schoolDoc) ? $schoolDoc : [], $this->session_year, (string) ($app['class'] ?? ''));
+        $amount  = round((float) ($feeInfo['amount'] ?? 0), 2);
+        if ($amount <= 0) {
+            // Legacy fallback: an amount explicitly stamped on the application
+            // (e.g. by the online flow) when no structure/global fee resolves.
+            $amount = round((float) ($app['fee_amount'] ?? 0), 2);
+        }
+        if ($amount <= 0) {
+            return $this->json_error('Admission fee is not configured for this application. Set the fee before collecting.');
+        }
+        $resolved = ((float) ($feeInfo['amount'] ?? 0)) > 0;
+        $feeHead  = $resolved ? (string) $feeInfo['fee_head'] : (string) ($app['fee_head'] ?? 'Admission Fee');
+        $feeLabel = $resolved ? (string) $feeInfo['label']    : (string) ($app['fee_label'] ?? $feeHead);
+
+        // ── Map display mode → accounting mode; validate bank ledger (non-cash) ──
+        $modeMap = [
+            'cash' => 'cash', 'upi' => 'upi', 'cheque' => 'cheque', 'neft' => 'neft', 'rtgs' => 'rtgs',
+            'dd' => 'bank_transfer', 'demand draft' => 'bank_transfer', 'bank transfer' => 'bank_transfer',
+            'pos' => 'bank_transfer', 'pos/card' => 'bank_transfer', 'card' => 'bank_transfer',
+        ];
+        $acctMode = $modeMap[strtolower($mode)] ?? 'bank_transfer';
+        $isCash   = ($acctMode === 'cash');
+        if ($isCash) {
+            $bankCode = '';
+        } else {
+            if ($bankCode === '') return $this->json_error('Select a bank ledger for a non-cash collection.');
+            $okBank = false;
+            foreach ((array) $this->firebase->firestoreQuery('chartOfAccounts', [['schoolId', '==', $this->school_name]]) as $row) {
+                $cd = $row['data'] ?? $row;
+                if ((string) ($cd['code'] ?? '') !== $bankCode) continue;
+                if (!empty($cd['is_bank']) && empty($cd['is_group']) && ($cd['status'] ?? '') === 'active') $okBank = true;
+                break;
+            }
+            if (!$okBank) return $this->json_error('Invalid or inactive bank ledger selected.');
+        }
+
+        // ── Period-lock pre-check (reuse Accounting_period_lock) ──
+        $this->load->library('Accounting_cache', null, 'acctCacheAdm');
+        $this->load->library('Accounting_period_lock', null, 'acctLockAdm');
+        $this->acctCacheAdm->init($this->school_name, $this->session_year);
+        $this->acctLockAdm->init($this->firebase, $this->acctCacheAdm, $this->school_name, $this->session_year);
+        $lock = $this->acctLockAdm->forceValidate(date('Y-m-d'));
+        if (!empty($lock['locked'])) {
+            return $this->json_error('The accounting period is closed up to ' . ($lock['lockedUntil'] ?? '') . '. Reopen it before collecting the admission fee.');
+        }
+
+        // ── SHARED receipt + accounting path (one path with online) ──
+        $this->load->library('Admission_collection', null, 'admissionCol');
+        $this->admissionCol->init($this->firebase, $this->fs, $this->school_name, $this->session_year);
+        $rc = $this->admissionCol->record_payment([
+            'app_id'         => $id,
+            'amount'         => $amount,
+            'currency'       => 'INR',
+            'student_name'   => (string) ($app['student_name'] ?? ''),
+            'father_name'    => (string) ($app['father_name'] ?? $app['parent_name'] ?? ''),
+            'applied_class'  => (string) ($app['class'] ?? ''),
+            'fee_head'       => $feeHead,
+            'fee_label'      => $feeLabel,
+            'payment_mode'   => $acctMode,
+            'mode_label'     => $mode,
+            'bank_code'      => $bankCode,
+            'bank_reference' => $bankRef,
+            'remarks'        => $remarks,
+            'collected_by'   => $this->admin_name ?: ($this->admin_id ?: 'Admin'),
+            'source'         => 'offline',
+            'admission_ref'  => (string) ($app['admission_ref'] ?? ('ADMREF-' . strtoupper($id))),
+        ]);
+        if (!is_array($rc)) return $this->json_error('Collection failed — invalid amount.');
+        $receiptNo = (string) $rc['receipt_no'];
+
+        // ── Mark the lead paid + history ──
+        // M7-B: single CAS-atomic write (payment fields + bounded history),
+        // concurrency-safe. dedupeKey on the receipt prevents a duplicate history
+        // entry if this collection is retried; financial truth is in
+        // admissionReceipts + accounting journal (record_payment already ran).
+        $now = date('Y-m-d H:i:s');
+        $this->load->helper('admission_crm');
+        $this->fs->casAppendBounded('crmApplications', $id, 'history',
+            [
+                'action'    => "Admission fee collected offline ({$mode}) — Receipt {$receiptNo}",
+                'by'        => $this->admin_name ?: 'Admin',
+                'timestamp' => $now,
+            ],
+            crm_history_cap(),
+            [
+                'payment_status' => 'paid',
+                'payment_mode'   => $mode,
+                'receipt_no'     => $receiptNo,
+                'updated_at'     => $now,
+            ],
+            'paid_' . $receiptNo);
+
+        return $this->json_success([
+            'message'    => "Admission fee collected. Receipt {$receiptNo}.",
+            'receipt_no' => $receiptNo,
+            'amount'     => $amount,
+        ]);
+    }
+
+    /**
+     * GET — Print the commercial admission-fee receipt (PDF) by ADM number.
+     * Reuses the shared receipt view; reads ONLY this tenant's admissionReceipts.
+     */
+    public function admission_receipt()
+    {
+        $this->_require_role(self::VIEW_ROLES, 'crm_view');
+        $rk = trim((string) $this->input->get('receipt'));
+        if ($rk === '' || !preg_match('/^ADM[0-9]{4,10}$/', $rk)) return show_404();
+
+        $receipt = $this->fs->get('admissionReceipts', $this->fs->docId($rk));
+        if (!is_array($receipt) || (string) ($receipt['schoolId'] ?? '') !== $this->school_name) {
+            return show_404();   // tenant-scoped: never expose another school's receipt
+        }
+
+        $schoolDoc = $this->firebase->firestoreGet('schools', $this->school_name) ?? [];
+        // Embed the logo as a data: URI (dompdf can't fetch Firebase Storage URLs
+        // reliably). CACHED + SSRF-hardened resolver (M4) — Firebase Storage is the
+        // source of truth; this is a disposable CI-file-cache render optimization.
+        $this->load->helper('public_url');
+        $logoRaw = (string) ($schoolDoc['logo'] ?? $schoolDoc['logoUrl'] ?? $schoolDoc['logo_url'] ?? '');
+        $logoEmbed = $logoRaw !== '' ? cached_school_logo_data_uri($this->school_name, $logoRaw) : '';
+        $profile = array_merge(is_array($schoolDoc) ? $schoolDoc : [], [
+            'display_name' => $schoolDoc['name'] ?? $schoolDoc['displayName'] ?? $this->school_name,
+            'school_name'  => $schoolDoc['name'] ?? '',
+            'logo_url'     => $logoEmbed, // '' → view hides it (no broken box)
+            'address'      => $schoolDoc['address'] ?? '',
+            'phone'        => $schoolDoc['phone']  ?? $schoolDoc['contact'] ?? '',
+            'email'        => $schoolDoc['email']  ?? '',
+        ]);
+
+        $this->load->library('pdf_generator');
+        $html = $this->load->view('admission/fee_receipt', ['receipt' => $receipt, 'school_profile' => $profile], true);
+        $this->pdf_generator->inline($html, 'admission_receipt_' . $rk . '.pdf');
+    }
+
+    /**
+     * GET — Admission QR poster (SCAN TO APPLY). HTML (print + PNG download) or
+     * PDF via ?pdf=1. Client-side print; the QR encodes ONLY this school's
+     * public admission URL (no secrets, tenant-scoped).
+     */
+    public function admission_poster()
+    {
+        $this->_require_role(self::VIEW_ROLES, 'crm_view');
+        $wantPdf = ((string) $this->input->get('pdf')) === '1';
+
+        $schoolDoc  = $this->firebase->firestoreGet('schools', $this->school_name) ?? [];
+
+        // Parent-facing link → canonical PRODUCTION origin (www.zenxii.com), never
+        // the admin's current request host. A printed poster must resolve publicly
+        // even though the admin may be on localhost/LAN/ngrok while generating it.
+        // Prefer the readable slug over the raw SCH_ id (both resolve).
+        $this->load->helper('public_url');
+        $admissionRef = trim((string) ($schoolDoc['admissionSlug'] ?? ''));
+        if ($admissionRef === '') {
+            // Self-heal: name set (via School Profile page / onboarding) but no
+            // slug yet — mint it now so the poster URL is professional too.
+            $nm = trim((string) ($schoolDoc['name'] ?? $schoolDoc['displayName'] ?? ''));
+            if ($nm !== '' && $nm !== $this->school_name) {
+                $admissionRef = ensure_admission_slug($this->firebase, $this->school_name, $nm);
+                if ($admissionRef !== '') $schoolDoc['admissionSlug'] = $admissionRef;
+            }
+            if ($admissionRef === '') $admissionRef = $this->school_name;
+        }
+        $admissionUrl = public_admission_form_url($admissionRef);
+
+        // Render the QR locally as a data: URI — never an external QR API. External
+        // hosts are blocked by our CSP img-src in-browser and fail offline; the local
+        // SVG is vector so it stays crisp at any poster/banner print size.
+        $this->load->helper('qr_token');
+
+        // Resolve the school's branding from its profile. When the School Profile
+        // has never been filled in, every field is blank — do NOT fall back to the
+        // raw SCH_* id (that looks like a bug on a printed poster). Flag it instead
+        // so the view can show a clean placeholder + an admin-only "configure" hint.
+        $schoolName = trim((string) ($schoolDoc['name'] ?? $schoolDoc['displayName'] ?? $schoolDoc['schoolName'] ?? ''));
+        if ($schoolName === '' || $schoolName === $this->school_name) {
+            $schoolName = trim((string) ($this->school_display_name ?? ''));
+        }
+        $nameConfigured = ($schoolName !== '' && $schoolName !== $this->school_name);
+
+        $addressParts = array_filter([
+            trim((string) ($schoolDoc['address'] ?? '')),
+            trim((string) ($schoolDoc['city'] ?? '')),
+            trim((string) ($schoolDoc['state'] ?? '')),
+            trim((string) ($schoolDoc['pincode'] ?? '')),
+        ], fn($v) => $v !== '');
+
+        // Logo. dompdf can't fetch the Firebase Storage URL (XAMPP SSL), so for
+        // the PDF we embed the bytes as a data: URI; the browser HTML can use the
+        // URL directly (CSP allows *.googleapis.com). If the PDF fetch fails, we
+        // omit the logo rather than render a broken-image box.
+        $logoUrl = (string) ($schoolDoc['logo'] ?? $schoolDoc['logoUrl'] ?? $schoolDoc['logo_url'] ?? '');
+        $logoForView = $logoUrl;
+        if ($wantPdf && $logoUrl !== '') {
+            // CACHED + SSRF-hardened resolver (M4); '' on failure → view hides it.
+            $logoForView = cached_school_logo_data_uri($this->school_name, $logoUrl);
+        }
+
+        $data = [
+            'school_name'     => $nameConfigured ? $schoolName : 'Your School Name',
+            'name_configured' => $nameConfigured,
+            'logo_url'        => $logoForView,
+            'address'         => implode(', ', $addressParts),
+            'admission_url'   => $admissionUrl,
+            'qr_svg'          => qr_svg_data_uri($admissionUrl),
+            'want_pdf'        => $wantPdf,
+        ];
+
+        if ($wantPdf) {
+            $this->load->library('pdf_generator');
+            $html = $this->load->view('admission_crm/poster', $data, true);
+            $this->pdf_generator->inline($html, 'admission_poster.pdf');
+            return;
+        }
+        $this->load->view('include/header');
+        $this->load->view('admission_crm/poster', $data);
+        $this->load->view('include/footer');
+    }
+
     public function delete_application()
     {
         $this->_require_role(self::MANAGE_ROLES, 'crm_delete_app');
@@ -5705,8 +6163,10 @@ class Sis extends MY_Controller
         if (!$id) return $this->json_error('Application ID required');
         $safeId = $this->safe_path_segment($id, 'id');
         $this->_crm_delete('crmApplications', $safeId);
-        // Firestore dual-write: delete application
-        try { $this->fs->removeEntity('crmApplications', $safeId); } catch (\Exception $e) { log_message('error', "Firestore dual-write delete crmApplications failed: " . $e->getMessage()); }
+        // M3: _crm_delete is the single canonical Firestore delete (removed redundant dual-write).
+        // M7-A: permanent audit (canonical auditLogs).
+        log_audit('CRM', 'delete_application', $safeId, "Deleted application {$safeId}",
+            ['appId' => $safeId, 'entityType' => 'application']);
         return $this->json_success();
     }
 
@@ -5725,21 +6185,65 @@ class Sis extends MY_Controller
     public function fetch_pipeline()
     {
         $this->_require_role(self::VIEW_ROLES, 'crm_fetch');
-        $applications = $this->_crm_list('crmApplications');
-        if (!is_array($applications)) $applications = [];
         $settings = $this->_crm_get_settings();
-        $stages = $settings['stages'] ?? $this->_default_stages();
-        $session = $this->session_year;
+        $stages   = $settings['stages'] ?? $this->_default_stages();
+        // C7 — each Kanban column is now a BOUNDED, index-backed per-stage query
+        // (index #8 schoolId+session+stage+created_at, or #9 when a class filter
+        // is applied) instead of the old unbounded full-scan grouped in memory.
+        // Each column returns `hasMore` + `nextCursor` for per-column "Load More".
+        $class    = trim((string) $this->input->get_post('class'));
         $pipeline = [];
-        foreach ($stages as $key => $label) $pipeline[$key] = ['label'=>$label,'items'=>[]];
-        foreach ($applications as $id => $app) {
-            if (!is_array($app) || ($app['session']??'') !== $session || ($app['status']??'') === 'enrolled') continue;
-            $stage = $app['stage'] ?? 'document_collection';
-            $app['id'] = $id;
-            if (isset($pipeline[$stage])) $pipeline[$stage]['items'][] = $app;
-            else { $fk = array_key_first($pipeline); if ($fk) $pipeline[$fk]['items'][] = $app; }
+        foreach ($stages as $key => $label) {
+            $col = $this->_crm_pipeline_column((string) $key, $class, 50, null);
+            $pipeline[$key] = array_merge(['label' => $label], $col);
         }
-        return $this->json_success(['pipeline'=>$pipeline,'stages'=>$stages]);
+        return $this->json_success(['pipeline' => $pipeline, 'stages' => $stages]);
+    }
+
+    /**
+     * One BOUNDED Kanban column page. Uses index #8 (stage) or #9 (stage+class).
+     * `enrolled` is defensively excluded (it is not a pipeline stage). The
+     * continuation cursor tracks the raw last row so it is stable regardless of
+     * the display-side enrolled filter.
+     */
+    private function _crm_pipeline_column(string $stage, string $class, int $limit, ?array $cursor): array
+    {
+        $limit = max(1, min(100, $limit));
+        $conds = [['stage', '==', $stage]];
+        if ($class !== '') $conds[] = ['class', '==', $class];
+        $items = [];
+        $hasMore = false;
+        $nextCursor = null;
+        try {
+            $res    = $this->fs->cursorQuery('crmApplications', $conds, $limit, $cursor);
+            $prefix = $this->school_id . '_';
+            foreach ($res['items'] as $it) {
+                $r = is_array($it['data'] ?? null) ? $it['data'] : $it;
+                if (($r['status'] ?? '') === 'enrolled') continue;
+                $rawId   = (string) ($it['id'] ?? '');
+                $r['id'] = (strpos($rawId, $prefix) === 0) ? substr($rawId, strlen($prefix)) : $rawId;
+                $items[] = $r;
+            }
+            $hasMore    = $res['hasMore'];
+            $nextCursor = $res['nextCursor'];
+        } catch (\Exception $e) {
+            log_message('error', "CRM pipeline stage {$stage} query failed: " . $e->getMessage());
+        }
+        return ['items' => $items, 'hasMore' => $hasMore, 'nextCursor' => $nextCursor];
+    }
+
+    /** Load one more bounded page for a SINGLE Kanban column (per-column pagination). */
+    public function fetch_pipeline_column()
+    {
+        $this->_require_role(self::VIEW_ROLES, 'crm_fetch');
+        $stage = trim((string) $this->input->get_post('stage'));
+        if ($stage === '') return $this->json_error('Stage required');
+        $settings = $this->_crm_get_settings();
+        $stages   = $settings['stages'] ?? $this->_default_stages();
+        if (!array_key_exists($stage, $stages)) return $this->json_error('Invalid stage');
+        $class = trim((string) $this->input->get_post('class'));
+        $col   = $this->_crm_pipeline_column($stage, $class, 50, $this->_crm_cursor_from_input());
+        return $this->json_success(array_merge(['stage' => $stage], $col));
     }
 
     public function update_stage()
@@ -5755,11 +6259,16 @@ class Sis extends MY_Controller
         $app = $this->_crm_get('crmApplications', $id);
         if (!is_array($app)) return $this->json_error('Application not found');
         $now = date('Y-m-d H:i:s');
-        $history = $app['history'] ?? [];
-        $history[] = ['action'=>"Stage changed: {$app['stage']} → {$stage}",'by'=>$this->admin_name,'timestamp'=>$now];
-        $this->_crm_update("crmApplications", $id, ['stage'=>$stage,'updated_at'=>$now,'history'=>$history]);
-        // Firestore dual-write: stage update
-        try { $this->fs->updateEntity('crmApplications', $id, ['stage'=>$stage,'updated_at'=>$now]); } catch (\Exception $e) { log_message('error', "Firestore dual-write update_stage failed: " . $e->getMessage()); }
+        $fromStage = (string) ($app['stage'] ?? '');
+        // M7-B: single CAS-atomic write (stage + bounded history), concurrency-safe.
+        $this->load->helper('admission_crm');
+        $this->fs->casAppendBounded('crmApplications', $id, 'history',
+            ['action'=>"Stage changed: {$fromStage} → {$stage}",'by'=>$this->admin_name,'timestamp'=>$now],
+            crm_history_cap(),
+            ['stage'=>$stage,'updated_at'=>$now]);
+        // M7-A: permanent audit (canonical auditLogs).
+        log_audit('CRM', 'change_stage', $id, "Stage changed: {$fromStage} → {$stage} for " . ($app['student_name'] ?? ''),
+            ['appId' => $id, 'entityType' => 'application', 'meta' => ['from' => $fromStage, 'to' => $stage]]);
         return $this->json_success();
     }
 
@@ -5776,11 +6285,15 @@ class Sis extends MY_Controller
         if ($cs === 'enrolled') return $this->json_error('Cannot approve an already enrolled application');
         if ($cs === 'approved') return $this->json_error('Application is already approved');
         $now = date('Y-m-d H:i:s');
-        $history = $app['history'] ?? [];
-        $history[] = ['action'=>'Application approved'.($remarks?": {$remarks}":''),'by'=>$this->admin_name,'timestamp'=>$now];
-        $this->_crm_update("crmApplications", $id, ['status'=>'approved','stage'=>'approved','approved_by'=>$this->admin_name,'approved_at'=>$now,'remarks'=>$remarks,'updated_at'=>$now,'history'=>$history]);
-        // Firestore dual-write: approve application
-        try { $this->fs->updateEntity('crmApplications', $id, ['status'=>'approved','stage'=>'approved','approved_by'=>$this->admin_name,'approved_at'=>$now,'remarks'=>$remarks,'updated_at'=>$now]); } catch (\Exception $e) { log_message('error', "Firestore dual-write approve_application failed: " . $e->getMessage()); }
+        // M7-B: single CAS-atomic write (approval fields + bounded history), concurrency-safe.
+        $this->load->helper('admission_crm');
+        $this->fs->casAppendBounded('crmApplications', $id, 'history',
+            ['action'=>'Application approved'.($remarks?": {$remarks}":''),'by'=>$this->admin_name,'timestamp'=>$now],
+            crm_history_cap(),
+            ['status'=>'approved','stage'=>'approved','approved_by'=>$this->admin_name,'approved_at'=>$now,'remarks'=>$remarks,'updated_at'=>$now]);
+        // M7-A: permanent audit (canonical auditLogs).
+        log_audit('CRM', 'approve_application', $id, "Approved application for " . ($app['student_name'] ?? '') . ($remarks ? " — {$remarks}" : ''),
+            ['appId' => $id, 'entityType' => 'application', 'meta' => ['status' => 'approved']]);
         return $this->json_success();
     }
 
@@ -5797,11 +6310,15 @@ class Sis extends MY_Controller
         if ($cs === 'enrolled') return $this->json_error('Cannot reject an already enrolled application');
         if ($cs === 'rejected') return $this->json_error('Application is already rejected');
         $now = date('Y-m-d H:i:s');
-        $history = $app['history'] ?? [];
-        $history[] = ['action'=>'Application rejected'.($reason?": {$reason}":''),'by'=>$this->admin_name,'timestamp'=>$now];
-        $this->_crm_update("crmApplications", $id, ['status'=>'rejected','stage'=>'rejected','rejected_by'=>$this->admin_name,'rejected_at'=>$now,'reject_reason'=>$reason,'updated_at'=>$now,'history'=>$history]);
-        // Firestore dual-write: reject application
-        try { $this->fs->updateEntity('crmApplications', $id, ['status'=>'rejected','stage'=>'rejected','rejected_by'=>$this->admin_name,'rejected_at'=>$now,'reject_reason'=>$reason,'updated_at'=>$now]); } catch (\Exception $e) { log_message('error', "Firestore dual-write reject_application failed: " . $e->getMessage()); }
+        // M7-B: single CAS-atomic write (rejection fields + bounded history), concurrency-safe.
+        $this->load->helper('admission_crm');
+        $this->fs->casAppendBounded('crmApplications', $id, 'history',
+            ['action'=>'Application rejected'.($reason?": {$reason}":''),'by'=>$this->admin_name,'timestamp'=>$now],
+            crm_history_cap(),
+            ['status'=>'rejected','stage'=>'rejected','rejected_by'=>$this->admin_name,'rejected_at'=>$now,'reject_reason'=>$reason,'updated_at'=>$now]);
+        // M7-A: permanent audit (canonical auditLogs).
+        log_audit('CRM', 'reject_application', $id, "Rejected application for " . ($app['student_name'] ?? '') . ($reason ? " — {$reason}" : ''),
+            ['appId' => $id, 'entityType' => 'application', 'meta' => ['status' => 'rejected', 'reason' => $reason]]);
         return $this->json_success();
     }
 
@@ -5934,6 +6451,40 @@ class Sis extends MY_Controller
         // skipped, so no orphan side-effect can be left behind.
         // saveStudent returns bool; an exception is treated as a false
         // return so a single guard covers both failure modes.
+        // NEW-1 — SERVER-SIDE ENROLLMENT IDEMPOTENCY. Reuse the SAME
+        // production-certified primitive the admission payment path uses
+        // (Accounting_idempotency), with the deterministic key ENROLL_{appId}.
+        // This makes the whole create-student / Firebase-Auth / assignInitialFees /
+        // mark-enrolled sequence EXACTLY-ONCE under concurrent admins, browser/
+        // network retry, refresh, or duplicate POST. Acquired HERE — after every
+        // abort-able validation (status/class/section/fee-structure/password) and
+        // right before the first duplicating side-effect (saveStudent) — so a
+        // validation failure can never leave the slot stuck 'processing'.
+        $this->load->library('Accounting_idempotency', null, 'enrollIdemp');
+        $this->enrollIdemp->init($this->firebase, $this->school_name, $this->session_year);
+        $enrollKey = 'ENROLL_' . $id;
+        $claim = $this->enrollIdemp->claim($enrollKey, 'crm_enroll');
+        if (!empty($claim['dedup'])) {
+            // Already enrolled — return the canonical already-processed response.
+            // No second student / Auth / fee-demand is created.
+            $existingSid = (string) ($claim['entryId'] ?? ($app['student_id'] ?? ''));
+            return $this->json_success([
+                'student_id'       => $existingSid,
+                'already_enrolled' => true,
+                'message'          => 'This application is already enrolled' . ($existingSid !== '' ? " as {$existingSid}" : '') . '.',
+            ]);
+        }
+        if (!empty($claim['in_progress'])) {
+            // A concurrent request owns the slot — safe no-op (creates nothing).
+            return $this->json_error('Enrollment is already in progress for this application. Please wait a moment and refresh.');
+        }
+        if (isset($claim['error'])) {
+            // Fail CLOSED — proceeding without the gate risks a duplicate student.
+            log_message('error', "enroll_student: idempotency claim error key={$enrollKey}: " . $claim['error']);
+            return $this->json_error('Could not acquire the enrollment lock. Please retry.');
+        }
+        // first_claim | stale_override ⇒ we own the slot; enroll exactly once.
+
         $studentSaved = false;
         try {
             $studentSaved = (bool) $this->fs->saveStudent($studentId, $studentData);
@@ -5941,6 +6492,8 @@ class Sis extends MY_Controller
             log_message('error', "Firestore saveStudent failed for {$studentId}: " . $e->getMessage());
         }
         if (!$studentSaved) {
+            // Release the slot so a corrected retry can immediately reclaim it.
+            $this->enrollIdemp->markFailed($enrollKey, 'saveStudent failed');
             return $this->json_error('Failed to create student profile in database. Please retry. If the issue persists, contact support.');
         }
 
@@ -5977,14 +6530,24 @@ class Sis extends MY_Controller
             log_message('error', "Firestore dual-write monthFee failed for {$studentId}: " . $e->getMessage());
         }
         if (!$monthFeeOk) {
+            // Release the slot so a corrected retry can immediately reclaim it.
+            $this->enrollIdemp->markFailed($enrollKey, 'monthFee init failed');
             return $this->json_error('Failed to initialize fee tracking for student. Please retry. CRM application has NOT been marked enrolled; no Firebase Auth account was created.');
         }
 
-        $history = $app['history'] ?? [];
-        $history[] = ['action'=>"Enrolled as {$studentId} in {$className} {$section}",'by'=>$this->admin_name,'timestamp'=>$now];
-        $this->_crm_update("crmApplications", $id, ['status'=>'enrolled','stage'=>'enrolled','student_id'=>$studentId,'enrolled_at'=>$now,'enrolled_by'=>$this->admin_name,'updated_at'=>$now,'history'=>$history]);
-        // Firestore dual-write: CRM application status
-        try { $this->fs->setEntity('crmApplications', $id, ['status'=>'enrolled','stage'=>'enrolled','student_id'=>$studentId,'enrolled_at'=>$now,'enrolled_by'=>$this->admin_name,'updated_at'=>$now]); } catch (\Exception $e) { log_message('error', "Firestore dual-write crmApplications failed for {$id}: " . $e->getMessage()); }
+        // M7-B: single CAS-atomic write (enrollment fields + bounded history),
+        // concurrency-safe. schoolId/session/searchTokens on the existing doc are
+        // preserved by the merge/patch (one write — M3-safe).
+        $this->load->helper('admission_crm');
+        $this->fs->casAppendBounded('crmApplications', $id, 'history',
+            ['action'=>"Enrolled as {$studentId} in {$className} {$section}",'by'=>$this->admin_name,'timestamp'=>$now],
+            crm_history_cap(),
+            ['status'=>'enrolled','stage'=>'enrolled','student_id'=>$studentId,'enrolled_at'=>$now,'enrolled_by'=>$this->admin_name,'updated_at'=>$now]);
+        // M7-A: permanent audit of the CRM enrollment event (canonical auditLogs).
+        // Note: the SIS student-record side is separately audited via studentHistory;
+        // this records the Admission-CRM lifecycle transition, correlated by appId.
+        log_audit('CRM', 'enroll_student', $id, "Enrolled application for " . ($app['student_name'] ?? '') . " as student {$studentId} in {$className} {$section}",
+            ['appId' => $id, 'entityType' => 'application', 'meta' => ['student_id' => $studentId, 'class' => $className, 'section' => $section]]);
 
         // ── Create Firebase Auth user — REQUIRED, not best-effort ─────
         // Previously this was wrapped in try/catch with only a log_message.
@@ -6064,6 +6627,13 @@ class Sis extends MY_Controller
             "Student admitted to {$className} / {$section} ({$session})",
             ['class' => $className, 'section' => $section, 'session' => $session]
         );
+
+        // NEW-1 — mark the enrollment slot SUCCESS, storing the studentId so any
+        // later retry/duplicate POST dedups to THIS enrollment instead of creating
+        // a second student. Reached on the success path even when Firebase Auth
+        // creation failed (the student WAS created; Auth is repaired via
+        // repair_auth) — so a retry must NOT re-create the student.
+        $this->enrollIdemp->markSuccess($enrollKey, $studentId);
 
         // Response carries the credentials separately from the user-
         // facing message so the JS can show a clean toast AND a
@@ -6334,14 +6904,16 @@ class Sis extends MY_Controller
             'priority'=>$priority,'reason'=>$reason,'status'=>'waiting','created_at'=>$now,'updated_at'=>$now];
         $this->_crm_set("crmWaitlist", $wl_id, $waitEntry);
         // Counter managed by _crm_next_id — no separate write needed.
-        $history = $app['history'] ?? [];
-        $history[] = ['action'=>'Added to waitlist','by'=>$this->admin_name,'timestamp'=>$now];
-        $this->_crm_update("crmApplications", $app_id, ['status'=>'waitlisted','stage'=>'waitlisted','updated_at'=>$now,'history'=>$history]);
-        // Firestore dual-write: waitlist entry + application status
-        try {
-            $this->fs->setEntity('crmWaitlist', $wl_id, $waitEntry);
-            $this->fs->updateEntity('crmApplications', $app_id, ['status'=>'waitlisted','stage'=>'waitlisted','updated_at'=>$now]);
-        } catch (\Exception $e) { log_message('error', "Firestore dual-write add_to_waitlist failed: " . $e->getMessage()); }
+        // M7-B: single CAS-atomic write (waitlist status + bounded history), concurrency-safe.
+        $this->load->helper('admission_crm');
+        $this->fs->casAppendBounded('crmApplications', $app_id, 'history',
+            ['action'=>'Added to waitlist','by'=>$this->admin_name,'timestamp'=>$now],
+            crm_history_cap(),
+            ['status'=>'waitlisted','stage'=>'waitlisted','updated_at'=>$now]);
+        // (crmWaitlist entry written above via _crm_set — a separate document.)
+        // M7-A: permanent audit (canonical auditLogs).
+        log_audit('CRM', 'waitlist_add', $app_id, "Added " . ($app['student_name'] ?? '') . " to waitlist (WL {$wl_id})",
+            ['appId' => $app_id, 'entityType' => 'application', 'meta' => ['waitlist_id' => $wl_id, 'priority' => $priority]]);
         return $this->json_success(['id' => $wl_id]);
     }
 
@@ -6354,12 +6926,13 @@ class Sis extends MY_Controller
         $entry = $this->_crm_get('crmWaitlist', $id);
         if (is_array($entry) && !empty($entry['application_id'])) {
             $this->_crm_update('crmApplications', $entry['application_id'], ['status'=>'pending','stage'=>'document_collection','updated_at'=>date('Y-m-d H:i:s')]);
-            // Firestore dual-write: revert application status
-            try { $this->fs->updateEntity('crmApplications', $entry['application_id'], ['status'=>'pending','stage'=>'document_collection','updated_at'=>date('Y-m-d H:i:s')]); } catch (\Exception $e) { log_message('error', "Firestore dual-write remove_from_waitlist app failed: " . $e->getMessage()); }
+            // M3: _crm_update is the single canonical Firestore write (removed redundant dual-write).
+            // M7-A: permanent audit (canonical auditLogs).
+            log_audit('CRM', 'waitlist_remove', (string) $entry['application_id'], "Removed application from waitlist (WL {$id})",
+                ['appId' => (string) $entry['application_id'], 'entityType' => 'application', 'meta' => ['waitlist_id' => $id]]);
         }
         $this->_crm_delete('crmWaitlist', $id);
-        // Firestore dual-write: delete waitlist entry
-        try { $this->fs->removeEntity('crmWaitlist', $id); } catch (\Exception $e) { log_message('error', "Firestore dual-write delete crmWaitlist failed: " . $e->getMessage()); }
+        // M3: _crm_delete is the single canonical Firestore delete (removed redundant dual-write).
         return $this->json_success();
     }
 
@@ -6376,15 +6949,18 @@ class Sis extends MY_Controller
         $now = date('Y-m-d H:i:s');
         $app = $this->_crm_get('crmApplications', $app_id);
         if (is_array($app)) {
-            $history = $app['history'] ?? [];
-            $history[] = ['action'=>'Promoted from waitlist and approved','by'=>$this->admin_name,'timestamp'=>$now];
-            $this->_crm_update("crmApplications", $app_id, ['status'=>'approved','stage'=>'approved','approved_by'=>$this->admin_name,'approved_at'=>$now,'updated_at'=>$now,'history'=>$history]);
-            // Firestore dual-write: approve from waitlist
-            try { $this->fs->updateEntity('crmApplications', $app_id, ['status'=>'approved','stage'=>'approved','approved_by'=>$this->admin_name,'approved_at'=>$now,'updated_at'=>$now]); } catch (\Exception $e) { log_message('error', "Firestore dual-write promote_from_waitlist failed: " . $e->getMessage()); }
+            // M7-B: single CAS-atomic write (approval fields + bounded history), concurrency-safe.
+            $this->load->helper('admission_crm');
+            $this->fs->casAppendBounded('crmApplications', $app_id, 'history',
+                ['action'=>'Promoted from waitlist and approved','by'=>$this->admin_name,'timestamp'=>$now],
+                crm_history_cap(),
+                ['status'=>'approved','stage'=>'approved','approved_by'=>$this->admin_name,'approved_at'=>$now,'updated_at'=>$now]);
+            // M7-A: permanent audit (canonical auditLogs).
+            log_audit('CRM', 'waitlist_promote', (string) $app_id, "Promoted " . ($app['student_name'] ?? '') . " from waitlist to approved (WL {$id})",
+                ['appId' => (string) $app_id, 'entityType' => 'application', 'meta' => ['waitlist_id' => $id, 'status' => 'approved']]);
         }
         $this->_crm_delete('crmWaitlist', $id);
-        // Firestore dual-write: delete waitlist entry
-        try { $this->fs->removeEntity('crmWaitlist', $id); } catch (\Exception $e) { log_message('error', "Firestore dual-write delete crmWaitlist failed: " . $e->getMessage()); }
+        // M3: _crm_delete is the single canonical Firestore delete (removed redundant dual-write).
         return $this->json_success();
     }
 
@@ -6410,8 +6986,10 @@ class Sis extends MY_Controller
         }
         $settings['updated_at'] = date('Y-m-d H:i:s');
         $this->_crm_save_settings($settings);
-        // Firestore dual-write: CRM settings
-        try { $this->fs->setEntity('crmSettings', 'config', $settings); } catch (\Exception $e) { log_message('error', "Firestore dual-write crmSettings failed: " . $e->getMessage()); }
+        // M3: _crm_save_settings (-> _crm_set) is the single canonical Firestore write (removed redundant dual-write).
+        // M7-A: permanent audit (canonical auditLogs).
+        log_audit('CRM', 'update_crm_settings', 'config', 'Updated CRM settings (stages / class limits / form fields / notifications)',
+            ['entityType' => 'crm_settings']);
         return $this->json_success();
     }
 
@@ -6480,11 +7058,19 @@ class Sis extends MY_Controller
         if (!preg_match('/^\+?\d{10,15}$/', preg_replace('/[\s\-]/','',$data['phone']))) return $this->json_error('Invalid phone number format');
         if ($data['email']!==''&&!filter_var($data['email'],FILTER_VALIDATE_EMAIL)) return $this->json_error('Invalid email address');
 
-        $existingApps = $this->_crm_list('crmApplications');
-        if (is_array($existingApps)) {
-            foreach ($existingApps as $ea) {
-                if (!is_array($ea)||($ea['session']??'')!==$this->session_year) continue;
-                if (($ea['phone']??'')===$data['phone']&&in_array($ea['status']??'',['pending','approved','waitlisted','enrolled'])) {
+        // SCALE (closure item I / Finding 1): duplicate-phone check via a BOUNDED
+        // equality query (schoolId+session+phone — zig-zag, no composite index)
+        // instead of a full-collection scan. Same exact-match semantics as before,
+        // but reads only the 0–few docs sharing this phone rather than every
+        // application in the school.
+        $dupCandidates = $this->fs->schoolWhere('crmApplications', [
+            ['session', '==', $this->session_year],
+            ['phone',   '==', $data['phone']],
+        ]);
+        if (is_array($dupCandidates)) {
+            foreach ($dupCandidates as $row) {
+                $ea = is_array($row['data'] ?? null) ? $row['data'] : (is_array($row) ? $row : []);
+                if (in_array($ea['status'] ?? '', ['pending','approved','waitlisted','enrolled'], true)) {
                     return $this->json_error('An application with this phone number already exists for this session (ID: '.($ea['application_id']??'N/A').')');
                 }
             }
@@ -6495,15 +7081,18 @@ class Sis extends MY_Controller
         $this->_crm_set('crmInquiries', $inq_id, $inqData);
         $app_id = $this->_crm_next_id('Application', 'APP', 5);
         $appData = array_merge($data, ['application_id'=>$app_id,'inquiry_id'=>$inq_id,'session'=>$this->session_year,'status'=>'pending','stage'=>'document_collection','created_at'=>$now,'updated_at'=>$now,'created_by'=>'Online','documents'=>[],'history'=>[['action'=>'Application submitted via online form','by'=>'Online','timestamp'=>$now]]]);
+        $this->load->helper('admission_search');
+        $appData['searchTokens'] = admission_search_tokens($appData['student_name'] ?? '');
         $this->_crm_set("crmApplications", $app_id, $appData);
         $this->_crm_update("crmInquiries", $inq_id, ['application_id'=>$app_id]);
         // Counter managed by _crm_next_id — no separate write needed.
-        // Firestore dual-write: online form inquiry + application
-        try {
-            $inqData['application_id'] = $app_id;
-            $this->fs->setEntity('crmInquiries', $inq_id, $inqData);
-            $this->fs->setEntity('crmApplications', $app_id, $appData);
-        } catch (\Exception $e) { log_message('error', "Firestore dual-write submit_online_form failed: " . $e->getMessage()); }
+        // M3: _crm_set (inquiry + application) and _crm_update (inquiry application_id)
+        // above are the single canonical Firestore writes. The removed dual-write
+        // re-set the same crmApplications doc and re-set crmInquiries with the same
+        // inqData+application_id already produced by _crm_set + _crm_update.
+        // M7-A: permanent audit (canonical auditLogs).
+        log_audit('CRM', 'create_application', $app_id, "Application submitted via online form for " . ($appData['student_name'] ?? ''),
+            ['appId' => $app_id, 'entityType' => 'application', 'meta' => ['source' => 'online_form', 'inquiry_id' => $inq_id]]);
         return $this->json_success(['application_id' => $app_id]);
     }
 

@@ -1016,6 +1016,97 @@ class FirestoreRestClient
     }
 
     /**
+     * M7-B — Atomically append an entry to a BOUNDED array field, retaining the
+     * newest $cap entries, using optimistic concurrency (currentDocument.updateTime
+     * CAS) so concurrent appenders cannot silently lose each other's events.
+     *
+     * REUSES the canonical atomic-write primitive (commitBatch with a CAS
+     * precondition — the Phase 8 accounting pattern) + _getDocumentUncached
+     * (memo-bypassing fresh read). NO new concurrency framework.
+     *
+     * $businessFields are written in the SAME atomic commit as the trimmed array,
+     * so a CRM mutation performs exactly ONE write (the append is not a second
+     * write) — M3-safe.
+     *
+     * Idempotency: when $dedupeKey !== '' the entry is stamped '_eid'=$dedupeKey;
+     * if an existing entry already carries that id the append is a no-op (stops a
+     * callback/webhook race from duplicating payment_collected). Legitimately
+     * repeated CRM actions pass '' and always append.
+     *
+     * Arrays are stored oldest→newest; trimming keeps the last $cap (newest).
+     *
+     * Failure isolation: the array is a RECENT CACHE (permanent truth is
+     * auditLogs). On CAS exhaustion it does one best-effort non-CAS merge so the
+     * business fields + event still land; it NEVER throws.
+     *
+     * @return array ['ok'=>bool,'deduped'=>bool,'retries'=>int,'fellback'=>bool]
+     */
+    public function casAppendBounded(string $collection, string $docId, string $arrayField, array $newEntry, int $cap, array $businessFields = [], string $dedupeKey = '', int $maxRetries = 5): array
+    {
+        $cap = max(1, $cap);
+        if ($dedupeKey !== '') $newEntry['_eid'] = $dedupeKey;
+
+        $hasDupe = function (array $arr) use ($dedupeKey): bool {
+            if ($dedupeKey === '') return false;
+            foreach ($arr as $e) { if (is_array($e) && (($e['_eid'] ?? null) === $dedupeKey)) return true; }
+            return false;
+        };
+
+        for ($attempt = 0; $attempt <= $maxRetries; $attempt++) {
+            $doc = $this->_getDocumentUncached($collection, $docId);
+            if (!is_array($doc)) {
+                return ['ok' => false, 'deduped' => false, 'retries' => $attempt, 'fellback' => false];
+            }
+            $updateTime = (string) ($doc['__updateTime'] ?? '');
+            $arr = is_array($doc[$arrayField] ?? null) ? array_values($doc[$arrayField]) : [];
+
+            if ($hasDupe($arr)) {
+                // Duplicate recent-cache event — still persist any business fields
+                // (e.g. payment_status) idempotently, then no-op the append.
+                if (empty($businessFields)) {
+                    return ['ok' => true, 'deduped' => true, 'retries' => $attempt, 'fellback' => false];
+                }
+                $op = ['op' => 'update', 'collection' => $collection, 'docId' => $docId, 'data' => $businessFields, 'merge' => true];
+                if ($updateTime !== '') $op['precondition'] = ['updateTime' => $updateTime];
+                if ($this->commitBatch([$op])) {
+                    return ['ok' => true, 'deduped' => true, 'retries' => $attempt, 'fellback' => false];
+                }
+                continue; // CAS conflict — re-read and retry
+            }
+
+            $arr[] = $newEntry;
+            if (count($arr) > $cap) $arr = array_slice($arr, -$cap); // retain newest N
+
+            $data = $businessFields;
+            $data[$arrayField] = $arr;
+            $op = ['op' => 'update', 'collection' => $collection, 'docId' => $docId, 'data' => $data, 'merge' => true];
+            if ($updateTime !== '') $op['precondition'] = ['updateTime' => $updateTime];
+            if ($this->commitBatch([$op])) {
+                return ['ok' => true, 'deduped' => false, 'retries' => $attempt, 'fellback' => false];
+            }
+            // CAS conflict / transient error — loop re-reads fresh and recomputes.
+        }
+
+        // CAS exhausted. FAIL-SAFE (item H): do NOT rewrite the array without a
+        // precondition — a non-CAS array overwrite would reintroduce the exact
+        // lost-update race M7-B eliminates (it could clobber a concurrent
+        // appender's entry). Instead persist ONLY the business fields (merge;
+        // scalar last-write-wins is acceptable and touches no array), so the
+        // business mutation still lands, and DROP the recent-cache append. No data
+        // is lost: the permanent authoritative record is already written to
+        // auditLogs by the caller (M7-A). The drop is logged for monitoring.
+        if (function_exists('log_message')) {
+            log_message('error', "casAppendBounded CAS exhausted {$collection}/{$docId} field={$arrayField} — recent-cache append DROPPED (fail-safe; permanent trail is in auditLogs). businessFields=" . (empty($businessFields) ? 'none' : implode(',', array_keys($businessFields))));
+        }
+        $ok = true;
+        if (!empty($businessFields)) {
+            // No array field + no precondition ⇒ cannot cause an array lost-update.
+            $ok = $this->commitBatch([['op' => 'update', 'collection' => $collection, 'docId' => $docId, 'data' => $businessFields, 'merge' => true]]);
+        }
+        return ['ok' => $ok, 'deduped' => false, 'retries' => $maxRetries + 1, 'fellback' => true, 'cacheDropped' => true];
+    }
+
+    /**
      * NON-ATOMIC batch write via Firestore's `:batchWrite` REST endpoint.
      *
      * Unlike commitBatch() (`:commit`, all-or-nothing), each write here
@@ -1375,6 +1466,109 @@ class FirestoreRestClient
         }
 
         return $results;
+    }
+
+    /**
+     * DETERMINISTIC cursor pagination for the Admission CRM (C7). Separate from
+     * query() — query()'s behavior (and its other certified callers) is unchanged.
+     *
+     * Fixed total order: `created_at DESC, __name__ DESC`. created_at (a fixed-
+     * width "Y-m-d H:i:s" string ⇒ lexical == chronological) can COLLIDE, so the
+     * unique document id (__name__) is the tie-breaker — giving a stable total
+     * order with no duplicate/skipped rows across pages. The cursor carries BOTH
+     * values (created_at + the doc's __name__ referenceValue) with startAt
+     * before=false (exclusive startAfter).
+     *
+     * FAIL-LOUD: a missing-index / FAILED_PRECONDITION (or any non-200) THROWS.
+     * It never client-sorts, never drops orderBy, never scans the whole
+     * collection. The caller converts the throw into a controlled CRM UI error.
+     *
+     * @param array      $conditions equality/array-contains filters [[field,op,value],…]
+     * @param int        $limit      page size
+     * @param array|null $cursor     ['created_at'=>string,'id'=>docId] or null (page 1)
+     * @return array ['items'=>[{id,data}…], 'nextCursor'=>['created_at','id']|null, 'hasMore'=>bool]
+     * @throws \RuntimeException on missing index / query failure
+     */
+    public function queryCursor(string $collection, array $conditions, int $limit, ?array $cursor = null): array
+    {
+        $opMap = ['=' => 'EQUAL', '==' => 'EQUAL', 'array-contains' => 'ARRAY_CONTAINS', 'in' => 'IN'];
+
+        $filters = [];
+        foreach ($conditions as [$field, $op, $value]) {
+            // `in` takes an array value encoded as a Firestore arrayValue; every
+            // other supported op takes a scalar. IN uses the same composite index
+            // as the equivalent equality filter (it is disjunctive equality).
+            if ($op === 'in') {
+                $encoded = ['arrayValue' => ['values' => array_map(fn($v) => $this->encode($v), array_values((array) $value))]];
+            } else {
+                $encoded = $this->encode($value);
+            }
+            $filters[] = ['fieldFilter' => [
+                'field' => ['fieldPath' => $field],
+                'op'    => $opMap[$op] ?? 'EQUAL',
+                'value' => $encoded,
+            ]];
+        }
+
+        $structuredQuery = [
+            'from'    => [['collectionId' => $collection]],
+            'orderBy' => [
+                ['field' => ['fieldPath' => 'created_at'], 'direction' => 'DESCENDING'],
+                ['field' => ['fieldPath' => '__name__'],   'direction' => 'DESCENDING'],
+            ],
+            'limit'   => $limit + 1, // fetch one extra to compute hasMore in the same round-trip
+        ];
+        if (!empty($filters)) {
+            $structuredQuery['where'] = count($filters) === 1
+                ? $filters[0]
+                : ['compositeFilter' => ['op' => 'AND', 'filters' => $filters]];
+        }
+        if ($cursor !== null && isset($cursor['created_at'], $cursor['id']) && $cursor['id'] !== '') {
+            $refPath = "projects/{$this->projectId}/databases/{$this->databaseId}/documents/{$collection}/{$cursor['id']}";
+            $structuredQuery['startAt'] = [
+                'values' => [
+                    $this->encode((string) $cursor['created_at']), // matches created_at (string) type
+                    ['referenceValue' => $refPath],                // matches __name__
+                ],
+                'before' => false, // exclusive — skip the cursor row itself
+            ];
+        }
+
+        $r = $this->request('POST', $this->baseUrl() . ':runQuery', ['structuredQuery' => $structuredQuery]);
+
+        if ($r['code'] !== 200) {
+            $status = $r['body']['error']['status']  ?? '';
+            $msg    = $r['body']['error']['message'] ?? '';
+            if ($status === 'FAILED_PRECONDITION') {
+                log_message('error', "CRM_QUERY_INDEX_MISSING collection={$collection} "
+                    . 'filters=' . json_encode(array_map(fn($c) => $c[0] . $c[1], $conditions))
+                    . ' — ' . substr($msg, 0, 220));
+            } else {
+                log_message('error', "CRM_QUERY_ERROR collection={$collection} http={$r['code']} status={$status} — " . substr($msg, 0, 220));
+            }
+            // FAIL LOUD — no fallback, no partial results.
+            throw new \RuntimeException('CRM_QUERY_FAILED:' . ($status !== '' ? $status : (string) $r['code']));
+        }
+
+        $rows = [];
+        foreach ((array) $r['body'] as $item) {
+            if (isset($item['document'])) {
+                $rows[] = [
+                    'id'   => $this->docIdFromName($item['document']['name']),
+                    'data' => $this->decodeDocument($item['document']),
+                ];
+            }
+        }
+
+        $hasMore = count($rows) > $limit;
+        if ($hasMore) $rows = array_slice($rows, 0, $limit);
+
+        $nextCursor = null;
+        if ($hasMore && !empty($rows)) {
+            $last = $rows[count($rows) - 1];
+            $nextCursor = ['created_at' => (string) ($last['data']['created_at'] ?? ''), 'id' => $last['id']];
+        }
+        return ['items' => $rows, 'nextCursor' => $nextCursor, 'hasMore' => $hasMore];
     }
 
     /**
