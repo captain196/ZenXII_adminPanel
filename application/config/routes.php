@@ -482,6 +482,12 @@ $route['sis/reset_password']                    = 'Sis/reset_password';
 $route['sis/documents/(:any)']                  = 'Sis/documents/$1';
 $route['sis/upload_document']                   = 'Sis/upload_document';
 $route['sis/delete_document']                   = 'Sis/delete_document';
+// Phase 2 — Student Documents via the Canonical Document Service (Document Service unchanged).
+$route['sis/student_upload_document']           = 'Sis/student_upload_document';
+$route['sis/verify_student_document']           = 'Sis/verify_student_document';
+$route['sis/replace_student_document']          = 'Sis/replace_student_document';
+$route['sis/delete_student_document']           = 'Sis/delete_student_document';
+$route['sis/student_document_audit']            = 'Sis/student_document_audit';
 $route['sis/history/(:any)']                    = 'Sis/history/$1';
 $route['sis/id_card']                           = 'Sis/id_card';
 $route['sis/search_student']                    = 'Sis/search_student';

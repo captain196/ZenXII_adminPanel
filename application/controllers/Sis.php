@@ -2249,6 +2249,17 @@ class Sis extends MY_Controller
             : (is_array($priorStudentDoc['Doc'][$docLabel] ?? null)
                 ? $priorStudentDoc['Doc'][$docLabel]
                 : []);
+
+        // HARDENING (Objective 1/4) — the legacy label-keyed uploader must not
+        // clobber a Canonical Document Service slot: doing so would raw-delete a
+        // service object and diverge the Doc[] map from documentRefs. If this
+        // label already holds a managed document, refuse and direct the caller to
+        // the managed uploader (the Documents page). The service is the single
+        // authority for managed-document bytes + lifecycle.
+        if (is_array($priorDocNode) && !empty($priorDocNode['documentId'])) {
+            return $this->json_error('This document is managed by the Document Service — use the Documents page to replace it.');
+        }
+
         if (!empty($priorDocNode)) {
             $this->_deleteOldStorageFile($priorDocNode);
         }
@@ -2326,14 +2337,41 @@ class Sis extends MY_Controller
         $studentDoc = $this->_getStudent($userId);
         $docMap = $studentDoc['documents'] ?? $studentDoc['Doc'] ?? [];
 
-        // ─────────────────────────────────────────────────────────────────
-        // Storage-orphan fix (2026-05-30): delete the Storage object BEFORE
-        // removing the Firestore reference. Mirrors the proven
-        // edit_student@3435 pattern via _deleteOldStorageFile. Without this
-        // call the Firestore entry vanished but the underlying Storage file
-        // lingered indefinitely (only cleaned at full student deletion).
-        // ─────────────────────────────────────────────────────────────────
         $oldDocNode = $docMap[$docLabel] ?? [];
+
+        // ─────────────────────────────────────────────────────────────────
+        // HARDENING (Objective 1) — the legacy label-keyed delete must NEVER
+        // touch a Canonical Document Service object. There is exactly ONE
+        // authoritative deletion lifecycle for managed documents.
+        //   (a) Node carries a `documentId` → it is a service-managed document:
+        //       route through the service lifecycle (unlink + reference-counted
+        //       purge + audit). No raw Storage delete, no bypass.
+        //   (b) Node has no marker but its bytes live under the service prefix
+        //       `documents/{schoolId}/…` (e.g. an admission document carried onto
+        //       the student at enrollment, still referenced by the application):
+        //       drop ONLY the student's display reference — never raw-delete a
+        //       shared service object (that would break the admission record, W4).
+        //   (c) A genuine legacy student-owned object → the historical raw delete.
+        // ─────────────────────────────────────────────────────────────────
+        $managedId = is_array($oldDocNode) ? trim((string) ($oldDocNode['documentId'] ?? '')) : '';
+        if ($managedId !== '') {
+            return $this->_delete_managed_student_document($userId, $managedId);
+        }
+        $svcPath = is_array($oldDocNode) ? $this->_extractStoragePathFromUrl((string) ($oldDocNode['url'] ?? '')) : '';
+        if ($svcPath !== '' && strpos($svcPath, 'documents/' . $this->school_name . '/') === 0) {
+            unset($docMap[$docLabel]);
+            $this->fs->updateEntity('students', $userId, ['documents' => $docMap, 'Doc' => $docMap]);
+            $this->_log_history($this->school_id, $userId, 'DOCUMENT_DELETE',
+                "Document reference removed: {$docLabel}",
+                ['doc_label' => $docLabel, 'note' => 'service-owned object retained (may be shared)']);
+            return $this->json_success(['message' => 'Document removed.']);
+        }
+
+        // ─────────────────────────────────────────────────────────────────
+        // (c) Genuine legacy object. Storage-orphan fix (2026-05-30): delete the
+        // Storage object BEFORE removing the Firestore reference (mirrors the
+        // edit_student@3435 pattern via _deleteOldStorageFile).
+        // ─────────────────────────────────────────────────────────────────
         if (is_array($oldDocNode) && !empty($oldDocNode)) {
             $this->_deleteOldStorageFile($oldDocNode);
         }
@@ -2350,6 +2388,301 @@ class Sis extends MY_Controller
         );
 
         return $this->json_success(['message' => 'Document deleted.']);
+    }
+
+    /* ══════════════════════════════════════════════════════════════════════
+       STUDENT DOCUMENTS — Canonical Document Service consumer (Phase 2)
+
+       The Student "Documents" experience is the first production consumer of the
+       (frozen) Document Service. New uploads become canonical documents
+       (id-addressed, verified, versioned, reference-counted, audited) linked to
+       the student; a denormalized `documentRefs[]` pointer on the student drives
+       the admin UI, while the legacy `documents`/`Doc` map is kept in sync so the
+       Parent/Teacher apps keep displaying documents with NO app change. Existing
+       students' legacy `Doc[]` entries render read-only (view/download) for full
+       backward compatibility — no migration. The Document Service, its APIs,
+       schema, config, and concurrency model are NOT modified.
+    ══════════════════════════════════════════════════════════════════════ */
+
+    /** Student document types (reuse the frozen document_service config types; no 'photo' — profile pic is separate). */
+    private function _student_doc_types(): array
+    {
+        return ['aadhaar', 'birth_certificate', 'transfer_certificate', 'marksheet', 'medical_certificate', 'additional'];
+    }
+
+    /** Display label for a student document type (mirrors the frozen document_service config labels). */
+    private function _student_doc_label(string $type, string $custom = ''): string
+    {
+        $map = [
+            'aadhaar'              => 'Aadhaar Card',
+            'birth_certificate'    => 'Birth Certificate',
+            'transfer_certificate' => 'Transfer Certificate',
+            'marksheet'            => 'Marksheet',
+            'medical_certificate'  => 'Medical Certificate',
+        ];
+        if (isset($map[$type])) return $map[$type];
+        $c = trim(preg_replace('/[.\$#\[\]\/]/', '_', $custom));
+        return $c !== '' ? substr($c, 0, 60) : 'Document';
+    }
+
+    /** Ownership guard — the documentId must be referenced by THIS student. */
+    private function _student_doc_owned(array $student, string $documentId): bool
+    {
+        if ($documentId === '') return false;
+        foreach ((array) ($student['documentRefs'] ?? []) as $r) {
+            if (is_array($r) && (string) ($r['documentId'] ?? '') === $documentId) return true;
+        }
+        return false;
+    }
+
+    /**
+     * Upsert a document pointer onto the student: the `documentRefs[]` entry (the
+     * admin-UI lifecycle source) AND the legacy `documents`/`Doc` map keyed by
+     * label (Parent/Teacher app compatibility). Read-modify-write; every field is
+     * a merge so no other student field is touched.
+     */
+    private function _student_sync_docref(string $userId, array $doc, string $label, string $type, int $bytes): void
+    {
+        $student = $this->_getStudent($userId) ?? [];
+        $docId   = (string) ($doc['documentId'] ?? '');
+        if ($docId === '') return;
+
+        $ref = [
+            'documentId'         => $docId,
+            'type'               => $type,
+            'role'               => $type,
+            'label'              => $label,
+            'url'                => (string) ($doc['downloadUrl'] ?? ''),
+            'category'           => (string) ($doc['category'] ?? ($type === 'additional' ? 'additional' : 'predefined')),
+            'verificationStatus' => (string) ($doc['verificationStatus'] ?? 'pending'),
+            'version'            => (int) ($doc['version'] ?? 1),
+            'uploaded_at'        => date('Y-m-d H:i:s'),
+        ];
+        $refs = is_array($student['documentRefs'] ?? null) ? array_values($student['documentRefs']) : [];
+        $found = false;
+        foreach ($refs as $i => $r) {
+            if (is_array($r) && (string) ($r['documentId'] ?? '') === $docId) { $refs[$i] = $ref; $found = true; break; }
+        }
+        if (!$found) $refs[] = $ref;
+
+        // Legacy map (documents + Doc), keyed by unique label — app compatibility.
+        $map = is_array($student['documents'] ?? null) ? $student['documents']
+             : (is_array($student['Doc'] ?? null) ? $student['Doc'] : []);
+        $key = $label;
+        if (!$found) {
+            // Reuse an EMPTY placeholder slot of the same label (fill it) — or the
+            // same document — instead of creating a "Label (2)" duplicate. Only
+            // suffix when a DIFFERENT real document already holds that label.
+            $n = 2;
+            while (isset($map[$key])) {
+                $ex    = $map[$key];
+                $exId  = is_array($ex) ? (string) ($ex['documentId'] ?? '') : '';
+                $exUrl = is_array($ex) ? (string) ($ex['url'] ?? '') : (string) $ex;
+                if ($exId === $docId || ($exId === '' && $exUrl === '')) break; // same doc, or empty slot → use this key
+                $key = $label . ' (' . $n++ . ')';
+            }
+        } else {
+            // replace: reuse whatever label key currently points at this documentId
+            foreach ($map as $k => $v) { if (is_array($v) && (string) ($v['documentId'] ?? '') === $docId) { $key = $k; break; } }
+        }
+        $thumb = strpos((string) ($doc['mime'] ?? ''), 'image/') === 0 ? (string) ($doc['downloadUrl'] ?? '') : '';
+        $map[$key] = [
+            'url'         => (string) ($doc['downloadUrl'] ?? ''),
+            'thumbnail'   => $thumb,
+            'uploaded_at' => date('Y-m-d H:i:s'),
+            'bytes'       => $bytes,
+            'documentId'  => $docId,
+        ];
+        $this->fs->updateEntity('students', $userId, ['documentRefs' => $refs, 'documents' => $map, 'Doc' => $map]);
+    }
+
+    /**
+     * POST — upload a student document through the Document Service. Predefined
+     * types are single-slot: re-uploading an existing type REPLACES it (new
+     * version). `additional` always adds a new document. Per-student quota is
+     * still enforced (existing business rule; not storage logic).
+     */
+    public function student_upload_document()
+    {
+        $this->_require_role(self::MANAGE_ROLES, 'sis_upload_doc');
+        if ($this->input->method() !== 'post') return $this->json_error('POST required');
+
+        $userId = trim((string) $this->input->post('user_id'));
+        $type   = trim((string) $this->input->post('doc_type'));
+        $custom = trim((string) $this->input->post('doc_label'));
+        if ($userId === '' || !$this->safe_path_segment($userId))   return $this->json_error('Invalid User ID.');
+        if (!in_array($type, $this->_student_doc_types(), true))     return $this->json_error('Invalid document type.');
+        if (empty($_FILES['document']) || ($_FILES['document']['error'] ?? UPLOAD_ERR_NO_FILE) !== UPLOAD_ERR_OK) {
+            return $this->json_error('Please choose a file to upload.');
+        }
+        $student = $this->_getStudent($userId);
+        if (empty($student)) return $this->json_error('Student not found.');
+
+        // Reuse the existing per-student quota (business rule; not storage logic).
+        $fileBytes = (int) ($_FILES['document']['size'] ?? 0);
+        $quota = $this->_check_doc_quota($userId, $fileBytes);
+        if (!$quota['ok']) return $this->json_error($quota['reason']);
+
+        $this->load->library('document_service', null, 'docsvc');
+        $this->docsvc->init($this->firebase, $this->school_name);
+        $actor = (string) ($this->admin_id ?? 'system');
+        $label = $this->_student_doc_label($type, $custom);
+        $tmp   = (string) $_FILES['document']['tmp_name'];
+        $orig  = (string) ($_FILES['document']['name'] ?? 'file');
+
+        // Predefined single-slot: replace the existing document of this type.
+        $existingId = '';
+        if ($type !== 'additional') {
+            foreach ((array) ($student['documentRefs'] ?? []) as $r) {
+                if (is_array($r) && (string) ($r['type'] ?? '') === $type) { $existingId = (string) ($r['documentId'] ?? ''); break; }
+            }
+        }
+
+        if ($existingId !== '') {
+            $res = $this->docsvc->replace($existingId, $tmp, $orig, $actor);
+            if (empty($res['ok'])) return $this->json_error($res['error'] ?? 'Upload failed.');
+            $this->_student_sync_docref($userId, $res['document'], $label, $type, $fileBytes);
+            $this->_log_history($this->school_id, $userId, 'DOCUMENT_REPLACE', "Document replaced: {$label}", ['documentId' => $existingId, 'type' => $type]);
+            return $this->json_success(['message' => 'Document updated.', 'documentId' => $existingId, 'url' => $res['document']['downloadUrl'] ?? '']);
+        }
+
+        $res = $this->docsvc->upload($tmp, $orig, $type, ['uploadedBy' => $actor, 'label' => $label]);
+        if (empty($res['ok'])) return $this->json_error($res['error'] ?? 'Upload failed.');
+        $doc = $res['document'];
+        $this->docsvc->link($doc['documentId'], 'student', $userId, $type, $actor);
+        $this->_student_sync_docref($userId, $doc, $label, $type, $fileBytes);
+        $this->_log_history($this->school_id, $userId, 'DOCUMENT_UPLOAD', "Document uploaded: {$label}", ['documentId' => $doc['documentId'], 'type' => $type]);
+        return $this->json_success(['message' => 'Document uploaded.', 'documentId' => $doc['documentId'], 'url' => $doc['downloadUrl'] ?? '']);
+    }
+
+    /** POST — set a student document's verification status (verified|rejected|pending). */
+    public function verify_student_document()
+    {
+        $this->_require_role(self::MANAGE_ROLES, 'sis_upload_doc');
+        $userId = trim((string) $this->input->post('user_id'));
+        $docId  = trim((string) $this->input->post('document_id'));
+        $status = trim((string) $this->input->post('status'));
+        if ($userId === '' || !$this->safe_path_segment($userId))       return $this->json_error('Invalid User ID.');
+        if (!preg_match('/^[A-Za-z0-9_]+$/', $docId))                    return $this->json_error('Invalid document id.');
+        if (!in_array($status, ['verified', 'rejected', 'pending'], true)) return $this->json_error('Invalid status.');
+        $student = $this->_getStudent($userId);
+        if (empty($student))                          return $this->json_error('Student not found.');
+        if (!$this->_student_doc_owned($student, $docId)) return $this->json_error('Document does not belong to this student.');
+
+        $this->load->library('document_service', null, 'docsvc');
+        $this->docsvc->init($this->firebase, $this->school_name);
+        $res = $this->docsvc->verify($docId, $status, (string) ($this->admin_id ?? 'system'));
+        if (empty($res['ok'])) return $this->json_error($res['error'] ?? 'Verification failed.');
+
+        $refs = array_map(function ($r) use ($docId, $status) {
+            if (is_array($r) && (string) ($r['documentId'] ?? '') === $docId) $r['verificationStatus'] = $status;
+            return $r;
+        }, (array) ($student['documentRefs'] ?? []));
+        $this->fs->updateEntity('students', $userId, ['documentRefs' => array_values($refs)]);
+        $this->_log_history($this->school_id, $userId, 'DOCUMENT_VERIFY', "Document {$docId} marked {$status}", ['documentId' => $docId, 'status' => $status]);
+        // NOTE: do NOT return a 'status' key — json_success() already sets
+        // status:'success', and a data 'status' would overwrite it (making the
+        // frontend think the call failed). Return the value under a distinct key.
+        return $this->json_success(['verificationStatus' => $status]);
+    }
+
+    /** POST (multipart) — replace a student document's bytes (new version, old retired). */
+    public function replace_student_document()
+    {
+        $this->_require_role(self::MANAGE_ROLES, 'sis_upload_doc');
+        $userId = trim((string) $this->input->post('user_id'));
+        $docId  = trim((string) $this->input->post('document_id'));
+        if ($userId === '' || !$this->safe_path_segment($userId)) return $this->json_error('Invalid User ID.');
+        if (!preg_match('/^[A-Za-z0-9_]+$/', $docId))             return $this->json_error('Invalid document id.');
+        if (empty($_FILES['document']) || ($_FILES['document']['error'] ?? UPLOAD_ERR_NO_FILE) !== UPLOAD_ERR_OK) {
+            return $this->json_error('Please choose a replacement file.');
+        }
+        $student = $this->_getStudent($userId);
+        if (empty($student))                          return $this->json_error('Student not found.');
+        if (!$this->_student_doc_owned($student, $docId)) return $this->json_error('Document does not belong to this student.');
+
+        $fileBytes = (int) ($_FILES['document']['size'] ?? 0);
+        $this->load->library('document_service', null, 'docsvc');
+        $this->docsvc->init($this->firebase, $this->school_name);
+        $res = $this->docsvc->replace($docId, (string) $_FILES['document']['tmp_name'], (string) ($_FILES['document']['name'] ?? 'file'), (string) ($this->admin_id ?? 'system'));
+        if (empty($res['ok'])) return $this->json_error($res['error'] ?? 'Replace failed.');
+
+        $label = ''; $type = 'additional';
+        foreach ((array) ($student['documentRefs'] ?? []) as $r) {
+            if (is_array($r) && (string) ($r['documentId'] ?? '') === $docId) { $label = (string) ($r['label'] ?? ''); $type = (string) ($r['type'] ?? 'additional'); break; }
+        }
+        if ($label === '') $label = $this->_student_doc_label($type);
+        $this->_student_sync_docref($userId, $res['document'], $label, $type, $fileBytes);
+        $this->_log_history($this->school_id, $userId, 'DOCUMENT_REPLACE', "Document {$docId} replaced", ['documentId' => $docId]);
+        return $this->json_success(['url' => $res['document']['downloadUrl'] ?? '', 'version' => $res['document']['version'] ?? 2]);
+    }
+
+    /**
+     * The SINGLE authoritative deletion lifecycle for a service-managed student
+     * document. Ownership-guarded → `docsvc->delete('student', …)` (unlink;
+     * reference-counted purge only if orphaned & retention-eligible — a document
+     * still linked elsewhere, e.g. its admission application, is never destroyed)
+     * → strip the student's documentRefs pointer + legacy map entry → audit.
+     * Reused by both the managed endpoint and the hardened legacy endpoint so no
+     * managed document can ever bypass the Document Service lifecycle.
+     */
+    private function _delete_managed_student_document(string $userId, string $docId)
+    {
+        $student = $this->_getStudent($userId);
+        if (empty($student))                              return $this->json_error('Student not found.');
+        if (!$this->_student_doc_owned($student, $docId)) return $this->json_error('Document does not belong to this student.');
+
+        $this->load->library('document_service', null, 'docsvc');
+        $this->docsvc->init($this->firebase, $this->school_name);
+        $res = $this->docsvc->delete($docId, 'student', $userId, (string) ($this->admin_id ?? 'system'), false);
+        if (empty($res['ok'])) return $this->json_error($res['error'] ?? 'Delete failed.');
+
+        $refs = [];
+        foreach ((array) ($student['documentRefs'] ?? []) as $r) {
+            if (is_array($r) && (string) ($r['documentId'] ?? '') === $docId) continue;
+            $refs[] = $r;
+        }
+        $map = is_array($student['documents'] ?? null) ? $student['documents']
+             : (is_array($student['Doc'] ?? null) ? $student['Doc'] : []);
+        foreach ($map as $k => $v) {
+            if (is_array($v) && (string) ($v['documentId'] ?? '') === $docId) unset($map[$k]);
+        }
+        $this->fs->updateEntity('students', $userId, ['documentRefs' => array_values($refs), 'documents' => $map, 'Doc' => $map]);
+        $this->_log_history($this->school_id, $userId, 'DOCUMENT_DELETE', 'Document ' . $docId . ' deleted (purged=' . (!empty($res['purged']) ? 'yes' : 'no') . ')', ['documentId' => $docId, 'purged' => !empty($res['purged'])]);
+        return $this->json_success(['purged' => !empty($res['purged'])]);
+    }
+
+    /** POST — delete a service-managed student document (via the single authoritative lifecycle). */
+    public function delete_student_document()
+    {
+        $this->_require_role(self::MANAGE_ROLES, 'sis_delete_doc');
+        $userId = trim((string) $this->input->post('user_id'));
+        $docId  = trim((string) $this->input->post('document_id'));
+        if ($userId === '' || !$this->safe_path_segment($userId)) return $this->json_error('Invalid User ID.');
+        if (!preg_match('/^[A-Za-z0-9_]+$/', $docId))             return $this->json_error('Invalid document id.');
+        return $this->_delete_managed_student_document($userId, $docId);
+    }
+
+    /** GET/POST — the document audit trail for a student (DOCUMENT_* events from studentHistory; no new index). */
+    public function student_document_audit()
+    {
+        $this->_require_role(self::VIEW_ROLES, 'sis_documents');
+        $userId = trim((string) $this->input->get_post('user_id'));
+        if ($userId === '' || !$this->safe_path_segment($userId)) return $this->json_error('Invalid User ID.');
+        $trail = [];
+        try {
+            $rows = $this->firebase->firestoreQuery('studentHistory', [
+                ['schoolId',  '==', $this->school_id],
+                ['studentId', '==', $userId],
+            ], 'changed_at', 'DESC', 500);
+            foreach ((array) $rows as $r) {
+                $d = is_array($r['data'] ?? null) ? $r['data'] : (is_array($r) ? $r : []);
+                if (!empty($d) && strpos((string) ($d['action'] ?? ''), 'DOCUMENT_') === 0) $trail[] = $d;
+            }
+        } catch (\Throwable $e) {
+            log_message('error', "Sis::student_document_audit query failed for {$userId}: " . $e->getMessage());
+        }
+        return $this->json_success(['trail' => $trail]);
     }
 
     /* ══════════════════════════════════════════════════════════════════════
@@ -2887,9 +3220,17 @@ class Sis extends MY_Controller
         $studentDoc = $this->_getStudent($userId);
         $docMap = is_array($studentDoc['documents'] ?? null) ? $studentDoc['documents']
                 : (is_array($studentDoc['Doc'] ?? null) ? $studentDoc['Doc'] : []);
-        $currentCount = count($docMap);
+        // Count only REAL documents (entries that actually hold a file). Empty
+        // placeholder slots created at enrollment (Photo / Aadhar Card / Birth
+        // Certificate / Transfer Certificate with no url) are NOT documents and
+        // must not consume the per-student limit — otherwise a fresh student can
+        // only ever add (maxDocs − 4) files. Bugfix 2026-07-22.
+        $currentCount = 0;
         $currentBytes = 0;
         foreach ($docMap as $entry) {
+            $url = is_array($entry) ? (string) ($entry['url'] ?? '') : (string) $entry;
+            if ($url === '') continue;                 // empty placeholder slot → not a document
+            $currentCount++;
             if (is_array($entry) && isset($entry['bytes'])) {
                 $currentBytes += (int) $entry['bytes'];
             }
@@ -6504,7 +6845,9 @@ class Sis extends MY_Controller
         }
         log_audit('CRM', 'verify_admission_document', $id, "Document {$docId} marked {$status}",
             ['appId' => $id, 'entityType' => 'application', 'meta' => ['documentId' => $docId, 'status' => $status]]);
-        return $this->json_success(['status' => $status]);
+        // Distinct key — a data 'status' would overwrite json_success()'s
+        // status:'success' and make the frontend read the call as failed.
+        return $this->json_success(['verificationStatus' => $status]);
     }
 
     /** POST (multipart) — replace a document's bytes (new version; old object retired). */
