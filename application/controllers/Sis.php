@@ -374,6 +374,76 @@ class Sis extends MY_Controller
             }
         }
 
+        // ── Carry over files uploaded on the public admission form (lead) ──
+        // When converting a public application, reuse the photo / Aadhaar /
+        // supporting documents the parent already uploaded (they live in
+        // Firebase Storage as permanent tokenized URLs) instead of forcing the
+        // admin to re-scan them. URLs are read SERVER-SIDE from the lead doc —
+        // never from client input — and only fill slots the admin did not just
+        // upload above, so a fresh upload always wins.
+        $leadIdForFiles = trim((string) $this->input->post('lead_id'));
+        if ($leadIdForFiles !== '' && preg_match('/^[A-Za-z0-9_]+$/', $leadIdForFiles)) {
+            $leadDocForFiles = $this->fs->get('crmApplications', $this->fs->docId($leadIdForFiles));
+            if (is_array($leadDocForFiles)) {
+                $leadPhoto = trim((string) ($leadDocForFiles['photo_url'] ?? ''));
+                if ($profilePicUrl === '' && $leadPhoto !== '') {
+                    $profilePicUrl    = $leadPhoto;
+                    $docData['Photo'] = ['url' => $leadPhoto, 'thumbnail' => $leadPhoto];
+                }
+                $leadAadhaar = trim((string) ($leadDocForFiles['aadhaar_url'] ?? ''));
+                if (($docData['Aadhar Card']['url'] ?? '') === '' && $leadAadhaar !== '') {
+                    $docData['Aadhar Card'] = ['url' => $leadAadhaar, 'thumbnail' => ''];
+                }
+                if (is_array($leadDocForFiles['documents'] ?? null)) {
+                    foreach ($leadDocForFiles['documents'] as $ld) {
+                        if (!is_array($ld)) continue;
+                        $lurl = trim((string) ($ld['url'] ?? ''));
+                        $lname = trim((string) ($ld['name'] ?? ''));
+                        if ($lurl === '') continue;
+                        $key = $lname !== '' ? substr(preg_replace('/[^A-Za-z0-9 _.-]/', '', $lname), 0, 60) : '';
+                        if ($key === '' || isset($docData[$key])) $key = 'Application Document ' . (count($docData) + 1);
+                        $docData[$key] = ['url' => $lurl, 'thumbnail' => ''];
+                    }
+                }
+
+                // ── Phase 1 (revised D1): REFERENCE the same canonical documents ──
+                // Enrollment does NOT move or copy bytes. For every canonical
+                // document the parent uploaded on the lead, add a 'student' link
+                // so the one physical Storage object is now referenced by BOTH the
+                // admission application and the student (reference-counted; central
+                // retention). The Doc[] URLs above remain denormalized display
+                // pointers. Old leads without documentRefs skip this untouched.
+                if (is_array($leadDocForFiles['documentRefs'] ?? null) && $leadDocForFiles['documentRefs']) {
+                    $this->load->library('document_service', null, 'docsvc');
+                    $this->docsvc->init($this->firebase, $school_id);
+                    $predefLabels = [
+                        'birth_certificate'    => 'Birth Certificate',
+                        'transfer_certificate' => 'Transfer Certificate',
+                        'marksheet'            => 'Marksheet',
+                        'medical_certificate'  => 'Medical Certificate',
+                    ];
+                    foreach ($leadDocForFiles['documentRefs'] as $ref) {
+                        if (!is_array($ref)) continue;
+                        $docId = trim((string) ($ref['documentId'] ?? ''));
+                        if ($docId === '') continue;
+                        $role  = (string) ($ref['role'] ?? ($ref['type'] ?? 'document'));
+                        // Link the canonical document to the enrolled student (no copy).
+                        $this->docsvc->link($docId, 'student', $userId, $role, (string) ($this->admin_id ?? 'system'));
+                        // Surface the 4 predefined certificate types in the student
+                        // Doc[] map (photo/aadhaar/additional are carried above already).
+                        $rtype = (string) ($ref['type'] ?? '');
+                        if (isset($predefLabels[$rtype])) {
+                            $lbl  = $predefLabels[$rtype];
+                            $rurl = trim((string) ($ref['url'] ?? ''));
+                            if ($rurl !== '' && ($docData[$lbl]['url'] ?? '') === '') {
+                                $docData[$lbl] = ['url' => $rurl, 'thumbnail' => ''];
+                            }
+                        }
+                    }
+                }
+            }
+        }
+
         // ── Build student data — exact schema match with Student.php ─
         $studentData = [
             'Name'           => $name,
@@ -6322,6 +6392,205 @@ class Sis extends MY_Controller
         return $this->json_success();
     }
 
+    // ─────────────────────────────────────────────────────────────────────
+    //  Admission document lifecycle (Phase 1 — Canonical Document Service)
+    //  verify / replace / delete a document attached to an application. Each is
+    //  role-gated, tenant-scoped (docsvc init'd with this admin's school) and
+    //  ownership-guarded (the documentId must be referenced by THIS application),
+    //  then keeps the application's denormalized pointers in sync.
+    // ─────────────────────────────────────────────────────────────────────
+
+    /** True only if $documentId is referenced by this application (ownership guard). */
+    private function _crm_doc_owned(array $app, string $documentId): bool
+    {
+        if ($documentId === '') return false;
+        foreach ((array) ($app['documentRefs'] ?? []) as $r) {
+            if (is_array($r) && (string) ($r['documentId'] ?? '') === $documentId) return true;
+        }
+        foreach ((array) ($app['documents'] ?? []) as $d) {
+            if (is_array($d) && (string) ($d['documentId'] ?? '') === $documentId) return true;
+        }
+        return (string) ($app['photoDocId'] ?? '') === $documentId
+            || (string) ($app['aadhaarDocId'] ?? '') === $documentId;
+    }
+
+    /**
+     * Build the student Profile Pic + Doc[] map from an application's uploaded
+     * documents, and return the canonical document references to link on
+     * enrollment (revised D1 — link, not copy). Prefers the enriched
+     * documentRefs (Phase 1); falls back to the legacy *_url / documents[]
+     * fields for applications created before the Document Service, so old
+     * applications enroll identically with NO migration.
+     *
+     * @return array{profilePic:string, doc:array, links:array<int,array{documentId:string,role:string}>}
+     */
+    private function _admission_docs_for_student(array $app): array
+    {
+        $doc = []; $profilePic = ''; $links = [];
+        $typeLabel = [
+            'aadhaar'              => 'Aadhar Card',
+            'birth_certificate'    => 'Birth Certificate',
+            'transfer_certificate' => 'Transfer Certificate',
+            'marksheet'            => 'Marksheet',
+            'medical_certificate'  => 'Medical Certificate',
+        ];
+        $refs = is_array($app['documentRefs'] ?? null) ? $app['documentRefs'] : [];
+        if ($refs) {
+            foreach ($refs as $r) {
+                if (!is_array($r)) continue;
+                $docId = trim((string) ($r['documentId'] ?? ''));
+                $type  = (string) ($r['type'] ?? '');
+                $url   = trim((string) ($r['url'] ?? ''));
+                if ($docId !== '') $links[] = ['documentId' => $docId, 'role' => (string) ($r['role'] ?? ($type !== '' ? $type : 'document'))];
+                if ($url === '') continue;
+                if ($type === 'photo')            { $profilePic = $url; $doc['Photo'] = ['url' => $url, 'thumbnail' => $url]; }
+                elseif (isset($typeLabel[$type])) { $doc[$typeLabel[$type]] = ['url' => $url, 'thumbnail' => '']; }
+                else {
+                    $nm  = trim((string) ($r['label'] ?? 'Document'));
+                    $key = $nm !== '' ? substr(preg_replace('/[^A-Za-z0-9 _.-]/', '', $nm), 0, 60) : '';
+                    if ($key === '' || isset($doc[$key])) $key = 'Application Document ' . (count($doc) + 1);
+                    $doc[$key] = ['url' => $url, 'thumbnail' => ''];
+                }
+            }
+        } else {
+            // Legacy fallback (pre-Document-Service applications) — reference the
+            // stored URLs exactly as the prior behavior did (no links to create).
+            $ph = trim((string) ($app['photo_url'] ?? ''));
+            if ($ph !== '') { $profilePic = $ph; $doc['Photo'] = ['url' => $ph, 'thumbnail' => $ph]; }
+            $aa = trim((string) ($app['aadhaar_url'] ?? ''));
+            if ($aa !== '') $doc['Aadhar Card'] = ['url' => $aa, 'thumbnail' => ''];
+            if (is_array($app['documents'] ?? null)) {
+                foreach ($app['documents'] as $ld) {
+                    if (!is_array($ld)) continue;
+                    $lurl = trim((string) ($ld['url'] ?? ''));
+                    if ($lurl === '') continue;
+                    $nm  = trim((string) ($ld['name'] ?? ''));
+                    $key = $nm !== '' ? substr(preg_replace('/[^A-Za-z0-9 _.-]/', '', $nm), 0, 60) : '';
+                    if ($key === '' || isset($doc[$key])) $key = 'Application Document ' . (count($doc) + 1);
+                    $doc[$key] = ['url' => $lurl, 'thumbnail' => ''];
+                }
+            }
+        }
+        return ['profilePic' => $profilePic, 'doc' => $doc, 'links' => $links];
+    }
+
+    /** POST — set a document's verification status: verified | rejected | pending. */
+    public function verify_admission_document()
+    {
+        $this->_require_role(self::MANAGE_ROLES, 'crm_verify_doc');
+        $id     = $this->safe_path_segment(trim((string) $this->input->post('app_id')), 'app_id');
+        $docId  = trim((string) $this->input->post('document_id'));
+        $status = trim((string) $this->input->post('status'));
+        if ($id === '' || $docId === '')                                return $this->json_error('Application and document are required.');
+        if (!preg_match('/^[A-Za-z0-9_]+$/', $docId))                   return $this->json_error('Invalid document id.');
+        if (!in_array($status, ['verified', 'rejected', 'pending'], true)) return $this->json_error('Invalid verification status.');
+        $app = $this->_crm_get('crmApplications', $id);
+        if (!is_array($app))                    return $this->json_error('Application not found.');
+        if (!$this->_crm_doc_owned($app, $docId)) return $this->json_error('Document does not belong to this application.');
+
+        $this->load->library('document_service', null, 'docsvc');
+        $this->docsvc->init($this->firebase, $this->school_name);
+        $res = $this->docsvc->verify($docId, $status, (string) ($this->admin_id ?? 'system'));
+        if (empty($res['ok'])) return $this->json_error($res['error'] ?? 'Verification failed.');
+
+        // Keep the denormalized pointer fresh so the CRM reflects the new status
+        // with no extra read.
+        if (is_array($app['documentRefs'] ?? null)) {
+            $refs = array_map(function ($r) use ($docId, $status) {
+                if (is_array($r) && (string) ($r['documentId'] ?? '') === $docId) $r['verificationStatus'] = $status;
+                return $r;
+            }, $app['documentRefs']);
+            $this->fs->updateEntity('crmApplications', $id, ['documentRefs' => $refs, 'updated_at' => date('Y-m-d H:i:s')]);
+        }
+        log_audit('CRM', 'verify_admission_document', $id, "Document {$docId} marked {$status}",
+            ['appId' => $id, 'entityType' => 'application', 'meta' => ['documentId' => $docId, 'status' => $status]]);
+        return $this->json_success(['status' => $status]);
+    }
+
+    /** POST (multipart) — replace a document's bytes (new version; old object retired). */
+    public function replace_admission_document()
+    {
+        $this->_require_role(self::MANAGE_ROLES, 'crm_replace_doc');
+        $id    = $this->safe_path_segment(trim((string) $this->input->post('app_id')), 'app_id');
+        $docId = trim((string) $this->input->post('document_id'));
+        if ($id === '' || $docId === '')             return $this->json_error('Application and document are required.');
+        if (!preg_match('/^[A-Za-z0-9_]+$/', $docId)) return $this->json_error('Invalid document id.');
+        if (empty($_FILES['file']) || ($_FILES['file']['error'] ?? UPLOAD_ERR_NO_FILE) !== UPLOAD_ERR_OK) {
+            return $this->json_error('Please choose a replacement file.');
+        }
+        $app = $this->_crm_get('crmApplications', $id);
+        if (!is_array($app))                    return $this->json_error('Application not found.');
+        if (!$this->_crm_doc_owned($app, $docId)) return $this->json_error('Document does not belong to this application.');
+
+        $this->load->library('document_service', null, 'docsvc');
+        $this->docsvc->init($this->firebase, $this->school_name);
+        $res = $this->docsvc->replace($docId, (string) $_FILES['file']['tmp_name'], (string) $_FILES['file']['name'], (string) ($this->admin_id ?? 'system'));
+        if (empty($res['ok'])) return $this->json_error($res['error'] ?? 'Replace failed.');
+        $newUrl = (string) ($res['document']['downloadUrl'] ?? '');
+
+        // Refresh ALL denormalized pointers (URL changes; verification resets to
+        // pending) so every existing reader — CRM, enrollment carry-over — sees
+        // the new object.
+        $now = date('Y-m-d H:i:s'); $patch = ['updated_at' => $now];
+        if (is_array($app['documentRefs'] ?? null)) {
+            $patch['documentRefs'] = array_map(function ($r) use ($docId, $newUrl) {
+                if (is_array($r) && (string) ($r['documentId'] ?? '') === $docId) { $r['url'] = $newUrl; $r['verificationStatus'] = 'pending'; }
+                return $r;
+            }, $app['documentRefs']);
+        }
+        if (is_array($app['documents'] ?? null)) {
+            $patch['documents'] = array_map(function ($d) use ($docId, $newUrl) {
+                if (is_array($d) && (string) ($d['documentId'] ?? '') === $docId) $d['url'] = $newUrl;
+                return $d;
+            }, $app['documents']);
+        }
+        if ((string) ($app['photoDocId'] ?? '')   === $docId) $patch['photo_url']   = $newUrl;
+        if ((string) ($app['aadhaarDocId'] ?? '') === $docId) $patch['aadhaar_url'] = $newUrl;
+        $this->fs->updateEntity('crmApplications', $id, $patch);
+        log_audit('CRM', 'replace_admission_document', $id, "Document {$docId} replaced",
+            ['appId' => $id, 'entityType' => 'application', 'meta' => ['documentId' => $docId]]);
+        return $this->json_success(['url' => $newUrl]);
+    }
+
+    /** POST — remove a document from this application (unlink; purge only if orphaned). */
+    public function delete_admission_document()
+    {
+        $this->_require_role(self::MANAGE_ROLES, 'crm_delete_doc');
+        $id    = $this->safe_path_segment(trim((string) $this->input->post('app_id')), 'app_id');
+        $docId = trim((string) $this->input->post('document_id'));
+        if ($id === '' || $docId === '')             return $this->json_error('Application and document are required.');
+        if (!preg_match('/^[A-Za-z0-9_]+$/', $docId)) return $this->json_error('Invalid document id.');
+        $app = $this->_crm_get('crmApplications', $id);
+        if (!is_array($app))                    return $this->json_error('Application not found.');
+        if (!$this->_crm_doc_owned($app, $docId)) return $this->json_error('Document does not belong to this application.');
+
+        $this->load->library('document_service', null, 'docsvc');
+        $this->docsvc->init($this->firebase, $this->school_name);
+        // Unlink from THIS application. The service purges the Storage object ONLY
+        // when no other module still references it (e.g. an enrolled student) AND
+        // retention has elapsed — so deleting a lead's document can never break an
+        // enrolled student's file (resolves hazard W4).
+        $res = $this->docsvc->delete($docId, 'admission', $id, (string) ($this->admin_id ?? 'system'), false);
+        if (empty($res['ok'])) return $this->json_error($res['error'] ?? 'Delete failed.');
+
+        // Strip the denormalized pointers from the application.
+        $now = date('Y-m-d H:i:s'); $patch = ['updated_at' => $now];
+        if (is_array($app['documentRefs'] ?? null)) {
+            $patch['documentRefs'] = array_values(array_filter($app['documentRefs'],
+                fn($r) => !(is_array($r) && (string) ($r['documentId'] ?? '') === $docId)));
+        }
+        if (is_array($app['documents'] ?? null)) {
+            $patch['documents'] = array_values(array_filter($app['documents'],
+                fn($d) => !(is_array($d) && (string) ($d['documentId'] ?? '') === $docId)));
+        }
+        if ((string) ($app['photoDocId'] ?? '')   === $docId) { $patch['photo_url']   = ''; $patch['photoDocId']   = ''; }
+        if ((string) ($app['aadhaarDocId'] ?? '') === $docId) { $patch['aadhaar_url'] = ''; $patch['aadhaarDocId'] = ''; }
+        $this->fs->updateEntity('crmApplications', $id, $patch);
+        log_audit('CRM', 'delete_admission_document', $id, 'Document ' . $docId . ' deleted (purged=' . (!empty($res['purged']) ? 'yes' : 'no') . ')',
+            ['appId' => $id, 'entityType' => 'application', 'meta' => ['documentId' => $docId, 'purged' => !empty($res['purged'])]]);
+        return $this->json_success(['purged' => !empty($res['purged'])]);
+    }
+
     public function enroll_student()
     {
         $this->_require_role(self::MANAGE_ROLES, 'crm_enroll');
@@ -6414,6 +6683,17 @@ class Sis extends MY_Controller
             return $this->json_error('Could not generate a valid password (student name or date of birth is missing). Please edit the application first.');
         }
 
+        // Carry the parent-uploaded documents onto the enrolled student. Prefers
+        // the canonical documentRefs (Phase 1); falls back to legacy URLs for
+        // pre-Document-Service applications. The empty canonical slots are kept
+        // (merged under) so the SIS profile always shows them; uploaded files
+        // fill them. Links are created AFTER saveStudent (revised D1 — no copy).
+        $carry       = $this->_admission_docs_for_student($app);
+        $docTemplate = [
+            "Aadhar Card"=>["thumbnail"=>"","url"=>""], "Birth Certificate"=>["thumbnail"=>"","url"=>""],
+            "Photo"=>["thumbnail"=>"","url"=>""], "Transfer Certificate"=>["thumbnail"=>"","url"=>""],
+        ];
+
         $studentData = [
             "Name"=>$app['student_name']??'', "User Id"=>$studentId, "DOB"=>$formattedDOB,
             "Admission Date"=>date('d-m-Y'), "Class"=>$className, "Section"=>$section,  // Already prefixed via classKey/sectionKey
@@ -6427,8 +6707,8 @@ class Sis extends MY_Controller
             "Password"=>$generatedPassword,
             "Address"=>["Street"=>$app['address']??'',"City"=>$app['city']??'',"State"=>$app['state']??'',"PostalCode"=>$app['pincode']??''],
             "Pre School"=>$app['previous_school']??'', "Pre Class"=>$app['previous_class']??'', "Pre Marks"=>$app['previous_marks']??'',
-            "Profile Pic"=>"",
-            "Doc"=>["Aadhar Card"=>["thumbnail"=>"","url"=>""],"Birth Certificate"=>["thumbnail"=>"","url"=>""],"Photo"=>["thumbnail"=>"","url"=>""],"Transfer Certificate"=>["thumbnail"=>"","url"=>""]],
+            "Profile Pic"=>$carry['profilePic'],
+            "Doc"=>array_merge($docTemplate, $carry['doc']),
             "Status"=>"Active",
             // Phase A — first-login force-change. Cleared once the parent
             // successfully changes the password from the parent app.
@@ -6495,6 +6775,18 @@ class Sis extends MY_Controller
             // Release the slot so a corrected retry can immediately reclaim it.
             $this->enrollIdemp->markFailed($enrollKey, 'saveStudent failed');
             return $this->json_error('Failed to create student profile in database. Please retry. If the issue persists, contact support.');
+        }
+
+        // Revised D1 — reference (do NOT copy) the canonical documents on the
+        // enrolled student. One physical object referenced by both the admission
+        // application and the student; retention governed centrally by link-count.
+        // link() is idempotent, so an enroll-idempotency retry never double-counts.
+        if (!empty($carry['links'])) {
+            $this->load->library('document_service', null, 'docsvc');
+            $this->docsvc->init($this->firebase, $school_id);
+            foreach ($carry['links'] as $lk) {
+                $this->docsvc->link($lk['documentId'], 'student', $studentId, $lk['role'], (string) ($this->admin_id ?? 'system'));
+            }
         }
 
         $phone = trim($app['phone'] ?? '');

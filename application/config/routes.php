@@ -584,6 +584,10 @@ $route['admission_crm/update_stage']            = 'Sis/update_stage';
 $route['admission_crm/approve_application']     = 'Sis/approve_application';
 $route['admission_crm/reject_application']      = 'Sis/reject_application';
 $route['admission_crm/enroll_student']          = 'Sis/enroll_student';
+// Phase 1 — Canonical Document Service: admission document lifecycle actions.
+$route['admission_crm/verify_document']         = 'Sis/verify_admission_document';
+$route['admission_crm/replace_document']        = 'Sis/replace_admission_document';
+$route['admission_crm/delete_document']         = 'Sis/delete_admission_document';
 // SIS Tier-2 fix B3 (post-soak 2026-06-01): Auth-repair endpoint for
 // orphan Firebase Auth rows. Two aliases — admission_crm/* for the
 // enrollment-credentials modal in admission_crm/applications.php, and

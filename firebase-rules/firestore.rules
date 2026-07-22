@@ -1937,6 +1937,17 @@ service cloud.firestore {
     // (schoolId, op). Server-only.
     match /_b2_pending/{docId}      { allow read, write: if false; }
 
+    // ── Canonical Document Service (Phase 1) — SERVER-ONLY ────────
+    // documents/{schoolId}_{documentId} = one physical file's metadata;
+    // documentLinks/{...} = per-module reference links (reference count).
+    // Both are written EXCLUSIVELY by the PHP backend via the Admin SDK
+    // (service account bypasses these rules). Client apps NEVER read these
+    // directly — they read the denormalized pointer cached on the owning
+    // doc (crmApplications.documentRefs / student Doc[]). Deny all client
+    // access so one school can never read another's document metadata.
+    match /documents/{docId}        { allow read, write: if false; }
+    match /documentLinks/{linkId}   { allow read, write: if false; }
+
     // ── Deny everything else (catch-all) ─────────────────────────
     match /{document=**} {
       allow read, write: if false;

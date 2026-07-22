@@ -514,6 +514,81 @@ function renderTable(items, mode) {
     document.getElementById('tableWrap').innerHTML = html;
 }
 
+// Render one uploaded file as a tile: image files → inline thumbnail, other
+// types (PDF/DOC/XLS) → typed-icon chip. Returns '' when the url is empty.
+function acDocExt(s){ s = (s || '').split('?')[0]; try { s = decodeURIComponent(s); } catch(e){} var i = s.lastIndexOf('.'); return i < 0 ? '' : s.slice(i + 1).toLowerCase(); }
+function acDocTile(url, caption){
+    if (!url) return '';
+    var ext = acDocExt(caption) || acDocExt(url);
+    var isImg = ['jpg','jpeg','png','gif','webp'].indexOf(ext) !== -1;
+    if (isImg){
+        return '<a href="' + esc(url) + '" target="_blank" rel="noopener" title="' + esc(caption) + '" style="display:inline-block;width:96px;text-align:center;text-decoration:none;color:var(--t2);">'
+             +  '<img src="' + esc(url) + '" alt="' + esc(caption) + '" loading="lazy" style="width:96px;height:96px;object-fit:cover;border-radius:10px;border:1px solid var(--border,#e5e7eb);display:block;">'
+             +  '<span style="display:block;font-size:11px;margin-top:4px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;">' + esc(caption) + '</span></a>';
+    }
+    var icon = ext === 'pdf' ? 'fa-file-pdf' : ((ext === 'xls' || ext === 'xlsx') ? 'fa-file-excel' : ((ext === 'doc' || ext === 'docx') ? 'fa-file-word' : 'fa-file'));
+    return '<a href="' + esc(url) + '" target="_blank" rel="noopener" class="ac-btn ac-btn-ghost ac-btn-sm"><i class="fa ' + icon + '"></i> ' + esc(caption) + '</a>';
+}
+
+// ── Canonical Document Service — managed document card (Phase 1) ──
+// Rendered from the application's denormalized documentRefs pointers. Shows the
+// preview, a verification badge, and role-gated actions (server enforces the
+// role): mark verified/rejected, replace (new version), delete (unlink + purge
+// only if orphaned). All actions re-open the detail panel to reflect the change.
+function acStatusBadge(s){
+    var m = { verified:['#16a34a','fa-circle-check','Verified'], rejected:['#dc2626','fa-circle-xmark','Rejected'], pending:['#d97706','fa-clock','Pending'] };
+    var c = m[s || 'pending'] || m.pending;
+    return '<span style="display:inline-flex;align-items:center;gap:4px;font-size:11px;font-weight:700;color:' + c[0] + ';"><i class="fa ' + c[1] + '"></i> ' + c[2] + '</span>';
+}
+function acDocCard(ref, appId){
+    var url = ref.url || '', cap = ref.label || ref.type || 'Document', docId = ref.documentId || '';
+    var ext = acDocExt(cap) || acDocExt(url);
+    var isImg = ['jpg','jpeg','png','gif','webp'].indexOf(ext) !== -1;
+    var thumb = isImg
+        ? '<a href="' + esc(url) + '" target="_blank" rel="noopener"><img src="' + esc(url) + '" alt="' + esc(cap) + '" loading="lazy" style="width:110px;height:110px;object-fit:cover;border-radius:10px;border:1px solid var(--border,#e5e7eb);display:block;"></a>'
+        : '<a href="' + esc(url) + '" target="_blank" rel="noopener" class="ac-btn ac-btn-ghost ac-btn-sm" style="width:110px;height:110px;display:flex;align-items:center;justify-content:center;"><i class="fa ' + (ext === 'pdf' ? 'fa-file-pdf' : ((ext === 'xls' || ext === 'xlsx') ? 'fa-file-excel' : ((ext === 'doc' || ext === 'docx') ? 'fa-file-word' : 'fa-file'))) + '" style="font-size:34px;"></i></a>';
+    var acts = docId
+        ? '<div style="display:flex;flex-wrap:wrap;gap:4px;margin-top:6px;justify-content:center;">'
+            + '<button class="ac-btn ac-btn-sm" title="Mark verified" style="background:var(--green,#16a34a);color:#fff;padding:4px 7px;" onclick="verifyDoc(\'' + esc(appId) + '\',\'' + esc(docId) + '\',\'verified\')"><i class="fa fa-check"></i></button>'
+            + '<button class="ac-btn ac-btn-sm" title="Mark rejected" style="background:var(--red,#dc2626);color:#fff;padding:4px 7px;" onclick="verifyDoc(\'' + esc(appId) + '\',\'' + esc(docId) + '\',\'rejected\')"><i class="fa fa-xmark"></i></button>'
+            + '<button class="ac-btn ac-btn-ghost ac-btn-sm" title="Replace" style="padding:4px 7px;" onclick="replaceDoc(\'' + esc(appId) + '\',\'' + esc(docId) + '\')"><i class="fa fa-arrows-rotate"></i></button>'
+            + '<button class="ac-btn ac-btn-ghost ac-btn-sm" title="Delete" style="padding:4px 7px;" onclick="deleteDoc(\'' + esc(appId) + '\',\'' + esc(docId) + '\')"><i class="fa fa-trash"></i></button>'
+          + '</div>'
+        : '';
+    return '<div style="width:130px;text-align:center;">' + thumb
+        + '<div style="font-size:11px;margin-top:5px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;" title="' + esc(cap) + '">' + esc(cap) + '</div>'
+        + '<div style="margin-top:3px;">' + acStatusBadge(ref.verificationStatus) + '</div>' + acts + '</div>';
+}
+var _acReplaceTarget = null;
+function verifyDoc(appId, docId, status){
+    if (status === 'rejected' && !confirm('Mark this document as rejected?')) return;
+    fetch(BASE + 'admission_crm/verify_document', { method:'POST', headers:{'Content-Type':'application/x-www-form-urlencoded','X-Requested-With':'XMLHttpRequest'}, body:new URLSearchParams({ app_id:appId, document_id:docId, status:status }).toString() })
+    .then(function(r){ return r.json(); })
+    .then(function(d){ if (d.status === 'success'){ viewApp(appId); } else { showAlert(d.message || 'Could not update the document.', true); } })
+    .catch(function(){ showAlert('Network error updating the document.', true); });
+}
+function replaceDoc(appId, docId){
+    _acReplaceTarget = { appId:appId, docId:docId };
+    var inp = document.getElementById('acReplaceInput');
+    if (inp){ inp.value = ''; inp.click(); }
+}
+function acReplaceChosen(inp){
+    if (!_acReplaceTarget || !inp.files || !inp.files.length) return;
+    var appId = _acReplaceTarget.appId, fd = new FormData();
+    fd.append('app_id', appId); fd.append('document_id', _acReplaceTarget.docId); fd.append('file', inp.files[0]);
+    fetch(BASE + 'admission_crm/replace_document', { method:'POST', headers:{'X-Requested-With':'XMLHttpRequest'}, body:fd })
+    .then(function(r){ return r.json(); })
+    .then(function(d){ if (d.status === 'success'){ viewApp(appId); } else { showAlert(d.message || 'Could not replace the document.', true); } })
+    .catch(function(){ showAlert('Network error replacing the document.', true); });
+}
+function deleteDoc(appId, docId){
+    if (!confirm('Remove this document from the application? The file is permanently deleted only if no enrolled student references it and the retention window has passed.')) return;
+    fetch(BASE + 'admission_crm/delete_document', { method:'POST', headers:{'Content-Type':'application/x-www-form-urlencoded','X-Requested-With':'XMLHttpRequest'}, body:new URLSearchParams({ app_id:appId, document_id:docId }).toString() })
+    .then(function(r){ return r.json(); })
+    .then(function(d){ if (d.status === 'success'){ viewApp(appId); } else { showAlert(d.message || 'Could not delete the document.', true); } })
+    .catch(function(){ showAlert('Network error deleting the document.', true); });
+}
+
 function viewApp(id) {
     fetch(BASE + 'admission_crm/get_application?id=' + encodeURIComponent(id), { headers:{'X-Requested-With':'XMLHttpRequest'} })
     .then(function(r) { return r.json(); })
@@ -528,6 +603,46 @@ function viewApp(id) {
             if (f[1]) html += '<div class="ac-detail-item"><label>' + f[0] + '</label><span>' + esc(f[1]) + '</span></div>';
         });
         html += '</div>';
+        // Photo & documents uploaded on the public admission form. Firebase
+        // Storage download URLs are allow-listed by our img-src CSP, so image
+        // files render as inline thumbnails; non-images (PDF/DOC/XLS) show a
+        // typed icon. Everything opens full-size / downloads in a new tab.
+        // Canonical Document Service (Phase 1): when the enriched documentRefs
+        // pointer set exists, render MANAGED cards (verify / replace / delete via
+        // the service). Legacy leads without documentRefs fall back to read-only
+        // tiles built from the denormalized *_url fields — full backward compat.
+        if (Array.isArray(a.documentRefs) && a.documentRefs.length) {
+            // Predefined types render in the main section; only non-predefined
+            // (category 'additional') fall under "Additional Documents".
+            var preCards = '', addCards = '';
+            a.documentRefs.forEach(function(ref){
+                if (!ref || !ref.documentId) return;
+                var card = acDocCard(ref, a.id);
+                if ((ref.category || '') === 'additional') addCards += card; else preCards += card;
+            });
+            if (preCards || addCards) {
+                html += '<input type="file" id="acReplaceInput" style="display:none" accept="image/jpeg,image/png,image/webp,application/pdf,.doc,.docx,.xls,.xlsx" onchange="acReplaceChosen(this)">';
+                if (preCards) {
+                    html += '<h4 style="margin:16px 0 8px;font-size:13px;color:var(--t2);font-weight:700;">Photo &amp; Documents</h4>'
+                         +  '<div style="display:flex;flex-wrap:wrap;gap:14px;align-items:flex-start;">' + preCards + '</div>';
+                }
+                if (addCards) {
+                    html += '<h4 style="margin:16px 0 8px;font-size:13px;color:var(--t2);font-weight:700;">Additional Documents</h4>'
+                         +  '<div style="display:flex;flex-wrap:wrap;gap:14px;align-items:flex-start;">' + addCards + '</div>';
+                }
+            }
+        } else {
+            var docsHtml = '';
+            docsHtml += acDocTile(a.photo_url, 'Student Photo');
+            docsHtml += acDocTile(a.aadhaar_url, 'Aadhaar Card');
+            if (Array.isArray(a.documents)) {
+                a.documents.forEach(function(d) { if (d && d.url) docsHtml += acDocTile(d.url, d.name || 'Document'); });
+            }
+            if (docsHtml) {
+                html += '<h4 style="margin:16px 0 8px;font-size:13px;color:var(--t2);font-weight:700;">Photo &amp; Documents</h4>'
+                     +  '<div style="display:flex;flex-wrap:wrap;gap:12px;align-items:flex-start;">' + docsHtml + '</div>';
+            }
+        }
         if (a.payment_status === 'paid' && a.receipt_no) {
             html += '<div style="margin-top:14px;"><button class="ac-btn ac-btn-sm" style="background:var(--green,#16a34a);color:#fff;" onclick="printAdmReceipt(\'' + esc(a.receipt_no) + '\')"><i class="fa fa-print"></i> Print Admission Receipt (' + esc(a.receipt_no) + ')</button></div>';
         } else if (a.fee_amount) {

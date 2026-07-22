@@ -157,6 +157,15 @@ class Admission_public extends CI_Controller
             'classes'        => $classes,
         ];
 
+        // The public form embeds a per-request CSRF token and is served fresh on
+        // every open — it must never be cached. A stale cached copy would (a)
+        // run outdated inline JS and (b) carry a dead CSRF token that silently
+        // breaks submission. Force no-store so parents always get the live page.
+        $this->output
+            ->set_header('Cache-Control: no-store, no-cache, must-revalidate, max-age=0')
+            ->set_header('Pragma: no-cache')
+            ->set_header('Expires: 0');
+
         $this->load->view('admission/public_form', $data);
     }
 
@@ -402,6 +411,20 @@ class Admission_public extends CI_Controller
         $appId = 'APP_' . strtoupper(substr(dechex((int) (microtime(true) * 1000)), -6))
                . '_' . str_pad((string) mt_rand(0, 99999), 5, '0', STR_PAD_LEFT);
 
+        // ── Optional file uploads: student photo, Aadhaar, supporting docs ──
+        // Uploaded to Firebase Cloud Storage under admission/{school}/{appId}/…
+        // (service-account write — independent of the parent's network and of
+        // client Storage rules). The tokenized download URLs are persisted on
+        // the application doc so the admin CRM can view them. Files are
+        // OPTIONAL; an invalid file (wrong type / >1 MB) rejects the submit
+        // with a clear message BEFORE the doc is written, rather than being
+        // silently dropped.
+        $uploads = $this->_handle_admission_uploads($school_id, $appId);
+        if (!empty($uploads['error'])) {
+            echo json_encode(['status' => 'error', 'message' => $uploads['error']]);
+            return;
+        }
+
         // Schema mirrors what admin's `convert_to_application` writes to
         // `crmApplications` so the same Pipeline / Inquiries / Applications
         // grids show public submissions without any normalization.
@@ -467,7 +490,19 @@ class Admission_public extends CI_Controller
             // with the same phone+class exists for this school. Twins
             // legitimately trigger this; admin reviews and clears.
             'possible_duplicate' => $possibleDuplicate,
-            'documents'         => [],
+            // Uploaded files (optional). `photo_url` and `aadhaar_url` are the
+            // student photo + Aadhaar scan; `documents` holds any additional
+            // supporting files [{name,url,category}]. Empty string / [] when
+            // the parent skipped them.
+            'photo_url'         => $uploads['photo_url'],
+            'aadhaar_url'       => $uploads['aadhaar_url'],
+            'documents'         => $uploads['documents'],
+            // Canonical Document Service references (Phase 1). The *_url fields
+            // above stay as denormalized pointers for existing readers; these
+            // ids are the lifecycle handles (verify/replace/delete/link).
+            'photoDocId'        => $uploads['photoDocId'],
+            'aadhaarDocId'      => $uploads['aadhaarDocId'],
+            'documentRefs'      => $uploads['documentRefs'],
             'history'           => [
                 ['action' => 'Application submitted via public form', 'by' => 'Public', 'timestamp' => $now],
             ],
@@ -519,6 +554,132 @@ class Admission_public extends CI_Controller
             'payment_source'   => $feeInfo['source'], // "feeStructures" | "schools.admissionFee" | "none"
             'csrf_token'       => $this->security->get_csrf_hash(),
         ]);
+    }
+
+    /**
+     * Handle OPTIONAL admission file uploads from the public form.
+     *
+     * Inputs (all optional): `photo` (student photo, images only),
+     * `aadhaar_card` (image/PDF) and `documents[]` (multiple supporting
+     * files). Each is validated against an extension + MIME allowlist and a
+     * 1 MB cap, then uploaded to Firebase Cloud Storage under
+     *   admission/{schoolId}/{appId}/…
+     * using the existing service-account client (Firebase::uploadFile —
+     * Admin write, so no client Storage rule is required). Returns the
+     * tokenized download URLs for persistence on the application doc.
+     *
+     * On the first invalid file it returns early with a human-readable
+     * `error`; the caller rejects the whole submit before writing anything.
+     *
+     * @return array{photo_url:string, aadhaar_url:string, documents:array, error:?string}
+     */
+    private function _handle_admission_uploads(string $school_id, string $appId): array
+    {
+        // Phase 1 — route uploads through the canonical Document Service:
+        // each file becomes one canonical document (id-addressed, optimized,
+        // audited) linked to this application. We STILL return the same
+        // photo_url / aadhaar_url / documents[] shape (now enriched with the
+        // documentId) so every existing reader — the CRM, the enrollment
+        // carry-over, older records — keeps working unchanged (backward compat).
+        $out = ['photo_url' => '', 'aadhaar_url' => '', 'documents' => [],
+                'photoDocId' => '', 'aadhaarDocId' => '', 'documentRefs' => [], 'error' => null];
+        if (empty($_FILES)) return $out;
+
+        $this->load->library('document_service', null, 'docsvc');
+        $this->docsvc->init($this->firebase, $school_id);
+
+        // Build the canonical DENORMALIZED pointer for one uploaded document and
+        // push it onto documentRefs[]. The service record (documents/{id}) stays
+        // authoritative for lifecycle; this cached pointer lets the CRM render +
+        // enrollment carry-over run with NO extra Firestore reads (ADR §Canonical).
+        $pushRef = function (array $p, string $role) use (&$out): void {
+            $out['documentRefs'][] = [
+                'documentId'         => $p['documentId'],
+                'type'               => $p['type'],
+                'role'               => $role,
+                'label'              => $p['label'],
+                'url'                => $p['downloadUrl'],
+                'category'           => $p['category'],
+                'verificationStatus' => $p['verificationStatus'] ?? 'pending',
+            ];
+        };
+
+        // Process one uploaded $_FILES entry via the service + link it to the
+        // application. Returns [pointer|null, errorOrNull]; null pointer = "not
+        // provided" (optional field skipped).
+        $handle = function (array $file, string $type, string $role)
+                use ($appId): array {
+            $err = $file['error'] ?? UPLOAD_ERR_NO_FILE;
+            if ($err === UPLOAD_ERR_NO_FILE) return [null, null];
+            if ($err !== UPLOAD_ERR_OK)      return [null, 'A file failed to upload. Please try again.'];
+            if ((int) ($file['size'] ?? 0) <= 0) return [null, null];
+
+            $res = $this->docsvc->upload(
+                (string) ($file['tmp_name'] ?? ''),
+                (string) ($file['name'] ?? 'file'),
+                $type,
+                ['uploadedBy' => 'public']
+            );
+            if (!$res['ok']) {
+                $label = ucfirst(str_replace('_', ' ', $type));
+                return [null, "{$label}: " . $res['error'] . '.'];
+            }
+            $this->docsvc->link($res['document']['documentId'], 'admission', $appId, $role, 'public');
+            return [$res['document'], null];
+        };
+
+        // Student photo (optimized to JPEG by the service)
+        if (isset($_FILES['photo'])) {
+            [$p, $e] = $handle($_FILES['photo'], 'photo', 'photo');
+            if ($e !== null) { $out['error'] = $e; return $out; }
+            if ($p) { $out['photo_url'] = $p['downloadUrl']; $out['photoDocId'] = $p['documentId']; $pushRef($p, 'photo'); }
+        }
+        // Aadhaar card
+        if (isset($_FILES['aadhaar_card'])) {
+            [$p, $e] = $handle($_FILES['aadhaar_card'], 'aadhaar', 'aadhaar');
+            if ($e !== null) { $out['error'] = $e; return $out; }
+            if ($p) { $out['aadhaar_url'] = $p['downloadUrl']; $out['aadhaarDocId'] = $p['documentId']; $pushRef($p, 'aadhaar'); }
+        }
+        // Additional predefined certificates (D2) — each an optional single-file
+        // input; routed to its canonical type so it renders in its own CRM field.
+        // input name === document type; role === type (predefined 1:1).
+        foreach (['birth_certificate', 'transfer_certificate', 'marksheet', 'medical_certificate'] as $type) {
+            if (!isset($_FILES[$type])) continue;
+            [$p, $e] = $handle($_FILES[$type], $type, $type);
+            if ($e !== null) { $out['error'] = $e; return $out; }
+            if ($p) $pushRef($p, $type);
+        }
+        // Additional documents — <input name="documents[]" multiple>
+        if (isset($_FILES['documents']) && is_array($_FILES['documents']['name'] ?? null)) {
+            $n = count($_FILES['documents']['name']);
+            if ($n > 10) { $out['error'] = 'Please upload at most 10 supporting documents.'; return $out; }
+            for ($i = 0; $i < $n; $i++) {
+                $one = [
+                    'name'     => $_FILES['documents']['name'][$i]     ?? '',
+                    'tmp_name' => $_FILES['documents']['tmp_name'][$i] ?? '',
+                    'error'    => $_FILES['documents']['error'][$i]    ?? UPLOAD_ERR_NO_FILE,
+                    'size'     => $_FILES['documents']['size'][$i]     ?? 0,
+                ];
+                [$p, $e] = $handle($one, 'additional', 'document');
+                if ($e !== null) { $out['error'] = $e; return $out; }
+                if ($p) {
+                    $nm = preg_replace('/[^A-Za-z0-9._ -]/', '', (string) ($one['name'] ?: ('Document ' . ($i + 1))));
+                    $label = substr($nm, 0, 80) ?: ('Document ' . ($i + 1));
+                    $out['documents'][] = [
+                        'name'       => $label,
+                        'url'        => $p['downloadUrl'],
+                        'category'   => 'document',
+                        'documentId' => $p['documentId'],
+                        'type'       => 'additional',
+                    ];
+                    // Enriched pointer (carry the parent-supplied label for display).
+                    $ref = $p; $ref['label'] = $label;
+                    $pushRef($ref, 'document');
+                }
+            }
+        }
+
+        return $out;
     }
 
     // ─── PAYMENT MODE: parent chooses "Pay at School" (offline) ────────
