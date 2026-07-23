@@ -953,6 +953,28 @@ class FirestoreRestClient
     public function commitBatch(array $ops): bool
     {
         $this->_readCache = []; // PERF: write invalidates the request read memo
+        // Symmetry with the single-doc writers (createDocument / updateDocument /
+        // setDocument / deleteDocument, which all do
+        //   $this->_readCache = []; $this->_bustConfigCache($collection, $docId);):
+        // a batch write must ALSO invalidate the cross-request config-doc cache for
+        // every whitelisted config doc it touches. Without this, a CAS batch commit
+        // against schools / schoolControl / timetableSettings / systemPlans /
+        // tenantPublic left a stale __updateTime in cache/fsdoc/, so the NEXT
+        // request's currentDocument.updateTime precondition was falsely rejected —
+        // the "Another administrator updated…" false-409 on sequential Save-All
+        // Streams (single admin). _bustConfigCache() is a no-op for any collection
+        // not in CONFIG_DOC_TTL, so hot non-config batch paths (accounting journals,
+        // receipts, feeDemands, claims, …) are untouched. Busting on ENTRY (as
+        // createDocument does) is fail-open: even if the commit later fails, no stale
+        // entry survives. Optimistic concurrency (CAS) itself is unchanged.
+        // 2026-07-22 — stale-config-cache invalidation fix (Option B).
+        foreach ($ops as $__cacheOp) {
+            $__cacheCol = (string) ($__cacheOp['collection'] ?? '');
+            $__cacheId  = (string) ($__cacheOp['docId'] ?? '');
+            if ($__cacheCol !== '' && $__cacheId !== '') {
+                $this->_bustConfigCache($__cacheCol, $__cacheId);
+            }
+        }
         if (empty($ops)) return true;
         if ($this->_blockWrite('BATCH', 'commit:' . count($ops))) return false;
 
