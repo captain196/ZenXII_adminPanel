@@ -239,7 +239,7 @@
                     <input type="hidden" id="editAdminId" value="">
                     <div style="padding:8px 12px;background:var(--gold-dim);border:1px solid var(--gold-ring);border-radius:7px;margin-bottom:14px;font-size:11.5px;color:var(--t2);" id="autoIdNotice">
                         <i class="fa fa-info-circle" style="color:var(--gold);margin-right:4px;"></i>
-                        Admin ID (ADM0001, ADM0002...) will be auto-generated.
+                        A staff ID (STA0001, STA0002...) will be auto-generated.
                     </div>
                     <div class="row">
                         <div class="col-sm-6"><div class="au-fg"><label>Full Name *</label><input type="text" id="aName" maxlength="60" required></div></div>

@@ -721,9 +721,20 @@ class AdminUsers extends MY_Controller
                 $this->json_error("Role '{$role}' does not exist.");
                 return;
             }
-            // SECURITY: reserved-label + privilege-ceiling gate (C2/M1).
+            // SECURITY: reserved-label + privilege-ceiling gate (C2/M1) on the NEW role.
             $roleErr = $this->_role_assignment_error($schoolDoc, $role);
             if ($roleErr !== null) { $this->json_error($roleErr, 403); return; }
+            // SECURITY (review Medium #1): also gate on the TARGET's CURRENT role. The
+            // assignment ceiling above only checks the NEW role, so without this an
+            // 'edit'-level caller could take a higher-tier admin (e.g. the Principal)
+            // and reassign them to a minimal role — a demotion/neutralise. Reject when
+            // a non-god caller edits an admin whose CURRENT role is reserved or at/above
+            // the caller's own tier.
+            $curErr = $this->_role_assignment_error($schoolDoc, (string) ($existing['Role'] ?? ''));
+            if ($curErr !== null) {
+                $this->json_error('You cannot edit an administrator at or above your own privilege level.', 403);
+                return;
+            }
 
             // Duplicate email check across the admin roster (exclude self).
             $this->load->helper('admin_roster');
@@ -770,12 +781,22 @@ class AdminUsers extends MY_Controller
                 ]);
                 $old_role = $existing['Role'] ?? '';
                 if ($old_role !== $role) {
+                    // setCanonicalClaims REPLACES the whole claim set — preserve staffId
+                    // (owner-filters + caps lookup) and any pending must_change_password,
+                    // and carry the new role's tier (review Medium #2 + staffId gap),
+                    // mirroring Staff_access::_remint_primary_role_claim.
+                    $extra = [];
+                    $mcp = $this->firebase->getCustomClaim($admin_id, 'must_change_password', null);
+                    if ($mcp !== null) { $extra['must_change_password'] = $mcp; }
                     $this->firebase->setCanonicalClaims($admin_id, [
                         'role'          => $role,
                         'role_fallback' => 'Admin',
                         'school_id'     => $this->school_id,
                         'school_code'   => $this->school_code,
                         'parent_db_key' => $this->parent_db_key,
+                        'staff_id'      => $admin_id,
+                        'role_tier'     => (string) $this->_role_tier($schoolDoc, $role),
+                        'extra'         => $extra,
                     ]);
                 }
             } catch (Exception $syncEx) {
