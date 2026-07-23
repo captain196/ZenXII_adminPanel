@@ -41,3 +41,7 @@ application/logs/.debug_enabled
 # OS
 .DS_Store
 Thumbs.db
+
+# Runtime cache + logs — regenerated live, must never be committed (unblocks prod FF).
+application/cache/
+application/logs/*.log

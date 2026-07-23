@@ -1,1 +1,0 @@
-a:3:{s:4:"time";i:1784674185;s:3:"ttl";i:300;s:4:"data";a:7:{s:22:"late_threshold_student";s:5:"08:30";s:20:"late_threshold_staff";s:5:"09:00";s:12:"working_days";a:6:{i:0;s:3:"Mon";i:1;s:3:"Tue";i:2;s:3:"Wed";i:3;s:3:"Thu";i:4;s:3:"Fri";i:5;s:3:"Sat";}s:17:"biometric_enabled";b:0;s:12:"rfid_enabled";b:0;s:24:"face_recognition_enabled";b:0;s:5:"rules";a:0:{}}}
