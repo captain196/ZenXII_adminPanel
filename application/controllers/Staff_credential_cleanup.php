@@ -27,7 +27,7 @@ class Staff_credential_cleanup extends CI_Controller
 {
     private $commit = false;
     private $stats  = ['scanned' => 0, 'scrubbed' => 0, 'clean' => 0, 'failed' => 0];
-    private $log    = [];
+    private $changeLog = [];
 
     public function __construct()
     {
@@ -67,7 +67,7 @@ class Staff_credential_cleanup extends CI_Controller
             if (!$hasPw && !$hasCred) { $this->stats['clean']++; continue; }
 
             $this->stats['scrubbed']++;
-            $this->log[] = "SCRUB {$docId}" . ($hasPw ? ' Password' : '') . ($hasCred ? ' Credentials' : '');
+            $this->changeLog[] = "SCRUB {$docId}" . ($hasPw ? ' Password' : '') . ($hasCred ? ' Credentials' : '');
 
             if ($this->commit) {
                 if ($rollback) {
@@ -83,7 +83,7 @@ class Staff_credential_cleanup extends CI_Controller
         if ($rollback) fclose($rollback);
 
         $this->_out('── changes ──');
-        foreach (($this->log ?: ['  (none — no staff doc carries a credential hash)']) as $l) $this->_out('  ' . $l);
+        foreach (($this->changeLog ?: ['  (none — no staff doc carries a credential hash)']) as $l) $this->_out('  ' . $l);
         $this->_out('');
         $this->_out('── summary ──');
         foreach ($this->stats as $k => $v) $this->_out(sprintf('  %-10s %d', $k, $v));

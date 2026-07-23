@@ -37,7 +37,7 @@ class Staff_pii_migrate extends CI_Controller
 
     private $commit = false;
     private $stats  = ['scanned' => 0, 'migrated' => 0, 'clean' => 0, 'failed' => 0];
-    private $log    = [];
+    private $changeLog = [];
 
     public function __construct()
     {
@@ -84,7 +84,7 @@ class Staff_pii_migrate extends CI_Controller
             if (empty($moving)) { $this->stats['clean']++; continue; }
 
             $this->stats['migrated']++;
-            $this->log[] = "MOVE {$docId}  [" . implode(',', array_keys($moving)) . ']';
+            $this->changeLog[] = "MOVE {$docId}  [" . implode(',', array_keys($moving)) . ']';
 
             if (!$this->commit) continue;
 
@@ -111,7 +111,7 @@ class Staff_pii_migrate extends CI_Controller
         if ($rollback) fclose($rollback);
 
         $this->_out('── changes ──');
-        foreach (($this->log ?: ['  (none — every staff doc is already split)']) as $l) $this->_out('  ' . $l);
+        foreach (($this->changeLog ?: ['  (none — every staff doc is already split)']) as $l) $this->_out('  ' . $l);
         $this->_out('');
         $this->_out('── summary ──');
         foreach ($this->stats as $k => $v) $this->_out(sprintf('  %-9s %d', $k, $v));
