@@ -141,7 +141,10 @@ service firebase.storage {
                     && request.auth.token.school_id == schoolId
                     && !(request.auth.token.role in
                          ['Student','student','Parent','parent','Guardian','guardian'])
-                    && request.resource.size <= 50 * 1024 * 1024;
+                    // D1 (2026-07-12): backstop lowered 50→25 MiB to match the
+                    // unified conservative policy (image 3MB / video 25MB). The
+                    // finer per-type split is enforced client-side + in PHP.
+                    && request.resource.size <= 25 * 1024 * 1024;
       allow delete: if request.auth != null
                     && request.auth.token.school_id == schoolId;
     }
@@ -149,14 +152,15 @@ service firebase.storage {
     // ─── L3: STORIES (Teacher-posted via StoryMediaUploader) ────────────
     // Path:  stories/{schoolId}/{teacherId}/{path=**}
     // M4 hardening (2026-07-05): block NON-STAFF writers (parents only read
-    // stories, never upload) and bound object size (was unbounded). The
-    // per-type cap + contentType gate is intentionally NOT added yet:
-    // StoryMediaUploader uses putFile() which relies on Uri MIME inference
-    // (no explicit metadata), so a contentType predicate could reject a
-    // legitimate upload — tighten only after the uploader sets explicit
-    // StorageMetadata. 300 MB matches the uploader's own MAX_VIDEO_BYTES so
-    // no current upload is rejected. Delete stays tenant-only (request.resource
-    // is null on delete) so the rollback + delete-on-story-delete path works.
+    // stories, never upload) and bound object size (was unbounded).
+    // 2026-07-13: StoryMediaUploader now sets an EXPLICIT contentType on both
+    // putFile (media) and putBytes (video poster), so we can finally gate the
+    // MIME to image/* | video/* — closing the "any 300 MB blob of any type"
+    // hole. Per-type BYTE caps stay app-side (10 MB image / 50 MB video, post-
+    // compression) + PHP; the 300 MB rule cap is the coarse server backstop
+    // (matches the uploader's raw video cap so no legit upload is rejected).
+    // Delete stays tenant-only (request.resource is null on delete) so the
+    // rollback + delete-on-story-delete path works.
     match /stories/{schoolId}/{teacherId}/{path=**} {
       allow read:   if request.auth != null
                     && request.auth.token.school_id == schoolId;
@@ -165,22 +169,18 @@ service firebase.storage {
                     && request.auth.token.school_id == schoolId
                     && !(request.auth.token.role in
                          ['Student','student','Parent','parent','Guardian','guardian'])
-                    && request.resource.size <= 300 * 1024 * 1024;
+                    && request.resource.size <= 300 * 1024 * 1024
+                    && request.resource.contentType != null
+                    && request.resource.contentType.matches('image/.*|video/.*');
       allow delete: if request.auth != null
                     && request.auth.token.school_id == schoolId;
     }
 
-    // ─── L4: STORIES (Admin-posted via Stories.php) ─────────────────────
-    // Path:  stories/admin/{schoolId}/{adminId}/{path=**}
-    // Distinct from L3: literal 'admin' second segment instead of a
-    // schoolId. Both patterns coexist via the OR semantic of Storage rules
-    // — a path is allowed if either matching block allows it.
-    match /stories/admin/{schoolId}/{adminId}/{path=**} {
-      allow read:  if request.auth != null
-                   && request.auth.token.school_id == schoolId;
-      allow write: if request.auth != null
-                   && request.auth.token.school_id == schoolId;
-    }
+    // NOTE (2026-07-13): the old L4 block for `stories/admin/{schoolId}/{adminId}/**`
+    // was REMOVED — it was dead. Admin stories are written by Stories.php to
+    // `schools/{schoolId}/stories/{adminId}/...` (covered by L6 below) via the
+    // Admin SDK, which bypasses Storage rules entirely. No writer ever used the
+    // `stories/admin/...` path, so the rule only misled readers of this file.
 
     // ─── L5: MESSAGES (Parent + Teacher chat attachments) ───────────────
     // Path:  messages/{schoolId}/{conversationId}/{path=**}
@@ -212,8 +212,21 @@ service firebase.storage {
     match /schools/{schoolId}/{path=**} {
       allow read:  if request.auth != null
                    && request.auth.token.school_id == schoolId;
+      // D5 (2026-07-12): write gated to non-student/parent/guardian. Audit
+      // confirmed NO rule-subject client writes here (real writers are
+      // admin-panel Admin-SDK, which bypasses rules) — this is a defence-in-
+      // depth backstop closing the "any same-school token can write anywhere
+      // under the school tree" hole. Read stays open (parents/students read
+      // logos, circulars, report cards, etc. under schools/{schoolId}/).
+      // L12 (2026-07-13): 50 MiB per-object backstop. Real writers are the
+      // Admin SDK (bypasses rules); this only bounds a rogue non-student token
+      // uploading arbitrarily large blobs under the school tree (circular
+      // attachments etc. had no size cap, unlike gallery's 25 MiB).
       allow write: if request.auth != null
-                   && request.auth.token.school_id == schoolId;
+                   && request.auth.token.school_id == schoolId
+                   && !(request.auth.token.role in
+                        ['Student','student','Parent','parent','Guardian','guardian'])
+                   && request.resource.size < 50 * 1024 * 1024;
     }
 
     // ─── L7: STUDENTS (Sis.php:1601 lowercase variant) ──────────────────

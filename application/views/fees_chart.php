@@ -632,7 +632,7 @@ function _doSaveUpdatedFees(cls, sec) {
 :root {
     --fm-navy:   #0c1e38;
     --fm-teal:   #BC5A3C;
-    --fm-sky:    #e6f4f1;
+    --fm-sky:    #F7ECE7;
     --fm-green:  #15803d;
     --fm-amber:  #d97706;
     --fm-red:    #dc2626;
@@ -640,7 +640,7 @@ function _doSaveUpdatedFees(cls, sec) {
     --fm-muted:  #64748b;
     --fm-border: #e2e8f0;
     --fm-white:  #ffffff;
-    --fm-bg:     #f0f7f5;
+    --fm-bg:     #F7F4F1;
     --fm-shadow: 0 1px 12px rgba(12,30,56,.07);
     --fm-radius: 12px;
 }
@@ -753,7 +753,7 @@ function _doSaveUpdatedFees(cls, sec) {
     margin-top: 12px;
     display: flex; align-items: center; gap: 8px;
     padding: 8px 14px;
-    background: #d1fae5; border: 1px solid rgba(188,90,60,.25);
+    background: #F7ECE7; border: 1px solid rgba(188,90,60,.25);
     border-radius: 8px;
     font-size: 13px; color: var(--fm-green); font-weight: 600;
     width: fit-content;

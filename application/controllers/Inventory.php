@@ -52,7 +52,7 @@ class Inventory extends MY_Controller
     // ====================================================================
     public function index()
     {
-        $this->_require_role(self::VIEW_ROLES);
+        $this->_require_role(self::VIEW_ROLES, '', 'Inventory', 'view');
         $tab = $this->uri->segment(2, 'items');
         $data = ['active_tab' => $tab];
         $this->load->view('include/header', $data);
@@ -65,7 +65,7 @@ class Inventory extends MY_Controller
     // ====================================================================
     public function get_categories()
     {
-        $this->_require_role(self::VIEW_ROLES);
+        $this->_require_role(self::VIEW_ROLES, '', 'Inventory', 'view');
         $rows = $this->firebase->firestoreQuery(self::COL_CATEGORIES,
             [['schoolId', '==', $this->school_name]], 'name', 'ASC');
         $list = [];
@@ -79,7 +79,7 @@ class Inventory extends MY_Controller
 
     public function save_category()
     {
-        $this->_require_role(self::MANAGE_ROLES);
+        $this->_require_role(self::MANAGE_ROLES, '', 'Inventory', 'edit');
         $id   = trim($this->input->post('id') ?? '');
         $name = trim($this->input->post('name') ?? '');
         $desc = trim($this->input->post('description') ?? '');
@@ -104,7 +104,7 @@ class Inventory extends MY_Controller
 
     public function delete_category()
     {
-        $this->_require_role(self::MANAGE_ROLES);
+        $this->_require_role(self::MANAGE_ROLES, '', 'Inventory', 'manage');
         $id = $this->safe_path_segment(trim($this->input->post('id') ?? ''), 'category_id');
         // Block if any item uses this category.
         $using = $this->firebase->firestoreQuery(self::COL_ITEMS, [
@@ -121,7 +121,7 @@ class Inventory extends MY_Controller
     // ====================================================================
     public function get_items()
     {
-        $this->_require_role(self::VIEW_ROLES);
+        $this->_require_role(self::VIEW_ROLES, '', 'Inventory', 'view');
         $rows = $this->firebase->firestoreQuery(self::COL_ITEMS,
             [['schoolId', '==', $this->school_name]], 'name', 'ASC');
         $list = [];
@@ -137,7 +137,7 @@ class Inventory extends MY_Controller
 
     public function save_item()
     {
-        $this->_require_role(self::MANAGE_ROLES);
+        $this->_require_role(self::MANAGE_ROLES, '', 'Inventory', 'edit');
         $id          = trim($this->input->post('id') ?? '');
         $name        = trim($this->input->post('name') ?? '');
         $categoryId  = trim($this->input->post('category_id') ?? '');
@@ -177,7 +177,7 @@ class Inventory extends MY_Controller
 
     public function delete_item()
     {
-        $this->_require_role(self::MANAGE_ROLES);
+        $this->_require_role(self::MANAGE_ROLES, '', 'Inventory', 'manage');
         $id   = $this->safe_path_segment(trim($this->input->post('id') ?? ''), 'item_id');
         $item = $this->fs->getEntity(self::COL_ITEMS, $id);
         if (is_array($item) && (int) ($item['current_stock'] ?? 0) > 0) {
@@ -192,7 +192,7 @@ class Inventory extends MY_Controller
     // ====================================================================
     public function get_vendors()
     {
-        $this->_require_role(self::VIEW_ROLES);
+        $this->_require_role(self::VIEW_ROLES, '', 'Inventory', 'view');
         $rows = $this->firebase->firestoreQuery(self::COL_VENDORS,
             [['schoolId', '==', $this->school_name]], 'name', 'ASC');
         $list = [];
@@ -206,7 +206,7 @@ class Inventory extends MY_Controller
 
     public function save_vendor()
     {
-        $this->_require_role(self::MANAGE_ROLES);
+        $this->_require_role(self::MANAGE_ROLES, '', 'Inventory', 'edit');
         $id      = trim($this->input->post('id') ?? '');
         $name    = trim($this->input->post('name') ?? '');
         $contact = trim($this->input->post('contact') ?? '');
@@ -237,7 +237,7 @@ class Inventory extends MY_Controller
 
     public function delete_vendor()
     {
-        $this->_require_role(self::MANAGE_ROLES);
+        $this->_require_role(self::MANAGE_ROLES, '', 'Inventory', 'manage');
         $id = $this->safe_path_segment(trim($this->input->post('id') ?? ''), 'vendor_id');
         // Block if any purchase references this vendor.
         $using = $this->firebase->firestoreQuery(self::COL_PURCHASES, [
@@ -254,7 +254,7 @@ class Inventory extends MY_Controller
     // ====================================================================
     public function get_purchases()
     {
-        $this->_require_role(self::VIEW_ROLES);
+        $this->_require_role(self::VIEW_ROLES, '', 'Inventory', 'view');
         $rows = $this->firebase->firestoreQuery(self::COL_PURCHASES,
             [['schoolId', '==', $this->school_name]], 'date', 'DESC');
         $list = [];
@@ -272,7 +272,7 @@ class Inventory extends MY_Controller
 
     public function save_purchase()
     {
-        $this->_require_role(self::MANAGE_ROLES);
+        $this->_require_role(self::MANAGE_ROLES, '', 'Inventory', 'edit');
         $itemId      = $this->safe_path_segment(trim($this->input->post('item_id') ?? ''), 'item_id');
         $vendorId    = trim($this->input->post('vendor_id') ?? '');
         if ($vendorId !== '') $vendorId = $this->safe_path_segment($vendorId, 'vendor_id');
@@ -382,7 +382,7 @@ class Inventory extends MY_Controller
     // ====================================================================
     public function get_issues()
     {
-        $this->_require_role(self::VIEW_ROLES);
+        $this->_require_role(self::VIEW_ROLES, '', 'Inventory', 'view');
         $rows = $this->firebase->firestoreQuery(self::COL_ISSUES,
             [['schoolId', '==', $this->school_name]], 'date', 'DESC');
         $list = [];
@@ -400,7 +400,7 @@ class Inventory extends MY_Controller
 
     public function save_issue()
     {
-        $this->_require_role(self::MANAGE_ROLES);
+        $this->_require_role(self::MANAGE_ROLES, '', 'Inventory', 'edit');
         $itemId   = $this->safe_path_segment(trim($this->input->post('item_id') ?? ''), 'item_id');
         $issuedTo = trim($this->input->post('issued_to') ?? '');
         $qty      = max(1, (int) ($this->input->post('qty') ?? 1));
@@ -470,7 +470,7 @@ class Inventory extends MY_Controller
 
     public function return_issue()
     {
-        $this->_require_role(self::MANAGE_ROLES);
+        $this->_require_role(self::MANAGE_ROLES, '', 'Inventory', 'edit');
         $issueId   = $this->safe_path_segment(trim($this->input->post('issue_id') ?? ''), 'issue_id');
         $returnQty = max(1, (int) ($this->input->post('return_qty') ?? 0));
 
@@ -518,7 +518,7 @@ class Inventory extends MY_Controller
     // ====================================================================
     public function get_stock_report()
     {
-        $this->_require_role(self::VIEW_ROLES);
+        $this->_require_role(self::VIEW_ROLES, '', 'Inventory', 'view');
         $rows = $this->firebase->firestoreQuery(self::COL_ITEMS,
             [['schoolId', '==', $this->school_name]]);
         $report = [];

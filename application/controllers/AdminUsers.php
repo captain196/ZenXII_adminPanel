@@ -22,141 +22,18 @@ defined('BASEPATH') OR exit('No direct script access allowed');
  */
 class AdminUsers extends MY_Controller
 {
-    /* -- Default permission sets (seeded on first use) ------------- */
-    /* 13-role hierarchy (Super Admin handled separately via Superadmin_login) */
-    private const DEFAULT_ROLES = [
-        // ── Tier 1: Full Access ──────────────────────────────────────────
-        'Admin' => [
-            'label'       => 'School Admin',
-            'description' => 'Full school-level access, all modules',
-            'permissions' => ['SIS','Fees','Accounting','Attendance','Examinations','Results',
-                              'LMS','Certificates','HR','Events','Communication','Operations',
-                              'Academic','Reports','Configuration','Admin Users','Stories'],
-            'is_system'   => true,
-            'tier'        => 1,
-            'sort_order'  => 1,
-        ],
+    /* DEFAULT_ROLES removed (supersession cleanup 2026-07-22): the 13-role seed
+     * hierarchy was DEAD — zero code readers. Role seeding now flows through the
+     * unified catalogue via ensure_unified_roles()/Staff::default_staff_roles();
+     * the fold reads schools.roles Firestore data, NOT this PHP const. */
 
-        // ── Tier 2: Leadership ───────────────────────────────────────────
-        'Principal' => [
-            'label'       => 'Principal',
-            'description' => 'Academic oversight, approvals, reports (no accounting)',
-            'permissions' => ['SIS','Attendance','Examinations','Results','LMS','Certificates',
-                              'Academic','Reports','Events','Communication','Stories','Configuration'],
-            'is_system'   => true,
-            'tier'        => 2,
-            'sort_order'  => 2,
-        ],
-        'Vice Principal' => [
-            'label'       => 'Vice Principal',
-            'description' => 'Academic oversight, limited approvals (no config)',
-            'permissions' => ['SIS','Attendance','Examinations','Results','LMS','Certificates',
-                              'Academic','Reports','Events','Communication','Stories'],
-            'is_system'   => true,
-            'tier'        => 2,
-            'sort_order'  => 3,
-        ],
-
-        // ── Tier 3: Department Heads ─────────────────────────────────────
-        'Academic Coordinator' => [
-            'label'       => 'Academic Coordinator',
-            'description' => 'Classes, exams, results, timetable, homework',
-            'permissions' => ['SIS','Attendance','Examinations','Results','LMS',
-                              'Academic','Reports','Stories'],
-            'is_system'   => true,
-            'tier'        => 3,
-            'sort_order'  => 4,
-        ],
-        'HR Manager' => [
-            'label'       => 'HR Manager',
-            'description' => 'Staff, payroll, leaves, recruitment, appraisals',
-            'permissions' => ['HR','Attendance','Reports'],
-            'is_system'   => true,
-            'tier'        => 3,
-            'sort_order'  => 5,
-        ],
-        'Accountant' => [
-            'label'       => 'Accountant',
-            'description' => 'Fees, accounting, ledgers, bank recon, reports',
-            'permissions' => ['Fees','Accounting','Reports'],
-            'is_system'   => true,
-            'tier'        => 3,
-            'sort_order'  => 6,
-        ],
-
-        // ── Tier 4: Operational Staff ────────────────────────────────────
-        'Front Office' => [
-            'label'       => 'Front Office / Receptionist',
-            'description' => 'Admissions CRM, visitor log, communication, certificates',
-            'permissions' => ['SIS','Communication','Certificates','Events','Stories'],
-            'is_system'   => true,
-            'tier'        => 4,
-            'sort_order'  => 7,
-        ],
-        'Class Teacher' => [
-            'label'       => 'Class Teacher',
-            'description' => 'Teacher + section-level reports, parent communication, red flags',
-            'permissions' => ['SIS','Attendance','Examinations','Results','LMS',
-                              'Stories','Communication','Reports','Events'],
-            'is_system'   => true,
-            'tier'        => 4,
-            'sort_order'  => 8,
-        ],
-        'Teacher' => [
-            'label'       => 'Teacher',
-            'description' => 'Own class attendance, homework, marks, stories, messages',
-            'permissions' => ['Attendance','Examinations','Results','LMS',
-                              'Stories','Communication'],
-            'is_system'   => true,
-            'tier'        => 4,
-            'sort_order'  => 9,
-        ],
-
-        // ── Tier 5: Specialist Roles ─────────────────────────────────────
-        'Librarian' => [
-            'label'       => 'Librarian',
-            'description' => 'Library module only',
-            'permissions' => ['Library'],
-            'is_system'   => true,
-            'tier'        => 5,
-            'sort_order'  => 10,
-        ],
-        'Transport Manager' => [
-            'label'       => 'Transport Manager',
-            'description' => 'Transport, routes, vehicles, GPS tracking',
-            'permissions' => ['Transport','Reports'],
-            'is_system'   => true,
-            'tier'        => 5,
-            'sort_order'  => 11,
-        ],
-        'Hostel Warden' => [
-            'label'       => 'Hostel Warden',
-            'description' => 'Hostel allocation, hostel attendance',
-            'permissions' => ['Hostel'],
-            'is_system'   => true,
-            'tier'        => 5,
-            'sort_order'  => 12,
-        ],
-
-        // ── Tier 6: Minimal Access ───────────────────────────────────────
-        'Staff' => [
-            'label'       => 'Staff',
-            'description' => 'View-only access, no module permissions',
-            'permissions' => [],
-            'is_system'   => true,
-            'tier'        => 6,
-            'sort_order'  => 13,
-        ],
-    ];
-
-    /* -- All available modules for permission assignment ----------- */
-    private const AVAILABLE_MODULES = [
-        'SIS','Fees','Accounting','Attendance','Examinations','Results',
-        'LMS','Certificates','HR','Events','Communication','Operations',
-        // Operations sub-modules (grantable individually; 'Operations' = all).
-        'Library','Transport','Hostel','Inventory','Assets',
-        'Academic','Reports','Configuration','Admin Users','Stories','Homework',
-    ];
+    /* -- All available modules for permission assignment ------------
+     * SINGLE SOURCE OF TRUTH: the global RBAC_MODULES constant in
+     * application/helpers/rbac_helper.php. The former private copy here was a
+     * second hand-maintained list that silently drifted from RBAC_MODULES (e.g.
+     * Device Management / Message Monitor missing). All usages now read
+     * RBAC_MODULES directly so the picker, save_role validation and role listing
+     * can never diverge from what the resolver actually recognises. */
 
     /* -- Login audit lives in security_events (Wave C). These are the
           admin-login event types the Login Activity tab surfaces. -------- */
@@ -427,9 +304,11 @@ class AdminUsers extends MY_Controller
                 log_message('error', 'AdminUsers::change_my_password — RTDB mirror failed: ' . $mirrorEx->getMessage());
             }
 
-            // Clear mustChangePassword on the admins Firestore doc too.
+            // Clear mustChangePassword on the caller's own record (staff for STA,
+            // admins for legacy ADM).
             try {
-                $this->fs->set('admins', $this->fs->docId($this->admin_id), [
+                $this->load->helper('admin_roster');
+                $this->fs->set(admin_record_collection($this->admin_id), $this->fs->docId($this->admin_id), [
                     'mustChangePassword' => false,
                     'updatedAt'          => date('c'),
                 ], true);
@@ -458,7 +337,7 @@ class AdminUsers extends MY_Controller
 
     public function index(): void
     {
-        $this->_require_role(['Super Admin', 'Admin'], 'admin_users_view');
+        $this->_require_role(['Super Admin', 'Admin'], 'admin_users_view', 'Admin Users', 'view');
 
         // Auto-retry admins created while Firebase Auth was unavailable (non-blocking).
         // Gated to the page load only — was previously firing on every AJAX request.
@@ -466,7 +345,7 @@ class AdminUsers extends MY_Controller
 
         $data = [
             'page_title'        => 'Admin Users',
-            'available_modules' => self::AVAILABLE_MODULES,
+            'available_modules' => RBAC_MODULES,
         ];
 
         $this->load->view('include/header', $data);
@@ -480,7 +359,7 @@ class AdminUsers extends MY_Controller
 
     public function get_dashboard(): void
     {
-        $this->_require_role(['Super Admin', 'Admin'], 'admin_users_dashboard');
+        $this->_require_role(['Super Admin', 'Admin'], 'admin_users_dashboard', 'Admin Users', 'view');
 
         try {
             // Initialise before passing by-reference: the helper's params are
@@ -517,14 +396,11 @@ class AdminUsers extends MY_Controller
         $total = 0; $active = 0; $disabled = 0;
         $map = [];
         try {
-            foreach ($this->fs->schoolWhere('admins', []) as $doc) {
-                $d   = $doc['data'] ?? $doc;
-                $a   = $doc['data'];
-                $aid = $a['adminId'] ?? $d['id'];
-                $map[$aid] = $a['Name'] ?? $a['Profile']['name'] ?? $aid;
+            $this->load->helper('admin_roster');
+            foreach (admin_roster_rows($this->fs, $this->school_id) as $r) {
+                $map[$r['id']] = $r['name'] !== '' ? $r['name'] : $r['id'];
                 $total++;
-                if (($a['Status'] ?? 'Active') === 'Active') $active++;
-                else $disabled++;
+                if ($r['status'] === 'active') $active++; else $disabled++;
             }
         } catch (Exception $e) {
             log_message('error', 'AdminUsers::_admin_name_map — ' . $e->getMessage());
@@ -585,10 +461,14 @@ class AdminUsers extends MY_Controller
 
     public function get_admins(): void
     {
-        $this->_require_role(['Super Admin', 'Admin'], 'admin_users_list');
+        $this->_require_role(['Super Admin', 'Admin'], 'admin_users_list', 'Admin Users', 'view');
 
         try {
-            $adminDocs = $this->fs->schoolWhere('admins', [], 'Name', 'ASC');
+            // FOLD: roster = staff(ROLE_ADMIN) ∪ legacy admins collection, deduped.
+            // Correct at every migration stage; degrades to staff-only once the
+            // admins collection is retired (teardown).
+            $this->load->helper('admin_roster');
+            $roster = admin_roster_rows($this->fs, $this->school_id);
 
             // Most-recent successful login per admin, from the audit trail.
             // 200 recent successes covers the newest login for every admin in any
@@ -603,14 +483,19 @@ class AdminUsers extends MY_Controller
             }
 
             $rows = [];
-            foreach ($adminDocs as $doc) {
-                $d = $doc['data'] ?? $doc;
-                $a   = $doc['data'];
-                $aid = $a['adminId'] ?? $d['id'];
-                $row = $this->_normalize_admin($aid, $a);
-                $row['lastLogin'] = $lastMap[$aid] ?? '';
-                $rows[] = $row;
+            foreach ($roster as $r) {
+                $rows[] = [
+                    'adminId'   => $r['id'],
+                    'name'      => $r['name'],
+                    'email'     => $r['email'],
+                    'phone'     => $r['phone'],
+                    'role'      => $r['role'],
+                    'status'    => $r['status'],
+                    'createdAt' => $r['createdAt'],
+                    'lastLogin' => $r['lastLogin'] !== '' ? $r['lastLogin'] : ($lastMap[$r['id']] ?? ''),
+                ];
             }
+            usort($rows, static fn($a, $b) => strcasecmp((string) $a['name'], (string) $b['name']));
             $this->json_success(['admins' => $rows]);
         } catch (Exception $e) {
             $this->json_error('Failed to load admin users.');
@@ -623,7 +508,7 @@ class AdminUsers extends MY_Controller
 
     public function create_admin(): void
     {
-        $this->_require_role(['Super Admin', 'Admin'], 'create_admin');
+        $this->_require_role(['Super Admin', 'Admin'], 'create_admin', 'Admin Users', 'manage');
 
         $name     = trim($this->input->post('name',      TRUE) ?? '');
         $email    = strtolower(trim($this->input->post('email', TRUE) ?? ''));
@@ -666,37 +551,33 @@ class AdminUsers extends MY_Controller
             $roleErr = $this->_role_assignment_error($schoolDoc, $role);
             if ($roleErr !== null) { $this->json_error($roleErr, 403); return; }
 
-            // Check duplicate email across all admins
-            $existingAdmins = $this->fs->schoolWhere('admins', []);
-            foreach ($existingAdmins as $doc) {
-                $a = $doc['data'];
-                if (strtolower($a['Profile']['email'] ?? '') === $email) {
+            // Check duplicate email across the admin roster (staff∪admins).
+            $this->load->helper('admin_roster');
+            foreach (admin_roster_rows($this->fs, $this->school_id) as $r) {
+                if (strtolower((string) $r['email']) === $email) {
                     $this->json_error('An admin with this email already exists.');
                     return;
                 }
             }
 
-            // Hash password ONCE — same hash goes to both MongoDB and Firebase
-            $hashed_pw = password_hash($password, PASSWORD_BCRYPT, ['cost' => 12]);
-
-            // Auto-generate ADM ID via Id_generator
+            // FOLD: admins are staff records now — mint an STA id, never ADM.
+            // uid == staffId. Firebase Auth is the credential authority.
             $this->load->library('id_generator');
-            $admin_id    = $this->id_generator->generate('ADM');
-            if ($admin_id === null) {
-                log_message('error', 'AdminUsers::create_admin — Id_generator returned null for ADM (counter exhausted)');
-                $this->json_error('Could not allocate an admin ID right now. Please try again.');
+            $staff_id = $this->id_generator->generate('STA');
+            if ($staff_id === null) {
+                log_message('error', 'AdminUsers::create_admin — Id_generator returned null for STA (counter exhausted)');
+                $this->json_error('Could not allocate a staff ID right now. Please try again.');
                 return;
             }
             // Numeric part of the claimed id, for releaseClaim() on rollback.
-            $adm_seq = (int) preg_replace('/^[A-Z]+/', '', $admin_id);
+            $sta_seq = (int) preg_replace('/^[A-Z]+/', '', $staff_id);
 
-            // Create Firebase Auth account — this is the primary login source.
-            // If it fails we abort BEFORE writing any Firestore record, so we
-            // never leave a half-created admin that has no working login.
+            // Create Firebase Auth account — the primary login source. Abort BEFORE
+            // any Firestore write so we never leave a login-less half-record.
             try {
-                $authEmail = Firebase::authEmail($admin_id);
+                $authEmail = Firebase::authEmail($staff_id);
                 $created   = $this->firebase->createFirebaseUser($authEmail, $password, [
-                    'uid'         => $admin_id,
+                    'uid'         => $staff_id,
                     'displayName' => $name,
                 ]);
             } catch (Exception $e) {
@@ -704,104 +585,79 @@ class AdminUsers extends MY_Controller
                 $created = null;
             }
             if ($created === null || $created === false) {
-                // Hand the unused ADM number back so the sequence has no gap.
-                $this->id_generator->releaseClaim('ADM', $adm_seq);
+                // Hand the unused STA number back so the sequence has no gap.
+                $this->id_generator->releaseClaim('STA', $sta_seq);
                 $this->json_error('Could not create the login account (Firebase Auth unavailable, or that account already exists). No admin was created — please try again.');
                 return;
             }
-            $this->firebase->setCanonicalClaims($admin_id, [
+            // Claims: staffId is set; role_fallback='Admin' is kept so the panel
+            // grants access during the transition. The teardown step removes reliance
+            // on the Admin bypass, after which access resolves purely from staff_roles.
+            $this->firebase->setCanonicalClaims($staff_id, [
                 'role'          => $role,
                 'role_fallback' => 'Admin',
                 'school_id'     => $this->school_id,
                 'school_code'   => $this->school_code,
                 'parent_db_key' => $this->parent_db_key,
-                // Force set-new-password on first login. Web-panel gate
-                // (MY_Controller / Admin_login) reads this claim; the admins-doc
-                // mirror below is written for parity with reset_password.
+                // Force set-new-password on first login (panel + app gates read this).
                 'extra'         => [
                     'must_change_password' => true,
                 ],
             ]);
-            $now       = date('Y-m-d H:i:s');
 
-            // Firebase structure — same as School Super Admin
-            $admin_data = [
-                'Status'      => 'Active',
-                'Role'        => $role,
-                'Name'        => $name,
-                'Email'       => $email,
-                'Credentials' => [
-                    'Id'       => $admin_id,
-                    'Password' => $hashed_pw,
-                ],
-                'Profile'     => [
-                    'name'        => $name,
-                    'email'       => $email,
-                    'phone'       => $phone,
-                    'role'        => $role,
-                    'school'      => $this->school_display_name,
-                    'school_id'   => $this->school_code,
-                    'firebase_id' => $this->school_id,
-                    'created_at'  => $now,
-                    'created_by'  => $this->admin_id,
-                ],
-                'AccessHistory' => [
-                    'SA_LastLogin'   => null,
-                    'SA_LastLoginIP' => null,
-                    'LoginAttempts'  => 0,
-                ],
-                'Privileges'  => ['accountmanagement' => ''],
-            ];
+            // Resolve the chosen role LABEL to its ROLE_* id. FOLD (no escalation):
+            // the staff carries ONLY its nominal role — access = exactly that role's
+            // modules. A FULL admin is created by choosing the 'Admin' role (whose id
+            // is ROLE_ADMIN), never implicitly bolted on. $schoolDoc folded above.
+            $nominal_rid = null;
+            $catalogue   = is_array($schoolDoc['staffRoles'] ?? null) ? $schoolDoc['staffRoles'] : [];
+            foreach ($catalogue as $rid => $rentry) {
+                if (is_array($rentry) && ((string) ($rentry['label'] ?? '') === $role || (string) $rid === $role)) {
+                    $nominal_rid = (string) $rid; break;
+                }
+            }
+            $staff_roles = $nominal_rid !== null ? [$nominal_rid] : [];
 
-            // ── Firestore admins collection (exclude password) ──
-            $fsData = array_merge($admin_data, [
-                'schoolId' => $this->school_id,
-                'adminId'  => $admin_id,
-                'updatedAt' => date('c'),
-                // Force set-new-password on first login (mirror of the claim above).
-                'mustChangePassword' => true,
-            ]);
-            unset($fsData['Credentials']);
-
-            // The admins doc is the source of truth. If it can't be written we
-            // roll back the Auth account + ID claim so create is all-or-nothing.
+            // ── Firestore `staff` is the SOURCE OF TRUTH (fold: no admins doc). ──
+            // All-or-nothing: on write failure roll back the Auth account + ID claim.
             $written = false;
             try {
-                $written = $this->fs->set('admins', $this->fs->docId($admin_id), $fsData, true);
-            } catch (Exception $writeEx) {
-                log_message('error', 'AdminUsers::create_admin — admins write failed: ' . $writeEx->getMessage());
-            }
-            if ($written === false) {
-                try {
-                    $this->firebase->deleteFirebaseUser($admin_id);
-                } catch (Exception $rb) {
-                    log_message('error', 'AdminUsers::create_admin — Auth rollback failed: ' . $rb->getMessage());
-                }
-                $this->id_generator->releaseClaim('ADM', $adm_seq);
-                $this->json_error('Could not save the admin record. No admin was created — please try again.');
-                return;
-            }
-
-            // ── Firestore staff collection dual-write (best-effort) ──
-            try {
-                $this->fs->saveStaff($admin_id, [
+                $this->fs->saveStaff($staff_id, [
                     'Name'   => $name,
                     'Email'  => $email,
                     'Phone'  => $phone,
                     'Role'   => $role,
                     'Status' => 'Active',
                 ]);
-            } catch (Exception $staffEx) {
-                log_message('error', "AdminUsers::create_admin — staff dual-write failed: {$staffEx->getMessage()}");
+                // saveStaff() writes fixed identity fields only — add the RBAC grant +
+                // onboarding metadata via a MERGE so nothing above is clobbered.
+                $written = $this->fs->set('staff', $this->fs->docId($staff_id), [
+                    'staff_roles'        => $staff_roles,
+                    'mustChangePassword' => true,
+                    'created_by'         => $this->admin_id,
+                    'createdAt'          => date('c'),
+                ], true);
+            } catch (Exception $writeEx) {
+                log_message('error', 'AdminUsers::create_admin — staff write failed: ' . $writeEx->getMessage());
+            }
+            if ($written === false) {
+                try {
+                    $this->firebase->deleteFirebaseUser($staff_id);
+                } catch (Exception $rb) {
+                    log_message('error', 'AdminUsers::create_admin — Auth rollback failed: ' . $rb->getMessage());
+                }
+                $this->id_generator->releaseClaim('STA', $sta_seq);
+                $this->json_error('Could not save the staff record. No admin was created — please try again.');
+                return;
             }
 
-            log_audit('AdminUsers', 'create_admin', $admin_id, "Created admin '{$name}' with role '{$role}'");
+            log_audit('AdminUsers', 'create_admin', $staff_id, "Created admin '{$name}' role '{$role}' as staff {$staff_id} [" . implode(',', $staff_roles) . ']');
 
             // F8: do NOT echo the plaintext password back. The creator typed it,
             // so the UI already has it client-side for the one-time reveal.
             $this->json_success([
                 'message'  => 'Admin created successfully.',
-                'admin_id' => $admin_id,
+                'admin_id' => $staff_id,
                 'name'     => $name,
                 'role'     => $role,
             ]);
@@ -817,7 +673,11 @@ class AdminUsers extends MY_Controller
 
     public function update_admin(): void
     {
-        $this->_require_role(['Super Admin', 'Admin'], 'update_admin');
+        // 'edit' (not 'manage'): editing an existing admin's details is the EDIT
+        // capability. Escalation is still blocked — _role_assignment_error (below)
+        // enforces the reserved-label + privilege-tier ceiling on any role change,
+        // and self-role-change is refused. Create/delete/reset/disable stay 'manage'.
+        $this->_require_role(['Super Admin', 'Admin'], 'update_admin', 'Admin Users', 'edit');
 
         $admin_id = trim($this->input->post('admin_id', TRUE) ?? '');
         $name     = trim($this->input->post('name',     TRUE) ?? '');
@@ -838,7 +698,10 @@ class AdminUsers extends MY_Controller
         $role     = $this->safe_path_segment($role, 'role');
 
         try {
-            $existing = $this->fs->getEntity('admins', $admin_id);
+            // FOLD: STA admins live in `staff`, legacy ADM in `admins`.
+            $this->load->helper('admin_roster');
+            $coll = admin_record_collection($admin_id);
+            $existing = $this->fs->getEntity($coll, $admin_id);
             if (empty($existing) || !is_array($existing)) {
                 $this->json_error('Admin user not found.');
                 return;
@@ -862,21 +725,18 @@ class AdminUsers extends MY_Controller
             $roleErr = $this->_role_assignment_error($schoolDoc, $role);
             if ($roleErr !== null) { $this->json_error($roleErr, 403); return; }
 
-            // Duplicate email check (exclude self)
-            $allAdmins = $this->fs->schoolWhere('admins', []);
-            foreach ($allAdmins as $doc) {
-                $d = $doc['data'] ?? $doc;
-                $a   = $doc['data'];
-                $aid = $a['adminId'] ?? $d['id'];
-                if ($aid === $admin_id) continue;
-                if (strtolower($a['Profile']['email'] ?? '') === $email) {
+            // Duplicate email check across the admin roster (exclude self).
+            $this->load->helper('admin_roster');
+            foreach (admin_roster_rows($this->fs, $this->school_id) as $r) {
+                if ($r['id'] === $admin_id) continue;
+                if (strtolower((string) $r['email']) === $email) {
                     $this->json_error('Another admin already uses this email.');
                     return;
                 }
             }
 
-            // ── Firestore admins collection update ──
-            $this->fs->updateEntity('admins', $admin_id, [
+            // ── Update the authoritative record (staff for STA, admins for ADM) ──
+            $this->fs->updateEntity($coll, $admin_id, [
                 'Name' => $name,
                 'Role' => $role,
                 'Profile' => array_merge($existing['Profile'] ?? [], [
@@ -937,7 +797,7 @@ class AdminUsers extends MY_Controller
 
     public function disable_admin(): void
     {
-        $this->_require_role(['Super Admin', 'Admin'], 'disable_admin');
+        $this->_require_role(['Super Admin', 'Admin'], 'disable_admin', 'Admin Users', 'manage');
 
         $admin_id   = $this->safe_path_segment(trim($this->input->post('admin_id', TRUE) ?? ''), 'admin_id');
         $new_status = trim($this->input->post('status', TRUE) ?? '');
@@ -956,7 +816,10 @@ class AdminUsers extends MY_Controller
         }
 
         try {
-            $existing = $this->fs->getEntity('admins', $admin_id);
+            // FOLD: STA admins live in `staff`, legacy ADM in `admins`.
+            $this->load->helper('admin_roster');
+            $coll = admin_record_collection($admin_id);
+            $existing = $this->fs->getEntity($coll, $admin_id);
             if (empty($existing) || !is_array($existing)) {
                 $this->json_error('Admin user not found.');
                 return;
@@ -964,8 +827,8 @@ class AdminUsers extends MY_Controller
 
             $mappedStatus = $status_map[$new_status];
 
-            // ── Firestore admins collection ──
-            $this->fs->updateEntity('admins', $admin_id, [
+            // ── Authoritative record (staff for STA, admins for ADM) ──
+            $this->fs->updateEntity($coll, $admin_id, [
                 'Status' => $mappedStatus,
             ]);
 
@@ -1009,7 +872,7 @@ class AdminUsers extends MY_Controller
 
     public function delete_admin(): void
     {
-        $this->_require_role(['Super Admin', 'Admin'], 'delete_admin');
+        $this->_require_role(['Super Admin', 'Admin'], 'delete_admin', 'Admin Users', 'manage');
 
         $admin_id = $this->safe_path_segment(trim($this->input->post('admin_id', TRUE) ?? ''), 'admin_id');
 
@@ -1019,14 +882,36 @@ class AdminUsers extends MY_Controller
         }
 
         try {
-            $existing = $this->fs->getEntity('admins', $admin_id);
+            // FOLD: STA admins live in `staff`, legacy ADM in `admins`.
+            $this->load->helper('admin_roster');
+            $coll = admin_record_collection($admin_id);
+            $existing = $this->fs->getEntity($coll, $admin_id);
             if (empty($existing) || !is_array($existing)) {
                 $this->json_error('Admin user not found.');
                 return;
             }
 
-            $name = $existing['Name'] ?? $existing['Profile']['name'] ?? $admin_id;
+            $name = $existing['Name'] ?? $existing['name'] ?? $existing['Profile']['name'] ?? $admin_id;
 
+            // FOLD: a staff member holding admin access is NOT destroyed by
+            // "delete admin" — that would nuke a real staff record + login. Instead
+            // REVOKE the admin grant (remove ROLE_ADMIN); they revert to their
+            // nominal role and stay a staff member with their app login intact.
+            if ($coll === 'staff') {
+                $roles = array_values(array_filter(
+                    _admin_roster_staff_roles($existing),
+                    static fn($r) => $r !== 'ROLE_ADMIN'
+                ));
+                $this->fs->update('staff', $this->fs->docId($admin_id), [
+                    'staff_roles' => $roles,
+                    'updatedAt'   => date('c'),
+                ]);
+                log_audit('AdminUsers', 'delete_admin', $admin_id, "Removed admin access from staff '{$name}'");
+                $this->json_success(['message' => "Admin access removed from '{$name}'. They remain a staff member."]);
+                return;
+            }
+
+            // ── Legacy ADM record — full destroy ──
             // M10: kill the login BEFORE removing the Firestore record. If the
             // Auth delete later fails, the account is already token-revoked +
             // disabled, so an orphaned Auth user can't authenticate into a
@@ -1069,7 +954,7 @@ class AdminUsers extends MY_Controller
 
     public function reset_password(): void
     {
-        $this->_require_role(['Super Admin', 'School Super Admin', 'Admin'], 'reset_password');
+        $this->_require_role(['Super Admin', 'School Super Admin', 'Admin'], 'reset_password', 'Admin Users', 'manage');
 
         $admin_id     = $this->safe_path_segment(trim($this->input->post('admin_id', TRUE) ?? ''), 'admin_id');
         $new_password = (string)($this->input->post('new_password', FALSE) ?? '');
@@ -1096,7 +981,10 @@ class AdminUsers extends MY_Controller
         }
 
         try {
-            $existing = $this->fs->getEntity('admins', $admin_id);
+            // FOLD: STA admins live in `staff`, legacy ADM in `admins`.
+            $this->load->helper('admin_roster');
+            $coll = admin_record_collection($admin_id);
+            $existing = $this->fs->getEntity($coll, $admin_id);
             if (empty($existing) || !is_array($existing)) {
                 $this->json_error('Admin user not found.');
                 return;
@@ -1149,10 +1037,10 @@ class AdminUsers extends MY_Controller
                 // Non-fatal: Firebase Auth is the truth.
             }
 
-            // 5. Firestore admins doc — sets mustChangePassword=true for clients
+            // 5. Firestore record ($coll) — sets mustChangePassword=true for clients
             //    that read this field instead of (or in addition to) the claim.
             try {
-                $this->fs->set('admins', $this->fs->docId($admin_id), [
+                $this->fs->set($coll, $this->fs->docId($admin_id), [
                     'mustChangePassword' => true,
                     'updatedAt'          => date('c'),
                 ], true);
@@ -1184,8 +1072,7 @@ class AdminUsers extends MY_Controller
     public function school_super_admins(): void
     {
         if (strcasecmp($this->admin_role ?? '', 'School Super Admin') !== 0) {
-            $this->session->set_flashdata('error', 'Only School Super Admins can access this page.');
-            redirect('admin/index');
+            redirect(rbac_denied_url());
             return;
         }
 
@@ -1279,7 +1166,7 @@ class AdminUsers extends MY_Controller
 
     public function get_roles(): void
     {
-        $this->_require_role(['Super Admin', 'Admin'], 'view_roles');
+        $this->_require_role(['Super Admin', 'Admin'], 'view_roles', 'Admin Users', 'view');
 
         try {
             // Roles now come from the SINGLE unified catalogue (schools.staffRoles).
@@ -1310,7 +1197,7 @@ class AdminUsers extends MY_Controller
 
             $this->json_success([
                 'roles'   => $roles,
-                'modules' => self::AVAILABLE_MODULES,
+                'modules' => RBAC_MODULES,
             ]);
         } catch (Exception $e) {
             $this->json_error('Failed to load roles.');
@@ -1318,54 +1205,21 @@ class AdminUsers extends MY_Controller
     }
 
     // -------------------------------------------------------------------------
-    // POST  /admin_users/save_role
+    // POST  /admin_users/save_role  — RETIRED 2026-07-23.
     //
-    // Updates ONLY the "Access" facet (module permissions) of a unified role.
-    // The role's IDENTITY (name, category, capabilities, departments) is edited in
-    // Departments & Roles (Org::save_role). Both write the same schools.staffRoles
-    // entry — different fields — so there is one catalogue and no divergence.
+    // Role ACCESS editing (module permissions) has moved to the graded Role Editor
+    // (Staff & Roles → Staff_access: save_role_access / set_role_level), which does
+    // view/edit/manage levels + per-person extra/deny + the anti-escalation ceiling.
+    // This flat-checkbox duplicate is HARD-FAILED so a stale bookmark / cached JS
+    // can no longer reach a SECOND write path to schools.staffRoles — there is now
+    // exactly one guarded surface for role access. `get_roles` stays (read-only; it
+    // still backs the Add-Admin role dropdown). The live write paths that remain
+    // (Staff_access, Org) are guarded by rbac_role_edit_error().
     // -------------------------------------------------------------------------
 
     public function save_role(): void
     {
-        $this->_require_role(['Super Admin', 'Admin'], 'save_access');
-
-        // Accept either the ROLE_* id (preferred) or the role label.
-        $role = trim($this->input->post('role_id', TRUE) ?? '');
-        if ($role === '') $role = trim($this->input->post('role_name', TRUE) ?? '');
-        if ($role === '') { $this->json_error('Role is required.'); return; }
-
-        $permsRaw = $this->input->post('permissions');
-
-        try {
-            ensure_unified_roles($this->fs, $this->school_id);
-            $schoolDoc = $this->fs->get('schools', $this->school_id);
-            $allRoles  = is_array($schoolDoc['staffRoles'] ?? null) ? $schoolDoc['staffRoles'] : [];
-
-            // Field-level update of ONLY the Access facet (pure, tested helper).
-            $res = set_role_access($allRoles, $role, is_array($permsRaw) ? $permsRaw : [], self::AVAILABLE_MODULES);
-            if ($res === null) {
-                $this->json_error('Role not found.');
-                return;
-            }
-            $allRoles = $res['staffRoles'];
-            $rid = $res['rid'];
-            $allRoles[$rid]['accessUpdatedAt'] = date('c');
-            $allRoles[$rid]['accessUpdatedBy'] = $this->admin_id;
-            $this->fs->update('schools', $this->school_id, ['staffRoles' => $allRoles]);
-
-            // If the caller just edited their OWN role's access, refresh their session.
-            if ($res['label'] === (string) $this->admin_role) {
-                $this->session->set_userdata('rbac_permissions', $res['permissions']);
-            }
-
-            log_audit('AdminUsers', 'save_access', $rid, "Set access for '{$res['label']}' → " . count($res['permissions']) . ' section(s)');
-
-            $this->json_success(['message' => "Access updated for '{$res['label']}'.", 'role_id' => $rid, 'permissions' => $res['permissions']]);
-        } catch (Exception $e) {
-            log_message('error', 'AdminUsers::save_role (access) failed: ' . $e->getMessage());
-            $this->json_error('Failed to update access.');
-        }
+        $this->json_error('Role access editing has moved to Staff & Roles → Role Editor.', 410);
     }
 
     // -------------------------------------------------------------------------
@@ -1385,7 +1239,7 @@ class AdminUsers extends MY_Controller
 
     public function get_login_logs(): void
     {
-        $this->_require_role(['Super Admin', 'Admin'], 'view_login_logs');
+        $this->_require_role(['Super Admin', 'Admin'], 'view_login_logs', 'Admin Users', 'view');
 
         try {
             $names = $this->_admin_name_map();
@@ -1412,10 +1266,10 @@ class AdminUsers extends MY_Controller
     /**
      * DEPRECATED (unified-roles merge, 2026-07-07). The legacy RBAC-only seeder is
      * replaced by the single unified catalogue. Delegates to ensure_unified_roles()
-     * so any lingering caller still upgrades the school correctly. The in-code
-     * DEFAULT_ROLES / AVAILABLE_MODULES constants above are retained only as the
-     * historical reference the migration folds from (via schools.roles); the live
-     * default set now lives in Staff::default_staff_roles().
+     * so any lingering caller still upgrades the school correctly. The module
+     * catalogue is the single global RBAC_MODULES; the live default role set lives
+     * in Staff::default_staff_roles(). (The old in-code DEFAULT_ROLES const was
+     * removed 2026-07-22 — it was dead; the fold reads schools.roles Firestore data.)
      */
     private function _seed_default_roles(): void
     {

@@ -14,9 +14,9 @@
 /* ── Theme vars with solid fallbacks ── */
 .ac-wrap {
     --ac-primary: var(--gold, #BC5A3C);
-    --ac-bg: var(--bg, #f0f7f5);
+    --ac-bg: var(--bg, #F7F4F1);
     --ac-bg2: var(--bg2, #ffffff);
-    --ac-bg3: var(--bg3, #e6f4f1);
+    --ac-bg3: var(--bg3, #F7ECE7);
     --ac-border: var(--border, #d1ddd8);
     --ac-text: var(--t1, #1a2e2a);
     --ac-text2: var(--t2, #4a6a60);
@@ -176,9 +176,9 @@ a.ac-tab.active { color: var(--ac-primary); }
     align-items: center; justify-content: center;
     /* Inherit theme vars — modals sit outside .ac-wrap in the DOM */
     --ac-primary: var(--gold, #BC5A3C);
-    --ac-bg: var(--bg, #f0f7f5);
+    --ac-bg: var(--bg, #F7F4F1);
     --ac-bg2: var(--bg2, #ffffff);
-    --ac-bg3: var(--bg3, #e6f4f1);
+    --ac-bg3: var(--bg3, #F7ECE7);
     --ac-border: var(--border, #d1ddd8);
     --ac-text: var(--t1, #1a2e2a);
     --ac-text2: var(--t2, #4a6a60);
@@ -255,7 +255,7 @@ a.ac-tab.active { color: var(--ac-primary); }
 
 /* ── Journal modal table inputs ── */
 #journalModal .ac-table { border: 1px solid var(--ac-border); border-radius: 8px; overflow: hidden; }
-#journalModal .ac-table th { background: var(--ac-bg3, #e6f4f1); }
+#journalModal .ac-table th { background: var(--ac-bg3, #F7ECE7); }
 #journalModal .ac-table td { padding: 8px 10px; background: var(--ac-bg, #f8fafc); }
 #journalModal .ac-table select,
 #journalModal .ac-table input[type="number"] {
@@ -272,7 +272,7 @@ a.ac-tab.active { color: var(--ac-primary); }
     outline: none; border-color: var(--ac-primary);
     box-shadow: 0 0 0 3px rgba(188,90,60,.12);
 }
-#journalModal .ac-table tfoot td { background: var(--ac-bg3, #e6f4f1); }
+#journalModal .ac-table tfoot td { background: var(--ac-bg3, #F7ECE7); }
 #journalModal .ac-table tfoot .ac-num { font-size: 14px; }
 
 /* ── Add Line button ── */

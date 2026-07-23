@@ -18,7 +18,7 @@ class Classes extends MY_Controller
 
     public function ensure_class_exists()
     {
-        $this->_require_role(self::MANAGE_ROLES);
+        $this->_require_role(self::MANAGE_ROLES, '', 'Configuration', 'manage');
 
         $class_label = $this->safe_path_segment(
             $this->input->post('class_name'),
@@ -34,7 +34,7 @@ class Classes extends MY_Controller
 
     public function manage_classes()
     {
-        $this->_require_role(self::VIEW_ROLES);
+        $this->_require_role(self::VIEW_ROLES, '', 'Configuration', 'view');
         $school_id    = $this->parent_db_key;
         $school_name  = $this->school_name;
         $session_year = $this->session_year;
@@ -51,7 +51,7 @@ class Classes extends MY_Controller
 
     public function section_students($class_slug, $section_slug)
     {
-        $this->_require_role(self::VIEW_ROLES);
+        $this->_require_role(self::VIEW_ROLES, '', 'Configuration', 'view');
         $class = urldecode($class_slug);
 
         // Numeric class → add prefix
@@ -71,7 +71,7 @@ class Classes extends MY_Controller
 
     public function fetch_classes_grid()
     {
-        $this->_require_role(self::VIEW_ROLES);
+        $this->_require_role(self::VIEW_ROLES, '', 'Configuration', 'view');
         header('Content-Type: application/json');
 
         // Query all sections for this school from Firestore
@@ -100,7 +100,7 @@ class Classes extends MY_Controller
 
     public function fetch_class_sections()
     {
-        $this->_require_role(self::VIEW_ROLES);
+        $this->_require_role(self::VIEW_ROLES, '', 'Configuration', 'view');
         header('Content-Type: application/json');
 
         $class_name = trim((string) $this->input->post('class_name'));
@@ -166,7 +166,7 @@ class Classes extends MY_Controller
 
     public function add_section()
     {
-        $this->_require_role(self::MANAGE_ROLES);
+        $this->_require_role(self::MANAGE_ROLES, '', 'Configuration', 'edit');
         header('Content-Type: application/json');
 
         $class_name   = trim((string) $this->input->post('class_name'));
@@ -212,7 +212,7 @@ class Classes extends MY_Controller
 
     public function fetch_sections_list()
     {
-        $this->_require_role(self::VIEW_ROLES);
+        $this->_require_role(self::VIEW_ROLES, '', 'Configuration', 'view');
         header('Content-Type: application/json');
 
         $class = trim((string) $this->input->post('class_name'));
@@ -243,7 +243,7 @@ class Classes extends MY_Controller
 
     public function get_class_details()
     {
-        $this->_require_role(self::VIEW_ROLES);
+        $this->_require_role(self::VIEW_ROLES, '', 'Configuration', 'view');
         header('Content-Type: application/json');
 
         // Get distinct class names from sections collection
@@ -297,7 +297,7 @@ class Classes extends MY_Controller
 
     public function view($class_slug = null)
     {
-        $this->_require_role(self::VIEW_ROLES);
+        $this->_require_role(self::VIEW_ROLES, '', 'Configuration', 'view');
         if (!$class_slug) {
             show_404();
             return;
@@ -317,7 +317,7 @@ class Classes extends MY_Controller
 
     public function fetch_section_students()
     {
-        $this->_require_role(self::VIEW_ROLES);
+        $this->_require_role(self::VIEW_ROLES, '', 'Configuration', 'view');
         header('Content-Type: application/json');
 
         $class   = trim((string) $this->input->post('class_name'));
@@ -366,7 +366,7 @@ class Classes extends MY_Controller
 
     public function get_section_settings()
     {
-        $this->_require_role(self::VIEW_ROLES);
+        $this->_require_role(self::VIEW_ROLES, '', 'Configuration', 'view');
         header('Content-Type: application/json');
 
         $class   = trim((string) $this->input->post('class_name'));
@@ -395,7 +395,7 @@ class Classes extends MY_Controller
 
     public function save_section_settings()
     {
-        $this->_require_role(self::MANAGE_ROLES);
+        $this->_require_role(self::MANAGE_ROLES, '', 'Configuration', 'edit');
         header('Content-Type: application/json');
 
         $class        = trim((string) $this->input->post('class_name'));
@@ -461,7 +461,7 @@ class Classes extends MY_Controller
 
     public function loadClassesForTransfer()
     {
-        $this->_require_role(self::VIEW_ROLES);
+        $this->_require_role(self::VIEW_ROLES, '', 'Configuration', 'view');
         header('Content-Type: application/json');
 
         // Query all sections for this school from Firestore
@@ -495,7 +495,7 @@ class Classes extends MY_Controller
 
     public function transfer_students()
     {
-        $this->_require_role(self::MANAGE_ROLES);
+        $this->_require_role(self::MANAGE_ROLES, '', 'Configuration', 'manage');
         header('Content-Type: application/json');
 
         $studentIds  = $this->input->post('student_ids');
@@ -578,7 +578,7 @@ class Classes extends MY_Controller
      */
     public function delete_section()
     {
-        $this->_require_role(self::MANAGE_ROLES);
+        $this->_require_role(self::MANAGE_ROLES, '', 'Configuration', 'manage');
         header('Content-Type: application/json');
 
         $class   = trim((string) $this->input->post('class_name'));

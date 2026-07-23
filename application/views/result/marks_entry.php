@@ -1,8 +1,12 @@
 <?php defined('BASEPATH') OR exit('No direct script access allowed');
 $flashError = $this->session->flashdata('error');
+$can_edit   = function_exists('has_permission') ? has_permission('Results', 'edit')   : true;
+$can_manage = function_exists('has_permission') ? has_permission('Results', 'manage') : true;
 ?>
+<link rel="stylesheet" href="<?= base_url('assets/css/rbac_ui_kit.css') ?>">
 
 <div class="content-wrapper">
+<div class="rx-loadbar" id="rxLoadbar"></div>
 <div class="rme-wrap">
 
   <!-- ── Page Header ──────────────────────────────────────────────── -->
@@ -19,6 +23,13 @@ $flashError = $this->session->flashdata('error');
 
   <?php if ($flashError): ?>
   <div class="rme-alert rme-alert-err"><?= htmlspecialchars($flashError) ?></div>
+  <?php endif; ?>
+
+  <?php if (!$can_edit): ?>
+  <div class="rx-ro-banner">
+    <i class="fa fa-eye rx-ro-ic"></i>
+    View-only access — you can browse subjects and marks sheets, but entering or saving marks requires Edit access.
+  </div>
   <?php endif; ?>
 
   <!-- ── Selectors ────────────────────────────────────────────────── -->
@@ -82,6 +93,29 @@ $flashError = $this->session->flashdata('error');
   var STRUCTURE = <?= json_encode($structure) ?>;
   var EXAM_URL  = '<?= base_url('result/marks_sheet') ?>/';
   var STATUS_URL = '<?= base_url('result/get_exam_status') ?>';
+  var CAN_EDIT  = <?php echo !empty($can_edit) ? 'true' : 'false'; ?>;
+
+  // ── Top progress bar (ref-counted; visible while any request is in flight) ──
+  var RXBar = {
+    _n: 0,
+    _el: function () { return document.getElementById('rxLoadbar'); },
+    start: function () { this._n++; var el = this._el(); if (el) el.classList.add('on'); },
+    done:  function () { this._n = Math.max(0, this._n - 1); if (this._n === 0) { var el = this._el(); if (el) el.classList.remove('on'); } }
+  };
+
+  // ── Fail-closed JSON fetch: reject on !ok / status:error / success:false ──
+  function jfetch(url) {
+    return fetch(url, { headers: { 'X-Requested-With': 'XMLHttpRequest' } })
+      .then(function (r) {
+        if (!r.ok) throw new Error('HTTP ' + r.status);
+        return r.json().catch(function () { throw new Error('Malformed server response'); });
+      })
+      .then(function (d) {
+        if (!d || typeof d !== 'object') throw new Error('Malformed server response');
+        if (d.status === 'error' || d.success === false) throw new Error(d.message || 'Request failed');
+        return d;
+      });
+  }
 
   var examSel    = document.getElementById('rmeExamSel');
   var classSel   = document.getElementById('rmeClassSel');
@@ -127,25 +161,42 @@ $flashError = $this->session->flashdata('error');
     var classKey   = classSel.value;
     var sectionKey = sectionSel.value;
 
-    grid.style.display      = 'none';
     gridEmpty.style.display = 'none';
-    gridLoad.style.display  = '';
+    gridLoad.style.display  = 'none';
+    loadBtn.classList.add('rx-btnload');
+    loadBtn.setAttribute('data-spin', 'dark');
+    loadBtn.disabled = true;
+    RXBar.start();
+
+    // Skeleton grid so the area is never blank while subjects load.
+    grid.innerHTML = '';
+    for (var s = 0; s < 6; s++) {
+      var sk = document.createElement('div');
+      sk.className = 'rme-subj-card rme-skel-card';
+      sk.innerHTML = '<div class="rx-skel" style="width:44px;height:44px;border-radius:50%"></div>'
+        + '<div class="rx-skel rx-skel-row" style="width:70%"></div>'
+        + '<div class="rx-skel rx-skel-row" style="width:90%;height:32px"></div>';
+      grid.appendChild(sk);
+    }
+    grid.style.display = '';
 
     // Fetch subjects from exam's get_subjects, then check status for each
     var subjectsUrl = '<?= base_url('exam/get_subjects') ?>?class=' + encodeURIComponent(classKey);
 
     Promise.all([
-      fetch(subjectsUrl).then(function (r) { return r.json(); }),
-      fetch(STATUS_URL + '?examId=' + encodeURIComponent(examId)
+      jfetch(subjectsUrl),
+      jfetch(STATUS_URL + '?examId=' + encodeURIComponent(examId)
           + '&classKey=' + encodeURIComponent(classKey)
-          + '&sectionKey=' + encodeURIComponent(sectionKey)).then(function (r) { return r.json(); }),
+          + '&sectionKey=' + encodeURIComponent(sectionKey)),
     ]).then(function (results) {
       var subjects  = results[0].subjects || [];
       var statusObj = (results[1].status) || {};
 
-      gridLoad.style.display = 'none';
+      settleLoad();
 
       if (!subjects.length) {
+        grid.style.display = 'none';
+        grid.innerHTML = '';
         gridEmpty.style.display = '';
         return;
       }
@@ -171,22 +222,39 @@ $flashError = $this->session->flashdata('error');
         card.innerHTML = '<div class="rme-subj-icon"><i class="fa fa-book"></i></div>'
           + '<div class="rme-subj-name">' + escHtml(subj) + '</div>'
           + '<a href="' + href + '" class="rme-subj-btn">'
-          + '<i class="fa fa-pencil"></i> Enter Marks</a>';
+          + (CAN_EDIT
+              ? '<i class="fa fa-pencil"></i> Enter Marks'
+              : '<i class="fa fa-eye"></i> View Marks') + '</a>';
         grid.appendChild(card);
       });
 
       grid.style.display = '';
       if (grid.children.length === 0) {
+        grid.innerHTML = '';
         gridEmpty.style.display = '';
       }
-    }).catch(function () {
-      gridLoad.style.display = 'none';
+    }).catch(function (err) {
+      settleLoad();
+      grid.style.display = 'none';
+      grid.innerHTML = '';
+      gridEmpty.innerHTML = '<i class="fa fa-exclamation-triangle"></i>'
+        + '<p>' + escHtml(err && err.message ? err.message : 'Could not load subjects.')
+        + '<br><a href="#" onclick="return false;">Please try again.</a></p>';
       gridEmpty.style.display = '';
     });
   }
 
+  // Clear the top bar + button spinner after a load settles (success or fail).
+  function settleLoad() {
+    RXBar.done();
+    gridLoad.style.display = 'none';
+    loadBtn.classList.remove('rx-btnload');
+    loadBtn.removeAttribute('data-spin');
+    checkReady();
+  }
+
   function escHtml(s) {
-    return s.replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;');
+    return String(s).replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;');
   }
 
   // Auto-load if examId in URL
@@ -260,8 +328,13 @@ html { font-size: 16px !important; }
 }
 .rme-subj-btn:hover { background: var(--gold2); }
 
+/* Skeleton card (shown while subjects load — area never blank) */
+.rme-skel-card { pointer-events: none; }
+.rme-skel-card .rx-skel-row { width: 100%; }
+
 /* Loading / Empty */
 .rme-loading { text-align: center; padding: 40px; color: var(--t3); font-size: 1.1rem; }
+.rme-empty i.fa-exclamation-triangle { color: #dc2626; }
 .rme-empty   { text-align: center; padding: 40px; color: var(--t3); }
 .rme-empty i { font-size: 2.5rem; color: var(--border); display: block; margin-bottom: 12px; }
 .rme-empty a { color: var(--gold); }

@@ -47,14 +47,14 @@ html { font-size:16px !important; }
 .ac-fg select, .ac-fg input[type="text"], .ac-fg input[type="tel"], .ac-fg input[type="email"],
 .ac-fg input[type="date"], .ac-fg input[type="number"] {
     padding:8px 12px; border:1px solid var(--border); border-radius:8px;
-    background:var(--bg3); color:var(--t1); font-size:13px;
+    background:var(--bg2); color:var(--t1); font-size:13px;
     font-family:var(--font-b); min-width:140px;
     transition:border-color var(--ease), box-shadow var(--ease); outline:none;
 }
 .ac-fg select:focus, .ac-fg input:focus { border-color:var(--gold); box-shadow:0 0 0 3px var(--gold-ring); }
 .ac-fg textarea {
     width:100%; padding:9px 12px; border:1px solid var(--border); border-radius:8px;
-    background:var(--bg3); color:var(--t1); font-size:13px; font-family:var(--font-b);
+    background:var(--bg2); color:var(--t1); font-size:13px; font-family:var(--font-b);
     resize:vertical; min-height:60px; outline:none; transition:border-color var(--ease), box-shadow var(--ease);
 }
 .ac-fg textarea:focus { border-color:var(--gold); box-shadow:0 0 0 3px var(--gold-ring); }
@@ -76,11 +76,26 @@ html { font-size:16px !important; }
 
 /* ── Badges ── */
 .ac-badge { display:inline-block; padding:3px 10px; border-radius:20px; font-size:11px; font-weight:700; }
-.ac-badge-pending { background:rgba(217,119,6,.12); color:#d97706; }
-.ac-badge-approved { background:rgba(22,163,74,.12); color:#16a34a; }
-.ac-badge-rejected { background:rgba(220,38,38,.12); color:#dc2626; }
-.ac-badge-enrolled { background:rgba(37,99,235,.12); color:#2563eb; }
-.ac-badge-waitlisted { background:rgba(249,115,22,.12); color:#f97316; }
+/* Aligned to the Board's palette (IA reorg 2026-07) for a consistent look. */
+.ac-badge-pending { background:rgba(221,148,51,.14); color:#B5741F; }
+.ac-badge-approved { background:rgba(47,168,117,.14); color:#2FA875; }
+.ac-badge-rejected { background:rgba(219,90,72,.14); color:#C0402E; }
+.ac-badge-enrolled { background:rgba(46,167,148,.14); color:#2AA79C; }
+.ac-badge-waitlisted { background:rgba(142,114,200,.14); color:#8E72C8; }
+/* View sub-toolbar: status tabs + search (IA redesign 2026-07) */
+.ac-sub { display:flex; align-items:center; gap:10px; margin-bottom:14px; flex-wrap:wrap; }
+.ac-tabs { display:inline-flex; gap:4px; flex-wrap:wrap; }
+.ac-tab { border:1px solid var(--border); background:var(--bg2); color:var(--t2); font-size:12.5px; font-weight:600; padding:7px 13px; border-radius:20px; cursor:pointer; display:inline-flex; align-items:center; gap:7px; font-family:var(--font-b); }
+.ac-tab:hover { border-color:var(--gold-ring); color:var(--t1); }
+.ac-tab.on { background:var(--gold-dim); border-color:transparent; color:var(--gold); }
+.ac-tab .ct { font-size:11px; font-weight:800; opacity:.85; }
+.ac-select { padding:8px 12px; border:1px solid var(--border); border-radius:9px; background:var(--bg2); color:var(--t1); font-size:13px; font-family:var(--font-b); outline:none; }
+.ac-select:focus { border-color:var(--gold); }
+.ac-search { display:flex; align-items:center; gap:8px; background:var(--bg2); border:1px solid var(--border); border-radius:9px; padding:8px 12px; color:var(--t3); font-size:13px; min-width:180px; margin-left:auto; }
+.ac-search input { border:0; background:none; outline:none; color:var(--t1); font-size:13px; font-family:var(--font-b); width:100%; }
+.cellname { display:flex; align-items:center; gap:11px; }
+.ac-av { width:32px; height:32px; border-radius:9px; display:grid; place-items:center; font-weight:700; font-size:11.5px; color:#fff; flex:0 0 auto; }
+.pill { display:inline-flex; align-items:center; gap:5px; font-size:11.5px; font-weight:650; padding:3px 10px; border-radius:20px; white-space:nowrap; }
 
 /* ── Action Buttons ── */
 .ac-act {
@@ -164,7 +179,17 @@ html { font-size:16px !important; }
             <div class="ac-head-title">Applications</div>
             <div class="ac-head-sub">Manage admission applications, approvals &amp; enrollment</div>
         </div>
-        <button class="ac-btn ac-btn-primary" onclick="openAppModal()"><i class="fa fa-plus"></i> New Application</button>
+        <!-- New applications are created via the public admission form (see the
+             Admission Payment page). The CRM only processes/edits them. -->
+    </div>
+
+    <!-- View switcher (IA reorg 2026-07): Applications hosts three views —
+         Table (this page), Board (former Pipeline) and Funnel (former Leads),
+         now reachable here instead of as separate sidebar items. -->
+    <div class="ac-viewsw" style="display:inline-flex;gap:4px;background:var(--bg3,#f1f0ed);border:1px solid var(--border,#e6e2dc);border-radius:10px;padding:4px;margin-bottom:16px;flex-wrap:wrap;">
+        <span style="display:inline-flex;align-items:center;gap:7px;padding:7px 15px;border-radius:7px;font-size:13px;font-weight:600;background:var(--card,#fff);color:var(--gold,#BC5A3C);box-shadow:0 1px 2px rgba(0,0,0,.07);"><i class="fa fa-table"></i> Table</span>
+        <a href="<?= base_url('sis/pipeline') ?>" style="display:inline-flex;align-items:center;gap:7px;padding:7px 15px;border-radius:7px;font-size:13px;font-weight:600;color:var(--t2,#5b524b);text-decoration:none;"><i class="fa fa-columns"></i> Board</a>
+        <a href="<?= base_url('sis/admission_leads') ?>" style="display:inline-flex;align-items:center;gap:7px;padding:7px 15px;border-radius:7px;font-size:13px;font-weight:600;color:var(--t2,#5b524b);text-decoration:none;"><i class="fa fa-filter"></i> Funnel</a>
     </div>
 
     <div id="pageAlert" class="ac-alert"></div>
@@ -172,32 +197,22 @@ html { font-size:16px !important; }
     <!-- Detail Panel -->
     <div class="ac-detail" id="detailPanel"></div>
 
-    <!-- Filters -->
-    <div class="ac-filters">
-        <div class="ac-fg">
-            <label>Status</label>
-            <select id="filterStatus" onchange="loadApplications()">
-                <option value="">All Statuses</option>
-                <option value="pending">Pending</option>
-                <option value="approved">Approved</option>
-                <option value="rejected">Rejected</option>
-                <option value="enrolled">Enrolled</option>
-                <option value="waitlisted">Waitlisted</option>
-            </select>
+    <!-- Status tabs + class + search (IA redesign 2026-07) -->
+    <div class="ac-sub">
+        <div class="ac-tabs" id="statusTabs">
+            <button class="ac-tab on" data-st="all" onclick="setAppStatus('all',this)">All <span class="ct" id="ct-all">0</span></button>
+            <button class="ac-tab" data-st="pending" onclick="setAppStatus('pending',this)">Pending <span class="ct" id="ct-pending">0</span></button>
+            <button class="ac-tab" data-st="approved" onclick="setAppStatus('approved',this)">Approved <span class="ct" id="ct-approved">0</span></button>
+            <button class="ac-tab" data-st="enrolled" onclick="setAppStatus('enrolled',this)">Enrolled <span class="ct" id="ct-enrolled">0</span></button>
+            <button class="ac-tab" data-st="rejected" onclick="setAppStatus('rejected',this)">Rejected <span class="ct" id="ct-rejected">0</span></button>
         </div>
-        <div class="ac-fg">
-            <label>Class</label>
-            <select id="filterClass" onchange="loadApplications()">
-                <option value="">All Classes</option>
-                <?php foreach ($classes as $c): ?>
-                <option value="<?= htmlspecialchars(str_replace('Class ', '', $c['class_name'])) ?>"><?= htmlspecialchars($c['class_name']) ?></option>
-                <?php endforeach; ?>
-            </select>
-        </div>
-        <div class="ac-fg">
-            <label>Search</label>
-            <input type="text" id="filterSearch" placeholder="Name or ID..." oninput="filterTable()" style="min-width:180px;">
-        </div>
+        <select id="filterClass" class="ac-select" onchange="renderTable(allApps)">
+            <option value="">All Classes</option>
+            <?php foreach ($classes as $c): ?>
+            <option value="<?= htmlspecialchars(str_replace('Class ', '', $c['class_name'])) ?>"><?= htmlspecialchars($c['class_name']) ?></option>
+            <?php endforeach; ?>
+        </select>
+        <div class="ac-search"><i class="fa fa-search"></i><input type="text" id="filterSearch" placeholder="Name or ID…" oninput="filterTable()"></div>
     </div>
 
     <div id="tableWrap">
@@ -207,18 +222,18 @@ html { font-size:16px !important; }
     <!-- Application Modal -->
     <div class="ac-overlay" id="appModal">
         <div class="ac-modal">
-            <h2 id="modalTitle"><i class="fa fa-file-text-o" style="color:var(--gold);margin-right:8px;"></i>New Application</h2>
+            <h2 id="modalTitle"><i class="fa fa-file-text-o" style="color:var(--gold);margin-right:8px;"></i>Edit Application</h2>
             <input type="hidden" id="appId">
 
             <div class="ac-form-grid">
-                <div class="ac-fg"><label>Student Name *</label><input type="text" id="appStudentName"></div>
-                <div class="ac-fg"><label>Parent / Guardian *</label><input type="text" id="appParentName"></div>
-                <div class="ac-fg"><label>Father's Name</label><input type="text" id="appFatherName"></div>
-                <div class="ac-fg"><label>Mother's Name</label><input type="text" id="appMotherName"></div>
-                <div class="ac-fg"><label>Phone *</label><input type="tel" id="appPhone"></div>
-                <div class="ac-fg"><label>Email</label><input type="email" id="appEmail"></div>
+                <div class="ac-fg"><label for="appStudentName">Student Name *</label><input type="text" id="appStudentName"></div>
+                <div class="ac-fg"><label for="appParentName">Parent / Guardian *</label><input type="text" id="appParentName"></div>
+                <div class="ac-fg"><label for="appFatherName">Father's Name</label><input type="text" id="appFatherName"></div>
+                <div class="ac-fg"><label for="appMotherName">Mother's Name</label><input type="text" id="appMotherName"></div>
+                <div class="ac-fg"><label for="appPhone">Phone *</label><input type="tel" id="appPhone"></div>
+                <div class="ac-fg"><label for="appEmail">Email</label><input type="email" id="appEmail"></div>
                 <div class="ac-fg">
-                    <label>Class *</label>
+                    <label for="appClass">Class *</label>
                     <select id="appClass">
                         <option value="">-- Select --</option>
                         <?php foreach ($classes as $c): ?>
@@ -229,38 +244,38 @@ html { font-size:16px !important; }
                     </select>
                 </div>
                 <div class="ac-fg">
-                    <label>Section <span style="font-weight:400;color:var(--t3);font-size:11px;">(decided at enrollment)</span></label>
+                    <label for="appSection">Section <span style="font-weight:400;color:var(--t3);font-size:11px;">(decided at enrollment)</span></label>
                     <input type="text" id="appSection" placeholder="Leave blank — picked when enrolling">
                 </div>
-                <div class="ac-fg"><label>Date of Birth</label><input type="date" id="appDOB"></div>
+                <div class="ac-fg"><label for="appDOB">Date of Birth</label><input type="date" id="appDOB"></div>
                 <div class="ac-fg">
-                    <label>Gender</label>
+                    <label for="appGender">Gender</label>
                     <select id="appGender"><option value="">-- Select --</option><option value="Male">Male</option><option value="Female">Female</option><option value="Other">Other</option></select>
                 </div>
-                <div class="ac-fg"><label>Blood Group</label><input type="text" id="appBloodGroup"></div>
-                <div class="ac-fg"><label>Category</label><input type="text" id="appCategory"></div>
-                <div class="ac-fg"><label>Religion</label><input type="text" id="appReligion"></div>
-                <div class="ac-fg"><label>Nationality</label><input type="text" id="appNationality" value="Indian"></div>
-                <div class="ac-fg"><label>Father's Occupation</label><input type="text" id="appFatherOcc"></div>
-                <div class="ac-fg"><label>Mother's Occupation</label><input type="text" id="appMotherOcc"></div>
+                <div class="ac-fg"><label for="appBloodGroup">Blood Group</label><input type="text" id="appBloodGroup"></div>
+                <div class="ac-fg"><label for="appCategory">Category</label><input type="text" id="appCategory"></div>
+                <div class="ac-fg"><label for="appReligion">Religion</label><input type="text" id="appReligion"></div>
+                <div class="ac-fg"><label for="appNationality">Nationality</label><input type="text" id="appNationality" value="Indian"></div>
+                <div class="ac-fg"><label for="appFatherOcc">Father's Occupation</label><input type="text" id="appFatherOcc"></div>
+                <div class="ac-fg"><label for="appMotherOcc">Mother's Occupation</label><input type="text" id="appMotherOcc"></div>
             </div>
 
             <h3><i class="fa fa-map-marker" style="margin-right:6px;"></i> Address</h3>
             <div class="ac-fg"><input type="text" id="appAddress" placeholder="Street address"></div>
             <div class="ac-form-grid-3">
-                <div class="ac-fg"><label>City</label><input type="text" id="appCity"></div>
-                <div class="ac-fg"><label>State</label><input type="text" id="appState"></div>
-                <div class="ac-fg"><label>Pincode</label><input type="text" id="appPincode"></div>
+                <div class="ac-fg"><label for="appState">State</label><select id="appState" data-india-state data-india-fill data-india-placeholder="Select State"><option value="">Select State</option></select></div>
+                <div class="ac-fg"><label for="appCity">District</label><select id="appCity" data-india-district="appState" data-india-placeholder="Select District"><option value="">Select District</option></select></div>
+                <div class="ac-fg"><label for="appPincode">Pincode</label><input type="text" id="appPincode"></div>
             </div>
 
             <h3><i class="fa fa-school" style="margin-right:6px;"></i> Previous School</h3>
             <div class="ac-form-grid-3">
-                <div class="ac-fg"><label>School Name</label><input type="text" id="appPrevSchool"></div>
-                <div class="ac-fg"><label>Class</label><input type="text" id="appPrevClass"></div>
-                <div class="ac-fg"><label>Marks/Grade</label><input type="text" id="appPrevMarks"></div>
+                <div class="ac-fg"><label for="appPrevSchool">School Name</label><input type="text" id="appPrevSchool"></div>
+                <div class="ac-fg"><label for="appPrevClass">Class</label><input type="text" id="appPrevClass"></div>
+                <div class="ac-fg"><label for="appPrevMarks">Marks/Grade</label><input type="text" id="appPrevMarks"></div>
             </div>
 
-            <div class="ac-fg" style="margin-top:8px;"><label>Notes</label><textarea id="appNotes" rows="2"></textarea></div>
+            <div class="ac-fg" style="margin-top:8px;"><label for="appNotes">Notes</label><textarea id="appNotes" rows="2"></textarea></div>
 
             <div class="ac-modal-foot">
                 <button class="ac-btn ac-btn-ghost" onclick="closeAppModal()">Cancel</button>
@@ -275,7 +290,7 @@ html { font-size:16px !important; }
             <h2 id="actionTitle">Approve Application</h2>
             <input type="hidden" id="actionAppId">
             <input type="hidden" id="actionType">
-            <div class="ac-fg"><label id="actionLabel">Remarks</label><textarea id="actionRemarks" rows="3"></textarea></div>
+            <div class="ac-fg"><label id="actionLabel" for="actionRemarks">Remarks</label><textarea id="actionRemarks" rows="3"></textarea></div>
             <div class="ac-modal-foot">
                 <button class="ac-btn ac-btn-ghost" onclick="closeActionModal()">Cancel</button>
                 <button class="ac-btn ac-btn-primary" onclick="submitAction()" id="actionBtn">Confirm</button>
@@ -306,6 +321,7 @@ html { font-size:16px !important; }
 </div>
 </div>
 
+<script src="<?= base_url('assets/js/india_geo.js') ?>"></script>
 <script>
 var BASE = '<?= base_url() ?>';
 var allApps = [];
@@ -320,7 +336,7 @@ function setBusy(on, label) {
         el.id = 'acBusyOverlay';
         el.style.cssText = 'position:fixed;inset:0;background:rgba(15,23,42,0.55);display:none;align-items:center;justify-content:center;z-index:9999;';
         el.innerHTML = '<div style="background:#fff;border-radius:12px;padding:20px 28px;display:flex;align-items:center;gap:14px;box-shadow:0 12px 32px rgba(0,0,0,0.25);min-width:200px;">'
-                     + '<i class="fa fa-spinner fa-spin" style="font-size:22px;color:var(--gold,#d97706);"></i>'
+                     + '<i class="fa fa-spinner fa-spin" style="font-size:22px;color:var(--gold,#BC5A3C);"></i>'
                      + '<span id="acBusyLabel" style="font-size:14px;color:#1f2937;font-weight:500;">Processing…</span>'
                      + '</div>';
         document.body.appendChild(el);
@@ -335,7 +351,8 @@ function setBusy(on, label) {
 
 document.addEventListener('DOMContentLoaded', function() {
     loadApplications();
-    document.getElementById('appClass').addEventListener('change', function() {
+    var acSel = document.getElementById('appClass');
+    if (acSel) acSel.addEventListener('change', function() {
         var opt = this.options[this.selectedIndex];
         document.getElementById('appSection').value = opt.getAttribute('data-section') || '';
     });
@@ -350,62 +367,84 @@ function loadApplications() {
     .then(function(r) { return r.json(); })
     .then(function(data) {
         if (data.status === 'success') { allApps = data.applications || []; renderTable(allApps); }
+        else { document.getElementById('tableWrap').innerHTML = '<div class="ac-empty"><i class="fa fa-exclamation-triangle"></i> ' + String(data.message || 'Could not load applications').replace(/</g,'&lt;') + '</div>'; }
     })
     .catch(function() { document.getElementById('tableWrap').innerHTML = '<div class="ac-empty"><i class="fa fa-exclamation-triangle"></i> Failed to load</div>'; });
 }
 
-function renderTable(items) {
-    var sf = document.getElementById('filterStatus').value;
-    var cf = document.getElementById('filterClass').value;
-    var filtered = items.filter(function(a) { if (sf && a.status !== sf) return false; if (cf && a.class !== cf) return false; return true; });
+var curStatus = 'all';
+function avColor(s){var p=['#4E82E0','#DD9433','#9576DA','#2FA875','#C05A3B','#3BB0C9','#E06A9B','#6E8AA8'];s=String(s||'');var h=0;for(var i=0;i<s.length;i++){h=(h*31+s.charCodeAt(i))&0x7fffffff;}return p[h%p.length];}
+function initials(n){n=String(n||'').trim();if(!n)return '?';var p=n.split(/\s+/);return ((p[0].charAt(0)||'')+(p.length>1?p[p.length-1].charAt(0):'')).toUpperCase();}
+function tint(hex,a){var h=(hex||'#888').replace('#','');if(h.length===3)h=h[0]+h[0]+h[1]+h[1]+h[2]+h[2];var n=parseInt(h,16);return 'rgba('+((n>>16)&255)+','+((n>>8)&255)+','+(n&255)+','+a+')';}
+function srcMap(s){s=String(s||'').toLowerCase();if(s.indexOf('public')>-1||s.indexOf('online')>-1)return 'Online';if(s.indexOf('walk')>-1||s.indexOf('admin')>-1)return 'Walk-in';if(s.indexOf('refer')>-1)return 'Referral';return s?s.replace(/_/g,' '):'-';}
+function daysOf(d){if(!d)return null;var t=Date.parse(String(d).replace(' ','T'));if(isNaN(t))return null;return Math.max(0,Math.floor((Date.now()-t)/86400000));}
 
-    if (filtered.length === 0) { document.getElementById('tableWrap').innerHTML = '<div class="ac-empty"><i class="fa fa-inbox"></i> No applications found</div>'; return; }
+function setAppStatus(st, btn){
+    curStatus = st;
+    document.querySelectorAll('#statusTabs .ac-tab').forEach(function(t){ t.classList.remove('on'); });
+    btn.classList.add('on');
+    renderTable(allApps);
+}
+
+function renderTable(items) {
+    items = items || allApps || [];
+    var cf = document.getElementById('filterClass').value;
+
+    // Live tab counts (class-scoped, whole set).
+    var counts = { all:0, pending:0, approved:0, enrolled:0, rejected:0 };
+    items.forEach(function(a){ if (cf && a.class !== cf) return; counts.all++; if (counts[a.status] !== undefined) counts[a.status]++; });
+    ['all','pending','approved','enrolled','rejected'].forEach(function(k){ var e=document.getElementById('ct-'+k); if(e) e.textContent=counts[k]; });
+
+    var filtered = items.filter(function(a) {
+        if (curStatus !== 'all' && a.status !== curStatus) return false;
+        if (cf && a.class !== cf) return false;
+        return true;
+    });
+
+    if (filtered.length === 0) { document.getElementById('tableWrap').innerHTML = '<div class="ac-empty"><i class="fa fa-inbox"></i> No applications here</div>'; return; }
 
     var bm = { pending:'ac-badge-pending', approved:'ac-badge-approved', rejected:'ac-badge-rejected', enrolled:'ac-badge-enrolled', waitlisted:'ac-badge-waitlisted' };
-    // Payment-status pill colors. `paid` is the only "actionable green";
-    // `initiated` (parent started checkout but didn't finish) is amber so
-    // the admin can spot stuck flows; `failed` is red.
-    function paymentBadge(ps) {
+    function feePill(ps) {
         var s = (ps || '').toLowerCase();
-        if (s === 'paid')      return '<span style="background:#dcfce7;color:#166534;padding:2px 8px;border-radius:10px;font-size:10px;font-weight:700;text-transform:uppercase;letter-spacing:0.3px;"><i class="fa fa-check" style="font-size:9px;margin-right:3px;"></i>Paid</span>';
-        if (s === 'initiated') return '<span style="background:#fef3c7;color:#92400e;padding:2px 8px;border-radius:10px;font-size:10px;font-weight:700;text-transform:uppercase;letter-spacing:0.3px;">Started</span>';
-        if (s === 'failed')    return '<span style="background:#fee2e2;color:#991b1b;padding:2px 8px;border-radius:10px;font-size:10px;font-weight:700;text-transform:uppercase;letter-spacing:0.3px;">Failed</span>';
-        if (s === 'pending')   return '<span style="color:var(--t3);font-size:11px;">—</span>';
-        return s ? '<span style="font-size:11px;color:var(--t3);">' + esc(s) + '</span>' : '<span style="color:var(--t3);font-size:11px;">—</span>';
+        if (s === 'paid')      return '<span class="pill" style="background:'+tint('#2FA875',.14)+';color:#2FA875">&#10003; Paid</span>';
+        if (s === 'initiated') return '<span class="pill" style="background:'+tint('#DD9433',.14)+';color:#B5741F">Started</span>';
+        if (s === 'failed')    return '<span class="pill" style="background:'+tint('#DB5A48',.14)+';color:#C0402E">Failed</span>';
+        return '<span style="color:var(--t3);font-size:12px;">—</span>';
     }
-    var html = '<div class="ac-table-wrap"><table class="ac-table"><thead><tr><th>ID</th><th>Student</th><th>Class</th><th>Phone</th><th>Stage</th><th>Status</th><th>Payment</th><th>Date</th><th>Actions</th></tr></thead><tbody>';
+    var html = '<div class="ac-table-wrap"><table class="ac-table"><thead><tr>'
+        + '<th>Applicant</th><th>Class</th><th>Source</th><th>Status</th><th>Fee</th><th>Age</th><th></th>'
+        + '</tr></thead><tbody>';
 
     filtered.forEach(function(a) {
         var bc = bm[a.status] || 'ac-badge-pending';
-        html += '<tr data-name="' + (a.student_name || '').toLowerCase() + '" data-id="' + (a.application_id || '').toLowerCase() + '">';
-        html += '<td style="font-family:var(--font-m);font-size:11px;">' + esc(a.application_id || a.id) + '</td>';
-        // Possible-duplicate badge — non-blocking. Set when another
-        // application from the same phone+class exists. Twins legitimately
-        // trigger this; admin reviews and dismisses.
+        var col = avColor(a.student_name);
+        var age = daysOf(a.created_at);
         var dupBadge = (a.possible_duplicate === true)
-            ? ' <span title="Another application from the same phone applied for the same class. Review for possible duplicate." style="display:inline-block;background:#fef3c7;color:#92400e;padding:1px 7px;border-radius:8px;font-size:9px;font-weight:700;text-transform:uppercase;letter-spacing:0.3px;margin-left:6px;vertical-align:middle;"><i class="fa fa-exclamation-triangle" style="font-size:8px;margin-right:3px;"></i>Possible Dup</span>'
+            ? ' <span title="Another application from the same phone applied for the same class." style="display:inline-block;background:'+tint('#DD9433',.16)+';color:#B5741F;padding:1px 7px;border-radius:8px;font-size:9px;font-weight:700;text-transform:uppercase;letter-spacing:0.3px;margin-left:6px;">Dup?</span>'
             : '';
-        html += '<td style="font-weight:600;">' + esc(a.student_name) + dupBadge + '</td>';
-        html += '<td>' + esc(a.class || '-') + '</td>';
-        html += '<td>' + esc(a.phone) + '</td>';
-        html += '<td style="font-size:12px;color:var(--t3);">' + esc((a.stage || '').replace(/_/g, ' ')) + '</td>';
+        html += '<tr data-name="' + escAttr((a.student_name || '').toLowerCase()) + '" data-id="' + escAttr((a.application_id || '').toLowerCase()) + '">';
+        html += '<td><div class="cellname"><div class="ac-av" style="background:'+col+'">'+esc(initials(a.student_name))+'</div>'
+             +  '<div><div style="font-weight:600">'+esc(a.student_name)+dupBadge+'</div><div style="font-size:11px;color:var(--t3)">'+esc(a.application_id || a.id)+'</div></div></div></td>';
+        html += '<td>' + esc(a.class ? ('Grade '+a.class) : '-') + (a.section?(' · '+esc(a.section)):'') + '</td>';
+        html += '<td>' + esc(srcMap(a.source)) + '</td>';
         html += '<td><span class="ac-badge ' + bc + '">' + esc(a.status) + '</span></td>';
-        html += '<td>' + paymentBadge(a.payment_status) + '</td>';
-        html += '<td style="font-size:12px;">' + esc((a.created_at || '').substring(0, 10)) + '</td>';
-        html += '<td style="white-space:nowrap;">';
-        html += '<button class="ac-act" onclick="viewApp(\'' + a.id + '\')" title="View"><i class="fa fa-eye"></i></button> ';
-        html += '<button class="ac-act" onclick="editApp(\'' + a.id + '\')" title="Edit"><i class="fa fa-pencil"></i></button> ';
+        html += '<td>' + feePill(a.payment_status) + '</td>';
+        html += '<td style="color:'+((age!==null&&age>7)?'#B5741F':'var(--t3)')+'">' + (age===null?'—':(age+'d')) + '</td>';
+        html += '<td><div style="display:flex;gap:5px;white-space:nowrap;">';
+        html += '<button class="ac-act" onclick="viewApp(\'' + esc(a.id) + '\')" title="View"><i class="fa fa-eye"></i></button>';
+        html += '<button class="ac-act" onclick="editApp(\'' + esc(a.id) + '\')" title="Edit"><i class="fa fa-pencil"></i></button>';
         if (a.status === 'pending') {
-            html += '<button class="ac-act ac-act-green" onclick="openAction(\'' + a.id + '\',\'approve\')" title="Approve"><i class="fa fa-check"></i></button> ';
-            html += '<button class="ac-act ac-act-red" onclick="openAction(\'' + a.id + '\',\'reject\')" title="Reject"><i class="fa fa-times"></i></button> ';
-            html += '<button class="ac-act" onclick="addWaitlist(\'' + a.id + '\')" title="Waitlist"><i class="fa fa-clock-o"></i></button> ';
+            html += '<button class="ac-act ac-act-green" onclick="openAction(\'' + esc(a.id) + '\',\'approve\')" title="Approve"><i class="fa fa-check"></i></button>';
+            html += '<button class="ac-act ac-act-red" onclick="openAction(\'' + esc(a.id) + '\',\'reject\')" title="Reject"><i class="fa fa-times"></i></button>';
+            html += '<button class="ac-act" onclick="addWaitlist(\'' + esc(a.id) + '\')" title="Waitlist"><i class="fa fa-clock-o"></i></button>';
         }
-        if (a.status === 'approved') html += '<button class="ac-act ac-act-blue" onclick="enrollStudent(\'' + a.id + '\')" title="Enroll"><i class="fa fa-user-plus"></i></button> ';
-        html += '<button class="ac-act ac-act-red" onclick="deleteApp(\'' + a.id + '\')"><i class="fa fa-trash"></i></button>';
-        html += '</td></tr>';
+        if (a.status === 'approved') html += '<button class="ac-act ac-act-blue" onclick="enrollStudent(\'' + esc(a.id) + '\')" title="Enroll"><i class="fa fa-user-plus"></i></button>';
+        html += '<button class="ac-act ac-act-red" onclick="deleteApp(\'' + esc(a.id) + '\')" title="Delete"><i class="fa fa-trash"></i></button>';
+        html += '</div></td></tr>';
     });
     html += '</tbody></table></div>';
     document.getElementById('tableWrap').innerHTML = html;
+    filterTable();
 }
 
 function filterTable() {
@@ -441,11 +480,15 @@ function viewApp(id) {
 function openAppModal(app) {
     var ids = ['appId','appStudentName','appParentName','appFatherName','appMotherName','appPhone','appEmail','appClass','appSection','appDOB','appGender','appBloodGroup','appCategory','appReligion','appNationality','appFatherOcc','appMotherOcc','appAddress','appCity','appState','appPincode','appPrevSchool','appPrevClass','appPrevMarks','appNotes'];
     ids.forEach(function(f) { var el = document.getElementById(f); if (el) el.value = f === 'appNationality' ? 'Indian' : ''; });
-    document.getElementById('modalTitle').innerHTML = '<i class="fa fa-file-text-o" style="color:var(--gold);margin-right:8px;"></i>New Application';
+    document.getElementById('modalTitle').innerHTML = '<i class="fa fa-pencil" style="color:var(--gold);margin-right:8px;"></i>Edit Application';
     if (app) {
         var map = {appId:'id',appStudentName:'student_name',appParentName:'parent_name',appFatherName:'father_name',appMotherName:'mother_name',appPhone:'phone',appEmail:'email',appClass:'class',appSection:'section',appDOB:'dob',appGender:'gender',appBloodGroup:'blood_group',appCategory:'category',appReligion:'religion',appNationality:'nationality',appFatherOcc:'father_occupation',appMotherOcc:'mother_occupation',appAddress:'address',appCity:'city',appState:'state',appPincode:'pincode',appPrevSchool:'previous_school',appPrevClass:'previous_class',appPrevMarks:'previous_marks',appNotes:'notes'};
         Object.keys(map).forEach(function(k) { var el = document.getElementById(k); if (el) el.value = app[map[k]] || ''; });
         document.getElementById('modalTitle').innerHTML = '<i class="fa fa-pencil" style="color:var(--gold);margin-right:8px;"></i>Edit Application';
+    }
+    // Cascade the district select off the (possibly just-filled) state value.
+    if (window.IndiaGeo) {
+        IndiaGeo.fillDistricts(document.getElementById('appState'), document.getElementById('appCity'), app ? (app.city || '') : '');
     }
     document.getElementById('appModal').classList.add('active');
 }
@@ -544,11 +587,11 @@ function openSectionPicker(detail, suggested) {
             // Color thresholds — green (≤70%), amber (≤95%), red (full)
             var bar = pct >= 100 ? '#dc2626' : (pct >= 95 ? '#f59e0b' : (pct >= 70 ? '#eab308' : '#16a34a'));
             var isSugg = (d.section === suggested);
-            var border = isSugg ? '2px solid var(--gold,#d97706)' : '1px solid var(--border,#e5e7eb)';
+            var border = isSugg ? '2px solid var(--gold,#BC5A3C)' : '1px solid var(--border,#e5e7eb)';
             var disabled = d.full ? 'opacity:0.55;cursor:not-allowed;' : 'cursor:pointer;';
             var click = d.full ? '' : 'onclick="confirmSectionPick(\'' + d.section + '\')"';
             var badge = isSugg
-                ? '<span style="background:var(--gold,#d97706);color:#fff;padding:2px 8px;border-radius:10px;font-size:10px;font-weight:700;letter-spacing:0.4px;text-transform:uppercase;">Suggested</span>'
+                ? '<span style="background:var(--gold,#BC5A3C);color:#fff;padding:2px 8px;border-radius:10px;font-size:10px;font-weight:700;letter-spacing:0.4px;text-transform:uppercase;">Suggested</span>'
                 : (d.full ? '<span style="background:#fee2e2;color:#991b1b;padding:2px 8px;border-radius:10px;font-size:10px;font-weight:700;text-transform:uppercase;">Full</span>' : '');
             return ''
               + '<div ' + click + ' style="border:' + border + ';border-radius:10px;padding:12px 14px;background:#fff;' + disabled + '">'
@@ -601,6 +644,11 @@ function confirmSectionPick(section) {
                     authError:   res.auth_error || ''
                 });
             }
+            // Non-fatal post-enroll issues (fees didn't assign / app-sync
+            // didn't fire) — surface them so the operator can act.
+            if (res.warnings && res.warnings.length) {
+                setTimeout(function(){ showAlert('Enrolled, but: ' + res.warnings.join(' '), 'error'); }, 700);
+            }
             loadApplications();
         }
     })
@@ -614,9 +662,9 @@ function showEnrollmentCredentials(c) {
     // Inline modal — minimal markup so we don't need to ship a separate
     // template. Admin can copy each credential or print the whole card.
     var bgColor   = c.authCreated ? '#dcfce7' : '#fef3c7';
-    var borderCol = c.authCreated ? '#16a34a' : '#d97706';
+    var borderCol = c.authCreated ? '#16a34a' : '#BC5A3C';
     var icon      = c.authCreated ? 'fa-check-circle' : 'fa-exclamation-triangle';
-    var iconCol   = c.authCreated ? '#16a34a' : '#d97706';
+    var iconCol   = c.authCreated ? '#16a34a' : '#BC5A3C';
     var statusTxt = c.authCreated
         ? 'Parent login is ready. Share these credentials with the parent.'
         : '⚠ Firebase Auth account FAILED to create — parent cannot log in yet. Contact tech support. (' + esc(c.authError) + ')';
@@ -652,8 +700,8 @@ function showEnrollmentCredentials(c) {
       +     // the only payload the handler sends; server re-reads stored
       +     // password from the student doc (Q4 — no client-side password).
       +     (!c.authCreated
-      +        ? '<div style="margin:0 0 12px;"><button class="ac-btn ac-btn-primary" style="background:#d97706;border-color:#d97706;" id="repairAuthInModalBtn" data-user-id="' + esc(c.studentId) + '" onclick="repairAuthAccount()"><i class="fa fa-wrench"></i> Repair Auth Account</button></div>'
-      +        : '')
+                 ? '<div style="margin:0 0 12px;"><button class="ac-btn ac-btn-primary" style="background:#BC5A3C;border-color:#BC5A3C;" id="repairAuthInModalBtn" data-user-id="' + esc(c.studentId) + '" onclick="repairAuthAccount()"><i class="fa fa-wrench"></i> Repair Auth Account</button></div>'
+                 : '')
       +     '<p style="margin:0 0 16px;font-size:11px;color:#9ca3af;line-height:1.5;">'
       +       'The parent will be required to set a new password on first login. SMS delivery of these credentials will be added in the next phase.'
       +     '</p>'
@@ -736,4 +784,9 @@ function deleteApp(id) {
 
 function showAlert(msg,type){var el=document.getElementById('pageAlert');el.className='ac-alert ac-alert-'+type;el.textContent=msg;el.style.display='block';setTimeout(function(){el.style.display='none';},4000);}
 function esc(s){var d=document.createElement('div');d.textContent=s||'';return d.innerHTML;}
+// Attribute-safe escaper (F2): esc() above escapes <>& but NOT quotes, so it
+// is unsafe inside an HTML attribute (data-name/data-id). escAttr also escapes
+// " and ' so applicant-controlled values can't break out of the attribute and
+// inject an event handler that would run in this privileged admin panel.
+function escAttr(s){return (s==null?'':String(s)).replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;').replace(/"/g,'&quot;').replace(/'/g,'&#39;');}
 </script>

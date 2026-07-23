@@ -57,7 +57,7 @@ class Exam extends MY_Controller
     // ── index() — Exam list ───────────────────────────────────────────────
     public function index()
     {
-        $this->_require_role(self::VIEW_ROLES, 'view_exams');
+        $this->_require_role(self::VIEW_ROLES, 'view_exams', 'Examinations', 'view');
         $school = $this->school_name;
         $year   = $this->session_year;
 
@@ -173,7 +173,7 @@ class Exam extends MY_Controller
 
     public function create()
     {
-        $this->_require_role(self::ADMIN_ROLES, 'create exam');
+        $this->_require_role(self::ADMIN_ROLES, 'create exam', 'Examinations', 'edit');
 
         $structure = $this->exam_engine->get_class_structure();
 
@@ -330,7 +330,7 @@ class Exam extends MY_Controller
     // Draft-only render of the prefilled form. The POST save is edit_exam().
     public function edit($id = null)
     {
-        $this->_require_role(self::ADMIN_ROLES, 'edit exam');
+        $this->_require_role(self::ADMIN_ROLES, 'edit exam', 'Examinations', 'edit');
         $id = trim((string) $id);
         if ($id === '') { redirect('exam'); }
 
@@ -482,7 +482,7 @@ class Exam extends MY_Controller
      */
     public function datesheet_json($id = null)
     {
-        $this->_require_role(self::ADMIN_ROLES, 'clone exam datesheet');
+        $this->_require_role(self::ADMIN_ROLES, 'clone exam datesheet', 'Examinations', 'view');
         header('Content-Type: application/json');
         $id = trim((string) $id);
         if ($id === '') { echo json_encode(['ok' => false, 'error' => 'Missing exam id']); return; }
@@ -545,7 +545,7 @@ class Exam extends MY_Controller
     // updatedAt is refreshed. Reachable via default routing exam/edit_exam/{id}.
     public function edit_exam($id = null)
     {
-        $this->_require_role(self::ADMIN_ROLES, 'edit exam');
+        $this->_require_role(self::ADMIN_ROLES, 'edit exam', 'Examinations', 'edit');
         header('Content-Type: application/json');
 
         if ($this->input->method() !== 'post') {
@@ -704,7 +704,7 @@ class Exam extends MY_Controller
     // ── view($id) ────────────────────────────────────────────────────────
     public function view($id = null)
     {
-        $this->_require_role(self::VIEW_ROLES, 'view_exam');
+        $this->_require_role(self::VIEW_ROLES, 'view_exam', 'Examinations', 'view');
         if (!$id) { redirect('exam'); }
 
         $school = $this->school_name;
@@ -725,7 +725,7 @@ class Exam extends MY_Controller
     // ── delete($id) ──────────────────────────────────────────────────────
     public function delete($id = null)
     {
-        $this->_require_role(self::ADMIN_ROLES, 'delete exam');
+        $this->_require_role(self::ADMIN_ROLES, 'delete exam', 'Examinations', 'manage');
         if (!$id) { redirect('exam'); }
 
         // Phase 3.3 delete guard: a graded exam (marks entered) requires an
@@ -796,7 +796,7 @@ class Exam extends MY_Controller
     // ── update_status() — POST AJAX ──────────────────────────────────────
     public function update_status()
     {
-        $this->_require_role(self::ADMIN_ROLES, 'update exam status');
+        $this->_require_role(self::ADMIN_ROLES, 'update exam status', 'Examinations', 'manage');
         header('Content-Type: application/json');
 
         $id     = trim((string) $this->input->post('examId'));
@@ -972,7 +972,7 @@ class Exam extends MY_Controller
     // ── get_subjects() — GET AJAX ────────────────────────────────────────
     public function get_subjects()
     {
-        $this->_require_role(self::VIEW_ROLES, 'view_subjects');
+        $this->_require_role(self::VIEW_ROLES, 'view_subjects', 'Examinations', 'view');
         header('Content-Type: application/json');
 
         $classKey = trim((string) $this->input->get('class'));

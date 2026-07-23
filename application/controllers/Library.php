@@ -45,11 +45,18 @@ class Library extends MY_Controller
     // ── Role Guards ─────────────────────────────────────────────────────
     private function _require_manage()
     {
+        // Capability path: this helper guards BOTH routine writes (edit) and
+        // destructive ops. Destructive methods are independently gated at
+        // 'manage' by their base _require_role, so short-circuiting the shared
+        // helper at 'edit' preserves operator write access without widening
+        // delete. (Audit lists LIB_MANAGE_ROLES as 'manage' in isolation.)
+        if (has_permission('Library', 'edit')) return;
         if (!in_array($this->admin_role, self::LIB_MANAGE_ROLES, true))
             $this->json_error('Access denied.', 403);
     }
     private function _require_view()
     {
+        if (has_permission('Library', 'view')) return;
         if (!in_array($this->admin_role, self::LIB_VIEW_ROLES, true))
             $this->json_error('Access denied.', 403);
     }
@@ -66,7 +73,7 @@ class Library extends MY_Controller
 
     public function index()
     {
-        $this->_require_role(self::VIEW_ROLES, 'library_view');
+        $this->_require_role(self::VIEW_ROLES, 'library_view', 'Library', 'view');
         $tab = $this->uri->segment(2, 'catalog');
         $data = ['active_tab' => $tab];
         $this->load->view('include/header', $data);
@@ -80,7 +87,7 @@ class Library extends MY_Controller
 
     public function get_categories()
     {
-        $this->_require_role(self::VIEW_ROLES, 'library_view');
+        $this->_require_role(self::VIEW_ROLES, 'library_view', 'Library', 'view');
         $this->_require_view();
         $rows = $this->firebase->firestoreQuery(self::COL_CATEGORIES,
             [['schoolId', '==', $this->school_name]], 'name', 'ASC');
@@ -97,7 +104,7 @@ class Library extends MY_Controller
 
     public function save_category()
     {
-        $this->_require_role(self::MANAGE_ROLES, 'save_category');
+        $this->_require_role(self::MANAGE_ROLES, 'save_category', 'Library', 'edit');
         $this->_require_manage();
         $id   = trim($this->input->post('id') ?? '');
         $name = trim($this->input->post('name') ?? '');
@@ -129,7 +136,7 @@ class Library extends MY_Controller
 
     public function delete_category()
     {
-        $this->_require_role(self::MANAGE_ROLES, 'delete_category');
+        $this->_require_role(self::MANAGE_ROLES, 'delete_category', 'Library', 'manage');
         $this->_require_manage();
         $id = $this->safe_path_segment(trim($this->input->post('id') ?? ''), 'category_id');
 
@@ -152,7 +159,7 @@ class Library extends MY_Controller
     /** GET — List books. Supports ?page=N&limit=N for pagination. */
     public function get_books()
     {
-        $this->_require_role(self::VIEW_ROLES, 'library_view');
+        $this->_require_role(self::VIEW_ROLES, 'library_view', 'Library', 'view');
         $this->_require_view();
         $rows = $this->firebase->firestoreQuery(self::COL_BOOKS,
             [['schoolId', '==', $this->school_name]], 'title', 'ASC');
@@ -179,7 +186,7 @@ class Library extends MY_Controller
 
     public function save_book()
     {
-        $this->_require_role(self::MANAGE_ROLES, 'save_book');
+        $this->_require_role(self::MANAGE_ROLES, 'save_book', 'Library', 'edit');
         $this->_require_manage();
         $id          = trim($this->input->post('id') ?? '');
         $title       = trim($this->input->post('title') ?? '');
@@ -238,7 +245,7 @@ class Library extends MY_Controller
 
     public function delete_book()
     {
-        $this->_require_role(self::MANAGE_ROLES, 'delete_book');
+        $this->_require_role(self::MANAGE_ROLES, 'delete_book', 'Library', 'manage');
         $this->_require_manage();
         $id = $this->safe_path_segment(trim($this->input->post('id') ?? ''), 'book_id');
 
@@ -262,7 +269,7 @@ class Library extends MY_Controller
     /** POST — Issue a book to a student. */
     public function issue_book()
     {
-        $this->_require_role(self::MANAGE_ROLES, 'issue_book');
+        $this->_require_role(self::MANAGE_ROLES, 'issue_book', 'Library', 'edit');
         $this->_require_manage();
         $bookId    = $this->safe_path_segment(trim($this->input->post('book_id') ?? ''), 'book_id');
         $studentId = $this->safe_path_segment(trim($this->input->post('student_id') ?? ''), 'student_id');
@@ -341,7 +348,7 @@ class Library extends MY_Controller
     /** POST — Return a book. Calculates late fine if applicable. */
     public function return_book()
     {
-        $this->_require_role(self::MANAGE_ROLES, 'return_book');
+        $this->_require_role(self::MANAGE_ROLES, 'return_book', 'Library', 'edit');
         $this->_require_manage();
         $issueId    = $this->safe_path_segment(trim($this->input->post('issue_id') ?? ''), 'issue_id');
         $finePerDay = max(0, (float) ($this->input->post('fine_per_day') ?? 2));
@@ -431,7 +438,7 @@ class Library extends MY_Controller
     /** GET — List issue records. ?status=Issued|Returned&page=N&limit=N */
     public function get_issues()
     {
-        $this->_require_role(self::VIEW_ROLES, 'library_view');
+        $this->_require_role(self::VIEW_ROLES, 'library_view', 'Library', 'view');
         $this->_require_view();
         $filterStatus = strtolower(trim($this->input->get('status') ?? ''));
 
@@ -467,7 +474,7 @@ class Library extends MY_Controller
     /** GET — List fines. ?status=Pending|Paid&page=N&limit=N */
     public function get_fines()
     {
-        $this->_require_role(self::VIEW_ROLES, 'library_view');
+        $this->_require_role(self::VIEW_ROLES, 'library_view', 'Library', 'view');
         $this->_require_view();
         $filterStatus = strtolower(trim($this->input->get('status') ?? ''));
 
@@ -495,7 +502,7 @@ class Library extends MY_Controller
     /** POST — Pay a fine. Creates accounting journal entry. */
     public function pay_fine()
     {
-        $this->_require_role(self::MANAGE_ROLES, 'pay_fine');
+        $this->_require_role(self::MANAGE_ROLES, 'pay_fine', 'Library', 'edit');
         $this->_require_manage();
         $fineId      = $this->safe_path_segment(trim($this->input->post('fine_id') ?? ''), 'fine_id');
         $paymentMode = trim($this->input->post('payment_mode') ?? 'Cash');
@@ -541,7 +548,7 @@ class Library extends MY_Controller
     /** GET — Library report data. */
     public function get_reports()
     {
-        $this->_require_role(self::VIEW_ROLES, 'library_view');
+        $this->_require_role(self::VIEW_ROLES, 'library_view', 'Library', 'view');
         $this->_require_view();
 
         $bookRows  = $this->firebase->firestoreQuery(self::COL_BOOKS,  [['schoolId', '==', $this->school_name]]);
@@ -607,7 +614,7 @@ class Library extends MY_Controller
     /** GET — Search students for issue form. ?q=name_fragment */
     public function search_students()
     {
-        $this->_require_role(self::VIEW_ROLES, 'library_view');
+        $this->_require_role(self::VIEW_ROLES, 'library_view', 'Library', 'view');
         $this->_require_view();
         $results = $this->operations_accounting->search_students(
             $this->input->get('q') ?? ''

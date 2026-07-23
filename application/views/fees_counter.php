@@ -667,7 +667,7 @@ $accounts          = $accounts          ?? [];
 <!-- ══ MODAL: Confirm Payment ══ -->
 <div class="fc-overlay" id="confirmModal">
     <div class="fc-modal" style="max-width:480px;">
-        <div class="fc-modal-head" style="background:linear-gradient(135deg,var(--fc-teal),#134e4a);">
+        <div class="fc-modal-head" style="background:linear-gradient(135deg,var(--fc-teal),#9E4830);">
             <h4 style="color:#fff"><i class="fa fa-shield"></i> Confirm Payment</h4>
             <button class="fc-modal-close" onclick="closeModal('confirmModal')" style="color:#fff">&times;</button>
         </div>
@@ -2296,7 +2296,17 @@ $accounts          = $accounts          ?? [];
                 credentials: 'same-origin',
                 headers: { 'X-Requested-With': 'XMLHttpRequest' }
             })
-            .then(function(r) { return r.json(); })
+            .then(function(r) {
+                // fetch does NOT reject on 4xx/5xx. A denied (403) / session
+                // (401) / server (500) response — or an error-flagged body —
+                // must reject here so it can never reach the success path below.
+                return r.json().catch(function() { return {}; }).then(function(j) {
+                    if (!r.ok || (j && (j.status === 'error' || j.success === false))) {
+                        throw new Error((j && (j.message || j.error)) || ('Request failed (' + r.status + ')'));
+                    }
+                    return j;
+                });
+            })
             .then(function(resp) {
                 btn.disabled = false;
                 btn.innerHTML = origHtml;
@@ -2879,7 +2889,7 @@ $accounts          = $accounts          ?? [];
     .fc-input-primary {
         border-color: #BC5A3C;
         font-weight: 600;
-        background: #f0fdfa;
+        background: #F7ECE7;
     }
 
     .fc-select-wrap {
@@ -3019,11 +3029,11 @@ $accounts          = $accounts          ?? [];
        the explicit-yearly rule the allocator now relies on (Phase 10). */
     .fc-month-tile.yearly {
         border-style: dashed;
-        border-color: #5eead4;
-        background: #f0fdfa;
+        border-color: #E7DED6;
+        background: #F7ECE7;
     }
     .fc-month-tile.yearly:hover:not(.paid) {
-        background: #ccfbf1;
+        background: #F7ECE7;
         border-color: #D4725C;
     }
     .fc-month-tile.yearly.selected {
@@ -3037,11 +3047,11 @@ $accounts          = $accounts          ?? [];
        the explicit-yearly rule the allocator now relies on (Phase 10). */
     .fc-month-tile.yearly {
         border-style: dashed;
-        border-color: #5eead4;
-        background: #f0fdfa;
+        border-color: #E7DED6;
+        background: #F7ECE7;
     }
     .fc-month-tile.yearly:hover:not(.paid) {
-        background: #ccfbf1;
+        background: #F7ECE7;
         border-color: #D4725C;
     }
     .fc-month-tile.yearly.selected {
@@ -3404,7 +3414,7 @@ $accounts          = $accounts          ?? [];
     .fc-btn-ghost:hover {
         border-color: #BC5A3C;
         color: #BC5A3C;
-        background: #f0fdfa;
+        background: #F7ECE7;
         opacity: 1;
     }
 
@@ -3724,7 +3734,7 @@ $accounts          = $accounts          ?? [];
         align-items: center;
         gap: 4px;
     }
-    .fc-grant-link:hover { color: #115e59; text-decoration: underline; }
+    .fc-grant-link:hover { color: #9E4830; text-decoration: underline; }
 
     /* Grant Discount modal (reuses .pay-btn from Step 4) */
     .grant-modal {
@@ -3908,7 +3918,7 @@ $accounts          = $accounts          ?? [];
         align-items: center;
         gap: 4px;
     }
-    .fc-grant-link:hover { color: #115e59; text-decoration: underline; }
+    .fc-grant-link:hover { color: #9E4830; text-decoration: underline; }
 
     /* Grant Discount modal (reuses .pay-btn from Step 4) */
     .grant-modal {
@@ -4503,7 +4513,7 @@ $accounts          = $accounts          ?? [];
         color: #fff;
     }
     .pay-chip-primary:hover {
-        background: #115e59;
+        background: #9E4830;
         transform: translateY(-1px);
         box-shadow: 0 4px 10px rgba(188,90,60,.25);
     }
@@ -4560,7 +4570,7 @@ $accounts          = $accounts          ?? [];
         font-size: 16px;
         color: #0f1f3a;
         border-color: #BC5A3C;
-        background: #f0fdfa;
+        background: #F7ECE7;
     }
     .pay-input-primary:focus {
         background: #fff;
@@ -4620,7 +4630,7 @@ $accounts          = $accounts          ?? [];
 
     /* ── Allocation preview ─────────────────────────────────────────── */
     .pay-alloc {
-        background: #f0fdfa;
+        background: #F7ECE7;
         border: 1px solid #EBC3B4;
         border-left: 4px solid #BC5A3C;
         border-radius: 10px;
@@ -4684,7 +4694,7 @@ $accounts          = $accounts          ?? [];
         box-shadow: 0 4px 12px rgba(188,90,60,.25);
     }
     .pay-btn-submit:hover {
-        background: linear-gradient(135deg, #115e59 0%, #0a4744 100%);
+        background: linear-gradient(135deg, #9E4830 0%, #5A2A1C 100%);
         transform: translateY(-1px);
         box-shadow: 0 6px 16px rgba(188,90,60,.35);
     }
@@ -4863,7 +4873,7 @@ $accounts          = $accounts          ?? [];
         color: #fff;
     }
     .pay-chip-primary:hover {
-        background: #115e59;
+        background: #9E4830;
         transform: translateY(-1px);
         box-shadow: 0 4px 10px rgba(188,90,60,.25);
     }
@@ -4920,7 +4930,7 @@ $accounts          = $accounts          ?? [];
         font-size: 16px;
         color: #0f1f3a;
         border-color: #BC5A3C;
-        background: #f0fdfa;
+        background: #F7ECE7;
     }
     .pay-input-primary:focus {
         background: #fff;
@@ -4979,7 +4989,7 @@ $accounts          = $accounts          ?? [];
 
     /* ── Allocation preview ─────────────────────────────────────────── */
     .pay-alloc {
-        background: #f0fdfa;
+        background: #F7ECE7;
         border: 1px solid #EBC3B4;
         border-left: 4px solid #BC5A3C;
         border-radius: 10px;
@@ -5043,7 +5053,7 @@ $accounts          = $accounts          ?? [];
         box-shadow: 0 4px 12px rgba(188,90,60,.25);
     }
     .pay-btn-submit:hover {
-        background: linear-gradient(135deg, #115e59 0%, #0a4744 100%);
+        background: linear-gradient(135deg, #9E4830 0%, #5A2A1C 100%);
         transform: translateY(-1px);
         box-shadow: 0 6px 16px rgba(188,90,60,.35);
     }
@@ -5314,7 +5324,7 @@ $accounts          = $accounts          ?? [];
         margin: 1px 3px 1px 0;
     }
     .hist-month-chip.yearly {
-        background: #ccfbf1;
+        background: #F7ECE7;
         color: #BC5A3C;
     }
 

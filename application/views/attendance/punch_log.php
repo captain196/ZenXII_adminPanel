@@ -1,5 +1,8 @@
 <?php defined('BASEPATH') OR exit('No direct script access allowed'); ?>
 
+<!-- Attendance Design System (shared, cacheable) — provides the loading primitives (.att-loadbar, .att-skel). -->
+<link rel="stylesheet" href="<?= base_url('assets/css/attendance_design_system.css') ?>?v=2.1.0">
+
 <style>
 :root {
     --pl-primary: var(--gold);
@@ -194,6 +197,9 @@
 <section class="content">
 <div class="container-fluid">
 
+    <!-- Top progress bar — reflects the in-flight punch-log fetch. -->
+    <div class="att-loadbar" id="attLoadbar"></div>
+
     <!-- Page Header -->
     <div class="pl-page-hdr">
         <h4>
@@ -303,24 +309,50 @@
         setTimeout(function(){ elToast.classList.remove('show'); }, 3000);
     }
 
+    /* ── Top progress bar — busy counter shared by every request. ── */
+    var _busy = 0;
+    function busyStart(){ _busy++; var b = document.getElementById('attLoadbar'); if (b) b.classList.add('on'); }
+    function busyEnd(){ _busy = Math.max(0, _busy - 1); if (!_busy) { var b = document.getElementById('attLoadbar'); if (b) b.classList.remove('on'); } }
+
+    /* ── Skeleton table rows (shimmer while the log loads). ── */
+    function skelRows(cols, n) {
+        var row = '<tr><td colspan="' + cols + '"><div class="att-skel att-skel-row"></div></td></tr>';
+        var h = ''; for (var i = 0; i < n; i++) h += row; return h;
+    }
+    /* ── Button spinner (icon swap; restores original label on settle). ── */
+    function setBtnLoading(btn, on) {
+        if (!btn) return;
+        if (on) {
+            btn.disabled = true;
+            if (!btn.getAttribute('data-orig')) btn.setAttribute('data-orig', btn.innerHTML);
+            btn.innerHTML = '<i class="fa fa-spinner fa-spin"></i> Loading…';
+        } else {
+            btn.disabled = false;
+            var o = btn.getAttribute('data-orig');
+            if (o) btn.innerHTML = o;
+        }
+    }
+
     function postData(url, data) {
         var fd = new FormData();
         fd.append(CSRF_NAME, CSRF_HASH);
         if (data) {
             Object.keys(data).forEach(function(k){ fd.append(k, data[k]); });
         }
+        busyStart();
         return fetch(BASE + url, { method: 'POST', body: fd })
             .then(function(r) {
-                var ct = r.headers.get('content-type') || '';
-                if (ct.indexOf('application/json') !== -1) return r.json();
-                return r.text().then(function(t) {
-                    try { return JSON.parse(t); } catch(e) { throw new Error('Invalid response'); }
+                // Fail-closed: reject on 401/403/500 or a server error envelope so a
+                // denied/failed call shows an error state instead of a silent empty log.
+                return r.json().catch(function(){ return {}; }).then(function(j) {
+                    if (j && j.csrf_hash) CSRF_HASH = j.csrf_hash;
+                    if (!r.ok || (j && (j.status === 'error' || j.success === false))) {
+                        throw new Error((j && (j.message || j.error)) || ('Request failed (' + r.status + ')'));
+                    }
+                    return j;
                 });
             })
-            .then(function(j) {
-                if (j && j.csrf_hash) CSRF_HASH = j.csrf_hash;
-                return j;
-            });
+            .finally(busyEnd);
     }
 
     function confClass(val) {
@@ -343,17 +375,19 @@
         if (!dateVal) { showToast('Please select a date.', 'error'); return; }
 
         elEmpty.style.display = 'none';
-        elPanel.style.display = 'none';
         elSummary.style.display = 'none';
-        elLoading.style.display = 'block';
-        elLoadBtn.disabled = true;
+        elLoading.style.display = 'none';
+        // Skeleton rows inside the panel — professional shimmer instead of a lone spinner.
+        elBody.innerHTML = skelRows(12, 8);
+        elPanel.style.display = 'block';
+        setBtnLoading(elLoadBtn, true);
 
         postData('attendance/fetch_punch_log', { date: dateVal })
             .then(function(res) {
-                elLoading.style.display = 'none';
-                elLoadBtn.disabled = false;
+                setBtnLoading(elLoadBtn, false);
 
                 if (!res || res.status === 'error') {
+                    elPanel.style.display = 'none';
                     showToast(res && res.message ? res.message : 'Failed to load punch log.', 'error');
                     elEmpty.style.display = 'block';
                     return;
@@ -363,6 +397,7 @@
                 var displayDate = res.date || dateVal;
 
                 if (punches.length === 0) {
+                    elPanel.style.display = 'none';   // clear the skeleton
                     elSummary.innerHTML = '<strong>0</strong> punches on <strong>' + esc(displayDate) + '</strong>';
                     elSummary.style.display = 'block';
                     elEmpty.style.display = 'block';
@@ -378,11 +413,14 @@
                 renderTable(punches);
                 elPanel.style.display = 'block';
             })
-            .catch(function() {
-                elLoading.style.display = 'none';
-                elLoadBtn.disabled = false;
-                showToast('Network error. Please try again.', 'error');
+            .catch(function(err) {
+                setBtnLoading(elLoadBtn, false);
+                elPanel.style.display = 'none';   // clear the skeleton
+                var msg = (err && err.message) || 'Network error. Please try again.';
+                showToast(msg, 'error');
                 elEmpty.style.display = 'block';
+                var p = elEmpty.querySelector('p');
+                if (p) p.textContent = 'Could not load punch records — ' + msg;
             });
     }
 

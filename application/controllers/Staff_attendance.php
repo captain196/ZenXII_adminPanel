@@ -411,6 +411,40 @@ class Staff_attendance extends MY_Controller
         }
         unset($_h);
 
+        // GPS config for the client — the app gates Clock-In/out behind a real
+        // location fix INSIDE any ACTIVE campus (multi-campus aware) before
+        // enabling the buttons, using this single authoritative source instead
+        // of reading Firestore's singular geofence directly.
+        $gpsPol   = is_array($pol['gps'] ?? null) ? $pol['gps'] : [];
+        $gpsMeth  = is_array($pol['enabledMethods'] ?? null) ? $pol['enabledMethods'] : [];
+        $rawFences = [];
+        if (isset($gpsPol['geofences']) && is_array($gpsPol['geofences'])) {
+            $rawFences = $gpsPol['geofences'];
+        } elseif (is_array($gpsPol['geofence'] ?? null)) {
+            $rawFences = [$gpsPol['geofence']];   // legacy singular → one campus
+        }
+        $fencesOut = [];
+        foreach ($rawFences as $f) {
+            if (!is_array($f) || empty($f['active'])) continue;
+            $flat = $f['centerLat'] ?? null; $flng = $f['centerLng'] ?? null;
+            $frad = (int) ($f['radius'] ?? 0);
+            if (!is_numeric($flat) || !is_numeric($flng) || $frad <= 0) continue;
+            $fencesOut[] = [
+                'id'        => (string) ($f['id'] ?? ''),
+                'name'      => (string) ($f['name'] ?? ''),
+                'centerLat' => (float) $flat,
+                'centerLng' => (float) $flng,
+                'radius'    => $frad,
+            ];
+        }
+        $gpsOut = [
+            'enabled'                 => in_array('gps', $gpsMeth, true) && !empty($fencesOut),
+            'geofences'               => $fencesOut,
+            'maxAccuracyMeters'       => (int) ($gpsPol['maxAccuracyMeters'] ?? 100),
+            'boundaryToleranceMeters' => (int) ($gpsPol['boundaryToleranceMeters'] ?? 0),
+            'allowMockLocation'       => !empty($gpsPol['allowMockLocation']),
+        ];
+
         return $this->json_success([
             'apiVersion' => 1,
             'staffId'    => $staffId,
@@ -442,6 +476,7 @@ class Staff_attendance extends MY_Controller
                 'totalDays'   => strlen($curDayWise),
             ],
             'history'    => $history,   // [{date,status,checkInAt,checkOutAt}] oldest→newest, 30d
+            'gps'        => $gpsOut,     // {enabled, geofences[], maxAccuracyMeters, boundaryToleranceMeters, allowMockLocation}
         ]);
     }
 
@@ -614,14 +649,22 @@ class Staff_attendance extends MY_Controller
         $autoAbsent = array_key_exists('autoAbsent', $policy) ? !empty($policy['autoAbsent']) : true;
         $len = strlen($dayWise);
         for ($d = 1; $d <= $len; $d++) {
-            if (strtoupper($dayWise[$d - 1]) !== 'V') continue;      // only fill vacant
+            $ch = strtoupper($dayWise[$d - 1]);
+            // Only unmarked ('V') and previously auto-absented ('A') days are
+            // eligible. Processing 'A' lets a holiday added to the Academic
+            // Calendar AFTER a day was auto-absented retroactively show as 'H'
+            // in the live view (kept in sync with Staff_attendance_finaliser).
+            if ($ch !== 'V' && $ch !== 'A') continue;
             $dateISO = sprintf('%s-%02d', $monthKey, $d);
             if ($dateISO >= $todayISO) continue;                    // today + future untouched
+            // Fail closed on a per-date lookup error: leave the day as-is rather
+            // than flipping a possible holiday to Absent (is_holiday itself never
+            // throws — it fails open to "no holiday" — so this is belt-and-braces).
             try { $isHol = $this->holiday_service->is_holiday($dateISO); }
-            catch (\Throwable $e) { $isHol = false; }
+            catch (\Throwable $e) { continue; }
             if ($isHol) {
-                $dayWise[$d - 1] = 'H';
-            } else {
+                $dayWise[$d - 1] = 'H';                              // V→H or retroactive A→H
+            } elseif ($ch === 'V') {
                 $dow = date('D', strtotime($dateISO));
                 if (in_array($dow, $weeklyOffs, true)) {
                     $dayWise[$d - 1] = 'O';
@@ -630,6 +673,7 @@ class Staff_attendance extends MY_Controller
                 }
                 // else: autoAbsent OFF → leave the day Vacant (V)
             }
+            // $ch === 'A' and not a holiday → leave the genuine Absent untouched.
         }
         return $dayWise;
     }

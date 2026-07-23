@@ -1,3 +1,4 @@
+<?php $ev_can_manage = function_exists('has_permission') ? has_permission('Events','manage') : true; ?>
 <style>
 .ptm-wrap{padding:20px;max-width:1400px;margin:0 auto}
 .ptm-header{display:flex;align-items:center;justify-content:space-between;margin-bottom:20px;flex-wrap:wrap;gap:12px}
@@ -48,16 +49,36 @@
 .ptm-status-list button .dot.scheduled{background:#3b82f6}
 .ptm-status-list button .dot.completed{background:#22c55e}
 .ptm-status-list button .dot.cancelled{background:#ef4444}
+.ptm-btn[disabled],.ptm-btn.is-disabled{opacity:.45;cursor:not-allowed;pointer-events:none}
+
+/* ── shared loading / polish (ev-*) ──────────────────────── */
+@keyframes ev-loadbar-slide{0%{left:-40%;width:40%}50%{width:58%}100%{left:100%;width:40%}}@keyframes ev-spin{to{transform:rotate(360deg)}}@keyframes ev-shimmer{0%{background-position:200% 0}100%{background-position:-200% 0}}
+.ev-loadbar{position:fixed;top:0;left:0;right:0;height:3px;z-index:99999;background:var(--gold-dim,rgba(188,90,60,.15));overflow:hidden;opacity:0;transition:opacity .18s;pointer-events:none}.ev-loadbar.on{opacity:1}
+.ev-loadbar:before{content:'';position:absolute;top:0;height:100%;width:40%;left:-40%;border-radius:3px;background:linear-gradient(90deg,transparent,var(--gold,#BC5A3C),transparent);animation:ev-loadbar-slide 1.1s ease-in-out infinite}
+.ev-spin{display:inline-block;width:14px;height:14px;border:2px solid currentColor;border-top-color:transparent;border-radius:50%;animation:ev-spin .7s linear infinite;vertical-align:-2px}
+.is-loading{position:relative;color:transparent!important;pointer-events:none;opacity:.9}.is-loading:after{content:'';position:absolute;top:50%;left:50%;width:15px;height:15px;margin:-8px 0 0 -8px;border:2px solid currentColor;border-top-color:transparent;border-radius:50%;color:#fff;animation:ev-spin .7s linear infinite}
+.ev-rel{position:relative}.ev-loading-overlay{position:absolute;inset:0;z-index:20;display:flex;align-items:center;justify-content:center;gap:10px;background:rgba(127,127,127,.06);font-size:13px;font-weight:650;color:var(--t2)}.ev-loading-overlay .ev-spin{width:20px;height:20px;color:var(--gold,#BC5A3C)}
+.ev-skel{background:linear-gradient(90deg,var(--bg2,#f1f1f1) 25%,var(--bg3,#e7e7e7) 37%,var(--bg2,#f1f1f1) 63%);background-size:200% 100%;animation:ev-shimmer 1.3s ease-in-out infinite;border-radius:8px}.ev-skel-row{height:14px;margin:8px 0}
+.ev-ro-banner{display:flex;align-items:center;gap:9px;padding:10px 14px;margin:0 0 12px;border-radius:10px;font-size:13px;font-weight:600;background:rgba(37,99,235,.08);color:#1d4ed8;border:1px solid rgba(37,99,235,.2)}
+@media(prefers-reduced-motion:reduce){.ev-loadbar:before,.ev-spin,.is-loading:after,.ev-skel{animation:none}}
 </style>
 
 <div class="content-wrapper"><section class="content"><div class="ptm-wrap">
+<div class="ev-loadbar" id="evLoadbar"></div>
+<?php if (!$ev_can_manage): ?>
+<div class="ev-ro-banner"><i class="fa fa-lock"></i> View-only — managing PTMs needs manage access.</div>
+<?php endif; ?>
 <div class="ptm-header">
   <div>
     <div class="ptm-title"><i class="fa fa-users"></i> Parent-Teacher Meetings</div>
     <ol class="ptm-breadcrumb"><li><a href="<?= base_url('admin') ?>">Dashboard</a></li><li>PTM</li></ol>
   </div>
   <div>
+    <?php if ($ev_can_manage): ?>
     <a href="<?= base_url('ptm/create') ?>" class="ptm-btn ptm-btn-primary"><i class="fa fa-plus"></i> Create PTM</a>
+    <?php else: ?>
+    <span class="ptm-btn ptm-btn-primary is-disabled" aria-disabled="true" title="Managing PTMs needs manage access"><i class="fa fa-plus"></i> Create PTM</span>
+    <?php endif; ?>
   </div>
 </div>
 
@@ -77,14 +98,18 @@
       </tr>
     </thead>
     <tbody id="ptmRows">
-      <tr><td colspan="8" class="ptm-empty"><i class="fa fa-spinner fa-spin"></i><br>Loading…</td></tr>
+      <tr><td colspan="8"><div class="ev-skel ev-skel-row" style="width:96%"></div><div class="ev-skel ev-skel-row" style="width:96%"></div><div class="ev-skel ev-skel-row" style="width:96%"></div><div class="ev-skel ev-skel-row" style="width:96%"></div></td></tr>
     </tbody>
   </table>
   <div id="ptmEmpty" class="ptm-empty-panel" style="display:none">
     <div class="icon-wrap"><i class="fa fa-calendar-plus-o"></i></div>
     <h3>No PTMs scheduled yet</h3>
     <p>Schedule your first parent-teacher meeting and parents in the targeted classes will be notified instantly to RSVP from the ZenXii app.</p>
+    <?php if ($ev_can_manage): ?>
     <a href="<?= base_url('ptm/create') ?>" class="ptm-btn ptm-btn-primary"><i class="fa fa-plus"></i> Schedule your first PTM</a>
+    <?php else: ?>
+    <span class="ptm-btn ptm-btn-primary is-disabled" aria-disabled="true" title="Managing PTMs needs manage access"><i class="fa fa-plus"></i> Schedule your first PTM</span>
+    <?php endif; ?>
   </div>
 </div>
 </div></section></div>
@@ -96,7 +121,13 @@
 // from any response that returns a fresh csrf_token field.
 var CSRF_NAME  = '<?= $this->security->get_csrf_token_name() ?>';
 var CSRF_TOKEN = '<?= $this->security->get_csrf_hash() ?>';
+var EV_CAN_MANAGE = <?= $ev_can_manage ? 'true' : 'false' ?>;
 (function(){
+  // Global loadbar busy counter — bS() before each fetch, bE() in finally.
+  var _b = 0;
+  function bS(){ _b++; document.getElementById('evLoadbar')?.classList.add('on'); }
+  function bE(){ _b = Math.max(0, _b - 1); if (!_b) document.getElementById('evLoadbar')?.classList.remove('on'); }
+
   const $ = (s,el)=>(el||document).querySelector(s);
   const esc = s => String(s ?? '').replace(/[&<>"']/g, c => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));
   const toast = (msg, kind='success') => {
@@ -122,11 +153,15 @@ var CSRF_TOKEN = '<?= $this->security->get_csrf_hash() ?>';
   };
   const statusControl = p => {
     const cur = p.status || 'scheduled';
-    const allowed = STATUS_TRANSITIONS[cur] || [];
     const cls = cur === 'scheduled' ? 'ptm-badge-blue'
               : cur === 'completed' ? 'ptm-badge-green'
               : cur === 'cancelled' ? 'ptm-badge-rose'
               : 'ptm-badge-gray';
+    // Changing status is a MANAGE action — view-only users see a static badge.
+    if (!EV_CAN_MANAGE) {
+      return `<span class="ptm-badge ${cls}">${esc(cur.toUpperCase())}</span>`;
+    }
+    const allowed = STATUS_TRANSITIONS[cur] || [];
     const items = ['scheduled','completed','cancelled'].map(s => {
       const en = (s !== cur) && allowed.includes(s);
       const lbl = s === 'scheduled' ? 'Re-open as scheduled'
@@ -193,6 +228,13 @@ var CSRF_TOKEN = '<?= $this->security->get_csrf_hash() ?>';
       const slotCount = Array.isArray(p.slots) ? p.slots.length : 0;
       const rsvpHref = '<?= base_url('ptm/rsvps/') ?>' + encodeURIComponent(p.id);
       const editHref = '<?= base_url('ptm/edit/') ?>' + encodeURIComponent(p.id);
+      // Edit + Delete are MANAGE actions — disabled (not hidden) for view-only.
+      const editBtn = EV_CAN_MANAGE
+        ? `<a href="${editHref}" class="ptm-btn ptm-btn-outline ptm-btn-sm" title="Edit PTM"><i class="fa fa-pencil"></i></a>`
+        : `<span class="ptm-btn ptm-btn-outline ptm-btn-sm is-disabled" aria-disabled="true" title="Managing PTMs needs manage access"><i class="fa fa-pencil"></i></span>`;
+      const delBtn = EV_CAN_MANAGE
+        ? `<button class="ptm-btn ptm-btn-danger ptm-btn-sm" title="Delete PTM" onclick="PTM.del('${esc(p.id)}','${esc(p.title)}', this)"><i class="fa fa-trash"></i></button>`
+        : `<button class="ptm-btn ptm-btn-danger ptm-btn-sm is-disabled" disabled aria-disabled="true" title="Managing PTMs needs manage access"><i class="fa fa-trash"></i></button>`;
       return `<tr>
         <td><b>${esc(p.title || '(Untitled)')}</b><br><small style="color:var(--t3)">${esc(p.location||'')}</small></td>
         <td>${sec}</td>
@@ -203,46 +245,56 @@ var CSRF_TOKEN = '<?= $this->security->get_csrf_hash() ?>';
         <td>${statusControl(p)}</td>
         <td><div class="ptm-actions">
           <a href="${rsvpHref}" class="ptm-btn ptm-btn-outline ptm-btn-sm" title="View RSVPs"><i class="fa fa-eye"></i></a>
-          <a href="${editHref}" class="ptm-btn ptm-btn-outline ptm-btn-sm" title="Edit PTM"><i class="fa fa-pencil"></i></a>
-          <button class="ptm-btn ptm-btn-danger ptm-btn-sm" title="Delete PTM" onclick="PTM.del('${esc(p.id)}','${esc(p.title)}')"><i class="fa fa-trash"></i></button>
+          ${editBtn}
+          ${delBtn}
         </div></td>
       </tr>`;
     }).join('');
   }
 
   async function loadList(){
+    bS();
     try {
       const res = await fetch('<?= base_url('ptm/get_list') ?>', {credentials:'same-origin'});
-      const data = await res.json();
-      if (!data || data.success === false) {
-        toast(data && data.message || 'Failed to load PTMs', 'error');
-        return;
+      const data = await res.json().catch(() => ({}));
+      if (!res.ok || !data || data.status === 'error' || data.success === false) {
+        throw new Error((data && (data.message || data.error)) || ('Failed to load PTMs (' + res.status + ')'));
       }
       renderRows((data.data && data.data.ptms) || data.ptms || []);
     } catch (e) {
-      toast('Failed to load PTMs', 'error');
+      toast((e && e.message) || 'Failed to load PTMs', 'error');
+      // Read failed → surface an error state instead of a stuck skeleton.
+      $('#ptmRows').innerHTML = '<tr><td colspan="8" class="ptm-empty"><i class="fa fa-exclamation-triangle"></i><br>' + esc((e && e.message) || 'Failed to load PTMs') + '</td></tr>';
+    } finally {
+      bE();
     }
   }
 
   window.PTM = {
-    del: async function(id, title){
+    del: async function(id, title, btn){
+      if (!EV_CAN_MANAGE) { toast('View-only — managing PTMs needs manage access', 'error'); return; }
       if (!confirm(`Delete PTM "${title}"? This will also remove all parent RSVPs.`)) return;
       const fd = new FormData();
       fd.append(CSRF_NAME, CSRF_TOKEN);
+      if (btn) btn.classList.add('is-loading');
+      bS();
       try {
         const res = await fetch('<?= base_url('ptm/delete/') ?>' + encodeURIComponent(id), {
           method: 'POST', body: fd, credentials: 'same-origin'
         });
         const data = await res.json().catch(() => ({}));
         if (data && data.csrf_token) CSRF_TOKEN = data.csrf_token;
-        if (res.ok && data && data.status !== 'error') {
-          toast('PTM deleted');
-          loadList();
-        } else {
-          toast((data && data.message) || 'Delete failed', 'error');
+        // Fail-closed: 4xx/5xx or an error body is a failure, not a success.
+        if (!res.ok || !data || data.status === 'error' || data.success === false) {
+          throw new Error((data && (data.message || data.error)) || ('Delete failed (' + res.status + ')'));
         }
+        toast('PTM deleted');
+        loadList();
       } catch (e) {
-        toast('Delete failed', 'error');
+        toast((e && e.message) || 'Delete failed', 'error');
+      } finally {
+        if (btn) btn.classList.remove('is-loading');
+        bE();
       }
     },
 
@@ -256,6 +308,8 @@ var CSRF_TOKEN = '<?= $this->security->get_csrf_hash() ?>';
     },
 
     setStatus: async function(id, newStatus, btn){
+      // Changing status is a MANAGE action.
+      if (!EV_CAN_MANAGE) { toast('View-only — managing PTMs needs manage access', 'error'); return; }
       // Extra confirm specifically on cancellation — irreversible from the
       // parent's POV (push fires immediately) so we don't want it on a
       // single accidental click.
@@ -263,31 +317,37 @@ var CSRF_TOKEN = '<?= $this->security->get_csrf_hash() ?>';
         if (!confirm('Cancel this PTM and notify all affected parents/teachers? They will receive a "[PTM CANCELLED]" push notification.')) return;
       }
       btn.disabled = true;
+      btn.classList.add('is-loading');
       const fd = new FormData();
       fd.append(CSRF_NAME, CSRF_TOKEN);
       fd.append('status', newStatus);
+      bS();
       try {
         const res = await fetch('<?= base_url('ptm/set_status/') ?>' + encodeURIComponent(id), {
           method: 'POST', body: fd, credentials: 'same-origin'
         });
         const data = await res.json().catch(() => ({}));
         if (data && data.csrf_token) CSRF_TOKEN = data.csrf_token;
-        if (res.ok && data && data.status !== 'error') {
-          // Surface cancellation push warnings (e.g. enqueue failed).
-          const warnings = data.warnings || [];
-          if (warnings.length) {
-            toast(`Status: ${newStatus.toUpperCase()} · ${warnings[0]}`, 'error');
-          } else if (newStatus === 'cancelled') {
-            toast('PTM cancelled · notification sent');
-          } else {
-            toast(`Status: ${newStatus.toUpperCase()}`);
-          }
-          loadList();
-        } else {
-          toast((data && data.message) || 'Status change failed', 'error');
+        // Fail-closed: only treat a 2xx + non-error body as success.
+        if (!res.ok || !data || data.status === 'error' || data.success === false) {
+          throw new Error((data && (data.message || data.error)) || ('Status change failed (' + res.status + ')'));
         }
+        // Surface cancellation push warnings (e.g. enqueue failed).
+        const warnings = data.warnings || [];
+        if (warnings.length) {
+          toast(`Status: ${newStatus.toUpperCase()} · ${warnings[0]}`, 'error');
+        } else if (newStatus === 'cancelled') {
+          toast('PTM cancelled · notification sent');
+        } else {
+          toast(`Status: ${newStatus.toUpperCase()}`);
+        }
+        loadList();
       } catch (e) {
-        toast('Status change failed', 'error');
+        toast((e && e.message) || 'Status change failed', 'error');
+        btn.disabled = false;
+        btn.classList.remove('is-loading');
+      } finally {
+        bE();
       }
     }
   };

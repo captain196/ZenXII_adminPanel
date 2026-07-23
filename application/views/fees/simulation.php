@@ -56,6 +56,18 @@ var BASE='<?= rtrim(base_url(),"/") ?>/';
 var csrfName='<?= $this->security->get_csrf_token_name() ?>';
 var csrfHash='<?= $this->security->get_csrf_hash() ?>';
 
+// Harden a fetch Response: reject on HTTP error or a JSON error body so a
+// DENIED/FAILED request never resolves as a false success.
+function jsonOk(r){
+  return r.json().catch(function(){return {};}).then(function(j){
+    if(!r.ok||(j&&(j.status==='error'||j.success===false))){
+      var e=new Error((j&&(j.message||j.error))||('Request failed ('+r.status+')'));
+      e.httpStatus=r.status;e.payload=j;throw e;
+    }
+    return j;
+  });
+}
+
 function runParallel(){
   var btn=document.getElementById('btnParallel');
   var el=document.getElementById('simOutput');
@@ -68,12 +80,12 @@ function runParallel(){
     +'&max_parallel='+document.getElementById('parMax').value
     +'&batch_delay='+document.getElementById('parDelay').value;
 
-  fetch(url).then(function(r){return r.json();}).then(function(r){
+  fetch(url).then(jsonOk).then(function(r){
     btn.disabled=false;btn.innerHTML='<i class="fa fa-bolt"></i> Run Parallel';
     renderParallelResults(r,el);
   }).catch(function(e){
     btn.disabled=false;btn.innerHTML='<i class="fa fa-bolt"></i> Run Parallel';
-    el.innerHTML='<div style="color:#dc2626;padding:20px">Parallel simulation failed: '+e.message+'</div>';
+    el.innerHTML='<div style="color:#dc2626;padding:20px">Parallel simulation failed: '+esc(e.message||'unknown error')+'</div>';
   });
 }
 
@@ -162,12 +174,12 @@ function runSim(){
     +'&schools='+document.getElementById('simSchools').value
     +'&students='+document.getElementById('simStudents').value;
 
-  fetch(url).then(function(r){return r.json();}).then(function(r){
+  fetch(url).then(jsonOk).then(function(r){
     btn.disabled=false;btn.innerHTML='<i class="fa fa-play"></i> Run Simulation';
     renderResults(r,el);
   }).catch(function(e){
     btn.disabled=false;btn.innerHTML='<i class="fa fa-play"></i> Run Simulation';
-    el.innerHTML='<div style="color:#dc2626;padding:20px">Simulation failed: '+e.message+'</div>';
+    el.innerHTML='<div style="color:#dc2626;padding:20px">Simulation failed: '+esc(e.message||'unknown error')+'</div>';
   });
 }
 
@@ -175,7 +187,8 @@ function cleanupSim(){
   if(!confirm('Delete ALL simulation data from Firebase?\n\nThis removes Schools/Simulation/* entirely.'))return;
   var fd=new FormData();fd.append(csrfName,csrfHash);
   fetch(BASE+'fee_simulation/cleanup',{method:'POST',body:fd,headers:{'X-CSRF-Token':csrfHash}})
-    .then(function(r){return r.json();}).then(function(r){alert(r.message||'Done');});
+    .then(jsonOk).then(function(r){alert(r.message||'Done');})
+    .catch(function(e){alert('Cleanup failed: '+(e.message||'unknown error'));});
 }
 
 function esc(s){var d=document.createElement('div');d.textContent=String(s||'');return d.innerHTML;}

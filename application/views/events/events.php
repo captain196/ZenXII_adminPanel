@@ -1,3 +1,5 @@
+<?php $ev_can_edit = function_exists('has_permission') ? has_permission('Events','edit') : true;
+      $ev_can_manage = function_exists('has_permission') ? has_permission('Events','manage') : true; ?>
 <?php
 $tabs = [
     'dashboard'     => ['icon' => 'fa-dashboard',   'label' => 'Dashboard',      'url' => 'events'],
@@ -45,9 +47,27 @@ $at = $active_tab ?? 'events';
 .ev-filter{padding:6px 14px;border-radius:20px;font-size:12px;font-weight:600;cursor:pointer;border:1px solid var(--border);background:transparent;color:var(--t2);font-family:var(--font-b);transition:all .15s}
 .ev-filter.active,.ev-filter:hover{border-color:var(--gold);background:var(--gold-dim);color:var(--gold)}
 .ev-toast.success{background:#22c55e;display:block}.ev-toast.error{background:#ef4444;display:block}
+.ev-tablewrap{overflow-x:auto;-webkit-overflow-scrolling:touch;border-radius:8px}
+.ev-btn:disabled,.ev-btn[disabled]{opacity:.4;cursor:not-allowed;pointer-events:none;filter:grayscale(.2)}
+.ev-actions{display:flex;gap:6px;flex-wrap:wrap}
+@keyframes ev-loadbar-slide{0%{left:-40%;width:40%}50%{width:58%}100%{left:100%;width:40%}}@keyframes ev-spin{to{transform:rotate(360deg)}}@keyframes ev-shimmer{0%{background-position:200% 0}100%{background-position:-200% 0}}
+.ev-loadbar{position:fixed;top:0;left:0;right:0;height:3px;z-index:99999;background:var(--gold-dim,rgba(188,90,60,.15));overflow:hidden;opacity:0;transition:opacity .18s;pointer-events:none}.ev-loadbar.on{opacity:1}
+.ev-loadbar:before{content:'';position:absolute;top:0;height:100%;width:40%;left:-40%;border-radius:3px;background:linear-gradient(90deg,transparent,var(--gold,#BC5A3C),transparent);animation:ev-loadbar-slide 1.1s ease-in-out infinite}
+.ev-spin{display:inline-block;width:14px;height:14px;border:2px solid currentColor;border-top-color:transparent;border-radius:50%;animation:ev-spin .7s linear infinite;vertical-align:-2px}
+.is-loading{position:relative;color:transparent!important;pointer-events:none;opacity:.9}.is-loading:after{content:'';position:absolute;top:50%;left:50%;width:15px;height:15px;margin:-8px 0 0 -8px;border:2px solid currentColor;border-top-color:transparent;border-radius:50%;color:#fff;animation:ev-spin .7s linear infinite}.ev-btn-outline.is-loading:after,.ev-btn-ghost.is-loading:after{color:var(--gold,#BC5A3C)}
+.ev-rel{position:relative}.ev-loading-overlay{position:absolute;inset:0;z-index:20;display:flex;align-items:center;justify-content:center;gap:10px;background:rgba(127,127,127,.06);font-size:13px;font-weight:650;color:var(--t2)}.ev-loading-overlay .ev-spin{width:20px;height:20px;color:var(--gold,#BC5A3C)}
+.ev-skel{background:linear-gradient(90deg,var(--bg2,#f1f1f1) 25%,var(--bg3,#e7e7e7) 37%,var(--bg2,#f1f1f1) 63%);background-size:200% 100%;animation:ev-shimmer 1.3s ease-in-out infinite;border-radius:8px}.ev-skel-row{height:14px;margin:8px 0}
+.ev-ro-banner{display:flex;align-items:center;gap:9px;padding:10px 14px;margin:0 0 12px;border-radius:10px;font-size:13px;font-weight:600;background:rgba(37,99,235,.08);color:#1d4ed8;border:1px solid rgba(37,99,235,.2)}
+@media(prefers-reduced-motion:reduce){.ev-loadbar:before,.ev-spin,.is-loading:after,.ev-skel{animation:none}}
 </style>
 
 <div class="content-wrapper"><section class="content"><div class="ev-wrap">
+<div class="ev-loadbar" id="evLoadbar"></div>
+<?php if (!$ev_can_edit): ?>
+<div class="ev-ro-banner"><i class="fa fa-eye"></i> View-only access: you can browse events but cannot create, edit, change status, or delete them.</div>
+<?php elseif (!$ev_can_manage): ?>
+<div class="ev-ro-banner"><i class="fa fa-info-circle"></i> Limited access: you can create and edit events, but deleting events requires manage permission.</div>
+<?php endif; ?>
 <div class="ev-header"><div>
     <div class="ev-header-icon"><i class="fa fa-calendar-check-o"></i> Events &amp; Activities</div>
     <ol class="ev-breadcrumb"><li><a href="<?= base_url('admin') ?>">Dashboard</a></li><li><a href="<?= base_url('events') ?>">Events</a></li><li>Manage Events</li></ol>
@@ -62,7 +82,7 @@ $at = $active_tab ?? 'events';
 <div class="ev-card">
     <div class="ev-card-title">
         <span>Events</span>
-        <button class="ev-btn ev-btn-primary" onclick="EVT.openModal()"><i class="fa fa-plus"></i> Create Event</button>
+        <button class="ev-btn ev-btn-primary" onclick="EVT.openModal()"<?= $ev_can_edit ? '' : ' disabled title="You do not have permission to create events"' ?>><i class="fa fa-plus"></i> Create Event</button>
     </div>
     <div class="ev-filters">
         <button class="ev-filter active" onclick="EVT.filter('')" data-c="">All</button>
@@ -70,8 +90,10 @@ $at = $active_tab ?? 'events';
         <button class="ev-filter" onclick="EVT.filter('cultural')" data-c="cultural">Cultural</button>
         <button class="ev-filter" onclick="EVT.filter('sports')" data-c="sports">Sports</button>
     </div>
+    <div class="ev-tablewrap">
     <table class="ev-table"><thead><tr><th>Title</th><th>Category</th><th>Date</th><th>Location</th><th>Organizer</th><th>Status</th><th>Actions</th></tr></thead>
     <tbody id="evtTbody"><tr><td colspan="7" class="ev-empty"><i class="fa fa-spinner fa-spin"></i><span class="ev-load-text">Loading...</span></td></tr></tbody></table>
+    </div>
 </div>
 
 </div></section></div>
@@ -112,10 +134,21 @@ $at = $active_tab ?? 'events';
 <script>
 var EV = EV || {};
 EV.BASE = '<?= base_url() ?>';
+EV.canEdit = <?= $ev_can_edit ? 'true' : 'false' ?>;
+EV.canManage = <?= $ev_can_manage ? 'true' : 'false' ?>;
 EV.toast = function(msg,type){var t=document.getElementById('evToast');t.textContent=msg;t.className='ev-toast '+(type||'success');setTimeout(function(){t.className='ev-toast';},3000);};
 EV.esc = function(s){var d=document.createElement('span');d.textContent=s||'';return d.innerHTML;};
 EV.escJs = function(s){return String(s||'').replace(/\\/g,'\\\\').replace(/'/g,"\\'").replace(/"/g,'\\"').replace(/</g,'\\x3c').replace(/>/g,'\\x3e');};
-EV.ajax = function(url,data,cb,method){$.ajax({url:EV.BASE+url,type:method||'GET',data:data,dataType:'json',success:function(r){if(r.status==='success'){if(cb)cb(r);}else EV.toast(r.message||'Error','error');},error:function(xhr){var m='Error';try{m=JSON.parse(xhr.responseText).message||m;}catch(e){}EV.toast(m,'error');}});};
+EV.errMsg = function(xhr){ return (xhr && xhr.responseJSON && xhr.responseJSON.message) || (function(){try{return JSON.parse(xhr.responseText).message;}catch(e){return null;}})() || 'Request failed'; };
+// Fail-closed: only invoke the callback after the server confirms success.
+EV.ajax = function(url,data,cb,method){$.ajax({url:EV.BASE+url,type:method||'GET',data:data,dataType:'json',
+    success:function(r){ if(!r || r.status==='error' || r.success===false || r.status!=='success'){ EV.toast((r&&r.message)||'Request failed','error'); return; } if(cb)cb(r); },
+    error:function(xhr){ EV.toast(EV.errMsg(xhr),'error'); }});};
+// Guard a mutation button while its request is in-flight.
+EV.btnBusy = function(el,on){ if(!el)return; if(on){el.classList.add('is-loading');el.disabled=true;} else {el.classList.remove('is-loading');el.disabled=false;} };
+// Skeleton shimmer rows while a list loads.
+EV.skel = function(tbodyId,cols,rows){ var h='',i,j; rows=rows||5; for(i=0;i<rows;i++){ h+='<tr>'; for(j=0;j<cols;j++){ h+='<td><div class="ev-skel ev-skel-row"></div></td>'; } h+='</tr>'; } var b=document.getElementById(tbodyId); if(b)b.innerHTML=h; };
+$(document).ajaxStart(function(){$('#evLoadbar').addClass('on')}).ajaxStop(function(){$('#evLoadbar').removeClass('on')});
 
 var EVT = {};
 EVT.data = [];
@@ -135,6 +168,7 @@ EVT.filter = function(cat) {
 EVT.load = function() {
     var params = {};
     if (EVT.currentFilter) params.category = EVT.currentFilter;
+    EV.skel('evtTbody', 7);
     $.ajax({
         url: EV.BASE + 'events/get_events',
         type: 'GET',
@@ -158,10 +192,10 @@ EVT.load = function() {
                         '<td style="font-size:12px">' + EV.esc(e.location||'') + '</td>' +
                         '<td style="font-size:12px">' + EV.esc(e.organizer||'') + '</td>' +
                         '<td><span class="ev-badge ' + EVT.statusBadge(e.status) + '">' + EV.esc(e.status) + '</span></td>' +
-                        '<td><button class="ev-btn ev-btn-sm ev-btn-outline" onclick="EVT.addPhotos(\'' + EV.escJs(e.id) + '\')" title="Add Photos"><i class="fa fa-camera"></i></button> ' +
-                        '<button class="ev-btn ev-btn-sm ev-btn-outline" onclick="EVT.circular(\'' + EV.escJs(e.id) + '\')" title="View Circular"><i class="fa fa-file-text-o"></i></button> ' +
-                        '<button class="ev-btn ev-btn-sm ev-btn-primary" onclick="EVT.edit(\'' + EV.escJs(e.id) + '\')"><i class="fa fa-pencil"></i></button> ' +
-                        '<button class="ev-btn ev-btn-sm ev-btn-danger" onclick="EVT.del(\'' + EV.escJs(e.id) + '\')"><i class="fa fa-trash"></i></button></td>' +
+                        '<td><div class="ev-actions"><button class="ev-btn ev-btn-sm ev-btn-outline" onclick="EVT.addPhotos(\'' + EV.escJs(e.id) + '\')" title="Add Photos"><i class="fa fa-camera"></i></button>' +
+                        '<button class="ev-btn ev-btn-sm ev-btn-outline" onclick="EVT.circular(\'' + EV.escJs(e.id) + '\')" title="View Circular"><i class="fa fa-file-text-o"></i></button>' +
+                        '<button class="ev-btn ev-btn-sm ev-btn-primary" onclick="EVT.edit(\'' + EV.escJs(e.id) + '\')"' + (EV.canEdit ? '' : ' disabled title="No permission to edit"') + '><i class="fa fa-pencil"></i></button>' +
+                        '<button class="ev-btn ev-btn-sm ev-btn-danger" onclick="EVT.del(\'' + EV.escJs(e.id) + '\',this)"' + (EV.canManage ? '' : ' disabled title="No permission to delete"') + '><i class="fa fa-trash"></i></button></div></td>' +
                         '</tr>';
                 });
             }
@@ -194,6 +228,7 @@ EVT.openModal = function() {
 EVT.closeModal = function() { document.getElementById('evtModal').classList.remove('show'); };
 
 EVT.edit = function(id) {
+    if (!EV.canEdit) { EV.toast('You do not have permission to edit events','error'); return; }
     var e = EVT.data.find(function(x){ return x.id === id; });
     if (!e) return;
     document.getElementById('evtId').value = e.id;
@@ -215,6 +250,7 @@ EVT.save = function() {
     // Double-submit guard: a slow save_event round-trip used to let an
     // impatient user click "Save" 2-3 times, creating duplicate events.
     if (EVT._saving) return;
+    if (!EV.canEdit) { EV.toast('You do not have permission to save events','error'); return; }
     var data = {
         id: document.getElementById('evtId').value,
         title: document.getElementById('evtTitle').value.trim(),
@@ -249,9 +285,18 @@ EVT.save = function() {
     });
 };
 
-EVT.del = function(id) {
+EVT.del = function(id, btn) {
+    if (!EV.canManage) { EV.toast('You do not have permission to delete events','error'); return; }
     if (!confirm('Delete this event? This will also remove all participants.')) return;
-    EV.ajax('events/delete_event', {id:id}, function(r) { EV.toast(r.message||'Deleted'); EVT.load(); }, 'POST');
+    EV.btnBusy(btn, true);
+    $.ajax({ url: EV.BASE + 'events/delete_event', type: 'POST', data: {id:id}, dataType: 'json',
+        success: function(r) {
+            if (!r || r.status === 'error' || r.success === false || r.status !== 'success') { EV.toast((r && r.message) || 'Request failed','error'); return; }
+            EV.toast(r.message||'Deleted'); EVT.load();
+        },
+        error: function(xhr) { EV.toast(EV.errMsg(xhr),'error'); },
+        complete: function() { EV.btnBusy(btn, false); }
+    });
 };
 
 EVT.addPhotos = function(id) {

@@ -1,4 +1,14 @@
 <?php defined('BASEPATH') or exit('No direct script access allowed'); ?>
+<?php
+/* ── RBAC level flags ─────────────────────────────────────────────────
+   Certificates: edit is UNUSED — every write (save/delete template,
+   generate certificate, revoke) is gated at MANAGE. view = read.
+   Respect a flag the controller already computed (it carries extra
+   role fallbacks); otherwise derive it from has_permission().          */
+$can_edit   = isset($can_edit)   ? $can_edit   : (function_exists('has_permission') ? has_permission('Certificates', 'edit')   : true);
+$can_manage = isset($can_manage) ? $can_manage : (function_exists('has_permission') ? has_permission('Certificates', 'manage') : true);
+?>
+<link rel="stylesheet" href="<?= base_url('assets/css/rbac_ui_kit.css') ?>">
 
 <style>
 /* ── Certificate Module — Professional Design ──────────────────────── */
@@ -170,12 +180,17 @@
 </style>
 
 <div class="content-wrapper">
+  <div class="rx-loadbar" id="rxLoadbar"></div>
   <section class="content">
     <div class="cert-wrap">
       <!-- Page Header -->
       <div class="cert-page-header">
         <h2><i class="fa fa-certificate"></i> Certificate Management <span class="cert-page-sub">| <?= htmlspecialchars($session_year) ?></span></h2>
       </div>
+
+      <?php if (!$can_manage): ?>
+      <div class="rx-ro-banner"><i class="fa fa-eye rx-ro-ic"></i> View-only access — you can view and print certificates, but creating templates, issuing, and revoking are restricted to Manage-level users.</div>
+      <?php endif; ?>
 
       <!-- Tab Navigation -->
       <?php $at = $active_tab ?? 'dashboard'; ?>
@@ -241,9 +256,7 @@
         <div class="cert-card">
           <div class="cert-card-head">
             <h3><i class="fa fa-file-text-o"></i> Certificate Templates</h3>
-            <?php if ($can_manage): ?>
-            <button class="cert-btn cert-btn-primary" onclick="CERT.tpl.openModal()"><i class="fa fa-plus"></i> New Template</button>
-            <?php endif; ?>
+            <button class="cert-btn cert-btn-primary" onclick="CERT.tpl.openModal()" <?= $can_manage ? '' : 'disabled title="Manage access required"' ?>><i class="fa fa-plus"></i> New Template</button>
           </div>
           <div class="cert-card-body" style="padding:0;">
             <div class="cert-table-wrap" id="templatesTableWrap">
@@ -366,7 +379,7 @@
                 <button class="cert-btn cert-btn-outline" onclick="CERT.gen.toStep2()"><i class="fa fa-arrow-left"></i> Back</button>
                 <div style="display:flex; gap:12px;">
                   <button class="cert-btn cert-btn-outline" onclick="CERT.gen.print()"><i class="fa fa-print"></i> Print</button>
-                  <button class="cert-btn cert-btn-primary" onclick="CERT.gen.issue()"><i class="fa fa-check"></i> Issue Certificate</button>
+                  <button class="cert-btn cert-btn-primary" onclick="CERT.gen.issue()" <?= $can_manage ? '' : 'disabled title="Manage access required"' ?>><i class="fa fa-check"></i> Issue Certificate</button>
                 </div>
               </div>
             </div>
@@ -501,6 +514,26 @@ document.addEventListener('DOMContentLoaded', function() {
     return $.ajax({ url: BASE + url, type: 'GET', dataType: 'json' });
   }
 
+  /* ── Top progress bar — driven off every in-flight AJAX ───────────── */
+  $(document).ajaxStart(function() { $('#rxLoadbar').addClass('on'); });
+  $(document).ajaxStop(function()  { $('#rxLoadbar').removeClass('on'); });
+
+  /* ── Skeleton placeholder for table wraps while data loads ────────── */
+  function skel(rows) {
+    var h = '<div style="padding:16px 22px;">';
+    for (var i = 0; i < (rows || 5); i++) {
+      h += '<div class="rx-skel rx-skel-row" style="width:' + (98 - (i % 3) * 12) + '%;"></div>';
+    }
+    return h + '</div>';
+  }
+
+  /* ── Button spinner helper (fail-closed: always cleared on settle) ── */
+  function btnBusy(el, on) {
+    if (!el) return;
+    if (on) el.classList.add('rx-btnload');
+    else el.classList.remove('rx-btnload');
+  }
+
   function toast(msg, ok) {
     var el = document.createElement('div');
     el.textContent = msg;
@@ -566,8 +599,12 @@ document.addEventListener('DOMContentLoaded', function() {
   /* ── DASHBOARD ───────────────────────────────────────────────────── */
   CERT.dash = {
     load: function() {
+      document.getElementById('dashRecentWrap').innerHTML = skel(4);
       get('certificates/get_dashboard').done(function(r) {
-        if (!r || r.status !== 'success') return;
+        if (!r || r.status !== 'success') {
+          document.getElementById('dashRecentWrap').innerHTML = '<div class="cert-empty"><i class="fa fa-exclamation-triangle"></i> ' + esc(r && r.message || 'Failed to load dashboard.') + '</div>';
+          return;
+        }
         var d = r.data || {};
         document.getElementById('dc-total').textContent = d.total || 0;
         document.getElementById('dc-today').textContent = d.today || 0;
@@ -602,8 +639,12 @@ document.addEventListener('DOMContentLoaded', function() {
     _data: [],
 
     load: function() {
+      document.getElementById('templatesTableWrap').innerHTML = skel(4);
       get('certificates/get_templates').done(function(r) {
-        if (!r || r.status !== 'success') return;
+        if (!r || r.status !== 'success') {
+          document.getElementById('templatesTableWrap').innerHTML = '<div class="cert-empty"><i class="fa fa-exclamation-triangle"></i> ' + esc(r && r.message || 'Failed to load templates.') + '</div>';
+          return;
+        }
         var d = r.data || {};
         CERT.tpl._data = d.templates || [];
         _templates = CERT.tpl._data;
@@ -628,12 +669,12 @@ document.addEventListener('DOMContentLoaded', function() {
           '<td><span class="cert-badge cert-badge-' + typeBadge + '">' + esc(t.type) + '</span></td>' +
           '<td>' + esc((t.updatedAt || t.createdAt || '').substring(0, 10)) + '</td>' +
           '<td>';
-        html += '<button class="cert-btn cert-btn-sm cert-btn-outline" onclick="CERT.tpl.preview(\'' + esc(t.id) + '\')"><i class="fa fa-eye"></i></button> ';
-        if (CAN_MANAGE) {
-          html += '<button class="cert-btn cert-btn-sm cert-btn-outline" onclick="CERT.tpl.edit(\'' + esc(t.id) + '\')"><i class="fa fa-pencil"></i></button> ';
-          if (!t.builtIn) {
-            html += '<button class="cert-btn cert-btn-sm cert-btn-danger" onclick="CERT.tpl.del(\'' + esc(t.id) + '\')"><i class="fa fa-trash"></i></button>';
-          }
+        html += '<button class="cert-btn cert-btn-sm cert-btn-outline" onclick="CERT.tpl.preview(\'' + esc(t.id) + '\')" title="Preview"><i class="fa fa-eye"></i></button> ';
+        // Manage-gated: shown to everyone but disabled below the level.
+        var mgAttr = CAN_MANAGE ? '' : ' disabled title="Manage access required"';
+        html += '<button class="cert-btn cert-btn-sm cert-btn-outline" onclick="CERT.tpl.edit(\'' + esc(t.id) + '\')"' + mgAttr + '><i class="fa fa-pencil"></i></button> ';
+        if (!t.builtIn) {
+          html += '<button class="cert-btn cert-btn-sm cert-btn-danger" onclick="CERT.tpl.del(\'' + esc(t.id) + '\')"' + mgAttr + '><i class="fa fa-trash"></i></button>';
         }
         html += '</td></tr>';
       });
@@ -711,6 +752,7 @@ document.addEventListener('DOMContentLoaded', function() {
     },
 
     save: function() {
+      if (!CAN_MANAGE) return toast('You do not have permission to manage templates.', false);
       var id = document.getElementById('tpl_id').value;
       var name = document.getElementById('tpl_name').value.trim();
       var type = document.getElementById('tpl_type').value;
@@ -720,6 +762,8 @@ document.addEventListener('DOMContentLoaded', function() {
       if (!name) return toast('Template name is required.', false);
       if (!body) return toast('Template body is required.', false);
 
+      var btn = document.querySelector('#templateModal .cert-modal-foot .cert-btn-primary');
+      btnBusy(btn, true);
       post('certificates/save_template', { id: id, name: name, type: type, title: title, body: body })
         .done(function(r) {
           if (r && r.status === 'success') {
@@ -727,13 +771,16 @@ document.addEventListener('DOMContentLoaded', function() {
             CERT.tpl.closeModal();
             CERT.tpl.load();
           } else {
+            // Fail-closed: never treat a non-success body as saved.
             toast(r && r.message || 'Save failed.', false);
           }
         })
-        .fail(function() { toast('Network error.', false); });
+        .fail(function(x) { toast((x.responseJSON && x.responseJSON.message) || 'Network error — template not saved.', false); })
+        .always(function() { btnBusy(btn, false); });
     },
 
     del: function(id) {
+      if (!CAN_MANAGE) return toast('You do not have permission to delete templates.', false);
       if (!confirm('Delete this template?')) return;
       post('certificates/delete_template', { id: id })
         .done(function(r) {
@@ -743,7 +790,8 @@ document.addEventListener('DOMContentLoaded', function() {
           } else {
             toast(r && r.message || 'Delete failed.', false);
           }
-        });
+        })
+        .fail(function(x) { toast((x.responseJSON && x.responseJSON.message) || 'Network error — template not deleted.', false); });
     }
   };
 
@@ -925,6 +973,8 @@ document.addEventListener('DOMContentLoaded', function() {
         'extraData[reason_for_leaving]': document.getElementById('gen_reason').value || ''
       };
 
+      var btn = document.querySelector('#genStep3 .cert-btn-primary');
+      btnBusy(btn, true);
       post('certificates/generate_certificate', payload)
         .done(function(r) {
           if (r && r.status === 'success') {
@@ -936,10 +986,12 @@ document.addEventListener('DOMContentLoaded', function() {
             document.getElementById('gen_certType').value = '';
             document.getElementById('gen_template').innerHTML = '<option value="">Select template after choosing type</option>';
           } else {
+            // Fail-closed: a non-success body never counts as issued.
             toast(r && r.message || 'Issue failed.', false);
           }
         })
-        .fail(function() { toast('Network error.', false); });
+        .fail(function(x) { toast((x.responseJSON && x.responseJSON.message) || 'Network error — certificate not issued.', false); })
+        .always(function() { btnBusy(btn, false); });
     },
 
     print: function() {
@@ -959,8 +1011,12 @@ document.addEventListener('DOMContentLoaded', function() {
     _viewCert: null,
 
     load: function() {
+      document.getElementById('issuedTableWrap').innerHTML = skel(5);
       get('certificates/get_issued').done(function(r) {
-        if (!r || r.status !== 'success') return;
+        if (!r || r.status !== 'success') {
+          document.getElementById('issuedTableWrap').innerHTML = '<div class="cert-empty"><i class="fa fa-exclamation-triangle"></i> ' + esc(r && r.message || 'Failed to load certificates.') + '</div>';
+          return;
+        }
         var d = r.data || {};
         CERT.issued._data = d.issued || [];
         CERT.issued.render();
@@ -1001,8 +1057,9 @@ document.addEventListener('DOMContentLoaded', function() {
             '<button class="cert-btn cert-btn-sm cert-btn-outline" onclick="CERT.issued.view(\'' + esc(c.id) + '\')" title="View"><i class="fa fa-eye"></i></button> ' +
             '<button class="cert-btn cert-btn-sm cert-btn-outline" onclick="CERT.issued.printById(\'' + esc(c.id) + '\')" title="Print"><i class="fa fa-print"></i></button> ';
 
-        if (CAN_MANAGE && !c.revoked) {
-          html += '<button class="cert-btn cert-btn-sm cert-btn-danger" onclick="CERT.issued.revoke(\'' + esc(c.id) + '\')" title="Revoke"><i class="fa fa-ban"></i></button>';
+        if (!c.revoked) {
+          var rvAttr = CAN_MANAGE ? '' : ' disabled title="Manage access required"';
+          html += '<button class="cert-btn cert-btn-sm cert-btn-danger" onclick="CERT.issued.revoke(\'' + esc(c.id) + '\')" title="Revoke"' + rvAttr + '><i class="fa fa-ban"></i></button>';
         }
         html += '</td></tr>';
       });
@@ -1085,6 +1142,7 @@ document.addEventListener('DOMContentLoaded', function() {
     },
 
     revoke: function(certId) {
+      if (!CAN_MANAGE) return toast('You do not have permission to revoke certificates.', false);
       if (!confirm('Are you sure you want to revoke this certificate? This cannot be undone.')) return;
       post('certificates/revoke_certificate', { certId: certId })
         .done(function(r) {
@@ -1094,7 +1152,8 @@ document.addEventListener('DOMContentLoaded', function() {
           } else {
             toast(r && r.message || 'Revoke failed.', false);
           }
-        });
+        })
+        .fail(function(x) { toast((x.responseJSON && x.responseJSON.message) || 'Network error — certificate not revoked.', false); });
     }
   };
 

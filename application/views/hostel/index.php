@@ -6,7 +6,10 @@ $tab_map = [
     'allocations' => ['panel'=>'panelAlloc',      'icon'=>'fa-users',      'label'=>'Allocations'],
     'attendance'  => ['panel'=>'panelAtt',        'icon'=>'fa-check-square-o','label'=>'Attendance'],
 ];
+$can_edit   = function_exists('has_permission') ? has_permission('Hostel','edit')   : true;
+$can_manage = function_exists('has_permission') ? has_permission('Hostel','manage') : true;
 ?>
+<link rel="stylesheet" href="<?= base_url('assets/css/rbac_ui_kit.css') ?>">
 <style>
 .hst-wrap{padding:20px;max-width:1400px;margin:0 auto}
 .hst-header{display:flex;align-items:center;justify-content:space-between;margin-bottom:24px;flex-wrap:wrap;gap:12px}
@@ -52,7 +55,9 @@ $tab_map = [
 .hst-search-box{position:relative} .hst-search-results{position:absolute;top:100%;left:0;right:0;background:var(--bg2);border:1px solid var(--border);border-radius:0 0 var(--r-sm) var(--r-sm);max-height:200px;overflow-y:auto;z-index:100;display:none} .hst-search-results.show{display:block} .hst-search-item{padding:8px 12px;cursor:pointer;font-size:13px;color:var(--t1);border-bottom:1px solid var(--border);font-family:var(--font-b)} .hst-search-item:hover{background:var(--gold-dim)}
 </style>
 
-<div class="content-wrapper"><section class="content"><div class="hst-wrap">
+<div class="content-wrapper">
+<div class="rx-loadbar" id="rxLoadbar"></div>
+<section class="content"><div class="hst-wrap">
   <div class="hst-header"><div>
     <div class="hst-header-icon"><i class="fa fa-building"></i> Hostel Management</div>
     <ol class="hst-breadcrumb"><li><a href="<?= base_url('admin') ?>">Dashboard</a></li><li><a href="<?= base_url('operations') ?>">Operations</a></li><li>Hostel</li></ol>
@@ -64,11 +69,17 @@ $tab_map = [
     <?php endforeach; ?>
   </nav>
 
+  <?php if(!$can_edit): ?>
+  <div class="rx-ro-banner"><span class="rx-ro-ic">🔒</span> View-only access — you can browse Hostel records but cannot add, edit, or delete.</div>
+  <?php elseif(!$can_manage): ?>
+  <div class="rx-ro-banner"><span class="rx-ro-ic">🔒</span> Limited access — you can add and edit, but deleting is restricted.</div>
+  <?php endif; ?>
+
   <!-- BUILDINGS -->
   <div class="hst-panel<?= $at === 'buildings' ? ' active' : '' ?>" id="panelBuildings">
     <div id="hostelStats"></div>
     <div class="hst-card">
-      <div class="hst-card-title"><span>Buildings</span><button class="hst-btn hst-btn-primary" onclick="HST.openBldModal()"><i class="fa fa-plus"></i> Add Building</button></div>
+      <div class="hst-card-title"><span>Buildings</span><button class="hst-btn hst-btn-primary" onclick="HST.openBldModal()" <?= $can_edit?'':'disabled' ?>><i class="fa fa-plus"></i> Add Building</button></div>
       <table class="hst-table"><thead><tr><th>ID</th><th>Name</th><th>Type</th><th>Floors</th><th>Warden</th><th>Status</th><th>Actions</th></tr></thead><tbody id="bldTbody"></tbody></table>
     </div>
   </div>
@@ -76,7 +87,7 @@ $tab_map = [
   <!-- ROOMS -->
   <div class="hst-panel<?= $at === 'rooms' ? ' active' : '' ?>" id="panelRooms">
     <div class="hst-card">
-      <div class="hst-card-title"><span>Rooms</span><button class="hst-btn hst-btn-primary" onclick="HST.openRmModal()"><i class="fa fa-plus"></i> Add Room</button></div>
+      <div class="hst-card-title"><span>Rooms</span><button class="hst-btn hst-btn-primary" onclick="HST.openRmModal()" <?= $can_edit?'':'disabled' ?>><i class="fa fa-plus"></i> Add Room</button></div>
       <div class="hst-form-group" style="max-width:300px;margin-bottom:14px"><label>Filter by Building</label><select id="rmBldFilter"><option value="">All Buildings</option></select></div>
       <table class="hst-table"><thead><tr><th>ID</th><th>Building</th><th>Floor</th><th>Room#</th><th>Type</th><th>Beds</th><th>Occupied</th><th>Fee/Month</th><th>Actions</th></tr></thead><tbody id="rmTbody"></tbody></table>
     </div>
@@ -85,7 +96,7 @@ $tab_map = [
   <!-- ALLOCATIONS -->
   <div class="hst-panel<?= $at === 'allocations' ? ' active' : '' ?>" id="panelAlloc">
     <div class="hst-card">
-      <div class="hst-card-title"><span>Student Allocations</span><button class="hst-btn hst-btn-primary" onclick="HST.openAllocModal()"><i class="fa fa-plus"></i> Allocate Student</button></div>
+      <div class="hst-card-title"><span>Student Allocations</span><button class="hst-btn hst-btn-primary" onclick="HST.openAllocModal()" <?= $can_edit?'':'disabled' ?>><i class="fa fa-plus"></i> Allocate Student</button></div>
       <table class="hst-table"><thead><tr><th>Student</th><th>Class</th><th>Building</th><th>Room</th><th>Bed</th><th>Check In</th><th>Fee</th><th>Status</th><th>Actions</th></tr></thead><tbody id="allocTbody"></tbody></table>
     </div>
   </div>
@@ -97,7 +108,7 @@ $tab_map = [
         <div style="display:flex;gap:10px;align-items:center">
           <input type="date" id="attDate" value="<?= date('Y-m-d') ?>" style="padding:6px 10px;border:1px solid var(--border);border-radius:var(--r-sm);background:var(--bg2);color:var(--t1);font-size:.84rem">
           <button class="hst-btn hst-btn-primary" onclick="HST.loadAtt()"><i class="fa fa-refresh"></i> Load</button>
-          <button class="hst-btn hst-btn-primary" onclick="HST.saveAtt()"><i class="fa fa-save"></i> Save</button>
+          <button class="hst-btn hst-btn-primary" onclick="HST.saveAtt()" <?= $can_edit?'':'disabled' ?>><i class="fa fa-save"></i> Save</button>
         </div>
       </div>
       <table class="hst-table"><thead><tr><th>Student</th><th>Room</th><th>Building</th><th style="text-align:center">Status</th></tr></thead><tbody id="attTbody"></tbody></table>
@@ -112,7 +123,7 @@ $tab_map = [
   <div class="hst-form-group"><label>Name *</label><input type="text" id="bldName"></div>
   <div class="hst-form-row"><div class="hst-form-group"><label>Type</label><select id="bldType"><option value="boys">Boys</option><option value="girls">Girls</option><option value="mixed">Mixed</option></select></div><div class="hst-form-group"><label>Floors</label><input type="number" id="bldFloors" value="1" min="1"></div></div>
   <div class="hst-form-row"><div class="hst-form-group"><label>Warden Name</label><input type="text" id="bldWarden"></div><div class="hst-form-group"><label>Address</label><input type="text" id="bldAddress"></div></div>
-  <button class="hst-btn hst-btn-primary" onclick="HST.saveBld()" style="width:100%;margin-top:8px">Save Building</button>
+  <button class="hst-btn hst-btn-primary" onclick="HST.saveBld()" style="width:100%;margin-top:8px" <?= $can_edit?'':'disabled' ?>>Save Building</button>
 </div></div>
 
 <!-- ROOM MODAL -->
@@ -124,7 +135,7 @@ $tab_map = [
   <div class="hst-form-row"><div class="hst-form-group"><label>Type</label><select id="rmType"><option value="single">Single</option><option value="double">Double</option><option value="triple">Triple</option><option value="dormitory">Dormitory</option></select></div><div class="hst-form-group"><label>Beds</label><input type="number" id="rmBeds" value="2" min="1"></div></div>
   <div class="hst-form-group"><label>Monthly Fee (Rs)</label><input type="number" id="rmFee" value="0" min="0"></div>
   <div class="hst-form-group"><label>Facilities</label><input type="text" id="rmFacilities" placeholder="AC, Geyser, WiFi..."></div>
-  <button class="hst-btn hst-btn-primary" onclick="HST.saveRm()" style="width:100%;margin-top:8px">Save Room</button>
+  <button class="hst-btn hst-btn-primary" onclick="HST.saveRm()" style="width:100%;margin-top:8px" <?= $can_edit?'':'disabled' ?>>Save Room</button>
 </div></div>
 
 <!-- ALLOCATION MODAL -->
@@ -133,28 +144,38 @@ $tab_map = [
   <div class="hst-form-group hst-search-box"><label>Student</label><input type="text" id="allocStudentSearch" placeholder="Search by name or ID..." autocomplete="off"><input type="hidden" id="allocStudentId"><div class="hst-search-results" id="allocStudentResults"></div></div>
   <div class="hst-form-group"><label>Room *</label><select id="allocRoomId"></select></div>
   <div class="hst-form-group"><label>Bed Number</label><input type="number" id="allocBed" value="1" min="1"></div>
-  <button class="hst-btn hst-btn-primary" onclick="HST.saveAlloc()" style="width:100%;margin-top:8px">Allocate</button>
+  <button class="hst-btn hst-btn-primary" onclick="HST.saveAlloc()" style="width:100%;margin-top:8px" <?= $can_edit?'':'disabled' ?>>Allocate</button>
 </div></div>
 
 <script>
-var _HST_CFG={BASE:'<?= base_url() ?>',CSRF_NAME:'<?= $this->security->get_csrf_token_name() ?>',CSRF_HASH:'<?= $this->security->get_csrf_hash() ?>',activeTab:'<?= $at ?>'};
+var _HST_CFG={BASE:'<?= base_url() ?>',CSRF_NAME:'<?= $this->security->get_csrf_token_name() ?>',CSRF_HASH:'<?= $this->security->get_csrf_hash() ?>',activeTab:'<?= $at ?>',CAN_EDIT:<?= $can_edit?'true':'false' ?>,CAN_MANAGE:<?= $can_manage?'true':'false' ?>};
 document.addEventListener('DOMContentLoaded', function(){
 (function(){
   'use strict';
   var BASE=_HST_CFG.BASE,CN=_HST_CFG.CSRF_NAME,CH=_HST_CFG.CSRF_HASH;
   var buildings=[],rooms=[];
-  function getJSON(u){return $.getJSON(BASE+u)} function post(u,d){d[CN]=CH;return $.post(BASE+u,d)}
+  var CAN_EDIT=_HST_CFG.CAN_EDIT, CAN_MANAGE=_HST_CFG.CAN_MANAGE;
+  var EDIT_ATTR=CAN_EDIT?'':' disabled title="No edit permission"';
+  var DEL_ATTR=CAN_MANAGE?'':' disabled title="No delete permission"';
   function toast(m,ok){var t=$('<div style="position:fixed;top:20px;right:20px;z-index:99999;padding:12px 20px;border-radius:8px;font-size:.85rem;color:#fff;background:'+(ok?'var(--green)':'var(--rose)')+'">'+m+'</div>');$('body').append(t);setTimeout(function(){t.fadeOut(300,function(){t.remove()})},3000)}
   function escH(s){return $('<span>').text(s||'').html()}
+  function errMsg(xhr,def){var m=def||'Request failed';try{var j=xhr.responseJSON;if(!j&&xhr.responseText)j=JSON.parse(xhr.responseText);if(j&&j.message)m=j.message;else if(xhr.status)m=(def||'Request failed')+' ('+xhr.status+')';}catch(e){if(xhr.status)m=(def||'Request failed')+' ('+xhr.status+')';}return m}
+  function getJSON(u){return $.getJSON(BASE+u).fail(function(xhr){toast(errMsg(xhr,'Failed to load data'),false)})}
+  function post(u,d){d[CN]=CH;return $.post(BASE+u,d).fail(function(xhr){toast(errMsg(xhr,'Action failed'),false)})}
+  function skel(id,cols,n){var h='';n=n||4;for(var i=0;i<n;i++){h+='<tr>';for(var c=0;c<cols;c++)h+='<td><div class="rx-skel rx-skel-row"></div></td>';h+='</tr>'}$('#'+id).html(h)}
+  function btnOn(sel){var el=$(sel)[0];if(el)el.classList.add('rx-btnload');return el}
+  function btnOff(el){if(el)el.classList.remove('rx-btnload')}
+  $(document).ajaxStart(function(){$('#rxLoadbar').addClass('on')}).ajaxStop(function(){$('#rxLoadbar').removeClass('on')});
   function bldName(id){for(var i=0;i<buildings.length;i++) if(buildings[i].id===id) return buildings[i].name; return id||'—'}
   window.HST={};
 
   // ── Buildings ──
   function loadBuildings(){
-    getJSON('hostel/get_buildings').done(function(r){if(r.status!=='success') return; buildings=r.buildings||[];
+    skel('bldTbody',7);
+    getJSON('hostel/get_buildings').done(function(r){if(r.status!=='success'){$('#bldTbody').html('<tr><td colspan="7" style="text-align:center;color:var(--rose)">'+escH(r.message||'Failed to load')+'</td></tr>');return} buildings=r.buildings||[];
       var html='';buildings.forEach(function(b){
         html+='<tr><td>'+escH(b.id)+'</td><td>'+escH(b.name)+'</td><td>'+escH(b.type)+'</td><td>'+b.floors+'</td><td>'+escH(b.warden_name)+'</td><td><span class="hst-badge hst-badge-green">'+b.status+'</span></td>';
-        html+='<td><button class="hst-btn hst-btn-sm hst-btn-primary" onclick="HST.editBld(\''+b.id+'\')"><i class="fa fa-pencil"></i></button> <button class="hst-btn hst-btn-sm hst-btn-danger" onclick="HST.delBld(\''+b.id+'\')"><i class="fa fa-trash"></i></button></td></tr>';
+        html+='<td><button class="hst-btn hst-btn-sm hst-btn-primary" onclick="HST.editBld(\''+b.id+'\')"'+EDIT_ATTR+'><i class="fa fa-pencil"></i></button> <button class="hst-btn hst-btn-sm hst-btn-danger" onclick="HST.delBld(\''+b.id+'\')"'+DEL_ATTR+'><i class="fa fa-trash"></i></button></td></tr>';
       });
       $('#bldTbody').html(html||'<tr><td colspan="7" style="text-align:center;color:var(--t3)">No buildings</td></tr>');
       var opts='<option value="">All Buildings</option>',selO='';
@@ -173,20 +194,21 @@ document.addEventListener('DOMContentLoaded', function(){
   }
   HST.openBldModal=function(){$('#bldId,#bldName,#bldWarden,#bldAddress').val('');$('#bldType').val('mixed');$('#bldFloors').val(1);$('#bldModalTitle').text('Add Building');$('#bldModal').addClass('show')};
   HST.closeBldModal=function(){$('#bldModal').removeClass('show')};
-  HST.editBld=function(id){var b=buildings.find(function(x){return x.id===id});if(!b)return;$('#bldId').val(b.id);$('#bldName').val(b.name);$('#bldType').val(b.type);$('#bldFloors').val(b.floors);$('#bldWarden').val(b.warden_name);$('#bldAddress').val(b.address);$('#bldModalTitle').text('Edit Building');$('#bldModal').addClass('show')};
-  HST.saveBld=function(){post('hostel/save_building',{id:$('#bldId').val(),name:$('#bldName').val(),type:$('#bldType').val(),floors:$('#bldFloors').val(),warden_name:$('#bldWarden').val(),address:$('#bldAddress').val()}).done(function(r){r=typeof r==='string'?JSON.parse(r):r;if(r.status==='success'){toast(r.message,true);HST.closeBldModal();loadBuildings()}else toast(r.message,false)})};
-  HST.delBld=function(id){if(!confirm('Delete building?'))return;post('hostel/delete_building',{id:id}).done(function(r){r=typeof r==='string'?JSON.parse(r):r;if(r.status==='success'){toast(r.message,true);loadBuildings()}else toast(r.message,false)})};
+  HST.editBld=function(id){if(!CAN_EDIT)return;var b=buildings.find(function(x){return x.id===id});if(!b)return;$('#bldId').val(b.id);$('#bldName').val(b.name);$('#bldType').val(b.type);$('#bldFloors').val(b.floors);$('#bldWarden').val(b.warden_name);$('#bldAddress').val(b.address);$('#bldModalTitle').text('Edit Building');$('#bldModal').addClass('show')};
+  HST.saveBld=function(){if(!CAN_EDIT){toast('You do not have edit permission',false);return}var b=btnOn('#bldModal .hst-btn-primary');post('hostel/save_building',{id:$('#bldId').val(),name:$('#bldName').val(),type:$('#bldType').val(),floors:$('#bldFloors').val(),warden_name:$('#bldWarden').val(),address:$('#bldAddress').val()}).done(function(r){r=typeof r==='string'?JSON.parse(r):r;if(r.status==='success'){toast(r.message,true);HST.closeBldModal();loadBuildings()}else toast(r.message,false)}).always(function(){btnOff(b)})};
+  HST.delBld=function(id){if(!CAN_MANAGE){toast('You do not have delete permission',false);return}if(!confirm('Delete building?'))return;post('hostel/delete_building',{id:id}).done(function(r){r=typeof r==='string'?JSON.parse(r):r;if(r.status==='success'){toast(r.message,true);loadBuildings()}else toast(r.message,false)})};
 
   // ── Rooms ──
   function loadRooms(){
+    skel('rmTbody',9);
     var bid=$('#rmBldFilter').val()||'';
-    getJSON('hostel/get_rooms?building_id='+bid).done(function(r){if(r.status!=='success') return; rooms=r.rooms||[];
+    getJSON('hostel/get_rooms?building_id='+bid).done(function(r){if(r.status!=='success'){$('#rmTbody').html('<tr><td colspan="9" style="text-align:center;color:var(--rose)">'+escH(r.message||'Failed to load')+'</td></tr>');return} rooms=r.rooms||[];
       var html='';rooms.forEach(function(rm){
         var pct=rm.beds>0?Math.round((rm.occupied/rm.beds)*100):0;
         var occBadge=pct>=90?'hst-badge-red':pct>=50?'hst-badge-amber':'hst-badge-green';
         html+='<tr><td>'+escH(rm.id)+'</td><td>'+escH(bldName(rm.building_id))+'</td><td>'+rm.floor+'</td><td>'+escH(rm.room_no)+'</td><td>'+escH(rm.type)+'</td><td>'+rm.beds+'</td>';
         html+='<td><span class="hst-badge '+occBadge+'">'+rm.occupied+'/'+rm.beds+'</span></td><td>Rs '+rm.monthly_fee+'</td>';
-        html+='<td><button class="hst-btn hst-btn-sm hst-btn-primary" onclick="HST.editRm(\''+rm.id+'\')"><i class="fa fa-pencil"></i></button> <button class="hst-btn hst-btn-sm hst-btn-danger" onclick="HST.delRm(\''+rm.id+'\')"><i class="fa fa-trash"></i></button></td></tr>';
+        html+='<td><button class="hst-btn hst-btn-sm hst-btn-primary" onclick="HST.editRm(\''+rm.id+'\')"'+EDIT_ATTR+'><i class="fa fa-pencil"></i></button> <button class="hst-btn hst-btn-sm hst-btn-danger" onclick="HST.delRm(\''+rm.id+'\')"'+DEL_ATTR+'><i class="fa fa-trash"></i></button></td></tr>';
       });
       $('#rmTbody').html(html||'<tr><td colspan="9" style="text-align:center;color:var(--t3)">No rooms</td></tr>');
       // populate alloc room select
@@ -197,16 +219,17 @@ document.addEventListener('DOMContentLoaded', function(){
   $('#rmBldFilter').on('change',loadRooms);
   HST.openRmModal=function(){$('#rmId,#rmNo,#rmFacilities').val('');$('#rmFloor').val(1);$('#rmType').val('double');$('#rmBeds').val(2);$('#rmFee').val(0);$('#rmModalTitle').text('Add Room');$('#rmModal').addClass('show')};
   HST.closeRmModal=function(){$('#rmModal').removeClass('show')};
-  HST.editRm=function(id){var r=rooms.find(function(x){return x.id===id});if(!r)return;$('#rmId').val(r.id);$('#rmBldId').val(r.building_id);$('#rmFloor').val(r.floor);$('#rmNo').val(r.room_no);$('#rmType').val(r.type);$('#rmBeds').val(r.beds);$('#rmFee').val(r.monthly_fee);$('#rmFacilities').val(r.facilities||'');$('#rmModalTitle').text('Edit Room');$('#rmModal').addClass('show')};
-  HST.saveRm=function(){post('hostel/save_room',{id:$('#rmId').val(),building_id:$('#rmBldId').val(),floor:$('#rmFloor').val(),room_no:$('#rmNo').val(),type:$('#rmType').val(),beds:$('#rmBeds').val(),monthly_fee:$('#rmFee').val(),facilities:$('#rmFacilities').val()}).done(function(r){r=typeof r==='string'?JSON.parse(r):r;if(r.status==='success'){toast(r.message,true);HST.closeRmModal();loadRooms()}else toast(r.message,false)})};
-  HST.delRm=function(id){if(!confirm('Delete room?'))return;post('hostel/delete_room',{id:id}).done(function(r){r=typeof r==='string'?JSON.parse(r):r;if(r.status==='success'){toast(r.message,true);loadRooms()}else toast(r.message,false)})};
+  HST.editRm=function(id){if(!CAN_EDIT)return;var r=rooms.find(function(x){return x.id===id});if(!r)return;$('#rmId').val(r.id);$('#rmBldId').val(r.building_id);$('#rmFloor').val(r.floor);$('#rmNo').val(r.room_no);$('#rmType').val(r.type);$('#rmBeds').val(r.beds);$('#rmFee').val(r.monthly_fee);$('#rmFacilities').val(r.facilities||'');$('#rmModalTitle').text('Edit Room');$('#rmModal').addClass('show')};
+  HST.saveRm=function(){if(!CAN_EDIT){toast('You do not have edit permission',false);return}var b=btnOn('#rmModal .hst-btn-primary');post('hostel/save_room',{id:$('#rmId').val(),building_id:$('#rmBldId').val(),floor:$('#rmFloor').val(),room_no:$('#rmNo').val(),type:$('#rmType').val(),beds:$('#rmBeds').val(),monthly_fee:$('#rmFee').val(),facilities:$('#rmFacilities').val()}).done(function(r){r=typeof r==='string'?JSON.parse(r):r;if(r.status==='success'){toast(r.message,true);HST.closeRmModal();loadRooms()}else toast(r.message,false)}).always(function(){btnOff(b)})};
+  HST.delRm=function(id){if(!CAN_MANAGE){toast('You do not have delete permission',false);return}if(!confirm('Delete room?'))return;post('hostel/delete_room',{id:id}).done(function(r){r=typeof r==='string'?JSON.parse(r):r;if(r.status==='success'){toast(r.message,true);loadRooms()}else toast(r.message,false)})};
 
   // ── Allocations ──
   function loadAllocations(){
-    getJSON('hostel/get_allocations').done(function(r){if(r.status!=='success') return;
+    skel('allocTbody',9);
+    getJSON('hostel/get_allocations').done(function(r){if(r.status!=='success'){$('#allocTbody').html('<tr><td colspan="9" style="text-align:center;color:var(--rose)">'+escH(r.message||'Failed to load')+'</td></tr>');return}
       var html='';(r.allocations||[]).forEach(function(a){
         var stBadge=a.status==='Active'?'<span class="hst-badge hst-badge-green">Active</span>':'<span class="hst-badge hst-badge-amber">'+a.status+'</span>';
-        var actions=a.status==='Active'?'<button class="hst-btn hst-btn-sm hst-btn-danger" onclick="HST.checkout(\''+a.student_id+'\')"><i class="fa fa-sign-out"></i> Check Out</button>':'—';
+        var actions=a.status==='Active'?'<button class="hst-btn hst-btn-sm hst-btn-danger" onclick="HST.checkout(\''+a.student_id+'\')"'+DEL_ATTR+'><i class="fa fa-sign-out"></i> Check Out</button>':'—';
         html+='<tr><td>'+escH(a.student_name)+'</td><td>'+escH(a.student_class)+'</td><td>'+escH(a.building_name)+'</td><td>'+escH(a.room_no)+'</td><td>'+a.bed_no+'</td><td>'+escH(a.check_in)+'</td><td>Rs '+a.monthly_fee+'</td><td>'+stBadge+'</td><td>'+actions+'</td></tr>';
       });
       $('#allocTbody').html(html||'<tr><td colspan="9" style="text-align:center;color:var(--t3)">No allocations</td></tr>');
@@ -220,13 +243,14 @@ document.addEventListener('DOMContentLoaded', function(){
   $(document).on('click',function(e){if(!$(e.target).closest('.hst-search-box').length) $('.hst-search-results').removeClass('show')});
   HST.openAllocModal=function(){$('#allocStudentSearch,#allocStudentId').val('');$('#allocBed').val(1);$('#allocModal').addClass('show')};
   HST.closeAllocModal=function(){$('#allocModal').removeClass('show')};
-  HST.saveAlloc=function(){post('hostel/save_allocation',{student_id:$('#allocStudentId').val(),room_id:$('#allocRoomId').val(),bed_no:$('#allocBed').val()}).done(function(r){r=typeof r==='string'?JSON.parse(r):r;if(r.status==='success'){toast(r.message,true);HST.closeAllocModal();loadAllocations();loadRooms()}else toast(r.message,false)})};
-  HST.checkout=function(sid){if(!confirm('Check out this student?'))return;post('hostel/delete_allocation',{student_id:sid}).done(function(r){r=typeof r==='string'?JSON.parse(r):r;if(r.status==='success'){toast(r.message,true);loadAllocations();loadRooms()}else toast(r.message,false)})};
+  HST.saveAlloc=function(){if(!CAN_EDIT){toast('You do not have edit permission',false);return}var b=btnOn('#allocModal .hst-btn-primary');post('hostel/save_allocation',{student_id:$('#allocStudentId').val(),room_id:$('#allocRoomId').val(),bed_no:$('#allocBed').val()}).done(function(r){r=typeof r==='string'?JSON.parse(r):r;if(r.status==='success'){toast(r.message,true);HST.closeAllocModal();loadAllocations();loadRooms()}else toast(r.message,false)}).always(function(){btnOff(b)})};
+  HST.checkout=function(sid){if(!CAN_MANAGE){toast('You do not have delete permission',false);return}if(!confirm('Check out this student?'))return;post('hostel/delete_allocation',{student_id:sid}).done(function(r){r=typeof r==='string'?JSON.parse(r):r;if(r.status==='success'){toast(r.message,true);loadAllocations();loadRooms()}else toast(r.message,false)})};
 
   // ── Attendance ──
   var attData=[];
   HST.loadAtt=function(){
     var date=$('#attDate').val();
+    skel('attTbody',4);
     getJSON('hostel/get_attendance?date='+date).done(function(r){if(r.status!=='success') return;
       var existing={};(r.attendance||[]).forEach(function(a){existing[a.student_id]=a.status||'P'});
       attData=[];var html='';(r.roster||[]).forEach(function(s){
@@ -241,11 +265,13 @@ document.addEventListener('DOMContentLoaded', function(){
     });
   };
   $(document).on('click','.hst-att-mark',function(){
+    if(!CAN_EDIT)return;
     var sid=$(this).data('sid'),mark=$(this).data('mark');
     $(this).siblings().removeClass('P A L');$(this).addClass(mark);
     for(var i=0;i<attData.length;i++){if(attData[i].student_id===sid){attData[i].status=mark;break}}
   });
   HST.saveAtt=function(){
+    if(!CAN_EDIT){toast('You do not have edit permission',false);return}
     if(!attData.length){toast('Load attendance first',false);return}
     post('hostel/save_attendance',{date:$('#attDate').val(),attendance:JSON.stringify(attData)}).done(function(r){
       r=typeof r==='string'?JSON.parse(r):r;

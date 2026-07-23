@@ -1,3 +1,5 @@
+<?php $ev_can_edit = function_exists('has_permission') ? has_permission('Events','edit') : true;
+      $ev_can_manage = function_exists('has_permission') ? has_permission('Events','manage') : true; ?>
 <?php
 $tabs = [
     'dashboard'     => ['icon' => 'fa-dashboard',   'label' => 'Dashboard',      'url' => 'events'],
@@ -45,9 +47,25 @@ $at = $active_tab ?? 'participation';
 .ev-search-item:hover{background:var(--gold-dim)}
 .ev-search-item:last-child{border-bottom:none}
 .ev-toast.success{background:#22c55e;display:block}.ev-toast.error{background:#ef4444;display:block}
+.ev-tablewrap{overflow-x:auto;-webkit-overflow-scrolling:touch;border-radius:8px}
+.ev-btn:disabled,.ev-btn[disabled]{opacity:.4;cursor:not-allowed;pointer-events:none;filter:grayscale(.2)}
+.ev-actions{display:flex;gap:6px;flex-wrap:wrap}
+@keyframes ev-loadbar-slide{0%{left:-40%;width:40%}50%{width:58%}100%{left:100%;width:40%}}@keyframes ev-spin{to{transform:rotate(360deg)}}@keyframes ev-shimmer{0%{background-position:200% 0}100%{background-position:-200% 0}}
+.ev-loadbar{position:fixed;top:0;left:0;right:0;height:3px;z-index:99999;background:var(--gold-dim,rgba(188,90,60,.15));overflow:hidden;opacity:0;transition:opacity .18s;pointer-events:none}.ev-loadbar.on{opacity:1}
+.ev-loadbar:before{content:'';position:absolute;top:0;height:100%;width:40%;left:-40%;border-radius:3px;background:linear-gradient(90deg,transparent,var(--gold,#BC5A3C),transparent);animation:ev-loadbar-slide 1.1s ease-in-out infinite}
+.ev-spin{display:inline-block;width:14px;height:14px;border:2px solid currentColor;border-top-color:transparent;border-radius:50%;animation:ev-spin .7s linear infinite;vertical-align:-2px}
+.is-loading{position:relative;color:transparent!important;pointer-events:none;opacity:.9}.is-loading:after{content:'';position:absolute;top:50%;left:50%;width:15px;height:15px;margin:-8px 0 0 -8px;border:2px solid currentColor;border-top-color:transparent;border-radius:50%;color:#fff;animation:ev-spin .7s linear infinite}.ev-btn-outline.is-loading:after,.ev-btn-ghost.is-loading:after{color:var(--gold,#BC5A3C)}
+.ev-rel{position:relative}.ev-loading-overlay{position:absolute;inset:0;z-index:20;display:flex;align-items:center;justify-content:center;gap:10px;background:rgba(127,127,127,.06);font-size:13px;font-weight:650;color:var(--t2)}.ev-loading-overlay .ev-spin{width:20px;height:20px;color:var(--gold,#BC5A3C)}
+.ev-skel{background:linear-gradient(90deg,var(--bg2,#f1f1f1) 25%,var(--bg3,#e7e7e7) 37%,var(--bg2,#f1f1f1) 63%);background-size:200% 100%;animation:ev-shimmer 1.3s ease-in-out infinite;border-radius:8px}.ev-skel-row{height:14px;margin:8px 0}
+.ev-ro-banner{display:flex;align-items:center;gap:9px;padding:10px 14px;margin:0 0 12px;border-radius:10px;font-size:13px;font-weight:600;background:rgba(37,99,235,.08);color:#1d4ed8;border:1px solid rgba(37,99,235,.2)}
+@media(prefers-reduced-motion:reduce){.ev-loadbar:before,.ev-spin,.is-loading:after,.ev-skel{animation:none}}
 </style>
 
 <div class="content-wrapper"><section class="content"><div class="ev-wrap">
+<div class="ev-loadbar" id="evLoadbar"></div>
+<?php if (!$ev_can_edit): ?>
+<div class="ev-ro-banner"><i class="fa fa-eye"></i> View-only access: you can view participants but cannot add, remove, or mark attendance.</div>
+<?php endif; ?>
 <div class="ev-header"><div>
     <div class="ev-header-icon"><i class="fa fa-calendar-check-o"></i> Events &amp; Activities</div>
     <ol class="ev-breadcrumb"><li><a href="<?= base_url('admin') ?>">Dashboard</a></li><li><a href="<?= base_url('events') ?>">Events</a></li><li>Participation</li></ol>
@@ -72,12 +90,14 @@ $at = $active_tab ?? 'participation';
     <div class="ev-card-title">
         <span id="pCardTitle">Participants</span>
         <div style="display:flex;gap:8px">
-            <button class="ev-btn ev-btn-sm ev-btn-primary" onclick="PART.openModal()"><i class="fa fa-plus"></i> Add Participant</button>
+            <button class="ev-btn ev-btn-sm ev-btn-primary" onclick="PART.openModal()"<?= $ev_can_edit ? '' : ' disabled title="You do not have permission to add participants"' ?>><i class="fa fa-plus"></i> Add Participant</button>
             <button class="ev-btn ev-btn-sm ev-btn-outline" onclick="PART.load()"><i class="fa fa-refresh"></i></button>
         </div>
     </div>
+    <div class="ev-tablewrap">
     <table class="ev-table"><thead><tr><th>Name</th><th>Type</th><th>Class / Section</th><th>Status</th><th>Registered</th><th>Actions</th></tr></thead>
     <tbody id="pTbody"><tr><td colspan="6" class="ev-empty"><i class="fa fa-spinner fa-spin"></i><span class="ev-load-text">Loading...</span></td></tr></tbody></table>
+    </div>
 </div>
 
 </div></section></div>
@@ -97,7 +117,7 @@ $at = $active_tab ?? 'participation';
         <div class="ev-form-group"><label>Class</label><input type="text" id="pClass" readonly></div>
         <div class="ev-form-group"><label>Section</label><input type="text" id="pSection" readonly></div>
     </div>
-    <button class="ev-btn ev-btn-primary" onclick="PART.save()" style="width:100%;margin-top:8px">Register Participant</button>
+    <button id="pSaveBtn" class="ev-btn ev-btn-primary" onclick="PART.save()" style="width:100%;margin-top:8px"<?= $ev_can_edit ? '' : ' disabled title="No permission"' ?>>Register Participant</button>
 </div></div>
 
 <div class="ev-toast" id="evToast"></div>
@@ -105,10 +125,19 @@ $at = $active_tab ?? 'participation';
 <script>
 var EV = EV || {};
 EV.BASE = '<?= base_url() ?>';
+EV.canEdit = <?= $ev_can_edit ? 'true' : 'false' ?>;
+EV.canManage = <?= $ev_can_manage ? 'true' : 'false' ?>;
 EV.toast = function(msg,type){var t=document.getElementById('evToast');t.textContent=msg;t.className='ev-toast '+(type||'success');setTimeout(function(){t.className='ev-toast';},3000);};
 EV.esc = function(s){var d=document.createElement('span');d.textContent=s||'';return d.innerHTML;};
 EV.escJs = function(s){return String(s||'').replace(/\\/g,'\\\\').replace(/'/g,"\\'").replace(/"/g,'\\"').replace(/</g,'\\x3c').replace(/>/g,'\\x3e');};
-EV.ajax = function(url,data,cb,method){$.ajax({url:EV.BASE+url,type:method||'GET',data:data,dataType:'json',success:function(r){if(r.status==='success'){if(cb)cb(r);}else EV.toast(r.message||'Error','error');},error:function(xhr){var m='Error';try{m=JSON.parse(xhr.responseText).message||m;}catch(e){}EV.toast(m,'error');}});};
+EV.errMsg = function(xhr){ return (xhr && xhr.responseJSON && xhr.responseJSON.message) || (function(){try{return JSON.parse(xhr.responseText).message;}catch(e){return null;}})() || 'Request failed'; };
+// Fail-closed: only invoke the callback after the server confirms success.
+EV.ajax = function(url,data,cb,method){$.ajax({url:EV.BASE+url,type:method||'GET',data:data,dataType:'json',
+    success:function(r){ if(!r || r.status==='error' || r.success===false || r.status!=='success'){ EV.toast((r&&r.message)||'Request failed','error'); return; } if(cb)cb(r); },
+    error:function(xhr){ EV.toast(EV.errMsg(xhr),'error'); }});};
+EV.btnBusy = function(el,on){ if(!el)return; if(on){el.classList.add('is-loading');el.disabled=true;} else {el.classList.remove('is-loading');el.disabled=false;} };
+EV.skel = function(tbodyId,cols,rows){ var h='',i,j; rows=rows||5; for(i=0;i<rows;i++){ h+='<tr>'; for(j=0;j<cols;j++){ h+='<td><div class="ev-skel ev-skel-row"></div></td>'; } h+='</tr>'; } var b=document.getElementById(tbodyId); if(b)b.innerHTML=h; };
+$(document).ajaxStart(function(){$('#evLoadbar').addClass('on')}).ajaxStop(function(){$('#evLoadbar').removeClass('on')});
 
 var PART = {};
 PART.eventId = '';
@@ -154,6 +183,7 @@ PART.onEventChange = function() {
 
 PART.load = function() {
     if (!PART.eventId) return;
+    EV.skel('pTbody', 6);
     $.ajax({
         url: EV.BASE + 'events/get_participants',
         type: 'GET',
@@ -178,11 +208,11 @@ PART.load = function() {
                         '<td style="font-size:12px">' + EV.esc(p.class||'') + (p.section ? ' / ' + EV.esc(p.section) : '') + '</td>' +
                         '<td><span class="ev-badge ' + PART.pStatusBadge(p.status) + '">' + EV.esc(p.status) + '</span></td>' +
                         '<td style="font-size:12px">' + EV.esc((p.registration_date||'').substring(0,10)) + '</td>' +
-                        '<td>' +
-                            '<button class="ev-btn ev-btn-sm ev-btn-success" onclick="PART.markAttendance(\'' + EV.escJs(p.id) + '\',\'attended\')" title="Mark Attended"><i class="fa fa-check"></i></button> ' +
-                            '<button class="ev-btn ev-btn-sm ev-btn-outline" onclick="PART.markAttendance(\'' + EV.escJs(p.id) + '\',\'absent\')" title="Mark Absent"><i class="fa fa-times"></i></button> ' +
-                            '<button class="ev-btn ev-btn-sm ev-btn-danger" onclick="PART.remove(\'' + EV.escJs(p.id) + '\')" title="Remove"><i class="fa fa-trash"></i></button>' +
-                        '</td></tr>';
+                        '<td><div class="ev-actions">' +
+                            '<button class="ev-btn ev-btn-sm ev-btn-success" onclick="PART.markAttendance(\'' + EV.escJs(p.id) + '\',\'attended\',this)" title="Mark Attended"' + (EV.canEdit ? '' : ' disabled') + '><i class="fa fa-check"></i></button>' +
+                            '<button class="ev-btn ev-btn-sm ev-btn-outline" onclick="PART.markAttendance(\'' + EV.escJs(p.id) + '\',\'absent\',this)" title="Mark Absent"' + (EV.canEdit ? '' : ' disabled') + '><i class="fa fa-times"></i></button>' +
+                            '<button class="ev-btn ev-btn-sm ev-btn-danger" onclick="PART.remove(\'' + EV.escJs(p.id) + '\',this)" title="Remove"' + (EV.canEdit ? '' : ' disabled') + '><i class="fa fa-trash"></i></button>' +
+                        '</div></td></tr>';
                 });
             }
             document.getElementById('pTbody').innerHTML = html;
@@ -252,7 +282,10 @@ PART.selectPerson = function(id, type, name, cls, sec) {
     document.getElementById('pClassFields').style.display = (type === 'teacher') ? 'none' : '';
 };
 
+PART._saving = false;
 PART.save = function() {
+    if (PART._saving) return;
+    if (!EV.canEdit) { EV.toast('You do not have permission to add participants','error'); return; }
     var data = {
         event_id: PART.eventId,
         participant_id: document.getElementById('pId').value,
@@ -263,26 +296,43 @@ PART.save = function() {
         status: 'registered'
     };
     if (!data.participant_id || !data.name) { EV.toast('Select a participant first','error'); return; }
-    EV.ajax('events/save_participant', data, function(r) {
-        EV.toast(r.message||'Registered');
-        PART.closeModal();
-        PART.load();
-    }, 'POST');
+    var btn = document.getElementById('pSaveBtn');
+    PART._saving = true; EV.btnBusy(btn, true);
+    $.ajax({ url: EV.BASE + 'events/save_participant', type: 'POST', data: data, dataType: 'json',
+        success: function(r) {
+            if (!r || r.status === 'error' || r.success === false || r.status !== 'success') { EV.toast((r && r.message) || 'Request failed','error'); return; }
+            EV.toast(r.message||'Registered'); PART.closeModal(); PART.load();
+        },
+        error: function(xhr) { EV.toast(EV.errMsg(xhr),'error'); },
+        complete: function() { PART._saving = false; EV.btnBusy(btn, false); }
+    });
 };
 
-PART.markAttendance = function(pid, status) {
-    EV.ajax('events/mark_attendance', {event_id: PART.eventId, participant_id: pid, status: status}, function(r) {
-        EV.toast(r.message||'Updated');
-        PART.load();
-    }, 'POST');
+PART.markAttendance = function(pid, status, btn) {
+    if (!EV.canEdit) { EV.toast('You do not have permission to mark attendance','error'); return; }
+    EV.btnBusy(btn, true);
+    $.ajax({ url: EV.BASE + 'events/mark_attendance', type: 'POST', data: {event_id: PART.eventId, participant_id: pid, status: status}, dataType: 'json',
+        success: function(r) {
+            if (!r || r.status === 'error' || r.success === false || r.status !== 'success') { EV.toast((r && r.message) || 'Request failed','error'); return; }
+            EV.toast(r.message||'Updated'); PART.load();
+        },
+        error: function(xhr) { EV.toast(EV.errMsg(xhr),'error'); },
+        complete: function() { EV.btnBusy(btn, false); }
+    });
 };
 
-PART.remove = function(pid) {
+PART.remove = function(pid, btn) {
+    if (!EV.canEdit) { EV.toast('You do not have permission to remove participants','error'); return; }
     if (!confirm('Remove this participant?')) return;
-    EV.ajax('events/remove_participant', {event_id: PART.eventId, participant_id: pid}, function(r) {
-        EV.toast(r.message||'Removed');
-        PART.load();
-    }, 'POST');
+    EV.btnBusy(btn, true);
+    $.ajax({ url: EV.BASE + 'events/remove_participant', type: 'POST', data: {event_id: PART.eventId, participant_id: pid}, dataType: 'json',
+        success: function(r) {
+            if (!r || r.status === 'error' || r.success === false || r.status !== 'success') { EV.toast((r && r.message) || 'Request failed','error'); return; }
+            EV.toast(r.message||'Removed'); PART.load();
+        },
+        error: function(xhr) { EV.toast(EV.errMsg(xhr),'error'); },
+        complete: function() { EV.btnBusy(btn, false); }
+    });
 };
 
 document.addEventListener('DOMContentLoaded', function() {

@@ -1,4 +1,11 @@
 <?php defined('BASEPATH') OR exit('No direct script access allowed'); ?>
+<?php
+    /* ── Access levels (defense-in-depth; controller remains source of truth) ──
+     * In these marking views, marking/saving counts as EDIT.
+     * MANAGE gates correction DECIDE/approve + lock (none inline here yet). */
+    $att_can_edit   = function_exists('has_permission') ? has_permission('Attendance', 'edit')   : true;
+    $att_can_manage = function_exists('has_permission') ? has_permission('Attendance', 'manage') : true;
+?>
 
 <!-- Attendance Design System (shared, cacheable) — see assets/css/attendance_design_system.css -->
 <link rel="stylesheet" href="<?= base_url('assets/css/attendance_design_system.css') ?>?v=2.1.0">
@@ -15,9 +22,9 @@
     --sa-primary: var(--gold, #BC5A3C);
     --sa-primary-dim: var(--gold-dim, rgba(188,90,60,.10));
     --sa-primary-ring: var(--gold-ring, rgba(188,90,60,.22));
-    --sa-bg: var(--bg, #f0f7f5);
+    --sa-bg: var(--bg, #F7F4F1);
     --sa-bg2: var(--bg2, #ffffff);
-    --sa-bg3: var(--bg3, #e6f4f1);
+    --sa-bg3: var(--bg3, #F7ECE7);
     --sa-bg4: var(--bg4, #cce9e4);
     --sa-border: var(--border, #d1ddd9);
     --sa-t1: var(--t1, #1a1a2e);
@@ -67,23 +74,23 @@
 .sa-grid-wrap::-webkit-scrollbar-thumb { background:var(--sa-border); border-radius:3px; }
 
 .sa-grid {
+    /* fixed layout → every column takes its defined <th> width for BOTH header
+       and body, so the date headers always sit exactly above their marks. */
+    table-layout:fixed;
     width:max-content; min-width:100%; border-collapse:separate;
     border-spacing:0; font-family:var(--sa-font);
 }
 
-/* ── Sticky columns ── */
-.sa-grid th:nth-child(1),
-.sa-grid td:nth-child(1),
-.sa-grid th:nth-child(2),
-.sa-grid td:nth-child(2) { position:sticky; z-index:5; }
-.sa-grid th:nth-child(1),
-.sa-grid td:nth-child(1) { left:0; }
-.sa-grid th:nth-child(2),
-.sa-grid td:nth-child(2) { left:42px; }
+/* Frozen first columns disabled — position:sticky on table cells mis-sizes in
+   Safari inside a scroll container and drifts the columns out of alignment. The
+   first two columns keep a solid background but scroll with the grid. */
 .sa-grid td:nth-child(1),
 .sa-grid td:nth-child(2) { background:var(--sa-card); }
 
-.sa-grid thead { position:sticky; top:0; z-index:12; }
+/* Header is intentionally NOT position:sticky — Safari mis-sizes sticky
+   table-header cells in a scroll container, drifting the date headers off the
+   marks. A plain header shares the body's fixed column grid, so it stays aligned. */
+.sa-grid thead th { position:static; }
 .sa-grid thead th:nth-child(1),
 .sa-grid thead th:nth-child(2) { z-index:15; }
 
@@ -94,9 +101,9 @@
     border-bottom:2px solid var(--sa-border);
 }
 .sa-grid th.sa-th-idx { width:42px; text-align:center; padding-left:10px; }
-.sa-grid th.sa-th-student { text-align:left; padding-left:14px; min-width:200px; }
+.sa-grid th.sa-th-student { text-align:left; padding-left:14px; width:200px; }
 .sa-grid th.sa-th-day { width:38px; }
-.sa-grid th.sa-th-pct { min-width:100px; }
+.sa-grid th.sa-th-pct { width:112px; }
 .sa-grid th.sa-col-sun { background:rgba(239,68,68,.10); color:#dc2626; }
 .sa-grid th.sa-col-hol { background:rgba(139,92,246,.14); color:#7c3aed; }
 
@@ -141,13 +148,14 @@
 
 .sa-grid td.sa-col-sun { background:var(--sa-sun-bg); border-left:1px solid rgba(239,68,68,.10); border-right:1px solid rgba(239,68,68,.10); }
 .sa-grid td.sa-col-hol { background:var(--sa-hol-bg); border-left:1px solid rgba(139,92,246,.10); border-right:1px solid rgba(139,92,246,.10); }
-/* Future days: visually grayed, not editable. Header gets the same wash. */
+/* Future days: not yet editable. Kept visually uniform with the rest of the
+   grid — only the date number is muted and the marks are lightly dimmed, so the
+   future half doesn't read as a washed-out / broken block. */
 .sa-grid th.sa-col-future,
 .sa-grid td.sa-col-future {
-    background:repeating-linear-gradient(45deg, rgba(148,163,184,.06) 0 6px, transparent 6px 12px);
     color:var(--sa-t3);
 }
-.sa-grid td.sa-col-future .sa-cell { cursor:not-allowed; opacity:.32; }
+.sa-grid td.sa-col-future .sa-cell { cursor:not-allowed; opacity:.5; }
 .sa-grid td.sa-col-future .sa-cell:hover { transform:none; }
 /* Sundays and Holidays are also locked — same cursor + dim treatment. The
    existing red/purple column tint stays so the reason is still legible. */
@@ -209,14 +217,41 @@
 
 /* Toast, modal, loading, and empty-state styles now live in the shared ADS. */
 
+/* ── Sticky action/save bar — stays in view while the register scrolls ── */
+#attToolbar { position:sticky; top:0; z-index:20; }
+/* Unsaved-changes affordance: amber ring on the action bar until saved. */
+#attToolbar.att-has-unsaved {
+    border-color:var(--sa-l);
+    box-shadow:inset 0 0 0 1px var(--sa-l), var(--sa-shadow);
+}
+
+/* ── Keyboard focus — visible ring on the focused mark cell ── */
+.sa-cell:focus-visible { outline:2px solid var(--sa-primary); outline-offset:1px; }
+
+/* ── Read-only (view-level) — grid is shown but not interactive ── */
+.sa-grid-wrap.att-readonly .sa-cell { cursor:default; }
+.sa-grid-wrap.att-readonly .sa-cell:hover { transform:none; box-shadow:none; }
+
 /* ── Responsive (matrix only) ── */
 @media (max-width:767px) {
-    .sa-grid th.sa-th-student { min-width:140px; }
+    .sa-grid th.sa-th-student { width:140px; }
     .sa-grid th:nth-child(2),
     .sa-grid td:nth-child(2) { left:36px; }
     .sa-grid th:nth-child(1) { width:36px; }
 }
 </style>
+
+<!-- Top progress bar — driven by attBusyStart/attBusyEnd on every request -->
+<div class="att-loadbar" id="attLoadbar"></div>
+<script>
+    /* Shared busy counter: any in-flight fetch turns the top loadbar on; it
+       clears only when the LAST request settles (success OR error). Defined at
+       page scope so BOTH the register IIFE (postData) and the stage/correction
+       IIFE below drive the same bar. */
+    var _attBusy = 0;
+    function attBusyStart(){ _attBusy++; var b=document.getElementById('attLoadbar'); if(b)b.classList.add('on'); }
+    function attBusyEnd(){ _attBusy=Math.max(0,_attBusy-1); if(!_attBusy){ var b=document.getElementById('attLoadbar'); if(b)b.classList.remove('on'); } }
+</script>
 
 <div class="content-wrapper">
 <section class="content">
@@ -240,6 +275,14 @@
             <i class="fa fa-calendar"></i> <span id="saMonthLabel"></span>
         </span>
     </div>
+
+    <?php if (!$att_can_edit): ?>
+    <!-- Read-only banner (view-level access) — data still shown; editing blocked -->
+    <div class="att-alert att-alert-info show" style="margin-bottom:16px;">
+        <i class="fa fa-eye"></i>
+        <span><strong>View-only access</strong> — you can see attendance but can't mark or edit it.</span>
+    </div>
+    <?php endif; ?>
 
     <!-- Phase 2/3 — Stage + Lock + Corrections strip (att-stage-* from the shared ADS) -->
     <div class="att-stage-strip unknown" id="saStageStrip" data-current-month="0">
@@ -356,21 +399,21 @@
             <button type="button" class="att-btn att-btn-primary att-btn-sm" id="attSaveBtn" disabled>
                 <i class="fa fa-save"></i> Save Changes
             </button>
-            <span id="saDirtyCount" style="font-family:var(--sa-font);font-size:11px;color:var(--sa-t3);display:none;">
-                <i class="fa fa-pencil"></i> <em id="saDirtyNum">0</em> modified
+            <span id="saDirtyCount" style="font-family:var(--sa-font);font-size:11px;color:var(--sa-l);font-weight:700;display:none;">
+                <i class="fa fa-pencil"></i> <em id="saDirtyNum">0</em> unsaved
             </span>
         </div>
         <div class="att-toolbar-divider"></div>
         <div class="att-toolbar-section">
             <label style="font-family:var(--sa-font);font-size:11px;font-weight:700;color:var(--sa-t3);letter-spacing:.5px;">DAY:</label>
-            <input type="number" id="attDayPicker" class="att-day-input" min="1" max="31" value="1">
-            <button type="button" class="att-btn att-btn-outline att-btn-sm" data-bulk="P">
+            <input type="number" id="attDayPicker" class="att-day-input" min="1" max="31" value="1"<?= $att_can_edit ? '' : ' disabled' ?>>
+            <button type="button" class="att-btn att-btn-outline att-btn-sm" data-bulk="P"<?= $att_can_edit ? '' : ' disabled' ?>>
                 <i class="fa fa-check"></i> All Present
             </button>
-            <button type="button" class="att-btn att-btn-outline att-btn-sm" data-bulk="A">
+            <button type="button" class="att-btn att-btn-outline att-btn-sm" data-bulk="A"<?= $att_can_edit ? '' : ' disabled' ?>>
                 <i class="fa fa-times"></i> All Absent
             </button>
-            <button type="button" class="att-btn att-btn-outline att-btn-sm" data-bulk="H">
+            <button type="button" class="att-btn att-btn-outline att-btn-sm" data-bulk="H"<?= $att_can_edit ? '' : ' disabled' ?>>
                 <i class="fa fa-star"></i> Holiday
             </button>
         </div>
@@ -448,6 +491,9 @@
     var CSRF_NAME = '<?= $this->security->get_csrf_token_name() ?>';
     var CSRF_HASH = '<?= $this->security->get_csrf_hash() ?>';
     var BASE = '<?= base_url() ?>';
+
+    // Access level (mirrors server RBAC — defense-in-depth only).
+    var CAN_EDIT = <?= $att_can_edit ? 'true' : 'false' ?>;
 
     var classesData = <?= json_encode($Classes ?: []) ?>;
 
@@ -570,18 +616,25 @@
         if (data) {
             Object.keys(data).forEach(function(k){ fd.append(k, data[k]); });
         }
+        // FAIL-CLOSED: fetch never rejects on 403/401/500, so we inspect the
+        // parsed body + HTTP status and THROW on any failure. Callers show the
+        // thrown message in .catch and only flip UI to "saved" in the resolved
+        // .then — never optimistically.
+        // Drive the top progress bar for EVERY request routed through here.
+        attBusyStart();
         return fetch(BASE + url, { method: 'POST', body: fd })
             .then(function(r) {
-                var ct = r.headers.get('content-type') || '';
-                if (ct.indexOf('application/json') !== -1) return r.json();
                 return r.text().then(function(t) {
-                    try { return JSON.parse(t); } catch(e) { throw new Error('Invalid response'); }
+                    var j = {};
+                    try { j = t ? JSON.parse(t) : {}; } catch (e) { j = {}; }
+                    if (j && j.csrf_hash) CSRF_HASH = j.csrf_hash;
+                    if (!r.ok || (j && (j.status === 'error' || j.success === false))) {
+                        throw new Error((j && (j.message || j.error)) || ('Request failed (' + r.status + ')'));
+                    }
+                    return j;
                 });
             })
-            .then(function(j) {
-                if (j && j.csrf_hash) CSRF_HASH = j.csrf_hash;
-                return j;
-            });
+            .finally(function(){ attBusyEnd(); });
     }
 
     /* ── Section Dropdown ── */
@@ -617,10 +670,14 @@
         elStatsStrip.style.display = 'none';
         elMonthBadge.style.display = 'none';
         elLoading.style.display = 'block';
+        elLoadBtn.classList.add('is-loading');
+        elLoadBtn.disabled = true;
 
         postData('attendance/fetch_student', { 'class': cls, section: sec, month: mon })
             .then(function(res) {
                 elLoading.style.display = 'none';
+                elLoadBtn.classList.remove('is-loading');
+                elLoadBtn.disabled = false;
                 if (!res || res.status === 'error') {
                     showToast(res ? res.message : 'Failed to load data.', 'error');
                     elEmpty.style.display = 'block';
@@ -663,13 +720,16 @@
                 renderGrid();
                 updateStats();
                 elGridWrap.style.display = 'block';
+                elGridWrap.classList.toggle('att-readonly', !CAN_EDIT);
                 elToolbar.style.display = 'flex';
                 elStatsStrip.style.display = 'grid';
                 updateSaveBtn();
             })
-            .catch(function() {
+            .catch(function(e) {
                 elLoading.style.display = 'none';
-                showToast('Network error loading attendance.', 'error');
+                elLoadBtn.classList.remove('is-loading');
+                elLoadBtn.disabled = false;
+                showToast((e && e.message) ? e.message : 'Network error loading attendance.', 'error');
                 elEmpty.style.display = 'block';
             });
     }
@@ -748,8 +808,11 @@
                 if (dayState(day) === 'future') tdCls += ' sa-col-future';
                 var dirtyMark = state.dirty.has(s.id) && att[d] !== state.original[s.id].charAt(d) ? ' sa-dirty' : '';
                 var lateDot = v === 'T' ? '<span class="sa-late-dot"></span>' : '';
+                // Only genuinely editable cells are keyboard-focusable.
+                var editable = CAN_EDIT && !dateLockReason(day);
+                var cellAttrs = editable ? ' tabindex="0" role="button" aria-label="Toggle mark, day ' + day + '"' : '';
                 bHtml += '<td class="' + tdCls + '">';
-                bHtml += '<span class="sa-cell' + dirtyMark + '" data-v="' + v + '" data-sid="' + esc(s.id) + '" data-d="' + d + '">';
+                bHtml += '<span class="sa-cell' + dirtyMark + '" data-v="' + v + '" data-sid="' + esc(s.id) + '" data-d="' + d + '"' + cellAttrs + '>';
                 bHtml += v + lateDot + '</span></td>';
             }
 
@@ -818,12 +881,21 @@
     }
 
     function updateSaveBtn() {
+        // View-only: Save can never enable, and no "unsaved" affordance shows.
+        if (!CAN_EDIT) {
+            elSaveBtn.disabled = true;
+            elDirtyCount.style.display = 'none';
+            elToolbar.classList.remove('att-has-unsaved');
+            return;
+        }
         elSaveBtn.disabled = state.dirty.size === 0;
         if (state.dirty.size > 0) {
             elDirtyNum.textContent = state.dirty.size;
             elDirtyCount.style.display = 'inline';
+            elToolbar.classList.add('att-has-unsaved');
         } else {
             elDirtyCount.style.display = 'none';
+            elToolbar.classList.remove('att-has-unsaved');
         }
     }
 
@@ -839,10 +911,14 @@
         updateStats();
     }
 
-    /* ── Cell Click ── */
-    elBody.addEventListener('click', function(e) {
-        var cell = e.target.closest('.sa-cell');
+    /* ── Cell toggle (click + keyboard) ── */
+    function toggleCell(cell) {
         if (!cell) return;
+        // View-only users can read the register but never mutate it.
+        if (!CAN_EDIT) {
+            showToast('View-only access — you can see attendance but can\'t mark or edit it.', 'error');
+            return;
+        }
         var sid = cell.getAttribute('data-sid');
         var d = parseInt(cell.getAttribute('data-d'), 10);
         var day = d + 1;
@@ -856,6 +932,18 @@
         state.attendance[sid][d] = nextMark(curr);
         updateCell(sid, d);
         markDirty(sid);
+    }
+
+    elBody.addEventListener('click', function(e) {
+        toggleCell(e.target.closest('.sa-cell'));
+    });
+    // Keyboard-friendly: Enter / Space cycles the focused cell.
+    elBody.addEventListener('keydown', function(e) {
+        if (e.key !== 'Enter' && e.key !== ' ' && e.key !== 'Spacebar') return;
+        var cell = e.target.closest('.sa-cell');
+        if (!cell) return;
+        e.preventDefault();
+        toggleCell(cell);
     });
 
     /* ── Double-click Row → Modal ── */
@@ -920,6 +1008,10 @@
     /* ── Bulk Actions ── */
     document.querySelectorAll('[data-bulk]').forEach(function(btn) {
         btn.addEventListener('click', function() {
+            if (!CAN_EDIT) {
+                showToast('View-only access — bulk marking is disabled.', 'error');
+                return;
+            }
             var mark = btn.getAttribute('data-bulk');
             var day = parseInt(elDayPick.value, 10);
             if (day < 1 || day > state.daysInMonth) {
@@ -985,7 +1077,7 @@
         });
 
         elSaveBtn.disabled = true;
-        elSaveBtn.innerHTML = '<i class="fa fa-spinner fa-spin"></i> Saving...';
+        elSaveBtn.classList.add('is-loading');
 
         postData('attendance/save_student', {
             'class': cls,
@@ -995,7 +1087,7 @@
             late: JSON.stringify(lateObj)
         })
         .then(function(res) {
-            elSaveBtn.innerHTML = '<i class="fa fa-save"></i> Save Changes';
+            elSaveBtn.classList.remove('is-loading');
             if (res && res.status === 'success') {
                 // Strip the rejected students from the local dirty set so
                 // their unsaved edits stay highlighted; only commit the
@@ -1029,10 +1121,12 @@
                 elSaveBtn.disabled = false;
             }
         })
-        .catch(function() {
-            elSaveBtn.innerHTML = '<i class="fa fa-save"></i> Save Changes';
+        .catch(function(e) {
+            // Fail-closed: server rejected (403/500/status:error) — nothing was
+            // committed to state.original, so dirty marks stay highlighted.
+            elSaveBtn.classList.remove('is-loading');
             elSaveBtn.disabled = false;
-            showToast('Network error while saving.', 'error');
+            showToast((e && e.message) ? e.message : 'Network error while saving.', 'error');
         });
     }
 
@@ -1095,6 +1189,7 @@
     }
 
     elSaveBtn.addEventListener('click', function() {
+        if (!CAN_EDIT) return;   // hardened: view-only can never save
         if (state.dirty.size === 0) return;
         var pastEdits = collectPastEdits();
         if (pastEdits.length > 0) {
@@ -1259,6 +1354,7 @@
             return;
         }
         // Fetch lock + stage for today
+        attBusyStart();
         fetch(BASE + 'attendance/lock?class=' + encodeURIComponent(c)
                   + '&section=' + encodeURIComponent(s)
                   + '&date='    + encodeURIComponent(TODAY),
@@ -1268,9 +1364,11 @@
                 if (!j || j.status !== 'success') return setStage(null, null);
                 setStage(j.stage, j.lock || {});
             })
-            .catch(function(){ setStage(null, null); });
+            .catch(function(){ setStage(null, null); })
+            .finally(function(){ attBusyEnd(); });
 
         // Fetch pending correction count for this date
+        attBusyStart();
         fetch(BASE + 'attendance/correction/list?status=pending&date=' + encodeURIComponent(TODAY) + '&limit=100',
               { credentials: 'same-origin' })
             .then(function(r){ return r.ok ? r.json() : null; })
@@ -1278,7 +1376,8 @@
                 var n = (j && j.requests) ? j.requests.length : 0;
                 setCorrCount(n);
             })
-            .catch(function(){ setCorrCount(0); });
+            .catch(function(){ setCorrCount(0); })
+            .finally(function(){ attBusyEnd(); });
     }
 
     $cls.addEventListener('change',  refresh);

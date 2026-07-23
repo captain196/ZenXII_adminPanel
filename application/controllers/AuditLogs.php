@@ -61,7 +61,7 @@ class AuditLogs extends MY_Controller
 
     public function index(): void
     {
-        $this->_require_role(['Super Admin', 'Admin', 'Principal'], 'audit_view');
+        $this->_require_role(['Super Admin', 'Admin', 'Principal'], 'audit_view', 'Admin Users', 'view');
 
         $data = [
             'page_title' => 'Audit Logs',
@@ -78,7 +78,7 @@ class AuditLogs extends MY_Controller
 
     public function get_logs(): void
     {
-        $this->_require_role(['Super Admin', 'Admin', 'Principal'], 'audit_get_logs');
+        $this->_require_role(['Super Admin', 'Admin', 'Principal'], 'audit_get_logs', 'Admin Users', 'view');
 
         try {
             $logs  = $this->_recent_logs(self::UI_PAGE_SIZE);
@@ -100,7 +100,7 @@ class AuditLogs extends MY_Controller
 
     public function filter_logs(): void
     {
-        $this->_require_role(['Super Admin', 'Admin', 'Principal'], 'audit_filter');
+        $this->_require_role(['Super Admin', 'Admin', 'Principal'], 'audit_filter', 'Admin Users', 'view');
 
         $module    = trim($this->input->post('module', TRUE) ?? '');
         $action    = trim($this->input->post('action', TRUE) ?? '');
@@ -142,7 +142,7 @@ class AuditLogs extends MY_Controller
 
     public function get_user_activity(): void
     {
-        $this->_require_role(['Super Admin', 'Admin', 'Principal'], 'audit_user_activity');
+        $this->_require_role(['Super Admin', 'Admin', 'Principal'], 'audit_user_activity', 'Admin Users', 'view');
 
         $userId = trim($this->input->post('user_id', TRUE) ?? '');
         if (empty($userId)) {
@@ -182,7 +182,7 @@ class AuditLogs extends MY_Controller
 
     public function get_stats(): void
     {
-        $this->_require_role(['Super Admin', 'Admin', 'Principal'], 'audit_stats');
+        $this->_require_role(['Super Admin', 'Admin', 'Principal'], 'audit_stats', 'Admin Users', 'view');
 
         try {
             $rows = $this->_recent_logs(self::UI_PAGE_SIZE);
@@ -231,7 +231,7 @@ class AuditLogs extends MY_Controller
 
     public function archive_old(): void
     {
-        $this->_require_role(['Super Admin', 'Admin'], 'audit_archive');
+        $this->_require_role(['Super Admin', 'Admin'], 'audit_archive', 'Admin Users', 'manage');
 
         try {
             $archived = audit_archive_old(null, $this->school_id, self::LOG_LIMIT);

@@ -121,7 +121,7 @@ class Sis extends MY_Controller
 
     public function index()
     {
-        $this->_require_role(self::VIEW_ROLES, 'sis_view');
+        $this->_require_role(self::VIEW_ROLES, 'sis_view', 'SIS', 'view');
         $school_id   = $this->parent_db_key;
         $school_name = $this->school_name;
         $session     = $this->session_year;
@@ -195,7 +195,7 @@ class Sis extends MY_Controller
 
     public function students()
     {
-        $this->_require_role(self::VIEW_ROLES, 'sis_students');
+        $this->_require_role(self::VIEW_ROLES, 'sis_students', 'SIS', 'view');
         $session = $this->session_year;
 
         $data['class_map']    = $this->_fs_class_map();
@@ -206,13 +206,51 @@ class Sis extends MY_Controller
         $this->load->view('include/footer');
     }
 
+    /**
+     * RBAC gate override — fixes the Layer-2 role-name gate (F3).
+     *
+     * The base MY_Controller::_require_role() hard-matches the ROLE NAME
+     * against the allow-list. That silently locks out custom tenant roles
+     * which legitimately hold the SIS module permission, and makes the
+     * per-action labels ('crm_view'/'crm_approve'/…) purely decorative.
+     * Mirroring the Attendance controller, defer to the real RBAC
+     * permission: any role granted the SIS module (already required in the
+     * constructor for every non-public method) passes. This also resolves the
+     * teacher-PII over-exposure (F8) — access is now governed by the SIS grant
+     * rather than a hardcoded name list, so a Teacher without SIS can't reach
+     * the CRM at all. Pass $strict = true to force the hard name floor where a
+     * specific role is genuinely required.
+     */
+    protected function _require_role(array $allowed, string $action = '', ?string $module = null, string $level = 'view'): void
+    {
+        // Signature matches the base MY_Controller::_require_role (Unified-RBAC
+        // capability bridge: ?string $module + string $level). Graded path: a
+        // role holding the SIS module AT THE REQUESTED LEVEL ($level:
+        // view|edit|manage) passes without appearing in the hardcoded name
+        // list. Pass the sentinel module 'strict' (was the boolean `true`) to
+        // force the hard name floor. Callers pass module 'SIS' + the site's
+        // real level; a bare/absent module keeps the legacy view-floor default.
+        $strict = ($module === 'strict');
+        if (!$strict && has_permission('SIS', $level)) {
+            return;
+        }
+        // Non-strict sites pass the real module + level so the base enforces
+        // graded authority (a holder at a LOWER level is denied, not re-granted by
+        // the legacy name list). Strict sites keep the hard name floor.
+        if ($strict) {
+            parent::_require_role($allowed, $action);
+        } else {
+            parent::_require_role($allowed, $action, 'SIS', $level);
+        }
+    }
+
     /* ══════════════════════════════════════════════════════════════════════
        ADMISSION
     ══════════════════════════════════════════════════════════════════════ */
 
     public function admission()
     {
-        $this->_require_role(self::MANAGE_ROLES, 'sis_admission');
+        $this->_require_role(self::MANAGE_ROLES, 'sis_admission', 'SIS', 'manage');
         $school_id   = $this->parent_db_key;
         $school_name = $this->school_name;
         $session     = $this->session_year;
@@ -242,7 +280,7 @@ class Sis extends MY_Controller
 
     public function save_admission()
     {
-        $this->_require_role(self::MANAGE_ROLES, 'sis_save_admission');
+        $this->_require_role(self::MANAGE_ROLES, 'sis_save_admission', 'SIS', 'manage');
         if ($this->input->method() !== 'post') {
             return $this->json_error('POST required');
         }
@@ -591,7 +629,7 @@ class Sis extends MY_Controller
 
     public function profile($userId = null)
     {
-        $this->_require_role(self::VIEW_ROLES, 'sis_profile');
+        $this->_require_role(self::VIEW_ROLES, 'sis_profile', 'SIS', 'view');
         if (empty($userId) || !$this->safe_path_segment($userId)) show_404();
 
         // Delegate to the comprehensive student_profile view
@@ -600,7 +638,7 @@ class Sis extends MY_Controller
 
     public function update_profile()
     {
-        $this->_require_role(self::MANAGE_ROLES, 'sis_update_profile');
+        $this->_require_role(self::MANAGE_ROLES, 'sis_update_profile', 'SIS', 'edit');
         if ($this->input->method() !== 'post') {
             return $this->json_error('POST required');
         }
@@ -801,7 +839,7 @@ class Sis extends MY_Controller
 
     public function promote()
     {
-        $this->_require_role(self::MANAGE_ROLES, 'sis_promote');
+        $this->_require_role(self::MANAGE_ROLES, 'sis_promote', 'SIS', 'manage');
         $session     = $this->session_year;
 
         $data['class_map']         = $this->_fs_class_map();
@@ -831,7 +869,7 @@ class Sis extends MY_Controller
 
     public function promote_preview()
     {
-        $this->_require_role(self::MANAGE_ROLES, 'sis_promote_preview');
+        $this->_require_role(self::MANAGE_ROLES, 'sis_promote_preview', 'SIS', 'manage');
         if ($this->input->method() !== 'post') {
             return $this->json_error('POST required');
         }
@@ -862,7 +900,7 @@ class Sis extends MY_Controller
 
     public function execute_promotion()
     {
-        $this->_require_role(self::MANAGE_ROLES, 'sis_execute_promotion');
+        $this->_require_role(self::MANAGE_ROLES, 'sis_execute_promotion', 'SIS', 'manage');
         if ($this->input->method() !== 'post') {
             return $this->json_error('POST required');
         }
@@ -1360,7 +1398,7 @@ class Sis extends MY_Controller
 
     public function tc_list()
     {
-        $this->_require_role(self::VIEW_ROLES, 'sis_tc_list');
+        $this->_require_role(self::VIEW_ROLES, 'sis_tc_list', 'SIS', 'view');
         $school_id   = $this->parent_db_key;
         $school_name = $this->school_name;
         $session     = $this->session_year;
@@ -1446,7 +1484,7 @@ class Sis extends MY_Controller
 
     public function issue_tc()
     {
-        $this->_require_role(self::MANAGE_ROLES, 'sis_issue_tc');
+        $this->_require_role(self::MANAGE_ROLES, 'sis_issue_tc', 'SIS', 'manage');
         if ($this->input->method() !== 'post') {
             return $this->json_error('POST required');
         }
@@ -1592,7 +1630,7 @@ class Sis extends MY_Controller
 
     public function print_tc($userId = null, $tcKey = null)
     {
-        $this->_require_role(self::VIEW_ROLES, 'sis_print_tc');
+        $this->_require_role(self::VIEW_ROLES, 'sis_print_tc', 'SIS', 'view');
         if (empty($userId)) show_404();
         if (!preg_match('/^[A-Za-z0-9_\-]+$/', $userId)) show_404();
         if (!empty($tcKey) && !preg_match('/^[A-Za-z0-9_\-]+$/', $tcKey)) show_404();
@@ -1712,7 +1750,7 @@ class Sis extends MY_Controller
 
     public function cancel_tc()
     {
-        $this->_require_role(self::MANAGE_ROLES, 'sis_cancel_tc');
+        $this->_require_role(self::MANAGE_ROLES, 'sis_cancel_tc', 'SIS', 'manage');
         if ($this->input->method() !== 'post') {
             return $this->json_error('POST required');
         }
@@ -1807,7 +1845,7 @@ class Sis extends MY_Controller
      */
     public function withdraw_student()
     {
-        $this->_require_role(self::MANAGE_ROLES, 'sis_withdraw');
+        $this->_require_role(self::MANAGE_ROLES, 'sis_withdraw', 'SIS', 'manage');
         if ($this->input->method() !== 'post') {
             return $this->json_error('POST required');
         }
@@ -1907,7 +1945,7 @@ class Sis extends MY_Controller
      */
     public function change_status()
     {
-        $this->_require_role(self::MANAGE_ROLES, 'sis_change_status');
+        $this->_require_role(self::MANAGE_ROLES, 'sis_change_status', 'SIS', 'manage');
         if ($this->input->method() !== 'post') {
             return $this->json_error('POST required');
         }
@@ -1981,7 +2019,7 @@ class Sis extends MY_Controller
      */
     public function reset_password()
     {
-        $this->_require_role(self::MANAGE_ROLES, 'sis_reset_password');
+        $this->_require_role(self::MANAGE_ROLES, 'sis_reset_password', 'SIS', 'manage');
         if ($this->input->method() !== 'post') {
             return $this->json_error('POST required');
         }
@@ -2090,7 +2128,7 @@ class Sis extends MY_Controller
 
     public function documents($userId = null)
     {
-        $this->_require_role(self::VIEW_ROLES, 'sis_documents');
+        $this->_require_role(self::VIEW_ROLES, 'sis_documents', 'SIS', 'view');
         if (empty($userId) || !$this->safe_path_segment($userId)) show_404();
 
         $school_id = $this->parent_db_key;
@@ -2106,7 +2144,7 @@ class Sis extends MY_Controller
 
     public function upload_document()
     {
-        $this->_require_role(self::MANAGE_ROLES, 'sis_upload_doc');
+        $this->_require_role(self::MANAGE_ROLES, 'sis_upload_doc', 'SIS', 'edit');
         if ($this->input->method() !== 'post') {
             return $this->json_error('POST required');
         }
@@ -2232,7 +2270,7 @@ class Sis extends MY_Controller
 
     public function delete_document()
     {
-        $this->_require_role(self::MANAGE_ROLES, 'sis_delete_doc');
+        $this->_require_role(self::MANAGE_ROLES, 'sis_delete_doc', 'SIS', 'manage');
         if ($this->input->method() !== 'post') {
             return $this->json_error('POST required');
         }
@@ -2288,7 +2326,7 @@ class Sis extends MY_Controller
 
     public function history($userId = null)
     {
-        $this->_require_role(self::VIEW_ROLES, 'sis_history');
+        $this->_require_role(self::VIEW_ROLES, 'sis_history', 'SIS', 'view');
         if (empty($userId) || !$this->safe_path_segment($userId)) show_404();
 
         $student = $this->_getStudent($userId);
@@ -2327,7 +2365,7 @@ class Sis extends MY_Controller
 
     public function id_card()
     {
-        $this->_require_role(self::VIEW_ROLES);
+        $this->_require_role(self::VIEW_ROLES, 'id_card', 'SIS', 'view');
         $school_id    = $this->parent_db_key;
         $school_name  = $this->school_name;
         $session_year = $this->session_year;
@@ -2445,7 +2483,7 @@ class Sis extends MY_Controller
      */
     public function rebuild_index()
     {
-        $this->_require_role(self::MANAGE_ROLES, 'sis_rebuild_index');
+        $this->_require_role(self::MANAGE_ROLES, 'sis_rebuild_index', 'SIS', 'manage');
 
         // In Firestore, the students collection IS the index — no separate index needed.
         $count = $this->fs->count('students', [['schoolId', '==', $this->school_id]]);
@@ -2462,7 +2500,7 @@ class Sis extends MY_Controller
 
     public function search_student()
     {
-        $this->_require_role(self::VIEW_ROLES, 'sis_search');
+        $this->_require_role(self::VIEW_ROLES, 'sis_search', 'SIS', 'view');
         if ($this->input->method() !== 'post') {
             return $this->json_error('POST required');
         }
@@ -2631,7 +2669,7 @@ class Sis extends MY_Controller
 
     public function get_student()
     {
-        $this->_require_role(self::VIEW_ROLES, 'sis_get_student');
+        $this->_require_role(self::VIEW_ROLES, 'sis_get_student', 'SIS', 'view');
         if ($this->input->method() !== 'post') {
             return $this->json_error('POST required');
         }
@@ -2651,14 +2689,14 @@ class Sis extends MY_Controller
 
     public function get_classes()
     {
-        $this->_require_role(self::VIEW_ROLES, 'sis_get_classes');
+        $this->_require_role(self::VIEW_ROLES, 'sis_get_classes', 'SIS', 'view');
         $classMap = $this->_fs_class_map();
         return $this->json_success(['classes' => array_keys($classMap)]);
     }
 
     public function get_sections()
     {
-        $this->_require_role(self::VIEW_ROLES, 'sis_get_sections');
+        $this->_require_role(self::VIEW_ROLES, 'sis_get_sections', 'SIS', 'view');
         $classOrd = trim($this->input->get('class') ?? $this->input->post('class') ?? '');
 
         if (empty($classOrd)) return $this->json_error('Class required.');
@@ -3593,7 +3631,7 @@ class Sis extends MY_Controller
 
     public function master_student()
     {
-        $this->_require_role(self::VIEW_ROLES);
+        $this->_require_role(self::VIEW_ROLES, 'master_student', 'SIS', 'view');
         $this->load->view('include/header');
         $this->load->view('import_students');
         $this->load->view('include/footer');
@@ -3607,7 +3645,7 @@ class Sis extends MY_Controller
      */
     public function import_students()
     {
-        $this->_require_role(self::MANAGE_ROLES);
+        $this->_require_role(self::MANAGE_ROLES, '', 'SIS', 'manage');
         try {
             if (defined('GRADER_DEBUG') && GRADER_DEBUG) log_message('debug', '=== IMPORT FUNCTION STARTED ===');
 
@@ -4154,19 +4192,30 @@ class Sis extends MY_Controller
      */
     public function import_preview()
     {
-        $this->_require_role(self::MANAGE_ROLES);
+        $this->_require_role(self::MANAGE_ROLES, '', 'SIS', 'manage');
+
+        // Single-page flow: the upload posts via AJAX and expects JSON back;
+        // a plain (no-JS) POST still renders the standalone map view as before.
+        $isAjax = $this->input->is_ajax_request();
+        $fail = function ($msg) use ($isAjax) {
+            if ($isAjax) {
+                $this->output->set_content_type('application/json')
+                     ->set_output(json_encode(['status' => 'error', 'message' => $msg]));
+            } else {
+                $this->session->set_flashdata('import_result', $msg);
+                redirect('sis/master_student');
+            }
+        };
 
         if (!isset($_FILES['excelFile']) || $_FILES['excelFile']['error'] !== UPLOAD_ERR_OK) {
-            $this->session->set_flashdata('import_result', 'No file received, or the upload failed. Please choose a CSV or XLSX file.');
-            redirect('sis/master_student');
+            $fail('No file received, or the upload failed. Please choose a CSV or XLSX file.');
             return;
         }
 
         $file      = $_FILES['excelFile'];
         $extension = strtolower(pathinfo($file['name'], PATHINFO_EXTENSION));
         if (!in_array($extension, ['csv', 'xlsx', 'xls'], true)) {
-            $this->session->set_flashdata('import_result', 'Unsupported file type. Please upload a .csv or .xlsx file.');
-            redirect('sis/master_student');
+            $fail('Unsupported file type. Please upload a .csv or .xlsx file.');
             return;
         }
 
@@ -4177,8 +4226,7 @@ class Sis extends MY_Controller
             $sheetData   = $spreadsheet->getActiveSheet()->toArray(null, true, true, false);
         } catch (\Throwable $e) {
             log_message('error', 'IMPORT PREVIEW read error: ' . $e->getMessage());
-            $this->session->set_flashdata('import_result', 'Could not read the file. It may be corrupt or password-protected.');
-            redirect('sis/master_student');
+            $fail('Could not read the file. It may be corrupt or password-protected.');
             return;
         }
 
@@ -4190,8 +4238,7 @@ class Sis extends MY_Controller
         }));
 
         if (count($sheetData) < 2) {
-            $this->session->set_flashdata('import_result', 'The file has no data rows below the header.');
-            redirect('sis/master_student');
+            $fail('The file has no data rows below the header.');
             return;
         }
 
@@ -4228,6 +4275,12 @@ class Sis extends MY_Controller
             'learnedApplied' => $this->import_schema->learnedHitCount($headers, $learned),
         ];
 
+        if ($isAjax) {
+            $data['status'] = 'success';
+            $this->output->set_content_type('application/json')->set_output(json_encode($data));
+            return;
+        }
+
         $this->load->view('include/header');
         $this->load->view('import_students_map', $data);
         $this->load->view('include/footer');
@@ -4240,7 +4293,7 @@ class Sis extends MY_Controller
      */
     public function import_validate()
     {
-        $this->_require_role(self::MANAGE_ROLES);
+        $this->_require_role(self::MANAGE_ROLES, '', 'SIS', 'manage');
         $this->output->set_content_type('application/json');
 
         $payload = json_decode((string) $this->input->post('payload'), true);
@@ -4271,7 +4324,7 @@ class Sis extends MY_Controller
      */
     public function import_commit()
     {
-        $this->_require_role(self::MANAGE_ROLES);
+        $this->_require_role(self::MANAGE_ROLES, '', 'SIS', 'manage');
         $this->output->set_content_type('application/json');
 
         $payload = json_decode((string) $this->input->post('payload'), true);
@@ -4355,7 +4408,7 @@ class Sis extends MY_Controller
      */
     public function import_dedupe_check()
     {
-        $this->_require_role(self::MANAGE_ROLES);
+        $this->_require_role(self::MANAGE_ROLES, '', 'SIS', 'manage');
         $this->output->set_content_type('application/json');
 
         $payload = json_decode((string) $this->input->post('payload'), true);
@@ -4451,7 +4504,7 @@ class Sis extends MY_Controller
 
     public function import_template()
     {
-        $this->_require_role(self::VIEW_ROLES);
+        $this->_require_role(self::VIEW_ROLES, 'import_template', 'SIS', 'view');
         $this->load->library('import_schema');
 
         $fh = fopen('php://temp', 'r+');
@@ -4477,7 +4530,7 @@ class Sis extends MY_Controller
      */
     public function import_credentials_pdf()
     {
-        $this->_require_role(self::MANAGE_ROLES);
+        $this->_require_role(self::MANAGE_ROLES, '', 'SIS', 'manage');
 
         $creds = $this->session->userdata('import_creds_student');
         if (!is_array($creds) || empty($creds)) {
@@ -4531,7 +4584,7 @@ class Sis extends MY_Controller
 
     public function get_sections_by_class()
     {
-        $this->_require_role(self::VIEW_ROLES);
+        $this->_require_role(self::VIEW_ROLES, 'get_sections_by_class', 'SIS', 'view');
         $school_name  = $this->school_name;
         $session_year = $this->session_year;
         $className = trim((string)$this->input->post('class_name'));
@@ -4575,7 +4628,7 @@ class Sis extends MY_Controller
 
     public function fetch_subjects()
     {
-        $this->_require_role(self::VIEW_ROLES);
+        $this->_require_role(self::VIEW_ROLES, 'fetch_subjects', 'SIS', 'view');
         header('Content-Type: application/json');
         $school_name = $this->school_name;
         $rawClass = trim((string) $this->input->post('class_name'));
@@ -4621,7 +4674,7 @@ class Sis extends MY_Controller
 
     public function edit_student($userId)
     {
-        $this->_require_role(self::MANAGE_ROLES);
+        $this->_require_role(self::MANAGE_ROLES, '', 'SIS', 'edit');
         if (empty($userId) || !preg_match('/^[A-Za-z0-9_]+$/', $userId)) { show_404(); return; }
 
         $school_id    = $this->parent_db_key;
@@ -4854,7 +4907,7 @@ class Sis extends MY_Controller
 
     public function delete_student($id)
     {
-        $this->_require_role(self::MANAGE_ROLES);
+        $this->_require_role(self::MANAGE_ROLES, '', 'SIS', 'manage');
         // FIXED: return JSON for AJAX requests instead of redirect (was breaking bulk delete)
         $isAjax = $this->input->is_ajax_request();
         if ($this->input->method() !== 'post') {
@@ -5006,7 +5059,7 @@ class Sis extends MY_Controller
 
     public function student_profile($userId)
     {
-        $this->_require_role(self::VIEW_ROLES);
+        $this->_require_role(self::VIEW_ROLES, 'student_profile', 'SIS', 'view');
         if (empty($userId) || !preg_match('/^[A-Za-z0-9_]+$/', $userId)) { show_404(); return; }
 
         $school_id    = $this->parent_db_key;
@@ -5080,7 +5133,7 @@ class Sis extends MY_Controller
 
     public function download_document()
     {
-        $this->_require_role(self::VIEW_ROLES);
+        $this->_require_role(self::VIEW_ROLES, 'download_document', 'SIS', 'view');
         $fileUrl = $this->input->get('file', TRUE);
         if (empty($fileUrl) || !filter_var($fileUrl, FILTER_VALIDATE_URL)) { show_error("Invalid file URL.", 400); return; }
 
@@ -5115,7 +5168,7 @@ class Sis extends MY_Controller
 
     public function attendance()
     {
-        $this->_require_role(self::VIEW_ROLES);
+        $this->_require_role(self::VIEW_ROLES, 'attendance', 'Attendance', 'view');
         $sectionDocs = $this->fs->schoolWhere('sections', []);
         $ClassesData = [];
         foreach ($sectionDocs as $doc) {
@@ -5133,7 +5186,7 @@ class Sis extends MY_Controller
 
     public function fetchAttendance()
     {
-        $this->_require_role(self::VIEW_ROLES);
+        $this->_require_role(self::VIEW_ROLES, 'fetch_attendance', 'Attendance', 'view');
         header('Content-Type: application/json');
         $school_name  = $this->school_name;
         $session_year = $this->session_year;
@@ -5199,10 +5252,15 @@ class Sis extends MY_Controller
     ══════════════════════════════════════════════════════════════════════ */
 
     /** List all docs in a CRM collection, keyed by entity ID. */
-    private function _crm_list(string $collection): array
+    private function _crm_list(string $collection, array $conditions = []): array
     {
         try {
-            $docs = $this->fs->schoolWhere($collection, []);
+            // Push equality filters (e.g. session==) to Firestore instead of
+            // fetching the whole collection and filtering in PHP (F5). Two
+            // equality conditions (schoolId== injected by schoolWhere + the
+            // caller's session==) are served from single-field indexes — no
+            // composite index required.
+            $docs = $this->fs->schoolWhere($collection, $conditions);
         } catch (\Exception $e) {
             log_message('error', "CRM list {$collection} failed: " . $e->getMessage());
             return [];
@@ -5272,9 +5330,14 @@ class Sis extends MY_Controller
 
         $next = $this->fs->nextSchoolCounter('crm_' . $type, $seed);
         if ($next <= 0) {
-            // Allocator unavailable (Firestore not ready) — degraded last resort.
-            log_message('error', "CRM atomic counter unavailable for {$type}; using seed fallback");
-            $next = $seed + 1;
+            // Fail closed (F11): the old `$seed + 1` fallback handed two
+            // concurrent callers the SAME id during a Firestore outage,
+            // silently overwriting one admission record. A duplicate/clobbered
+            // record is worse than a retry, so refuse to allocate rather than
+            // risk a collision. This fires only when the allocator is down and
+            // is thrown BEFORE any caller write, so it leaves no partial state.
+            log_message('error', "CRM atomic counter unavailable for {$type}; refusing racy fallback id (fail-closed)");
+            throw new \RuntimeException('CRM ID allocator is temporarily unavailable — please retry.');
         }
         return $prefix . str_pad((string) $next, $pad, '0', STR_PAD_LEFT);
     }
@@ -5297,7 +5360,7 @@ class Sis extends MY_Controller
     // LEAD SYSTEM — List all public admission leads
     public function admission_leads()
     {
-        $this->_require_role(self::VIEW_ROLES, 'crm_view');
+        $this->_require_role(self::VIEW_ROLES, 'crm_view', 'SIS', 'view');
         $data['session_year'] = $this->session_year;
         $data['school_name']  = $this->school_name;
         $this->load->view('include/header');
@@ -5308,11 +5371,12 @@ class Sis extends MY_Controller
     // LEAD SYSTEM — AJAX: fetch leads data
     public function fetch_leads()
     {
-        $this->_require_role(self::VIEW_ROLES, 'crm_view');
-        $applications = $this->_crm_list('crmApplications');
+        $this->_require_role(self::VIEW_ROLES, 'crm_view', 'SIS', 'view');
+        $session = $this->session_year;
+        // Session-scoped read (F5): leads screen shows only the active session.
+        $applications = $this->_crm_list('crmApplications', [['session', '==', $session]]);
         if (!is_array($applications)) $applications = [];
 
-        $session = $this->session_year;
         $leads = [];
         foreach ($applications as $id => $app) {
             if (!is_array($app)) continue;
@@ -5329,7 +5393,7 @@ class Sis extends MY_Controller
     // LEAD SYSTEM — Single lead detail (AJAX)
     public function admission_lead()
     {
-        $this->_require_role(self::VIEW_ROLES, 'crm_view');
+        $this->_require_role(self::VIEW_ROLES, 'crm_view', 'SIS', 'view');
         $leadId = trim($this->input->get_post('lead_id') ?? '');
         if ($leadId === '') return $this->json_error('Lead ID required.');
         $leadId = $this->safe_path_segment($leadId, 'lead_id');
@@ -5343,14 +5407,22 @@ class Sis extends MY_Controller
     // LEAD SYSTEM — Update lead status (AJAX)
     public function update_lead_status()
     {
-        $this->_require_role(self::MANAGE_ROLES, 'crm_manage');
+        $this->_require_role(self::MANAGE_ROLES, 'crm_manage', 'SIS', 'manage');
         $leadId = trim($this->input->post('lead_id') ?? '');
         $status = trim($this->input->post('status') ?? '');
         if ($leadId === '' || $status === '') return $this->json_error('Lead ID and status required.');
         $leadId = $this->safe_path_segment($leadId, 'lead_id');
 
-        $allowed = ['new', 'contacted', 'interested', 'approved', 'rejected', 'enrolled', 'admitted'];
-        if (!in_array($status, $allowed, true)) return $this->json_error('Invalid status.');
+        // MED-16: 'enrolled'/'admitted' are TERMINAL and must not be set by a
+        // direct status write — enrollment creates a real student + Auth + fees
+        // and only happens via enroll_student(). Writing status=enrolled here
+        // produced a phantom "enrolled" lead with no backing student record.
+        $allowed = ['new', 'contacted', 'interested', 'approved', 'rejected'];
+        if (!in_array($status, $allowed, true)) {
+            return $this->json_error($status === 'enrolled' || $status === 'admitted'
+                ? 'Use the Enroll action to enroll a student — status can’t be set to enrolled directly.'
+                : 'Invalid status.');
+        }
 
         $lead = $this->_crm_get('crmApplications', $leadId);
         if (!is_array($lead)) return $this->json_error('Lead not found.');
@@ -5364,8 +5436,6 @@ class Sis extends MY_Controller
             'updated_at' => $now,
             'history'    => $history,
         ]);
-        // Firestore dual-write: lead status update
-        try { $this->fs->updateEntity('crmApplications', $leadId, ['status' => $status, 'updated_at' => $now]); } catch (\Exception $e) { log_message('error', "Firestore dual-write update_lead_status failed: " . $e->getMessage()); }
         log_audit('CRM', 'update_lead_status', $leadId, "Lead status changed to '{$status}' for " . ($lead['student_name'] ?? ''));
         return $this->json_success(['message' => 'Status updated.']);
     }
@@ -5373,7 +5443,7 @@ class Sis extends MY_Controller
     // LEAD SYSTEM — Fetch lead data for admission form prefill
     public function get_lead_data()
     {
-        $this->_require_role(self::MANAGE_ROLES, 'sis_admission');
+        $this->_require_role(self::MANAGE_ROLES, 'sis_admission', 'SIS', 'manage');
         $leadId = trim($this->input->get('lead_id') ?? '');
         if ($leadId === '') return $this->json_error('Lead ID required.');
         $leadId = $this->safe_path_segment($leadId, 'lead_id');
@@ -5387,11 +5457,11 @@ class Sis extends MY_Controller
     // LEAD SYSTEM — Admission analytics dashboard (single Firebase read, all PHP computation)
     public function admission_analytics()
     {
-        $this->_require_role(self::VIEW_ROLES, 'crm_view');
+        $this->_require_role(self::VIEW_ROLES, 'crm_view', 'SIS', 'view');
         $session = $this->session_year;
 
-        // Single read — fetch all applications once
-        $applications = $this->_crm_list('crmApplications');
+        // Single read, session-scoped at Firestore (F5) — analytics is per-session.
+        $applications = $this->_crm_list('crmApplications', [['session', '==', $session]]);
         if (!is_array($applications)) $applications = [];
 
         // Filter to current session + compute all metrics in one pass
@@ -5472,12 +5542,16 @@ class Sis extends MY_Controller
 
     public function crm_dashboard()
     {
-        $this->_require_role(self::VIEW_ROLES, 'crm_view');
+        $this->_require_role(self::VIEW_ROLES, 'crm_view', 'SIS', 'view');
         $session = $this->session_year;
 
-        $inquiries    = $this->_crm_list('crmInquiries');
-        $applications = $this->_crm_list('crmApplications');
-        $waitlist     = $this->_crm_list('crmWaitlist');
+        // Session-scoped reads (F5): the dashboard only reports the active
+        // session, so filter at Firestore instead of fetching every all-time
+        // doc and discarding most in PHP (was 3 full-collection scans/load).
+        $sessionCond  = [['session', '==', $session]];
+        $inquiries    = $this->_crm_list('crmInquiries', $sessionCond);
+        $applications = $this->_crm_list('crmApplications', $sessionCond);
+        $waitlist     = $this->_crm_list('crmWaitlist', $sessionCond);
         $settings     = $this->_crm_get_settings();
         if (!is_array($inquiries))    $inquiries = [];
         if (!is_array($applications)) $applications = [];
@@ -5519,7 +5593,35 @@ class Sis extends MY_Controller
         ksort($monthlyTrend);
         $monthlyTrend = array_slice($monthlyTrend, -6, 6, true);
 
-        $data = compact('stats') + ['class_breakdown'=>$classBreakdown,'source_breakdown'=>$sourceBreakdown,'monthly_trend'=>$monthlyTrend,'settings'=>$settings,'session_year'=>$session];
+        // ── Overview redesign (2026-07): "In review" funnel count + the
+        // "Needs attention" (aging / unpaid) and "Recent activity" feeds the
+        // hub renders. Computed from the apps already loaded above. ──
+        $inReview = 0; $attention = []; $activity = [];
+        $nowTs = time();
+        $reviewStages = ['document_collection','under_review','docs','interview','assessment'];
+        foreach ($sessionApps as $app) {
+            $stage  = (string) ($app['stage'] ?? '');
+            $status = (string) ($app['status'] ?? 'pending');
+            if (in_array($stage, $reviewStages, true)) $inReview++;
+            $dt   = (string) ($app['updated_at'] ?? $app['created_at'] ?? '');
+            $days = $dt !== '' ? (int) floor(($nowTs - strtotime($dt)) / 86400) : null;
+            $unpaid = !empty($app['payment_status']) && $app['payment_status'] !== 'paid';
+            if ($status !== 'enrolled' && $status !== 'rejected' && (($days !== null && $days > 7) || $unpaid)) {
+                $attention[] = ['name'=>(string)($app['student_name']??''), 'class'=>(string)($app['class']??''),
+                    'stage'=>$stage, 'days'=>$days, 'unpaid'=>$unpaid];
+            }
+            foreach ((is_array($app['history'] ?? null) ? $app['history'] : []) as $h) {
+                $activity[] = ['name'=>(string)($app['student_name']??''), 'action'=>(string)($h['action']??''),
+                    'ts'=>(string)($h['timestamp']??''), 'by'=>(string)($h['by']??'')];
+            }
+        }
+        usort($attention, fn($a,$b) => ($b['days'] ?? 0) <=> ($a['days'] ?? 0));
+        $attention = array_slice($attention, 0, 6);
+        usort($activity, fn($a,$b) => strcmp($b['ts'] ?? '', $a['ts'] ?? ''));
+        $activity = array_slice($activity, 0, 6);
+        $stats['in_review'] = $inReview;
+
+        $data = compact('stats') + ['class_breakdown'=>$classBreakdown,'source_breakdown'=>$sourceBreakdown,'monthly_trend'=>$monthlyTrend,'settings'=>$settings,'session_year'=>$session,'attention'=>$attention,'activity'=>$activity];
         $this->load->view('include/header');
         $this->load->view('admission_crm/index', $data);
         $this->load->view('include/footer');
@@ -5527,7 +5629,7 @@ class Sis extends MY_Controller
 
     public function inquiries()
     {
-        $this->_require_role(self::VIEW_ROLES, 'crm_view');
+        $this->_require_role(self::VIEW_ROLES, 'crm_view', 'SIS', 'view');
         $data['session_year'] = $this->session_year;
         $data['classes']      = $this->_get_crm_classes();
         $this->load->view('include/header');
@@ -5537,10 +5639,11 @@ class Sis extends MY_Controller
 
     public function fetch_inquiries()
     {
-        $this->_require_role(self::VIEW_ROLES, 'crm_fetch');
-        $inquiries = $this->_crm_list('crmInquiries');
-        if (!is_array($inquiries)) $inquiries = [];
+        $this->_require_role(self::VIEW_ROLES, 'crm_fetch', 'SIS', 'view');
         $session = $this->session_year;
+        // Session-scoped read (F5): inquiries screen shows only the active session.
+        $inquiries = $this->_crm_list('crmInquiries', [['session', '==', $session]]);
+        if (!is_array($inquiries)) $inquiries = [];
         $result = [];
         foreach ($inquiries as $id => $inq) {
             if (!is_array($inq) || ($inq['session'] ?? '') !== $session) continue;
@@ -5553,7 +5656,7 @@ class Sis extends MY_Controller
 
     public function save_inquiry()
     {
-        $this->_require_role(self::MANAGE_ROLES, 'crm_save_inquiry');
+        $this->_require_role(self::MANAGE_ROLES, 'crm_save_inquiry', 'SIS', 'edit');
         $id = trim($this->input->post('id') ?? '');
         if ($id !== '') $id = $this->safe_path_segment($id, 'id');
         $student_name   = trim($this->input->post('student_name') ?? '');
@@ -5576,8 +5679,6 @@ class Sis extends MY_Controller
             if (!is_array($existing)) return $this->json_error('Inquiry not found');
             $data = array_merge($existing, compact('student_name','parent_name','phone','email','class','source','notes','status','follow_up_date') + ['updated_at'=>$now]);
             $this->_crm_set("crmInquiries", $id, $data);
-            // Firestore dual-write: update inquiry
-            try { $this->fs->setEntity('crmInquiries', $id, $data); } catch (\Exception $e) { log_message('error', "Firestore dual-write crmInquiries failed for {$id}: " . $e->getMessage()); }
         } else {
             $id = $this->_crm_next_id('Inquiry', 'INQ', 5);
             $data = compact('student_name','parent_name','phone','email','class','source','notes','status','follow_up_date') + [
@@ -5585,32 +5686,34 @@ class Sis extends MY_Controller
             ];
             $this->_crm_set("crmInquiries", $id, $data);
             // Counter managed by _crm_next_id — no separate write needed.
-            // Firestore dual-write: new inquiry
-            try { $this->fs->setEntity('crmInquiries', $id, $data); } catch (\Exception $e) { log_message('error', "Firestore dual-write crmInquiries failed for {$id}: " . $e->getMessage()); }
         }
-        return $this->json_success(['id' => $id]);
+        return $this->json_success(['id' => $id, 'message' => 'Inquiry saved.']);
     }
 
     public function delete_inquiry()
     {
-        $this->_require_role(self::MANAGE_ROLES, 'crm_delete_inquiry');
+        $this->_require_role(self::MANAGE_ROLES, 'crm_delete_inquiry', 'SIS', 'manage');
         $id = trim($this->input->post('id') ?? '');
         if (!$id) return $this->json_error('Inquiry ID required');
         $safeId = $this->safe_path_segment($id, 'id');
         $this->_crm_delete('crmInquiries', $safeId);
-        // Firestore dual-write: delete inquiry
-        try { $this->fs->removeEntity('crmInquiries', $safeId); } catch (\Exception $e) { log_message('error', "Firestore dual-write delete crmInquiries failed: " . $e->getMessage()); }
-        return $this->json_success();
+        return $this->json_success(['message' => 'Inquiry deleted.']);
     }
 
     public function convert_to_application()
     {
-        $this->_require_role(self::MANAGE_ROLES, 'crm_convert');
+        $this->_require_role(self::MANAGE_ROLES, 'crm_convert', 'SIS', 'manage');
         $inquiry_id = trim($this->input->post('inquiry_id') ?? '');
         if (!$inquiry_id) return $this->json_error('Inquiry ID required');
         $inquiry_id = $this->safe_path_segment($inquiry_id, 'inquiry_id');
         $inquiry = $this->_crm_get('crmInquiries', $inquiry_id);
         if (!is_array($inquiry)) return $this->json_error('Inquiry not found');
+        // Idempotency (F6): a double-click / concurrent convert would mint a
+        // second application and orphan the first (inquiry.application_id gets
+        // overwritten). Reject if this inquiry was already converted.
+        if (($inquiry['status'] ?? '') === 'converted' || !empty($inquiry['application_id'])) {
+            return $this->json_error('This inquiry has already been converted to an application.');
+        }
 
         $app_id = $this->_crm_next_id('Application', 'APP', 5);
         $now = date('Y-m-d H:i:s');
@@ -5628,30 +5731,37 @@ class Sis extends MY_Controller
         $this->_crm_set("crmApplications", $app_id, $application);
         // Counter managed by _crm_next_id — no separate write needed.
         $this->_crm_update("crmInquiries", $inquiry_id, ['status'=>'converted','application_id'=>$app_id,'updated_at'=>$now]);
-        // Firestore dual-write: new application + inquiry status update
-        try {
-            $this->fs->setEntity('crmApplications', $app_id, $application);
-            $this->fs->updateEntity('crmInquiries', $inquiry_id, ['status'=>'converted','application_id'=>$app_id,'updated_at'=>$now]);
-        } catch (\Exception $e) { log_message('error', "Firestore dual-write convert_to_application failed: " . $e->getMessage()); }
-        return $this->json_success(['application_id' => $app_id]);
+        return $this->json_success(['application_id' => $app_id, 'message' => 'Inquiry converted to application.']);
     }
 
     public function applications()
     {
-        $this->_require_role(self::VIEW_ROLES, 'crm_view');
-        $data['session_year'] = $this->session_year;
-        $data['classes']      = $this->_get_crm_classes();
+        $this->_require_role(self::VIEW_ROLES, 'crm_view', 'SIS', 'view');
+        // IA reorg (Phase 3): standalone → the tabbed Applications shell hosting
+        // Table / Board / Funnel in isolated iframes. When loaded inside that
+        // shell (?embed=1) → render the Table view itself, chrome-less. Same
+        // proven pattern as the Attendance tab-shell; no JS merge, no collisions.
+        if ($this->input->get('embed') === '1') {
+            $data['session_year'] = $this->session_year;
+            $data['classes']      = $this->_get_crm_classes();
+            $this->load->view('include/header');
+            $this->load->view('admission_crm/applications', $data);
+            $this->load->view('include/footer');
+            return;
+        }
         $this->load->view('include/header');
-        $this->load->view('admission_crm/applications', $data);
+        $this->load->view('admission_crm/applications_shell');
         $this->load->view('include/footer');
     }
 
     public function fetch_applications()
     {
-        $this->_require_role(self::VIEW_ROLES, 'crm_fetch');
-        $applications = $this->_crm_list('crmApplications');
-        if (!is_array($applications)) $applications = [];
+        $this->_require_role(self::VIEW_ROLES, 'crm_fetch', 'SIS', 'view');
         $session = $this->session_year;
+        // Session-scoped read (F5): only pull this session's applications from
+        // Firestore rather than the school's entire all-time history.
+        $applications = $this->_crm_list('crmApplications', [['session', '==', $session]]);
+        if (!is_array($applications)) $applications = [];
         $result = [];
         foreach ($applications as $id => $app) {
             if (!is_array($app) || ($app['session'] ?? '') !== $session) continue;
@@ -5664,7 +5774,7 @@ class Sis extends MY_Controller
 
     public function save_application()
     {
-        $this->_require_role(self::MANAGE_ROLES, 'crm_save_app');
+        $this->_require_role(self::MANAGE_ROLES, 'crm_save_app', 'SIS', 'edit');
         $id = trim($this->input->post('id') ?? '');
         if ($id !== '') $id = $this->safe_path_segment($id, 'id');
         $now = date('Y-m-d H:i:s');
@@ -5686,9 +5796,7 @@ class Sis extends MY_Controller
             $history[] = ['action'=>'Application updated','by'=>$this->admin_name,'timestamp'=>$now];
             $data['history'] = $history;
             $this->_crm_update("crmApplications", $id, $data);
-            // Firestore dual-write: update application
-            try { $this->fs->setEntity('crmApplications', $id, $data); } catch (\Exception $e) { log_message('error', "Firestore dual-write crmApplications update failed for {$id}: " . $e->getMessage()); }
-            return $this->json_success(['id' => $id]);
+            return $this->json_success(['id' => $id, 'message' => 'Application saved.']);
         } else {
             $app_id = $this->_crm_next_id('Application', 'APP', 5);
             // `source: admin` distinguishes admin-created applications
@@ -5700,15 +5808,13 @@ class Sis extends MY_Controller
                 'history'=>[['action'=>'Application created directly','by'=>$this->admin_name,'timestamp'=>$now]]]);
             $this->_crm_set("crmApplications", $app_id, $data);
             // Counter managed by _crm_next_id — no separate write needed.
-            // Firestore dual-write: new application
-            try { $this->fs->setEntity('crmApplications', $app_id, $data); } catch (\Exception $e) { log_message('error', "Firestore dual-write crmApplications create failed for {$app_id}: " . $e->getMessage()); }
-            return $this->json_success(['id' => $app_id]);
+            return $this->json_success(['id' => $app_id, 'message' => 'Application saved.']);
         }
     }
 
     public function get_application()
     {
-        $this->_require_role(self::VIEW_ROLES, 'crm_fetch');
+        $this->_require_role(self::VIEW_ROLES, 'crm_fetch', 'SIS', 'view');
         $id = trim($this->input->get('id') ?? '');
         if (!$id) return $this->json_error('Application ID required');
         $id = $this->safe_path_segment($id, 'id');
@@ -5720,19 +5826,17 @@ class Sis extends MY_Controller
 
     public function delete_application()
     {
-        $this->_require_role(self::MANAGE_ROLES, 'crm_delete_app');
+        $this->_require_role(self::MANAGE_ROLES, 'crm_delete_app', 'SIS', 'manage');
         $id = trim($this->input->post('id') ?? '');
         if (!$id) return $this->json_error('Application ID required');
         $safeId = $this->safe_path_segment($id, 'id');
         $this->_crm_delete('crmApplications', $safeId);
-        // Firestore dual-write: delete application
-        try { $this->fs->removeEntity('crmApplications', $safeId); } catch (\Exception $e) { log_message('error', "Firestore dual-write delete crmApplications failed: " . $e->getMessage()); }
-        return $this->json_success();
+        return $this->json_success(['message' => 'Application deleted.']);
     }
 
     public function pipeline()
     {
-        $this->_require_role(self::VIEW_ROLES, 'crm_view');
+        $this->_require_role(self::VIEW_ROLES, 'crm_view', 'SIS', 'view');
         $data['session_year'] = $this->session_year;
         $data['classes']      = $this->_get_crm_classes();
         $settings = $this->_crm_get_settings();
@@ -5744,12 +5848,13 @@ class Sis extends MY_Controller
 
     public function fetch_pipeline()
     {
-        $this->_require_role(self::VIEW_ROLES, 'crm_fetch');
-        $applications = $this->_crm_list('crmApplications');
+        $this->_require_role(self::VIEW_ROLES, 'crm_fetch', 'SIS', 'view');
+        $session = $this->session_year;
+        // Session-scoped read (F5): pipeline only shows the current session.
+        $applications = $this->_crm_list('crmApplications', [['session', '==', $session]]);
         if (!is_array($applications)) $applications = [];
         $settings = $this->_crm_get_settings();
         $stages = $settings['stages'] ?? $this->_default_stages();
-        $session = $this->session_year;
         $pipeline = [];
         foreach ($stages as $key => $label) $pipeline[$key] = ['label'=>$label,'items'=>[]];
         foreach ($applications as $id => $app) {
@@ -5764,7 +5869,7 @@ class Sis extends MY_Controller
 
     public function update_stage()
     {
-        $this->_require_role(self::MANAGE_ROLES, 'crm_update_stage');
+        $this->_require_role(self::MANAGE_ROLES, 'crm_update_stage', 'SIS', 'manage');
         $id = trim($this->input->post('id') ?? '');
         $stage = $this->input->post('stage');
         if (!$id || !$stage) return $this->json_error('Application ID and stage required');
@@ -5775,17 +5880,45 @@ class Sis extends MY_Controller
         $app = $this->_crm_get('crmApplications', $id);
         if (!is_array($app)) return $this->json_error('Application not found');
         $now = date('Y-m-d H:i:s');
+
+        // Keep status in lockstep with terminal stages (F7). Dragging a card
+        // into Approved/Rejected previously changed only `stage`, leaving
+        // `status` = pending — so the grid and the board disagreed and an app
+        // "approved" on the board could never be enrolled (enroll requires
+        // status==='approved'). Mirror the approve/reject bookkeeping here.
+        // Enrolling still MUST go through enroll_student (it creates the
+        // student + auth account), so that transition is blocked from the board.
+        $stageStatus = ['approved' => 'approved', 'rejected' => 'rejected'];
+        $extra = [];
+        if ($stage === 'enrolled') {
+            return $this->json_error('Use the Enroll action to enroll a student — it can’t be done by moving the card.');
+        }
+        if ($stage === 'waitlisted') {
+            // Waitlisting must create a crmWaitlist entry (via add_to_waitlist);
+            // moving the card alone would leave a "ghost" — a board card with
+            // no matching Waiting List row, un-promotable. Route to the Table.
+            return $this->json_error('Use the Waitlist action in the Table view to add someone to the waiting list.');
+        }
+        if (isset($stageStatus[$stage])) {
+            $extra['status'] = $stageStatus[$stage];
+            if ($stage === 'approved') { $extra['approved_by'] = $this->admin_name; $extra['approved_at'] = $now; }
+            if ($stage === 'rejected') { $extra['rejected_by'] = $this->admin_name; $extra['rejected_at'] = $now; }
+        } elseif (in_array(($app['status'] ?? ''), ['approved', 'rejected'], true)) {
+            // Moving back OUT of a terminal column → return to pending so the
+            // status doesn't stay stuck approved/rejected.
+            $extra['status'] = 'pending';
+        }
+
         $history = $app['history'] ?? [];
         $history[] = ['action'=>"Stage changed: {$app['stage']} → {$stage}",'by'=>$this->admin_name,'timestamp'=>$now];
-        $this->_crm_update("crmApplications", $id, ['stage'=>$stage,'updated_at'=>$now,'history'=>$history]);
-        // Firestore dual-write: stage update
-        try { $this->fs->updateEntity('crmApplications', $id, ['stage'=>$stage,'updated_at'=>$now]); } catch (\Exception $e) { log_message('error', "Firestore dual-write update_stage failed: " . $e->getMessage()); }
+        $update = array_merge(['stage'=>$stage,'updated_at'=>$now,'history'=>$history], $extra);
+        $this->_crm_update("crmApplications", $id, $update);
         return $this->json_success();
     }
 
     public function approve_application()
     {
-        $this->_require_role(self::MANAGE_ROLES, 'crm_approve');
+        $this->_require_role(self::MANAGE_ROLES, 'crm_approve', 'SIS', 'manage');
         $id = trim($this->input->post('id') ?? '');
         $remarks = trim($this->input->post('remarks') ?? '');
         if (!$id) return $this->json_error('Application ID required');
@@ -5799,14 +5932,19 @@ class Sis extends MY_Controller
         $history = $app['history'] ?? [];
         $history[] = ['action'=>'Application approved'.($remarks?": {$remarks}":''),'by'=>$this->admin_name,'timestamp'=>$now];
         $this->_crm_update("crmApplications", $id, ['status'=>'approved','stage'=>'approved','approved_by'=>$this->admin_name,'approved_at'=>$now,'remarks'=>$remarks,'updated_at'=>$now,'history'=>$history]);
-        // Firestore dual-write: approve application
-        try { $this->fs->updateEntity('crmApplications', $id, ['status'=>'approved','stage'=>'approved','approved_by'=>$this->admin_name,'approved_at'=>$now,'remarks'=>$remarks,'updated_at'=>$now]); } catch (\Exception $e) { log_message('error', "Firestore dual-write approve_application failed: " . $e->getMessage()); }
-        return $this->json_success();
+        // Notify the applicant of the decision (G-N2). Best-effort; the SMS
+        // layer is a no-op until a provider is configured (notification_helper).
+        $aphone = trim((string) ($app['phone'] ?? ''));
+        if ($aphone !== '') {
+            $this->load->helper('notification');
+            notify_application_approved($aphone, (string) ($this->school_display_name ?? $this->school_name), (string) ($app['student_name'] ?? ''), (string) ($app['application_id'] ?? $id), $remarks);
+        }
+        return $this->json_success(['message' => 'Application approved.']);
     }
 
     public function reject_application()
     {
-        $this->_require_role(self::MANAGE_ROLES, 'crm_reject');
+        $this->_require_role(self::MANAGE_ROLES, 'crm_reject', 'SIS', 'manage');
         $id = trim($this->input->post('id') ?? '');
         $reason = trim($this->input->post('reason') ?? '');
         if (!$id) return $this->json_error('Application ID required');
@@ -5820,20 +5958,48 @@ class Sis extends MY_Controller
         $history = $app['history'] ?? [];
         $history[] = ['action'=>'Application rejected'.($reason?": {$reason}":''),'by'=>$this->admin_name,'timestamp'=>$now];
         $this->_crm_update("crmApplications", $id, ['status'=>'rejected','stage'=>'rejected','rejected_by'=>$this->admin_name,'rejected_at'=>$now,'reject_reason'=>$reason,'updated_at'=>$now,'history'=>$history]);
-        // Firestore dual-write: reject application
-        try { $this->fs->updateEntity('crmApplications', $id, ['status'=>'rejected','stage'=>'rejected','rejected_by'=>$this->admin_name,'rejected_at'=>$now,'reject_reason'=>$reason,'updated_at'=>$now]); } catch (\Exception $e) { log_message('error', "Firestore dual-write reject_application failed: " . $e->getMessage()); }
-        return $this->json_success();
+        // Notify the applicant of the decision (G-N2). Best-effort; the SMS
+        // layer is a no-op until a provider is configured (notification_helper).
+        $aphone = trim((string) ($app['phone'] ?? ''));
+        if ($aphone !== '') {
+            $this->load->helper('notification');
+            notify_application_rejected($aphone, (string) ($this->school_display_name ?? $this->school_name), (string) ($app['student_name'] ?? ''), (string) ($app['application_id'] ?? $id), $reason);
+        }
+        return $this->json_success(['message' => 'Application rejected.']);
     }
 
     public function enroll_student()
     {
-        $this->_require_role(self::MANAGE_ROLES, 'crm_enroll');
+        $this->_require_role(self::MANAGE_ROLES, 'crm_enroll', 'SIS', 'manage');
         $id = trim($this->input->post('id') ?? '');
         if (!$id) return $this->json_error('Application ID required');
         $id = $this->safe_path_segment($id, 'id');
         $app = $this->_crm_get('crmApplications', $id);
         if (!is_array($app)) return $this->json_error('Application not found');
         if (($app['status'] ?? '') !== 'approved') return $this->json_error('Only approved applications can be enrolled');
+
+        // Concurrency guard (F1) — TRUE atomic mutex. createIfAbsent() on a
+        // per-application lock doc is a real cross-process compare-and-set
+        // (Firestore returns 409 if the doc already exists), so two genuinely
+        // simultaneous enrolls of the same application can NEVER both proceed —
+        // exactly one wins the create; the loser is rejected. This closes the
+        // duplicate student + Firebase Auth + double-fee race for good (not just
+        // the double-click case). Stale-lock recovery: if an existing lock is
+        // older than 120s (a crashed/abandoned enroll), reclaim it. The lock is
+        // released on the success path and the common failure paths below, and
+        // self-heals after 120s as a safety net. On success the status flips to
+        // 'enrolled', which the approved-check above independently blocks.
+        $lockId   = $this->fs->docId($id);   // crmEnrollLocks/{schoolId}_{appId}
+        $lockData = ['appId' => $id, 'lockedBy' => $this->admin_name, 'lockedAt' => date('c'), 'ts' => time()];
+        if (!$this->fs->createIfAbsent('crmEnrollLocks', $lockId, $lockData)) {
+            $held   = $this->fs->get('crmEnrollLocks', $lockId);
+            $heldTs = is_array($held) ? (int) ($held['ts'] ?? 0) : 0;
+            if ($heldTs > 0 && (time() - $heldTs) < 120) {
+                return $this->json_error('This application is already being enrolled. Please wait a moment and refresh before retrying.');
+            }
+            // Stale lock from a crashed enroll — take it over.
+            $this->fs->set('crmEnrollLocks', $lockId, $lockData, false);
+        }
 
         $school_id = $this->parent_db_key;
         $school_name = $this->school_name;
@@ -5893,6 +6059,10 @@ class Sis extends MY_Controller
         $destFeeStructDocId = "{$school_name}_{$session}_{$className}_{$section}";
         $destFeeStruct      = $this->fs->get('feeStructures', $destFeeStructDocId);
         if (!is_array($destFeeStruct) || empty($destFeeStruct['feeHeads'])) {
+            // Release the enroll lock so the operator can retry immediately
+            // after creating the fee structure (the documented "set it up and
+            // retry" workflow — a wait here would be pure friction).
+            $this->fs->remove('crmEnrollLocks', $lockId);
             return $this->json_error(
                 "No fee structure exists for {$className} / {$section} in session "
                 . "{$session}. Enrollment aborted to prevent the student being "
@@ -5961,6 +6131,7 @@ class Sis extends MY_Controller
             log_message('error', "Firestore saveStudent failed for {$studentId}: " . $e->getMessage());
         }
         if (!$studentSaved) {
+            $this->fs->remove('crmEnrollLocks', $lockId);   // release enroll mutex
             return $this->json_error('Failed to create student profile in database. Please retry. If the issue persists, contact support.');
         }
 
@@ -5997,14 +6168,27 @@ class Sis extends MY_Controller
             log_message('error', "Firestore dual-write monthFee failed for {$studentId}: " . $e->getMessage());
         }
         if (!$monthFeeOk) {
-            return $this->json_error('Failed to initialize fee tracking for student. Please retry. CRM application has NOT been marked enrolled; no Firebase Auth account was created.');
+            // Compensating cleanup (F4): monthFee failed AFTER the student doc
+            // + phone index were written. Roll them back so we don't leave an
+            // Active student with zero fee demands — an orphan the operator
+            // can't see and a retry would duplicate (retry mints a NEW
+            // studentId). The denormalized Students_Index entry is harmless
+            // without a backing student doc and is left for reconcile (logged).
+            // Also clear the enroll lock so an immediate retry isn't blocked.
+            try { $this->fs->removeEntity('students', $studentId); }
+            catch (\Exception $e) { log_message('error', "enroll_student F4 rollback: removeEntity students {$studentId} failed: " . $e->getMessage()); }
+            if ($phone !== '') {
+                try { $this->fs->remove('indexPhones', $this->fs->docId($phone)); }
+                catch (\Exception $e) { log_message('error', "enroll_student F4 rollback: remove indexPhones failed: " . $e->getMessage()); }
+            }
+            $this->fs->remove('crmEnrollLocks', $lockId);   // release enroll mutex
+            log_message('error', "enroll_student: monthFee init failed for {$studentId}; rolled back student doc + phone index (Students_Index entry left for reconcile).");
+            return $this->json_error('Failed to initialize fee tracking for student. The partial record was rolled back — please retry. CRM application has NOT been marked enrolled; no Firebase Auth account was created.');
         }
 
         $history = $app['history'] ?? [];
         $history[] = ['action'=>"Enrolled as {$studentId} in {$className} {$section}",'by'=>$this->admin_name,'timestamp'=>$now];
         $this->_crm_update("crmApplications", $id, ['status'=>'enrolled','stage'=>'enrolled','student_id'=>$studentId,'enrolled_at'=>$now,'enrolled_by'=>$this->admin_name,'updated_at'=>$now,'history'=>$history]);
-        // Firestore dual-write: CRM application status
-        try { $this->fs->setEntity('crmApplications', $id, ['status'=>'enrolled','stage'=>'enrolled','student_id'=>$studentId,'enrolled_at'=>$now,'enrolled_by'=>$this->admin_name,'updated_at'=>$now]); } catch (\Exception $e) { log_message('error', "Firestore dual-write crmApplications failed for {$id}: " . $e->getMessage()); }
 
         // ── Create Firebase Auth user — REQUIRED, not best-effort ─────
         // Previously this was wrapped in try/catch with only a log_message.
@@ -6058,6 +6242,15 @@ class Sis extends MY_Controller
             }
         }
 
+        // Post-enrollment steps that run AFTER the student is committed. These
+        // were previously log-only, so an operator saw "Enrolled" success while
+        // fees silently failed to assign or the app-sync didn't fire. Collect
+        // any failures into $warnings and surface them in the response (MED-11)
+        // so the operator can act (re-assign fees / re-sync) instead of finding
+        // out later. Full transactional/outbox handling of these is a larger
+        // follow-up; this at least makes partial failure VISIBLE.
+        $warnings = [];
+
         // Auto-assign class fees for enrolled student
         try {
             $parentDbKey = $school_id;
@@ -6065,15 +6258,18 @@ class Sis extends MY_Controller
             log_message('info', "Fee_lifecycle: auto-assigned fees for new enrollment {$studentId}");
         } catch (Exception $e) {
             log_message('error', "Fee_lifecycle::assignInitialFees failed for {$studentId}: " . $e->getMessage());
+            $warnings[] = 'Initial fees could not be assigned automatically — assign them manually from Fees.';
         }
 
         // Firestore sync for Android apps (entity_sync loaded in constructor)
         // SIS Wave-2 S6 (2026-05-31): observability for sync return.
         if (!$this->entity_sync->syncStudent($studentId, $studentData)) {
             log_message('warning', "syncStudent returned false for {$studentId} (enroll_student)");
+            $warnings[] = 'Student record did not sync to the mobile apps — it may take a moment or need a manual re-sync.';
         }
         if (!$this->entity_sync->syncParent($studentId, $studentData)) {
             log_message('warning', "syncParent returned false for {$studentId} (enroll_student)");
+            $warnings[] = 'Parent record did not sync to the mobile apps — it may take a moment or need a manual re-sync.';
         }
 
         // SIS Tier 2 carry (2026-05-30): emit ADMISSION history entry
@@ -6090,6 +6286,7 @@ class Sis extends MY_Controller
         // copyable credentials panel. Password deliberately NOT in
         // `message` — toasts auto-dismiss and showing secrets in a
         // toast is bad UX + bad security.
+        $this->fs->remove('crmEnrollLocks', $lockId);   // release enroll mutex — enrollment complete
         return $this->json_success([
             'student_id'   => $studentId,
             'class'        => $className,
@@ -6098,6 +6295,7 @@ class Sis extends MY_Controller
             'auth_created' => $authCreated,
             'auth_error'   => $authCreated ? '' : $authError,
             'sms_sent'     => $smsSent,
+            'warnings'     => $warnings,   // non-fatal post-enroll issues (fees/sync) for the operator
             'message'      => $authCreated
                 ? "Enrolled as {$studentId} in {$className} / {$section}." . ($smsSent ? ' Login credentials sent via SMS.' : '')
                 : "Enrolled as {$studentId} but parent login is NOT ready — Firebase Auth account creation failed. Error: {$authError}",
@@ -6149,7 +6347,7 @@ class Sis extends MY_Controller
      */
     public function repair_student_auth()
     {
-        $this->_require_role(self::MANAGE_ROLES, 'sis_repair_auth');
+        $this->_require_role(self::MANAGE_ROLES, 'sis_repair_auth', 'SIS', 'manage');
 
         if (strtolower((string) $this->input->method()) !== 'post') {
             return $this->json_error('POST required.');
@@ -6231,7 +6429,7 @@ class Sis extends MY_Controller
      */
     public function get_class_sections()
     {
-        $this->_require_role(self::VIEW_ROLES, 'crm_view');
+        $this->_require_role(self::VIEW_ROLES, 'crm_view', 'SIS', 'view');
         $cls = trim((string) $this->input->get('class'));
         if ($cls === '') return $this->json_success(['sections' => [], 'detail' => [], 'suggested' => '']);
         $className = Firestore_service::classKey($cls);
@@ -6242,6 +6440,23 @@ class Sis extends MY_Controller
                 ['session',   '==', $this->session_year],
                 ['className', '==', $className],
             ]);
+            // Live counts in ONE query, tallied per section in PHP — avoids an
+            // N+1 count() RPC per section (was one aggregation round-trip each
+            // time the enroll dialog opened). Null signals a query failure so
+            // the loop falls back to the section doc's stored studentCount.
+            $secCounts = [];
+            try {
+                foreach ($this->fs->schoolList('students', [
+                    ['className', '==', $className],
+                    ['Status',    '==', 'Active'],
+                ]) as $st) {
+                    $sec = trim((string) ($st['section'] ?? ''));
+                    if ($sec !== '') $secCounts[$sec] = ($secCounts[$sec] ?? 0) + 1;
+                }
+            } catch (\Exception $e) {
+                log_message('error', "get_class_sections student tally failed for {$className}: " . $e->getMessage());
+                $secCounts = null;
+            }
             foreach ($docs as $d) {
                 $s = trim((string) ($d['section'] ?? ''));
                 if ($s === '') continue;
@@ -6257,18 +6472,11 @@ class Sis extends MY_Controller
                 // the cached `studentCount` field on the section doc, which
                 // can drift if other flows forget to bump it.
                 $sectionStored = $d['section'] ?? $sNorm; // exact stored value (might be "A" or "Section A")
-                $current = 0;
-                try {
-                    $current = $this->fs->count('students', [
-                        ['schoolId',  '==', $this->school_id],
-                        ['className', '==', $className],
-                        ['section',   '==', $sectionStored],
-                        ['Status',    '==', 'Active'],
-                    ]);
-                } catch (\Exception $e) {
-                    // Fallback to stored studentCount on count() failure.
-                    $current = (int) ($d['studentCount'] ?? 0);
-                }
+                // Use the pre-computed tally; fall back to the section doc's
+                // stored studentCount only if the students query above failed.
+                $current = is_array($secCounts)
+                    ? (int) ($secCounts[$sectionStored] ?? 0)
+                    : (int) ($d['studentCount'] ?? 0);
 
                 $available = max(0, $capacity - $current);
                 $detail[$sNorm] = [
@@ -6310,7 +6518,7 @@ class Sis extends MY_Controller
 
     public function waitlist()
     {
-        $this->_require_role(self::VIEW_ROLES, 'crm_view');
+        $this->_require_role(self::VIEW_ROLES, 'crm_view', 'SIS', 'view');
         $data['session_year'] = $this->session_year;
         $data['classes']      = $this->_get_crm_classes();
         $this->load->view('include/header');
@@ -6320,10 +6528,11 @@ class Sis extends MY_Controller
 
     public function fetch_waitlist()
     {
-        $this->_require_role(self::VIEW_ROLES, 'crm_fetch');
-        $waitlist = $this->_crm_list('crmWaitlist');
-        if (!is_array($waitlist)) $waitlist = [];
+        $this->_require_role(self::VIEW_ROLES, 'crm_fetch', 'SIS', 'view');
         $session = $this->session_year;
+        // Session-scoped read (F5): waitlist screen shows only the active session.
+        $waitlist = $this->_crm_list('crmWaitlist', [['session', '==', $session]]);
+        if (!is_array($waitlist)) $waitlist = [];
         $result = [];
         foreach ($waitlist as $id => $w) {
             if (!is_array($w) || ($w['session']??'') !== $session) continue;
@@ -6339,7 +6548,7 @@ class Sis extends MY_Controller
 
     public function add_to_waitlist()
     {
-        $this->_require_role(self::MANAGE_ROLES, 'crm_waitlist_add');
+        $this->_require_role(self::MANAGE_ROLES, 'crm_waitlist_add', 'SIS', 'manage');
         $app_id = trim($this->input->post('application_id') ?? '');
         $reason = trim($this->input->post('reason') ?? '');
         $priority = (int)($this->input->post('priority') ?? 99);
@@ -6357,35 +6566,26 @@ class Sis extends MY_Controller
         $history = $app['history'] ?? [];
         $history[] = ['action'=>'Added to waitlist','by'=>$this->admin_name,'timestamp'=>$now];
         $this->_crm_update("crmApplications", $app_id, ['status'=>'waitlisted','stage'=>'waitlisted','updated_at'=>$now,'history'=>$history]);
-        // Firestore dual-write: waitlist entry + application status
-        try {
-            $this->fs->setEntity('crmWaitlist', $wl_id, $waitEntry);
-            $this->fs->updateEntity('crmApplications', $app_id, ['status'=>'waitlisted','stage'=>'waitlisted','updated_at'=>$now]);
-        } catch (\Exception $e) { log_message('error', "Firestore dual-write add_to_waitlist failed: " . $e->getMessage()); }
-        return $this->json_success(['id' => $wl_id]);
+        return $this->json_success(['id' => $wl_id, 'message' => 'Added to waiting list.']);
     }
 
     public function remove_from_waitlist()
     {
-        $this->_require_role(self::MANAGE_ROLES, 'crm_waitlist_remove');
+        $this->_require_role(self::MANAGE_ROLES, 'crm_waitlist_remove', 'SIS', 'manage');
         $id = trim($this->input->post('id') ?? '');
         if (!$id) return $this->json_error('Waitlist ID required');
         $id = $this->safe_path_segment($id, 'id');
         $entry = $this->_crm_get('crmWaitlist', $id);
         if (is_array($entry) && !empty($entry['application_id'])) {
             $this->_crm_update('crmApplications', $entry['application_id'], ['status'=>'pending','stage'=>'document_collection','updated_at'=>date('Y-m-d H:i:s')]);
-            // Firestore dual-write: revert application status
-            try { $this->fs->updateEntity('crmApplications', $entry['application_id'], ['status'=>'pending','stage'=>'document_collection','updated_at'=>date('Y-m-d H:i:s')]); } catch (\Exception $e) { log_message('error', "Firestore dual-write remove_from_waitlist app failed: " . $e->getMessage()); }
         }
         $this->_crm_delete('crmWaitlist', $id);
-        // Firestore dual-write: delete waitlist entry
-        try { $this->fs->removeEntity('crmWaitlist', $id); } catch (\Exception $e) { log_message('error', "Firestore dual-write delete crmWaitlist failed: " . $e->getMessage()); }
-        return $this->json_success();
+        return $this->json_success(['message' => 'Removed from waiting list.']);
     }
 
     public function promote_from_waitlist()
     {
-        $this->_require_role(self::MANAGE_ROLES, 'crm_waitlist_promote');
+        $this->_require_role(self::MANAGE_ROLES, 'crm_waitlist_promote', 'SIS', 'manage');
         $id = trim($this->input->post('id') ?? '');
         if (!$id) return $this->json_error('Waitlist ID required');
         $id = $this->safe_path_segment($id, 'id');
@@ -6399,21 +6599,19 @@ class Sis extends MY_Controller
             $history = $app['history'] ?? [];
             $history[] = ['action'=>'Promoted from waitlist and approved','by'=>$this->admin_name,'timestamp'=>$now];
             $this->_crm_update("crmApplications", $app_id, ['status'=>'approved','stage'=>'approved','approved_by'=>$this->admin_name,'approved_at'=>$now,'updated_at'=>$now,'history'=>$history]);
-            // Firestore dual-write: approve from waitlist
-            try { $this->fs->updateEntity('crmApplications', $app_id, ['status'=>'approved','stage'=>'approved','approved_by'=>$this->admin_name,'approved_at'=>$now,'updated_at'=>$now]); } catch (\Exception $e) { log_message('error', "Firestore dual-write promote_from_waitlist failed: " . $e->getMessage()); }
         }
         $this->_crm_delete('crmWaitlist', $id);
-        // Firestore dual-write: delete waitlist entry
-        try { $this->fs->removeEntity('crmWaitlist', $id); } catch (\Exception $e) { log_message('error', "Firestore dual-write delete crmWaitlist failed: " . $e->getMessage()); }
-        return $this->json_success();
+        return $this->json_success(['message' => 'Promoted to Approved.']);
     }
 
     public function crm_settings()
     {
-        $this->_require_role(self::VIEW_ROLES, 'crm_view');
+        $this->_require_role(self::VIEW_ROLES, 'crm_view', 'SIS', 'view');
         $settings = $this->_crm_get_settings();
         if (!is_array($settings)) $settings = [];
-        $data = ['settings'=>$settings,'session_year'=>$this->session_year,'classes'=>$this->_get_crm_classes()];
+        // school_id (SCH_…) powers the Public Admission Form shareable link now
+        // surfaced in the Settings hub (IA reorg 2026-07).
+        $data = ['settings'=>$settings,'session_year'=>$this->session_year,'classes'=>$this->_get_crm_classes(),'school_id'=>$this->school_id];
         $this->load->view('include/header');
         $this->load->view('admission_crm/settings', $data);
         $this->load->view('include/footer');
@@ -6421,23 +6619,44 @@ class Sis extends MY_Controller
 
     public function save_crm_settings()
     {
-        $this->_require_role(self::MANAGE_ROLES, 'crm_save_settings');
+        $this->_require_role(self::MANAGE_ROLES, 'crm_save_settings', 'SIS', 'manage');
         $settings = $this->_crm_get_settings();
         if (!is_array($settings)) $settings = [];
         foreach (['stages','class_limits','form_fields','notifications'] as $key) {
             $val = $this->input->post($key);
-            if ($val) { $decoded = json_decode($val, true); if (is_array($decoded)) $settings[$key] = $decoded; }
+            if (!$val) continue;
+            $decoded = json_decode($val, true);
+            if (!is_array($decoded)) continue;
+            // Validation (F13): the payload was previously accepted with only an
+            // is_array check, allowing unbounded / malformed settings to be
+            // persisted. Cap collection size and sanitise stage keys/labels so
+            // a bad payload can't bloat the doc or inject odd stage keys the
+            // pipeline then can't render.
+            if (count($decoded) > 100) {
+                return $this->json_error("Too many entries for '{$key}' (max 100).");
+            }
+            if ($key === 'stages') {
+                $clean = [];
+                foreach ($decoded as $sk => $label) {
+                    $sk = preg_replace('/[^a-z0-9_]/', '', strtolower((string) $sk));
+                    if ($sk === '') continue;                       // drop unusable keys
+                    $clean[$sk] = mb_substr(trim((string) $label), 0, 60); // cap label length
+                }
+                if (empty($clean)) {
+                    return $this->json_error('At least one valid stage is required.');
+                }
+                $decoded = $clean;
+            }
+            $settings[$key] = $decoded;
         }
         $settings['updated_at'] = date('Y-m-d H:i:s');
         $this->_crm_save_settings($settings);
-        // Firestore dual-write: CRM settings
-        try { $this->fs->setEntity('crmSettings', 'config', $settings); } catch (\Exception $e) { log_message('error', "Firestore dual-write crmSettings failed: " . $e->getMessage()); }
-        return $this->json_success();
+        return $this->json_success(['message' => 'Settings saved.']);
     }
 
     public function get_crm_settings()
     {
-        $this->_require_role(self::VIEW_ROLES, 'crm_fetch');
+        $this->_require_role(self::VIEW_ROLES, 'crm_fetch', 'SIS', 'view');
         $settings = $this->_crm_get_settings();
         if (!is_array($settings)) $settings = [];
         if (empty($settings['stages'])) $settings['stages'] = $this->_default_stages();
@@ -6446,6 +6665,10 @@ class Sis extends MY_Controller
 
     public function online_form()
     {
+        // MED-6: this is behind admin auth (the real public form is
+        // Admission_public::form) but had no role gate — any tenant user could
+        // reach it. Require CRM view access.
+        $this->_require_role(self::VIEW_ROLES, 'crm_view', 'SIS', 'view');
         $school_name = $this->school_name;
         $settings = $this->_crm_get_settings();
         $classes  = $this->_get_crm_classes();
@@ -6457,6 +6680,10 @@ class Sis extends MY_Controller
 
     public function submit_online_form()
     {
+        // MED-6: gate this authenticated-but-unauthorized writer (it creates
+        // crmInquiries + crmApplications and burns counter IDs). Requires CRM
+        // manage access, matching save_application.
+        $this->_require_role(self::MANAGE_ROLES, 'crm_save_app', 'SIS', 'edit');
         // ── Rate limiting — max 10 submissions per IP per 15 minutes ──
         // Firestore-based: one doc per IP, stores recent submission timestamps.
         $clientIp = $this->input->ip_address();
@@ -6500,10 +6727,13 @@ class Sis extends MY_Controller
         if (!preg_match('/^\+?\d{10,15}$/', preg_replace('/[\s\-]/','',$data['phone']))) return $this->json_error('Invalid phone number format');
         if ($data['email']!==''&&!filter_var($data['email'],FILTER_VALIDATE_EMAIL)) return $this->json_error('Invalid email address');
 
-        $existingApps = $this->_crm_list('crmApplications');
+        // CR-4: scope the dup-check to THIS session at the query layer instead
+        // of scanning every application the school ever received (was an
+        // unbounded all-time read on each submit).
+        $existingApps = $this->_crm_list('crmApplications', [['session', '==', $this->session_year]]);
         if (is_array($existingApps)) {
             foreach ($existingApps as $ea) {
-                if (!is_array($ea)||($ea['session']??'')!==$this->session_year) continue;
+                if (!is_array($ea)) continue;
                 if (($ea['phone']??'')===$data['phone']&&in_array($ea['status']??'',['pending','approved','waitlisted','enrolled'])) {
                     return $this->json_error('An application with this phone number already exists for this session (ID: '.($ea['application_id']??'N/A').')');
                 }
@@ -6518,23 +6748,19 @@ class Sis extends MY_Controller
         $this->_crm_set("crmApplications", $app_id, $appData);
         $this->_crm_update("crmInquiries", $inq_id, ['application_id'=>$app_id]);
         // Counter managed by _crm_next_id — no separate write needed.
-        // Firestore dual-write: online form inquiry + application
-        try {
-            $inqData['application_id'] = $app_id;
-            $this->fs->setEntity('crmInquiries', $inq_id, $inqData);
-            $this->fs->setEntity('crmApplications', $app_id, $appData);
-        } catch (\Exception $e) { log_message('error', "Firestore dual-write submit_online_form failed: " . $e->getMessage()); }
         return $this->json_success(['application_id' => $app_id]);
     }
 
     public function fetch_analytics()
     {
-        $this->_require_role(self::VIEW_ROLES, 'crm_fetch');
-        $inquiries    = $this->_crm_list('crmInquiries');
-        $applications = $this->_crm_list('crmApplications');
-        $waitlist     = $this->_crm_list('crmWaitlist');
-        if (!is_array($inquiries)) $inquiries=[]; if (!is_array($applications)) $applications=[]; if (!is_array($waitlist)) $waitlist=[];
+        $this->_require_role(self::VIEW_ROLES, 'crm_fetch', 'SIS', 'view');
+        // Scope to the current session at the query layer (was an all-time read
+        // of every inquiry/application/waitlist doc, then filtered in PHP).
         $session = $this->session_year;
+        $inquiries    = $this->_crm_list('crmInquiries',    [['session', '==', $session]]);
+        $applications = $this->_crm_list('crmApplications', [['session', '==', $session]]);
+        $waitlist     = $this->_crm_list('crmWaitlist',     [['session', '==', $session]]);
+        if (!is_array($inquiries)) $inquiries=[]; if (!is_array($applications)) $applications=[]; if (!is_array($waitlist)) $waitlist=[];
         $sInq = array_filter($inquiries, fn($i) => is_array($i)&&($i['session']??'')===$session);
         $sApp = array_filter($applications, fn($a) => is_array($a)&&($a['session']??'')===$session);
         $sWl  = array_filter($waitlist, fn($w) => is_array($w)&&($w['session']??'')===$session);

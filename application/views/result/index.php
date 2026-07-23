@@ -1,6 +1,11 @@
-<?php defined('BASEPATH') OR exit('No direct script access allowed'); ?>
+<?php defined('BASEPATH') OR exit('No direct script access allowed');
+$can_edit   = function_exists('has_permission') ? has_permission('Results', 'edit')   : true;
+$can_manage = function_exists('has_permission') ? has_permission('Results', 'manage') : true;
+?>
+<link rel="stylesheet" href="<?= base_url('assets/css/rbac_ui_kit.css') ?>">
 
 <div class="content-wrapper">
+<div class="rx-loadbar" id="rxLoadbar"></div>
 <div class="ri-wrap">
 
   <!-- ── Page Header ──────────────────────────────────────────────── -->

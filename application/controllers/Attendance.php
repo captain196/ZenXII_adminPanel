@@ -102,17 +102,44 @@ class Attendance extends MY_Controller
      * to the base role check. The per-method self::MANAGE_ROLES/MARK_ROLES/
      * VIEW_ROLES arguments are retained but no longer restrict RBAC holders.
      */
-    protected function _require_role(array $allowed, string $action = '', bool $strict = false): void
+    protected function _require_role(array $allowed, string $action = '', ?string $module = null, string $level = 'view'): void
     {
-        // The coarse `Attendance` module permission grants view + marking. It must
-        // NOT auto-grant sensitive administrative actions (locks, correction /
-        // regularization approvals, device-key rotation, policy/settings) — those
-        // require an actual management role. $strict bypasses the module shortcut
-        // so those endpoints fall through to the real role allow-list. (BE-C1)
-        if (!$strict && has_permission('Attendance')) {
+        // Signature matches the base MY_Controller::_require_role (the Unified-RBAC
+        // capability bridge added ?string $module + string $level). This override
+        // keeps the old Attendance behaviour: the coarse `Attendance` module
+        // permission grants view + marking. It must NOT auto-grant sensitive
+        // administrative actions (locks, correction / regularization approvals,
+        // device-key rotation, policy/settings) — those require an actual
+        // management role. Those endpoints pass the sentinel module 'strict' (was
+        // the boolean `true` before the base signature changed) to bypass the
+        // module shortcut and fall through to the real role allow-list. (BE-C1)
+        // Graded RBAC: each non-strict site passes its true capability level
+        // (view for reads, edit for marking writes, manage for admin ops) so a
+        // module holder is admitted only at the level the action requires — a
+        // bare 'view' holder no longer passes an edit/manage site via the module
+        // shortcut. Strict sites still fall through to the legacy name-gate and
+        // are NOT reachable by a mere module holder.
+        $strict = ($module === 'strict');
+        if (!$strict && has_permission('Attendance', $level)) {
             return;
         }
-        parent::_require_role($allowed, $action);
+        // DECISION (2026-07-18): strict admin sites (settings / policy / device-key
+        // rotation / locks / correction+regularization decide) ARE reachable by a
+        // custom/union role holding Attendance at MANAGE — a bare view/edit holder
+        // still is not. The legacy name-list stays as the fallback below.
+        if ($strict && has_permission('Attendance', 'manage')) {
+            return;
+        }
+        // Fall through to the base gate. For NON-strict sites pass the real module
+        // + level so the base enforces graded authority — a holder at a LOWER
+        // level (e.g. a view-only Teacher on an 'edit' marking site) is DENIED
+        // instead of being re-granted by the legacy name list. Strict admin sites
+        // keep the hard name floor (a manage holder already returned above).
+        if ($strict) {
+            parent::_require_role($allowed, $action);
+        } else {
+            parent::_require_role($allowed, $action, 'Attendance', $level);
+        }
     }
 
     /** Month names → numbers */
@@ -137,7 +164,7 @@ class Attendance extends MY_Controller
      */
     public function index()
     {
-        $this->_require_role(self::VIEW_ROLES);
+        $this->_require_role(self::VIEW_ROLES, 'index', 'Attendance', 'view');
         $data = [];
         $this->load->view('include/header', $data);
         $this->load->view('attendance/index', $data);
@@ -151,7 +178,7 @@ class Attendance extends MY_Controller
      */
     public function control()
     {
-        $this->_require_role(self::VIEW_ROLES, 'attendance/control');
+        $this->_require_role(self::VIEW_ROLES, 'attendance/control', 'Attendance', 'view');
         $data['Classes']      = $this->_build_class_list();
         $data['session_year'] = $this->session_year;
         $this->load->view('include/header', $data);
@@ -168,7 +195,7 @@ class Attendance extends MY_Controller
     /** Mark Attendance shell — Student · Staff · QR Scan. */
     public function mark()
     {
-        $this->_require_role(self::VIEW_ROLES, 'attendance/mark');
+        $this->_require_role(self::VIEW_ROLES, 'attendance/mark', 'Attendance', 'view');
         $data['shell'] = [
             'title'    => 'Mark Attendance',
             'subtitle' => "Take and edit today's attendance for students and staff",
@@ -187,7 +214,7 @@ class Attendance extends MY_Controller
     /** Approvals shell — Student Corrections · Staff Regularization · Student Leave. */
     public function approvals()
     {
-        $this->_require_role(self::VIEW_ROLES, 'attendance/approvals');
+        $this->_require_role(self::VIEW_ROLES, 'attendance/approvals', 'Attendance', 'view');
         // Combined + per-tab pending badges are populated client-side from the
         // three existing list endpoints (all same-origin, same session).
         $extra = <<<JS
@@ -239,7 +266,7 @@ JS;
     /** Reports & Logs shell — Analytics · Audit Trail · Punch Log. */
     public function reports()
     {
-        $this->_require_role(self::VIEW_ROLES, 'attendance/reports');
+        $this->_require_role(self::VIEW_ROLES, 'attendance/reports', 'Attendance', 'view');
         $data['shell'] = [
             'title'    => 'Reports & Logs',
             'subtitle' => 'Analytics, governance audit trail and raw punch forensics',
@@ -261,7 +288,7 @@ JS;
      */
     public function dashboard_stats()
     {
-        $this->_require_role(self::VIEW_ROLES, 'dashboard_stats');
+        $this->_require_role(self::VIEW_ROLES, 'dashboard_stats', 'Attendance', 'view');
 
         // Phase 8b/10: process pending teacher requests before
         // computing stats. Best-effort — don't let a failure break
@@ -425,7 +452,7 @@ JS;
      */
     public function student_attendance()
     {
-        $this->_require_role(self::VIEW_ROLES);
+        $this->_require_role(self::VIEW_ROLES, 'student_attendance', 'Attendance', 'view');
 
         $data['Classes']      = $this->_build_class_list();
         $data['months']       = $this->academic_months;
@@ -446,7 +473,7 @@ JS;
      */
     public function test_push()
     {
-        $this->_require_role(self::MANAGE_ROLES, 'test_push');
+        $this->_require_role(self::MANAGE_ROLES, 'test_push', null, 'manage');
         $fcmToken = trim((string) $this->input->post('fcm_token'));
         if ($fcmToken === '') {
             return $this->json_error('fcm_token is required.');
@@ -474,7 +501,7 @@ JS;
      */
     public function staff_attendance()
     {
-        $this->_require_role(self::VIEW_ROLES);
+        $this->_require_role(self::VIEW_ROLES, 'staff_attendance', 'Attendance', 'view');
         $data['months']       = $this->academic_months;
         $data['session_year'] = $this->session_year;
 
@@ -488,9 +515,24 @@ JS;
      */
     public function settings()
     {
-        $this->_require_role(self::MANAGE_ROLES, 'att_settings', true);
+        $this->_require_role(self::MANAGE_ROLES, 'att_settings', 'strict');
+
+        // SSR bootstrap: render the current attendance policy INTO the page so
+        // the GPS tab shows its real state (toggle on/off, campuses, schedule)
+        // on the first paint — no default-off flash while an async fetch runs.
+        $schoolDoc = $this->fs->get('schools', $this->school_id);
+        $policy = (is_array($schoolDoc) && is_array($schoolDoc['attendancePolicy'] ?? null))
+            ? $schoolDoc['attendancePolicy'] : [];
+        $gps     = is_array($policy['gps'] ?? null) ? $policy['gps'] : [];
+        $geo     = is_array($gps['geofence'] ?? null) ? $gps['geofence'] : [];
+        $methods = is_array($policy['enabledMethods'] ?? null) ? $policy['enabledMethods'] : [];
+        $data = [
+            'attendance_policy' => $policy,
+            'gps_enabled'       => in_array('gps', $methods, true) || !empty($geo['active']),
+        ];
+
         $this->load->view('include/header');
-        $this->load->view('attendance/settings');
+        $this->load->view('attendance/settings', $data);
         $this->load->view('include/footer');
     }
 
@@ -502,7 +544,7 @@ JS;
      */
     public function audit()
     {
-        $this->_require_role(self::MANAGE_ROLES, 'attendance/audit');
+        $this->_require_role(self::MANAGE_ROLES, 'attendance/audit', null, 'manage');
         $this->load->view('include/header');
         $this->load->view('attendance/audit');
         $this->load->view('include/footer');
@@ -513,7 +555,7 @@ JS;
      */
     public function analytics()
     {
-        $this->_require_role(self::VIEW_ROLES);
+        $this->_require_role(self::VIEW_ROLES, 'analytics', 'Attendance', 'view');
         $data['Classes'] = $this->_build_class_list();
         $data['months']  = $this->academic_months;
 
@@ -527,7 +569,7 @@ JS;
      */
     public function punch_log()
     {
-        $this->_require_role(self::VIEW_ROLES);
+        $this->_require_role(self::VIEW_ROLES, 'punch_log', 'Attendance', 'view');
         $this->load->view('include/header');
         $this->load->view('attendance/punch_log');
         $this->load->view('include/footer');
@@ -536,7 +578,7 @@ JS;
     /** Admin/HR page: review + approve/reject staff GPS-attendance regularizations. */
     public function staff_regularization()
     {
-        $this->_require_role(self::VIEW_ROLES);
+        $this->_require_role(self::VIEW_ROLES, 'staff_regularization', 'Attendance', 'view');
         $this->load->view('include/header');
         $this->load->view('attendance/staff_regularization');
         $this->load->view('include/footer');
@@ -547,7 +589,7 @@ JS;
      */
     public function health_check()
     {
-        $this->_require_role(self::MANAGE_ROLES, 'health_check');
+        $this->_require_role(self::MANAGE_ROLES, 'health_check', null, 'manage');
         $checks = [];
 
         // 1. Firebase connectivity
@@ -628,7 +670,7 @@ JS;
      */
     public function cleanup()
     {
-        $this->_require_role(self::MANAGE_ROLES, 'cleanup');
+        $this->_require_role(self::MANAGE_ROLES, 'cleanup', null, 'manage');
         $school  = $this->school_name;
         $session = $this->session_year;
         $now     = time();
@@ -680,7 +722,7 @@ JS;
      */
     public function fetch_audit_logs()
     {
-        $this->_require_role(self::MANAGE_ROLES, 'fetch_audit_logs');
+        $this->_require_role(self::MANAGE_ROLES, 'fetch_audit_logs', null, 'manage');
         if (!$this->_check_rate_limit('fetch_audit_logs')) {
             return $this->json_error('Rate limit exceeded. Max ' . self::INTERNAL_RATE_LIMIT . ' requests/minute.', 429);
         }
@@ -849,7 +891,7 @@ JS;
      */
     public function debug_student_sync()
     {
-        $this->_require_role(self::VIEW_ROLES, 'debug_student_sync');
+        $this->_require_role(self::VIEW_ROLES, 'debug_student_sync', 'Attendance', 'view');
 
         $studentId = trim((string) ($this->input->get('student_id') ?: $this->input->post('student_id')));
         $month     = trim((string) ($this->input->get('month')      ?: $this->input->post('month')));
@@ -936,7 +978,7 @@ JS;
      */
     public function fetch_student_attendance()
     {
-        $this->_require_role(self::VIEW_ROLES, 'fetch_student_att');
+        $this->_require_role(self::VIEW_ROLES, 'fetch_student_att', 'Attendance', 'view');
         $class   = trim((string) $this->input->post('class'));
         $section = trim((string) $this->input->post('section'));
         $month   = trim((string) $this->input->post('month'));
@@ -1055,7 +1097,7 @@ JS;
      */
     public function save_student_attendance()
     {
-        $this->_require_role(self::MARK_ROLES, 'save_student_att');
+        $this->_require_role(self::MARK_ROLES, 'save_student_att', null, 'edit');
         $class   = trim((string) $this->input->post('class'));
         $section = trim((string) $this->input->post('section'));
         $month   = trim((string) $this->input->post('month'));
@@ -1348,7 +1390,7 @@ JS;
      */
     public function mark_student_day()
     {
-        $this->_require_role(self::MARK_ROLES, 'mark_student_day');
+        $this->_require_role(self::MARK_ROLES, 'mark_student_day', null, 'edit');
         $class      = $this->safe_path_segment(trim((string) $this->input->post('class')), 'class');
         $section    = $this->safe_path_segment(trim((string) $this->input->post('section')), 'section');
         $month      = trim((string) $this->input->post('month'));
@@ -1475,7 +1517,7 @@ JS;
      */
     public function bulk_mark_student()
     {
-        $this->_require_role(self::MARK_ROLES, 'bulk_mark_student');
+        $this->_require_role(self::MARK_ROLES, 'bulk_mark_student', null, 'edit');
         $class   = $this->safe_path_segment(trim((string) $this->input->post('class')), 'class');
         $section = $this->safe_path_segment(trim((string) $this->input->post('section')), 'section');
         $month   = trim((string) $this->input->post('month'));
@@ -1585,7 +1627,7 @@ JS;
      */
     public function get_student_summary()
     {
-        $this->_require_role(self::VIEW_ROLES, 'student_summary');
+        $this->_require_role(self::VIEW_ROLES, 'student_summary', 'Attendance', 'view');
         $studentId = trim((string) $this->input->post('student_id'));
         $class     = $this->safe_path_segment(trim((string) $this->input->post('class')), 'class');
         $section   = $this->safe_path_segment(trim((string) $this->input->post('section')), 'section');
@@ -1704,7 +1746,7 @@ JS;
      */
     private function _fetch_staff_attendance_fs()
     {
-        $this->_require_role(self::VIEW_ROLES, 'fetch_staff_att');
+        $this->_require_role(self::VIEW_ROLES, 'fetch_staff_att', 'Attendance', 'view');
         $month = trim((string) $this->input->post('month'));
 
         if (!$month || !isset($this->month_map[$month])) {
@@ -1874,7 +1916,7 @@ JS;
      */
     private function _save_staff_attendance_fs()
     {
-        $this->_require_role(self::MARK_ROLES, 'save_staff_att');
+        $this->_require_role(self::MARK_ROLES, 'save_staff_att', null, 'edit');
         $month   = trim((string) $this->input->post('month'));
         $attData = $this->input->post('attendance');
 
@@ -2072,7 +2114,7 @@ JS;
      */
     private function _mark_staff_day_fs()
     {
-        $this->_require_role(self::MARK_ROLES, 'mark_staff_day');
+        $this->_require_role(self::MARK_ROLES, 'mark_staff_day', null, 'edit');
         $month    = trim((string) $this->input->post('month'));
         $staffId  = trim((string) $this->input->post('staff_id'));
         $day      = (int) $this->input->post('day');
@@ -2173,7 +2215,7 @@ JS;
      */
     public function bulk_mark_staff()
     {
-        $this->_require_role(self::MARK_ROLES, 'bulk_mark_staff');
+        $this->_require_role(self::MARK_ROLES, 'bulk_mark_staff', null, 'edit');
         $month = trim((string) $this->input->post('month'));
         $day   = (int) $this->input->post('day');
         $mark  = strtoupper(trim((string) $this->input->post('mark')));
@@ -2260,7 +2302,7 @@ JS;
      */
     public function autofill_staff_today()
     {
-        $this->_require_role(self::MARK_ROLES, 'autofill_staff');
+        $this->_require_role(self::MARK_ROLES, 'autofill_staff', null, 'edit');
 
         $now      = new DateTime();
         $year     = (int) $now->format('Y');
@@ -2331,7 +2373,7 @@ JS;
      */
     public function get_settings()
     {
-        $this->_require_role(self::MANAGE_ROLES, 'get_settings', true);
+        $this->_require_role(self::MANAGE_ROLES, 'get_settings', 'strict');
 
         // Firestore-canonical (Phase 6B): read via the shared settings helper
         // (read-through cache). Return only the general-settings keys so the
@@ -2355,7 +2397,7 @@ JS;
      */
     public function save_settings()
     {
-        $this->_require_role(self::MANAGE_ROLES, 'save_settings', true);
+        $this->_require_role(self::MANAGE_ROLES, 'save_settings', 'strict');
         $allowed = [
             'late_threshold_student', 'late_threshold_staff',
             'working_days', 'biometric_enabled', 'rfid_enabled', 'face_recognition_enabled',
@@ -2409,7 +2451,7 @@ JS;
      */
     public function get_attendance_policy()
     {
-        $this->_require_role(self::MANAGE_ROLES, 'get_attendance_policy', true);
+        $this->_require_role(self::MANAGE_ROLES, 'get_attendance_policy', 'strict');
 
         $schoolDoc = $this->fs->get('schools', $this->school_id);
         $policy = (is_array($schoolDoc) && is_array($schoolDoc['attendancePolicy'] ?? null))
@@ -2440,7 +2482,7 @@ JS;
      */
     public function save_attendance_policy()
     {
-        $this->_require_role(self::MANAGE_ROLES, 'save_attendance_policy', true);
+        $this->_require_role(self::MANAGE_ROLES, 'save_attendance_policy', 'strict');
         $this->load->helper('geofence');
 
         $raw = $this->input->post('policy');
@@ -2450,27 +2492,73 @@ JS;
         }
 
         $gpsIn = is_array($in['gps'] ?? null) ? $in['gps'] : [];
-        $geoIn = is_array($gpsIn['geofence'] ?? null) ? $gpsIn['geofence'] : [];
         $winIn = is_array($in['windows'] ?? null) ? $in['windows'] : [];
-        $enabled = !empty($gpsIn['enabled']) || !empty($geoIn['active']);
+        $enabled = !empty($gpsIn['enabled']);
 
-        // ── Geofence validation (strict only when GPS is enabled) ──
-        $centerLat = $geoIn['centerLat'] ?? null;
-        $centerLng = $geoIn['centerLng'] ?? null;
-        $radius    = (int) ($geoIn['radius'] ?? 0);
-        if ($enabled) {
-            if (!gf_valid_coord($centerLat, $centerLng)) {
-                return $this->json_error('A valid campus latitude/longitude is required.');
-            }
-            // Hard cap tightened 2026-07-07: the old 5000 m ceiling let a fence
-            // span a whole town (a live tenant sat at 5 km = effectively no fence,
-            // enabling off-campus punches). A single school campus is comfortably
-            // under 2 km; anything larger is a misconfiguration that defeats the
-            // geofence. Existing over-cap policies must be corrected on next save.
-            if ($radius < 25 || $radius > 2000) {
-                return $this->json_error('Campus radius must be between 25 and 2000 metres. A larger radius defeats the geofence — use a value that tightly covers the campus.');
-            }
+        // ── Multi-campus geofences ───────────────────────────────────
+        // Source of truth is gps.geofences[] (a school may run several
+        // campuses; a punch is valid inside ANY active one). The legacy
+        // singular gps.geofence is still accepted as a one-campus fallback.
+        $rawFences = [];
+        if (isset($gpsIn['geofences']) && is_array($gpsIn['geofences'])) {
+            $rawFences = $gpsIn['geofences'];
+        } elseif (is_array($gpsIn['geofence'] ?? null)) {
+            $rawFences = [$gpsIn['geofence']];
         }
+        if (count($rawFences) > 20) {
+            return $this->json_error('Too many campuses (maximum 20).');
+        }
+
+        // Validate + normalise each campus. Active campuses are validated
+        // strictly (25–2000 m, valid coords); inactive campuses with no usable
+        // coordinates are dropped so we never persist junk. Radius cap tightened
+        // 2026-07-07: a fence over ~2 km effectively disables the geofence.
+        $fences = [];
+        $activeCount = 0;
+        foreach ($rawFences as $idx => $f) {
+            if (!is_array($f)) { continue; }
+            $active   = !empty($f['active']);
+            $name     = trim((string) ($f['name'] ?? ''));
+            if ($name === '') { $name = 'Campus ' . ($idx + 1); }
+            $name     = mb_substr($name, 0, 60);
+            $lat      = $f['centerLat'] ?? null;
+            $lng      = $f['centerLng'] ?? null;
+            $rad      = (int) ($f['radius'] ?? 0);
+            $hasCoord = gf_valid_coord($lat, $lng);
+
+            if ($active) {
+                if (!$hasCoord) {
+                    return $this->json_error("Campus \"{$name}\" needs a valid location — drop its pin on the map.");
+                }
+                if ($rad < 25 || $rad > 2000) {
+                    return $this->json_error("Campus \"{$name}\" radius must be between 25 and 2000 metres.");
+                }
+                $activeCount++;
+            } elseif (!$hasCoord) {
+                continue; // inactive draft with no coordinates → drop
+            }
+
+            $fid = trim((string) ($f['id'] ?? ''));
+            if ($fid === '' || !preg_match('/^[A-Za-z0-9_-]{1,40}$/', $fid)) {
+                $fid = 'gf_' . substr(md5($name . '|' . (string) $lat . '|' . (string) $lng . '|' . $idx), 0, 10);
+            }
+            $fences[] = [
+                'id'        => $fid,
+                'name'      => $name,
+                'active'    => $active,
+                'centerLat' => $hasCoord ? (float) $lat : 0.0,
+                'centerLng' => $hasCoord ? (float) $lng : 0.0,
+                'radius'    => ($rad >= 25 && $rad <= 2000) ? $rad : 200,
+            ];
+        }
+        if ($enabled && $activeCount < 1) {
+            return $this->json_error('Enable at least one active campus (set its location on the map) before turning GPS attendance on.');
+        }
+
+        // Derive the legacy singular geofence = FIRST active campus, so the
+        // Teacher app and any old reader keep working against the primary campus.
+        $primary = null;
+        foreach ($fences as $f) { if ($f['active']) { $primary = $f; break; } }
 
         $maxAcc = (int) ($gpsIn['maxAccuracyMeters'] ?? 100);
         if ($maxAcc < 10 || $maxAcc > 1000) {
@@ -2540,11 +2628,16 @@ JS;
             'version'        => 1,
             'enabledMethods' => $enabled ? ['gps', 'manual'] : ['manual'],
             'gps' => [
+                // Multi-campus source of truth. The punch engine (Attendance_policy)
+                // validates a fix against ALL active campuses.
+                'geofences' => $fences,
+                // Legacy singular geofence = the primary (first active) campus,
+                // kept for the Teacher app + any old reader (back-compat).
                 'geofence' => [
-                    'active'    => (bool) $enabled,
-                    'centerLat' => gf_valid_coord($centerLat, $centerLng) ? (float) $centerLat : 0.0,
-                    'centerLng' => gf_valid_coord($centerLat, $centerLng) ? (float) $centerLng : 0.0,
-                    'radius'    => $radius > 0 ? $radius : 200,
+                    'active'    => (bool) ($enabled && $primary !== null),
+                    'centerLat' => $primary ? $primary['centerLat'] : 0.0,
+                    'centerLng' => $primary ? $primary['centerLng'] : 0.0,
+                    'radius'    => $primary ? $primary['radius'] : 200,
                 ],
                 'maxAccuracyMeters'       => $maxAcc,
                 'allowMockLocation'       => !empty($gpsIn['allowMockLocation']),
@@ -2588,7 +2681,7 @@ JS;
      */
     public function get_holidays()
     {
-        $this->_require_role(self::VIEW_ROLES, 'get_holidays');
+        $this->_require_role(self::VIEW_ROLES, 'get_holidays', 'Attendance', 'view');
 
         $holidays    = [];
         $lastUpdated = null;
@@ -2626,7 +2719,7 @@ JS;
      */
     public function fetch_devices()
     {
-        $this->_require_role(self::MANAGE_ROLES, 'fetch_devices', true);
+        $this->_require_role(self::MANAGE_ROLES, 'fetch_devices', 'strict');
 
         $list = [];
 
@@ -2663,7 +2756,7 @@ JS;
      */
     public function register_device()
     {
-        $this->_require_role(self::MANAGE_ROLES, 'register_device', true);
+        $this->_require_role(self::MANAGE_ROLES, 'register_device', 'strict');
         $name     = trim((string) $this->input->post('name'));
         $type     = trim((string) $this->input->post('type'));
         $location = trim((string) $this->input->post('location'));
@@ -2727,7 +2820,7 @@ JS;
      */
     public function update_device()
     {
-        $this->_require_role(self::MANAGE_ROLES, 'update_device', true);
+        $this->_require_role(self::MANAGE_ROLES, 'update_device', 'strict');
         $deviceId = trim((string) $this->input->post('device_id'));
         if (!$deviceId || !preg_match('/^[A-Za-z0-9_]+$/', $deviceId)) {
             return $this->json_error('Invalid device ID.');
@@ -2771,7 +2864,7 @@ JS;
      */
     public function delete_device()
     {
-        $this->_require_role(self::MANAGE_ROLES, 'delete_device', true);
+        $this->_require_role(self::MANAGE_ROLES, 'delete_device', 'strict');
         $deviceId = trim((string) $this->input->post('device_id'));
         if (!$deviceId || !preg_match('/^[A-Za-z0-9_]+$/', $deviceId)) {
             return $this->json_error('Invalid device ID.');
@@ -2804,7 +2897,7 @@ JS;
      */
     public function regenerate_key()
     {
-        $this->_require_role(self::MANAGE_ROLES, 'regenerate_key', true);
+        $this->_require_role(self::MANAGE_ROLES, 'regenerate_key', 'strict');
         $deviceId = trim((string) $this->input->post('device_id'));
         if (!$deviceId || !preg_match('/^[A-Za-z0-9_]+$/', $deviceId)) {
             return $this->json_error('Invalid device ID.');
@@ -3241,7 +3334,7 @@ JS;
      */
     public function fetch_analytics()
     {
-        $this->_require_role(self::VIEW_ROLES, 'fetch_analytics');
+        $this->_require_role(self::VIEW_ROLES, 'fetch_analytics', 'Attendance', 'view');
         if (!$this->_check_rate_limit('fetch_analytics')) {
             return $this->json_error('Rate limit exceeded. Max ' . self::INTERNAL_RATE_LIMIT . ' requests/minute.', 429);
         }
@@ -3366,7 +3459,7 @@ JS;
      */
     public function fetch_monthly_trend()
     {
-        $this->_require_role(self::VIEW_ROLES, 'monthly_trend');
+        $this->_require_role(self::VIEW_ROLES, 'monthly_trend', 'Attendance', 'view');
         $classFilter   = trim((string) $this->input->post('class'));
         $sectionFilter = trim((string) $this->input->post('section'));
 
@@ -3480,7 +3573,7 @@ JS;
      */
     public function fetch_individual_report()
     {
-        $this->_require_role(self::VIEW_ROLES, 'individual_report');
+        $this->_require_role(self::VIEW_ROLES, 'individual_report', 'Attendance', 'view');
         $personId   = trim((string) $this->input->post('person_id'));
         $personType = trim((string) $this->input->post('person_type'));
         $class      = trim((string) $this->input->post('class'));
@@ -3620,7 +3713,7 @@ JS;
      */
     public function fetch_punch_log()
     {
-        $this->_require_role(self::VIEW_ROLES, 'fetch_punch_log');
+        $this->_require_role(self::VIEW_ROLES, 'fetch_punch_log', 'Attendance', 'view');
         $date = trim((string) $this->input->post('date'));
         if (!$date || !preg_match('/^\d{4}-\d{2}-\d{2}$/', $date)) {
             $date = date('Y-m-d');
@@ -3797,7 +3890,7 @@ JS;
      */
     public function api_get_classes()
     {
-        $this->_require_role(self::VIEW_ROLES, 'api_get_classes');
+        $this->_require_role(self::VIEW_ROLES, 'api_get_classes', 'Attendance', 'view');
         header('Content-Type: application/json');
         $classes = $this->_build_class_list();
         return $this->json_success(['classes' => $classes]);
@@ -3809,7 +3902,7 @@ JS;
      */
     public function api_get_students()
     {
-        $this->_require_role(self::VIEW_ROLES, 'api_get_students');
+        $this->_require_role(self::VIEW_ROLES, 'api_get_students', 'Attendance', 'view');
         $class   = $this->safe_path_segment(trim((string) $this->input->post('class')), 'class');
         $section = $this->safe_path_segment(trim((string) $this->input->post('section')), 'section');
 
@@ -3839,7 +3932,7 @@ JS;
      */
     public function api_get_attendance()
     {
-        $this->_require_role(self::VIEW_ROLES, 'api_get_attendance');
+        $this->_require_role(self::VIEW_ROLES, 'api_get_attendance', 'Attendance', 'view');
         $class   = $this->safe_path_segment(trim((string) $this->input->post('class')), 'class');
         $section = $this->safe_path_segment(trim((string) $this->input->post('section')), 'section');
 
@@ -3931,14 +4024,14 @@ JS;
      */
     public function process_push_requests()
     {
-        $this->_require_role(self::VIEW_ROLES, 'process_push_requests');
+        $this->_require_role(self::VIEW_ROLES, 'process_push_requests', 'Attendance', 'view');
         $this->_process_pending_push_requests();
         return $this->json_success(['message' => 'Pending push requests processed.']);
     }
 
     public function teacher_notify()
     {
-        $this->_require_role(self::MARK_ROLES, 'teacher_notify');
+        $this->_require_role(self::MARK_ROLES, 'teacher_notify', null, 'edit');
 
         $studentId = trim((string) $this->input->post('student_id'));
         $mark      = strtoupper(trim((string) $this->input->post('mark')));
@@ -3974,7 +4067,7 @@ JS;
 
     public function api_mark_attendance()
     {
-        $this->_require_role(self::MARK_ROLES, 'api_mark_attendance');
+        $this->_require_role(self::MARK_ROLES, 'api_mark_attendance', null, 'edit');
         $class   = $this->safe_path_segment(trim((string) $this->input->post('class')), 'class');
         $section = $this->safe_path_segment(trim((string) $this->input->post('section')), 'section');
         $attData = $this->input->post('attendance');
@@ -4060,7 +4153,7 @@ JS;
      */
     public function scan_qr()
     {
-        $this->_require_role(self::MARK_ROLES, 'attendance_scan_qr');
+        $this->_require_role(self::MARK_ROLES, 'attendance_scan_qr', null, 'edit');
 
         if ($this->input->method() !== 'post') {
             return $this->json_error('POST required.');
@@ -4271,7 +4364,7 @@ JS;
      */
     public function scan()
     {
-        $this->_require_role(self::MARK_ROLES, 'attendance_scan');
+        $this->_require_role(self::MARK_ROLES, 'attendance_scan', null, 'edit');
         $this->load->view('include/header');
         $this->load->view('attendance/scan_qr');
         $this->load->view('include/footer');
@@ -4282,7 +4375,7 @@ JS;
      */
     public function student_leaves()
     {
-        $this->_require_role(self::VIEW_ROLES);
+        $this->_require_role(self::VIEW_ROLES, 'student_leaves', 'Attendance', 'view');
         $data['Classes'] = $this->_build_class_list();
         $this->load->view('include/header', $data);
         $this->load->view('attendance/student_leave', $data);
@@ -4313,7 +4406,7 @@ JS;
      */
     public function approval_badge_counts()
     {
-        $this->_require_role(self::VIEW_ROLES, 'approval_badge_counts');
+        $this->_require_role(self::VIEW_ROLES, 'approval_badge_counts', 'Attendance', 'view');
 
         // Returns a set of matching doc ids (keyed) so unions de-dupe for free.
         $idset = function (string $collection, array $conds): array {
@@ -4358,7 +4451,7 @@ JS;
 
     public function list_student_leaves()
     {
-        $this->_require_role(self::VIEW_ROLES, 'list_student_leaves');
+        $this->_require_role(self::VIEW_ROLES, 'list_student_leaves', 'Attendance', 'view');
         $classFilter   = trim((string) $this->input->post('class'));
         $sectionFilter = trim((string) $this->input->post('section'));
         $statusFilter  = trim((string) ($this->input->post('status_filter') ?: 'pending'));
@@ -4437,7 +4530,7 @@ JS;
      */
     public function approve_student_leave()
     {
-        $this->_require_role(self::MARK_ROLES, 'approve_student_leave');
+        $this->_require_role(self::MARK_ROLES, 'approve_student_leave', null, 'edit');
         $leaveId = trim((string) $this->input->post('leave_id'));
         $remarks = trim((string) ($this->input->post('remarks') ?? ''));
 
@@ -4582,7 +4675,7 @@ JS;
      */
     public function reject_student_leave()
     {
-        $this->_require_role(self::MARK_ROLES, 'reject_student_leave');
+        $this->_require_role(self::MARK_ROLES, 'reject_student_leave', null, 'edit');
         $leaveId = trim((string) $this->input->post('leave_id'));
         $remarks = trim((string) ($this->input->post('remarks') ?? ''));
 
@@ -5607,7 +5700,7 @@ JS;
      */
     public function lock_staff_attendance()
     {
-        $this->_require_role(self::MANAGE_ROLES, 'lock_staff_att', true);
+        $this->_require_role(self::MANAGE_ROLES, 'lock_staff_att', 'strict');
         $month = trim((string) $this->input->post('month'));
         if (!$month) return $this->json_error('Month is required.');
 
@@ -5653,7 +5746,7 @@ JS;
      */
     public function unlock_staff_attendance()
     {
-        $this->_require_role(self::MANAGE_ROLES, 'unlock_staff_att', true);
+        $this->_require_role(self::MANAGE_ROLES, 'unlock_staff_att', 'strict');
         $month = trim((string) $this->input->post('month'));
         if (!$month) return $this->json_error('Month is required.');
 
@@ -6989,7 +7082,7 @@ JS;
        ================================================================ */
     public function save()
     {
-        $this->_require_role(self::MARK_ROLES, 'attendance/save');
+        $this->_require_role(self::MARK_ROLES, 'attendance/save', null, 'edit');
 
         $class   = trim((string) $this->input->post('class'));
         $section = trim((string) $this->input->post('section'));
@@ -7368,7 +7461,7 @@ JS;
      */
     public function lock_get()
     {
-        $this->_require_role(self::VIEW_ROLES, 'lock_get');
+        $this->_require_role(self::VIEW_ROLES, 'lock_get', 'Attendance', 'view');
 
         $class   = trim((string) $this->input->get('class'));
         $section = trim((string) $this->input->get('section'));
@@ -7397,7 +7490,7 @@ JS;
      */
     public function lock_set()
     {
-        $this->_require_role(self::MANAGE_ROLES, 'lock_set', true);
+        $this->_require_role(self::MANAGE_ROLES, 'lock_set', 'strict');
 
         $class   = trim((string) $this->input->post('class'));
         $section = trim((string) $this->input->post('section'));
@@ -7667,7 +7760,7 @@ JS;
      */
     public function correction_submit()
     {
-        $this->_require_role(self::MARK_ROLES, 'correction_submit');
+        $this->_require_role(self::MARK_ROLES, 'correction_submit', null, 'edit');
 
         $studentId    = trim((string) $this->input->post('studentId'));
         $date         = trim((string) $this->input->post('date'));
@@ -7821,7 +7914,7 @@ JS;
      */
     public function correction_list()
     {
-        $this->_require_role(self::VIEW_ROLES, 'correction_list');
+        $this->_require_role(self::VIEW_ROLES, 'correction_list', 'Attendance', 'view');
 
         $statusFilter = strtolower(trim((string) $this->input->get('status')));
         if ($statusFilter === '') $statusFilter = 'pending';
@@ -7910,7 +8003,7 @@ JS;
      */
     public function staff_regularization_list()
     {
-        $this->_require_role(self::VIEW_ROLES, 'staff_regularization_list');
+        $this->_require_role(self::VIEW_ROLES, 'staff_regularization_list', 'Attendance', 'view');
 
         $statusFilter = strtolower(trim((string) $this->input->post('status')));
         $allowed = ['pending', 'approved', 'rejected', 'cancelled', 'auto_rejected', 'all'];
@@ -7971,7 +8064,7 @@ JS;
      */
     public function staff_regularization_decide()
     {
-        $this->_require_role(self::STAFF_REG_DECIDE_ROLES, 'staff_regularization_decide', true);
+        $this->_require_role(self::STAFF_REG_DECIDE_ROLES, 'staff_regularization_decide', 'strict');
 
         $docId    = trim((string) $this->input->post('doc_id'));
         $batchId  = trim((string) $this->input->post('batch_id'));
@@ -8123,7 +8216,7 @@ JS;
      */
     public function correction_decide()
     {
-        $this->_require_role(self::MANAGE_ROLES, 'correction_decide', true);
+        $this->_require_role(self::MANAGE_ROLES, 'correction_decide', 'strict');
 
         $reqId    = trim((string) $this->input->post('requestId'));
         $decision = strtolower(trim((string) $this->input->post('decision')));
@@ -8334,7 +8427,7 @@ JS;
        ================================================================ */
     public function summary()
     {
-        $this->_require_role(self::VIEW_ROLES, 'attendance/summary');
+        $this->_require_role(self::VIEW_ROLES, 'attendance/summary', 'Attendance', 'view');
 
         $class   = trim((string) $this->input->get('class'));
         $section = trim((string) $this->input->get('section'));

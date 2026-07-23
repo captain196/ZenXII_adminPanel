@@ -60,7 +60,7 @@ class Red_flags extends MY_Controller
         if ($this->input->is_ajax_request()) {
             $this->json_error('Access denied.', 403);
         }
-        redirect(base_url('admin'));
+        redirect(rbac_denied_url('Red Flags', 'view'));
     }
 
     /**
@@ -300,7 +300,7 @@ class Red_flags extends MY_Controller
      */
     public function index()
     {
-        $this->_require_role(self::VIEW_ROLES, 'red_flags_view');
+        $this->_require_role(self::VIEW_ROLES, 'red_flags_view', 'Red Flags', 'view');
         // Server-authoritative manage capability, computed with the SAME
         // case-insensitive logic the mutation endpoints enforce. Passing this
         // to the view lets it hide action buttons from view-only roles without
@@ -329,7 +329,7 @@ class Red_flags extends MY_Controller
      */
     public function get_classes()
     {
-        $this->_require_role(self::VIEW_ROLES, 'red_flags_classes');
+        $this->_require_role(self::VIEW_ROLES, 'red_flags_classes', 'Red Flags', 'view');
 
         $classes = $this->_get_class_sections();
 
@@ -422,7 +422,7 @@ class Red_flags extends MY_Controller
      */
     public function get_overview()
     {
-        $this->_require_role(self::VIEW_ROLES, 'red_flags_overview');
+        $this->_require_role(self::VIEW_ROLES, 'red_flags_overview', 'Red Flags', 'view');
 
         $allFlags = $this->_collect_all_flags();
 
@@ -523,7 +523,7 @@ class Red_flags extends MY_Controller
      */
     public function get_flags()
     {
-        $this->_require_role(self::VIEW_ROLES, 'red_flags_list');
+        $this->_require_role(self::VIEW_ROLES, 'red_flags_list', 'Red Flags', 'view');
 
         // include_deleted=1 surfaces soft-deleted flags so admins can audit
         // and (via restore_flag) bring back accidental deletions.
@@ -618,7 +618,7 @@ class Red_flags extends MY_Controller
      */
     public function get_student_flags(string $studentId = '')
     {
-        $this->_require_role(self::VIEW_ROLES, 'red_flags_student');
+        $this->_require_role(self::VIEW_ROLES, 'red_flags_student', 'Red Flags', 'view');
 
         if ($studentId === '') {
             $this->json_error('Student ID is required.', 400);
@@ -699,6 +699,37 @@ class Red_flags extends MY_Controller
     }
 
     /**
+     * Queue a red-flag push (best-effort). Mirrors the create_flag producer
+     * so resolve/bulk-resolve notify the flagged student's parent via the
+     * universal dispatcher. Never throws — a push failure must not fail the
+     * underlying flag mutation. $mark is a MARK_REGISTRY key (FLAG_RESOLVED);
+     * $flag is the existing flag doc; $reqSuffix keeps the pushRequests doc id
+     * distinct from the create request so onCreate fires for each event.
+     */
+    private function _queue_flag_push(string $mark, string $reqSuffix, string $flagId, array $flag): void
+    {
+        try {
+            $reqId = $this->school_id . '_' . $reqSuffix . '_' . $flagId;
+            $this->fs->set('pushRequests', $reqId, [
+                'mark'        => $mark,
+                'schoolId'    => $this->school_id,
+                'flagId'      => $flagId,
+                'studentId'   => (string) ($flag['studentId']   ?? ''),
+                'studentName' => (string) ($flag['studentName'] ?? ''),
+                'severity'    => strtolower((string) ($flag['severity'] ?? 'low')),
+                'flagType'    => strtolower((string) ($flag['type']     ?? '')),
+                'subject'     => (string) ($flag['subject'] ?? ''),
+                'message'     => (string) ($flag['message'] ?? ''),
+                'teacherName' => (string) ($flag['teacherName'] ?? ($this->admin_name ?? $this->admin_id)),
+                'status'      => 'pending',
+                'createdAt'   => date('c'),
+            ], false);
+        } catch (\Exception $e) {
+            log_message('error', "red_flag {$mark} pushRequests write failed (non-fatal): " . $e->getMessage());
+        }
+    }
+
+    /**
      * POST — Resolve a single flag.
      *
      * Inputs: flag_id (required); class_key/section_key/student_id accepted
@@ -706,7 +737,7 @@ class Red_flags extends MY_Controller
      */
     public function resolve_flag()
     {
-        $this->_require_role(self::MANAGE_ROLES, 'red_flags_resolve');
+        $this->_require_role(self::MANAGE_ROLES, 'red_flags_resolve', 'Red Flags', 'edit');
 
         $flagId = $this->safe_path_segment($this->input->post('flag_id') ?? '', 'flag_id');
         $docId  = $this->fs->docId($flagId);
@@ -750,6 +781,9 @@ class Red_flags extends MY_Controller
             $this->json_error('Failed to resolve flag.', 500);
         }
 
+        // Notify the parent that the flag was cleared (best-effort).
+        $this->_queue_flag_push('FLAG_RESOLVED', 'flagresolved', $flagId, $existing);
+
         log_audit('Red Flags', 'resolve_flag', $flagId,
             "Resolved flag for student " . ($existing['studentId'] ?? '?'));
 
@@ -761,7 +795,7 @@ class Red_flags extends MY_Controller
      */
     public function create_flag()
     {
-        $this->_require_role(self::MANAGE_ROLES, 'red_flags_create');
+        $this->_require_role(self::MANAGE_ROLES, 'red_flags_create', 'Red Flags', 'edit');
 
         $classKey   = $this->safe_path_segment($this->input->post('class_key') ?? '', 'class_key');
         $sectionKey = $this->safe_path_segment($this->input->post('section_key') ?? '', 'section_key');
@@ -896,7 +930,7 @@ class Red_flags extends MY_Controller
      */
     public function delete_flag()
     {
-        $this->_require_role(self::MANAGE_ROLES, 'red_flags_delete');
+        $this->_require_role(self::MANAGE_ROLES, 'red_flags_delete', 'Red Flags', 'manage');
 
         $flagId    = $this->safe_path_segment($this->input->post('flag_id') ?? '', 'flag_id');
         $studentId = trim($this->input->post('student_id') ?? '');
@@ -955,7 +989,7 @@ class Red_flags extends MY_Controller
      */
     public function restore_flag()
     {
-        $this->_require_role(self::MANAGE_ROLES, 'red_flags_restore');
+        $this->_require_role(self::MANAGE_ROLES, 'red_flags_restore', 'Red Flags', 'manage');
 
         $flagId = $this->safe_path_segment($this->input->post('flag_id') ?? '', 'flag_id');
         $docId  = $this->fs->docId($flagId);
@@ -1011,7 +1045,7 @@ class Red_flags extends MY_Controller
      */
     public function bulk_resolve()
     {
-        $this->_require_role(self::MANAGE_ROLES, 'red_flags_bulk_resolve');
+        $this->_require_role(self::MANAGE_ROLES, 'red_flags_bulk_resolve', 'Red Flags', 'edit');
 
         $flags = $this->input->post('flags');
         if (!is_array($flags) || empty($flags)) {
@@ -1073,7 +1107,11 @@ class Red_flags extends MY_Controller
                 'resolvedAtMs' => $nowMs,
                 'resolvedBy'   => $this->admin_id,
             ]);
-            if ($ok) $resolved++;
+            if ($ok) {
+                $resolved++;
+                // Notify each resolved flag's parent (best-effort).
+                $this->_queue_flag_push('FLAG_RESOLVED', 'flagresolved', $fid, $existing);
+            }
         }
 
         log_audit('Red Flags', 'bulk_resolve', '', "Bulk resolved {$resolved} flags");
@@ -1107,7 +1145,7 @@ class Red_flags extends MY_Controller
      */
     public function get_trends()
     {
-        $this->_require_role(self::VIEW_ROLES, 'red_flags_trends');
+        $this->_require_role(self::VIEW_ROLES, 'red_flags_trends', 'Red Flags', 'view');
 
         $allFlags = $this->_collect_all_flags();
 
@@ -1231,7 +1269,7 @@ class Red_flags extends MY_Controller
      */
     public function get_flag_detail(string $flagId = '')
     {
-        $this->_require_role(self::VIEW_ROLES, 'red_flags_detail');
+        $this->_require_role(self::VIEW_ROLES, 'red_flags_detail', 'Red Flags', 'view');
 
         if ($flagId === '') {
             $this->json_error('Flag ID is required.', 400);
@@ -1295,7 +1333,7 @@ class Red_flags extends MY_Controller
      */
     public function get_students_for_class()
     {
-        $this->_require_role(self::VIEW_ROLES, 'red_flags_students');
+        $this->_require_role(self::VIEW_ROLES, 'red_flags_students', 'Red Flags', 'view');
 
         $classKey   = $this->safe_path_segment($this->input->post('class_key') ?? '', 'class_key');
         $sectionKey = $this->safe_path_segment($this->input->post('section_key') ?? '', 'section_key');
@@ -1373,7 +1411,7 @@ class Red_flags extends MY_Controller
      */
     public function get_class_summary()
     {
-        $this->_require_role(self::VIEW_ROLES, 'red_flags_class_summary');
+        $this->_require_role(self::VIEW_ROLES, 'red_flags_class_summary', 'Red Flags', 'view');
 
         $allFlags = $this->_collect_all_flags();
         $summary  = [];
@@ -1435,7 +1473,7 @@ class Red_flags extends MY_Controller
      */
     public function get_teacher_activity()
     {
-        $this->_require_role(self::VIEW_ROLES, 'red_flags_teacher_activity');
+        $this->_require_role(self::VIEW_ROLES, 'red_flags_teacher_activity', 'Red Flags', 'view');
 
         $allFlags = $this->_collect_all_flags();
         $teachers = [];
@@ -1508,7 +1546,7 @@ class Red_flags extends MY_Controller
      */
     public function add_flag()
     {
-        $this->_require_role(self::MANAGE_ROLES, 'red_flags_create');
+        $this->_require_role(self::MANAGE_ROLES, 'red_flags_create', 'Red Flags', 'edit');
         $this->create_flag();
     }
 }

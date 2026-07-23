@@ -88,7 +88,7 @@ class Result extends MY_Controller
      */
     public function index()
     {
-        $this->_require_role(self::VIEW_ROLES, 'view_results');
+        $this->_require_role(self::VIEW_ROLES, 'view_results', 'Results', 'view');
         $school = $this->school_name;
         $year   = $this->session_year;
 
@@ -111,7 +111,7 @@ class Result extends MY_Controller
      */
     public function template_designer($examId = null)
     {
-        $this->_require_role(self::ADMIN_ROLES, 'design exam template');
+        $this->_require_role(self::ADMIN_ROLES, 'design exam template', 'Results', 'manage');
 
         $school    = $this->school_name;
         $year      = $this->session_year;
@@ -143,7 +143,7 @@ class Result extends MY_Controller
      */
     public function marks_entry($examId = null)
     {
-        $this->_require_role(self::VIEW_ROLES, 'marks_entry');
+        $this->_require_role(self::VIEW_ROLES, 'marks_entry', 'Results', 'view');
         $school    = $this->school_name;
         $year      = $this->session_year;
         $structure = $this->exam_engine->get_class_structure();
@@ -175,7 +175,7 @@ class Result extends MY_Controller
      */
     public function marks_sheet($examId = null, $classKey = null, $sectionKey = null, $subject = null)
     {
-        $this->_require_role(self::VIEW_ROLES, 'view_marks_sheet');
+        $this->_require_role(self::VIEW_ROLES, 'view_marks_sheet', 'Results', 'view');
         $school = $this->school_name;
         $year   = $this->session_year;
 
@@ -252,7 +252,7 @@ class Result extends MY_Controller
      */
     public function class_result($examId = null)
     {
-        $this->_require_role(self::VIEW_ROLES, 'view_class_result');
+        $this->_require_role(self::VIEW_ROLES, 'view_class_result', 'Results', 'view');
         $school    = $this->school_name;
         $year      = $this->session_year;
         $structure = $this->exam_engine->get_class_structure();
@@ -282,7 +282,7 @@ class Result extends MY_Controller
      */
     public function student_result($userId = null)
     {
-        $this->_require_role(self::VIEW_ROLES, 'view_student_result');
+        $this->_require_role(self::VIEW_ROLES, 'view_student_result', 'Results', 'view');
         $school = $this->school_name;
         $year   = $this->session_year;
 
@@ -437,7 +437,7 @@ class Result extends MY_Controller
      */
     public function report_card($userId = null, $examId = null)
     {
-        $this->_require_role(self::VIEW_ROLES, 'view_report_card');
+        $this->_require_role(self::VIEW_ROLES, 'view_report_card', 'Results', 'view');
 
         if (!$userId || !$examId) {
             redirect('result');
@@ -493,7 +493,7 @@ class Result extends MY_Controller
      */
     public function batch_report_cards($examId = null, $classKey = null, $sectionKey = null)
     {
-        $this->_require_role(self::ADMIN_ROLES, 'batch report cards');
+        $this->_require_role(self::ADMIN_ROLES, 'batch report cards', 'Results', 'manage');
 
         $school = $this->school_name;
         $year   = $this->session_year;
@@ -590,7 +590,7 @@ class Result extends MY_Controller
 
     public function cumulative()
     {
-        $this->_require_role(self::ADMIN_ROLES, 'cumulative results');
+        $this->_require_role(self::ADMIN_ROLES, 'cumulative results', 'Results', 'manage');
 
         $school    = $this->school_name;
         $year      = $this->session_year;
@@ -620,7 +620,7 @@ class Result extends MY_Controller
      */
     public function save_template()
     {
-        $this->_require_role(self::ADMIN_ROLES, 'save exam template');
+        $this->_require_role(self::ADMIN_ROLES, 'save exam template', 'Results', 'manage');
         header('Content-Type: application/json');
 
         $school = $this->school_name;
@@ -689,7 +689,7 @@ class Result extends MY_Controller
      */
     public function get_template()
     {
-        $this->_require_role(self::VIEW_ROLES, 'get_template');
+        $this->_require_role(self::VIEW_ROLES, 'get_template', 'Results', 'view');
         header('Content-Type: application/json');
 
         $school     = $this->school_name;
@@ -727,7 +727,7 @@ class Result extends MY_Controller
      */
     public function save_marks()
     {
-        $this->_require_role(self::MARKS_ENTRY_ROLES, 'save_marks');
+        $this->_require_role(self::MARKS_ENTRY_ROLES, 'save_marks', 'Results', 'edit');
         header('Content-Type: application/json');
 
         $school = $this->school_name;
@@ -917,7 +917,7 @@ class Result extends MY_Controller
      */
     public function get_marks()
     {
-        $this->_require_role(self::VIEW_ROLES, 'get_marks');
+        $this->_require_role(self::VIEW_ROLES, 'get_marks', 'Results', 'view');
         header('Content-Type: application/json');
 
         // B1: marks now read from Firestore via Exam_read (keyed by $this->school_id
@@ -1019,7 +1019,7 @@ class Result extends MY_Controller
      */
     public function compute_results()
     {
-        $this->_require_role(self::ADMIN_ROLES, 'compute results');
+        $this->_require_role(self::ADMIN_ROLES, 'compute results', 'Results', 'manage');
         header('Content-Type: application/json');
 
         $school     = $this->school_name;
@@ -1139,7 +1139,7 @@ class Result extends MY_Controller
      */
     public function save_cumulative_config()
     {
-        $this->_require_role(self::ADMIN_ROLES, 'save cumulative config');
+        $this->_require_role(self::ADMIN_ROLES, 'save cumulative config', 'Results', 'manage');
         header('Content-Type: application/json');
 
         $school    = $this->school_name;
@@ -1189,7 +1189,7 @@ class Result extends MY_Controller
      */
     public function compute_cumulative()
     {
-        $this->_require_role(self::ADMIN_ROLES, 'compute cumulative');
+        $this->_require_role(self::ADMIN_ROLES, 'compute cumulative', 'Results', 'manage');
         header('Content-Type: application/json');
 
         $school     = $this->school_name;
@@ -1385,7 +1385,7 @@ class Result extends MY_Controller
      */
     public function get_cumulative_data()
     {
-        $this->_require_role(self::VIEW_ROLES, 'get_cumulative_data');
+        $this->_require_role(self::VIEW_ROLES, 'get_cumulative_data', 'Results', 'view');
         header('Content-Type: application/json');
 
         $school     = $this->school_name;
@@ -1478,7 +1478,7 @@ class Result extends MY_Controller
      */
     public function get_class_result_data()
     {
-        $this->_require_role(self::VIEW_ROLES, 'get_class_result_data');
+        $this->_require_role(self::VIEW_ROLES, 'get_class_result_data', 'Results', 'view');
         header('Content-Type: application/json');
 
         $school     = $this->school_name;
@@ -1623,7 +1623,7 @@ class Result extends MY_Controller
      */
     public function get_exam_status()
     {
-        $this->_require_role(self::VIEW_ROLES, 'get_exam_status');
+        $this->_require_role(self::VIEW_ROLES, 'get_exam_status', 'Results', 'view');
         header('Content-Type: application/json');
 
         $school     = $this->school_name;
@@ -1682,7 +1682,7 @@ class Result extends MY_Controller
      */
     public function download_pdf($userId = null, $examId = null)
     {
-        $this->_require_role(self::VIEW_ROLES, 'download_pdf');
+        $this->_require_role(self::VIEW_ROLES, 'download_pdf', 'Results', 'view');
         $school = $this->school_name;
         $year   = $this->session_year;
 
@@ -1754,7 +1754,7 @@ class Result extends MY_Controller
      */
     public function download_batch_pdf($examId = null, $classKey = null, $sectionKey = null)
     {
-        $this->_require_role(self::ADMIN_ROLES, 'download_batch_pdf');
+        $this->_require_role(self::ADMIN_ROLES, 'download_batch_pdf', 'Results', 'manage');
 
         $school = $this->school_name;
         $year   = $this->session_year;
@@ -1874,7 +1874,7 @@ class Result extends MY_Controller
      */
     public function batch_pdf_count()
     {
-        $this->_require_role(self::ADMIN_ROLES, 'batch_pdf_count');
+        $this->_require_role(self::ADMIN_ROLES, 'batch_pdf_count', 'Results', 'manage');
         header('Content-Type: application/json');
 
         $school = $this->school_name;

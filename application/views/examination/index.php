@@ -1,6 +1,14 @@
 <?php defined('BASEPATH') OR exit('No direct script access allowed'); ?>
+<?php
+  // RBAC level flags (Examinations module). Dashboard is a pure-view surface,
+  // so these are informational only — no mutating controls live here.
+  $can_edit   = function_exists('has_permission') ? has_permission('Examinations','edit')   : true;
+  $can_manage = function_exists('has_permission') ? has_permission('Examinations','manage') : true;
+?>
+<link rel="stylesheet" href="<?= base_url('assets/css/rbac_ui_kit.css') ?>">
 
 <div class="content-wrapper">
+<div class="rx-loadbar" id="rxLoadbar"></div>
 <section class="content">
 <div class="exm-wrap">
 
@@ -449,5 +457,23 @@
       rows[i].style.display = text.indexOf(q) !== -1 ? '' : 'none';
     }
   });
+})();
+</script>
+
+<!-- ── Navigation loading feedback (pure-view: no mutations here) ─────── -->
+<script>
+(function(){
+  var bar = document.getElementById('rxLoadbar');
+  if (!bar) return;
+  // Same-tab navigation from any hub link → show the top progress bar so the
+  // click registers immediately even on a slow page load.
+  document.addEventListener('click', function(e){
+    var a = e.target.closest && e.target.closest('a[href]');
+    if (!a) return;
+    var href = a.getAttribute('href') || '';
+    if (!href || href.charAt(0) === '#' || a.target === '_blank' || e.metaKey || e.ctrlKey || e.shiftKey) return;
+    bar.classList.add('on');
+  });
+  window.addEventListener('pageshow', function(){ bar.classList.remove('on'); });
 })();
 </script>

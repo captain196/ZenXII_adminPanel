@@ -1,4 +1,8 @@
-<?php $at = isset($active_tab) ? $active_tab : 'dashboard'; ?>
+<?php $at = isset($active_tab) ? $active_tab : 'dashboard';
+$can_edit   = function_exists('has_permission') ? has_permission('Operations','edit')   : true;
+$can_manage = function_exists('has_permission') ? has_permission('Operations','manage') : true;
+?>
+<link rel="stylesheet" href="<?= base_url('assets/css/rbac_ui_kit.css') ?>">
 
 <style>
 .ops-wrap{padding:20px;max-width:1400px;margin:0 auto}
@@ -31,6 +35,7 @@
 </style>
 
 <div class="content-wrapper">
+<div class="rx-loadbar" id="rxLoadbar"></div>
 <section class="content">
 <div class="ops-wrap">
 
@@ -124,13 +129,28 @@ document.addEventListener('DOMContentLoaded', function(){
   'use strict';
   var BASE = _OPS_CFG.BASE;
 
-  function getJSON(url){
-    return $.getJSON(BASE + url);
+  function toast(msg, ok){
+    var t = $('<div style="position:fixed;top:20px;right:20px;z-index:99999;padding:12px 20px;border-radius:8px;font-size:.85rem;color:#fff;background:'+(ok?'var(--green)':'var(--rose)')+'">'+msg+'</div>');
+    $('body').append(t);
+    setTimeout(function(){ t.fadeOut(300, function(){ t.remove(); }); }, 3000);
   }
+  function errMsg(xhr, def){
+    var m = def || 'Request failed';
+    try { var j = xhr.responseJSON; if(!j && xhr.responseText) j = JSON.parse(xhr.responseText);
+      if(j && j.message) m = j.message; else if(xhr.status) m = (def||'Request failed')+' ('+xhr.status+')';
+    } catch(e){ if(xhr.status) m = (def||'Request failed')+' ('+xhr.status+')'; }
+    return m;
+  }
+  // Fail-closed read helper: on HTTP error surface the real message instead of silently blanking.
+  function getJSON(url){
+    return $.getJSON(BASE + url).fail(function(xhr){ toast(errMsg(xhr,'Failed to load dashboard'), false); });
+  }
+  $(document).ajaxStart(function(){ $('#rxLoadbar').addClass('on'); }).ajaxStop(function(){ $('#rxLoadbar').removeClass('on'); });
 
   function loadSummary(){
+    $('.ops-stat-val').text('…');
     getJSON('operations/get_summary').done(function(r){
-      if(r.status!=='success') return;
+      if(r.status!=='success'){ $('.ops-stat-val').text('—'); $('#opsAlerts').html('<div class="ops-alert"><i class="fa fa-exclamation-triangle"></i> '+(r.message||'Unable to load operations summary')+'</div>'); return; }
       var s = r.stats;
       // Library
       $('#sBooks').text(s.library.books);

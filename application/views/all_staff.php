@@ -809,20 +809,20 @@ function resetAllFilters() {
 @import url('https://fonts.googleapis.com/css2?family=Instrument+Sans:wght@400;500;600;700&family=Lora:wght@500;600;700&display=swap');
 
 :root {
-    --nsa-navy:   #0c1e38;
+    --nsa-navy:   #2A1C12;
     --nsa-teal:   #BC5A3C;
-    --nsa-sky:    #e6f4f1;
-    --nsa-green:  #0d7a5f;
-    --nsa-dark:   #15803d;
+    --nsa-sky:    #F7ECE7;
+    --nsa-green:  #2FA875;
+    --nsa-dark:   #2FA875;
     --nsa-red:    #dc2626;
     --nsa-amber:  #d97706;
     --nsa-blue:   #2563eb;
     --nsa-pink:   #db2777;
-    --nsa-text:   #1a2535;
-    --nsa-muted:  #64748b;
-    --nsa-border: #e2e8f0;
+    --nsa-text:   #22160F;
+    --nsa-muted:  #7A6A5E;
+    --nsa-border: #E7DED6;
     --nsa-white:  #ffffff;
-    --nsa-bg:     #f0f7f5;
+    --nsa-bg:     #F7F4F1;
     --nsa-shadow: 0 1px 12px rgba(12,30,56,.07);
     --nsa-radius: 12px;
 }
@@ -1004,7 +1004,7 @@ function resetAllFilters() {
 }
 .nsa-table tbody tr:last-child { border-bottom: none; }
 .nsa-table tbody tr:hover { background: var(--nsa-sky); }
-.nsa-table tbody tr.row-selected { background: #d1fae5; }
+.nsa-table tbody tr.row-selected { background: #F3E4DC; }
 
 .nsa-table td {
     padding: 11px 14px;

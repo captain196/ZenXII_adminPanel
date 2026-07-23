@@ -116,7 +116,8 @@
     <div class="au-tabs">
         <div class="au-tab active" data-tab="dashboard"><i class="fa fa-dashboard" style="margin-right:5px;"></i>Dashboard</div>
         <div class="au-tab" data-tab="admins"><i class="fa fa-user-circle" style="margin-right:5px;"></i>Admin Users</div>
-        <div class="au-tab" data-tab="access"><i class="fa fa-key" style="margin-right:5px;"></i>Access</div>
+        <!-- ACCESS tab RETIRED 2026-07-23: role access editing moved to the graded
+             Role Editor (Staff & Roles). The pane below is a deprecation pointer. -->
         <div class="au-tab" data-tab="logs"><i class="fa fa-history" style="margin-right:5px;"></i>Login Activity</div>
     </div>
 
@@ -149,7 +150,7 @@
             <input type="text" id="adminSearch" placeholder="Search by ID, name, phone, or role..." class="form-control"
                 aria-label="Search admins by ID, name, phone, email, or role"
                 style="width:260px;font-size:12.5px;height:34px;">
-            <?php if (in_array($admin_role, ['Super Admin', 'School Super Admin', 'Admin'])): ?>
+            <?php if (has_permission('Admin Users', 'manage')): /* CAPABILITY-gated, not role-name: a custom role or staff member granted 'Admin Users (Manage)' via Staff & Roles can create admins — mirrors the create_admin backend gate. */ ?>
             <div style="margin-left:auto;">
                 <button class="au-btn au-btn-p" id="addAdminBtn"><i class="fa fa-plus"></i> Add Admin</button>
             </div>
@@ -173,49 +174,22 @@
     <!-- Access = the module-permission facet of a role (what it can open in the
          panel). Roles themselves (name/category/departments) are defined in
          Departments & Roles; here you control each role's panel access. -->
+    <!-- ACCESS pane RETIRED 2026-07-23 — deprecation pointer only. The flat module-
+         checkbox picker here duplicated schools.staffRoles and was the weaker of two
+         write paths. Role access is now edited in the graded Role Editor (Staff &
+         Roles → Staff_access): View / Edit / Manage levels, per-person extra/deny,
+         tiers, and the anti-escalation ceiling. The tab is removed; this pane is a
+         friendly pointer in case of a stale deep link. The backend save_role now
+         hard-fails (410), so no write can land here. -->
     <div class="au-pane" id="pane-access">
-
-        <div style="padding:10px 14px;background:var(--gold-dim);border:1px solid var(--gold-ring);border-radius:8px;margin-bottom:16px;font-size:12px;color:var(--t2);line-height:1.5;">
-            <i class="fa fa-info-circle" style="color:var(--gold);margin-right:4px;"></i>
-            <strong>Access</strong> decides which sections of the admin panel a role can open. A role is a person's job (defined in
-            <a href="<?= base_url('org') ?>" style="color:var(--gold);font-weight:600;">Departments &amp; Roles</a>); its Access is set here.
-            Anyone who only logs into the mobile apps isn't affected.
-        </div>
-
-        <div class="row">
-            <div class="col-md-5">
-                <div class="au-box">
-                    <div class="au-box-head"><i class="fa fa-users" style="color:var(--gold);"></i> Roles
-                        <?php if (in_array($admin_role, ['Super Admin', 'School Super Admin', 'Admin'])): ?>
-                        <button type="button" class="au-btn au-btn-p" id="newRoleBtn" style="margin-left:auto;padding:5px 11px;font-size:12px;"><i class="fa fa-plus"></i> New role</button>
-                        <?php endif; ?>
-                    </div>
-                    <input type="text" id="accessSearch" placeholder="Search roles…" class="form-control"
-                        aria-label="Search roles" style="width:100%;font-size:12.5px;height:32px;margin-bottom:10px;">
-                    <div id="accessListWrap" style="max-height:440px;overflow-y:auto;">
-                        <p style="text-align:center;color:var(--t3);padding:20px;"><i class="fa fa-spinner fa-spin"></i></p>
-                    </div>
-                </div>
-            </div>
-            <div class="col-md-7">
-                <div class="au-box" id="accessEditorBox" style="display:none;">
-                    <div class="au-box-head">
-                        <i class="fa fa-key" style="color:var(--gold);"></i>
-                        Access for <span id="accessRoleName" style="margin-left:4px;">—</span>
-                        <span id="accessCount" class="au-badge au-b-blue" style="margin-left:auto;">0</span>
-                    </div>
-                    <p style="font-size:11.5px;color:var(--t3);margin:-4px 0 12px;">Tick the panel sections this role can open.</p>
-                    <input type="hidden" id="accessRoleId" value="">
-                    <div class="au-perm-picker" id="accessPermGrid"></div>
-                    <div style="display:flex;gap:8px;margin-top:16px;align-items:center;">
-                        <button type="button" class="au-btn au-btn-p" id="saveAccessBtn"><i class="fa fa-check"></i> Save Access</button>
-                        <button type="button" class="au-btn au-btn-s" id="deleteRoleBtn" style="display:none;margin-left:auto;color:#dc2626;border-color:rgba(220,38,38,.3);"><i class="fa fa-trash"></i> Delete role</button>
-                    </div>
-                </div>
-                <div id="accessPlaceholder" style="text-align:center;color:var(--t3);padding:60px 20px;font-size:13px;">
-                    <i class="fa fa-hand-pointer-o" style="font-size:24px;display:block;margin-bottom:10px;color:var(--gold);"></i>
-                    Select a role on the left to set which panel sections it can open.
-                </div>
+        <div style="padding:26px 22px;background:var(--gold-dim);border:1px solid var(--gold-ring);border-radius:10px;text-align:center;color:var(--t2);font-size:13px;line-height:1.6;">
+            <i class="fa fa-key" style="font-size:26px;color:var(--gold);display:block;margin-bottom:12px;"></i>
+            <strong style="color:var(--t1);font-size:14px;">Role access has moved</strong><br>
+            Setting which panel sections a role can open — now with graded
+            <strong>View / Edit / Manage</strong> levels and per-person exceptions — lives in
+            <a href="<?= base_url('staff_access') ?>" style="color:var(--gold);font-weight:600;">Staff &amp; Roles → Role Editor</a>.
+            <div style="margin-top:18px;">
+                <a href="<?= base_url('staff_access') ?>" class="au-btn au-btn-p" style="text-decoration:none;"><i class="fa fa-arrow-right"></i> Open Role Editor</a>
             </div>
         </div>
     </div>
@@ -413,10 +387,17 @@ document.addEventListener('DOMContentLoaded', function(){
 var B = typeof BASE_URL !== 'undefined' ? BASE_URL : <?= json_encode(base_url()) ?>;
 var CURRENT_ADMIN = <?= json_encode($admin_id ?? '') ?>;
 var CURRENT_ROLE  = <?= json_encode($admin_role ?? '') ?>;
-// Edit capability MUST match the server: AdminUsers::_require_role passes only
-// these three roles. Deriving this from has_permission('Admin Users') too made
-// the UI render edit/reset/delete buttons that the backend then 403'd (M9).
-var isAdmin = (CURRENT_ROLE === 'Super Admin' || CURRENT_ROLE === 'School Super Admin' || CURRENT_ROLE === 'Admin');
+// GRADED admin-management capability — mirrors the server _require_role bridge so
+// the UI never shows a button the backend then 403s:
+//   • MANAGE → create / delete / reset-password / enable-disable admins.
+//   • EDIT   → edit an existing admin's details (update_admin) — NOT create/remove.
+//   • VIEW   → see the list only (no actions).
+// So a school can grant "Admin Users (Edit)" to let someone maintain admin records
+// without the power to create or remove them. Bypass roles + a catalogue-resolved
+// Admin resolve true for both (a bare grant defaults to manage).
+var canManageAdmins = <?= has_permission('Admin Users', 'manage') ? 'true' : 'false' ?>;
+var canEditAdmins   = <?= has_permission('Admin Users', 'edit')   ? 'true' : 'false' ?>;
+var isAdmin = canManageAdmins; // legacy alias (Add-Admin gate + inert Access JS)
 var MODULES = <?= json_encode($available_modules ?? []) ?>;
 // Parent → children permission tree (e.g. Operations ⊇ Library/Transport/…).
 // Granting the parent implies all children; or grant children individually.
@@ -480,7 +461,8 @@ function activateTab($tab, focus){
     $('#pane-'+t).addClass('active');
     if(t==='dashboard') loadDashboard();
     if(t==='admins')    loadAdmins();
-    if(t==='access')    loadAccess();
+    // 'access' tab RETIRED — no trigger. The Access JS below is now unreachable
+    // (its DOM + endpoints are gone / hard-failed); left inert, not deleted.
     if(t==='logs')      loadLogs();
 }
 
@@ -555,16 +537,19 @@ function renderAdmins(){
         var aid = esc(a.adminId);
         var aname = esc(a.name);
         var acts = '<div style="display:flex;gap:4px;flex-wrap:wrap;">';
-        if(isAdmin){
+        // EDIT (edit an existing admin) → 'edit' capability, allowed on any row incl. self.
+        if(canEditAdmins){
             acts += '<button class="au-btn au-btn-sm au-btn-s act-edit" data-id="'+aid+'" title="Edit" aria-label="Edit '+aname+'"><i class="fa fa-pencil"></i></button>';
-            if(!isSelf){
-                acts += '<button class="au-btn au-btn-sm au-btn-s act-resetpw" data-id="'+aid+'" data-name="'+aname+'" title="Reset Password" aria-label="Reset password for '+aname+'"><i class="fa fa-key"></i></button>';
-                var toggleSt = (a.status||'active')==='active' ? 'disabled' : 'active';
-                var toggleIc = toggleSt==='disabled' ? 'fa-ban' : 'fa-check';
-                var toggleLbl = (toggleSt==='disabled'?'Disable':'Enable');
-                acts += '<button class="au-btn au-btn-sm au-btn-s act-toggle" data-id="'+aid+'" data-status="'+toggleSt+'" title="'+toggleLbl+'" aria-label="'+toggleLbl+' '+aname+'"><i class="fa '+toggleIc+'"></i></button>';
-                acts += '<button class="au-btn au-btn-sm au-btn-d act-delete" data-id="'+aid+'" data-name="'+aname+'" title="Delete" aria-label="Delete '+aname+'"><i class="fa fa-trash"></i></button>';
-            }
+        }
+        // DESTRUCTIVE (reset password / enable-disable / delete) → 'manage' capability,
+        // never on your own row (self-lockout guard).
+        if(canManageAdmins && !isSelf){
+            acts += '<button class="au-btn au-btn-sm au-btn-s act-resetpw" data-id="'+aid+'" data-name="'+aname+'" title="Reset Password" aria-label="Reset password for '+aname+'"><i class="fa fa-key"></i></button>';
+            var toggleSt = (a.status||'active')==='active' ? 'disabled' : 'active';
+            var toggleIc = toggleSt==='disabled' ? 'fa-ban' : 'fa-check';
+            var toggleLbl = (toggleSt==='disabled'?'Disable':'Enable');
+            acts += '<button class="au-btn au-btn-sm au-btn-s act-toggle" data-id="'+aid+'" data-status="'+toggleSt+'" title="'+toggleLbl+'" aria-label="'+toggleLbl+' '+aname+'"><i class="fa '+toggleIc+'"></i></button>';
+            acts += '<button class="au-btn au-btn-sm au-btn-d act-delete" data-id="'+aid+'" data-name="'+aname+'" title="Delete" aria-label="Delete '+aname+'"><i class="fa fa-trash"></i></button>';
         }
         acts += '</div>';
         return '<tr>'
@@ -585,7 +570,7 @@ $('#adminSearch').on('input', renderAdmins);
 
 // Add Admin
 $('#addAdminBtn').on('click', function(){
-    if(!isAdmin){ alert('Only Admin role can create administrators.'); return; }
+    if(!isAdmin){ alert('You need Admin Users (Manage) access to create administrators.'); return; }
     $('#editAdminId').val('');
     $('#adminForm')[0].reset();
     $('#aPassword').attr('type','password');
@@ -742,12 +727,17 @@ $('#resetPwForm').on('submit', function(e){
     },'json').fail(function(){ $sb.prop('disabled',false); toast('Network error.',false); });
 });
 
-/* Role definition/permission editing was moved to Departments & Roles →
-   "Access Roles" tab (single source of truth). The get_roles/save_role/
-   delete_role endpoints stay in AdminUsers and back that tab plus the
-   Add-Admin role dropdown (loadRoleOptions above). */
+/* Role ACCESS editing moved to the graded Role Editor (Staff & Roles → Staff_access).
+   `get_roles` STAYS (read-only) — it backs the Add-Admin role dropdown
+   (loadRoleOptions above). `save_role` / `delete_role` HARD-FAIL (410). */
 
-/* ══════════════════════════════════ ACCESS (role → panel sections) ═════ */
+/* ══ ACCESS (role → panel sections) — RETIRED 2026-07-23 ══════════════════
+   DEAD / UNREACHABLE: the Access tab + pane were removed and the tab-switch no
+   longer calls loadAccess(), so nothing below ever runs (every handler binds to
+   DOM ids that no longer exist). Kept inert (not deleted) to avoid churn; the
+   backend 410 is the real guard for any stale/cached page. */
+var _accessRoles = [];
+var _accessSel   = null;   // currently selected ROLE_* id
 var _accessRoles = [];
 var _accessSel   = null;   // currently selected ROLE_* id
 

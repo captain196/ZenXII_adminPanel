@@ -52,7 +52,7 @@ class School_config extends MY_Controller
     // ─────────────────────────────────────────────────────────────────────
     public function index()
     {
-        $this->_require_role(self::ADMIN_ROLES, 'school_config_index');
+        $this->_require_role(self::ADMIN_ROLES, 'school_config_index', 'Configuration', 'view');
         $this->load->view('include/header');
         $this->load->view('school_config/index', [
             'session_year' => $this->session_year,
@@ -66,7 +66,7 @@ class School_config extends MY_Controller
     // ─────────────────────────────────────────────────────────────────────
     public function get_config()
     {
-        $this->_require_role(self::ADMIN_ROLES, 'school_config_get_config');
+        $this->_require_role(self::ADMIN_ROLES, 'school_config_get_config', 'Configuration', 'view');
         $school    = $this->school_name;
         $school_id = $this->school_id;
 
@@ -376,7 +376,7 @@ class School_config extends MY_Controller
     // ─────────────────────────────────────────────────────────────────────
     public function save_profile()
     {
-        $this->_require_role(self::ADMIN_ROLES, 'school_config_save_profile');
+        $this->_require_role(self::ADMIN_ROLES, 'school_config_save_profile', 'Configuration', 'edit');
         $school    = $this->school_name;
         $school_id = $this->school_id;
 
@@ -461,7 +461,7 @@ class School_config extends MY_Controller
     // ─────────────────────────────────────────────────────────────────────
     public function save_forget_password_details()
     {
-        $this->_require_role(self::ADMIN_ROLES, 'school_config_save_forget_password_details');
+        $this->_require_role(self::ADMIN_ROLES, 'school_config_save_forget_password_details', 'Configuration', 'manage');
 
         $name   = trim((string) $this->input->post('name',   TRUE));
         $email  = strtolower(trim((string) $this->input->post('email',  TRUE)));
@@ -505,7 +505,7 @@ class School_config extends MY_Controller
     // ─────────────────────────────────────────────────────────────────────
     public function upload_logo()
     {
-        $this->_require_role(self::ADMIN_ROLES, 'school_config_upload_logo');
+        $this->_require_role(self::ADMIN_ROLES, 'school_config_upload_logo', 'Configuration', 'edit');
         $school    = $this->school_name;
         $school_id = $this->school_id;
 
@@ -600,7 +600,7 @@ class School_config extends MY_Controller
     // ─────────────────────────────────────────────────────────────────────
     public function upload_document()
     {
-        $this->_require_role(self::ADMIN_ROLES, 'school_config_upload_document');
+        $this->_require_role(self::ADMIN_ROLES, 'school_config_upload_document', 'Configuration', 'edit');
         $school = $this->school_name;
         $type   = trim((string) $this->input->post('doc_type', TRUE));
 
@@ -659,7 +659,7 @@ class School_config extends MY_Controller
     // ─────────────────────────────────────────────────────────────────────
     public function save_board()
     {
-        $this->_require_role(self::ADMIN_ROLES, 'school_config_save_board');
+        $this->_require_role(self::ADMIN_ROLES, 'school_config_save_board', 'Configuration', 'edit');
         $school = $this->school_name;
 
         $type            = trim((string) $this->input->post('type', TRUE));
@@ -725,7 +725,7 @@ class School_config extends MY_Controller
     // ─────────────────────────────────────────────────────────────────────
     public function save_classes()
     {
-        $this->_require_role(self::ADMIN_ROLES, 'school_config_save_classes');
+        $this->_require_role(self::ADMIN_ROLES, 'school_config_save_classes', 'Configuration', 'edit');
         $school     = $this->school_name;
         $rawClasses = json_decode($this->input->post('classes') ?? '[]', true);
 
@@ -807,7 +807,7 @@ class School_config extends MY_Controller
     // ─────────────────────────────────────────────────────────────────────
     public function activate_classes()
     {
-        $this->_require_role(self::ADMIN_ROLES, 'school_config_activate_classes');
+        $this->_require_role(self::ADMIN_ROLES, 'school_config_activate_classes', 'Configuration', 'manage');
         $school      = $this->school_name;
         $sessionYear = trim((string) $this->input->post('session', TRUE));
 
@@ -884,7 +884,7 @@ class School_config extends MY_Controller
     // ─────────────────────────────────────────────────────────────────────
     public function soft_delete_class()
     {
-        $this->_require_role(self::ADMIN_ROLES, 'school_config_soft_delete_class');
+        $this->_require_role(self::ADMIN_ROLES, 'school_config_soft_delete_class', 'Configuration', 'manage');
         $school   = $this->school_name;
         $classKey = trim((string) $this->input->post('class_key', TRUE));
 
@@ -1026,7 +1026,7 @@ class School_config extends MY_Controller
     // ─────────────────────────────────────────────────────────────────────
     public function restore_class()
     {
-        $this->_require_role(self::ADMIN_ROLES, 'school_config_restore_class');
+        $this->_require_role(self::ADMIN_ROLES, 'school_config_restore_class', 'Configuration', 'manage');
         $school   = $this->school_name;
         $classKey = trim((string) $this->input->post('class_key', TRUE));
 
@@ -1072,7 +1072,7 @@ class School_config extends MY_Controller
     // ─────────────────────────────────────────────────────────────────────
     public function seed_streams()
     {
-        $this->_require_role(self::ADMIN_ROLES, 'school_config_seed_streams');
+        $this->_require_role(self::ADMIN_ROLES, 'school_config_seed_streams', 'Configuration', 'manage');
         $school = $this->school_name;
 
         $defaults = [
@@ -1179,7 +1179,7 @@ class School_config extends MY_Controller
     // ─────────────────────────────────────────────────────────────────────
     public function get_sections()
     {
-        $this->_require_role(self::ADMIN_ROLES, 'school_config_get_sections');
+        $this->_require_role(self::ADMIN_ROLES, 'school_config_get_sections', 'Configuration', 'view');
         $school      = $this->school_name;
         $classKey    = trim((string) $this->input->post('class_key', TRUE));
         $sessionYear = trim((string) $this->input->post('session',   TRUE));
@@ -1223,7 +1223,7 @@ class School_config extends MY_Controller
     // ─────────────────────────────────────────────────────────────────────
     public function save_section()
     {
-        $this->_require_role(self::ADMIN_ROLES, 'school_config_save_section');
+        $this->_require_role(self::ADMIN_ROLES, 'school_config_save_section', 'Configuration', 'edit');
         $school        = $this->school_name;
         $classKey      = trim((string) $this->input->post('class_key', TRUE));
         $sectionLetter = strtoupper(trim((string) $this->input->post('section', TRUE)));
@@ -1279,7 +1279,7 @@ class School_config extends MY_Controller
     // ─────────────────────────────────────────────────────────────────────
     public function delete_section()
     {
-        $this->_require_role(self::ADMIN_ROLES, 'school_config_delete_section');
+        $this->_require_role(self::ADMIN_ROLES, 'school_config_delete_section', 'Configuration', 'manage');
         $school        = $this->school_name;
         $classKey      = trim((string) $this->input->post('class_key', TRUE));
         $sectionLetter = strtoupper(trim((string) $this->input->post('section', TRUE)));
@@ -1387,7 +1387,7 @@ class School_config extends MY_Controller
     // ─────────────────────────────────────────────────────────────────────
     public function get_all_sections()
     {
-        $this->_require_role(self::ADMIN_ROLES, 'school_config_get_all_sections');
+        $this->_require_role(self::ADMIN_ROLES, 'school_config_get_all_sections', 'Configuration', 'view');
         $school      = $this->school_name;
         $sessionYear = trim((string) $this->input->post('session', TRUE));
 
@@ -1527,7 +1527,7 @@ class School_config extends MY_Controller
     // ─────────────────────────────────────────────────────────────────────
     public function bulk_save_sections()
     {
-        $this->_require_role(self::ADMIN_ROLES, 'school_config_bulk_save_sections');
+        $this->_require_role(self::ADMIN_ROLES, 'school_config_bulk_save_sections', 'Configuration', 'edit');
 
         // 2026-06-09 — This batch runs two sequential Firestore round-trips
         // per section (existence-check + write), each ~1-3s. A bulk add across
@@ -1706,7 +1706,7 @@ class School_config extends MY_Controller
     // ─────────────────────────────────────────────────────────────────────
     public function get_subjects()
     {
-        $this->_require_role(self::ADMIN_ROLES, 'school_config_get_subjects');
+        $this->_require_role(self::ADMIN_ROLES, 'school_config_get_subjects', 'Configuration', 'view');
 
         try {
             $school   = $this->school_name;
@@ -1759,7 +1759,7 @@ class School_config extends MY_Controller
      */
     public function get_all_subjects()
     {
-        $this->_require_role(self::ADMIN_ROLES, 'school_config_get_all_subjects');
+        $this->_require_role(self::ADMIN_ROLES, 'school_config_get_all_subjects', 'Configuration', 'view');
 
         try {
             $school = $this->school_name;
@@ -1850,7 +1850,7 @@ class School_config extends MY_Controller
     // ─────────────────────────────────────────────────────────────────────
     public function get_suggested_subjects()
     {
-        $this->_require_role(self::ADMIN_ROLES, 'school_config_get_suggested_subjects');
+        $this->_require_role(self::ADMIN_ROLES, 'school_config_get_suggested_subjects', 'Configuration', 'view');
 
         try {
             $school   = $this->school_name;
@@ -2010,7 +2010,7 @@ class School_config extends MY_Controller
     // ─────────────────────────────────────────────────────────────────────
     public function save_subject()
     {
-        $this->_require_role(self::ADMIN_ROLES, 'school_config_save_subject');
+        $this->_require_role(self::ADMIN_ROLES, 'school_config_save_subject', 'Configuration', 'edit');
         $school   = $this->school_name;
         $classKey = trim((string) $this->input->post('class_key', TRUE));
         $name     = trim((string) $this->input->post('name',      TRUE));
@@ -2094,7 +2094,7 @@ class School_config extends MY_Controller
     // ─────────────────────────────────────────────────────────────────────
     public function delete_subject()
     {
-        $this->_require_role(self::ADMIN_ROLES, 'school_config_delete_subject');
+        $this->_require_role(self::ADMIN_ROLES, 'school_config_delete_subject', 'Configuration', 'manage');
         $school   = $this->school_name;
         $classKey = trim((string) $this->input->post('class_key', TRUE));
         $code     = trim((string) $this->input->post('code',      TRUE));
@@ -2175,7 +2175,7 @@ class School_config extends MY_Controller
     // ─────────────────────────────────────────────────────────────────────
     public function get_default_subjects()
     {
-        $this->_require_role(self::ADMIN_ROLES, 'school_config_get_default_subjects');
+        $this->_require_role(self::ADMIN_ROLES, 'school_config_get_default_subjects', 'Configuration', 'view');
 
         $classKey = trim((string) $this->input->post('class_key', TRUE));
         if ($classKey === '') {
@@ -2342,7 +2342,7 @@ class School_config extends MY_Controller
     // ─────────────────────────────────────────────────────────────────────
     public function save_bulk_subjects()
     {
-        $this->_require_role(self::ADMIN_ROLES, 'school_config_save_bulk_subjects');
+        $this->_require_role(self::ADMIN_ROLES, 'school_config_save_bulk_subjects', 'Configuration', 'edit');
 
         $school   = $this->school_name;
         $classKey = trim((string) $this->input->post('class_key', TRUE));
@@ -2476,7 +2476,7 @@ class School_config extends MY_Controller
     // ─────────────────────────────────────────────────────────────────────
     public function save_stream()
     {
-        $this->_require_role(self::ADMIN_ROLES, 'school_config_save_stream');
+        $this->_require_role(self::ADMIN_ROLES, 'school_config_save_stream', 'Configuration', 'edit');
         $school    = $this->school_name;
         $streamKey = trim((string) $this->input->post('stream_key', TRUE));
         $label     = trim((string) $this->input->post('label',      TRUE));
@@ -2580,7 +2580,7 @@ class School_config extends MY_Controller
     // ─────────────────────────────────────────────────────────────────────
     public function delete_stream()
     {
-        $this->_require_role(self::ADMIN_ROLES, 'school_config_delete_stream');
+        $this->_require_role(self::ADMIN_ROLES, 'school_config_delete_stream', 'Configuration', 'manage');
         $school    = $this->school_name;
         $streamKey = trim((string) $this->input->post('stream_key', TRUE));
 
@@ -2770,7 +2770,7 @@ class School_config extends MY_Controller
     // ─────────────────────────────────────────────────────────────────────
     public function sync_sessions()
     {
-        $this->_require_role(self::ADMIN_ROLES, 'school_config_sync_sessions');
+        $this->_require_role(self::ADMIN_ROLES, 'school_config_sync_sessions', 'Configuration', 'manage');
 
         // ── SC-Step3 (Session Convergence — 2026-06-02): lock + CAS ──
         // sync_sessions is a reconciliation read-modify-write. Pre-Step-3:
@@ -3031,7 +3031,7 @@ class School_config extends MY_Controller
     // ─────────────────────────────────────────────────────────────────────
     public function add_session()
     {
-        $this->_require_role(self::ADMIN_ROLES, 'school_config_add_session');
+        $this->_require_role(self::ADMIN_ROLES, 'school_config_add_session', 'Configuration', 'manage');
         $school  = $this->school_name;
         $session = trim((string) $this->input->post('session', TRUE));
 
@@ -3149,7 +3149,7 @@ class School_config extends MY_Controller
         // lower roles can't reach the "Set Active" button in that tab.
         // The header dropdown's session switcher (every authenticated
         // admin page) is the primary caller of this widened gate.
-        $this->_require_role(self::VIEW_ROLES, 'school_config_set_active_session');
+        $this->_require_role(self::VIEW_ROLES, 'school_config_set_active_session', 'Configuration', 'view');
         $school  = $this->school_name;
         $session = trim((string) $this->input->post('session', TRUE));
 
@@ -3276,7 +3276,7 @@ class School_config extends MY_Controller
     // ─────────────────────────────────────────────────────────────────────
     public function preview_rollover()
     {
-        $this->_require_role(self::ADMIN_ROLES, 'school_config_preview_rollover');
+        $this->_require_role(self::ADMIN_ROLES, 'school_config_preview_rollover', 'Configuration', 'view');
 
         $from = trim((string) $this->input->post('from_session', TRUE));
         $to   = trim((string) $this->input->post('to_session',   TRUE));
@@ -3370,7 +3370,7 @@ class School_config extends MY_Controller
     // ─────────────────────────────────────────────────────────────────────
     public function rollover_session()
     {
-        $this->_require_role(self::ADMIN_ROLES, 'school_config_rollover_session');
+        $this->_require_role(self::ADMIN_ROLES, 'school_config_rollover_session', 'Configuration', 'manage');
 
         $from = trim((string) $this->input->post('from_session', TRUE));
         $to   = trim((string) $this->input->post('to_session',   TRUE));
@@ -3903,7 +3903,7 @@ class School_config extends MY_Controller
     // ─────────────────────────────────────────────────────────────────────
     public function delete_session()
     {
-        $this->_require_role(self::ADMIN_ROLES, 'school_config_delete_session');
+        $this->_require_role(self::ADMIN_ROLES, 'school_config_delete_session', 'Configuration', 'manage');
 
         $session = trim((string) $this->input->post('session', TRUE));
         if (!preg_match('/^\d{4}-\d{2}$/', $session)) {
@@ -4073,7 +4073,7 @@ class School_config extends MY_Controller
     // ─────────────────────────────────────────────────────────────────────
     public function archive_session()
     {
-        $this->_require_role(self::ADMIN_ROLES, 'school_config_archive_session');
+        $this->_require_role(self::ADMIN_ROLES, 'school_config_archive_session', 'Configuration', 'manage');
 
         $session = trim((string) $this->input->post('session', TRUE));
         $doArchive = (int) $this->input->post('archive', TRUE) === 1;
@@ -4195,7 +4195,7 @@ class School_config extends MY_Controller
     // ─────────────────────────────────────────────────────────────────────
     public function session_stats()
     {
-        $this->_require_role(self::ADMIN_ROLES, 'school_config_session_stats');
+        $this->_require_role(self::ADMIN_ROLES, 'school_config_session_stats', 'Configuration', 'view');
 
         $fsSchool = $this->fs->get('schools', $this->fs->schoolId());
         $sessions = (is_array($fsSchool['sessions'] ?? null))
@@ -4246,7 +4246,7 @@ class School_config extends MY_Controller
     // ─────────────────────────────────────────────────────────────────────
     public function check_sessions()
     {
-        $this->_require_role(self::ADMIN_ROLES, 'school_config_check_sessions');
+        $this->_require_role(self::ADMIN_ROLES, 'school_config_check_sessions', 'Configuration', 'view');
 
         $fsSchool  = $this->fs->get('schools', $this->fs->schoolId());
         $listed    = (is_array($fsSchool['sessions'] ?? null))
@@ -4322,7 +4322,7 @@ class School_config extends MY_Controller
      */
     private function _assert_diagnostic_allowed(string $action): void
     {
-        $this->_require_role(self::ADMIN_ROLES, $action);
+        $this->_require_role(self::ADMIN_ROLES, $action, 'Configuration', 'manage');
         if (!defined('GRADER_DEBUG') || !GRADER_DEBUG) {
             log_message('info',
                 "ACC_DIAG_ROUTE_BLOCKED action={$action} schoolId={$this->school_id} "
@@ -4410,7 +4410,7 @@ class School_config extends MY_Controller
     // ─────────────────────────────────────────────────────────────────────
     public function save_report_card_template()
     {
-        $this->_require_role(self::ADMIN_ROLES, 'save_rc_template');
+        $this->_require_role(self::ADMIN_ROLES, 'save_rc_template', 'Configuration', 'edit');
         $school   = $this->school_name;
         $template = trim((string) $this->input->post('template', TRUE));
 
@@ -4435,7 +4435,7 @@ class School_config extends MY_Controller
     // ─────────────────────────────────────────────────────────────────────
     public function save_report_card_config()
     {
-        $this->_require_role(self::ADMIN_ROLES, 'save_rc_config');
+        $this->_require_role(self::ADMIN_ROLES, 'save_rc_config', 'Configuration', 'edit');
         $school = $this->school_name;
 
         $raw = (string) $this->input->post('config', TRUE);
@@ -4497,7 +4497,7 @@ class School_config extends MY_Controller
     // ─────────────────────────────────────────────────────────────────────
     public function upload_reportcard_asset()
     {
-        $this->_require_role(self::ADMIN_ROLES, 'upload_rc_asset');
+        $this->_require_role(self::ADMIN_ROLES, 'upload_rc_asset', 'Configuration', 'edit');
         $school = $this->school_name;
 
         $slot    = trim((string) $this->input->post('slot', TRUE));
@@ -4566,7 +4566,7 @@ class School_config extends MY_Controller
     // ─────────────────────────────────────────────────────────────────────
     public function remove_reportcard_asset()
     {
-        $this->_require_role(self::ADMIN_ROLES, 'remove_rc_asset');
+        $this->_require_role(self::ADMIN_ROLES, 'remove_rc_asset', 'Configuration', 'edit');
         $school = $this->school_name;
 
         $slot    = trim((string) $this->input->post('slot', TRUE));
@@ -4598,7 +4598,7 @@ class School_config extends MY_Controller
      */
     public function admission_payment_config()
     {
-        $this->_require_role(self::ADMIN_ROLES, 'admission_payment_config');
+        $this->_require_role(self::ADMIN_ROLES, 'admission_payment_config', 'Configuration', 'manage');
         $school = $this->school_name;
 
         // Read from Firestore
@@ -4624,7 +4624,7 @@ class School_config extends MY_Controller
      */
     public function save_admission_payment_config()
     {
-        $this->_require_role(self::ADMIN_ROLES, 'save_admission_payment_config');
+        $this->_require_role(self::ADMIN_ROLES, 'save_admission_payment_config', 'Configuration', 'manage');
         $school = $this->school_name;
 
         $enabled  = $this->input->post('enabled') === 'true' || $this->input->post('enabled') === '1';

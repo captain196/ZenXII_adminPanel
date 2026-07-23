@@ -742,7 +742,7 @@ document.addEventListener('DOMContentLoaded', function() {
     --fm-card: var(--bg2, rgba(12,30,56,.92));
     --fm-border: var(--border, rgba(188,90,60,.12));
     --fm-brd2: rgba(188,90,60,.25);
-    --fm-t1: var(--t1, #e6f4f1);
+    --fm-t1: var(--t1, #F7ECE7);
     --fm-t2: var(--t2, #94c9c3);
     --fm-t3: var(--t3, #5a9e98);
     --fm-sh: var(--sh, 0 4px 32px rgba(0,0,0,.55));

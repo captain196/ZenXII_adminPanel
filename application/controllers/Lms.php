@@ -42,7 +42,7 @@ class Lms extends MY_Controller
 
     public function index($tab = 'dashboard')
     {
-        $this->_require_role(self::VIEW_ROLES, 'lms_view');
+        $this->_require_role(self::VIEW_ROLES, 'lms_view', 'LMS', 'view');
 
         $validTabs = ['dashboard', 'classes', 'materials', 'assignments', 'quizzes'];
         if (!in_array($tab, $validTabs, true)) $tab = 'dashboard';
@@ -69,7 +69,7 @@ class Lms extends MY_Controller
      */
     public function get_classes_subjects()
     {
-        $this->_require_role(self::VIEW_ROLES, 'lms_data');
+        $this->_require_role(self::VIEW_ROLES, 'lms_data', 'LMS', 'view');
 
         $classes  = $this->_get_session_classes();
         $subjects = [];
@@ -96,7 +96,7 @@ class Lms extends MY_Controller
      */
     public function get_dashboard()
     {
-        $this->_require_role(self::VIEW_ROLES, 'lms_dashboard');
+        $this->_require_role(self::VIEW_ROLES, 'lms_dashboard', 'LMS', 'view');
 
         $base = $this->_lmsBase;
         $role = $this->admin_role ?? '';
@@ -162,7 +162,7 @@ class Lms extends MY_Controller
 
     public function get_classes()
     {
-        $this->_require_role(self::VIEW_ROLES, 'lms_classes');
+        $this->_require_role(self::VIEW_ROLES, 'lms_classes', 'LMS', 'view');
 
         $all = $this->firebase->get("{$this->_lmsBase}/Classes") ?? [];
         if (!is_array($all)) $all = [];
@@ -188,7 +188,7 @@ class Lms extends MY_Controller
 
     public function save_class()
     {
-        $this->_require_role(self::MANAGE_ROLES, 'lms_save_class');
+        $this->_require_role(self::MANAGE_ROLES, 'lms_save_class', 'LMS', 'edit');
 
         $id          = $this->input->post('id');
         $title       = trim($this->input->post('title') ?? '');
@@ -248,7 +248,7 @@ class Lms extends MY_Controller
 
     public function delete_class()
     {
-        $this->_require_role(self::MANAGE_ROLES, 'lms_delete_class');
+        $this->_require_role(self::MANAGE_ROLES, 'lms_delete_class', 'LMS', 'manage');
 
         $id = $this->input->post('id');
         if (!$id) $this->json_error('Class ID required.');
@@ -273,7 +273,7 @@ class Lms extends MY_Controller
 
     public function get_materials()
     {
-        $this->_require_role(self::VIEW_ROLES, 'lms_materials');
+        $this->_require_role(self::VIEW_ROLES, 'lms_materials', 'LMS', 'view');
 
         $all = $this->firebase->get("{$this->_lmsBase}/Materials") ?? [];
         if (!is_array($all)) $all = [];
@@ -296,7 +296,7 @@ class Lms extends MY_Controller
 
     public function save_material()
     {
-        $this->_require_role(self::MANAGE_ROLES, 'lms_save_material');
+        $this->_require_role(self::MANAGE_ROLES, 'lms_save_material', 'LMS', 'edit');
 
         $id          = $this->input->post('id');
         $title       = trim($this->input->post('title') ?? '');
@@ -354,7 +354,7 @@ class Lms extends MY_Controller
 
     public function delete_material()
     {
-        $this->_require_role(self::MANAGE_ROLES, 'lms_delete_material');
+        $this->_require_role(self::MANAGE_ROLES, 'lms_delete_material', 'LMS', 'manage');
 
         $id = $this->input->post('id');
         if (!$id) $this->json_error('Material ID required.');
@@ -383,7 +383,7 @@ class Lms extends MY_Controller
      */
     public function get_assignments()
     {
-        $this->_require_role(self::VIEW_ROLES, 'lms_assignments');
+        $this->_require_role(self::VIEW_ROLES, 'lms_assignments', 'LMS', 'view');
 
         $all = $this->firebase->get("{$this->_lmsBase}/Assignments") ?? [];
         if (!is_array($all)) $all = [];
@@ -408,7 +408,7 @@ class Lms extends MY_Controller
 
     public function save_assignment()
     {
-        $this->_require_role(self::MANAGE_ROLES, 'lms_save_assignment');
+        $this->_require_role(self::MANAGE_ROLES, 'lms_save_assignment', 'LMS', 'edit');
 
         $id          = $this->input->post('id');
         $title       = trim($this->input->post('title') ?? '');
@@ -483,7 +483,7 @@ class Lms extends MY_Controller
 
     public function delete_assignment()
     {
-        $this->_require_role(self::MANAGE_ROLES, 'lms_delete_assignment');
+        $this->_require_role(self::MANAGE_ROLES, 'lms_delete_assignment', 'LMS', 'manage');
 
         $id = $this->input->post('id');
         if (!$id) $this->json_error('Assignment ID required.');
@@ -509,7 +509,7 @@ class Lms extends MY_Controller
      */
     public function get_submissions()
     {
-        $this->_require_role(self::VIEW_ROLES, 'lms_submissions');
+        $this->_require_role(self::VIEW_ROLES, 'lms_submissions', 'LMS', 'view');
 
         $assignmentId = $this->input->get('assignmentId');
         if (!$assignmentId) $this->json_error('Assignment ID required.');
@@ -562,7 +562,7 @@ class Lms extends MY_Controller
      */
     public function grade_submission()
     {
-        $this->_require_role(self::MANAGE_ROLES, 'lms_grade');
+        $this->_require_role(self::MANAGE_ROLES, 'lms_grade', 'LMS', 'edit');
 
         $assignmentId = $this->input->post('assignmentId');
         $studentId    = $this->input->post('studentId');
@@ -627,7 +627,7 @@ class Lms extends MY_Controller
      */
     public function submit_assignment()
     {
-        $this->_require_role(self::MANAGE_ROLES, 'lms_submit_assignment');
+        $this->_require_role(self::MANAGE_ROLES, 'lms_submit_assignment', 'LMS', 'edit');
 
         $assignmentId = $this->input->post('assignmentId');
         $studentId    = $this->input->post('studentId');
@@ -708,7 +708,7 @@ class Lms extends MY_Controller
      */
     public function delete_submission()
     {
-        $this->_require_role(self::MANAGE_ROLES, 'lms_delete_submission');
+        $this->_require_role(self::MANAGE_ROLES, 'lms_delete_submission', 'LMS', 'manage');
 
         $assignmentId = $this->input->post('assignmentId');
         $studentId    = $this->input->post('studentId');
@@ -755,7 +755,7 @@ class Lms extends MY_Controller
      */
     public function get_quizzes()
     {
-        $this->_require_role(self::VIEW_ROLES, 'lms_quizzes');
+        $this->_require_role(self::VIEW_ROLES, 'lms_quizzes', 'LMS', 'view');
 
         $all = $this->firebase->get("{$this->_lmsBase}/Quizzes") ?? [];
         if (!is_array($all)) $all = [];
@@ -784,7 +784,7 @@ class Lms extends MY_Controller
      */
     public function get_quiz()
     {
-        $this->_require_role(self::VIEW_ROLES, 'lms_quiz_detail');
+        $this->_require_role(self::VIEW_ROLES, 'lms_quiz_detail', 'LMS', 'view');
 
         $quizId = $this->input->get('id');
         if (!$quizId) $this->json_error('Quiz ID required.');
@@ -806,7 +806,7 @@ class Lms extends MY_Controller
      */
     public function get_student_quiz()
     {
-        $this->_require_role(self::VIEW_ROLES, 'lms_student_quiz');
+        $this->_require_role(self::VIEW_ROLES, 'lms_student_quiz', 'LMS', 'view');
 
         $quizId = $this->input->get('id');
         if (!$quizId) $this->json_error('Quiz ID required.');
@@ -846,7 +846,7 @@ class Lms extends MY_Controller
 
     public function save_quiz()
     {
-        $this->_require_role(self::MANAGE_ROLES, 'lms_save_quiz');
+        $this->_require_role(self::MANAGE_ROLES, 'lms_save_quiz', 'LMS', 'edit');
 
         $raw = file_get_contents('php://input');
         $input = json_decode($raw, true);
@@ -943,7 +943,7 @@ class Lms extends MY_Controller
 
     public function delete_quiz()
     {
-        $this->_require_role(self::MANAGE_ROLES, 'lms_delete_quiz');
+        $this->_require_role(self::MANAGE_ROLES, 'lms_delete_quiz', 'LMS', 'manage');
 
         $id = $this->input->post('id');
         if (!$id) $this->json_error('Quiz ID required.');
@@ -970,7 +970,7 @@ class Lms extends MY_Controller
      */
     public function get_quiz_attempts()
     {
-        $this->_require_role(self::VIEW_ROLES, 'lms_quiz_attempts');
+        $this->_require_role(self::VIEW_ROLES, 'lms_quiz_attempts', 'LMS', 'view');
 
         $quizId = $this->input->get('quizId');
         if (!$quizId) $this->json_error('Quiz ID required.');
@@ -1018,7 +1018,7 @@ class Lms extends MY_Controller
      */
     public function submit_quiz_attempt()
     {
-        $this->_require_role(self::MANAGE_ROLES, 'lms_submit_quiz');
+        $this->_require_role(self::MANAGE_ROLES, 'lms_submit_quiz', 'LMS', 'edit');
 
         $raw = file_get_contents('php://input');
         $input = json_decode($raw, true);
@@ -1180,7 +1180,7 @@ class Lms extends MY_Controller
      */
     public function get_student_classes()
     {
-        $this->_require_role(self::VIEW_ROLES, 'lms_student_view');
+        $this->_require_role(self::VIEW_ROLES, 'lms_student_view', 'LMS', 'view');
 
         $classKey   = $this->input->get('classKey') ?? '';
         $sectionKey = $this->input->get('sectionKey') ?? '';
@@ -1211,7 +1211,7 @@ class Lms extends MY_Controller
      */
     public function get_student_materials()
     {
-        $this->_require_role(self::VIEW_ROLES, 'lms_student_view');
+        $this->_require_role(self::VIEW_ROLES, 'lms_student_view', 'LMS', 'view');
 
         $classKey   = $this->input->get('classKey') ?? '';
         $sectionKey = $this->input->get('sectionKey') ?? '';
@@ -1241,7 +1241,7 @@ class Lms extends MY_Controller
      */
     public function get_student_assignments()
     {
-        $this->_require_role(self::VIEW_ROLES, 'lms_student_view');
+        $this->_require_role(self::VIEW_ROLES, 'lms_student_view', 'LMS', 'view');
 
         $classKey   = $this->input->get('classKey') ?? '';
         $sectionKey = $this->input->get('sectionKey') ?? '';
@@ -1304,7 +1304,7 @@ class Lms extends MY_Controller
      */
     public function get_student_quizzes()
     {
-        $this->_require_role(self::VIEW_ROLES, 'lms_student_view');
+        $this->_require_role(self::VIEW_ROLES, 'lms_student_view', 'LMS', 'view');
 
         $classKey   = $this->input->get('classKey') ?? '';
         $sectionKey = $this->input->get('sectionKey') ?? '';
@@ -1403,7 +1403,7 @@ class Lms extends MY_Controller
      */
     public function rebuild_submission_count()
     {
-        $this->_require_role(self::MANAGE_ROLES, 'lms_reconcile');
+        $this->_require_role(self::MANAGE_ROLES, 'lms_reconcile', 'LMS', 'manage');
 
         $assignmentId = $this->input->post('assignmentId');
         if (!$assignmentId) $this->json_error('Assignment ID required.');
@@ -1431,7 +1431,7 @@ class Lms extends MY_Controller
      */
     public function rebuild_attempt_count()
     {
-        $this->_require_role(self::MANAGE_ROLES, 'lms_reconcile');
+        $this->_require_role(self::MANAGE_ROLES, 'lms_reconcile', 'LMS', 'manage');
 
         $quizId = $this->input->post('quizId');
         if (!$quizId) $this->json_error('Quiz ID required.');

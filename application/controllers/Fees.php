@@ -386,7 +386,7 @@ class Fees extends MY_Controller
      */
     public function fees_dashboard()
     {
-        $this->_require_role(self::VIEW_ROLES);
+        $this->_require_role(self::VIEW_ROLES, '', 'Fees', 'view');
         $this->load->view('include/header');
         $this->load->view('fees/dashboard');
         $this->load->view('include/footer');
@@ -397,7 +397,7 @@ class Fees extends MY_Controller
      */
     public function student_ledger()
     {
-        $this->_require_role(self::VIEW_ROLES);
+        $this->_require_role(self::VIEW_ROLES, '', 'Fees', 'view');
         $this->load->view('include/header');
         $this->load->view('fees/student_ledger');
         $this->load->view('include/footer');
@@ -408,7 +408,7 @@ class Fees extends MY_Controller
      */
     public function defaulter_report()
     {
-        $this->_require_role(self::VIEW_ROLES);
+        $this->_require_role(self::VIEW_ROLES, '', 'Fees', 'view');
         $this->load->view('include/header');
         $this->load->view('fees/defaulter_report');
         $this->load->view('include/footer');
@@ -421,7 +421,7 @@ class Fees extends MY_Controller
      */
     public function get_defaulter_data()
     {
-        $this->_require_role(self::VIEW_ROLES);
+        $this->_require_role(self::VIEW_ROLES, '', 'Fees', 'view');
 
         $sy           = $this->session_year;
         $filterClass  = trim($this->input->get('class') ?? '');
@@ -588,7 +588,7 @@ class Fees extends MY_Controller
      */
     public function get_collection_analytics()
     {
-        $this->_require_role(self::VIEW_ROLES);
+        $this->_require_role(self::VIEW_ROLES, '', 'Fees', 'view');
 
         $sy = $this->session_year;
         $schoolFs = $this->fs->schoolId();
@@ -813,7 +813,7 @@ class Fees extends MY_Controller
      */
     public function get_student_allocations()
     {
-        $this->_require_role(self::VIEW_ROLES);
+        $this->_require_role(self::VIEW_ROLES, '', 'Fees', 'view');
 
         $studentId = trim($this->input->get('student_id') ?? '');
         if ($studentId === '') {
@@ -872,7 +872,7 @@ class Fees extends MY_Controller
      */
     public function get_dashboard_data()
     {
-        $this->_require_role(self::VIEW_ROLES);
+        $this->_require_role(self::VIEW_ROLES, '', 'Fees', 'view');
 
         $schoolFs = $this->fs->schoolId();
         $sy       = $this->session_year;
@@ -1114,7 +1114,7 @@ class Fees extends MY_Controller
      */
     public function fees_structure()
     {
-        $this->_require_role(self::VIEW_ROLES, 'fees_structure');
+        $this->_require_role(self::VIEW_ROLES, 'fees_structure', 'Fees', 'view');
         redirect(base_url('fee_management/categories'));
     }
 
@@ -1123,7 +1123,7 @@ class Fees extends MY_Controller
      */
     public function delete_fees_structure($feeTitle = '', $feeType = '')
     {
-        $this->_require_role(self::MANAGE_ROLES, 'delete_fees_structure');
+        $this->_require_role(self::MANAGE_ROLES, 'delete_fees_structure', 'Fees', 'manage');
         redirect(base_url('fee_management/categories'));
     }
 
@@ -1133,7 +1133,7 @@ class Fees extends MY_Controller
 
     public function fees_chart()
     {
-        $this->_require_role(self::VIEW_ROLES, 'fees_chart');
+        $this->_require_role(self::VIEW_ROLES, 'fees_chart', 'Fees', 'view');
         $sn = $this->school_name;
         $sy = $this->session_year;
 
@@ -1302,7 +1302,7 @@ class Fees extends MY_Controller
     public function save_updated_fees()
     {
         $this->_require_post();
-        $this->_require_role(self::MANAGE_ROLES, 'save_fees');
+        $this->_require_role(self::MANAGE_ROLES, 'save_fees', 'Fees', 'edit');
         $this->output->set_content_type('application/json');
 
         // ── MY_Controller already validated CSRF in __construct() ──────
@@ -1588,7 +1588,7 @@ class Fees extends MY_Controller
      */
     public function recalc_unpaid_discounts()
     {
-        $this->_require_role(self::MANAGE_ROLES, 'recalc_discounts');
+        $this->_require_role(self::MANAGE_ROLES, 'recalc_discounts', 'Fees', 'edit');
         $studentId = trim($this->input->post('student_id') ?? '');
         if ($studentId === '') return $this->json_error('Student ID is required.');
         $studentId = $this->safe_path_segment($studentId, 'student_id');
@@ -1744,7 +1744,7 @@ class Fees extends MY_Controller
     public function set_student_discount()
     {
         $this->_require_post();
-        $this->_require_role(self::MANAGE_ROLES, 'set_discount');
+        $this->_require_role(self::MANAGE_ROLES, 'set_discount', 'Fees', 'edit');
         $this->output->set_content_type('application/json');
 
         $userId     = trim($this->input->post('user_id') ?? '');
@@ -1829,7 +1829,7 @@ class Fees extends MY_Controller
     public function submit_discount()
     {
         $this->_require_post();
-        $this->_require_role(self::MANAGE_ROLES, 'submit_discount');
+        $this->_require_role(self::MANAGE_ROLES, 'submit_discount', 'Fees', 'edit');
         $this->output->set_content_type('application/json');
 
         $userId   = trim($this->input->post('userId'));
@@ -1920,7 +1920,7 @@ class Fees extends MY_Controller
 
     public function student_fees()
     {
-        $this->_require_role(self::VIEW_ROLES, 'student_fees');
+        $this->_require_role(self::VIEW_ROLES, 'student_fees', 'Fees', 'view');
         $this->load->view('include/header');
         $this->load->view('student_fees');
         $this->load->view('include/footer');
@@ -1933,7 +1933,7 @@ class Fees extends MY_Controller
     public function fetch_fee_receipts()
     {
         $this->_require_post();
-        $this->_require_role(self::VIEW_ROLES, 'fetch_receipts');
+        $this->_require_role(self::VIEW_ROLES, 'fetch_receipts', 'Fees', 'view');
         $this->output->set_content_type('application/json');
 
         $userId = trim($this->input->post('userId') ?? '');
@@ -2182,7 +2182,7 @@ class Fees extends MY_Controller
 
     public function fees_counter()
     {
-        $this->_require_role(self::COUNTER_ROLES, 'fees_counter');
+        $this->_require_role(self::COUNTER_ROLES, 'fees_counter', 'Fees', 'edit');
         $school_name  = $this->school_name;
         $session_year = $this->session_year;
 
@@ -2247,7 +2247,7 @@ class Fees extends MY_Controller
     public function lookup_student()
     {
         $this->_require_post();
-        $this->_require_role(self::VIEW_ROLES, 'lookup_student');
+        $this->_require_role(self::VIEW_ROLES, 'lookup_student', 'Fees', 'view');
         $this->output->set_content_type('application/json');
 
         $userId = trim($this->input->post('user_id') ?? '');
@@ -2277,7 +2277,7 @@ class Fees extends MY_Controller
     public function fetch_months()
     {
         $this->_require_post();
-        $this->_require_role(self::VIEW_ROLES, 'fetch_months');
+        $this->_require_role(self::VIEW_ROLES, 'fetch_months', 'Fees', 'view');
         $this->output->set_content_type('application/json');
 
         $userId = trim($this->input->post('user_id') ?? '');
@@ -2432,7 +2432,7 @@ class Fees extends MY_Controller
     public function fetch_fee_details()
     {
         $this->_require_post();
-        $this->_require_role(self::VIEW_ROLES, 'fetch_fee_details');
+        $this->_require_role(self::VIEW_ROLES, 'fetch_fee_details', 'Fees', 'view');
         $this->output->set_content_type('application/json');
 
         $userId         = trim($this->input->post('user_id') ?? '');
@@ -2700,7 +2700,7 @@ class Fees extends MY_Controller
 
     public function get_server_date()
     {
-        $this->_require_role(self::VIEW_ROLES, 'get_server_date');
+        $this->_require_role(self::VIEW_ROLES, 'get_server_date', 'Fees', 'view');
         $this->output->set_content_type('application/json');
         // Session A audit: PHP clock — no RTDB round-trip needed.
         $this->_json_out(['date' => date('d-m-Y')]);
@@ -2712,7 +2712,7 @@ class Fees extends MY_Controller
 
     public function get_receipt_no()
     {
-        $this->_require_role(self::COUNTER_ROLES, 'get_receipt_no');
+        $this->_require_role(self::COUNTER_ROLES, 'get_receipt_no', 'Fees', 'edit');
         // Peek — submit_fees is the only place that increments the counter.
         // Refreshing the display should never burn a receipt number.
         $this->load->library('Fee_firestore_txn', null, 'fsTxn');
@@ -2728,7 +2728,7 @@ class Fees extends MY_Controller
     public function search_student()
     {
         $this->_require_post();
-        $this->_require_role(self::VIEW_ROLES, 'search_student');
+        $this->_require_role(self::VIEW_ROLES, 'search_student', 'Fees', 'view');
         $this->output->set_content_type('application/json');
         // Empty term → return ALL students (capped at 200) so the
         // Browse modal can show a roster on open, not a blank table.
@@ -2804,7 +2804,7 @@ class Fees extends MY_Controller
     public function submit_fees()
     {
         $this->_require_post();
-        $this->_require_role(self::COUNTER_ROLES, 'submit_fees');
+        $this->_require_role(self::COUNTER_ROLES, 'submit_fees', 'Fees', 'edit');
         // R1.1 freeze enforcement — block counter collections on a
         // session that's closed for year-end rollover. The admin UI
         // surfaces the rollover state separately so this guard is the
@@ -2860,7 +2860,7 @@ class Fees extends MY_Controller
         // feeLocks etc. Must reject GET so a casual link-tap or accidental
         // `curl` cannot erase a receipt. Stage A hardening 2026-05-10.
         $this->_require_post();
-        $this->_require_role(self::MANAGE_ROLES, 'void_test_receipt');
+        $this->_require_role(self::MANAGE_ROLES, 'void_test_receipt', 'Fees', 'manage');
 
         $receiptNo = trim((string) $this->input->post('receipt_no'));
         $receiptNo = preg_replace('/^R0*/i', '', $receiptNo); // accept "R000001" or "1"
@@ -3171,7 +3171,7 @@ class Fees extends MY_Controller
     // ══════════════════════════════════════════════════════════════════
     public function verify_test_cleanup()
     {
-        $this->_require_role(self::MANAGE_ROLES, 'verify_test_cleanup');
+        $this->_require_role(self::MANAGE_ROLES, 'verify_test_cleanup', 'Fees', 'manage');
 
         $receiptNo = trim((string) $this->input->post('receipt_no'));
         $receiptNo = preg_replace('/^R0*/i', '', $receiptNo);
@@ -3299,7 +3299,7 @@ class Fees extends MY_Controller
     // ══════════════════════════════════════════════════════════════════
     public function test_reset_student()
     {
-        $this->_require_role(self::MANAGE_ROLES, 'test_reset_student');
+        $this->_require_role(self::MANAGE_ROLES, 'test_reset_student', 'Fees', 'manage');
         $userId = trim((string) $this->input->post('user_id'));
         if ($userId === '' || !preg_match('/^[A-Za-z0-9_-]+$/', $userId)) {
             return $this->json_error('Valid user_id required.');
@@ -3396,7 +3396,7 @@ class Fees extends MY_Controller
     // ══════════════════════════════════════════════════════════════════
     public function verify_session_b()
     {
-        $this->_require_role(self::MANAGE_ROLES, 'verify_session_b');
+        $this->_require_role(self::MANAGE_ROLES, 'verify_session_b', 'Fees', 'manage');
         $refId     = trim((string) $this->input->post('refund_id'));
         $stage     = trim((string) $this->input->post('stage'));
         $receiptNo = trim((string) $this->input->post('receipt_no'));
@@ -3509,7 +3509,7 @@ class Fees extends MY_Controller
      */
     public function verify_session_c()
     {
-        $this->_require_role(self::MANAGE_ROLES, 'verify_session_c');
+        $this->_require_role(self::MANAGE_ROLES, 'verify_session_c', 'Fees', 'manage');
 
         $entryId   = trim((string) $this->input->post('entry_id'));
         $receiptNo = trim((string) $this->input->post('receipt_no'));
@@ -3686,7 +3686,7 @@ class Fees extends MY_Controller
      */
     public function repair_receipt_counter()
     {
-        $this->_require_role(self::MANAGE_ROLES, 'repair_receipt_counter');
+        $this->_require_role(self::MANAGE_ROLES, 'repair_receipt_counter', 'Fees', 'manage');
         $apply = (string) $this->input->post('apply') === '1';
 
         $schoolFs = $this->fs->schoolId();
@@ -3739,7 +3739,7 @@ class Fees extends MY_Controller
      */
     public function backfill_demand_shape()
     {
-        $this->_require_role(self::MANAGE_ROLES, 'backfill_demand_shape');
+        $this->_require_role(self::MANAGE_ROLES, 'backfill_demand_shape', 'Fees', 'manage');
         $studentId = trim((string) $this->input->post('student_id'));
         if ($studentId === '') return $this->json_error('student_id required (or "all").');
 
@@ -3820,7 +3820,7 @@ class Fees extends MY_Controller
 
     public function print_receipt($receiptNo = null)
     {
-        $this->_require_role(self::VIEW_ROLES, 'print_receipt');
+        $this->_require_role(self::VIEW_ROLES, 'print_receipt', 'Fees', 'view');
         if (empty($receiptNo)) show_404();
         // Strip formatting so both "1" and "R000001" work.
         $rnRaw = (string) $receiptNo;
@@ -3961,7 +3961,7 @@ class Fees extends MY_Controller
 
     public function class_fees()
     {
-        $this->_require_role(self::VIEW_ROLES, 'class_fees');
+        $this->_require_role(self::VIEW_ROLES, 'class_fees', 'Fees', 'view');
 
         $csMap = $this->_buildClassSectionMap();
         $classList  = $csMap['classList'];
@@ -4000,7 +4000,7 @@ class Fees extends MY_Controller
     public function due_fees_table()
     {
         $this->_require_post();
-        $this->_require_role(self::VIEW_ROLES, 'due_fees_table');
+        $this->_require_role(self::VIEW_ROLES, 'due_fees_table', 'Fees', 'view');
         $this->output->set_content_type('application/json');
 
         $class   = trim($this->input->post('class')   ?? '');
@@ -4091,7 +4091,7 @@ class Fees extends MY_Controller
 
     public function fees_records()
     {
-        $this->_require_role(self::VIEW_ROLES, 'fees_records');
+        $this->_require_role(self::VIEW_ROLES, 'fees_records', 'Fees', 'view');
         $schoolFs = $this->fs->schoolId();
 
         // Class/section list from Firestore
@@ -4191,7 +4191,7 @@ class Fees extends MY_Controller
      */
     public function get_fee_account_map()
     {
-        $this->_require_role(self::MANAGE_ROLES, 'get_fee_account_map');
+        $this->_require_role(self::MANAGE_ROLES, 'get_fee_account_map', 'Fees', 'manage');
 
         // Pure Firestore: mappings + CoA via Accounting_firestore_sync
         $this->load->library('Accounting_firestore_sync');
@@ -4256,7 +4256,7 @@ class Fees extends MY_Controller
      */
     public function save_fee_account_map()
     {
-        $this->_require_role(self::MANAGE_ROLES, 'save_fee_account_map');
+        $this->_require_role(self::MANAGE_ROLES, 'save_fee_account_map', 'Fees', 'manage');
 
         $feeHead     = trim($this->input->post('fee_head') ?? '');
         $accountCode = trim($this->input->post('account_code') ?? '');
@@ -4389,7 +4389,7 @@ class Fees extends MY_Controller
      */
     public function auto_compute_fines()
     {
-        $this->_require_role(self::MANAGE_ROLES, 'auto_compute_fines');
+        $this->_require_role(self::MANAGE_ROLES, 'auto_compute_fines', 'Fees', 'edit');
 
         $studentId = trim($this->input->post('student_id') ?? '');
         if ($studentId === '') {
@@ -4953,7 +4953,7 @@ class Fees extends MY_Controller
      */
     public function generate_demands_for_student()
     {
-        $this->_require_role(self::MANAGE_ROLES, 'generate_demands');
+        $this->_require_role(self::MANAGE_ROLES, 'generate_demands', 'Fees', 'edit');
 
         $studentId = trim($this->input->post('student_id') ?? '');
         if ($studentId === '') {
@@ -5059,7 +5059,7 @@ class Fees extends MY_Controller
     public function generate_monthly_demands()
     {
         $this->_require_post();
-        $this->_require_role(self::MANAGE_ROLES, 'generate_demands');
+        $this->_require_role(self::MANAGE_ROLES, 'generate_demands', 'Fees', 'edit');
 
         $monthInput = trim($this->input->post('month') ?? '');
         $classInput = trim($this->input->post('class') ?? '');
@@ -5615,7 +5615,7 @@ class Fees extends MY_Controller
     public function backfill_fee_summaries()
     {
         $this->_require_post();
-        $this->_require_role(self::MANAGE_ROLES, 'backfill_fee_summaries');
+        $this->_require_role(self::MANAGE_ROLES, 'backfill_fee_summaries', 'Fees', 'manage');
 
         @set_time_limit(600);
         $softDeadline = microtime(true) + 540;
@@ -5718,7 +5718,7 @@ class Fees extends MY_Controller
     public function init_sharded_counter()
     {
         $this->_require_post();
-        $this->_require_role(self::MANAGE_ROLES, 'init_sharded_counter');
+        $this->_require_role(self::MANAGE_ROLES, 'init_sharded_counter', 'Fees', 'manage');
 
         $this->load->library('Fee_sharded_counter', null, 'feeShardedCounter');
         $this->feeShardedCounter->init($this->firebase, $this->fs->schoolId(), $this->session_year);
@@ -5739,7 +5739,7 @@ class Fees extends MY_Controller
     public function enable_sharded_counter()
     {
         $this->_require_post();
-        $this->_require_role(self::MANAGE_ROLES, 'enable_sharded_counter');
+        $this->_require_role(self::MANAGE_ROLES, 'enable_sharded_counter', 'Fees', 'manage');
 
         $enabled = $this->input->post('enabled');
         $enabled = ($enabled === '1' || $enabled === 1 || $enabled === true || $enabled === 'true');
@@ -5776,7 +5776,7 @@ class Fees extends MY_Controller
      */
     public function sharded_counter_status()
     {
-        $this->_require_role(self::VIEW_ROLES, 'sharded_counter_status');
+        $this->_require_role(self::VIEW_ROLES, 'sharded_counter_status', 'Fees', 'view');
 
         $schoolId = $this->fs->schoolId();
         $session  = $this->session_year;
@@ -5843,7 +5843,7 @@ class Fees extends MY_Controller
      */
     public function queue_status()
     {
-        $this->_require_role(self::VIEW_ROLES, 'queue_status');
+        $this->_require_role(self::VIEW_ROLES, 'queue_status', 'Fees', 'view');
 
         $schoolId = $this->fs->schoolId();
         $session  = $this->session_year;
@@ -5999,7 +5999,7 @@ class Fees extends MY_Controller
     public function queue_retry_all_failed()
     {
         $this->_require_post();
-        $this->_require_role(self::MANAGE_ROLES, 'queue_retry_all_failed');
+        $this->_require_role(self::MANAGE_ROLES, 'queue_retry_all_failed', 'Fees', 'manage');
         $schoolId = $this->fs->schoolId();
         $session  = $this->session_year;
         $cap      = 100;
@@ -6067,7 +6067,7 @@ class Fees extends MY_Controller
     public function queue_reap_stuck()
     {
         $this->_require_post();
-        $this->_require_role(self::MANAGE_ROLES, 'queue_reap_stuck');
+        $this->_require_role(self::MANAGE_ROLES, 'queue_reap_stuck', 'Fees', 'manage');
         $schoolId = $this->fs->schoolId();
         $session  = $this->session_year;
         $threshold = date('c', time() - 300); // 5 min (matches worker)
@@ -6135,7 +6135,7 @@ class Fees extends MY_Controller
     public function queue_clear_stale_locks()
     {
         $this->_require_post();
-        $this->_require_role(self::MANAGE_ROLES, 'queue_clear_stale_locks');
+        $this->_require_role(self::MANAGE_ROLES, 'queue_clear_stale_locks', 'Fees', 'manage');
         $schoolId = $this->fs->schoolId();
         // Phase 7G (H5) — 2.5× the worker's LOCK_TTL_SEC (120 s). The
         // worker's own _safeReleaseLock can still override at 120 s; this
@@ -6245,7 +6245,7 @@ class Fees extends MY_Controller
      */
     public function receipt_status()
     {
-        $this->_require_role(self::VIEW_ROLES, 'receipt_status');
+        $this->_require_role(self::VIEW_ROLES, 'receipt_status', 'Fees', 'view');
         $receiptNo = trim((string) $this->input->get('receipt_no'));
         $receiptNo = preg_replace('/^F/i', '', $receiptNo);
         if ($receiptNo === '' || !preg_match('/^\d+$/', $receiptNo)) {
@@ -6283,7 +6283,7 @@ class Fees extends MY_Controller
      */
     public function queue_dashboard()
     {
-        $this->_require_role(self::MANAGE_ROLES, 'queue_dashboard');
+        $this->_require_role(self::MANAGE_ROLES, 'queue_dashboard', 'Fees', 'manage');
         $this->load->view('fees/queue_dashboard');
     }
 
@@ -6295,7 +6295,7 @@ class Fees extends MY_Controller
      */
     public function queue_failed_jobs()
     {
-        $this->_require_role(self::MANAGE_ROLES, 'queue_failed_jobs');
+        $this->_require_role(self::MANAGE_ROLES, 'queue_failed_jobs', 'Fees', 'manage');
         $schoolId = $this->fs->schoolId();
         $session  = $this->session_year;
         try {
@@ -6337,7 +6337,7 @@ class Fees extends MY_Controller
     public function queue_job_retry()
     {
         $this->_require_post();
-        $this->_require_role(self::MANAGE_ROLES, 'queue_job_retry');
+        $this->_require_role(self::MANAGE_ROLES, 'queue_job_retry', 'Fees', 'manage');
         $jobId = trim((string) $this->input->post('jobId'));
         if ($jobId === '' || !preg_match('/^[A-Za-z0-9_.-]+$/', $jobId)) {
             $this->json_error('Valid jobId is required.');
@@ -6390,7 +6390,7 @@ class Fees extends MY_Controller
      */
     public function get_generation_job()
     {
-        $this->require_admin_access(self::MANAGE_ROLES, 'get_generation_job');
+        $this->_require_role(self::MANAGE_ROLES, 'get_generation_job', 'Fees', 'edit');
         $jobId = trim($this->input->get('jobId') ?? '');
         if ($jobId === '') return $this->json_error('jobId is required.');
 
@@ -6430,7 +6430,7 @@ class Fees extends MY_Controller
     /** GET /fees/jobs_list?limit=50&status=pending|running|… */
     public function jobs_list()
     {
-        $this->_require_role(self::MANAGE_ROLES, 'jobs_list');
+        $this->_require_role(self::MANAGE_ROLES, 'jobs_list', 'Fees', 'manage');
         $this->output->set_content_type('application/json');
         $limit  = max(1, min(200, (int) ($this->input->get('limit') ?: 50)));
         $status = trim((string) $this->input->get('status'));
@@ -6455,7 +6455,7 @@ class Fees extends MY_Controller
     /** GET /fees/job_detail?jobId=… */
     public function job_detail()
     {
-        $this->require_admin_access(self::MANAGE_ROLES, 'job_detail');
+        $this->_require_role(self::MANAGE_ROLES, 'job_detail', 'Fees', 'edit');
         $jobId = trim((string) $this->input->get('jobId'));
         if ($jobId === '') return $this->json_error('jobId is required.');
         try {
@@ -6537,34 +6537,34 @@ class Fees extends MY_Controller
     /** POST /fees/job_pause?jobId=… */
     public function job_pause()
     {
-        $this->_require_role(self::MANAGE_ROLES, 'job_pause');
+        $this->_require_role(self::MANAGE_ROLES, 'job_pause', 'Fees', 'manage');
         $this->_flipJobStatus('paused', ['pausedAt' => date('c')]);
     }
     /** POST /fees/job_resume?jobId=… */
     public function job_resume()
     {
-        $this->_require_role(self::MANAGE_ROLES, 'job_resume');
+        $this->_require_role(self::MANAGE_ROLES, 'job_resume', 'Fees', 'manage');
         $this->_flipJobStatus('running', ['resumedAt' => date('c')]);
     }
 
     /** POST /fees/job_retry_failed?jobId=… */
     public function job_retry_failed()
     {
-        $this->_require_role(self::MANAGE_ROLES, 'job_retry_failed');
+        $this->_require_role(self::MANAGE_ROLES, 'job_retry_failed', 'Fees', 'manage');
         $this->_runCliMode('--retry-failed');
     }
 
     /** POST /fees/job_finalize?jobId=… */
     public function job_finalize()
     {
-        $this->_require_role(self::MANAGE_ROLES, 'job_finalize');
+        $this->_require_role(self::MANAGE_ROLES, 'job_finalize', 'Fees', 'manage');
         $this->_runCliMode('--finalize');
     }
 
     /** GET /fees/alerts_feed?limit=30&severity=error&status=open */
     public function alerts_feed()
     {
-        $this->_require_role(self::MANAGE_ROLES, 'alerts_feed');
+        $this->_require_role(self::MANAGE_ROLES, 'alerts_feed', 'Fees', 'manage');
         $this->output->set_content_type('application/json');
         $limit    = max(1, min(100, (int) ($this->input->get('limit') ?: 30)));
         $severity = trim((string) $this->input->get('severity'));
@@ -6589,7 +6589,7 @@ class Fees extends MY_Controller
     /** POST /fees/alert_ack?alertId=… */
     public function alert_ack()
     {
-        $this->_require_role(self::MANAGE_ROLES, 'alert_ack');
+        $this->_require_role(self::MANAGE_ROLES, 'alert_ack', 'Fees', 'manage');
         $this->_require_post();
         $alertId = trim((string) $this->input->post('alertId'));
         $note    = trim((string) ($this->input->post('note') ?? ''));
@@ -6604,7 +6604,7 @@ class Fees extends MY_Controller
     /** GET — Render the admin job dashboard page. */
     public function job_dashboard()
     {
-        $this->_require_role(self::MANAGE_ROLES, 'job_dashboard');
+        $this->_require_role(self::MANAGE_ROLES, 'job_dashboard', 'Fees', 'manage');
         $this->load->view('include/header');
         $this->load->view('fees/job_dashboard', [
             'school_name'  => $this->school_name,
@@ -6718,7 +6718,7 @@ class Fees extends MY_Controller
      */
     public function generate_demands()
     {
-        $this->_require_role(self::MANAGE_ROLES, 'generate_demands');
+        $this->_require_role(self::MANAGE_ROLES, 'generate_demands', 'Fees', 'edit');
         $this->load->library('Fee_firestore_txn', null, 'fsTxn');
         $this->fsTxn->init($this->firebase, $this->fs, $this->fs->schoolId(), $this->session_year);
 
@@ -6753,7 +6753,7 @@ class Fees extends MY_Controller
     public function preview_demand_generation()
     {
         $this->_require_post();
-        $this->_require_role(self::MANAGE_ROLES, 'preview_demand_generation');
+        $this->_require_role(self::MANAGE_ROLES, 'preview_demand_generation', 'Fees', 'edit');
 
         $monthInput = trim($this->input->post('month') ?? '');
         $classInput = trim($this->input->post('class') ?? '');
@@ -6846,7 +6846,7 @@ class Fees extends MY_Controller
      */
     public function get_student_demands()
     {
-        $this->_require_role(self::VIEW_ROLES, 'get_student_demands');
+        $this->_require_role(self::VIEW_ROLES, 'get_student_demands', 'Fees', 'view');
 
         $studentId  = trim($this->input->get('student_id') ?? '');
         $filterStat = trim($this->input->get('status') ?? '');
@@ -6919,7 +6919,7 @@ class Fees extends MY_Controller
      */
     public function get_demand_status()
     {
-        $this->_require_role(self::VIEW_ROLES, 'get_demand_status');
+        $this->_require_role(self::VIEW_ROLES, 'get_demand_status', 'Fees', 'view');
 
         $schoolFs = $this->fs->schoolId();
         $sy       = $this->session_year;
@@ -6989,7 +6989,7 @@ class Fees extends MY_Controller
     public function recalculate_demands()
     {
         $this->_require_post();
-        $this->_require_role(self::MANAGE_ROLES, 'recalculate_demands');
+        $this->_require_role(self::MANAGE_ROLES, 'recalculate_demands', 'Fees', 'edit');
 
         $studentId = trim($this->input->post('student_id') ?? '');
         if ($studentId === '') {
@@ -7112,7 +7112,7 @@ class Fees extends MY_Controller
     /** GET — Transaction Audit page */
     public function transaction_audit()
     {
-        $this->_require_role(self::MANAGE_ROLES);
+        $this->_require_role(self::MANAGE_ROLES, '', 'Fees', 'manage');
         $this->load->view('include/header');
         $this->load->view('fees/transaction_audit');
         $this->load->view('include/footer');
@@ -7125,7 +7125,7 @@ class Fees extends MY_Controller
     public function search_transaction()
     {
         $this->_require_post();
-        $this->_require_role(self::MANAGE_ROLES);
+        $this->_require_role(self::MANAGE_ROLES, '', 'Fees', 'manage');
 
         $query = trim($this->input->post('query') ?? '');
         $type  = trim($this->input->post('type') ?? 'auto');
@@ -7257,7 +7257,7 @@ class Fees extends MY_Controller
      */
     public function get_stale_transactions()
     {
-        $this->_require_role(self::MANAGE_ROLES);
+        $this->_require_role(self::MANAGE_ROLES, '', 'Fees', 'manage');
 
         $schoolFs = $this->fs->schoolId();
         $now      = time();
@@ -7318,7 +7318,7 @@ class Fees extends MY_Controller
     public function diagnose_transaction()
     {
         $this->_require_post();
-        $this->_require_role(self::MANAGE_ROLES, 'diagnose_transaction');
+        $this->_require_role(self::MANAGE_ROLES, 'diagnose_transaction', 'Fees', 'manage');
 
         $idempKey  = trim($this->input->post('idemp_key') ?? '');
         $receiptNo = trim($this->input->post('receipt_no') ?? '');
@@ -7402,7 +7402,7 @@ class Fees extends MY_Controller
     public function resolve_stale()
     {
         $this->_require_post();
-        $this->_require_role(['Admin'], 'resolve_stale_transaction');
+        $this->_require_role(['Admin'], 'resolve_stale_transaction', 'Fees', 'manage');
 
         $action  = trim($this->input->post('action') ?? '');
         $key     = trim($this->input->post('key') ?? '');
@@ -7469,7 +7469,7 @@ class Fees extends MY_Controller
      */
     public function year_rollover_prepare()
     {
-        $this->_require_role(self::MANAGE_ROLES);
+        $this->_require_role(self::MANAGE_ROLES, '', 'Fees', 'manage');
 
         $schoolFs   = $this->fs->schoolId();
         $sy         = $this->session_year;
@@ -7663,7 +7663,7 @@ class Fees extends MY_Controller
     public function year_rollover_execute()
     {
         $this->_require_post();
-        $this->_require_role(self::MANAGE_ROLES);
+        $this->_require_role(self::MANAGE_ROLES, '', 'Fees', 'manage');
 
         $schoolFs   = $this->fs->schoolId();
         $sy         = $this->session_year;
@@ -7863,7 +7863,7 @@ class Fees extends MY_Controller
      */
     public function year_rollover_block_check()
     {
-        $this->_require_role(self::MANAGE_ROLES);
+        $this->_require_role(self::MANAGE_ROLES, '', 'Fees', 'manage');
 
         $sessionToCheck = trim($this->input->get('session') ?? $this->session_year);
         $sn = $this->school_name;
@@ -7902,7 +7902,7 @@ class Fees extends MY_Controller
      */
     public function dashboard_collection_summary()
     {
-        $this->_require_role(self::VIEW_ROLES);
+        $this->_require_role(self::VIEW_ROLES, '', 'Fees', 'view');
 
         $sn = $this->school_name;
         $sy = $this->session_year;
@@ -7989,7 +7989,7 @@ class Fees extends MY_Controller
      */
     public function dashboard_defaulter_count()
     {
-        $this->_require_role(self::VIEW_ROLES);
+        $this->_require_role(self::VIEW_ROLES, '', 'Fees', 'view');
 
         $schoolFs = $this->fs->schoolId();
         $sy       = $this->session_year;

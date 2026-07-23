@@ -27,7 +27,7 @@
     border: none; border-radius: 6px; font-weight: 700;
     font-size: .9rem; cursor: pointer;
   }
-  .batch-toolbar button:hover { background: #e0f2f1; }
+  .batch-toolbar button:hover { background: #F7ECE7; }
   .batch-toolbar .batch-info { font-size: .9rem; opacity: .9; }
 
   /* Page break between report cards */

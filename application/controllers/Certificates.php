@@ -73,7 +73,7 @@ class Certificates extends MY_Controller
      */
     public function index($tab = 'dashboard')
     {
-        $this->_require_role(self::VIEW_ROLES, 'certificate_view');
+        $this->_require_role(self::VIEW_ROLES, 'certificate_view', 'Certificates', 'view');
 
         $validTabs = ['dashboard', 'templates', 'generate', 'issued'];
         if (!in_array($tab, $validTabs, true)) $tab = 'dashboard';
@@ -85,7 +85,8 @@ class Certificates extends MY_Controller
         $data['admin_id']      = $this->admin_id ?? '';
         $data['admin_name']    = $this->session->userdata('admin_name') ?? '';
         $data['active_tab']    = $tab;
-        $data['can_manage']    = in_array($this->admin_role, self::MANAGE_ROLES, true)
+        $data['can_manage']    = has_permission('Certificates', 'manage')
+                                  || in_array($this->admin_role, self::MANAGE_ROLES, true)
                                   || $this->admin_role === 'Super Admin'
                                   || $this->admin_role === 'School Super Admin';
 
@@ -103,7 +104,7 @@ class Certificates extends MY_Controller
      */
     public function get_dashboard()
     {
-        $this->_require_role(self::VIEW_ROLES, 'cert_dashboard');
+        $this->_require_role(self::VIEW_ROLES, 'cert_dashboard', 'Certificates', 'view');
 
         $issued = $this->firebase->get("{$this->_certBase}/Issued");
         if (!is_array($issued)) $issued = [];
@@ -166,7 +167,7 @@ class Certificates extends MY_Controller
      */
     public function get_templates()
     {
-        $this->_require_role(self::VIEW_ROLES, 'cert_templates');
+        $this->_require_role(self::VIEW_ROLES, 'cert_templates', 'Certificates', 'view');
 
         $templates = $this->firebase->get("{$this->_certBase}/Templates");
         if (!is_array($templates)) $templates = [];
@@ -208,7 +209,7 @@ class Certificates extends MY_Controller
     public function save_template()
     {
         if ($this->input->method() !== 'post') return $this->json_error('POST required', 405);
-        $this->_require_role(self::MANAGE_ROLES, 'cert_save_template');
+        $this->_require_role(self::MANAGE_ROLES, 'cert_save_template', 'Certificates', 'manage');
 
         $type = trim($this->input->post('type') ?? '');
         $name = trim($this->input->post('name') ?? '');
@@ -266,7 +267,7 @@ class Certificates extends MY_Controller
     public function delete_template()
     {
         if ($this->input->method() !== 'post') return $this->json_error('POST required', 405);
-        $this->_require_role(self::MANAGE_ROLES, 'cert_delete_template');
+        $this->_require_role(self::MANAGE_ROLES, 'cert_delete_template', 'Certificates', 'manage');
 
         $id = trim($this->input->post('id') ?? '');
         if (empty($id)) return $this->json_error('Template ID required.');
@@ -292,7 +293,7 @@ class Certificates extends MY_Controller
      */
     public function get_classes()
     {
-        $this->_require_role(self::VIEW_ROLES, 'cert_classes');
+        $this->_require_role(self::VIEW_ROLES, 'cert_classes', 'Certificates', 'view');
         $classes = $this->_get_session_classes();
         $this->json_success(['data' => ['classes' => $classes]]);
     }
@@ -303,7 +304,7 @@ class Certificates extends MY_Controller
     public function get_students()
     {
         if ($this->input->method() !== 'post') return $this->json_error('POST required', 405);
-        $this->_require_role(self::VIEW_ROLES, 'cert_students');
+        $this->_require_role(self::VIEW_ROLES, 'cert_students', 'Certificates', 'view');
 
         $classKey   = trim($this->input->post('classKey') ?? '');
         $sectionKey = trim($this->input->post('sectionKey') ?? '');
@@ -360,7 +361,7 @@ class Certificates extends MY_Controller
     public function get_student_details()
     {
         if ($this->input->method() !== 'post') return $this->json_error('POST required', 405);
-        $this->_require_role(self::VIEW_ROLES, 'cert_student_details');
+        $this->_require_role(self::VIEW_ROLES, 'cert_student_details', 'Certificates', 'view');
 
         $userId = trim($this->input->post('userId') ?? '');
         if (empty($userId)) return $this->json_error('Student ID required.');
@@ -403,7 +404,7 @@ class Certificates extends MY_Controller
         if ($this->input->method() !== 'post') {
             return $this->json_error('POST required', 405);
         }
-        $this->_require_role(self::MANAGE_ROLES, 'cert_generate');
+        $this->_require_role(self::MANAGE_ROLES, 'cert_generate', 'Certificates', 'manage');
 
         $certType    = trim($this->input->post('certificateType') ?? '');
         $templateId  = trim($this->input->post('templateId') ?? '');
@@ -534,7 +535,7 @@ class Certificates extends MY_Controller
      */
     public function get_issued()
     {
-        $this->_require_role(self::VIEW_ROLES, 'cert_issued');
+        $this->_require_role(self::VIEW_ROLES, 'cert_issued', 'Certificates', 'view');
 
         $issued = $this->firebase->get("{$this->_certBase}/Issued");
         if (!is_array($issued)) $issued = [];
@@ -571,7 +572,7 @@ class Certificates extends MY_Controller
     public function get_certificate()
     {
         if ($this->input->method() !== 'post') return $this->json_error('POST required', 405);
-        $this->_require_role(self::VIEW_ROLES, 'cert_get');
+        $this->_require_role(self::VIEW_ROLES, 'cert_get', 'Certificates', 'view');
 
         $certId = trim($this->input->post('certId') ?? '');
         if (empty($certId)) return $this->json_error('Certificate ID required.');
@@ -604,7 +605,7 @@ class Certificates extends MY_Controller
     public function revoke_certificate()
     {
         if ($this->input->method() !== 'post') return $this->json_error('POST required', 405);
-        $this->_require_role(self::MANAGE_ROLES, 'cert_revoke');
+        $this->_require_role(self::MANAGE_ROLES, 'cert_revoke', 'Certificates', 'manage');
 
         $certId = trim($this->input->post('certId') ?? '');
         if (empty($certId)) return $this->json_error('Certificate ID required.');
@@ -629,7 +630,7 @@ class Certificates extends MY_Controller
      */
     public function get_school_profile()
     {
-        $this->_require_role(self::VIEW_ROLES, 'cert_school_profile');
+        $this->_require_role(self::VIEW_ROLES, 'cert_school_profile', 'Certificates', 'view');
 
         $profile = $this->firebase->get("Schools/{$this->school_name}/Config/Profile");
         $this->json_success(['data' => [

@@ -46,12 +46,15 @@ $activeKey  = $shell['active'] ?? ($shellTabs[0]['key'] ?? '');
 
 /* Taller stage (smaller top reserve) + a lower min-height on short/landscape
    viewports so the hosted register isn't crushed behind a third scrollbar. */
-.att-shell .att-shell-stage { position:relative; border:1px solid var(--att-bd,#e4e9ef); border-radius:14px; overflow:hidden;
-    background:var(--att-bg1,#fff); height:calc(100vh - 178px); min-height:520px; }
-@media (max-height:720px){ .att-shell .att-shell-stage { min-height:360px; } }
-.att-shell .att-shell-pane { position:absolute; inset:0; display:none; }
+/* No fixed frame — each iframe auto-sizes to its content (JS) so the PARENT
+   page scrolls as one, like a normal list page (no inner scroll). */
+.att-shell .att-shell-stage { position:relative; }
+.att-shell .att-shell-pane { display:none; position:relative; }
 .att-shell .att-shell-pane.active { display:block; }
-.att-shell .att-shell-frame { width:100%; height:100%; border:0; display:block; background:transparent; }
+.att-shell .att-shell-frame { width:100%; border:0; display:block; background:transparent; min-height:0; }
+/* While a modal is open inside the iframe, pin it to the viewport so the modal's
+   position:fixed aligns with the real viewport (not the tall auto-height iframe). */
+.att-shell .att-shell-frame.shell-frame-pinned { position:fixed !important; top:0 !important; left:0 !important; width:100% !important; height:100vh !important; z-index:4000 !important; }
 .att-shell .att-shell-spin { position:absolute; inset:0; display:flex; align-items:center; justify-content:center;
     background:var(--att-bg1,#fff); z-index:2; }
 .att-shell .att-shell-spin.hidden { display:none; }
@@ -133,6 +136,54 @@ $activeKey  = $shell['active'] ?? ($shellTabs[0]['key'] ?? '');
     var panes = Array.prototype.slice.call(root.querySelectorAll('.att-shell-pane'));
     var LOAD_TIMEOUT = 15000;   // watchdog: no infinite spinner
 
+    // Auto-size each iframe to its content so there is ONE page scroll (no inner
+    // scroll). Same-origin → read the child scrollHeight directly and re-fit on
+    // every child re-render (ResizeObserver on its <body>).
+    function fitFrame(f){
+        try {
+            var d = f.contentWindow.document;
+            var h = Math.max(d.body ? d.body.scrollHeight : 0, d.documentElement ? d.documentElement.scrollHeight : 0);
+            if (h > 0) {
+                var target = h + 8;
+                var cur = parseInt(f.style.height, 10) || 0;
+                // Only resize on a real change. A sub-pixel/echo delta would otherwise
+                // ping-pong with the ResizeObserver and creep the height upward forever.
+                if (Math.abs(target - cur) > 2) f.style.height = target + 'px';
+            }
+        } catch(e){}
+    }
+    function observeFrame(f){
+        try {
+            var d = f.contentWindow.document;
+            if (f._ro){ try { f._ro.disconnect(); } catch(e){} f._ro = null; }
+            if (window.ResizeObserver && d.body){ f._ro = new ResizeObserver(function(){ fitFrame(f); }); f._ro.observe(d.body); }
+            else if (!f._iv){ f._iv = setInterval(function(){ fitFrame(f); }, 700); }
+            setTimeout(function(){ fitFrame(f); }, 300);
+            setTimeout(function(){ fitFrame(f); }, 900);
+            setTimeout(function(){ fitFrame(f); }, 1800);
+        } catch(e){}
+    }
+    window.addEventListener('resize', function(){ document.querySelectorAll('.att-shell-frame').forEach(function(f){ if (f.getAttribute('src')) fitFrame(f); }); });
+
+    // A modal opened/closed inside a child iframe → pin/unpin that iframe to the
+    // viewport so its position:fixed modal centers on the real viewport.
+    window.addEventListener('message', function(ev){
+        if (!ev.data || typeof ev.data.shellModal === 'undefined') return;
+        var f = null;
+        root.querySelectorAll('.att-shell-frame').forEach(function(fr){ try { if (fr.contentWindow === ev.source) f = fr; } catch(e){} });
+        if (!f){ var ap = root.querySelector('.att-shell-pane.active'); f = ap && ap.querySelector('.att-shell-frame'); }
+        if (!f) return;
+        var pane = f.closest('.att-shell-pane');
+        if (ev.data.shellModal){
+            if (pane) pane.style.minHeight = f.offsetHeight + 'px';   // freeze layout (no page jump)
+            f.classList.add('shell-frame-pinned');
+        } else {
+            f.classList.remove('shell-frame-pinned');
+            if (pane) pane.style.minHeight = '';
+            fitFrame(f);
+        }
+    });
+
     function paneFor(key){ return panes.filter(function(p){ return p.getAttribute('data-key') === key; })[0]; }
     function tabFor(key){  return tabs.filter(function(t){ return t.getAttribute('data-key') === key; })[0]; }
 
@@ -158,10 +209,11 @@ $activeKey  = $shell['active'] ?? ($shellTabs[0]['key'] ?? '');
             if (spin) spin.classList.add('hidden');
             if (err) err.classList.add('show');
         }, LOAD_TIMEOUT);
-        f.onload  = function(){ settled=true; clearTimeout(wd); if(spin)spin.classList.add('hidden'); if(err)err.classList.remove('show'); };
+        f.onload  = function(){ settled=true; clearTimeout(wd); if(spin)spin.classList.add('hidden'); if(err)err.classList.remove('show'); fitFrame(f); observeFrame(f); };
         f.onerror = function(){ settled=true; clearTimeout(wd); if(spin)spin.classList.add('hidden'); if(err)err.classList.add('show'); };
         var src = f.getAttribute('data-src');
         if (force){ var sep = src.indexOf('?')===-1?'?':'&'; src = src + sep + '_retry=' + Date.now(); }
+        f.style.height = '440px'; // load-time placeholder; fitFrame() sets exact height on load
         f.setAttribute('src', src);
     }
 
@@ -243,8 +295,9 @@ $activeKey  = $shell['active'] ?? ($shellTabs[0]['key'] ?? '');
             var err  = p.querySelector('.att-shell-error');
             var settled=false;
             var wd = setTimeout(function(){ if(settled)return; settled=true; if(spin)spin.classList.add('hidden'); if(err)err.classList.add('show'); next(); }, LOAD_TIMEOUT);
-            f.onload  = function(){ settled=true; clearTimeout(wd); if(spin)spin.classList.add('hidden'); if(err)err.classList.remove('show'); next(); };
+            f.onload  = function(){ settled=true; clearTimeout(wd); if(spin)spin.classList.add('hidden'); if(err)err.classList.remove('show'); fitFrame(f); observeFrame(f); next(); };
             f.onerror = function(){ settled=true; clearTimeout(wd); if(spin)spin.classList.add('hidden'); if(err)err.classList.add('show'); next(); };
+            f.style.height = '440px'; // placeholder until fitFrame() on load
             f.setAttribute('src', f.getAttribute('data-src'));
         })();
     }

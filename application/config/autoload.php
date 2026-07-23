@@ -94,7 +94,7 @@ $autoload['drivers'] = array();
 |
 |	$autoload['helper'] = array('url', 'file');
 */
-$autoload['helper'] = array('url','progress_bar','deptrole');
+$autoload['helper'] = array('url','progress_bar','deptrole','india_geo');
 
 /*
 | -------------------------------------------------------------------

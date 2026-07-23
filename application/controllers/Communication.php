@@ -23,8 +23,14 @@ class Communication extends MY_Controller
     /** Roles for system-level ops (triggers, queue, bulk) */
     private const RBAC_ADMIN_ROLES  = ['Super Admin', 'School Super Admin', 'Admin', 'Principal', 'Vice Principal'];
 
-    /** Roles for content management (notices, circulars, templates) */
-    private const RBAC_MANAGE_ROLES = ['Super Admin', 'School Super Admin', 'Admin', 'Principal', 'Vice Principal', 'Academic Coordinator', 'Class Teacher', 'Teacher', 'Front Office'];
+    /**
+     * Roles for content management (notices, circulars, templates).
+     * Admin-only by decision (2026-07-13): every manage endpoint also passes
+     * through `_require_admin()` (ADMIN_ROLES), so a broader list here was dead
+     * — the effective set was always the intersection = Admin-only. Kept equal
+     * to ADMIN_ROLES so both gates agree and no role is silently blocked.
+     */
+    private const RBAC_MANAGE_ROLES = ['Super Admin', 'School Super Admin', 'Admin', 'Principal', 'Vice Principal'];
 
     /** Roles that may view communication data */
     private const RBAC_VIEW_ROLES   = ['Super Admin', 'School Super Admin', 'Admin', 'Principal', 'Vice Principal', 'Academic Coordinator', 'HR Manager', 'Accountant', 'Class Teacher', 'Teacher', 'Front Office'];
@@ -46,7 +52,10 @@ class Communication extends MY_Controller
     const NATIVE_PUSH_EVENTS = ['student_absent', 'student_late'];
 
     const ALLOWED_PRIORITIES     = ['High', 'Normal', 'Low'];
-    const ALLOWED_NOTICE_CATS    = ['General', 'Academic', 'Event', 'Administrative', 'Emergency'];
+    // Must stay a superset of the Board modal (views/communication/notices.php)
+    // AND the apps' NoticeCard categories, else save_notice rejects a category
+    // the UI offers ("Invalid category"). Holiday/Exam were UI-only before.
+    const ALLOWED_NOTICE_CATS    = ['General', 'Academic', 'Event', 'Holiday', 'Exam', 'Administrative', 'Emergency'];
     const ALLOWED_RECIPIENT_TYPES = ['parent', 'student', 'teacher', 'staff', 'broadcast'];
     const ALLOWED_EVENTS = [
         'student_absent', 'student_late', 'low_attendance',
@@ -104,16 +113,25 @@ class Communication extends MY_Controller
     // ── Access helpers ──────────────────────────────────────────────────
     private function _require_admin()
     {
+        // Capability bridge: a graded Communication:manage holder passes this
+        // second-layer name-gate. Legacy name-list stays as the fallback.
+        if (has_permission('Communication', 'manage')) return;
         if (!in_array($this->admin_role, self::ADMIN_ROLES, true))
             $this->json_error('Access denied.', 403);
     }
     private function _require_teacher()
     {
+        // Capability bridge (dead helper — retained for consistency; no live
+        // caller after Messaging retirement). Communication:edit passes.
+        if (has_permission('Communication', 'edit')) return;
         if (!in_array($this->admin_role, self::TEACHER_ROLES, true))
             $this->json_error('Access denied.', 403);
     }
     private function _require_view()
     {
+        // Capability bridge: a graded Communication:view holder passes this
+        // second-layer name-gate. Legacy name-list stays as the fallback.
+        if (has_permission('Communication', 'view')) return;
         if (!in_array($this->admin_role, self::VIEW_ROLES, true))
             $this->json_error('Access denied.', 403);
     }
@@ -215,6 +233,11 @@ class Communication extends MY_Controller
                 'status'        => 'sent',  // Android filters by status == "sent"
                 'type'          => $type,
                 'sentAt'        => date('c'),
+                // Header notification bell (NoticeAnnouncement::getRecentNotices)
+                // orders by `timestamp`; Firestore excludes docs missing that
+                // field, so without these the bell is always empty.
+                'timestamp'     => date('c'),
+                'timestampMs'   => round(microtime(true) * 1000),
                 'updatedAt'     => date('c'),
                 // Admin-view snake_case mirror (matches Communication views
                 // + HR-written notice shape, so get_notices/get_circulars and
@@ -340,9 +363,10 @@ class Communication extends MY_Controller
             if (is_array($fsNotices)) {
                 $recent = [];
                 foreach ($fsNotices as $doc) {
-                    $d = $doc['data'] ?? $doc;
                     $d = is_array($doc['data'] ?? null) ? $doc['data'] : $doc;
-                    $rawId = (string) ($d['id'] ?? '');
+                    // id from the Firestore document KEY (not a data field),
+                    // de-prefixed by "{schoolId}_" — same fix as get_notices.
+                    $rawId = (string) ($doc['id'] ?? '');
                     $prefix = $this->school_id . '_';
                     $d['id'] = (strpos($rawId, $prefix) === 0)
                         ? substr($rawId, strlen($prefix))
@@ -390,7 +414,7 @@ class Communication extends MY_Controller
 
     public function index()
     {
-        $this->_require_role(self::RBAC_VIEW_ROLES, 'comm_view');
+        $this->_require_role(self::RBAC_VIEW_ROLES, 'comm_view', 'Communication', 'view');
 
         // Pre-load dashboard data server-side (no AJAX spinner).
         // All reads are Firestore-only via _fs_comm_stats().
@@ -403,7 +427,7 @@ class Communication extends MY_Controller
 
     public function messages()
     {
-        $this->_require_role(self::RBAC_VIEW_ROLES, 'comm_view');
+        $this->_require_role(self::RBAC_VIEW_ROLES, 'comm_view', 'Communication', 'view');
         $data = ['active_tab' => 'messages'];
         $this->load->view('include/header', $data);
         $this->load->view('communication/messages', $data);
@@ -412,7 +436,7 @@ class Communication extends MY_Controller
 
     public function notices()
     {
-        $this->_require_role(self::RBAC_VIEW_ROLES, 'comm_view');
+        $this->_require_role(self::RBAC_VIEW_ROLES, 'comm_view', 'Communication', 'view');
         $data = ['active_tab' => 'notices'];
         $this->load->view('include/header', $data);
         $this->load->view('communication/notices', $data);
@@ -421,7 +445,7 @@ class Communication extends MY_Controller
 
     public function circulars()
     {
-        $this->_require_role(self::RBAC_VIEW_ROLES, 'comm_view');
+        $this->_require_role(self::RBAC_VIEW_ROLES, 'comm_view', 'Communication', 'view');
         $data = ['active_tab' => 'circulars'];
         $this->load->view('include/header', $data);
         $this->load->view('communication/circulars', $data);
@@ -430,7 +454,7 @@ class Communication extends MY_Controller
 
     public function templates()
     {
-        $this->_require_role(self::RBAC_VIEW_ROLES, 'comm_view');
+        $this->_require_role(self::RBAC_VIEW_ROLES, 'comm_view', 'Communication', 'view');
         $data = ['active_tab' => 'templates'];
         $this->load->view('include/header', $data);
         $this->load->view('communication/templates', $data);
@@ -439,7 +463,7 @@ class Communication extends MY_Controller
 
     public function triggers()
     {
-        $this->_require_role(self::RBAC_VIEW_ROLES, 'comm_view');
+        $this->_require_role(self::RBAC_VIEW_ROLES, 'comm_view', 'Communication', 'view');
         $data = ['active_tab' => 'triggers'];
         $this->load->view('include/header', $data);
         $this->load->view('communication/triggers', $data);
@@ -448,7 +472,7 @@ class Communication extends MY_Controller
 
     public function queue()
     {
-        $this->_require_role(self::RBAC_VIEW_ROLES, 'comm_view');
+        $this->_require_role(self::RBAC_VIEW_ROLES, 'comm_view', 'Communication', 'view');
         $data = ['active_tab' => 'queue'];
         $this->load->view('include/header', $data);
         $this->load->view('communication/queue', $data);
@@ -457,7 +481,7 @@ class Communication extends MY_Controller
 
     public function logs()
     {
-        $this->_require_role(self::RBAC_VIEW_ROLES, 'comm_view');
+        $this->_require_role(self::RBAC_VIEW_ROLES, 'comm_view', 'Communication', 'view');
         $data = ['active_tab' => 'logs'];
         $this->load->view('include/header', $data);
         $this->load->view('communication/logs', $data);
@@ -470,7 +494,7 @@ class Communication extends MY_Controller
 
     public function get_dashboard()
     {
-        $this->_require_role(self::RBAC_VIEW_ROLES, 'get_dashboard');
+        $this->_require_role(self::RBAC_VIEW_ROLES, 'get_dashboard', 'Communication', 'view');
         $this->_require_view();
         $this->json_success($this->_fs_comm_stats());
     }
@@ -549,19 +573,29 @@ class Communication extends MY_Controller
 
     public function get_notices()
     {
-        $this->_require_role(self::RBAC_VIEW_ROLES, 'get_notices');
+        $this->_require_role(self::RBAC_VIEW_ROLES, 'get_notices', 'Communication', 'view');
         $this->_require_view();
+
+        $page  = max(1, (int) ($this->input->get('page') ?? 1));
+        $limit = min(100, max(1, (int) ($this->input->get('limit') ?? 50)));
+        // Bound the server read: order newest-first via the (schoolId, sentAt
+        // DESC) composite index and fetch only up to the requested page window
+        // instead of scanning the whole `notices` collection every request.
+        $cap = min($page * $limit, 500);
 
         // Firestore-only (no RTDB) per project policy.
         $list = [];
         try {
-            $fsDocs = $this->fs->schoolWhere('notices', []);
+            $fsDocs = $this->fs->schoolWhere('notices', [], 'sentAt', 'DESC', $cap);
             if (is_array($fsDocs)) {
                 $prefix = $this->school_id . '_';
                 foreach ($fsDocs as $doc) {
-                    $d = $doc['data'] ?? $doc;
+                    // Row id comes from the Firestore document KEY (the writer
+                    // never stores an `id` field), de-prefixed by the tenant
+                    // docId prefix "{schoolId}_" — otherwise every row gets ''
+                    // and edit/delete target the wrong (or no) doc.
                     $r = is_array($doc['data'] ?? null) ? $doc['data'] : [];
-                    $rawId = (string) ($d['id'] ?? '');
+                    $rawId = (string) ($doc['id'] ?? '');
                     $r['id'] = (strpos($rawId, $prefix) === 0)
                         ? substr($rawId, strlen($prefix))
                         : $rawId;
@@ -569,12 +603,20 @@ class Communication extends MY_Controller
                 }
             }
         } catch (\Exception $e) {
+            // Don't mask a Firestore outage as "no notices" — surface a 503 so
+            // the view shows its fail state instead of the empty state.
             log_message('error', 'Communication get_notices Firestore read failed: ' . $e->getMessage());
+            $this->output->set_status_header(503);
+            $this->json_error('Could not load notices from Firestore. Please try again.');
+            return;
         }
-        usort($list, fn($a, $b) => strcmp($b['created_at'] ?? '', $a['created_at'] ?? ''));
+        // Secondary in-memory sort keeps newest-first for any legacy docs; the
+        // server orderBy already did the heavy lifting and bounded the read.
+        usort($list, fn($a, $b) => strcmp(
+            (string) ($b['sentAt'] ?? $b['created_at'] ?? ''),
+            (string) ($a['sentAt'] ?? $a['created_at'] ?? '')
+        ));
 
-        $page  = max(1, (int) ($this->input->get('page') ?? 1));
-        $limit = min(100, max(1, (int) ($this->input->get('limit') ?? 50)));
         $total = count($list);
         $list  = array_slice($list, ($page - 1) * $limit, $limit);
 
@@ -583,7 +625,7 @@ class Communication extends MY_Controller
 
     public function save_notice()
     {
-        $this->_require_role(self::RBAC_MANAGE_ROLES, 'save_notice');
+        $this->_require_role(self::RBAC_MANAGE_ROLES, 'save_notice', 'Communication', 'manage');
         $this->_require_admin();
         $id          = trim($this->input->post('id') ?? '');
         $title       = trim($this->input->post('title') ?? '');
@@ -602,8 +644,10 @@ class Communication extends MY_Controller
         if ($expiryDate !== '' && !preg_match('/^\d{4}-\d{2}-\d{2}$/', $expiryDate)) {
             $this->json_error('Invalid expiry date format.');
         }
-        $title       = $this->_sanitize_html($title);
-        $description = $this->_sanitize_html($description);
+        // Store title/body RAW (cross-system contract). The web list re-escapes
+        // via CM.esc at render and the Parent/Teacher apps display verbatim, so
+        // HTML-encoding here would double-encode ("Tom & Jerry" → "Tom &amp;
+        // Jerry" on phones). XSS defence lives at the render layer, not storage.
 
         $isNew = ($id === '');
         if ($isNew) {
@@ -614,8 +658,8 @@ class Communication extends MY_Controller
             // job circulars). They'd be silently reverted on the next job save.
             try {
                 $existing = $this->fs->get('notices', $this->fs->docId($id));
-                if (is_array($existing) && ($existing['source'] ?? '') === 'hr_recruitment') {
-                    $this->json_error('This notice is managed by HR Recruitment. Edit the source job in HR → Recruitment instead.');
+                if (is_array($existing) && in_array($existing['source'] ?? '', ['hr_recruitment', 'event'], true)) {
+                    $this->json_error('This notice is auto-managed by its source module (HR Recruitment or Events/PTM). Edit it from that module so its metadata stays intact.');
                 }
             } catch (\Exception $e) {}
         }
@@ -707,7 +751,7 @@ class Communication extends MY_Controller
 
     public function delete_notice()
     {
-        $this->_require_role(self::RBAC_MANAGE_ROLES, 'delete_notice');
+        $this->_require_role(self::RBAC_MANAGE_ROLES, 'delete_notice', 'Communication', 'manage');
         $this->_require_admin();
         $id = $this->safe_path_segment(trim($this->input->post('id') ?? ''), 'notice_id');
 
@@ -716,7 +760,7 @@ class Communication extends MY_Controller
         try {
             $existing = $this->fs->get('notices', $this->fs->docId($id));
             if (is_array($existing) && ($existing['source'] ?? '') === 'hr_recruitment') {
-                $this->json_error('This notice is managed by HR Recruitment. Delete the source job in HR → Recruitment to remove it.');
+                $this->json_error('This notice is auto-managed by its source module (HR Recruitment or Events/PTM). Remove it from that module instead.');
             }
         } catch (\Exception $e) {}
 
@@ -745,7 +789,7 @@ class Communication extends MY_Controller
 
     public function get_circulars()
     {
-        $this->_require_role(self::RBAC_VIEW_ROLES, 'get_circulars');
+        $this->_require_role(self::RBAC_VIEW_ROLES, 'get_circulars', 'Communication', 'view');
         $this->_require_view();
 
         // Firestore-only (no RTDB fallback per project policy).
@@ -755,9 +799,10 @@ class Communication extends MY_Controller
             if (is_array($fsDocs)) {
                 $prefix = $this->school_id . '_';
                 foreach ($fsDocs as $doc) {
-                    $d = $doc['data'] ?? $doc;
+                    // Row id from the Firestore document KEY (not a data field —
+                    // the writer never sets `id`), de-prefixed by "{schoolId}_".
                     $r = is_array($doc['data'] ?? null) ? $doc['data'] : [];
-                    $rawId = (string) ($d['id'] ?? '');
+                    $rawId = (string) ($doc['id'] ?? '');
                     $r['id'] = (strpos($rawId, $prefix) === 0)
                         ? substr($rawId, strlen($prefix))
                         : $rawId;
@@ -779,7 +824,7 @@ class Communication extends MY_Controller
 
     public function save_circular()
     {
-        $this->_require_role(self::RBAC_MANAGE_ROLES, 'save_circular');
+        $this->_require_role(self::RBAC_MANAGE_ROLES, 'save_circular', 'Communication', 'manage');
         $this->_require_admin();
         $id          = trim($this->input->post('id') ?? '');
         $title       = trim($this->input->post('title') ?? '');
@@ -798,9 +843,10 @@ class Communication extends MY_Controller
         if ($expiryDate !== '' && !preg_match('/^\d{4}-\d{2}-\d{2}$/', $expiryDate)) {
             $this->json_error('Invalid expiry date format.');
         }
-        $title       = $this->_sanitize_html($title);
-        $description = $this->_sanitize_html($description);
-
+        // Store title/body RAW (same cross-system contract as save_notice). The
+        // web list re-escapes via CM.esc at render and the apps render verbatim,
+        // so HTML-encoding here double-encodes ("Tom & Jerry" → "Tom &amp; Jerry"
+        // on phones). XSS defence lives at the render layer, not storage.
         $isNew = ($id === '');
         if ($isNew) {
             $id = $this->_next_id('Circular', 'CIR');
@@ -811,8 +857,8 @@ class Communication extends MY_Controller
             // would be silently undone on the next job edit.
             try {
                 $existing = $this->fs->get('circulars', $this->fs->docId($id));
-                if (is_array($existing) && ($existing['source'] ?? '') === 'hr_recruitment') {
-                    $this->json_error('This circular is managed by HR Recruitment. Edit the source job in HR → Recruitment instead.');
+                if (is_array($existing) && in_array($existing['source'] ?? '', ['hr_recruitment', 'event'], true)) {
+                    $this->json_error('This circular is auto-managed by its source module (HR Recruitment or Events/PTM). Edit it from that module so its metadata stays intact.');
                 }
             } catch (\Exception $e) {}
         }
@@ -929,7 +975,7 @@ class Communication extends MY_Controller
 
     public function delete_circular()
     {
-        $this->_require_role(self::RBAC_MANAGE_ROLES, 'delete_circular');
+        $this->_require_role(self::RBAC_MANAGE_ROLES, 'delete_circular', 'Communication', 'manage');
         $this->_require_admin();
         $id = $this->safe_path_segment(trim($this->input->post('id') ?? ''), 'circular_id');
 
@@ -938,7 +984,7 @@ class Communication extends MY_Controller
         try {
             $existing = $this->fs->get('circulars', $this->fs->docId($id));
             if (is_array($existing) && ($existing['source'] ?? '') === 'hr_recruitment') {
-                $this->json_error('This circular is managed by HR Recruitment. Delete the source job in HR → Recruitment to remove it.');
+                $this->json_error('This circular is auto-managed by its source module (HR Recruitment or Events/PTM). Remove it from that module instead.');
             }
         } catch (\Exception $e) {}
 
@@ -961,7 +1007,7 @@ class Communication extends MY_Controller
 
     public function acknowledge_circular()
     {
-        $this->_require_role(self::RBAC_VIEW_ROLES, 'acknowledge_circular');
+        $this->_require_role(self::RBAC_VIEW_ROLES, 'acknowledge_circular', 'Communication', 'view');
         $this->_require_view();
         $id = $this->safe_path_segment(trim($this->input->post('id') ?? ''), 'circular_id');
 
@@ -1010,7 +1056,7 @@ class Communication extends MY_Controller
      */
     public function get_circular_acks()
     {
-        $this->_require_role(self::RBAC_VIEW_ROLES, 'get_circular_acks');
+        $this->_require_role(self::RBAC_VIEW_ROLES, 'get_circular_acks', 'Communication', 'view');
         $this->_require_view();
 
         $circularId = trim($this->input->get('circular_id') ?? '');
@@ -1049,7 +1095,7 @@ class Communication extends MY_Controller
 
     public function get_templates()
     {
-        $this->_require_role(self::RBAC_VIEW_ROLES, 'get_templates');
+        $this->_require_role(self::RBAC_VIEW_ROLES, 'get_templates', 'Communication', 'manage');
         $this->_require_admin();
         $all = $this->_dwListAdmin(self::FS_COL_TEMPLATES, 'Templates');
         $list = [];
@@ -1063,7 +1109,7 @@ class Communication extends MY_Controller
 
     public function save_template()
     {
-        $this->_require_role(self::RBAC_MANAGE_ROLES, 'save_template');
+        $this->_require_role(self::RBAC_MANAGE_ROLES, 'save_template', 'Communication', 'manage');
         $this->_require_admin();
         $id       = trim($this->input->post('id') ?? '');
         $name     = trim($this->input->post('name') ?? '');
@@ -1115,7 +1161,7 @@ class Communication extends MY_Controller
 
     public function delete_template()
     {
-        $this->_require_role(self::RBAC_MANAGE_ROLES, 'delete_template');
+        $this->_require_role(self::RBAC_MANAGE_ROLES, 'delete_template', 'Communication', 'manage');
         $this->_require_admin();
         $id = $this->safe_path_segment(trim($this->input->post('id') ?? ''), 'template_id');
 
@@ -1134,7 +1180,7 @@ class Communication extends MY_Controller
 
     public function preview_template()
     {
-        $this->_require_role(self::RBAC_VIEW_ROLES, 'preview_template');
+        $this->_require_role(self::RBAC_VIEW_ROLES, 'preview_template', 'Communication', 'manage');
         $this->_require_admin();
         $body    = trim($this->input->post('body') ?? '');
         $subject = trim($this->input->post('subject') ?? '');
@@ -1174,7 +1220,7 @@ class Communication extends MY_Controller
 
     public function get_triggers()
     {
-        $this->_require_role(self::RBAC_VIEW_ROLES, 'get_triggers');
+        $this->_require_role(self::RBAC_VIEW_ROLES, 'get_triggers', 'Communication', 'manage');
         $this->_require_admin();
         $all = $this->_dwListAdmin(self::FS_COL_TRIGGERS, 'Triggers');
         $list = [];
@@ -1188,7 +1234,7 @@ class Communication extends MY_Controller
 
     public function save_trigger()
     {
-        $this->_require_role(self::RBAC_ADMIN_ROLES, 'save_trigger');
+        $this->_require_role(self::RBAC_ADMIN_ROLES, 'save_trigger', 'Communication', 'manage');
         $this->_require_admin();
         $id            = trim($this->input->post('id') ?? '');
         $name          = trim($this->input->post('name') ?? '');
@@ -1253,7 +1299,7 @@ class Communication extends MY_Controller
 
     public function delete_trigger()
     {
-        $this->_require_role(self::RBAC_ADMIN_ROLES, 'delete_trigger');
+        $this->_require_role(self::RBAC_ADMIN_ROLES, 'delete_trigger', 'Communication', 'manage');
         $this->_require_admin();
         $id = $this->safe_path_segment(trim($this->input->post('id') ?? ''), 'trigger_id');
         $this->_dwDelete(self::FS_COL_TRIGGERS, 'Triggers', $id);
@@ -1262,7 +1308,7 @@ class Communication extends MY_Controller
 
     public function toggle_trigger()
     {
-        $this->_require_role(self::RBAC_ADMIN_ROLES, 'toggle_trigger');
+        $this->_require_role(self::RBAC_ADMIN_ROLES, 'toggle_trigger', 'Communication', 'manage');
         $this->_require_admin();
         $id      = $this->safe_path_segment(trim($this->input->post('id') ?? ''), 'trigger_id');
         $enabled = ($this->input->post('enabled') ?? '1') === '1';
@@ -1279,7 +1325,7 @@ class Communication extends MY_Controller
 
     public function get_queue()
     {
-        $this->_require_role(self::RBAC_VIEW_ROLES, 'get_queue');
+        $this->_require_role(self::RBAC_VIEW_ROLES, 'get_queue', 'Communication', 'manage');
         $this->_require_admin();
         $status = trim($this->input->get('status') ?? '');
         $all    = $this->_dwListAdmin(self::FS_COL_QUEUE, 'Queue');
@@ -1306,7 +1352,7 @@ class Communication extends MY_Controller
      */
     public function process_queue()
     {
-        $this->_require_role(self::RBAC_ADMIN_ROLES, 'process_queue');
+        $this->_require_role(self::RBAC_ADMIN_ROLES, 'process_queue', 'Communication', 'manage');
         $this->_require_admin();
         $all = $this->_dwListAdmin(self::FS_COL_QUEUE, 'Queue');
         if (empty($all)) {
@@ -1469,7 +1515,7 @@ class Communication extends MY_Controller
 
     public function cancel_queued()
     {
-        $this->_require_role(self::RBAC_ADMIN_ROLES, 'cancel_queued');
+        $this->_require_role(self::RBAC_ADMIN_ROLES, 'cancel_queued', 'Communication', 'manage');
         $this->_require_admin();
         $id = $this->safe_path_segment(trim($this->input->post('id') ?? ''), 'queue_id');
         $q  = $this->_dwGet(self::FS_COL_QUEUE, 'Queue', $id);
@@ -1484,7 +1530,7 @@ class Communication extends MY_Controller
 
     public function retry_failed()
     {
-        $this->_require_role(self::RBAC_ADMIN_ROLES, 'retry_failed');
+        $this->_require_role(self::RBAC_ADMIN_ROLES, 'retry_failed', 'Communication', 'manage');
         $this->_require_admin();
         $id = $this->safe_path_segment(trim($this->input->post('id') ?? ''), 'queue_id');
         $q  = $this->_dwGet(self::FS_COL_QUEUE, 'Queue', $id);
@@ -1505,7 +1551,7 @@ class Communication extends MY_Controller
 
     public function get_logs()
     {
-        $this->_require_role(self::RBAC_VIEW_ROLES, 'get_logs');
+        $this->_require_role(self::RBAC_VIEW_ROLES, 'get_logs', 'Communication', 'manage');
         $this->_require_admin();
         $all = $this->_dwListAdmin(self::FS_COL_LOGS, 'Logs');
         $list = [];
@@ -1526,7 +1572,7 @@ class Communication extends MY_Controller
 
     public function get_log_stats()
     {
-        $this->_require_role(self::RBAC_VIEW_ROLES, 'get_log_stats');
+        $this->_require_role(self::RBAC_VIEW_ROLES, 'get_log_stats', 'Communication', 'manage');
         $this->_require_admin();
 
         $all = $this->_dwListAdmin(self::FS_COL_LOGS, 'Logs');
@@ -1550,7 +1596,7 @@ class Communication extends MY_Controller
 
     public function send_bulk()
     {
-        $this->_require_role(self::RBAC_ADMIN_ROLES, 'send_bulk');
+        $this->_require_role(self::RBAC_ADMIN_ROLES, 'send_bulk', 'Communication', 'manage');
         $this->_require_admin();
         $title       = trim($this->input->post('title') ?? '');
         $message     = trim($this->input->post('message') ?? '');
@@ -1799,7 +1845,7 @@ class Communication extends MY_Controller
 
     public function get_target_groups()
     {
-        $this->_require_role(self::RBAC_VIEW_ROLES, 'get_target_groups');
+        $this->_require_role(self::RBAC_VIEW_ROLES, 'get_target_groups', 'Communication', 'view');
         $this->_require_view();
         $groups = [
             ['value' => 'All School', 'label' => 'All School'],

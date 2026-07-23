@@ -9,18 +9,18 @@
    listings look identical. Columns and data are unchanged.
    ───────────────────────────────────────────────────────────────────────── */
 :root {
-    --nsa-navy:   #0c1e38;
+    --nsa-navy:   #2A1C12;
     --nsa-teal:   #BC5A3C;
-    --nsa-sky:    #e6f4f1;
-    --nsa-green:  #0d7a5f;
+    --nsa-sky:    #F7ECE7;
+    --nsa-green:  #2FA875;
     --nsa-red:    #dc2626;
     --nsa-amber:  #d97706;
     --nsa-blue:   #2563eb;
-    --nsa-text:   #1a2535;
+    --nsa-text:   #22160F;
     --nsa-muted:  #64748b;
-    --nsa-border: #e2e8f0;
+    --nsa-border: #E7DED6;
     --nsa-white:  #ffffff;
-    --nsa-bg:     #f0f7f5;
+    --nsa-bg:     #F7F4F1;
     --nsa-shadow: 0 1px 12px rgba(12,30,56,.07);
     --nsa-radius: 12px;
 }
@@ -165,7 +165,7 @@
 /* ── Row action menu (⋮) ── */
 .nsa-menu-wrap { position: relative; display: inline-flex; }
 .nsa-menu-trigger { background: #f1f5f9; color: var(--nsa-muted); }
-.nsa-menu-trigger:hover { background: #e2e8f0; color: var(--nsa-text); }
+.nsa-menu-trigger:hover { background: #E7DED6; color: var(--nsa-text); }
 .nsa-menu[hidden] { display: none; }
 .nsa-menu {
     position: fixed; z-index: 1000; min-width: 188px; padding: 6px;

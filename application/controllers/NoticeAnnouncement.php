@@ -41,7 +41,7 @@ class NoticeAnnouncement extends MY_Controller
     // ─── Page: list view ─────────────────────────────────────────────
     public function index()
     {
-        $this->_require_role(self::VIEW_ROLES, 'notice_view');
+        $this->_require_role(self::VIEW_ROLES, 'notice_view', 'Communication', 'view');
         $data['notices'] = $this->_notices_as_legacy_map();
         $this->load->view('include/header');
         $this->load->view('notice_announcement/list', $data);
@@ -100,9 +100,12 @@ class NoticeAnnouncement extends MY_Controller
      */
     private function _notices_as_legacy_map(): array
     {
+        // schoolId-only (no session filter): Communication-Board, Event/PTM and
+        // HR notices write no `session` field, so a `session==` predicate hid
+        // them from "View All" — the page only showed NoticeAnnouncement-authored
+        // current-session notices. Tenant scoping via schoolId is sufficient.
         $rows = $this->firebase->firestoreQuery(self::COL_NOTICES, [
             ['schoolId', '==', $this->school_name],
-            ['session',  '==', $this->session_year],
         ], 'timestamp', 'DESC');
 
         $out = [];
@@ -131,20 +134,17 @@ class NoticeAnnouncement extends MY_Controller
     // ─── AJAX: user search (admins/teachers/students) ────────────────
     public function search_users()
     {
-        $this->_require_role(self::VIEW_ROLES, 'search_users');
+        $this->_require_role(self::VIEW_ROLES, 'search_users', 'Communication', 'view');
         header('Content-Type: application/json');
 
         $query   = strtolower(trim((string) ($this->input->get('query') ?? '')));
         $results = [];
 
-        // Admins — Firestore `admins` collection, auto-scoped via docId pattern.
-        $adminRows = $this->firebase->firestoreQuery('admins', [
-            ['schoolId', '==', $this->school_name],
-        ]);
-        foreach ((array) $adminRows as $r) {
-            $d = $r['data'] ?? $r; if (!is_array($d)) continue;
-            $id   = (string) ($d['adminId'] ?? ($r['id'] ?? ''));
-            $name = (string) ($d['name']    ?? $d['Name'] ?? '');
+        // Admins — roster = staff(ROLE_ADMIN) ∪ legacy admins collection (fold).
+        $this->load->helper('admin_roster');
+        foreach (admin_roster_rows($this->fs, (string) $this->school_name) as $r) {
+            $id   = (string) $r['id'];
+            $name = (string) $r['name'];
             if ($id === '') continue;
             if ($query === '' || stripos($name, $query) !== false || stripos($id, $query) !== false) {
                 $results[] = ['label' => "$name ($id)", 'type' => 'Admin', 'id' => $id, 'name' => $name];
@@ -198,7 +198,7 @@ class NoticeAnnouncement extends MY_Controller
     // ─── Create notice ───────────────────────────────────────────────
     public function create_notice()
     {
-        $this->_require_role(self::MANAGE_ROLES, 'create_notice');
+        $this->_require_role(self::MANAGE_ROLES, 'create_notice', 'Communication', 'edit');
         $school_name  = $this->school_name;
         $session_year = $this->session_year;
         $admin_id     = $this->admin_id;
@@ -213,7 +213,7 @@ class NoticeAnnouncement extends MY_Controller
             $to_ids      = [];
 
             $allowedPriorities = ['High', 'Normal', 'Low'];
-            $allowedCategories = ['General', 'Academic', 'Administrative', 'Holiday', 'Exam', 'Event'];
+            $allowedCategories = ['General', 'Academic', 'Administrative', 'Holiday', 'Exam', 'Event', 'Emergency'];
             $priority = in_array($this->input->post('priority'), $allowedPriorities, true)
                 ? $this->input->post('priority') : 'Normal';
             $category = in_array($this->input->post('category'), $allowedCategories, true)
@@ -249,6 +249,11 @@ class NoticeAnnouncement extends MY_Controller
                 'priority'    => $priority,
                 'category'    => $category,
                 'toId'        => [],       // filled below after fanout
+                // Apps query notices with `where status=='sent' orderBy sentAt`,
+                // so without these the notices-collection copy is invisible to
+                // both apps (it only survived via the circulars mirror).
+                'status'      => 'sent',
+                'sentAt'      => $now_iso,
                 'timestamp'   => $now_iso,
                 'timestampMs' => $now_ms,
                 'createdAt'   => $now_iso,
@@ -324,7 +329,12 @@ class NoticeAnnouncement extends MY_Controller
                     ? ['all']
                     : array_values(array_map(function ($id) { return 'user:' . $id; }, $recipientIds));
 
-                $this->firebase->firestoreSet(self::COL_CIRCULARS, $notice_id, [
+                // School-scoped doc key `{schoolId}_{noticeId}` — matches the
+                // tenant convention every other writer/reader uses. Previously
+                // this wrote an UNPREFIXED key, so a later edit/delete via the
+                // Communication Board (which does `fs->docId(id)`) could never
+                // address it → orphaned duplicate / no-op delete.
+                $this->firebase->firestoreSet(self::COL_CIRCULARS, "{$school_name}_{$notice_id}", [
                     'schoolId'       => $school_name,
                     'session'        => $session_year,
                     'title'          => $title,
@@ -359,13 +369,16 @@ class NoticeAnnouncement extends MY_Controller
     // ─── Delete notice ───────────────────────────────────────────────
     public function delete($id)
     {
-        $this->_require_role(self::MANAGE_ROLES, 'delete_notice');
+        $this->_require_role(self::MANAGE_ROLES, 'delete_notice', 'Communication', 'manage');
         $id = preg_replace('/[^a-zA-Z0-9_\-]/', '', $id);
         if ($id === '') { redirect('NoticeAnnouncement'); return; }
         try {
             $this->firebase->firestoreDelete(self::COL_NOTICES, "{$this->school_name}_{$id}");
         } catch (\Exception $_) { /* best-effort */ }
         try {
+            // School-scoped key (matches the create write above). Also clean up
+            // any legacy UNPREFIXED doc created before the scoping fix.
+            $this->firebase->firestoreDelete(self::COL_CIRCULARS, "{$this->school_name}_{$id}");
             $this->firebase->firestoreDelete(self::COL_CIRCULARS, $id);
         } catch (\Exception $_) { /* best-effort */ }
         // noticeRecipients docs are left in place for audit — they
@@ -509,13 +522,11 @@ class NoticeAnnouncement extends MY_Controller
 
     private function _all_admin_targets(string $senderAdminId): array
     {
-        $rows = $this->firebase->firestoreQuery('admins', [
-            ['schoolId', '==', $this->school_name],
-        ]);
+        // roster = staff(ROLE_ADMIN) ∪ legacy admins collection (fold).
+        $this->load->helper('admin_roster');
         $out = [];
-        foreach ((array) $rows as $r) {
-            $d = $r['data'] ?? $r; if (!is_array($d)) continue;
-            $aid = (string) ($d['adminId'] ?? ($r['id'] ?? ''));
+        foreach (admin_roster_rows($this->fs, (string) $this->school_name) as $r) {
+            $aid = (string) $r['id'];
             if ($aid === '' || $aid === $senderAdminId) continue;
             $out[] = ['key' => $aid, 'type' => 'Admin'];
         }

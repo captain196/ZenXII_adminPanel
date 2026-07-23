@@ -66,7 +66,7 @@ class Import_schema
                 'synonyms' => ['address', 'address line', 'addr', 'house address', 'residential address', 'line1', 'street']],
             'City'              => ['label' => 'City',           'required' => false, 'norm' => 'text',
                 'synonyms' => ['town', 'village', 'district']],
-            'State'             => ['label' => 'State',          'required' => false, 'norm' => 'text',
+            'State'             => ['label' => 'State',          'required' => false, 'norm' => 'india_state',
                 'synonyms' => ['province']],
             'PostalCode'        => ['label' => 'Postal Code',    'required' => false, 'norm' => 'text',
                 'synonyms' => ['postal code', 'pincode', 'pin code', 'zip', 'zip code', 'postcode', 'pin']],
@@ -221,6 +221,13 @@ class Import_schema
             case 'phone':   return $this->normalizePhone($raw);
             case 'blood':   return $this->normalizeBlood($raw);
             case 'email':   return $this->normalizeEmail($raw);
+            case 'india_state':
+                // Canonicalize an India state/UT spelling; keep as typed if unknown.
+                if (function_exists('india_geo_match_state')) {
+                    $c = india_geo_match_state($raw);
+                    if ($c !== '') return $c;
+                }
+                return $this->normalizeText($raw);
             default:        return $this->normalizeText($raw);
         }
     }
@@ -395,6 +402,18 @@ class Import_schema
         }
         if ($data['Email'] !== '' && !filter_var($data['Email'], FILTER_VALIDATE_EMAIL)) {
             $warnings[] = 'Email looks invalid';
+        }
+
+        // India geo: canonicalize District (City) against the row's State, warn on
+        // an unrecognized State / off-state District (never an error — stays lenient).
+        if (function_exists('india_geo_match_state') && $data['State'] !== '') {
+            if (india_geo_match_state($data['State']) === '') {
+                $warnings[] = "State \"{$data['State']}\" is not a recognized India state/UT — left as typed";
+            } elseif ($data['City'] !== '') {
+                $cityCanon = india_geo_match_district($data['State'], $data['City']);
+                if ($cityCanon !== '') $data['City'] = $cityCanon;
+                else $warnings[] = "City/District \"{$data['City']}\" is not a listed district of {$data['State']} — left as typed";
+            }
         }
 
         $status = !empty($errors) ? 'error' : (!empty($warnings) ? 'warning' : 'ok');

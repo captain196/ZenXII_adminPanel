@@ -5,7 +5,10 @@ $tab_map = [
     'routes'      => ['panel'=>'panelRoutes',      'icon'=>'fa-road',          'label'=>'Routes & Stops'],
     'assignments' => ['panel'=>'panelAssignments',  'icon'=>'fa-users',         'label'=>'Assignments'],
 ];
+$can_edit   = function_exists('has_permission') ? has_permission('Transport','edit')   : true;
+$can_manage = function_exists('has_permission') ? has_permission('Transport','manage') : true;
 ?>
+<link rel="stylesheet" href="<?= base_url('assets/css/rbac_ui_kit.css') ?>">
 <style>
 .trn-wrap{padding:20px;max-width:1400px;margin:0 auto}
 .trn-header{display:flex;align-items:center;justify-content:space-between;margin-bottom:24px;flex-wrap:wrap;gap:12px}
@@ -49,7 +52,9 @@ $tab_map = [
 .trn-search-item:hover{background:var(--gold-dim)}
 </style>
 
-<div class="content-wrapper"><section class="content"><div class="trn-wrap">
+<div class="content-wrapper">
+<div class="rx-loadbar" id="rxLoadbar"></div>
+<section class="content"><div class="trn-wrap">
   <div class="trn-header"><div>
     <div class="trn-header-icon"><i class="fa fa-bus"></i> Transport Management</div>
     <ol class="trn-breadcrumb"><li><a href="<?= base_url('admin') ?>">Dashboard</a></li><li><a href="<?= base_url('operations') ?>">Operations</a></li><li>Transport</li></ol>
@@ -61,10 +66,16 @@ $tab_map = [
     <?php endforeach; ?>
   </nav>
 
+  <?php if(!$can_edit): ?>
+  <div class="rx-ro-banner"><span class="rx-ro-ic">🔒</span> View-only access — you can browse Transport records but cannot add, edit, or delete.</div>
+  <?php elseif(!$can_manage): ?>
+  <div class="rx-ro-banner"><span class="rx-ro-ic">🔒</span> Limited access — you can add and edit, but deleting is restricted.</div>
+  <?php endif; ?>
+
   <!-- VEHICLES -->
   <div class="trn-panel<?= $at === 'vehicles' ? ' active' : '' ?>" id="panelVehicles">
     <div class="trn-card">
-      <div class="trn-card-title"><span>Vehicles</span><button class="trn-btn trn-btn-primary" onclick="TRN.openVehModal()"><i class="fa fa-plus"></i> Add Vehicle</button></div>
+      <div class="trn-card-title"><span>Vehicles</span><button class="trn-btn trn-btn-primary" onclick="TRN.openVehModal()" <?= $can_edit?'':'disabled' ?>><i class="fa fa-plus"></i> Add Vehicle</button></div>
       <table class="trn-table"><thead><tr><th>ID</th><th>Number</th><th>Type</th><th>Capacity</th><th>Driver</th><th>Phone</th><th>Status</th><th>Actions</th></tr></thead><tbody id="vehTbody"></tbody></table>
     </div>
   </div>
@@ -72,11 +83,11 @@ $tab_map = [
   <!-- ROUTES & STOPS -->
   <div class="trn-panel<?= $at === 'routes' ? ' active' : '' ?>" id="panelRoutes">
     <div class="trn-card">
-      <div class="trn-card-title"><span>Routes</span><button class="trn-btn trn-btn-primary" onclick="TRN.openRouteModal()"><i class="fa fa-plus"></i> Add Route</button></div>
+      <div class="trn-card-title"><span>Routes</span><button class="trn-btn trn-btn-primary" onclick="TRN.openRouteModal()" <?= $can_edit?'':'disabled' ?>><i class="fa fa-plus"></i> Add Route</button></div>
       <table class="trn-table"><thead><tr><th>ID</th><th>Name</th><th>Vehicle</th><th>Distance</th><th>Monthly Fee</th><th>Actions</th></tr></thead><tbody id="routesTbody"></tbody></table>
     </div>
     <div class="trn-card">
-      <div class="trn-card-title"><span>Stops</span><button class="trn-btn trn-btn-primary" onclick="TRN.openStopModal()"><i class="fa fa-plus"></i> Add Stop</button></div>
+      <div class="trn-card-title"><span>Stops</span><button class="trn-btn trn-btn-primary" onclick="TRN.openStopModal()" <?= $can_edit?'':'disabled' ?>><i class="fa fa-plus"></i> Add Stop</button></div>
       <div class="trn-form-group" style="max-width:300px;margin-bottom:14px">
         <label>Filter by Route</label><select id="stopRouteFilter"><option value="">All Routes</option></select>
       </div>
@@ -87,7 +98,7 @@ $tab_map = [
   <!-- ASSIGNMENTS -->
   <div class="trn-panel<?= $at === 'assignments' ? ' active' : '' ?>" id="panelAssignments">
     <div class="trn-card">
-      <div class="trn-card-title"><span>Student Transport Assignments</span><button class="trn-btn trn-btn-primary" onclick="TRN.openAsnModal()"><i class="fa fa-plus"></i> Assign Student</button></div>
+      <div class="trn-card-title"><span>Student Transport Assignments</span><button class="trn-btn trn-btn-primary" onclick="TRN.openAsnModal()" <?= $can_edit?'':'disabled' ?>><i class="fa fa-plus"></i> Assign Student</button></div>
       <table class="trn-table"><thead><tr><th>Student</th><th>Class</th><th>Route</th><th>Stop</th><th>Type</th><th>Fee/Month</th><th>Assigned</th><th>Actions</th></tr></thead><tbody id="asnTbody"></tbody></table>
     </div>
   </div>
@@ -102,7 +113,7 @@ $tab_map = [
   <div class="trn-form-row"><div class="trn-form-group"><label>Driver Phone</label><input type="text" id="vhDriverPhone"></div><div class="trn-form-group"><label>GPS Enabled</label><select id="vhGps"><option value="0">No</option><option value="1">Yes</option></select></div></div>
   <div class="trn-form-row"><div class="trn-form-group"><label>Insurance No.</label><input type="text" id="vhInsNo"></div><div class="trn-form-group"><label>Insurance Expiry</label><input type="date" id="vhInsExp"></div></div>
   <div class="trn-form-row"><div class="trn-form-group"><label>Fitness Expiry</label><input type="date" id="vhFitExp"></div><div class="trn-form-group"><label>Status</label><select id="vhStatus"><option value="Active">Active</option><option value="Inactive">Inactive</option><option value="Maintenance">Maintenance</option></select></div></div>
-  <button class="trn-btn trn-btn-primary" onclick="TRN.saveVehicle()" style="width:100%;margin-top:8px">Save Vehicle</button>
+  <button class="trn-btn trn-btn-primary" onclick="TRN.saveVehicle()" style="width:100%;margin-top:8px" <?= $can_edit?'':'disabled' ?>>Save Vehicle</button>
 </div></div>
 
 <!-- ROUTE MODAL -->
@@ -113,7 +124,7 @@ $tab_map = [
   <div class="trn-form-row"><div class="trn-form-group"><label>Vehicle</label><select id="rtVehicleId"><option value="">-- None --</option></select></div><div class="trn-form-group"><label>Monthly Fee (Rs)</label><input type="number" id="rtFee" value="0" min="0"></div></div>
   <div class="trn-form-row"><div class="trn-form-group"><label>Start Point</label><input type="text" id="rtStart"></div><div class="trn-form-group"><label>End Point</label><input type="text" id="rtEnd"></div></div>
   <div class="trn-form-group"><label>Distance (km)</label><input type="number" id="rtDistance" value="0" min="0" step="0.1"></div>
-  <button class="trn-btn trn-btn-primary" onclick="TRN.saveRoute()" style="width:100%;margin-top:8px">Save Route</button>
+  <button class="trn-btn trn-btn-primary" onclick="TRN.saveRoute()" style="width:100%;margin-top:8px" <?= $can_edit?'':'disabled' ?>>Save Route</button>
 </div></div>
 
 <!-- STOP MODAL -->
@@ -124,7 +135,7 @@ $tab_map = [
   <div class="trn-form-group"><label>Stop Name *</label><input type="text" id="stName"></div>
   <div class="trn-form-row"><div class="trn-form-group"><label>Pickup Time</label><input type="time" id="stPickup"></div><div class="trn-form-group"><label>Drop Time</label><input type="time" id="stDrop"></div></div>
   <div class="trn-form-group"><label>Order</label><input type="number" id="stOrder" value="0" min="0"></div>
-  <button class="trn-btn trn-btn-primary" onclick="TRN.saveStop()" style="width:100%;margin-top:8px">Save Stop</button>
+  <button class="trn-btn trn-btn-primary" onclick="TRN.saveStop()" style="width:100%;margin-top:8px" <?= $can_edit?'':'disabled' ?>>Save Stop</button>
 </div></div>
 
 <!-- ASSIGNMENT MODAL -->
@@ -133,19 +144,28 @@ $tab_map = [
   <div class="trn-form-group trn-search-box"><label>Student</label><input type="text" id="asnStudentSearch" placeholder="Search by name or ID..." autocomplete="off"><input type="hidden" id="asnStudentId"><div class="trn-search-results" id="asnStudentResults"></div></div>
   <div class="trn-form-group"><label>Route *</label><select id="asnRouteId"></select></div>
   <div class="trn-form-row"><div class="trn-form-group"><label>Stop</label><select id="asnStopId"><option value="">-- Select --</option></select></div><div class="trn-form-group"><label>Type</label><select id="asnType"><option value="both">Both (Pickup & Drop)</option><option value="pickup">Pickup Only</option><option value="drop">Drop Only</option></select></div></div>
-  <button class="trn-btn trn-btn-primary" onclick="TRN.saveAssignment()" style="width:100%;margin-top:8px">Assign</button>
+  <button class="trn-btn trn-btn-primary" onclick="TRN.saveAssignment()" style="width:100%;margin-top:8px" <?= $can_edit?'':'disabled' ?>>Assign</button>
 </div></div>
 
 <script>
-var _TRN_CFG={BASE:'<?= base_url() ?>',CSRF_NAME:'<?= $this->security->get_csrf_token_name() ?>',CSRF_HASH:'<?= $this->security->get_csrf_hash() ?>',activeTab:'<?= $at ?>'};
+var _TRN_CFG={BASE:'<?= base_url() ?>',CSRF_NAME:'<?= $this->security->get_csrf_token_name() ?>',CSRF_HASH:'<?= $this->security->get_csrf_hash() ?>',activeTab:'<?= $at ?>',CAN_EDIT:<?= $can_edit?'true':'false' ?>,CAN_MANAGE:<?= $can_manage?'true':'false' ?>};
 document.addEventListener('DOMContentLoaded', function(){
 (function(){
   'use strict';
   var BASE=_TRN_CFG.BASE,CSRF_NAME=_TRN_CFG.CSRF_NAME,CSRF_HASH=_TRN_CFG.CSRF_HASH;
   var vehicles=[],routes=[],stops=[];
-  function getJSON(u){return $.getJSON(BASE+u)} function post(u,d){d[CSRF_NAME]=CSRF_HASH;return $.post(BASE+u,d)}
+  var CAN_EDIT=_TRN_CFG.CAN_EDIT, CAN_MANAGE=_TRN_CFG.CAN_MANAGE;
+  var EDIT_ATTR=CAN_EDIT?'':' disabled title="No edit permission"';
+  var DEL_ATTR=CAN_MANAGE?'':' disabled title="No delete permission"';
   function toast(m,ok){var t=$('<div style="position:fixed;top:20px;right:20px;z-index:99999;padding:12px 20px;border-radius:8px;font-size:.85rem;color:#fff;background:'+(ok?'var(--green)':'var(--rose)')+'">'+m+'</div>');$('body').append(t);setTimeout(function(){t.fadeOut(300,function(){t.remove()})},3000)}
   function escH(s){return $('<span>').text(s||'').html()}
+  function errMsg(xhr,def){var m=def||'Request failed';try{var j=xhr.responseJSON;if(!j&&xhr.responseText)j=JSON.parse(xhr.responseText);if(j&&j.message)m=j.message;else if(xhr.status)m=(def||'Request failed')+' ('+xhr.status+')';}catch(e){if(xhr.status)m=(def||'Request failed')+' ('+xhr.status+')';}return m}
+  function getJSON(u){return $.getJSON(BASE+u).fail(function(xhr){toast(errMsg(xhr,'Failed to load data'),false)})}
+  function post(u,d){d[CSRF_NAME]=CSRF_HASH;return $.post(BASE+u,d).fail(function(xhr){toast(errMsg(xhr,'Action failed'),false)})}
+  function skel(id,cols,n){var h='';n=n||4;for(var i=0;i<n;i++){h+='<tr>';for(var c=0;c<cols;c++)h+='<td><div class="rx-skel rx-skel-row"></div></td>';h+='</tr>'}$('#'+id).html(h)}
+  function btnOn(sel){var el=$(sel)[0];if(el)el.classList.add('rx-btnload');return el}
+  function btnOff(el){if(el)el.classList.remove('rx-btnload')}
+  $(document).ajaxStart(function(){$('#rxLoadbar').addClass('on')}).ajaxStop(function(){$('#rxLoadbar').removeClass('on')});
   function vehName(id){for(var i=0;i<vehicles.length;i++) if(vehicles[i].id===id) return vehicles[i].number; return id||'—'}
   function routeName(id){for(var i=0;i<routes.length;i++) if(routes[i].id===id) return routes[i].name; return id||'—'}
 
@@ -153,12 +173,13 @@ document.addEventListener('DOMContentLoaded', function(){
 
   // ── Vehicles ──
   function loadVehicles(){
+    skel('vehTbody',8);
     getJSON('transport/get_vehicles').done(function(r){
-      if(r.status!=='success') return; vehicles=r.vehicles||[];
+      if(r.status!=='success'){$('#vehTbody').html('<tr><td colspan="8" style="text-align:center;color:var(--rose)">'+escH(r.message||'Failed to load')+'</td></tr>');return} vehicles=r.vehicles||[];
       var html=''; vehicles.forEach(function(v){
         var stCls=v.status==='Active'?'trn-badge-green':v.status==='Maintenance'?'trn-badge-amber':'trn-badge-red';
         html+='<tr><td>'+escH(v.id)+'</td><td>'+escH(v.number)+'</td><td>'+escH(v.type)+'</td><td>'+v.capacity+'</td><td>'+escH(v.driver_name)+'</td><td>'+escH(v.driver_phone)+'</td><td><span class="trn-badge '+stCls+'">'+v.status+'</span></td>';
-        html+='<td><button class="trn-btn trn-btn-sm trn-btn-primary" onclick="TRN.editVeh(\''+v.id+'\')"><i class="fa fa-pencil"></i></button> <button class="trn-btn trn-btn-sm trn-btn-danger" onclick="TRN.delVeh(\''+v.id+'\')"><i class="fa fa-trash"></i></button></td></tr>';
+        html+='<td><button class="trn-btn trn-btn-sm trn-btn-primary" onclick="TRN.editVeh(\''+v.id+'\')"'+EDIT_ATTR+'><i class="fa fa-pencil"></i></button> <button class="trn-btn trn-btn-sm trn-btn-danger" onclick="TRN.delVeh(\''+v.id+'\')"'+DEL_ATTR+'><i class="fa fa-trash"></i></button></td></tr>';
       });
       $('#vehTbody').html(html||'<tr><td colspan="8" style="text-align:center;color:var(--t3)">No vehicles</td></tr>');
       var opts='<option value="">-- None --</option>'; vehicles.forEach(function(v){opts+='<option value="'+v.id+'">'+escH(v.number)+'</option>'});
@@ -167,17 +188,18 @@ document.addEventListener('DOMContentLoaded', function(){
   }
   TRN.openVehModal=function(){$('#vhId,#vhNumber,#vhDriverName,#vhDriverPhone,#vhInsNo,#vhInsExp,#vhFitExp').val('');$('#vhCapacity').val(40);$('#vhType').val('Bus');$('#vhGps').val('0');$('#vhStatus').val('Active');$('#vehModalTitle').text('Add Vehicle');$('#vehModal').addClass('show')};
   TRN.closeVehModal=function(){$('#vehModal').removeClass('show')};
-  TRN.editVeh=function(id){var v=vehicles.find(function(x){return x.id===id});if(!v)return;$('#vhId').val(v.id);$('#vhNumber').val(v.number);$('#vhType').val(v.type);$('#vhCapacity').val(v.capacity);$('#vhDriverName').val(v.driver_name);$('#vhDriverPhone').val(v.driver_phone);$('#vhGps').val(v.gps_enabled?'1':'0');$('#vhInsNo').val(v.insurance_no);$('#vhInsExp').val(v.insurance_expiry);$('#vhFitExp').val(v.fitness_expiry);$('#vhStatus').val(v.status||'Active');$('#vehModalTitle').text('Edit Vehicle');$('#vehModal').addClass('show')};
-  TRN.saveVehicle=function(){post('transport/save_vehicle',{id:$('#vhId').val(),number:$('#vhNumber').val(),type:$('#vhType').val(),capacity:$('#vhCapacity').val(),driver_name:$('#vhDriverName').val(),driver_phone:$('#vhDriverPhone').val(),gps_enabled:$('#vhGps').val(),insurance_no:$('#vhInsNo').val(),insurance_expiry:$('#vhInsExp').val(),fitness_expiry:$('#vhFitExp').val(),status:$('#vhStatus').val()}).done(function(r){r=typeof r==='string'?JSON.parse(r):r;if(r.status==='success'){toast(r.message,true);TRN.closeVehModal();loadVehicles()}else toast(r.message,false)})};
-  TRN.delVeh=function(id){if(!confirm('Delete vehicle?'))return;post('transport/delete_vehicle',{id:id}).done(function(r){r=typeof r==='string'?JSON.parse(r):r;if(r.status==='success'){toast(r.message,true);loadVehicles()}else toast(r.message,false)})};
+  TRN.editVeh=function(id){if(!CAN_EDIT)return;var v=vehicles.find(function(x){return x.id===id});if(!v)return;$('#vhId').val(v.id);$('#vhNumber').val(v.number);$('#vhType').val(v.type);$('#vhCapacity').val(v.capacity);$('#vhDriverName').val(v.driver_name);$('#vhDriverPhone').val(v.driver_phone);$('#vhGps').val(v.gps_enabled?'1':'0');$('#vhInsNo').val(v.insurance_no);$('#vhInsExp').val(v.insurance_expiry);$('#vhFitExp').val(v.fitness_expiry);$('#vhStatus').val(v.status||'Active');$('#vehModalTitle').text('Edit Vehicle');$('#vehModal').addClass('show')};
+  TRN.saveVehicle=function(){if(!CAN_EDIT){toast('You do not have edit permission',false);return}var b=btnOn('#vehModal .trn-btn-primary');post('transport/save_vehicle',{id:$('#vhId').val(),number:$('#vhNumber').val(),type:$('#vhType').val(),capacity:$('#vhCapacity').val(),driver_name:$('#vhDriverName').val(),driver_phone:$('#vhDriverPhone').val(),gps_enabled:$('#vhGps').val(),insurance_no:$('#vhInsNo').val(),insurance_expiry:$('#vhInsExp').val(),fitness_expiry:$('#vhFitExp').val(),status:$('#vhStatus').val()}).done(function(r){r=typeof r==='string'?JSON.parse(r):r;if(r.status==='success'){toast(r.message,true);TRN.closeVehModal();loadVehicles()}else toast(r.message,false)}).always(function(){btnOff(b)})};
+  TRN.delVeh=function(id){if(!CAN_MANAGE){toast('You do not have delete permission',false);return}if(!confirm('Delete vehicle?'))return;post('transport/delete_vehicle',{id:id}).done(function(r){r=typeof r==='string'?JSON.parse(r):r;if(r.status==='success'){toast(r.message,true);loadVehicles()}else toast(r.message,false)})};
 
   // ── Routes ──
   function loadRoutes(){
+    skel('routesTbody',6);
     getJSON('transport/get_routes').done(function(r){
-      if(r.status!=='success') return; routes=r.routes||[];
+      if(r.status!=='success'){$('#routesTbody').html('<tr><td colspan="6" style="text-align:center;color:var(--rose)">'+escH(r.message||'Failed to load')+'</td></tr>');return} routes=r.routes||[];
       var html=''; routes.forEach(function(rt){
         html+='<tr><td>'+escH(rt.id)+'</td><td>'+escH(rt.name)+'</td><td>'+escH(vehName(rt.vehicle_id))+'</td><td>'+rt.distance_km+' km</td><td>Rs '+rt.monthly_fee+'</td>';
-        html+='<td><button class="trn-btn trn-btn-sm trn-btn-primary" onclick="TRN.editRoute(\''+rt.id+'\')"><i class="fa fa-pencil"></i></button> <button class="trn-btn trn-btn-sm trn-btn-danger" onclick="TRN.delRoute(\''+rt.id+'\')"><i class="fa fa-trash"></i></button></td></tr>';
+        html+='<td><button class="trn-btn trn-btn-sm trn-btn-primary" onclick="TRN.editRoute(\''+rt.id+'\')"'+EDIT_ATTR+'><i class="fa fa-pencil"></i></button> <button class="trn-btn trn-btn-sm trn-btn-danger" onclick="TRN.delRoute(\''+rt.id+'\')"'+DEL_ATTR+'><i class="fa fa-trash"></i></button></td></tr>';
       });
       $('#routesTbody').html(html||'<tr><td colspan="6" style="text-align:center;color:var(--t3)">No routes</td></tr>');
       var opts='<option value="">All Routes</option>',selOpts='';
@@ -187,18 +209,19 @@ document.addEventListener('DOMContentLoaded', function(){
   }
   TRN.openRouteModal=function(){$('#rtId,#rtName,#rtStart,#rtEnd').val('');$('#rtFee,#rtDistance').val(0);$('#rtVehicleId').val('');$('#routeModalTitle').text('Add Route');$('#routeModal').addClass('show')};
   TRN.closeRouteModal=function(){$('#routeModal').removeClass('show')};
-  TRN.editRoute=function(id){var r=routes.find(function(x){return x.id===id});if(!r)return;$('#rtId').val(r.id);$('#rtName').val(r.name);$('#rtVehicleId').val(r.vehicle_id);$('#rtFee').val(r.monthly_fee);$('#rtStart').val(r.start_point);$('#rtEnd').val(r.end_point);$('#rtDistance').val(r.distance_km);$('#routeModalTitle').text('Edit Route');$('#routeModal').addClass('show')};
-  TRN.saveRoute=function(){post('transport/save_route',{id:$('#rtId').val(),name:$('#rtName').val(),vehicle_id:$('#rtVehicleId').val(),monthly_fee:$('#rtFee').val(),start_point:$('#rtStart').val(),end_point:$('#rtEnd').val(),distance_km:$('#rtDistance').val()}).done(function(r){r=typeof r==='string'?JSON.parse(r):r;if(r.status==='success'){toast(r.message,true);TRN.closeRouteModal();loadRoutes()}else toast(r.message,false)})};
-  TRN.delRoute=function(id){if(!confirm('Delete route and its stops?'))return;post('transport/delete_route',{id:id}).done(function(r){r=typeof r==='string'?JSON.parse(r):r;if(r.status==='success'){toast(r.message,true);loadRoutes();loadStops()}else toast(r.message,false)})};
+  TRN.editRoute=function(id){if(!CAN_EDIT)return;var r=routes.find(function(x){return x.id===id});if(!r)return;$('#rtId').val(r.id);$('#rtName').val(r.name);$('#rtVehicleId').val(r.vehicle_id);$('#rtFee').val(r.monthly_fee);$('#rtStart').val(r.start_point);$('#rtEnd').val(r.end_point);$('#rtDistance').val(r.distance_km);$('#routeModalTitle').text('Edit Route');$('#routeModal').addClass('show')};
+  TRN.saveRoute=function(){if(!CAN_EDIT){toast('You do not have edit permission',false);return}var b=btnOn('#routeModal .trn-btn-primary');post('transport/save_route',{id:$('#rtId').val(),name:$('#rtName').val(),vehicle_id:$('#rtVehicleId').val(),monthly_fee:$('#rtFee').val(),start_point:$('#rtStart').val(),end_point:$('#rtEnd').val(),distance_km:$('#rtDistance').val()}).done(function(r){r=typeof r==='string'?JSON.parse(r):r;if(r.status==='success'){toast(r.message,true);TRN.closeRouteModal();loadRoutes()}else toast(r.message,false)}).always(function(){btnOff(b)})};
+  TRN.delRoute=function(id){if(!CAN_MANAGE){toast('You do not have delete permission',false);return}if(!confirm('Delete route and its stops?'))return;post('transport/delete_route',{id:id}).done(function(r){r=typeof r==='string'?JSON.parse(r):r;if(r.status==='success'){toast(r.message,true);loadRoutes();loadStops()}else toast(r.message,false)})};
 
   // ── Stops ──
   function loadStops(){
     var routeId=$('#stopRouteFilter').val()||'';
+    skel('stopsTbody',7);
     getJSON('transport/get_stops?route_id='+routeId).done(function(r){
-      if(r.status!=='success') return; stops=r.stops||[];
+      if(r.status!=='success'){$('#stopsTbody').html('<tr><td colspan="7" style="text-align:center;color:var(--rose)">'+escH(r.message||'Failed to load')+'</td></tr>');return} stops=r.stops||[];
       var html=''; stops.forEach(function(s){
         html+='<tr><td>'+escH(s.id)+'</td><td>'+escH(routeName(s.route_id))+'</td><td>'+escH(s.name)+'</td><td>'+escH(s.pickup_time)+'</td><td>'+escH(s.drop_time)+'</td><td>'+s.order+'</td>';
-        html+='<td><button class="trn-btn trn-btn-sm trn-btn-primary" onclick="TRN.editStop(\''+s.id+'\')"><i class="fa fa-pencil"></i></button> <button class="trn-btn trn-btn-sm trn-btn-danger" onclick="TRN.delStop(\''+s.id+'\')"><i class="fa fa-trash"></i></button></td></tr>';
+        html+='<td><button class="trn-btn trn-btn-sm trn-btn-primary" onclick="TRN.editStop(\''+s.id+'\')"'+EDIT_ATTR+'><i class="fa fa-pencil"></i></button> <button class="trn-btn trn-btn-sm trn-btn-danger" onclick="TRN.delStop(\''+s.id+'\')"'+DEL_ATTR+'><i class="fa fa-trash"></i></button></td></tr>';
       });
       $('#stopsTbody').html(html||'<tr><td colspan="7" style="text-align:center;color:var(--t3)">No stops</td></tr>');
       // populate assignment stop select
@@ -208,19 +231,20 @@ document.addEventListener('DOMContentLoaded', function(){
   $('#stopRouteFilter').on('change', loadStops);
   TRN.openStopModal=function(){$('#stId,#stName,#stPickup,#stDrop').val('');$('#stOrder').val(0);$('#stopModalTitle').text('Add Stop');$('#stopModal').addClass('show')};
   TRN.closeStopModal=function(){$('#stopModal').removeClass('show')};
-  TRN.editStop=function(id){var s=stops.find(function(x){return x.id===id});if(!s)return;$('#stId').val(s.id);$('#stRouteId').val(s.route_id);$('#stName').val(s.name);$('#stPickup').val(s.pickup_time);$('#stDrop').val(s.drop_time);$('#stOrder').val(s.order);$('#stopModalTitle').text('Edit Stop');$('#stopModal').addClass('show')};
-  TRN.saveStop=function(){post('transport/save_stop',{id:$('#stId').val(),route_id:$('#stRouteId').val(),name:$('#stName').val(),pickup_time:$('#stPickup').val(),drop_time:$('#stDrop').val(),order:$('#stOrder').val()}).done(function(r){r=typeof r==='string'?JSON.parse(r):r;if(r.status==='success'){toast(r.message,true);TRN.closeStopModal();loadStops()}else toast(r.message,false)})};
-  TRN.delStop=function(id){if(!confirm('Delete stop?'))return;post('transport/delete_stop',{id:id}).done(function(r){r=typeof r==='string'?JSON.parse(r):r;if(r.status==='success'){toast(r.message,true);loadStops()}else toast(r.message,false)})};
+  TRN.editStop=function(id){if(!CAN_EDIT)return;var s=stops.find(function(x){return x.id===id});if(!s)return;$('#stId').val(s.id);$('#stRouteId').val(s.route_id);$('#stName').val(s.name);$('#stPickup').val(s.pickup_time);$('#stDrop').val(s.drop_time);$('#stOrder').val(s.order);$('#stopModalTitle').text('Edit Stop');$('#stopModal').addClass('show')};
+  TRN.saveStop=function(){if(!CAN_EDIT){toast('You do not have edit permission',false);return}var b=btnOn('#stopModal .trn-btn-primary');post('transport/save_stop',{id:$('#stId').val(),route_id:$('#stRouteId').val(),name:$('#stName').val(),pickup_time:$('#stPickup').val(),drop_time:$('#stDrop').val(),order:$('#stOrder').val()}).done(function(r){r=typeof r==='string'?JSON.parse(r):r;if(r.status==='success'){toast(r.message,true);TRN.closeStopModal();loadStops()}else toast(r.message,false)}).always(function(){btnOff(b)})};
+  TRN.delStop=function(id){if(!CAN_MANAGE){toast('You do not have delete permission',false);return}if(!confirm('Delete stop?'))return;post('transport/delete_stop',{id:id}).done(function(r){r=typeof r==='string'?JSON.parse(r):r;if(r.status==='success'){toast(r.message,true);loadStops()}else toast(r.message,false)})};
 
   // ── Assignments ──
   var assignments=[];
   function loadAssignments(){
+    skel('asnTbody',8);
     getJSON('transport/get_assignments').done(function(r){
-      if(r.status!=='success') return; assignments=r.assignments||[];
+      if(r.status!=='success'){$('#asnTbody').html('<tr><td colspan="8" style="text-align:center;color:var(--rose)">'+escH(r.message||'Failed to load')+'</td></tr>');return} assignments=r.assignments||[];
       var html=''; assignments.forEach(function(a){
         var typeBadge=a.type==='both'?'Pickup & Drop':a.type==='pickup'?'Pickup Only':'Drop Only';
         html+='<tr><td>'+escH(a.student_name)+'</td><td>'+escH(a.student_class)+'</td><td>'+escH(a.route_name)+'</td><td>'+escH(a.stop_name||'—')+'</td><td><span class="trn-badge trn-badge-blue">'+typeBadge+'</span></td><td>Rs '+a.monthly_fee+'</td><td>'+escH(a.assigned_date)+'</td>';
-        html+='<td><button class="trn-btn trn-btn-sm trn-btn-primary" onclick="TRN.editAsn(\''+a.student_id+'\')"><i class="fa fa-pencil"></i></button> <button class="trn-btn trn-btn-sm trn-btn-danger" onclick="TRN.delAsn(\''+a.student_id+'\')"><i class="fa fa-times"></i></button></td></tr>';
+        html+='<td><button class="trn-btn trn-btn-sm trn-btn-primary" onclick="TRN.editAsn(\''+a.student_id+'\')"'+EDIT_ATTR+'><i class="fa fa-pencil"></i></button> <button class="trn-btn trn-btn-sm trn-btn-danger" onclick="TRN.delAsn(\''+a.student_id+'\')"'+DEL_ATTR+'><i class="fa fa-times"></i></button></td></tr>';
       });
       $('#asnTbody').html(html||'<tr><td colspan="8" style="text-align:center;color:var(--t3)">No assignments</td></tr>');
     });
@@ -241,7 +265,7 @@ document.addEventListener('DOMContentLoaded', function(){
     }
     $('#asnModal').addClass('show');
   };
-  TRN.editAsn=function(sid){var a=assignments.find(function(x){return x.student_id===sid});if(!a)return;TRN.openAsnModal(a)};
+  TRN.editAsn=function(sid){if(!CAN_EDIT)return;var a=assignments.find(function(x){return x.student_id===sid});if(!a)return;TRN.openAsnModal(a)};
   TRN.closeAsnModal=function(){$('#asnStudentSearch').prop('disabled',false);$('#asnModal').removeClass('show')};
 
   // Load stops for a route and optionally pre-select a stop
@@ -264,10 +288,12 @@ document.addEventListener('DOMContentLoaded', function(){
   // Route change → load stops for assignment
   $('#asnRouteId').on('change',function(){loadStopsForAssignment($(this).val())});
   TRN.saveAssignment=function(){
+    if(!CAN_EDIT){toast('You do not have edit permission',false);return}
     var sid=$('#asnStudentId').val();if(!sid){toast('Please select a student.',false);return}
     var rid=$('#asnRouteId').val();if(!rid){toast('Please select a route.',false);return}
-    post('transport/save_assignment',{student_id:sid,route_id:rid,stop_id:$('#asnStopId').val(),type:$('#asnType').val()}).done(function(r){r=typeof r==='string'?JSON.parse(r):r;if(r.status==='success'){toast(r.message,true);TRN.closeAsnModal();loadAssignments()}else toast(r.message,false)})};
-  TRN.delAsn=function(sid){if(!confirm('Remove transport assignment?'))return;post('transport/delete_assignment',{student_id:sid}).done(function(r){r=typeof r==='string'?JSON.parse(r):r;if(r.status==='success'){toast(r.message,true);loadAssignments()}else toast(r.message,false)})};
+    var b=btnOn('#asnModal .trn-btn-primary');
+    post('transport/save_assignment',{student_id:sid,route_id:rid,stop_id:$('#asnStopId').val(),type:$('#asnType').val()}).done(function(r){r=typeof r==='string'?JSON.parse(r):r;if(r.status==='success'){toast(r.message,true);TRN.closeAsnModal();loadAssignments()}else toast(r.message,false)}).always(function(){btnOff(b)})};
+  TRN.delAsn=function(sid){if(!CAN_MANAGE){toast('You do not have delete permission',false);return}if(!confirm('Remove transport assignment?'))return;post('transport/delete_assignment',{student_id:sid}).done(function(r){r=typeof r==='string'?JSON.parse(r):r;if(r.status==='success'){toast(r.message,true);loadAssignments()}else toast(r.message,false)})};
 
   // Init
   loadVehicles();loadRoutes();

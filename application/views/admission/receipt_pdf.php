@@ -87,7 +87,7 @@ $paymentLine  = $payStatus === 'paid'
   .ar-app-id { font-size: 14px; font-weight: 800; color: #1f2937; margin-top: 2px; }
 
   /* ── Status banner ──────────────────────────────────────────── */
-  .ar-banner { background: #f0fdfa; border: 1px solid #EBC3B4; border-radius: 6px;
+  .ar-banner { background: #F7ECE7; border: 1px solid #EBC3B4; border-radius: 6px;
                padding: 10px 14px; margin-bottom: 16px; }
   .ar-banner b { color: #BC5A3C; }
 

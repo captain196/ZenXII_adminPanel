@@ -734,6 +734,30 @@ class Firestore_service
         return $this->remove($collection, $this->docId($entityId));
     }
 
+    /**
+     * Atomic create-if-absent — a true cross-process mutex.
+     *
+     * Returns TRUE only if the document did not exist and was created;
+     * FALSE if it already existed (Firestore returns a 409 on create of an
+     * existing doc) or on error. This is the same createDocument-409 primitive
+     * nextSchoolCounter() relies on, exposed so callers can build a real lock
+     * without a transaction (e.g. a per-application enroll mutex). Pass the
+     * FULL doc id (apply docId() yourself), matching get()/set()/remove().
+     */
+    public function createIfAbsent(string $collection, string $docId, array $data): bool
+    {
+        if (!$this->ready || $this->client === null) return false;
+        if (!isset($data['schoolId'])) $data['schoolId'] = $this->schoolId;
+        try {
+            return (bool) $this->client->createDocument($collection, $docId, $data);
+        } catch (\Exception $e) {
+            // A 409 (already exists) surfaces here as false via the client;
+            // a genuine error is logged and also treated as "not acquired".
+            log_message('error', "Firestore_service::createIfAbsent {$collection}/{$docId}: " . $e->getMessage());
+            return false;
+        }
+    }
+
     // ══════════════════════════════════════════════════════════════════
     //  ATOMIC PER-SCHOOL COUNTERS
     // ══════════════════════════════════════════════════════════════════

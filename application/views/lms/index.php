@@ -1,4 +1,14 @@
 <?php defined('BASEPATH') or exit('No direct script access allowed'); ?>
+<?php
+/* ── RBAC level flags ─────────────────────────────────────────────────
+   LMS mapping:
+     EDIT   = save class/material/assignment, grade submission, save quiz
+     MANAGE = delete class/material/assignment/submission/quiz, rebuild counts
+   view = read.                                                          */
+$can_edit   = function_exists('has_permission') ? has_permission('LMS', 'edit')   : true;
+$can_manage = function_exists('has_permission') ? has_permission('LMS', 'manage') : true;
+?>
+<link rel="stylesheet" href="<?= base_url('assets/css/rbac_ui_kit.css') ?>">
 
 <style>
 /* ── LMS Module — Professional Design ─────────────────────────────── */
@@ -149,6 +159,7 @@
 </style>
 
 <div class="content-wrapper">
+  <div class="rx-loadbar" id="rxLoadbar"></div>
   <section class="content">
     <div class="lms-wrap">
       <!-- ── Page Header ─────────────────────────────────────────────────── -->
@@ -156,6 +167,12 @@
         <h2><i class="fa fa-laptop"></i> Learning Management System <span class="lms-page-sub">|
             <?= htmlspecialchars($session_year) ?></span></h2>
       </div>
+
+      <?php if (!$can_edit): ?>
+      <div class="rx-ro-banner"><i class="fa fa-eye rx-ro-ic"></i> View-only access — you can browse LMS data, but creating, editing, grading, and deleting are restricted.</div>
+      <?php elseif (!$can_manage): ?>
+      <div class="rx-ro-banner"><i class="fa fa-pencil rx-ro-ic"></i> Edit access — you can create, edit, and grade, but deleting classes, materials, assignments, and quizzes requires Manage access.</div>
+      <?php endif; ?>
 
       <!-- ── Tab Navigation ──────────────────────────────────────────────── -->
       <?php $at = $active_tab ?? 'dashboard'; ?>
@@ -234,7 +251,7 @@
         <div class="lms-card">
           <div class="lms-card-head">
             <h3><i class="fa fa-video-camera"></i> Online Classes</h3>
-            <button class="lms-btn lms-btn-primary" onclick="LMS.cls.openModal()"><i class="fa fa-plus"></i>
+            <button class="lms-btn lms-btn-primary" onclick="LMS.cls.openModal()" <?= $can_edit ? '' : 'disabled title="Edit access required"' ?>><i class="fa fa-plus"></i>
               Schedule Class</button>
           </div>
           <div class="lms-filter-bar">
@@ -264,7 +281,7 @@
         <div class="lms-card">
           <div class="lms-card-head">
             <h3><i class="fa fa-book"></i> Study Materials</h3>
-            <button class="lms-btn lms-btn-primary" onclick="LMS.mat.openModal()"><i class="fa fa-plus"></i> Add
+            <button class="lms-btn lms-btn-primary" onclick="LMS.mat.openModal()" <?= $can_edit ? '' : 'disabled title="Edit access required"' ?>><i class="fa fa-plus"></i> Add
               Material</button>
           </div>
           <div class="lms-filter-bar">
@@ -295,7 +312,7 @@
         <div class="lms-card">
           <div class="lms-card-head">
             <h3><i class="fa fa-file-text"></i> Assignments</h3>
-            <button class="lms-btn lms-btn-primary" onclick="LMS.asgn.openModal()"><i class="fa fa-plus"></i>
+            <button class="lms-btn lms-btn-primary" onclick="LMS.asgn.openModal()" <?= $can_edit ? '' : 'disabled title="Edit access required"' ?>><i class="fa fa-plus"></i>
               Create Assignment</button>
           </div>
           <div class="lms-filter-bar">
@@ -323,7 +340,7 @@
         <div class="lms-card">
           <div class="lms-card-head">
             <h3><i class="fa fa-question-circle"></i> Quizzes</h3>
-            <button class="lms-btn lms-btn-primary" onclick="LMS.quiz.openModal()"><i class="fa fa-plus"></i>
+            <button class="lms-btn lms-btn-primary" onclick="LMS.quiz.openModal()" <?= $can_edit ? '' : 'disabled title="Edit access required"' ?>><i class="fa fa-plus"></i>
               Create Quiz</button>
           </div>
           <div class="lms-filter-bar">
@@ -579,6 +596,8 @@
     var CSRF_HASH = '<?= $this->security->get_csrf_hash() ?>';
     var CSRF_COOKIE = '<?= $this->config->item('csrf_cookie_name') ?>';
     var ROLE = '<?= htmlspecialchars($admin_role) ?>';
+    var CAN_EDIT = <?= $can_edit ? 'true' : 'false' ?>;   // save class/material/assignment, grade, save quiz
+    var CAN_MANAGE = <?= $can_manage ? 'true' : 'false' ?>; // delete class/material/assignment/quiz
 
     var _classes = []; // session class-sections
     var _subjects = {}; // subject catalog per classNum
@@ -612,6 +631,26 @@
         type: 'GET',
         dataType: 'json'
       });
+    }
+
+    /* ── Top progress bar — driven off every in-flight AJAX ─────────── */
+    $(document).ajaxStart(function() { $('#rxLoadbar').addClass('on'); });
+    $(document).ajaxStop(function()  { $('#rxLoadbar').removeClass('on'); });
+
+    /* ── Skeleton placeholder while a table loads ───────────────────── */
+    function skel(rows) {
+      var h = '<div style="padding:16px 20px;">';
+      for (var i = 0; i < (rows || 6); i++) {
+        h += '<div class="rx-skel rx-skel-row" style="width:' + (98 - (i % 3) * 12) + '%;"></div>';
+      }
+      return h + '</div>';
+    }
+
+    /* ── Button spinner helper (always cleared on settle) ───────────── */
+    function btnBusy(el, on) {
+      if (!el) return;
+      if (on) el.classList.add('rx-btnload');
+      else el.classList.remove('rx-btnload');
     }
 
     function toast(msg, ok) {
@@ -749,15 +788,24 @@
         _data: [],
         _loaded: false,
         load: function() {
+          document.getElementById('classesTableWrap').innerHTML = skel();
           get('lms/get_classes').done(function(r) {
             if (r.status === 'success') {
               LMS.cls._data = r.classes || [];
               LMS.cls._loaded = true;
               LMS.cls.render();
+            } else {
+              document.getElementById('classesTableWrap').innerHTML =
+                '<div class="lms-empty"><i class="fa fa-exclamation-triangle"></i> ' + esc(r.message || 'Failed to load classes.') + '</div>';
             }
+          }).fail(function(x) {
+            document.getElementById('classesTableWrap').innerHTML =
+              '<div class="lms-empty"><i class="fa fa-exclamation-triangle"></i> ' + esc((x.responseJSON && x.responseJSON.message) || 'Network error loading classes.') + '</div>';
           });
         },
         render: function() {
+          var eAttr = CAN_EDIT ? '' : ' disabled title="Edit access required"';
+          var mAttr = CAN_MANAGE ? '' : ' disabled title="Manage access required"';
           var rows = LMS.cls._data;
           var fc = document.getElementById('clsFilterClass').value;
           var fs = document.getElementById('clsFilterStatus').value;
@@ -794,9 +842,9 @@
                 '" target="_blank" class="lms-btn lms-btn-sm lms-btn-success" title="Join"><i class="fa fa-external-link"></i></a> ' :
                 '') +
               '<button class="lms-btn lms-btn-sm lms-btn-outline" onclick="LMS.cls.edit(\'' +
-              c.id + '\')"><i class="fa fa-pencil"></i></button> ' +
+              c.id + '\')"' + eAttr + '><i class="fa fa-pencil"></i></button> ' +
               '<button class="lms-btn lms-btn-sm lms-btn-danger" onclick="LMS.cls.del(\'' +
-              c.id + '\')"><i class="fa fa-trash"></i></button>' +
+              c.id + '\')"' + mAttr + '><i class="fa fa-trash"></i></button>' +
               '</td></tr>';
           });
           html += '</tbody></table>';
@@ -834,6 +882,7 @@
           if (item) LMS.cls.openModal(item);
         },
         save: function() {
+          if (!CAN_EDIT) return toast('You do not have permission to save classes.', false);
           var data = {
             id: document.getElementById('cls_id').value,
             title: document.getElementById('cls_title').value,
@@ -847,17 +896,20 @@
             description: document.getElementById('cls_description').value,
             status: document.getElementById('cls_status').value,
           };
+          var btn = document.querySelector('#classModal .lms-modal-foot .lms-btn-primary');
+          btnBusy(btn, true);
           post('lms/save_class', data).done(function(r) {
             if (r.status === 'success') {
               toast('Class saved!', true);
               LMS.cls.closeModal();
               LMS.cls.load();
-            } else toast(r.message || 'Error', false);
+            } else toast(r.message || 'Error', false); // fail-closed: not saved
           }).fail(function(x) {
-            toast(x.responseJSON?.message || 'Error', false);
-          });
+            toast(x.responseJSON?.message || 'Network error — class not saved.', false);
+          }).always(function() { btnBusy(btn, false); });
         },
         del: function(id) {
+          if (!CAN_MANAGE) return toast('You do not have permission to delete classes.', false);
           if (!confirm('Delete this class?')) return;
           post('lms/delete_class', {
             id: id
@@ -866,6 +918,8 @@
               toast('Deleted', true);
               LMS.cls.load();
             } else toast(r.message || 'Error', false);
+          }).fail(function(x) {
+            toast(x.responseJSON?.message || 'Network error — class not deleted.', false);
           });
         }
       },
@@ -875,15 +929,24 @@
         _data: [],
         _loaded: false,
         load: function() {
+          document.getElementById('materialsTableWrap').innerHTML = skel();
           get('lms/get_materials').done(function(r) {
             if (r.status === 'success') {
               LMS.mat._data = r.materials || [];
               LMS.mat._loaded = true;
               LMS.mat.render();
+            } else {
+              document.getElementById('materialsTableWrap').innerHTML =
+                '<div class="lms-empty"><i class="fa fa-exclamation-triangle"></i> ' + esc(r.message || 'Failed to load materials.') + '</div>';
             }
+          }).fail(function(x) {
+            document.getElementById('materialsTableWrap').innerHTML =
+              '<div class="lms-empty"><i class="fa fa-exclamation-triangle"></i> ' + esc((x.responseJSON && x.responseJSON.message) || 'Network error loading materials.') + '</div>';
           });
         },
         render: function() {
+          var eAttr = CAN_EDIT ? '' : ' disabled title="Edit access required"';
+          var mAttr = CAN_MANAGE ? '' : ' disabled title="Manage access required"';
           var rows = LMS.mat._data;
           var fc = document.getElementById('matFilterClass').value;
           var ft = document.getElementById('matFilterType').value;
@@ -924,9 +987,9 @@
                 '" target="_blank" class="lms-btn lms-btn-sm lms-btn-success" title="Open"><i class="fa fa-external-link"></i></a> ' :
                 '') +
               '<button class="lms-btn lms-btn-sm lms-btn-outline" onclick="LMS.mat.edit(\'' +
-              m.id + '\')"><i class="fa fa-pencil"></i></button> ' +
+              m.id + '\')"' + eAttr + '><i class="fa fa-pencil"></i></button> ' +
               '<button class="lms-btn lms-btn-sm lms-btn-danger" onclick="LMS.mat.del(\'' +
-              m.id + '\')"><i class="fa fa-trash"></i></button>' +
+              m.id + '\')"' + mAttr + '><i class="fa fa-trash"></i></button>' +
               '</td></tr>';
           });
           html += '</tbody></table>';
@@ -961,6 +1024,7 @@
           if (item) LMS.mat.openModal(item);
         },
         save: function() {
+          if (!CAN_EDIT) return toast('You do not have permission to save materials.', false);
           var data = {
             id: document.getElementById('mat_id').value,
             title: document.getElementById('mat_title').value,
@@ -971,17 +1035,20 @@
             url: document.getElementById('mat_url').value,
             description: document.getElementById('mat_description').value,
           };
+          var btn = document.querySelector('#materialModal .lms-modal-foot .lms-btn-primary');
+          btnBusy(btn, true);
           post('lms/save_material', data).done(function(r) {
             if (r.status === 'success') {
               toast('Material saved!', true);
               LMS.mat.closeModal();
               LMS.mat.load();
-            } else toast(r.message || 'Error', false);
+            } else toast(r.message || 'Error', false); // fail-closed: not saved
           }).fail(function(x) {
-            toast(x.responseJSON?.message || 'Error', false);
-          });
+            toast(x.responseJSON?.message || 'Network error — material not saved.', false);
+          }).always(function() { btnBusy(btn, false); });
         },
         del: function(id) {
+          if (!CAN_MANAGE) return toast('You do not have permission to delete materials.', false);
           if (!confirm('Delete this material?')) return;
           post('lms/delete_material', {
             id: id
@@ -990,6 +1057,8 @@
               toast('Deleted', true);
               LMS.mat.load();
             } else toast(r.message || 'Error', false);
+          }).fail(function(x) {
+            toast(x.responseJSON?.message || 'Network error — material not deleted.', false);
           });
         }
       },
@@ -999,15 +1068,24 @@
         _data: [],
         _loaded: false,
         load: function() {
+          document.getElementById('assignmentsTableWrap').innerHTML = skel();
           get('lms/get_assignments').done(function(r) {
             if (r.status === 'success') {
               LMS.asgn._data = r.assignments || [];
               LMS.asgn._loaded = true;
               LMS.asgn.render();
+            } else {
+              document.getElementById('assignmentsTableWrap').innerHTML =
+                '<div class="lms-empty"><i class="fa fa-exclamation-triangle"></i> ' + esc(r.message || 'Failed to load assignments.') + '</div>';
             }
+          }).fail(function(x) {
+            document.getElementById('assignmentsTableWrap').innerHTML =
+              '<div class="lms-empty"><i class="fa fa-exclamation-triangle"></i> ' + esc((x.responseJSON && x.responseJSON.message) || 'Network error loading assignments.') + '</div>';
           });
         },
         render: function() {
+          var eAttr = CAN_EDIT ? '' : ' disabled title="Edit access required"';
+          var mAttr = CAN_MANAGE ? '' : ' disabled title="Manage access required"';
           var rows = LMS.asgn._data;
           var fc = document.getElementById('asgnFilterClass').value;
           var fs = document.getElementById('asgnFilterStatus').value;
@@ -1048,9 +1126,9 @@
               '</span></td>' +
               '<td>' +
               '<button class="lms-btn lms-btn-sm lms-btn-outline" onclick="LMS.asgn.edit(\'' +
-              a.id + '\')"><i class="fa fa-pencil"></i></button> ' +
+              a.id + '\')"' + eAttr + '><i class="fa fa-pencil"></i></button> ' +
               '<button class="lms-btn lms-btn-sm lms-btn-danger" onclick="LMS.asgn.del(\'' +
-              a.id + '\')"><i class="fa fa-trash"></i></button>' +
+              a.id + '\')"' + mAttr + '><i class="fa fa-trash"></i></button>' +
               '</td></tr>';
           });
           html += '</tbody></table>';
@@ -1087,6 +1165,7 @@
           if (item) LMS.asgn.openModal(item);
         },
         save: function() {
+          if (!CAN_EDIT) return toast('You do not have permission to save assignments.', false);
           var data = {
             id: document.getElementById('asgn_id').value,
             title: document.getElementById('asgn_title').value,
@@ -1099,17 +1178,20 @@
             attachUrl: document.getElementById('asgn_attachUrl').value,
             status: document.getElementById('asgn_status').value,
           };
+          var btn = document.querySelector('#assignmentModal .lms-modal-foot .lms-btn-primary');
+          btnBusy(btn, true);
           post('lms/save_assignment', data).done(function(r) {
             if (r.status === 'success') {
               toast('Assignment saved!', true);
               LMS.asgn.closeModal();
               LMS.asgn.load();
-            } else toast(r.message || 'Error', false);
+            } else toast(r.message || 'Error', false); // fail-closed: not saved
           }).fail(function(x) {
-            toast(x.responseJSON?.message || 'Error', false);
-          });
+            toast(x.responseJSON?.message || 'Network error — assignment not saved.', false);
+          }).always(function() { btnBusy(btn, false); });
         },
         del: function(id) {
+          if (!CAN_MANAGE) return toast('You do not have permission to delete assignments.', false);
           if (!confirm('Delete this assignment and all its submissions?')) return;
           post('lms/delete_assignment', {
             id: id
@@ -1118,6 +1200,8 @@
               toast('Deleted', true);
               LMS.asgn.load();
             } else toast(r.message || 'Error', false);
+          }).fail(function(x) {
+            toast(x.responseJSON?.message || 'Network error — assignment not deleted.', false);
           });
         },
         viewSubmissions: function(assignmentId) {
@@ -1140,6 +1224,7 @@
                 '<div class="lms-empty"><i class="fa fa-inbox"></i> No submissions yet</div>';
               return;
             }
+            var gAttr = CAN_EDIT ? '' : ' disabled title="Edit access required"';
             var html =
               '<table class="lms-table"><thead><tr><th>Student</th><th>Submitted At</th><th>Status</th><th>Marks</th><th>Actions</th></tr></thead><tbody>';
             subs.forEach(function(s) {
@@ -1158,7 +1243,7 @@
                 '<button class="lms-btn lms-btn-sm lms-btn-primary" onclick="LMS.asgn.gradePrompt(\'' +
                 assignmentId + '\',\'' + s.studentId + '\',' + (a
                   .maxMarks || 100) +
-                ')"><i class="fa fa-check"></i> Grade</button>' +
+                ')"' + gAttr + '><i class="fa fa-check"></i> Grade</button>' +
                 '</td></tr>';
             });
             html += '</tbody></table>';
@@ -1166,6 +1251,7 @@
           });
         },
         gradePrompt: function(assignmentId, studentId, maxMarks) {
+          if (!CAN_EDIT) return toast('You do not have permission to grade submissions.', false);
           var marks = prompt('Enter marks (max ' + maxMarks + '):');
           if (marks === null) return;
           marks = parseFloat(marks);
@@ -1184,7 +1270,9 @@
               if (r.status === 'success') {
                 toast('Graded!', true);
                 LMS.asgn.viewSubmissions(assignmentId);
-              } else toast(r.message || 'Error', false);
+              } else toast(r.message || 'Error', false); // fail-closed: not graded
+            }).fail(function(x) {
+              toast(x.responseJSON?.message || 'Network error — grade not saved.', false);
             });
         }
       },
@@ -1195,15 +1283,24 @@
         _loaded: false,
         _questions: [],
         load: function() {
+          document.getElementById('quizzesTableWrap').innerHTML = skel();
           get('lms/get_quizzes').done(function(r) {
             if (r.status === 'success') {
               LMS.quiz._data = r.quizzes || [];
               LMS.quiz._loaded = true;
               LMS.quiz.render();
+            } else {
+              document.getElementById('quizzesTableWrap').innerHTML =
+                '<div class="lms-empty"><i class="fa fa-exclamation-triangle"></i> ' + esc(r.message || 'Failed to load quizzes.') + '</div>';
             }
+          }).fail(function(x) {
+            document.getElementById('quizzesTableWrap').innerHTML =
+              '<div class="lms-empty"><i class="fa fa-exclamation-triangle"></i> ' + esc((x.responseJSON && x.responseJSON.message) || 'Network error loading quizzes.') + '</div>';
           });
         },
         render: function() {
+          var eAttr = CAN_EDIT ? '' : ' disabled title="Edit access required"';
+          var mAttr = CAN_MANAGE ? '' : ' disabled title="Manage access required"';
           var rows = LMS.quiz._data;
           var fc = document.getElementById('quizFilterClass').value;
           var fs = document.getElementById('quizFilterStatus').value;
@@ -1242,9 +1339,9 @@
                 .status || 'draft') + '</span></td>' +
               '<td>' +
               '<button class="lms-btn lms-btn-sm lms-btn-outline" onclick="LMS.quiz.edit(\'' +
-              q.id + '\')"><i class="fa fa-pencil"></i></button> ' +
+              q.id + '\')"' + eAttr + '><i class="fa fa-pencil"></i></button> ' +
               '<button class="lms-btn lms-btn-sm lms-btn-danger" onclick="LMS.quiz.del(\'' +
-              q.id + '\')"><i class="fa fa-trash"></i></button>' +
+              q.id + '\')"' + mAttr + '><i class="fa fa-trash"></i></button>' +
               '</td></tr>';
           });
           html += '</tbody></table>';
@@ -1344,6 +1441,7 @@
           wrap.innerHTML = html;
         },
         save: function() {
+          if (!CAN_EDIT) return toast('You do not have permission to save quizzes.', false);
           var data = {
             id: document.getElementById('quiz_id').value,
             title: document.getElementById('quiz_title').value,
@@ -1357,6 +1455,8 @@
           };
           data[CSRF] = CSRF_HASH;
 
+          var btn = document.querySelector('#quizModal .lms-modal-foot .lms-btn-primary');
+          btnBusy(btn, true);
           $.ajax({
             url: BASE + 'lms/save_quiz',
             type: 'POST',
@@ -1373,12 +1473,13 @@
               toast('Quiz saved!', true);
               LMS.quiz.closeModal();
               LMS.quiz.load();
-            } else toast(r.message || 'Error', false);
+            } else toast(r.message || 'Error', false); // fail-closed: not saved
           }).fail(function(x) {
-            toast(x.responseJSON?.message || 'Error', false);
-          });
+            toast(x.responseJSON?.message || 'Network error — quiz not saved.', false);
+          }).always(function() { btnBusy(btn, false); });
         },
         del: function(id) {
+          if (!CAN_MANAGE) return toast('You do not have permission to delete quizzes.', false);
           if (!confirm('Delete this quiz and all attempts?')) return;
           post('lms/delete_quiz', {
             id: id
@@ -1387,6 +1488,8 @@
               toast('Deleted', true);
               LMS.quiz.load();
             } else toast(r.message || 'Error', false);
+          }).fail(function(x) {
+            toast(x.responseJSON?.message || 'Network error — quiz not deleted.', false);
           });
         },
         viewAttempts: function(quizId) {

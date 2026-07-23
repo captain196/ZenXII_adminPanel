@@ -8,6 +8,9 @@
 <div class="container-fluid">
 <div class="att-wrap">
 
+    <!-- Top progress bar — reflects any in-flight request (busy counter). -->
+    <div class="att-loadbar" id="attLoadbar"></div>
+
     <!-- Page Header -->
     <div class="att-header">
         <div class="att-header-left">
@@ -111,6 +114,20 @@
         <div class="att-loader">
             <span class="att-loader-ring"></span>
             <span class="att-loader-text">Loading analytics&hellip;</span>
+        </div>
+    </div>
+
+    <!-- Skeleton placeholders (KPIs + charts) — shimmer while analytics loads. -->
+    <div id="anaSkel" style="display:none;">
+        <div class="att-kpi-grid">
+            <div class="att-skeleton att-skel-kpi"></div>
+            <div class="att-skeleton att-skel-kpi"></div>
+            <div class="att-skeleton att-skel-kpi"></div>
+            <div class="att-skeleton att-skel-kpi"></div>
+        </div>
+        <div class="att-analytics-grid" style="margin-top:16px;">
+            <div class="att-skeleton att-skel-chart"></div>
+            <div class="att-skeleton att-skel-chart"></div>
         </div>
     </div>
 
@@ -275,6 +292,7 @@
     var elAbsent    = document.getElementById('anaAbsentClass');
     var elTotalLate = document.getElementById('anaTotalLate');
     var elLoading   = document.getElementById('anaLoading');
+    var elSkel      = document.getElementById('anaSkel');
     var elEmpty     = document.getElementById('anaEmpty');
     var elGrid      = document.getElementById('anaAnalyticsGrid');
     var elTrendPanel = document.getElementById('anaTrendPanel');
@@ -334,21 +352,33 @@
         setTimeout(function(){ elToast.classList.add('show'); }, 10);
         setTimeout(function(){ elToast.classList.remove('show'); }, 3000);
     }
+    /* ── Top progress bar — busy counter shared by every request (analytics,
+       trend, individual). Wired into the request helper so the AbortController
+       flow stays intact; an aborted fetch still settles → busyEnd fires. ── */
+    var _busy = 0;
+    function busyStart(){ _busy++; var b = document.getElementById('attLoadbar'); if (b) b.classList.add('on'); }
+    function busyEnd(){ _busy = Math.max(0, _busy - 1); if (!_busy) { var b = document.getElementById('attLoadbar'); if (b) b.classList.remove('on'); } }
+
     function postData(url, data, signal) {
         var fd = new FormData();
         fd.append(CSRF_NAME, CSRF_HASH);
         if (data) { Object.keys(data).forEach(function(k){ fd.append(k, data[k]); }); }
         var opts = { method: 'POST', body: fd };
         if (signal) opts.signal = signal;
+        busyStart();
         return fetch(BASE + url, opts)
             .then(function(r) {
-                var ct = r.headers.get('content-type') || '';
-                if (ct.indexOf('application/json') !== -1) return r.json();
-                return r.text().then(function(t) {
-                    try { return JSON.parse(t); } catch(e) { throw new Error('Invalid response'); }
+                // Fail-closed: reject on 401/403/500 or a server error envelope so a
+                // denied/failed call surfaces as an error/empty state, never fake zeros.
+                return r.json().catch(function(){ return {}; }).then(function(j) {
+                    if (j && j.csrf_hash) CSRF_HASH = j.csrf_hash;
+                    if (!r.ok || (j && (j.status === 'error' || j.success === false))) {
+                        throw new Error((j && (j.message || j.error)) || ('Request failed (' + r.status + ')'));
+                    }
+                    return j;
                 });
             })
-            .then(function(j) { if (j && j.csrf_hash) CSRF_HASH = j.csrf_hash; return j; });
+            .finally(busyEnd);
     }
     function chartsReady() { return typeof window.Chart !== 'undefined'; }
 
@@ -610,15 +640,20 @@
     /* ═══════════════════════════════════════════════════════ */
     function setLoading(on){
         if (on) {
-            elLoading.style.display = 'block';
+            // Skeleton placeholders (KPIs + charts) instead of a lone centered spinner.
+            elSkel.style.display = 'block';
+            elLoading.style.display = 'none';
             elEmpty.style.display = 'none';
             elCards.style.display = 'none';
             elGrid.style.display = 'none';
             elTrendPanel.style.display = 'none';
             elLoadBtn.disabled = true;
+            elLoadBtn.classList.add('is-loading');
         } else {
+            elSkel.style.display = 'none';
             elLoading.style.display = 'none';
             elLoadBtn.disabled = false;
+            elLoadBtn.classList.remove('is-loading');
         }
     }
 
@@ -832,6 +867,7 @@
         document.getElementById('anaIndPersonInfo').style.display = 'none';
         elIndLoading.style.display = 'block';
         elIndBtn.disabled = true;
+        elIndBtn.classList.add('is-loading');
 
         postData('attendance/fetch_individual_report', {
             person_id: pid, person_type: ptype, 'class': cls, section: sec
@@ -839,6 +875,7 @@
             .then(function(res) {
                 elIndLoading.style.display = 'none';
                 elIndBtn.disabled = false;
+                elIndBtn.classList.remove('is-loading');
 
                 if (!res || res.status === 'error') {
                     showToast(res && res.message ? res.message : 'No data found.', 'error');
@@ -916,6 +953,7 @@
             .catch(function() {
                 elIndLoading.style.display = 'none';
                 elIndBtn.disabled = false;
+                elIndBtn.classList.remove('is-loading');
                 showToast('Network error. Please try again.', 'error');
                 elIndEmpty.style.display = 'block';
             });

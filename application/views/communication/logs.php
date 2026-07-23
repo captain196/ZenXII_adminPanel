@@ -41,7 +41,7 @@ $at = $active_tab ?? 'logs';
 .cm-empty i{font-size:36px;display:block;margin-bottom:12px;opacity:.5}
 .cm-loading{text-align:center;padding:18px 20px;color:var(--t3);font-size:13px;font-family:var(--font-b)}
 .cm-stat-grid{display:grid;grid-template-columns:repeat(auto-fit,minmax(160px,1fr));gap:14px;margin-bottom:20px}
-.cm-stat-mini{text-align:center;padding:16px;background:var(--bg3,#e6f4f1);border-radius:var(--r,10px);border:1px solid var(--border)}
+.cm-stat-mini{text-align:center;padding:16px;background:var(--bg3,#F7ECE7);border-radius:var(--r,10px);border:1px solid var(--border)}
 .cm-stat-mini-val{font-size:22px;font-weight:700;font-family:var(--font-b);line-height:1}
 .cm-stat-mini-lbl{font-size:11px;color:var(--t3);margin-top:4px;font-family:var(--font-b)}
 /* Toast base styles inherited from header.php */

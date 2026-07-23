@@ -737,7 +737,7 @@ if (!empty($student['Doc']) && is_array($student['Doc'])) {
 
 /* ── Hero — always dark with gold accent ── */
 .sp-hero {
-    background: linear-gradient(130deg, #0c1e38 0%, #070f1c 100%);
+    background: linear-gradient(130deg, #2A1C12 0%, #070f1c 100%);
     border: 1px solid rgba(188,90,60,.20);
     border-radius: var(--r, 14px);
     padding: 28px 32px;
@@ -1077,7 +1077,7 @@ if (!empty($student['Doc']) && is_array($student['Doc'])) {
 }
 .sp-total-cell:last-child { border-right: none; }
 .sp-total-cell--grand {
-    background: linear-gradient(135deg, #0c1e38 0%, #070f1c 100%);
+    background: linear-gradient(135deg, #2A1C12 0%, #070f1c 100%);
     flex: 1.4;
 }
 .sp-total-label {

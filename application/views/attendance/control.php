@@ -20,6 +20,10 @@ if (!empty($Classes) && is_array($Classes)) {
     foreach ($_classSections as $k => &$v) { sort($v); }
     unset($v);
 }
+// ── Level gating ── Locking/unlocking a period and deciding a correction are
+// MANAGE actions; the daily summary/stats and the correction list are view-only.
+$att_can_edit   = function_exists('has_permission') ? has_permission('Attendance', 'edit')   : true;
+$att_can_manage = function_exists('has_permission') ? has_permission('Attendance', 'manage') : true;
 ?>
 <!-- Attendance Design System (shared, cacheable) — see assets/css/attendance_design_system.css -->
 <link rel="stylesheet" href="<?= base_url('assets/css/attendance_design_system.css') ?>?v=2.1.0">
@@ -36,6 +40,8 @@ if (!empty($Classes) && is_array($Classes)) {
 <div class="content-wrapper">
 <section class="content">
 <div class="container-fluid">
+<!-- Top progress bar — driven by a busy counter inside the request helper -->
+<div class="att-loadbar" id="attLoadbar"></div>
 <div class="att-wrap">
     <div class="att-header">
         <div class="att-header-left">
@@ -60,6 +66,13 @@ if (!empty($Classes) && is_array($Classes)) {
             Corrections <span class="att-tag att-tag-red" id="ac-pending-badge" style="display:none">0</span>
         </button>
     </div>
+
+    <?php if (!$att_can_manage): ?>
+    <!-- Read-only banner — manage permission required to lock/unlock or decide -->
+    <div class="att-alert att-alert-warn show" style="margin-bottom:16px" role="status">
+        <i class="fa fa-lock"></i> View-only — you can review attendance, locks and corrections, but changing them needs Attendance manage access.
+    </div>
+    <?php endif; ?>
 
     <!-- ── Dashboard ──────────────────────────────────────────── -->
     <section class="att-pane active" id="sec-dashboard">
@@ -197,11 +210,18 @@ if (!empty($Classes) && is_array($Classes)) {
     var CSRF_NAME = '<?= $this->security->get_csrf_token_name() ?>';
     var csrf = '<?= $this->security->get_csrf_hash() ?>';
     var CLASS_SECTIONS = <?= json_encode($_classSections, JSON_UNESCAPED_UNICODE) ?>;
+    var CAN_MANAGE = <?= $att_can_manage ? 'true' : 'false' ?>;
 
     // ── shared helpers ───────────────────────────────────────────
     function $(sel, root){ return (root||document).querySelector(sel); }
     function $$(sel, root){ return Array.from((root||document).querySelectorAll(sel)); }
     function todayIso(){ return new Date().toISOString().slice(0,10); }
+
+    // Top progress bar — a busy counter so the bar stays lit while ANY request
+    // is in flight and clears only when the last one settles.
+    var _busy = 0;
+    function busyStart(){ _busy++; var b = $('#attLoadbar'); if (b) b.classList.add('on'); }
+    function busyEnd(){ _busy = Math.max(0, _busy - 1); if (!_busy){ var b = $('#attLoadbar'); if (b) b.classList.remove('on'); } }
     function toast(msg, kind){
         var t = $('#toast'); t.textContent = msg;
         t.className = 'att-toast show ' + (kind === 'error' ? 'error' : 'success');
@@ -219,13 +239,19 @@ if (!empty($Classes) && is_array($Classes)) {
             fd.append(CSRF_NAME, csrf);
             opts.body = fd;
         }
+        busyStart();
         return fetch(BASE + '/' + path, opts).then(function(r){
-            return r.json().then(function(j){
-                // refresh CSRF token from response
+            // Fail-closed: never let a non-JSON error body (login redirect, 500
+            // HTML) crash the helper — always resolve to a parsed-or-empty body
+            // carrying the real ok/status so every caller treats non-ok as
+            // failure. This helper deliberately does NOT reject: the
+            // correction/decide flow inspects the 409 drift response, which a
+            // reject would swallow.
+            return r.json().catch(function(){ return {}; }).then(function(j){
                 if (j && j.csrf_token) csrf = j.csrf_token;
-                return { ok: r.ok, status: r.status, body: j };
+                return { ok: r.ok, status: r.status, body: j || {} };
             });
-        });
+        }).finally(busyEnd);
     }
 
     // ── Tabs ─────────────────────────────────────────────────────
@@ -276,6 +302,7 @@ if (!empty($Classes) && is_array($Classes)) {
     }
 
     function fetchSummary(date, cls, sec) {
+        busyStart();
         return fetch(BASE + '/summary?class=' + encodeURIComponent(cls)
                           + '&section=' + encodeURIComponent(sec)
                           + '&date=' + encodeURIComponent(date),
@@ -286,7 +313,8 @@ if (!empty($Classes) && is_array($Classes)) {
                 return { cls: cls, sec: sec, p: j.present|0, a: j.absent|0, l: j.leave|0,
                          late: j.late|0, total: j.total|0 };
             })
-            .catch(function(){ return null; });
+            .catch(function(){ return null; })
+            .finally(busyEnd);
     }
 
     function loadDashboard() {
@@ -420,11 +448,19 @@ if (!empty($Classes) && is_array($Classes)) {
         var date = $('#lk-date').value;
         if (!cls || !sec || !date) return toast('Pick class, section, date.', 'error');
 
+        // Container loading state: reveal the detail card with an overlay while
+        // the lock state loads, so there's no blank flash before render.
+        var detail = $('#lk-detail');
+        detail.style.display = 'block';
+        detail.classList.add('att-rel');
+        detail.innerHTML = '<div style="min-height:78px"></div>'
+            + '<div class="att-loading-overlay"><span class="att-spin"></span> Loading lock state…</div>';
+
         api('GET', 'lock?class=' + encodeURIComponent(cls)
                   + '&section=' + encodeURIComponent(sec)
                   + '&date='    + encodeURIComponent(date)
         ).then(function(res){
-            if (!res.ok) return toast(res.body.message || 'Load failed.', 'error');
+            if (!res.ok){ detail.style.display = 'none'; detail.innerHTML = ''; return toast(res.body.message || 'Load failed.', 'error'); }
             renderLockDetail(cls, sec, date, res.body);
         });
     });
@@ -456,11 +492,14 @@ if (!empty($Classes) && is_array($Classes)) {
             + '  </div>'
             + '  <div>'
             + '    <span class="att-tag ' + pillCls + '">' + stage + '</span>'
-            + '    <button class="att-btn att-btn-primary" id="open-lock-modal" style="margin-left:10px">Lock / Unlock</button>'
+            + (CAN_MANAGE
+                ? '    <button class="att-btn att-btn-primary" id="open-lock-modal" style="margin-left:10px">Lock / Unlock</button>'
+                : '    <span class="att-mute" style="margin-left:10px" title="Requires Attendance manage permission"><i class="fa fa-lock"></i> View-only</span>')
             + '  </div>'
             + '</div>';
 
-        $('#open-lock-modal').addEventListener('click', function(){
+        var openBtn = $('#open-lock-modal');
+        if (openBtn) openBtn.addEventListener('click', function(){
             $('#lock-modal-title').textContent = 'Lock / Unlock — ' + cls + ' / ' + sec + ' • ' + date;
             $('#lock-modal-body').innerHTML = '<div class="att-mute">Current: ' + lockedHtml + '</div>';
             $('#lk-reason').value = '';
@@ -470,11 +509,13 @@ if (!empty($Classes) && is_array($Classes)) {
             $$('input[name=lk-action]').forEach(function(r){ r.checked = (r.value === (current ? 'false' : 'true')); });
 
             $('#lk-apply').onclick = function(){
+                var applyBtn = this;
                 var lockedNew = $('input[name=lk-action]:checked').value === 'true';
                 var reason = $('#lk-reason').value.trim();
                 if (!lockedNew && reason.length < 10) {
                     return toast('Unlock reason must be ≥10 chars.', 'error');
                 }
+                applyBtn.classList.add('is-loading');
                 api('POST', 'lock/set', {
                     'class':   cls,
                     'section': sec,
@@ -486,7 +527,7 @@ if (!empty($Classes) && is_array($Classes)) {
                     $('#modal-lock').classList.remove('open');
                     toast(lockedNew ? 'Locked.' : 'Unlocked.');
                     renderLockDetail(cls, sec, date, res.body);
-                });
+                }).finally(function(){ applyBtn.classList.remove('is-loading'); });
             };
             $('#modal-lock').classList.add('open');
         });
@@ -512,7 +553,20 @@ if (!empty($Classes) && is_array($Classes)) {
         if (date) qs += '&date=' + date;
         if (append && cursorState) qs += '&cursor=' + cursorState;
 
+        // Container loading state: overlay the corrections table on a fresh load
+        // (not on "Load more", which appends below the existing rows).
+        var wrap = $('#tbl-corrections').closest('.att-table-wrap');
+        if (!append && wrap && !wrap.querySelector('.att-loading-overlay')) {
+            wrap.classList.add('att-rel');
+            var ov = document.createElement('div');
+            ov.className = 'att-loading-overlay';
+            ov.innerHTML = '<span class="att-spin"></span> Loading…';
+            wrap.appendChild(ov);
+        }
+        function clearOv(){ if (wrap){ var o = wrap.querySelector('.att-loading-overlay'); if (o) o.remove(); } }
+
         api('GET', 'correction/list?' + qs).then(function(res){
+            clearOv();
             if (!res.ok) return toast(res.body.message || 'Load failed.', 'error');
             renderCorrections(res.body, append);
         });
@@ -532,7 +586,9 @@ if (!empty($Classes) && is_array($Classes)) {
         rows.forEach(function(r){
             var tr = document.createElement('tr');
             var actions = (r.status === 'pending')
-                ? '<button class="att-btn att-btn-ghost" data-decide="' + (r.requestId || '') + '">Review</button>'
+                ? (CAN_MANAGE
+                    ? '<button class="att-btn att-btn-ghost" data-decide="' + (r.requestId || '') + '">Review</button>'
+                    : '<span class="att-mute"><i class="fa fa-lock"></i> pending</span>')
                 : '<span class="att-mute">' + r.status + '</span>';
             tr.innerHTML = ''
                 + '<td><span class="att-mute">' + (r.requestedAt || '').slice(0,16).replace('T',' ') + '</span></td>'
@@ -575,6 +631,7 @@ if (!empty($Classes) && is_array($Classes)) {
         }
 
         function decide(decision, force){
+            if (!CAN_MANAGE) { toast("View-only — you don't have manage access.", 'error'); return; }
             // Loading feedback: disable both actions and spin the clicked one until
             // the decide round-trip resolves. Restore on every non-success path
             // (drift-409, server error, network reject) so the modal stays usable.

@@ -75,7 +75,7 @@ class Schools extends MY_Controller
 
     public function fees()
     {
-        $this->_require_role(self::VIEW_ROLES, 'view_fees');
+        $this->_require_role(self::VIEW_ROLES, 'view_fees', 'Configuration', 'view');
         $this->load->view('include/header');
         $this->load->view('fees');
         $this->load->view('include/footer');
@@ -284,7 +284,7 @@ class Schools extends MY_Controller
     // ── School Profile ────────────────────────────────────────────────────
     public function schoolProfile()
     {
-        $this->_require_role(self::VIEW_ROLES, 'view_school_profile');
+        $this->_require_role(self::VIEW_ROLES, 'view_school_profile', 'Configuration', 'view');
         $school_name = $this->school_name;
 
         // ── SP-01 (post-LOGO-1 2026-06-02): Firestore-canonical reads ──
@@ -575,7 +575,7 @@ class Schools extends MY_Controller
 
     public function schoolgallery()
     {
-        $this->_require_role(self::VIEW_ROLES, 'view_gallery');
+        $this->_require_role(self::VIEW_ROLES, 'view_gallery', 'Events', 'view');
         $this->load->view('include/header');
         $this->load->view('schoolgallery');
         $this->load->view('include/footer');
@@ -662,7 +662,7 @@ class Schools extends MY_Controller
 
     public function fetchGalleryAlbums()
     {
-        $this->_require_role(self::VIEW_ROLES, 'view_gallery_albums');
+        $this->_require_role(self::VIEW_ROLES, 'view_gallery_albums', 'Events', 'view');
         header('Content-Type: application/json');
         $school_name = $this->school_name;
 
@@ -857,7 +857,7 @@ class Schools extends MY_Controller
     // ── Gallery: fetch media for a specific event album ─────────────────
     public function fetchAlbumMedia()
     {
-        $this->_require_role(self::VIEW_ROLES, 'view_album_media');
+        $this->_require_role(self::VIEW_ROLES, 'view_album_media', 'Events', 'view');
         header('Content-Type: application/json');
         $school_name = $this->school_name;
         $eventId     = trim($this->input->get('event_id') ?? '');
@@ -1020,7 +1020,7 @@ class Schools extends MY_Controller
     // ── Gallery: delete media ───────────────────────────────────────────
     public function deleteMedia()
     {
-        $this->_require_role(self::ADMIN_ROLES, 'delete_media');
+        $this->_require_role(self::ADMIN_ROLES, 'delete_media', 'Events', 'manage');
         header('Content-Type: application/json');
 
         $school_name = $this->school_name;
@@ -1129,10 +1129,13 @@ class Schools extends MY_Controller
                 }
                 if (is_array($doc)) {
                     $docSchool = (string) ($doc['schoolId'] ?? '');
-                    // Block only on an explicit mismatch. An empty schoolId means
-                    // a legacy/malformed doc (the caller already passed the url
-                    // guard), so allow that through to avoid breaking cleanup.
-                    if ($docSchool !== '' && $docSchool !== (string) $this->school_id) {
+                    // D8 (2026-07-12): fail CLOSED on schoolId mismatch OR empty.
+                    // An empty schoolId no longer passes: galleryMedia doc-ids are
+                    // not schoolId-namespaced, so a self-owned url + a victim's
+                    // event_id/media_id targeting a legacy/empty-schoolId doc could
+                    // otherwise delete another tenant's row. Empty == not provably
+                    // ours → reject. (Legit ZenXii docs always stamp schoolId.)
+                    if ($docSchool !== (string) $this->school_id) {
                         $this->_deletemedia_reject_cross_tenant($eventId, $mediaId, $docSchool);
                         return;
                     }
@@ -1204,7 +1207,7 @@ class Schools extends MY_Controller
     // ── Gallery: upload media to event album ────────────────────────────
     public function uploadMedia()
     {
-        $this->_require_role(self::ADMIN_ROLES, 'upload_media');
+        $this->_require_role(self::ADMIN_ROLES, 'upload_media', 'Events', 'manage');
         header('Content-Type: application/json');
 
         $school_name = $this->school_name;
@@ -1456,7 +1459,7 @@ class Schools extends MY_Controller
     // ── Gallery: set event cover image ──────────────────────────────────
     public function setEventCover()
     {
-        $this->_require_role(self::ADMIN_ROLES, 'set_event_cover');
+        $this->_require_role(self::ADMIN_ROLES, 'set_event_cover', 'Events', 'manage');
         header('Content-Type: application/json');
         $school_name = $this->school_name;
         $eventId     = trim($this->input->post('event_id') ?? '');

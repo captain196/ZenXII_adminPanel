@@ -69,7 +69,7 @@ class Examination extends MY_Controller
      */
     public function index()
     {
-        $this->_require_role(self::VIEW_ROLES, 'view examination dashboard');
+        $this->_require_role(self::VIEW_ROLES, 'view examination dashboard', 'Examinations', 'view');
         $school = $this->school_name;
         $year   = $this->session_year;
 
@@ -111,7 +111,7 @@ class Examination extends MY_Controller
      */
     public function merit_list()
     {
-        $this->_require_role(self::VIEW_ROLES, 'view merit list');
+        $this->_require_role(self::VIEW_ROLES, 'view merit list', 'Examinations', 'view');
         $school    = $this->school_name;
         $year      = $this->session_year;
         $exams     = $this->exam_engine->get_active_exams();
@@ -130,7 +130,7 @@ class Examination extends MY_Controller
      */
     public function analytics()
     {
-        $this->_require_role(self::VIEW_ROLES, 'view examination analytics');
+        $this->_require_role(self::VIEW_ROLES, 'view examination analytics', 'Examinations', 'view');
         $exams     = $this->exam_engine->get_active_exams();
         $structure = $this->exam_engine->get_class_structure();
 
@@ -147,7 +147,7 @@ class Examination extends MY_Controller
      */
     public function tabulation()
     {
-        $this->_require_role(self::VIEW_ROLES, 'view tabulation sheet');
+        $this->_require_role(self::VIEW_ROLES, 'view tabulation sheet', 'Examinations', 'view');
         $exams     = $this->exam_engine->get_active_exams();
         $structure = $this->exam_engine->get_class_structure();
 
@@ -171,7 +171,7 @@ class Examination extends MY_Controller
      */
     public function get_merit_data()
     {
-        $this->_require_role(self::VIEW_ROLES, 'view merit data');
+        $this->_require_role(self::VIEW_ROLES, 'view merit data', 'Examinations', 'view');
         header('Content-Type: application/json');
 
         $school     = $this->school_name;
@@ -293,7 +293,7 @@ class Examination extends MY_Controller
      */
     public function get_analytics_data()
     {
-        $this->_require_role(self::VIEW_ROLES, 'view analytics data');
+        $this->_require_role(self::VIEW_ROLES, 'view analytics data', 'Examinations', 'view');
         header('Content-Type: application/json');
 
         $school     = $this->school_name;
@@ -448,7 +448,7 @@ class Examination extends MY_Controller
      */
     public function get_exam_comparison()
     {
-        $this->_require_role(self::VIEW_ROLES, 'view exam comparison');
+        $this->_require_role(self::VIEW_ROLES, 'view exam comparison', 'Examinations', 'view');
         header('Content-Type: application/json');
 
         $school     = $this->school_name;
@@ -586,7 +586,7 @@ class Examination extends MY_Controller
      */
     public function get_tabulation_data()
     {
-        $this->_require_role(self::VIEW_ROLES, 'view tabulation data');
+        $this->_require_role(self::VIEW_ROLES, 'view tabulation data', 'Examinations', 'view');
         header('Content-Type: application/json');
 
         $school     = $this->school_name;
@@ -706,7 +706,7 @@ class Examination extends MY_Controller
      */
     public function bulk_compute()
     {
-        $this->_require_role(self::ADMIN_ROLES, 'bulk compute results');
+        $this->_require_role(self::ADMIN_ROLES, 'bulk compute results', 'Examinations', 'manage');
         set_time_limit(120); // Allow up to 2 minutes for large schools
         header('Content-Type: application/json');
 
@@ -794,7 +794,7 @@ class Examination extends MY_Controller
      */
     public function export_merit_list()
     {
-        $this->_require_role(self::ADMIN_ROLES, 'export merit list');
+        $this->_require_role(self::ADMIN_ROLES, 'export merit list', 'Examinations', 'view');
         header('Content-Type: application/json');
 
         $school     = $this->school_name;

@@ -5,9 +5,13 @@ ksort($components);
 $totalMaxAll = (int) ($template['TotalMaxMarks'] ?? 0);
 $scale       = $exam['GradingScale'] ?? 'Percentage';
 $passingPct  = (int) ($exam['PassingPercent'] ?? 33);
+$can_edit    = function_exists('has_permission') ? has_permission('Results', 'edit')   : true;
+$can_manage  = function_exists('has_permission') ? has_permission('Results', 'manage') : true;
 ?>
+<link rel="stylesheet" href="<?= base_url('assets/css/rbac_ui_kit.css') ?>">
 
 <div class="content-wrapper">
+<div class="rx-loadbar" id="rxLoadbar"></div>
 <div class="rms-wrap">
 
   <!-- ── Page Header ──────────────────────────────────────────────── -->
@@ -31,16 +35,23 @@ $passingPct  = (int) ($exam['PassingPercent'] ?? 33);
     </div>
   </div>
 
+  <?php if (!$can_edit): ?>
+  <div class="rx-ro-banner">
+    <i class="fa fa-eye rx-ro-ic"></i>
+    View-only access — this marks sheet is read-only. Entering or saving marks requires Edit access on Results.
+  </div>
+  <?php endif; ?>
+
   <!-- ── Action bar ───────────────────────────────────────────────── -->
   <div class="rms-action-bar">
     <div id="rmsSaveMsg" class="rms-save-msg" style="display:none;"></div>
-    <button id="rmsSaveBtn" class="rms-btn-save">
+    <button id="rmsSaveBtn" class="rms-btn-save" <?= $can_edit ? '' : 'disabled title="You do not have Edit access"' ?>>
       <i class="fa fa-save"></i> Save All Marks
     </button>
   </div>
 
   <!-- ── Marks table ──────────────────────────────────────────────── -->
-  <div class="rms-table-wrapper">
+  <div class="rms-table-wrapper rx-rel">
     <table class="rms-table" id="rmsTable">
       <thead>
         <tr class="rms-thead-main">
@@ -86,7 +97,7 @@ $passingPct  = (int) ($exam['PassingPercent'] ?? 33);
                    min="0" max="<?= $compMax ?>"
                    value="<?= $absent ? '' : $val ?>"
                    placeholder="0"
-                   <?= $absent ? 'disabled' : '' ?>>
+                   <?= ($absent || !$can_edit) ? 'disabled' : '' ?>>
           </td>
           <?php endforeach; ?>
           <td class="rms-td-total">
@@ -102,7 +113,8 @@ $passingPct  = (int) ($exam['PassingPercent'] ?? 33);
           </td>
           <td class="rms-td-absent">
             <input type="checkbox" class="rms-absent-chk"
-                   <?= $absent ? 'checked' : '' ?>>
+                   <?= $absent ? 'checked' : '' ?>
+                   <?= $can_edit ? '' : 'disabled' ?>>
           </td>
         </tr>
         <?php endforeach; ?>

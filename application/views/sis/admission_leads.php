@@ -159,9 +159,16 @@ $esc = function($v) { return htmlspecialchars($v ?? '', ENT_QUOTES, 'UTF-8'); };
 <div class="content-wrapper">
 <div class="leads-wrap">
 
+    <!-- View switcher (IA reorg 2026-07): Funnel is a view of Applications. -->
+    <div class="ac-viewsw" style="display:inline-flex;gap:4px;background:var(--bg3,#f1f0ed);border:1px solid var(--border,#e6e2dc);border-radius:10px;padding:4px;margin-bottom:16px;flex-wrap:wrap;">
+        <a href="<?= base_url('sis/applications') ?>" style="display:inline-flex;align-items:center;gap:7px;padding:7px 15px;border-radius:7px;font-size:13px;font-weight:600;color:var(--t2,#5b524b);text-decoration:none;"><i class="fa fa-table"></i> Table</a>
+        <a href="<?= base_url('sis/pipeline') ?>" style="display:inline-flex;align-items:center;gap:7px;padding:7px 15px;border-radius:7px;font-size:13px;font-weight:600;color:var(--t2,#5b524b);text-decoration:none;"><i class="fa fa-columns"></i> Board</a>
+        <span style="display:inline-flex;align-items:center;gap:7px;padding:7px 15px;border-radius:7px;font-size:13px;font-weight:600;background:var(--card,#fff);color:var(--gold,#BC5A3C);box-shadow:0 1px 2px rgba(0,0,0,.07);"><i class="fa fa-filter"></i> Funnel</span>
+    </div>
+
     <div class="leads-hdr">
         <div class="leads-hdr-left">
-            <h1><i class="fa fa-users"></i>Admission Leads</h1>
+            <h1><i class="fa fa-filter"></i>Applications — Funnel</h1>
             <p class="leads-sub">Public-form applications and walk-in inquiries for session <?= $esc($session_year ?? '') ?></p>
         </div>
         <div class="leads-toolbar">
@@ -244,6 +251,7 @@ function loadLeads() {
             renderStats();
             renderTable();
         }
+        else { document.getElementById('leadsBody').innerHTML = '<tr><td colspan="7" class="leads-empty"><i class="fa fa-exclamation-triangle"></i> ' + String(data.message || 'Could not load leads.').replace(/</g,'&lt;') + '</td></tr>'; }
     })
     .catch(function() {
         document.getElementById('leadsBody').innerHTML = '<tr><td colspan="7" class="leads-empty"><i class="fa fa-exclamation-triangle"></i> Failed to load leads.</td></tr>';

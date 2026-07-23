@@ -1,255 +1,171 @@
-<?php defined('BASEPATH') or exit('No direct script access allowed'); ?>
+<?php defined('BASEPATH') or exit('No direct script access allowed');
+if (!function_exists('ov_initials')) { function ov_initials($n){ $n=trim((string)$n); if($n==='')return '?'; $p=preg_split('/\s+/',$n); $a=mb_substr($p[0],0,1); $b=count($p)>1?mb_substr($p[count($p)-1],0,1):''; return strtoupper($a.$b); } }
+if (!function_exists('ov_color')) { function ov_color($s){ $pal=['#4E82E0','#DD9433','#9576DA','#2FA875','#C05A3B','#3BB0C9','#E06A9B','#6E8AA8']; $s=(string)$s; $h=0; for($i=0;$i<strlen($s);$i++){$h=($h*31+ord($s[$i]))&0x7fffffff;} return $pal[$h%count($pal)]; } }
+if (!function_exists('ov_ago')) { function ov_ago($ts){ $t=strtotime((string)$ts); if(!$t)return ''; $d=time()-$t; if($d<3600)return max(1,floor($d/60)).'m ago'; if($d<86400)return floor($d/3600).'h ago'; return floor($d/86400).'d ago'; } }
+if (!function_exists('ov_tint')) { function ov_tint($hex,$a){ $h=ltrim($hex,'#'); if(strlen($h)===3)$h=$h[0].$h[0].$h[1].$h[1].$h[2].$h[2]; $n=hexdec($h); return 'rgba('.(($n>>16)&255).','.(($n>>8)&255).','.($n&255).','.$a.')'; } }
 
+$kpis = [
+    ['Inquiries',        (int)($stats['total_inquiries']??0),   '#4E82E0', 'this session'],
+    ['Applications',     (int)($stats['total_applications']??0),'#9576DA', 'this session'],
+    ['In Review',        (int)($stats['in_review']??0),         '#DD9433', 'docs + interview'],
+    ['Pending Decision', (int)($stats['pending_approval']??0),  '#C05A3B', 'awaiting sign-off'],
+    ['Approved',         (int)($stats['approved']??0),          '#2FA875', 'ready to enrol'],
+    ['Waitlisted',       (int)($stats['total_waitlist']??0),    '#8E72C8', 'held for a seat'],
+];
+$funnel = [
+    ['Inquiries',    (int)($stats['total_inquiries']??0),    '#4E82E0'],
+    ['Applications', (int)($stats['total_applications']??0), '#9576DA'],
+    ['In Review',    (int)($stats['in_review']??0),          '#DD9433'],
+    ['Decision',     (int)($stats['pending_approval']??0),   '#C05A3B'],
+    ['Approved',     (int)($stats['approved']??0),           '#2FA875'],
+    ['Enrolled',     (int)($stats['enrolled']??0),           '#2AA79C'],
+];
+$fmax = max(1, $funnel[0][1]);
+?>
 <style>
 html { font-size:16px !important; }
-
 .ac-wrap { padding:24px 22px 52px; min-height:100vh; }
-
-/* ── Page Header ── */
-.ac-head {
-    display:flex; align-items:center; gap:14px;
-    padding:18px 22px; margin-bottom:22px;
-    background:var(--bg2); border:1px solid var(--border);
-    border-radius:var(--r); box-shadow:var(--sh);
-}
-.ac-head-icon {
-    width:44px; height:44px; border-radius:10px;
-    background:var(--gold); display:flex; align-items:center; justify-content:center;
-    flex-shrink:0; box-shadow:0 0 18px var(--gold-glow);
-}
+.ac-head { display:flex; align-items:center; gap:14px; padding:18px 22px; margin-bottom:18px;
+    background:var(--bg2); border:1px solid var(--border); border-radius:var(--r); box-shadow:var(--sh); }
+.ac-head-icon { width:44px; height:44px; border-radius:10px; background:var(--gold); display:flex; align-items:center; justify-content:center;
+    flex-shrink:0; box-shadow:0 0 18px var(--gold-glow); }
 .ac-head-icon i { color:#fff; font-size:18px; }
 .ac-head-info { flex:1; }
 .ac-head-title { font-size:18px; font-weight:700; color:var(--t1); font-family:var(--font-d); }
 .ac-head-sub { font-size:12px; color:var(--t3); margin-top:2px; }
+.ac-btn { display:inline-flex; align-items:center; gap:7px; padding:9px 16px; border-radius:9px; font-size:13px; font-weight:600;
+    border:1px solid var(--gold); background:var(--gold); color:#fff; text-decoration:none; box-shadow:0 2px 10px var(--gold-ring); }
+.ac-btn:hover { background:var(--gold2); color:#fff; }
 
-/* ── Quick Links ── */
-.ac-quick { display:flex; gap:10px; flex-wrap:wrap; }
-.ac-ql {
-    display:inline-flex; align-items:center; gap:7px;
-    padding:9px 18px; border-radius:8px; border:1px solid var(--border);
-    background:var(--bg2); color:var(--t2); font-size:13px; font-weight:600;
-    text-decoration:none; cursor:pointer; transition:all var(--ease); font-family:var(--font-b);
-}
-.ac-ql:hover { border-color:var(--gold); color:var(--gold); background:var(--gold-dim); }
-.ac-ql i { font-size:13px; }
+/* KPI tiles */
+.ov-kpis { display:grid; grid-template-columns:repeat(6,1fr); gap:13px; margin-bottom:18px; }
+.ov-kpi { background:var(--bg2); border:1px solid var(--border); border-radius:14px; padding:15px 16px; box-shadow:var(--sh); }
+.ov-kpi .lbl { font-size:11.5px; font-weight:600; color:var(--t3); text-transform:uppercase; letter-spacing:.04em; display:flex; align-items:center; gap:7px; }
+.ov-kpi .dot { width:8px; height:8px; border-radius:50%; flex:0 0 auto; }
+.ov-kpi .val { font-size:27px; font-weight:750; margin-top:8px; color:var(--t1); line-height:1; letter-spacing:-.02em; }
+.ov-kpi .sub { font-size:11.5px; color:var(--t3); margin-top:3px; }
 
-/* ── Stat Grid ── */
-.ac-stat-grid {
-    display:grid; grid-template-columns:repeat(auto-fill,minmax(155px,1fr));
-    gap:14px; margin-bottom:24px;
-}
-.ac-stat {
-    background:var(--bg2); border:1px solid var(--border);
-    border-radius:10px; padding:18px 16px; text-align:center;
-    box-shadow:var(--sh); transition:border-color var(--ease);
-}
-.ac-stat:hover { border-color:var(--gold); }
-.ac-stat-val {
-    font-size:2rem; font-weight:700; color:var(--gold);
-    font-family:var(--font-b); line-height:1.1;
-}
-.ac-stat-lbl {
-    font-size:11px; color:var(--t3); margin-top:6px;
-    text-transform:uppercase; letter-spacing:.5px; font-weight:600;
-}
+.ac-card { background:var(--bg2); border:1px solid var(--border); border-radius:var(--r); box-shadow:var(--sh); }
+.ac-card-h { display:flex; align-items:center; gap:10px; padding:14px 18px; border-bottom:1px solid var(--border); }
+.ac-card-h h3 { font-size:14px; font-weight:700; color:var(--t1); margin:0; }
+.ac-card-h .hint { margin-left:auto; font-size:12px; color:var(--t3); }
+.ac-card-b { padding:16px 18px; }
 
-/* ── Chart Row ── */
-.ac-chart-row { display:grid; grid-template-columns:1fr 1fr; gap:18px; margin-bottom:22px; }
-.ac-card {
-    background:var(--bg2); border:1px solid var(--border);
-    border-radius:var(--r); padding:20px 22px; box-shadow:var(--sh);
-}
-.ac-card-title {
-    font-size:14px; font-weight:700; color:var(--t1); margin-bottom:16px;
-    display:flex; align-items:center; gap:8px;
-}
-.ac-card-title i { color:var(--gold); font-size:15px; }
+/* Funnel strip */
+.ov-funnel { display:flex; gap:6px; align-items:stretch; }
+.ov-step { flex:1; background:var(--bg3); border:1px solid var(--border); border-radius:10px; padding:11px 12px; min-width:0; }
+.ov-step .fn { font-size:11.5px; color:var(--t2); font-weight:600; white-space:nowrap; overflow:hidden; text-overflow:ellipsis; }
+.ov-step .fv { font-size:22px; font-weight:750; margin-top:3px; color:var(--t1); }
+.ov-step .fp { font-size:11px; color:var(--t3); margin-top:1px; }
+.ov-step .fb { height:4px; border-radius:3px; margin-top:8px; background:var(--border); overflow:hidden; }
+.ov-step .fb i { display:block; height:100%; border-radius:3px; }
+.ov-arrow { align-self:center; color:var(--t3); font-size:13px; flex:0 0 auto; }
 
-/* ── Funnel ── */
-.ac-funnel { display:flex; flex-direction:column; gap:10px; }
-.ac-funnel-row { display:flex; align-items:center; gap:12px; }
-.ac-funnel-lbl { width:100px; font-size:12px; color:var(--t2); text-align:right; font-weight:600; }
-.ac-funnel-bar { flex:1; height:30px; background:var(--bg3); border-radius:6px; overflow:hidden; }
-.ac-funnel-fill {
-    height:100%; border-radius:6px; transition:width .5s ease;
-    display:flex; align-items:center; padding:0 12px;
-}
-.ac-funnel-fill span { font-size:12px; font-weight:700; color:#fff; }
+/* Two columns */
+.ov-cols { display:grid; grid-template-columns:1.35fr 1fr; gap:16px; margin-top:16px; }
+.ov-row { display:flex; align-items:center; gap:12px; padding:11px 2px; border-bottom:1px solid var(--border); }
+.ov-row:last-child { border-bottom:0; }
+.ov-av { width:34px; height:34px; border-radius:9px; display:grid; place-items:center; font-weight:700; font-size:12px; color:#fff; flex:0 0 auto; }
+.ov-nm { font-weight:600; font-size:13.5px; color:var(--t1); }
+.ov-mt { font-size:12px; color:var(--t3); }
+.ov-chip { display:inline-flex; align-items:center; gap:5px; font-size:11.5px; font-weight:650; padding:2px 9px; border-radius:20px; white-space:nowrap; }
+.ov-stripe { width:3px; align-self:stretch; border-radius:3px; flex:0 0 auto; }
+.ov-empty { text-align:center; padding:26px; color:var(--t3); font-size:12.5px; }
 
-/* ── Source Bars ── */
-.ac-bar-row { display:flex; align-items:center; gap:10px; margin-bottom:8px; }
-.ac-bar-lbl { width:90px; font-size:12px; color:var(--t2); text-align:right; font-weight:600; }
-.ac-bar-track { flex:1; height:24px; background:var(--bg3); border-radius:4px; overflow:hidden; }
-.ac-bar-fill {
-    height:100%; background:var(--gold); border-radius:4px;
-    display:flex; align-items:center; padding:0 8px;
-}
-.ac-bar-fill span { font-size:11px; font-weight:700; color:#fff; }
-
-/* ── Table ── */
-.ac-table-wrap {
-    background:var(--bg2); border:1px solid var(--border);
-    border-radius:10px; overflow:hidden; box-shadow:var(--sh);
-}
-.ac-table { width:100%; border-collapse:collapse; font-size:13px; }
-.ac-table th {
-    background:var(--bg3); color:var(--t2); font-family:var(--font-m);
-    padding:10px 14px; text-align:left; border-bottom:1px solid var(--border);
-    font-size:11px; text-transform:uppercase; letter-spacing:.4px;
-}
-.ac-table td {
-    padding:10px 14px; border-bottom:1px solid var(--border); color:var(--t1);
-}
-.ac-table tr:last-child td { border-bottom:none; }
-.ac-table tr:hover td { background:var(--gold-dim); }
-
-/* ── Monthly Trend ── */
-.ac-trend { display:flex; align-items:flex-end; gap:14px; height:150px; padding:10px 0; }
-.ac-trend-bar { flex:1; display:flex; flex-direction:column; align-items:center; gap:4px; }
-.ac-trend-val { font-size:11px; color:var(--t2); font-weight:700; }
-.ac-trend-fill { width:100%; max-width:50px; background:var(--gold); border-radius:4px 4px 0 0; transition:height .4s ease; }
-.ac-trend-month { font-size:10px; color:var(--t3); font-weight:600; }
-
-.ac-empty { text-align:center; padding:36px; color:var(--t3); font-size:13px; }
-
-@media(max-width:767px) {
-    .ac-chart-row { grid-template-columns:1fr; }
-    .ac-stat-grid { grid-template-columns:repeat(2,1fr); }
-    .ac-head { flex-wrap:wrap; }
-    .ac-quick { width:100%; }
-}
-@media(max-width:640px) {
-    .ac-stat-grid { grid-template-columns:1fr 1fr; }
-}
+@media(max-width:1100px){ .ov-kpis { grid-template-columns:repeat(3,1fr); } .ov-cols { grid-template-columns:1fr; } }
+@media(max-width:720px){ .ov-kpis { grid-template-columns:repeat(2,1fr); } .ac-head { flex-wrap:wrap; } .ov-funnel { flex-wrap:wrap; } .ov-arrow { display:none; } .ov-step { flex:1 1 30%; } }
 </style>
 
 <div class="content-wrapper">
 <div class="ac-wrap">
 
-    <!-- Header -->
     <div class="ac-head">
         <div class="ac-head-icon"><i class="fa fa-graduation-cap"></i></div>
         <div class="ac-head-info">
-            <div class="ac-head-title">Admission CRM</div>
-            <div class="ac-head-sub">Session <?= htmlspecialchars($session_year) ?> — Manage inquiries, applications &amp; enrollment</div>
+            <div class="ac-head-title">Admission Overview</div>
+            <div class="ac-head-sub">Session <?= htmlspecialchars($session_year) ?> — where every applicant stands, capture to enrolment</div>
         </div>
-        <div class="ac-quick">
-            <a href="<?= base_url('admission_crm/inquiries') ?>" class="ac-ql"><i class="fa fa-phone"></i> Inquiries</a>
-            <a href="<?= base_url('admission_crm/applications') ?>" class="ac-ql"><i class="fa fa-file-text-o"></i> Applications</a>
-            <a href="<?= base_url('admission_crm/pipeline') ?>" class="ac-ql"><i class="fa fa-columns"></i> Pipeline</a>
-            <a href="<?= base_url('admission_crm/waitlist') ?>" class="ac-ql"><i class="fa fa-list-ol"></i> Waitlist</a>
-            <a href="<?= base_url('admission_crm/settings') ?>" class="ac-ql"><i class="fa fa-cog"></i> Settings</a>
-        </div>
+        <a href="<?= base_url('sis/applications') ?>" class="ac-btn"><i class="fa fa-list"></i> View Applications</a>
     </div>
 
-    <!-- Stat Cards -->
-    <div class="ac-stat-grid">
-        <div class="ac-stat"><div class="ac-stat-val"><?= $stats['total_inquiries'] ?></div><div class="ac-stat-lbl">Inquiries</div></div>
-        <div class="ac-stat"><div class="ac-stat-val"><?= $stats['total_applications'] ?></div><div class="ac-stat-lbl">Applications</div></div>
-        <div class="ac-stat"><div class="ac-stat-val"><?= $stats['pending_approval'] ?></div><div class="ac-stat-lbl">Pending</div></div>
-        <div class="ac-stat"><div class="ac-stat-val"><?= $stats['approved'] ?></div><div class="ac-stat-lbl">Approved</div></div>
-        <div class="ac-stat"><div class="ac-stat-val"><?= $stats['enrolled'] ?></div><div class="ac-stat-lbl">Enrolled</div></div>
-        <div class="ac-stat"><div class="ac-stat-val"><?= $stats['total_waitlist'] ?></div><div class="ac-stat-lbl">Waitlisted</div></div>
-        <div class="ac-stat"><div class="ac-stat-val"><?= $stats['rejected'] ?></div><div class="ac-stat-lbl">Rejected</div></div>
+    <!-- KPI tiles -->
+    <div class="ov-kpis">
+        <?php foreach ($kpis as $k): ?>
+        <div class="ov-kpi">
+            <div class="lbl"><span class="dot" style="background:<?= $k[2] ?>"></span><?= htmlspecialchars($k[0]) ?></div>
+            <div class="val"><?= $k[1] ?></div>
+            <div class="sub"><?= htmlspecialchars($k[3]) ?></div>
+        </div>
+        <?php endforeach; ?>
     </div>
 
-    <!-- Charts Row -->
-    <div class="ac-chart-row">
-        <!-- Funnel -->
-        <div class="ac-card">
-            <div class="ac-card-title"><i class="fa fa-filter"></i> Admission Funnel</div>
-            <div class="ac-funnel">
-                <?php
-                $maxVal = max($stats['total_inquiries'], 1);
-                $funnelData = [
-                    ['Inquiries', $stats['total_inquiries'], '#BC5A3C'],
-                    ['Applications', $stats['total_applications'], '#D4725C'],
-                    ['Approved', $stats['approved'], '#15803d'],
-                    ['Enrolled', $stats['enrolled'], '#9E4830'],
-                ];
-                foreach ($funnelData as $f):
-                    $pct = round(($f[1] / $maxVal) * 100);
+    <!-- Conversion funnel -->
+    <div class="ac-card" style="margin-bottom:0;">
+        <div class="ac-card-h"><h3>Conversion funnel</h3><span class="hint">this session</span></div>
+        <div class="ac-card-b">
+            <div class="ov-funnel">
+                <?php foreach ($funnel as $i => $f):
+                    $prev = $i > 0 ? max(1, $funnel[$i-1][1]) : $f[1];
+                    $pct  = $i === 0 ? '' : round($f[1] / $prev * 100) . '% of prev';
+                    $w    = round($f[1] / $fmax * 100);
                 ?>
-                <div class="ac-funnel-row">
-                    <div class="ac-funnel-lbl"><?= $f[0] ?></div>
-                    <div class="ac-funnel-bar">
-                        <div class="ac-funnel-fill" style="width:<?= max($pct, 6) ?>%;background:<?= $f[2] ?>;">
-                            <span><?= $f[1] ?></span>
-                        </div>
-                    </div>
+                <div class="ov-step">
+                    <div class="fn"><?= htmlspecialchars($f[0]) ?></div>
+                    <div class="fv"><?= $f[1] ?></div>
+                    <div class="fp"><?= $pct ?: '&nbsp;' ?></div>
+                    <div class="fb"><i style="width:<?= max($w,4) ?>%;background:<?= $f[2] ?>"></i></div>
                 </div>
+                <?php if ($i < count($funnel)-1): ?><div class="ov-arrow">&rsaquo;</div><?php endif; ?>
                 <?php endforeach; ?>
             </div>
         </div>
+    </div>
 
-        <!-- Source Breakdown -->
+    <!-- Attention + Activity -->
+    <div class="ov-cols">
         <div class="ac-card">
-            <div class="ac-card-title"><i class="fa fa-pie-chart"></i> Inquiry Sources</div>
-            <?php if (empty($source_breakdown)): ?>
-                <div class="ac-empty">No inquiry data yet</div>
-            <?php else: ?>
-                <?php
-                $maxSrc = max(array_values($source_breakdown));
-                foreach ($source_breakdown as $src => $cnt):
-                    $pct = round(($cnt / $maxSrc) * 100);
+            <div class="ac-card-h"><h3>Needs your attention</h3><span class="hint">aging &gt; 7d &middot; unpaid fee</span></div>
+            <div class="ac-card-b">
+                <?php if (empty($attention)): ?>
+                    <div class="ov-empty"><i class="fa fa-check-circle" style="color:#2FA875;"></i> Nothing needs attention — every applicant is on track.</div>
+                <?php else: foreach ($attention as $a):
+                    $col = ov_color($a['name']); $d = $a['days'];
+                    $ac  = ($d !== null && $d > 14) ? '#C0402E' : (($d !== null && $d > 7) ? '#B5741F' : 'var(--t3)');
                 ?>
-                <div class="ac-bar-row">
-                    <div class="ac-bar-lbl"><?= htmlspecialchars($src) ?></div>
-                    <div class="ac-bar-track">
-                        <div class="ac-bar-fill" style="width:<?= max($pct,8) ?>%;"><span><?= $cnt ?></span></div>
+                <div class="ov-row">
+                    <div class="ov-stripe" style="background:<?= $ac ?>"></div>
+                    <div class="ov-av" style="background:<?= $col ?>"><?= htmlspecialchars(ov_initials($a['name'])) ?></div>
+                    <div>
+                        <div class="ov-nm"><?= htmlspecialchars($a['name'] ?: 'Unnamed applicant') ?></div>
+                        <div class="ov-mt"><?= htmlspecialchars(($a['class']?'Grade '.$a['class']:'—')) ?> &middot; <?= htmlspecialchars(str_replace('_',' ', $a['stage'] ?: 'application')) ?></div>
+                    </div>
+                    <div style="margin-left:auto;display:flex;gap:6px;flex-wrap:wrap;justify-content:flex-end;">
+                        <?php if ($d !== null && $d > 7): ?><span class="ov-chip" style="background:<?= ov_tint($d>14?'#DB5A48':'#DD9433',.13) ?>;color:<?= $ac ?>"><?= (int)$d ?>d in stage</span><?php endif; ?>
+                        <?php if (!empty($a['unpaid'])): ?><span class="ov-chip" style="background:<?= ov_tint('#DD9433',.14) ?>;color:#B5741F">fee unpaid</span><?php endif; ?>
                     </div>
                 </div>
-                <?php endforeach; ?>
-            <?php endif; ?>
-        </div>
-    </div>
-
-    <!-- Class-wise Breakdown -->
-    <div class="ac-card" style="margin-bottom:22px;">
-        <div class="ac-card-title"><i class="fa fa-bar-chart"></i> Class-wise Admission Status</div>
-        <?php if (empty($class_breakdown)): ?>
-            <div class="ac-empty">No application data yet</div>
-        <?php else: ?>
-        <div class="ac-table-wrap" style="box-shadow:none;">
-            <table class="ac-table">
-                <thead>
-                    <tr><th>Class</th><th>Applied</th><th>Approved</th><th>Enrolled</th><th>Waitlisted</th></tr>
-                </thead>
-                <tbody>
-                    <?php foreach ($class_breakdown as $cls => $d): ?>
-                    <tr>
-                        <td style="font-weight:600;"><?= htmlspecialchars($cls) ?></td>
-                        <td><?= $d['applied'] ?></td>
-                        <td style="color:var(--green);"><?= $d['approved'] ?></td>
-                        <td style="color:var(--gold);"><?= $d['enrolled'] ?></td>
-                        <td style="color:var(--amber);"><?= $d['waitlisted'] ?></td>
-                    </tr>
-                    <?php endforeach; ?>
-                </tbody>
-            </table>
-        </div>
-        <?php endif; ?>
-    </div>
-
-    <!-- Monthly Trend -->
-    <?php if (!empty($monthly_trend)): ?>
-    <div class="ac-card">
-        <div class="ac-card-title"><i class="fa fa-line-chart"></i> Monthly Inquiry Trend</div>
-        <div class="ac-trend">
-            <?php
-            $maxM = max(array_values($monthly_trend));
-            foreach ($monthly_trend as $month => $cnt):
-                $h = round(($cnt / max($maxM,1)) * 120);
-            ?>
-            <div class="ac-trend-bar">
-                <span class="ac-trend-val"><?= $cnt ?></span>
-                <div class="ac-trend-fill" style="height:<?= max($h,8) ?>px;"></div>
-                <span class="ac-trend-month"><?= substr($month, 5) ?></span>
+                <?php endforeach; endif; ?>
             </div>
-            <?php endforeach; ?>
+        </div>
+
+        <div class="ac-card">
+            <div class="ac-card-h"><h3>Recent activity</h3></div>
+            <div class="ac-card-b">
+                <?php if (empty($activity)): ?>
+                    <div class="ov-empty">No activity yet this session.</div>
+                <?php else: foreach ($activity as $a): $col = ov_color($a['name']); ?>
+                <div class="ov-row">
+                    <div class="ov-av" style="background:<?= $col ?>"><?= htmlspecialchars(ov_initials($a['name'])) ?></div>
+                    <div>
+                        <div class="ov-nm"><?= htmlspecialchars($a['name'] ?: 'Applicant') ?></div>
+                        <div class="ov-mt"><?= htmlspecialchars($a['action']) ?></div>
+                    </div>
+                    <div class="ov-mt" style="margin-left:auto;white-space:nowrap;"><?= htmlspecialchars(ov_ago($a['ts'])) ?></div>
+                </div>
+                <?php endforeach; endif; ?>
+            </div>
         </div>
     </div>
-    <?php endif; ?>
 
 </div>
 </div>

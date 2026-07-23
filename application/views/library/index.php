@@ -7,7 +7,10 @@ $tab_map = [
     'fines'      => ['panel'=>'panelFines',     'icon'=>'fa-rupee',         'label'=>'Fines'],
     'reports'    => ['panel'=>'panelReports',   'icon'=>'fa-bar-chart',     'label'=>'Reports'],
 ];
+$can_edit   = function_exists('has_permission') ? has_permission('Library','edit')   : true;
+$can_manage = function_exists('has_permission') ? has_permission('Library','manage') : true;
 ?>
+<link rel="stylesheet" href="<?= base_url('assets/css/rbac_ui_kit.css') ?>">
 
 <style>
 .lib-wrap{padding:20px;max-width:1400px;margin:0 auto}
@@ -64,6 +67,7 @@ $tab_map = [
 </style>
 
 <div class="content-wrapper">
+<div class="rx-loadbar" id="rxLoadbar"></div>
 <section class="content">
 <div class="lib-wrap">
 
@@ -86,12 +90,18 @@ $tab_map = [
     <?php endforeach; ?>
   </nav>
 
+  <?php if(!$can_edit): ?>
+  <div class="rx-ro-banner"><span class="rx-ro-ic">🔒</span> View-only access — you can browse Library records but cannot add, edit, or delete.</div>
+  <?php elseif(!$can_manage): ?>
+  <div class="rx-ro-banner"><span class="rx-ro-ic">🔒</span> Limited access — you can add and edit, but deleting is restricted.</div>
+  <?php endif; ?>
+
   <!-- ════════ CATALOG ════════ -->
   <div class="lib-panel<?= $at === 'catalog' ? ' active' : '' ?>" id="panelCatalog">
     <div class="lib-card">
       <div class="lib-card-title">
         <span>Book Catalog</span>
-        <button class="lib-btn lib-btn-primary" onclick="LIB.openBookModal()"><i class="fa fa-plus"></i> Add Book</button>
+        <button class="lib-btn lib-btn-primary" onclick="LIB.openBookModal()" <?= $can_edit?'':'disabled' ?>><i class="fa fa-plus"></i> Add Book</button>
       </div>
       <table class="lib-table" id="booksTable">
         <thead><tr><th>ID</th><th>Title</th><th>Author</th><th>ISBN</th><th>Category</th><th>Copies</th><th>Available</th><th>Actions</th></tr></thead>
@@ -105,7 +115,7 @@ $tab_map = [
     <div class="lib-card">
       <div class="lib-card-title">
         <span>Book Categories</span>
-        <button class="lib-btn lib-btn-primary" onclick="LIB.openCatModal()"><i class="fa fa-plus"></i> Add Category</button>
+        <button class="lib-btn lib-btn-primary" onclick="LIB.openCatModal()" <?= $can_edit?'':'disabled' ?>><i class="fa fa-plus"></i> Add Category</button>
       </div>
       <table class="lib-table">
         <thead><tr><th>ID</th><th>Name</th><th>Description</th><th>Actions</th></tr></thead>
@@ -138,7 +148,7 @@ $tab_map = [
           <input type="date" id="issDueDate">
         </div>
         <div class="lib-form-group" style="display:flex;align-items:flex-end">
-          <button class="lib-btn lib-btn-primary" onclick="LIB.issueBook()"><i class="fa fa-arrow-right"></i> Issue Book</button>
+          <button class="lib-btn lib-btn-primary" onclick="LIB.issueBook()" <?= $can_edit?'':'disabled' ?>><i class="fa fa-arrow-right"></i> Issue Book</button>
         </div>
       </div>
     </div>
@@ -198,7 +208,7 @@ $tab_map = [
       <div class="lib-form-group"><label>Shelf Location</label><input type="text" id="bkShelf"></div>
     </div>
     <div class="lib-form-group"><label>Description</label><textarea id="bkDesc" rows="2"></textarea></div>
-    <button class="lib-btn lib-btn-primary" onclick="LIB.saveBook()" style="width:100%;margin-top:8px">Save Book</button>
+    <button class="lib-btn lib-btn-primary" onclick="LIB.saveBook()" style="width:100%;margin-top:8px" <?= $can_edit?'':'disabled' ?>>Save Book</button>
   </div>
 </div>
 
@@ -209,7 +219,7 @@ $tab_map = [
     <input type="hidden" id="catId">
     <div class="lib-form-group"><label>Name *</label><input type="text" id="catName"></div>
     <div class="lib-form-group"><label>Description</label><textarea id="catDesc" rows="2"></textarea></div>
-    <button class="lib-btn lib-btn-primary" onclick="LIB.saveCat()" style="width:100%;margin-top:8px">Save Category</button>
+    <button class="lib-btn lib-btn-primary" onclick="LIB.saveCat()" style="width:100%;margin-top:8px" <?= $can_edit?'':'disabled' ?>>Save Category</button>
   </div>
 </div>
 
@@ -218,7 +228,9 @@ var _LIB_CFG = {
   BASE:      '<?= base_url() ?>',
   CSRF_NAME: '<?= $this->security->get_csrf_token_name() ?>',
   CSRF_HASH: '<?= $this->security->get_csrf_hash() ?>',
-  activeTab: '<?= $at ?>'
+  activeTab: '<?= $at ?>',
+  CAN_EDIT:   <?= $can_edit   ? 'true' : 'false' ?>,
+  CAN_MANAGE: <?= $can_manage ? 'true' : 'false' ?>
 };
 
 document.addEventListener('DOMContentLoaded', function(){
@@ -228,19 +240,34 @@ document.addEventListener('DOMContentLoaded', function(){
   var CSRF_NAME = _LIB_CFG.CSRF_NAME;
   var CSRF_HASH = _LIB_CFG.CSRF_HASH;
   var activeTab = _LIB_CFG.activeTab;
+  var CAN_EDIT = _LIB_CFG.CAN_EDIT, CAN_MANAGE = _LIB_CFG.CAN_MANAGE;
+  var EDIT_ATTR = CAN_EDIT   ? '' : ' disabled title="No edit permission"';
+  var DEL_ATTR  = CAN_MANAGE ? '' : ' disabled title="No delete permission"';
   var categories = [], books = [];
 
-  function getJSON(url){ return $.getJSON(BASE + url); }
-  function post(url, data){
-    data[CSRF_NAME] = CSRF_HASH;
-    return $.post(BASE + url, data);
-  }
   function toast(msg, ok){
     var t = $('<div style="position:fixed;top:20px;right:20px;z-index:99999;padding:12px 20px;border-radius:8px;font-size:.85rem;color:#fff;background:'+(ok?'var(--green)':'var(--rose)')+'">'+msg+'</div>');
     $('body').append(t);
     setTimeout(function(){ t.fadeOut(300, function(){ t.remove(); }); }, 3000);
   }
   function escH(s){ return $('<span>').text(s||'').html(); }
+  function errMsg(xhr, def){
+    var m = def || 'Request failed';
+    try { var j = xhr.responseJSON; if(!j && xhr.responseText) j = JSON.parse(xhr.responseText);
+      if(j && j.message) m = j.message; else if(xhr.status) m = (def||'Request failed')+' ('+xhr.status+')';
+    } catch(e){ if(xhr.status) m = (def||'Request failed')+' ('+xhr.status+')'; }
+    return m;
+  }
+  // Fail-closed request helpers: reject/toast on HTTP error; success DOM only fires from .done on a real response.
+  function getJSON(url){ return $.getJSON(BASE + url).fail(function(xhr){ toast(errMsg(xhr,'Failed to load data'), false); }); }
+  function post(url, data){
+    data[CSRF_NAME] = CSRF_HASH;
+    return $.post(BASE + url, data).fail(function(xhr){ toast(errMsg(xhr,'Action failed'), false); });
+  }
+  function skel(id, cols, n){ var h=''; n=n||4; for(var i=0;i<n;i++){ h+='<tr>'; for(var c=0;c<cols;c++) h+='<td><div class="rx-skel rx-skel-row"></div></td>'; h+='</tr>'; } $('#'+id).html(h); }
+  function btnOn(sel){ var el=$(sel)[0]; if(el) el.classList.add('rx-btnload'); return el; }
+  function btnOff(el){ if(el) el.classList.remove('rx-btnload'); }
+  $(document).ajaxStart(function(){ $('#rxLoadbar').addClass('on'); }).ajaxStop(function(){ $('#rxLoadbar').removeClass('on'); });
   function catName(id){
     for(var i=0;i<categories.length;i++) if(categories[i].id===id) return categories[i].name;
     return id||'—';
@@ -248,14 +275,15 @@ document.addEventListener('DOMContentLoaded', function(){
 
   // ── Categories ───────────────────────────────────────────────────
   function loadCategories(){
+    skel('catsTbody', 4);
     getJSON('library/get_categories').done(function(r){
-      if(r.status!=='success') return;
+      if(r.status!=='success'){ $('#catsTbody').html('<tr><td colspan="4" style="text-align:center;color:var(--rose)">'+escH(r.message||'Failed to load categories')+'</td></tr>'); return; }
       categories = r.categories||[];
       var html = '';
       categories.forEach(function(c){
         html += '<tr><td>'+escH(c.id)+'</td><td>'+escH(c.name)+'</td><td>'+escH(c.description)+'</td>';
-        html += '<td><button class="lib-btn lib-btn-sm lib-btn-primary" onclick="LIB.editCat(\''+c.id+'\')"><i class="fa fa-pencil"></i></button> ';
-        html += '<button class="lib-btn lib-btn-sm lib-btn-danger" onclick="LIB.deleteCat(\''+c.id+'\')"><i class="fa fa-trash"></i></button></td></tr>';
+        html += '<td><button class="lib-btn lib-btn-sm lib-btn-primary" onclick="LIB.editCat(\''+c.id+'\')"'+EDIT_ATTR+'><i class="fa fa-pencil"></i></button> ';
+        html += '<button class="lib-btn lib-btn-sm lib-btn-danger" onclick="LIB.deleteCat(\''+c.id+'\')"'+DEL_ATTR+'><i class="fa fa-trash"></i></button></td></tr>';
       });
       $('#catsTbody').html(html||'<tr><td colspan="4" style="text-align:center;color:var(--t3)">No categories</td></tr>');
       // Update selects
@@ -275,13 +303,16 @@ document.addEventListener('DOMContentLoaded', function(){
     $('#catModalTitle').text('Edit Category'); $('#catModal').addClass('show');
   };
   LIB.saveCat = function(){
+    if(!CAN_EDIT){ toast('You do not have edit permission',false); return; }
+    var b = btnOn('#catModal .lib-btn-primary');
     post('library/save_category', { id:$('#catId').val(), name:$('#catName').val(), description:$('#catDesc').val() }).done(function(r){
       r = typeof r==='string'?JSON.parse(r):r;
       if(r.status==='success'){ toast(r.message,true); LIB.closeCatModal(); loadCategories(); }
       else toast(r.message,false);
-    });
+    }).always(function(){ btnOff(b); });
   };
   LIB.deleteCat = function(id){
+    if(!CAN_MANAGE){ toast('You do not have delete permission',false); return; }
     if(!confirm('Delete this category?')) return;
     post('library/delete_category', {id:id}).done(function(r){
       r = typeof r==='string'?JSON.parse(r):r;
@@ -291,16 +322,17 @@ document.addEventListener('DOMContentLoaded', function(){
 
   // ── Books (Catalog) ──────────────────────────────────────────────
   function loadBooks(){
+    skel('booksTbody', 8);
     getJSON('library/get_books').done(function(r){
-      if(r.status!=='success') return;
+      if(r.status!=='success'){ $('#booksTbody').html('<tr><td colspan="8" style="text-align:center;color:var(--rose)">'+escH(r.message||'Failed to load books')+'</td></tr>'); return; }
       books = r.books||[];
       var html = '';
       books.forEach(function(b){
         var avail = (b.available||0)>0 ? '<span class="lib-badge lib-badge-green">'+b.available+'</span>' : '<span class="lib-badge lib-badge-red">0</span>';
         html += '<tr><td>'+escH(b.id)+'</td><td>'+escH(b.title)+'</td><td>'+escH(b.author)+'</td><td>'+escH(b.isbn)+'</td>';
         html += '<td>'+escH(catName(b.category_id))+'</td><td>'+b.copies+'</td><td>'+avail+'</td>';
-        html += '<td><button class="lib-btn lib-btn-sm lib-btn-primary" onclick="LIB.editBook(\''+b.id+'\')"><i class="fa fa-pencil"></i></button> ';
-        html += '<button class="lib-btn lib-btn-sm lib-btn-danger" onclick="LIB.deleteBook(\''+b.id+'\')"><i class="fa fa-trash"></i></button></td></tr>';
+        html += '<td><button class="lib-btn lib-btn-sm lib-btn-primary" onclick="LIB.editBook(\''+b.id+'\')"'+EDIT_ATTR+'><i class="fa fa-pencil"></i></button> ';
+        html += '<button class="lib-btn lib-btn-sm lib-btn-danger" onclick="LIB.deleteBook(\''+b.id+'\')"'+DEL_ATTR+'><i class="fa fa-trash"></i></button></td></tr>';
       });
       $('#booksTbody').html(html||'<tr><td colspan="8" style="text-align:center;color:var(--t3)">No books</td></tr>');
       // Populate issue book select
@@ -323,6 +355,8 @@ document.addEventListener('DOMContentLoaded', function(){
     $('#bookModalTitle').text('Edit Book'); $('#bookModal').addClass('show');
   };
   LIB.saveBook = function(){
+    if(!CAN_EDIT){ toast('You do not have edit permission',false); return; }
+    var b = btnOn('#bookModal .lib-btn-primary');
     post('library/save_book', {
       id:$('#bkId').val(), title:$('#bkTitle').val(), author:$('#bkAuthor').val(), isbn:$('#bkIsbn').val(),
       category_id:$('#bkCatId').val(), publisher:$('#bkPublisher').val(), edition:$('#bkEdition').val(),
@@ -330,9 +364,10 @@ document.addEventListener('DOMContentLoaded', function(){
     }).done(function(r){
       r = typeof r==='string'?JSON.parse(r):r;
       if(r.status==='success'){ toast(r.message,true); LIB.closeBookModal(); loadBooks(); } else toast(r.message,false);
-    });
+    }).always(function(){ btnOff(b); });
   };
   LIB.deleteBook = function(id){
+    if(!CAN_MANAGE){ toast('You do not have delete permission',false); return; }
     if(!confirm('Delete this book?')) return;
     post('library/delete_book', {id:id}).done(function(r){
       r = typeof r==='string'?JSON.parse(r):r;
@@ -366,8 +401,9 @@ document.addEventListener('DOMContentLoaded', function(){
 
   // ── Issue / Return ────────────────────────────────────────────────
   function loadIssues(){
+    skel('issuesTbody', 7);
     getJSON('library/get_issues').done(function(r){
-      if(r.status!=='success') return;
+      if(r.status!=='success'){ $('#issuesTbody').html('<tr><td colspan="7" style="text-align:center;color:var(--rose)">'+escH(r.message||'Failed to load issues')+'</td></tr>'); return; }
       var html = '';
       var today = new Date().toISOString().slice(0,10);
       (r.issues||[]).forEach(function(iss){
@@ -375,7 +411,7 @@ document.addEventListener('DOMContentLoaded', function(){
           ? ((iss.due_date||'') < today ? '<span class="lib-badge lib-badge-red">Overdue</span>' : '<span class="lib-badge lib-badge-blue">Issued</span>')
           : '<span class="lib-badge lib-badge-green">Returned</span>';
         var actions = iss.status==='Issued'
-          ? '<button class="lib-btn lib-btn-sm lib-btn-primary" onclick="LIB.returnBook(\''+iss.id+'\')"><i class="fa fa-undo"></i> Return</button>'
+          ? '<button class="lib-btn lib-btn-sm lib-btn-primary" onclick="LIB.returnBook(\''+iss.id+'\')"'+EDIT_ATTR+'><i class="fa fa-undo"></i> Return</button>'
           : '—';
         html += '<tr><td>'+escH(iss.id)+'</td><td>'+escH(iss.book_title)+'</td><td>'+escH(iss.student_name)+'</td>';
         html += '<td>'+escH(iss.issue_date)+'</td><td>'+escH(iss.due_date)+'</td><td>'+statusBadge+'</td><td>'+actions+'</td></tr>';
@@ -385,20 +421,23 @@ document.addEventListener('DOMContentLoaded', function(){
   }
 
   LIB.issueBook = function(){
+    if(!CAN_EDIT){ toast('You do not have edit permission',false); return; }
     var studentId = $('#issStudentId').val(), bookId = $('#issBookSelect').val(), dueDate = $('#issDueDate').val();
     if(!studentId){ toast('Select a student',false); return; }
     if(!bookId){ toast('Select a book',false); return; }
     if(!dueDate){ toast('Set a due date',false); return; }
+    var b = btnOn('#panelIssues .lib-btn-primary');
     post('library/issue_book', { student_id:studentId, book_id:bookId, due_date:dueDate }).done(function(r){
       r = typeof r==='string'?JSON.parse(r):r;
       if(r.status==='success'){
         toast(r.message,true); loadIssues(); loadBooks();
         $('#issStudentSearch,#issStudentId').val(''); $('#issBookSelect').val('');
       } else toast(r.message,false);
-    });
+    }).always(function(){ btnOff(b); });
   };
 
   LIB.returnBook = function(issueId){
+    if(!CAN_EDIT){ toast('You do not have edit permission',false); return; }
     var finePerDay = prompt('Fine per day for late return (Rs):', '2');
     if(finePerDay === null) return;
     post('library/return_book', { issue_id:issueId, fine_per_day:finePerDay }).done(function(r){
@@ -409,13 +448,14 @@ document.addEventListener('DOMContentLoaded', function(){
 
   // ── Fines ─────────────────────────────────────────────────────────
   function loadFines(){
+    skel('finesTbody', 7);
     getJSON('library/get_fines').done(function(r){
-      if(r.status!=='success') return;
+      if(r.status!=='success'){ $('#finesTbody').html('<tr><td colspan="7" style="text-align:center;color:var(--rose)">'+escH(r.message||'Failed to load fines')+'</td></tr>'); return; }
       var html = '';
       (r.fines||[]).forEach(function(f){
         var statusBadge = f.status==='Paid' ? '<span class="lib-badge lib-badge-green">Paid</span>' : '<span class="lib-badge lib-badge-amber">Pending</span>';
         var actions = f.status!=='Paid'
-          ? '<button class="lib-btn lib-btn-sm lib-btn-primary" onclick="LIB.payFine(\''+f.id+'\')"><i class="fa fa-check"></i> Pay</button>'
+          ? '<button class="lib-btn lib-btn-sm lib-btn-primary" onclick="LIB.payFine(\''+f.id+'\')"'+EDIT_ATTR+'><i class="fa fa-check"></i> Pay</button>'
           : '—';
         html += '<tr><td>'+escH(f.id)+'</td><td>'+escH(f.student_name)+'</td><td>'+escH(f.book_title)+'</td>';
         html += '<td>'+f.late_days+'</td><td>Rs '+f.amount+'</td><td>'+statusBadge+'</td><td>'+actions+'</td></tr>';
@@ -425,6 +465,7 @@ document.addEventListener('DOMContentLoaded', function(){
   }
 
   LIB.payFine = function(fineId){
+    if(!CAN_EDIT){ toast('You do not have edit permission',false); return; }
     if(!confirm('Mark this fine as paid?')) return;
     post('library/pay_fine', { fine_id:fineId, payment_mode:'Cash' }).done(function(r){
       r = typeof r==='string'?JSON.parse(r):r;

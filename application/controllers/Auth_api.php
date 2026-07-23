@@ -152,9 +152,11 @@ class Auth_api extends CI_Controller
             $this->fs->init($schoolId);
             if (!$this->fs->isReady()) return;
 
-            $collection = ($role === 'Parent') ? 'students'
-                : (in_array($role, ['Admin','Principal','Vice Principal','Super Admin','School Super Admin','HR Manager','Front Office','Accountant','Academic Coordinator'], true)
-                   ? 'admins' : 'staff');
+            // FOLD: route by uid prefix, not role label. A demoted admin's record
+            // lives in `staff` under an STA id; only legacy ADM ids remain in
+            // `admins`. Parents stay in `students`.
+            $this->load->helper('admin_roster');
+            $collection = ($role === 'Parent') ? 'students' : admin_record_collection($uid);
 
             $this->fs->set($collection, $this->fs->docId($uid), [
                 'mustChangePassword' => false,

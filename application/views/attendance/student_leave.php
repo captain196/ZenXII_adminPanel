@@ -1,4 +1,11 @@
-<?php defined('BASEPATH') OR exit('No direct script access allowed'); ?>
+<?php defined('BASEPATH') OR exit('No direct script access allowed');
+    // Level gating — the LIST is view; approving/rejecting a leave is an EDIT action.
+    $att_can_edit   = function_exists('has_permission') ? has_permission('Attendance', 'edit')   : true;
+    $att_can_manage = function_exists('has_permission') ? has_permission('Attendance', 'manage') : true;
+?>
+
+<!-- Attendance Design System (shared, cacheable) — provides the loading primitives (.att-loadbar, .att-skel). -->
+<link rel="stylesheet" href="<?= base_url('assets/css/attendance_design_system.css') ?>?v=2.1.0">
 
 <style>
 /* ── Student Leave — uses the sa- (student attendance) design system ── */
@@ -121,11 +128,28 @@
 .sl-toast.show { transform:translateY(0); opacity:1; }
 .sl-toast.success { background:#16a34a; }
 .sl-toast.error { background:#dc2626; }
+
+/* ── View-only (no Attendance › edit) ── */
+.sl-viewonly-note {
+    display:inline-flex; align-items:center; gap:6px;
+    font-size:12px; color:var(--t3); font-family:var(--font-b); font-style:italic;
+}
+.sl-viewonly-note i { opacity:.7; }
+.sl-viewbanner {
+    display:flex; align-items:flex-start; gap:10px;
+    padding:12px 16px; margin-bottom:16px; border-radius:var(--sa-r,10px);
+    background:rgba(217,119,6,.10); border:1px solid rgba(217,119,6,.28);
+    color:#92600a; font-size:13px; line-height:1.45; font-family:var(--font-b);
+}
+.sl-viewbanner i { margin-top:2px; }
 </style>
 
 <div class="content-wrapper">
 <section class="content">
 <div class="container-fluid">
+
+    <!-- Top progress bar — reflects the in-flight list/approve/reject request. -->
+    <div class="att-loadbar" id="attLoadbar"></div>
 
     <!-- Page Header -->
     <div class="sl-page-head">
@@ -144,6 +168,14 @@
             <i class="fa fa-hourglass-half" aria-hidden="true"></i> <span id="slCountNum">0</span> pending
         </span>
     </div>
+
+    <?php if (!$att_can_edit): ?>
+    <!-- View-only banner (user lacks Attendance › edit) -->
+    <div class="sl-viewbanner" role="status">
+        <i class="fa fa-eye" aria-hidden="true"></i>
+        <span><strong>View-only</strong> — you can browse leave applications but can't approve or reject them. Ask an administrator for Attendance &rsaquo; edit access.</span>
+    </div>
+    <?php endif; ?>
 
     <!-- Filters -->
     <div class="sl-filter-card">
@@ -187,18 +219,55 @@
 <script>
 (function() {
     var csrfToken = '<?= $this->security->get_csrf_hash() ?>';
+    var CAN_EDIT  = <?= $att_can_edit ? 'true' : 'false' ?>;
     var AVATAR_COLORS = ['#BC5A3C','#2563eb','#7c3aed','#c2410c','#0891b2','#4f46e5','#059669','#b91c1c'];
+
+    /* ── Top progress bar — busy counter shared by list + approve/reject. ── */
+    var _busy = 0;
+    function busyStart(){ _busy++; var b = document.getElementById('attLoadbar'); if (b) b.classList.add('on'); }
+    function busyEnd(){ _busy = Math.max(0, _busy - 1); if (!_busy) { var b = document.getElementById('attLoadbar'); if (b) b.classList.remove('on'); } }
+
+    /* ── Skeleton cards (shimmer while the list loads). ── */
+    function skelCards(n) {
+        var card = '<div class="sl-card">'
+            + '<div class="att-skel att-skel-row" style="width:38%;height:18px;margin-bottom:14px"></div>'
+            + '<div class="att-skel att-skel-row" style="width:70%"></div>'
+            + '<div class="att-skel att-skel-row" style="width:55%"></div>'
+            + '</div>';
+        var h = ''; for (var i = 0; i < n; i++) h += card; return h;
+    }
+    /* ── Button spinner (icon swap; restores original label on settle). ── */
+    function setBtnLoading(btn, on) {
+        if (!btn) return;
+        if (on) {
+            btn.disabled = true;
+            if (!btn.getAttribute('data-orig')) btn.setAttribute('data-orig', btn.innerHTML);
+            btn.innerHTML = '<i class="fa fa-spinner fa-spin"></i> Loading…';
+        } else {
+            btn.disabled = false;
+            var o = btn.getAttribute('data-orig');
+            if (o) btn.innerHTML = o;
+        }
+    }
 
     function postData(url, params) {
         params.csrf_token = csrfToken;
+        busyStart();
         return fetch('<?= base_url() ?>' + url, {
             method: 'POST',
             headers: {'Content-Type': 'application/x-www-form-urlencoded'},
             body: new URLSearchParams(params)
-        }).then(function(r) { return r.json(); }).then(function(d) {
-            if (d.csrf_token) csrfToken = d.csrf_token;
-            return d;
-        });
+        }).then(function(r) {
+            // Fail-closed: fetch never rejects on 401/403/500, so a denied/failed call
+            // must throw here — the list shows an error state, mutations hit .catch.
+            return r.json().catch(function(){ return {}; }).then(function(d) {
+                if (d && d.csrf_token) csrfToken = d.csrf_token;
+                if (!r.ok || (d && (d.status === 'error' || d.success === false))) {
+                    throw new Error((d && (d.message || d.error)) || ('Request failed (' + r.status + ')'));
+                }
+                return d;
+            });
+        }).finally(busyEnd);
     }
 
     function showToast(msg, type) {
@@ -219,16 +288,20 @@
     function loadLeaves() {
         var status = document.getElementById('slStatus').value;
         var cls = document.getElementById('slClass').value;
-        document.getElementById('slLoading').style.display = 'block';
+        // Skeleton cards — professional shimmer instead of a lone centered spinner.
+        document.getElementById('slLoading').style.display = 'none';
         document.getElementById('slEmpty').style.display = 'none';
-        document.getElementById('slList').innerHTML = '';
+        document.getElementById('slList').innerHTML = skelCards(3);
         document.getElementById('slCountBadge').style.display = 'none';
+        setBtnLoading(document.getElementById('slLoadBtn'), true);
 
         postData('attendance/list_student_leaves', {
             status_filter: status,
             'class': cls
         }).then(function(res) {
+            setBtnLoading(document.getElementById('slLoadBtn'), false);
             document.getElementById('slLoading').style.display = 'none';
+            document.getElementById('slList').innerHTML = '';
             // Distinguish a server error from a genuinely empty result.
             if (!res || res.status === 'error') {
                 document.getElementById('slEmpty').style.display = 'block';
@@ -245,9 +318,12 @@
                 document.getElementById('slCountBadge').style.display = 'inline-flex';
             }
             renderLeaves(res.leaves);
-        }).catch(function() {
+        }).catch(function(err) {
+            setBtnLoading(document.getElementById('slLoadBtn'), false);
             document.getElementById('slLoading').style.display = 'none';
-            showToast('Failed to load leave applications.', 'error');
+            document.getElementById('slList').innerHTML = '';   // clear the skeleton
+            document.getElementById('slEmpty').style.display = 'block';
+            showToast((err && err.message) || 'Failed to load leave applications.', 'error');
         });
     }
 
@@ -296,12 +372,17 @@
                 html += '</div>';
             }
 
-            // Actions (only for pending)
+            // Actions (only for pending). Edit-gated: view-only users see the buttons
+            // DISABLED (not hidden) so the workflow stays discoverable.
             if (isPending) {
+                var dis = CAN_EDIT ? '' : ' disabled';
                 html += '<div class="sl-actions">';
-                html += '<input type="text" class="sl-remarks-input" placeholder="Add remarks (optional for approve, required for reject)" data-id="' + esc(l.id) + '">';
-                html += '<button type="button" class="sl-btn sl-btn-approve" data-action="approve" data-id="' + esc(l.id) + '"><i class="fa fa-check" aria-hidden="true"></i> Approve</button>';
-                html += '<button type="button" class="sl-btn sl-btn-reject" data-action="reject" data-id="' + esc(l.id) + '"><i class="fa fa-times" aria-hidden="true"></i> Reject</button>';
+                html += '<input type="text" class="sl-remarks-input" placeholder="Add remarks (optional for approve, required for reject)" data-id="' + esc(l.id) + '"' + dis + '>';
+                html += '<button type="button" class="sl-btn sl-btn-approve" data-action="approve" data-id="' + esc(l.id) + '"' + dis + '><i class="fa fa-check" aria-hidden="true"></i> Approve</button>';
+                html += '<button type="button" class="sl-btn sl-btn-reject" data-action="reject" data-id="' + esc(l.id) + '"' + dis + '><i class="fa fa-times" aria-hidden="true"></i> Reject</button>';
+                if (!CAN_EDIT) {
+                    html += '<span class="sl-viewonly-note"><i class="fa fa-eye" aria-hidden="true"></i> View-only</span>';
+                }
                 html += '</div>';
             }
 
@@ -335,8 +416,8 @@
                 showToast(res ? res.message : 'Failed to approve.', 'error');
                 restore();
             }
-        }).catch(function() {
-            showToast('Network error.', 'error');
+        }).catch(function(err) {
+            showToast((err && err.message) || 'Network error.', 'error');
             restore();
         });
     };
@@ -371,8 +452,8 @@
                 showToast(res ? res.message : 'Failed to reject.', 'error');
                 restore();
             }
-        }).catch(function() {
-            showToast('Network error.', 'error');
+        }).catch(function(err) {
+            showToast((err && err.message) || 'Network error.', 'error');
             restore();
         });
     }
@@ -384,6 +465,7 @@
     document.getElementById('slList').addEventListener('click', function(e) {
         var btn = e.target.closest('[data-action]');
         if (!btn) return;
+        if (!CAN_EDIT) { showToast('View-only — you can\'t approve or reject leaves.', 'error'); return; }
         var id = btn.getAttribute('data-id');
         if (!id) return;
         if (btn.getAttribute('data-action') === 'approve') approveLeave(id);

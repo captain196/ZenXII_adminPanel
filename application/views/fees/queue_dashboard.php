@@ -137,9 +137,21 @@ table.qd-tbl td{padding:8px 10px;border-bottom:1px solid #f1f3f5;vertical-align:
     }
     function esc(s) { return String(s||'').replace(/[&<>"]/g, c => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;'}[c])); }
 
+    // Harden a fetch Response: reject on HTTP error or a JSON error body so a
+    // DENIED/FAILED request never resolves as a false success or empty render.
+    function jsonOk(r) {
+        return r.json().catch(function(){return {};}).then(function(j){
+            if (!r.ok || (j && (j.status === 'error' || j.success === false))) {
+                var e = new Error((j && (j.message || j.error)) || ('Request failed (' + r.status + ')'));
+                e.httpStatus = r.status; e.payload = j; throw e;
+            }
+            return j;
+        });
+    }
+
     function updateHealth() {
         fetch(SITE_URL + '/fees/queue_status', { credentials: 'same-origin' })
-            .then(r => r.json())
+            .then(jsonOk)
             .then(resp => {
                 // json_success wraps body under `data` in this codebase.
                 const d = (resp && resp.data) ? resp.data : resp;
@@ -224,22 +236,16 @@ table.qd-tbl td{padding:8px 10px;border-bottom:1px solid #f1f3f5;vertical-align:
             const fd = new FormData();
             fd.append(CSRF_NAME, CSRF_HASH);
             fetch(SITE_URL + path, { method: 'POST', credentials: 'same-origin', body: fd })
-                .then(r => r.json())
+                .then(jsonOk)
                 .then(resp => {
                     btns.forEach(b => b.disabled = false);
-                    const ok = resp && resp.status === 'success';
                     const d  = (resp && resp.data) ? resp.data : {};
-                    if (ok) {
-                        const msg = d.message || noopText;
-                        $('opStatus').textContent = msg;
-                        updateHealth(); loadFailed();
-                    } else {
-                        $('opStatus').textContent = 'Error: ' + ((resp && resp.message) || 'unknown');
-                    }
+                    $('opStatus').textContent = d.message || noopText;
+                    updateHealth(); loadFailed();
                 })
                 .catch(e => {
                     btns.forEach(b => b.disabled = false);
-                    $('opStatus').textContent = 'Network error: ' + (e && e.message || '');
+                    $('opStatus').textContent = 'Error: ' + (e && e.message || 'unknown');
                 });
         };
     }
@@ -272,7 +278,7 @@ table.qd-tbl td{padding:8px 10px;border-bottom:1px solid #f1f3f5;vertical-align:
 
     function loadFailed() {
         fetch(SITE_URL + '/fees/queue_failed_jobs', { credentials: 'same-origin' })
-            .then(r => r.json())
+            .then(jsonOk)
             .then(resp => {
                 const d = (resp && resp.data) ? resp.data : resp;
                 const jobs = (d && d.jobs) ? d.jobs : [];
@@ -304,25 +310,18 @@ table.qd-tbl td{padding:8px 10px;border-bottom:1px solid #f1f3f5;vertical-align:
         fetch(SITE_URL + '/fees/queue_job_retry', {
             method: 'POST', credentials: 'same-origin', body: fd,
         })
-        .then(r => r.json())
+        .then(jsonOk)
         .then(resp => {
-            const ok = resp && (resp.status === 'success' || (resp.data && resp.data.status === 'queued'));
-            if (ok) {
-                // Drop the row optimistically; next poll will reconcile.
-                const tr = btn.closest('tr'); if (tr) tr.remove();
-                // Refresh counters right away so the KPIs drop.
-                updateHealth();
-                if (!$('qdFailedTbody').children.length) loadFailed();
-            } else {
-                btn.disabled = false;
-                btn.textContent = 'Retry';
-                alert('Retry failed: ' + (resp && resp.message ? resp.message : 'unknown error'));
-            }
+            // Server confirmed. Drop the row; next poll will reconcile.
+            const tr = btn.closest('tr'); if (tr) tr.remove();
+            // Refresh counters right away so the KPIs drop.
+            updateHealth();
+            if (!$('qdFailedTbody').children.length) loadFailed();
         })
         .catch(e => {
             btn.disabled = false;
             btn.textContent = 'Retry';
-            alert('Retry network error: ' + (e && e.message || 'unknown'));
+            alert('Retry failed: ' + (e && e.message || 'unknown'));
         });
     }
 

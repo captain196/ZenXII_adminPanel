@@ -77,7 +77,7 @@ $at = $active_tab ?? 'notices';
         <div class="cm-form-group"><label>Priority</label><select id="ntcPriority"><option value="Normal">Normal</option><option value="High">High</option><option value="Low">Low</option></select></div>
     </div>
     <div class="cm-form-row">
-        <div class="cm-form-group"><label>Category</label><select id="ntcCategory"><option value="General">General</option><option value="Academic">Academic</option><option value="Administrative">Administrative</option><option value="Holiday">Holiday</option><option value="Exam">Exam</option><option value="Event">Event</option></select></div>
+        <div class="cm-form-group"><label>Category</label><select id="ntcCategory"><option value="General">General</option><option value="Academic">Academic</option><option value="Administrative">Administrative</option><option value="Holiday">Holiday</option><option value="Exam">Exam</option><option value="Event">Event</option><option value="Emergency">Emergency</option></select></div>
         <div class="cm-form-group"><label>Expiry Date</label><input type="date" id="ntcExpiry"></div>
     </div>
     <button class="cm-btn cm-btn-primary" onclick="NTC.save()" style="width:100%;margin-top:8px">Save Notice</button>

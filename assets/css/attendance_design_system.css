@@ -217,6 +217,62 @@
 /* Buttons that sit inside a toolbar align to the 38px control height */
 .att-toolbar .att-btn, .att-fg .att-btn { height: 38px; padding-top: 0; padding-bottom: 0; }
 
+/* ─────────────────────────────────────────────────────────────────────
+   LOADING & PROGRESS PRIMITIVES  (shared across every attendance pane)
+   Usage:
+     • Top bar    : one <div class="att-loadbar" id="attLoadbar"></div>; toggle
+                    .on via a busy counter in the request helper (every fetch).
+     • Button     : btn.classList.add('is-loading') on submit → remove on settle.
+     • Overlay    : wrap a data container in .att-rel, inject .att-loading-overlay
+                    while fetching, remove on load/error.
+     • Skeleton   : .att-skel (+ .att-skel-row) placeholders before first paint.
+     • Working pill: optional floating .att-working "Working…" for long ops.
+   ───────────────────────────────────────────────────────────────────── */
+@keyframes att-loadbar-slide { 0% { left:-40%; width:40%; } 50% { width:58%; } 100% { left:100%; width:40%; } }
+@keyframes att-spin { to { transform: rotate(360deg); } }
+@keyframes att-shimmer { 0% { background-position: 200% 0; } 100% { background-position: -200% 0; } }
+
+.att-loadbar { position: fixed; top: 0; left: 0; right: 0; height: 3px; z-index: 99999;
+    background: var(--att-primary-dim); overflow: hidden; opacity: 0; transition: opacity .18s ease; pointer-events: none; }
+.att-loadbar.on { opacity: 1; }
+.att-loadbar::before { content: ''; position: absolute; top: 0; height: 100%; width: 40%; left: -40%; border-radius: 3px;
+    background: linear-gradient(90deg, transparent, var(--att-primary), transparent);
+    animation: att-loadbar-slide 1.1s ease-in-out infinite; }
+
+.att-spin { display: inline-block; width: 14px; height: 14px; border: 2px solid currentColor;
+    border-top-color: transparent; border-radius: 50%; animation: att-spin .7s linear infinite; vertical-align: -2px; }
+
+/* Button in-flight: keep width, hide label, center a spinner, block clicks. */
+.att-btn.is-loading { position: relative; color: transparent !important; pointer-events: none; opacity: .9; }
+.att-btn.is-loading::after { content: ''; position: absolute; top: 50%; left: 50%; width: 15px; height: 15px;
+    margin: -8px 0 0 -8px; border: 2px solid #fff; border-top-color: transparent; border-radius: 50%;
+    animation: att-spin .7s linear infinite; }
+.att-btn-ghost.is-loading::after, .att-btn-outline.is-loading::after { border-color: var(--att-primary); border-top-color: transparent; }
+
+/* Overlay a container being (re)loaded. Parent needs .att-rel (position:relative). */
+.att-rel { position: relative; }
+.att-loading-overlay { position: absolute; inset: 0; z-index: 20; display: flex; align-items: center; justify-content: center;
+    gap: 10px; background: rgba(127,127,127,.06); backdrop-filter: blur(1px); -webkit-backdrop-filter: blur(1px);
+    font-size: 13px; font-weight: 650; color: var(--att-t2); border-radius: inherit; }
+.att-loading-overlay .att-spin { width: 20px; height: 20px; color: var(--att-primary); }
+
+/* Shimmer skeleton placeholders. */
+.att-skel { background: linear-gradient(90deg, var(--att-bg2) 25%, var(--att-bg3) 37%, var(--att-bg2) 63%);
+    background-size: 200% 100%; animation: att-shimmer 1.3s ease-in-out infinite; border-radius: var(--att-radius-sm); }
+.att-skel-row { height: 14px; margin: 8px 0; }
+
+/* Optional floating "Working…" pill for longer operations. */
+.att-working { position: fixed; bottom: 18px; right: 18px; z-index: 99999; display: inline-flex; align-items: center; gap: 9px;
+    background: var(--att-bg2); border: 1px solid var(--att-border); box-shadow: var(--att-shadow); border-radius: 100px;
+    padding: 8px 14px; font-size: 12.5px; font-weight: 650; color: var(--att-t1);
+    opacity: 0; transform: translateY(6px); transition: opacity .2s ease, transform .2s ease; pointer-events: none; }
+.att-working.on { opacity: 1; transform: none; }
+.att-working .att-spin { color: var(--att-primary); }
+
+@media (prefers-reduced-motion: reduce) {
+    .att-loadbar::before, .att-spin, .att-btn.is-loading::after, .att-skel { animation-duration: .01ms; animation-iteration-count: 1; }
+}
+
 /* ── Toggle switch ──────────────────────────────────────────────────────── */
 .att-toggle-row {
     display: flex; align-items: center; justify-content: space-between;
@@ -520,6 +576,16 @@
 
 /* Link-buttons never underline when att-btn is applied to an <a>. */
 .att-btn { text-decoration: none; }
+/* When att-btn is an <a>, Bootstrap/skin-blue's `a:hover,a:focus{color:#23527c}`
+   (blue) outspecifies the button's own color and turns the label blue on hover.
+   Pin each variant's text colour across hover/focus/active so the button keeps
+   its clay identity. */
+.att-btn:hover, .att-btn:focus, .att-btn:active { text-decoration: none; }
+.att-btn-primary, .att-btn-primary:hover, .att-btn-primary:focus, .att-btn-primary:active,
+.att-btn-danger,  .att-btn-danger:hover,  .att-btn-danger:focus,  .att-btn-danger:active,
+.att-btn-success, .att-btn-success:hover, .att-btn-success:focus, .att-btn-success:active { color: #fff; }
+.att-btn-outline, .att-btn-outline:hover, .att-btn-outline:focus, .att-btn-outline:active,
+.att-btn-ghost,   .att-btn-ghost:hover,   .att-btn-ghost:focus,   .att-btn-ghost:active { color: var(--att-primary); }
 
 /* ── 5-up KPI grid (dashboard "today" stats) ────────────────────────────── */
 .att-kpi-grid-5 { display: grid; grid-template-columns: repeat(5, 1fr); gap: 16px; margin-bottom: 28px; }
@@ -530,7 +596,9 @@
 /* ── KPI extras: purple accent, clickable, pending state, loading ───────── */
 .att-kpi-purple::before { background: #7c3aed; }
 .att-kpi-purple .att-kpi-icon { background: rgba(124,58,237,.12); color: #7c3aed; }
-.att-kpi--clickable { cursor: pointer; }
+.att-kpi--clickable { cursor: pointer; transition: var(--att-ease); }
+.att-kpi--clickable:hover { transform: translateY(-2px); box-shadow: 0 6px 18px rgba(16,24,40,.10); }
+.att-kpi--clickable:focus-visible { outline: 2px solid var(--att-primary); outline-offset: 2px; }
 /* has-pending overrides any base accent (higher specificity: two classes) */
 .att-kpi.has-pending::before { background: var(--att-amber); }
 .att-kpi.has-pending .att-kpi-icon { background: var(--att-amber-bg); color: var(--att-amber); }

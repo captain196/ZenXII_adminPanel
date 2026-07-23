@@ -750,13 +750,13 @@ class Accounting extends MY_Controller
     /** GET: Fetch full Chart of Accounts */
     public function get_chart()
     {
-        $this->_require_role(self::FINANCE_ROLES);
+        $this->_require_role(self::FINANCE_ROLES, "", "Accounting", "view");
 
         $all = $this->_fs_coa_all();
         if (!is_array($all)) $all = [];
 
         // Auto-seed on first access if chart is empty (Admin/Principal only)
-        if (empty($all) && in_array($this->admin_role, self::ADMIN_ROLES, true)) {
+        if (empty($all) && (has_permission('Accounting', 'manage') || in_array($this->admin_role, self::ADMIN_ROLES, true))) {
             $ts       = date('c');
             $defaults = $this->_default_coa_template($ts);
             foreach ($defaults as $code => $acct) {
@@ -803,7 +803,7 @@ class Accounting extends MY_Controller
     /** POST: Create or update an account */
     public function save_account()
     {
-        $this->_require_role(self::FINANCE_ROLES);
+        $this->_require_role(self::FINANCE_ROLES, "", "Accounting", "edit");
 
         $code        = $this->safe_path_segment(trim((string) $this->input->post('code')), 'code');
         $name        = trim((string) $this->input->post('name'));
@@ -902,7 +902,7 @@ class Accounting extends MY_Controller
     /** POST: Delete (deactivate) an account */
     public function delete_account()
     {
-        $this->_require_role(self::ADMIN_ROLES);
+        $this->_require_role(self::ADMIN_ROLES, "", "Accounting", "manage");
 
         $code = $this->safe_path_segment(trim((string) $this->input->post('code')), 'code');
 
@@ -946,7 +946,7 @@ class Accounting extends MY_Controller
     /** POST: Seed default chart of accounts for Indian schools */
     public function seed_default_chart()
     {
-        $this->_require_role(self::ADMIN_ROLES);
+        $this->_require_role(self::ADMIN_ROLES, "", "Accounting", "manage");
 
         $ts = date('c');
         $defaults = $this->_default_coa_template($ts);
@@ -1053,7 +1053,7 @@ class Accounting extends MY_Controller
     /** POST: Migrate existing Account_book entries to ChartOfAccounts */
     public function migrate_existing_accounts()
     {
-        $this->_require_role(self::ADMIN_ROLES);
+        $this->_require_role(self::ADMIN_ROLES, "", "Accounting", "manage");
 
         $bookPath = $this->_bp() . '/Accounts/Account_book';
         $book = null /* account book — use Firestore chartOfAccounts */;
@@ -1147,7 +1147,7 @@ class Accounting extends MY_Controller
      */
     public function get_ledger_entries()
     {
-        $this->_require_role(self::FINANCE_ROLES);
+        $this->_require_role(self::FINANCE_ROLES, "", "Accounting", "view");
 
         $dateFrom    = trim((string) $this->input->post('date_from'));
         $dateTo      = trim((string) $this->input->post('date_to'));
@@ -1250,7 +1250,7 @@ class Accounting extends MY_Controller
     /** GET: Get next voucher number for a given type */
     public function get_next_voucher_no()
     {
-        $this->_require_role(self::FINANCE_ROLES);
+        $this->_require_role(self::FINANCE_ROLES, "", "Accounting", "view");
 
         $type = trim((string) $this->input->get('type'));
         if (!$type) $type = 'Journal';
@@ -1305,7 +1305,7 @@ class Accounting extends MY_Controller
      */
     public function save_journal_entry()
     {
-        $this->_require_role(self::FINANCE_ROLES);
+        $this->_require_role(self::FINANCE_ROLES, "", "Accounting", "edit");
 
         $date      = trim((string) $this->input->post('date'));
         $vType     = trim((string) $this->input->post('voucher_type'));
@@ -1425,7 +1425,7 @@ class Accounting extends MY_Controller
     /** POST: Soft-delete a non-finalized journal entry */
     public function delete_journal_entry()
     {
-        $this->_require_role(self::FINANCE_ROLES);
+        $this->_require_role(self::FINANCE_ROLES, "", "Accounting", "edit");
 
         $entryId = trim((string) $this->input->post('entry_id'));
         if (!$entryId) return $this->json_error('Entry ID required.');
@@ -1566,7 +1566,7 @@ class Accounting extends MY_Controller
     /** POST: Finalize an entry (make immutable) */
     public function finalize_entry()
     {
-        $this->_require_role(self::FINANCE_ROLES);
+        $this->_require_role(self::FINANCE_ROLES, "", "Accounting", "edit");
 
         $entryId = trim((string) $this->input->post('entry_id'));
         if (!$entryId) return $this->json_error('Entry ID required.');
@@ -1613,7 +1613,7 @@ class Accounting extends MY_Controller
     /** POST: Fetch income/expense records with pagination */
     public function get_income_expenses()
     {
-        $this->_require_role(self::FINANCE_ROLES);
+        $this->_require_role(self::FINANCE_ROLES, "", "Accounting", "view");
 
         $type     = trim((string) $this->input->post('type')); // income|expense|''
         $dateFrom = trim((string) $this->input->post('date_from'));
@@ -1651,7 +1651,7 @@ class Accounting extends MY_Controller
     /** POST: Create income or expense record + auto-create ledger entry */
     public function save_income_expense()
     {
-        $this->_require_role(self::FINANCE_ROLES);
+        $this->_require_role(self::FINANCE_ROLES, "", "Accounting", "edit");
 
         $type        = trim((string) $this->input->post('type'));
         $date        = trim((string) $this->input->post('date'));
@@ -1816,7 +1816,7 @@ class Accounting extends MY_Controller
     /** POST: Soft-delete income/expense + its ledger entry */
     public function delete_income_expense()
     {
-        $this->_require_role(self::FINANCE_ROLES);
+        $this->_require_role(self::FINANCE_ROLES, "", "Accounting", "edit");
 
         $id = trim((string) $this->input->post('id'));
         if (!$id) return $this->json_error('Record ID required.');
@@ -1890,7 +1890,7 @@ class Accounting extends MY_Controller
     /** POST: Income/Expense summary by month */
     public function get_income_expense_summary()
     {
-        $this->_require_role(self::FINANCE_ROLES);
+        $this->_require_role(self::FINANCE_ROLES, "", "Accounting", "view");
 
         $all = $this->_fs_ie_all();
         if (!is_array($all)) $all = [];
@@ -1918,7 +1918,7 @@ class Accounting extends MY_Controller
     /** POST: Get cash book for a cash/bank account */
     public function get_cash_book()
     {
-        $this->_require_role(self::FINANCE_ROLES);
+        $this->_require_role(self::FINANCE_ROLES, "", "Accounting", "view");
 
         $accountCode = trim((string) $this->input->post('account_code'));
         $dateFrom    = $this->_normalise_date((string) $this->input->post('date_from'));
@@ -2074,7 +2074,7 @@ class Accounting extends MY_Controller
     /** GET: Get bank accounts from CoA */
     public function get_bank_accounts()
     {
-        $this->_require_role(self::FINANCE_ROLES);
+        $this->_require_role(self::FINANCE_ROLES, "", "Accounting", "view");
 
         $all = $this->_fs_coa_all();
         if (!is_array($all)) $all = [];
@@ -2093,7 +2093,7 @@ class Accounting extends MY_Controller
     /** POST: Get bank recon entries */
     public function get_bank_statement()
     {
-        $this->_require_role(self::FINANCE_ROLES);
+        $this->_require_role(self::FINANCE_ROLES, "", "Accounting", "view");
 
         $code     = trim((string) $this->input->post('account_code'));
         $dateFrom = trim((string) $this->input->post('date_from'));
@@ -2122,7 +2122,7 @@ class Accounting extends MY_Controller
     /** POST: Import bank statement (CSV) with duplicate detection */
     public function import_bank_statement()
     {
-        $this->_require_role(self::FINANCE_ROLES);
+        $this->_require_role(self::FINANCE_ROLES, "", "Accounting", "edit");
 
         $code = trim((string) $this->input->post('account_code'));
         if (!$code) return $this->json_error('Account code required.');
@@ -2203,7 +2203,7 @@ class Accounting extends MY_Controller
     /** POST: Match a bank statement item to a ledger entry */
     public function match_transaction()
     {
-        $this->_require_role(self::FINANCE_ROLES);
+        $this->_require_role(self::FINANCE_ROLES, "", "Accounting", "edit");
 
         $code     = trim((string) $this->input->post('account_code'));
         $reconId  = trim((string) $this->input->post('recon_id'));
@@ -2237,7 +2237,7 @@ class Accounting extends MY_Controller
     /** POST: Unmatch a previously matched bank statement item */
     public function unmatch_transaction()
     {
-        $this->_require_role(self::FINANCE_ROLES);
+        $this->_require_role(self::FINANCE_ROLES, "", "Accounting", "edit");
 
         $code    = trim((string) $this->input->post('account_code'));
         $reconId = trim((string) $this->input->post('recon_id'));
@@ -2262,7 +2262,7 @@ class Accounting extends MY_Controller
     /** POST: Suggest matching ledger entries for a bank statement item */
     public function suggest_matches()
     {
-        $this->_require_role(self::FINANCE_ROLES);
+        $this->_require_role(self::FINANCE_ROLES, "", "Accounting", "view");
 
         $code    = trim((string) $this->input->post('account_code'));
         $reconId = trim((string) $this->input->post('recon_id'));
@@ -2347,7 +2347,7 @@ class Accounting extends MY_Controller
     /** POST: Get reconciliation summary */
     public function get_recon_summary()
     {
-        $this->_require_role(self::FINANCE_ROLES);
+        $this->_require_role(self::FINANCE_ROLES, "", "Accounting", "view");
 
         $code = trim((string) $this->input->post('account_code'));
         if (!$code) return $this->json_error('Account code required.');
@@ -2448,7 +2448,7 @@ class Accounting extends MY_Controller
     /** POST: Trial Balance */
     public function trial_balance()
     {
-        $this->_require_role(self::FINANCE_ROLES);
+        $this->_require_role(self::FINANCE_ROLES, "", "Accounting", "view");
 
         $from = $this->_normalise_date((string) $this->input->post('date_from'));
         $to   = $this->_normalise_date((string) $this->input->post('date_to'));
@@ -2515,7 +2515,7 @@ class Accounting extends MY_Controller
     /** POST: Profit & Loss Statement */
     public function profit_loss()
     {
-        $this->_require_role(self::FINANCE_ROLES);
+        $this->_require_role(self::FINANCE_ROLES, "", "Accounting", "view");
 
         $from = $this->_normalise_date((string) $this->input->post('date_from'));
         $to   = $this->_normalise_date((string) $this->input->post('date_to'));
@@ -2565,7 +2565,7 @@ class Accounting extends MY_Controller
     /** POST: Balance Sheet */
     public function balance_sheet()
     {
-        $this->_require_role(self::FINANCE_ROLES);
+        $this->_require_role(self::FINANCE_ROLES, "", "Accounting", "view");
 
         $to = $this->_normalise_date((string) $this->input->post('date_to'));
         // Balance Sheet is always "as of" a date — use date_to as upper bound, no lower bound
@@ -2664,7 +2664,7 @@ class Accounting extends MY_Controller
      */
     public function cash_flow()
     {
-        $this->_require_role(self::FINANCE_ROLES);
+        $this->_require_role(self::FINANCE_ROLES, "", "Accounting", "view");
 
         $from = $this->_normalise_date((string) $this->input->post('date_from'));
         $to   = $this->_normalise_date((string) $this->input->post('date_to'));
@@ -2994,7 +2994,7 @@ class Accounting extends MY_Controller
      */
     public function day_book()
     {
-        $this->_require_role(self::FINANCE_ROLES);
+        $this->_require_role(self::FINANCE_ROLES, "", "Accounting", "view");
 
         $from = $this->_normalise_date((string) $this->input->post('date_from'));
         $to   = $this->_normalise_date((string) $this->input->post('date_to'));
@@ -3077,7 +3077,7 @@ class Accounting extends MY_Controller
     /** POST: Ledger report for a single account (no $_POST mutation) */
     public function ledger_report()
     {
-        $this->_require_role(self::FINANCE_ROLES);
+        $this->_require_role(self::FINANCE_ROLES, "", "Accounting", "view");
 
         $code     = trim((string) $this->input->post('account_code'));
         $dateFrom = $this->_normalise_date((string) $this->input->post('date_from'));
@@ -3091,7 +3091,7 @@ class Accounting extends MY_Controller
     /** POST: Recompute all closing balances from scratch, with integrity report */
     public function recompute_balances()
     {
-        $this->_require_role(self::ADMIN_ROLES);
+        $this->_require_role(self::ADMIN_ROLES, "", "Accounting", "manage");
 
         // Fetch existing cache for comparison
         $oldBalances = $this->_fs_bal_all();
@@ -3190,7 +3190,7 @@ class Accounting extends MY_Controller
     /** GET: Get accounting settings */
     public function get_settings()
     {
-        $this->_require_role(self::FINANCE_ROLES);
+        $this->_require_role(self::FINANCE_ROLES, "", "Accounting", "view");
 
         $lock = $this->_fs_lock_get();
         $counters = [] /* counters now on profile doc via _fs_counter_get */;
@@ -3212,7 +3212,7 @@ class Accounting extends MY_Controller
      */
     public function health_json()
     {
-        $this->_require_role(self::FINANCE_ROLES);
+        $this->_require_role(self::FINANCE_ROLES, "", "Accounting", "view");
 
         $this->load->library('Accounting_health', null, 'acctHealth');
         $this->acctHealth->init(
@@ -3239,7 +3239,7 @@ class Accounting extends MY_Controller
      */
     public function acknowledge_alert()
     {
-        $this->_require_role(self::FINANCE_ROLES);
+        $this->_require_role(self::FINANCE_ROLES, "", "Accounting", "edit");
 
         $alertId = trim((string) $this->input->post('alertId'));
         if ($alertId === '') return $this->json_error('alertId is required.');
@@ -3270,7 +3270,7 @@ class Accounting extends MY_Controller
     /** POST: Lock accounting period (multi-path update for finalization) */
     public function lock_period()
     {
-        $this->_require_role(self::ADMIN_ROLES);
+        $this->_require_role(self::ADMIN_ROLES, "", "Accounting", "manage");
 
         $date = trim((string) $this->input->post('locked_until'));
         if (!$date || !preg_match('/^\d{4}-\d{2}-\d{2}$/', $date)) {
@@ -3438,7 +3438,7 @@ class Accounting extends MY_Controller
      */
     public function reopen_period()
     {
-        $this->_require_role(self::ADMIN_ROLES);
+        $this->_require_role(self::ADMIN_ROLES, "", "Accounting", "manage");
 
         $newLockedUntil      = trim((string) $this->input->post('new_locked_until'));
         $reason              = trim((string) $this->input->post('reason'));
@@ -3565,7 +3565,7 @@ class Accounting extends MY_Controller
      */
     public function get_period_reopens()
     {
-        $this->_require_role(self::FINANCE_ROLES);
+        $this->_require_role(self::FINANCE_ROLES, "", "Accounting", "view");
         $limit = max(1, min(100, (int) ($this->input->get('limit') ?: 20)));
         try {
             $rows = (array) $this->firebase->firestoreQuery('accountingPeriodReopens', [
@@ -3589,7 +3589,7 @@ class Accounting extends MY_Controller
     /** GET: Check if migration has been done */
     public function get_migration_status()
     {
-        $this->_require_role(self::FINANCE_ROLES);
+        $this->_require_role(self::FINANCE_ROLES, "", "Accounting", "view");
 
         $coa = $this->_fs_coa_all();
         $hasBook = !empty($this->_fs_coa_all()); /* check CoA not empty */
@@ -3603,7 +3603,7 @@ class Accounting extends MY_Controller
     /** POST: Carry forward closing balances as opening balances for next period */
     public function carry_forward_balances()
     {
-        $this->_require_role(self::ADMIN_ROLES);
+        $this->_require_role(self::ADMIN_ROLES, "", "Accounting", "manage");
 
         $coa = $this->_fs_coa_all();
         if (!is_array($coa)) return $this->json_error('No chart of accounts found.');
@@ -3646,7 +3646,7 @@ class Accounting extends MY_Controller
     /** GET: Fetch audit log entries */
     public function get_audit_log()
     {
-        $this->_require_role(self::FINANCE_ROLES);
+        $this->_require_role(self::FINANCE_ROLES, "", "Accounting", "view");
 
         $limit = (int) ($this->input->get('limit') ?: 50);
         $all = ($this->fs->schoolList('accountingAudit') ?? []);
@@ -3909,7 +3909,7 @@ class Accounting extends MY_Controller
      */
     public function export_excel()
     {
-        $this->_require_role(self::FINANCE_ROLES);
+        $this->_require_role(self::FINANCE_ROLES, "", "Accounting", "view");
 
         $type = trim($this->input->get('type') ?? '');
         $from = $this->_normalise_date((string) $this->input->get('date_from'));
@@ -3985,7 +3985,7 @@ class Accounting extends MY_Controller
      */
     public function export_pdf()
     {
-        $this->_require_role(self::FINANCE_ROLES);
+        $this->_require_role(self::FINANCE_ROLES, "", "Accounting", "view");
 
         $type = trim($this->input->get('type') ?? '');
         $from = $this->_normalise_date((string) $this->input->get('date_from'));

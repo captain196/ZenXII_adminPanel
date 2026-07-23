@@ -30,6 +30,15 @@ class Staff extends MY_Controller
     private const MANAGE_ROLES = ['Super Admin', 'School Super Admin', 'Admin', 'Principal', 'Vice Principal', 'HR Manager'];
     private const VIEW_ROLES   = ['Super Admin', 'School Super Admin', 'Admin', 'Principal', 'Vice Principal', 'HR Manager', 'Academic Coordinator', 'Class Teacher', 'Teacher'];
 
+    // ── Audit C1: PII split ────────────────────────────────────────────────
+    // The `staff/{schoolId}_{staffId}` doc is SAME-SCHOOL READABLE (parents +
+    // students can query it — the Parent app legitimately reads staff for
+    // search/PTM). These sensitive fields must NOT ride on that readable doc;
+    // they live in the server-only `staffPrivate/{schoolId}_{staffId}` mirror
+    // (Firestore rules deny ALL clients; the service account bypasses).
+    // Keep this list in lockstep with Hr.php and Staff_pii_migrate.php.
+    private const PII_KEYS = ['panNumber', 'aadharNumber', 'pfNumber', 'esiNumber', 'salaryDetails', 'bankDetails'];
+
     // ── Unified role catalogue (single source of truth) ────────────────────
     // ONE role entity now serves BOTH staff (HR: category/flags/attendance_type)
     // AND admin access (RBAC: permissions[]/tier/sort_order). A role is assignable
@@ -42,8 +51,21 @@ class Staff extends MY_Controller
         'SIS','Fees','Accounting','Attendance','Examinations','Results','LMS','Certificates',
         'HR','Events','Communication','Operations','Academic','Reports','Configuration',
         'Admin Users','Stories','Homework',
+        // Unified RBAC (2026-07-18): ROLE_ADMIN must equal the FULL RBAC_MODULES set
+        // so that once 'Admin' is demoted from RBAC_BYPASS_ROLES it resolves every
+        // module via the catalogue (previously Red Flags + the Operations children
+        // were missing — a demoted Admin would silently lose them; Ops children were
+        // only reachable via the umbrella).
+        'Red Flags','Library','Transport','Hostel','Inventory','Assets',
     ];
     private const DEFAULT_STAFF_ROLES = [
+        // ── System roles ─────────────────────────────────────────────────────
+        // Global auto-assigned baseline: every staff member (peon → principal)
+        // receives it, granting the common app modules at view. is_global keeps it
+        // out of the department tree; auto_assign means onboarding always attaches
+        // it. Whether its "both"-surface modules also grant PANEL access is settled
+        // by the surface-tagging rule in Phase B (baseline is app-facing).
+        'ROLE_BASELINE_APP'         => ['label' => 'App Baseline',         'description' => 'Baseline app modules every staff member receives (Stories, Events, Communication).', 'category' => 'System',         'flags' => [], 'attendance_type' => 'standard', 'is_system' => true, 'is_global' => true, 'auto_assign' => true, 'tier' => 9, 'sort_order' => 0, 'permissions' => ['Stories','Events','Communication'], 'permissionLevels' => ['Stories' => 'view', 'Events' => 'view', 'Communication' => 'view']],
         // ── Access-oriented roles (formerly the RBAC catalogue) ──────────────
         'ROLE_ADMIN'                => ['label' => 'Admin',                'description' => 'Full school-level access, all modules',                 'category' => 'Administrative', 'flags' => [],                                     'attendance_type' => 'standard', 'is_system' => true, 'tier' => 1, 'sort_order' => 1,  'permissions' => self::ALL_MODULES],
         'ROLE_PRINCIPAL'            => ['label' => 'Principal',            'description' => 'Academic oversight, approvals, reports (no accounting)', 'category' => 'Administrative', 'flags' => [],                                     'attendance_type' => 'standard', 'is_system' => true, 'tier' => 2, 'sort_order' => 2,  'permissions' => ['SIS','Attendance','Examinations','Results','LMS','Certificates','Academic','Reports','Events','Communication','Stories','Configuration']],
@@ -465,7 +487,7 @@ class Staff extends MY_Controller
 
     public function all_staff()
     {
-        $this->_require_role(self::VIEW_ROLES);
+        $this->_require_role(self::VIEW_ROLES, "", "SIS", "view");
         $session_year = $this->session_year;
 
         // PERF (2026-06-13) — this page server-renders the full roster, so its
@@ -518,7 +540,7 @@ class Staff extends MY_Controller
 
     public function master_staff()
     {
-        $this->_require_role(self::VIEW_ROLES);
+        $this->_require_role(self::VIEW_ROLES, "", "SIS", "view");
         $this->load->view('include/header');
         $this->load->view('import_staff'); // view file
         $this->load->view('include/footer');
@@ -527,7 +549,7 @@ class Staff extends MY_Controller
     // ── Fix staff count: reads actual staff entries and updates Count ───────
     public function fix_staff_count()
     {
-        $this->_require_role(self::MANAGE_ROLES);
+        $this->_require_role(self::MANAGE_ROLES, "", "SIS", "manage");
 
         // Firestore: count staff docs for this school
         $actualCount = $this->fs->count('staff', [['schoolId', '==', $this->school_id]]);
@@ -548,7 +570,7 @@ class Staff extends MY_Controller
 
     public function import_staff()
     {
-        $this->_require_role(self::MANAGE_ROLES);
+        $this->_require_role(self::MANAGE_ROLES, "", "SIS", "manage");
 
         // Bulk import does ~7 sequential network calls per row (Firestore +
         // Firebase Auth). Without a relaxed limit a moderate roster blows PHP's
@@ -714,19 +736,30 @@ class Staff extends MY_Controller
      */
     public function preview_import()
     {
-        $this->_require_role(self::MANAGE_ROLES);
+        $this->_require_role(self::MANAGE_ROLES, "", "SIS", "manage");
+
+        // Single-page flow: the upload posts via AJAX and expects JSON back;
+        // a plain (no-JS) POST still renders the standalone map view as before.
+        $isAjax = $this->input->is_ajax_request();
+        $fail = function ($msg) use ($isAjax) {
+            if ($isAjax) {
+                $this->output->set_content_type('application/json')
+                     ->set_output(json_encode(['status' => 'error', 'message' => $msg]));
+            } else {
+                $this->session->set_flashdata('import_result', $msg);
+                redirect('staff/all_staff');
+            }
+        };
 
         if (!isset($_FILES['excelFile']) || $_FILES['excelFile']['error'] !== UPLOAD_ERR_OK) {
-            $this->session->set_flashdata('import_result', 'No file received, or the upload failed. Choose a CSV or XLSX file.');
-            redirect('staff/all_staff');
+            $fail('No file received, or the upload failed. Choose a CSV or XLSX file.');
             return;
         }
 
         $origName  = $_FILES['excelFile']['name'];
         $extension = strtolower(pathinfo($origName, PATHINFO_EXTENSION));
         if (!in_array($extension, ['csv', 'xlsx', 'xls'], true)) {
-            $this->session->set_flashdata('import_result', 'Unsupported file type. Upload a .csv or .xlsx file.');
-            redirect('staff/all_staff');
+            $fail('Unsupported file type. Upload a .csv or .xlsx file.');
             return;
         }
 
@@ -736,8 +769,7 @@ class Staff extends MY_Controller
             $sheetData   = $spreadsheet->getActiveSheet()->toArray(null, true, true, false);
         } catch (\Throwable $e) {
             log_message('error', 'STAFF IMPORT PREVIEW read error: ' . $e->getMessage());
-            $this->session->set_flashdata('import_result', 'Could not read the file. It may be corrupt or password-protected.');
-            redirect('staff/all_staff');
+            $fail('Could not read the file. It may be corrupt or password-protected.');
             return;
         }
 
@@ -748,8 +780,7 @@ class Staff extends MY_Controller
             return false;
         }));
         if (count($sheetData) < 2) {
-            $this->session->set_flashdata('import_result', 'The file has no data rows below the header.');
-            redirect('staff/all_staff');
+            $fail('The file has no data rows below the header.');
             return;
         }
 
@@ -781,6 +812,12 @@ class Staff extends MY_Controller
             'fileName' => $origName,
         ];
 
+        if ($isAjax) {
+            $data['status'] = 'success';
+            $this->output->set_content_type('application/json')->set_output(json_encode($data));
+            return;
+        }
+
         $this->load->view('include/header');
         $this->load->view('import_staff_map', $data);
         $this->load->view('include/footer');
@@ -793,7 +830,7 @@ class Staff extends MY_Controller
      */
     public function import_validate()
     {
-        $this->_require_role(self::MANAGE_ROLES);
+        $this->_require_role(self::MANAGE_ROLES, "", "SIS", "manage");
         $this->output->set_content_type('application/json');
 
         $payload = json_decode((string) $this->input->post('payload'), true);
@@ -821,13 +858,21 @@ class Staff extends MY_Controller
             // maps to exactly one department (and isn't the teacher special case,
             // whose Department column may legitimately carry the subject).
             $deptName = trim($v['data']['department'] ?? '');
-            if ($deptName !== '' && !empty($roleIds)) {
-                $allowed = $deptCtx['byDeptLower'][strtolower($deptName)] ?? null;
-                if (is_array($allowed) && !empty($allowed) && array_diff($roleIds, $allowed)) {
-                    $v['warnings'][] = 'Role isn\'t listed under department "' . $deptName . '" — will still import; fix in Departments & Roles or Edit Staff.';
+            if ($deptName !== '') {
+                $known = array_key_exists(strtolower($deptName), $deptCtx['byDeptLower']);
+                if (!$known) {
+                    // Genuinely unknown department name — previously silent. Warn so the
+                    // admin creates it in Departments & Roles (else it imports as a bare label).
+                    $v['warnings'][] = 'Department "' . $deptName . '" isn\'t in Departments & Roles — create it there first, or it imports as a plain label.';
                     if ($v['status'] === 'ok') $v['status'] = 'warning';
+                } elseif (!empty($roleIds)) {
+                    $allowed = $deptCtx['byDeptLower'][strtolower($deptName)] ?? null;
+                    if (is_array($allowed) && !empty($allowed) && array_diff($roleIds, $allowed)) {
+                        $v['warnings'][] = 'Role isn\'t listed under department "' . $deptName . '" — will still import; fix in Departments & Roles or Edit Staff.';
+                        if ($v['status'] === 'ok') $v['status'] = 'warning';
+                    }
                 }
-            } elseif ($deptName === '' && count($roleIds) === 1 && $roleIds[0] !== 'ROLE_TEACHER') {
+            } elseif (count($roleIds) === 1 && $roleIds[0] !== 'ROLE_TEACHER') {
                 $onlyDepts = $deptCtx['byRole'][$roleIds[0]] ?? [];
                 if (count($onlyDepts) === 1) {
                     $v['data']['department'] = $onlyDepts[0];
@@ -856,7 +901,7 @@ class Staff extends MY_Controller
      */
     public function import_commit()
     {
-        $this->_require_role(self::MANAGE_ROLES);
+        $this->_require_role(self::MANAGE_ROLES, "", "SIS", "manage");
         $this->output->set_content_type('application/json');
         @set_time_limit(0);
         @ignore_user_abort(true);
@@ -924,7 +969,7 @@ class Staff extends MY_Controller
      */
     public function import_credentials_pdf()
     {
-        $this->_require_role(self::MANAGE_ROLES);
+        $this->_require_role(self::MANAGE_ROLES, "", "SIS", "manage");
 
         $creds = $this->session->userdata('import_creds_staff');
         if (!is_array($creds) || empty($creds)) {
@@ -975,7 +1020,7 @@ class Staff extends MY_Controller
         // Uses the NO-DEFAULT matcher so an unknown/blank role is genuinely held
         // back (the shared _infer_roles_from_position falls back to ROLE_TEACHER,
         // which would silently mislabel non-teaching staff — the bug this avoids).
-        $roleSource = trim($rowData['Position'] ?? '');
+        $roleSource = trim($rowData['Role'] ?? $rowData['Position'] ?? '');
         if ($roleSource === '') $roleSource = trim($rowData['Designation'] ?? '');
         $roleIds = $this->_match_roles_no_default($roleSource);
         if (empty($roleIds)) {
@@ -1018,6 +1063,37 @@ class Staff extends MY_Controller
      *   byRole[ROLE_*]          = [department names offering it]
      * Departments with no role_ids simply don't appear in the constraint.
      */
+    /** @var array|null cached dept↔role map for one import run */
+    private $_importDeptCtx = null;
+    /** @var bool ensure_unified_roles() runs once per import run, not per row */
+    private $_importCatalogueEnsured = false;
+
+    /** Cached dept↔role map (byDeptLower/byRole) for the current import run. */
+    private function _import_dept_ctx(): array
+    {
+        if ($this->_importDeptCtx === null) $this->_importDeptCtx = $this->_load_dept_role_map();
+        return $this->_importDeptCtx;
+    }
+
+    /**
+     * Once per import run: guarantee schools.staffRoles exists so resolved role ids
+     * (e.g. ROLE_ACCOUNTANT) actually resolve to modules downstream — mirrors what
+     * Staff_access::onboard_staff() does. Idempotent + additive (never overwrites).
+     */
+    private function _ensure_import_catalogue(): void
+    {
+        if ($this->_importCatalogueEnsured) return;
+        $this->_importCatalogueEnsured = true;
+        try {
+            $this->load->helper('deptrole');
+            if (function_exists('ensure_unified_roles')) ensure_unified_roles($this->fs, $this->school_id);
+        } catch (\Throwable $e) {
+            log_message('error', 'import ensure_unified_roles: ' . $e->getMessage());
+        }
+        $this->_importDeptCtx = null;   // rebuild the map against the ensured catalogue
+        $this->_roleLabelCache = null;  // and the role label/id lookup
+    }
+
     private function _load_dept_role_map(): array
     {
         $byDeptLower = []; $byRole = [];
@@ -1142,6 +1218,10 @@ class Staff extends MY_Controller
      */
     private function _commit_staff_row(array $rowData): array
     {
+        // Guarantee the tenant role catalogue exists (once per run) so resolved role
+        // ids actually map to modules downstream — same guarantee as onboard.
+        $this->_ensure_import_catalogue();
+
         $name  = trim($rowData['Name'] ?? '');
         $phone = trim($rowData['Phone Number'] ?? '');
 
@@ -1152,9 +1232,9 @@ class Staff extends MY_Controller
         }
 
         // 2) Role chain: Position → Designation. Unresolved is NON-blocking —
-        // the staff imports with NO role (assign later from Edit Staff); we never
-        // silently default to Teacher.
-        $roleSource = trim($rowData['Position'] ?? '');
+        // the staff imports with NO nominal role (assign later from Edit Staff); we
+        // never silently default to Teacher.
+        $roleSource = trim($rowData['Role'] ?? $rowData['Position'] ?? '');
         if ($roleSource === '') $roleSource = trim($rowData['Designation'] ?? '');
         $roleIds = $this->_match_roles_no_default($roleSource);
 
@@ -1232,7 +1312,33 @@ class Staff extends MY_Controller
             $department = '';
         }
 
+        // Department ↔ role reconciliation — Departments & Roles is the source of
+        // truth. Conservative (only acts when unambiguous, never destructive):
+        //   • blank department  → fill from the role when it maps to exactly one dept;
+        //   • mismatched dept    → repoint to the role's real dept when unambiguous.
+        // Roles that live in several departments (or none) leave the sheet value as-is.
+        if (!empty($roleIds)) {
+            $ctx = $this->_import_dept_ctx();
+            $roleDepts = $ctx['byRole'][$roleIds[0]] ?? [];
+            if ($department === '') {
+                if (count($roleDepts) === 1) $department = $roleDepts[0];
+            } else {
+                $allowed = $ctx['byDeptLower'][strtolower($department)] ?? null;
+                if (is_array($allowed) && !in_array($roleIds[0], $allowed, true) && count($roleDepts) === 1) {
+                    $department = $roleDepts[0];
+                }
+            }
+        }
+
+        // Every imported staff carries the auto-assigned app baseline so they get the
+        // common app modules even before a nominal role is set — same as onboard.
+        // primary_role stays the resolved nominal role (baseline is never "primary").
+        $staffRolesForDoc = array_values(array_unique(array_merge(['ROLE_BASELINE_APP'], $roleIds)));
+
         $positionLabel = $designation !== '' ? $designation : $roleSource;
+        // Claim/`role` must be a real ROLE LABEL (panel resolves access by it) — derive
+        // from the resolved role, never the free-text designation/position column.
+        $roleClaimLabel = $primaryRole !== '' ? $this->_role_id_to_label($primaryRole) : $positionLabel;
 
         $data = [
             'User ID'         => $staffId,
@@ -1252,7 +1358,7 @@ class Staff extends MY_Controller
             'Password'        => $hashedPassword,
             'Credentials'     => ['Id' => $staffId, 'Password' => $hashedPassword],
             'lastUpdated'     => date('Y-m-d'),
-            'staff_roles'     => $roleIds,
+            'staff_roles'     => $staffRolesForDoc,
             'primary_role'    => $primaryRole,
             'altPhone'        => $altPhone,
             'maritalStatus'   => $maritalSt,
@@ -1316,7 +1422,7 @@ class Staff extends MY_Controller
             'phone'          => $phone,
             'email'          => $email,
             'status'         => 'Active',
-            'role'           => $positionLabel,
+            'role'           => $roleClaimLabel,
             'roleId'         => $primaryRole,
             'position'       => $positionLabel,
             'department'     => $department,
@@ -1332,6 +1438,9 @@ class Staff extends MY_Controller
             'updatedAt'      => date('c'),
         ]);
         unset($fsData['Password'], $fsData['Credentials']);
+        // Audit C1: route PAN/Aadhar/PF/ESI/salary/bank to the server-only
+        // staffPrivate mirror; the readable staff doc gets nulls in their place.
+        $this->_split_staff_private($staffId, $fsData);
 
         // Guarded write — release the STA claim on failure so the number isn't burnt.
         try {
@@ -1361,7 +1470,7 @@ class Staff extends MY_Controller
                 'displayName' => $name,
             ]);
             $this->firebase->setCanonicalClaims($staffId, [
-                'role'           => $positionLabel,
+                'role'           => $roleClaimLabel,   // ROLE LABEL — panel resolves access by this
                 'school_id'      => $this->school_id,
                 'school_code'    => $this->school_code,
                 'parent_db_key'  => $this->parent_db_key,
@@ -1452,7 +1561,7 @@ class Staff extends MY_Controller
     // ── Download pre-filled Excel template for bulk import ─────────────────
     public function download_staff_template()
     {
-        $this->_require_role(self::MANAGE_ROLES);
+        $this->_require_role(self::MANAGE_ROLES, "", "SIS", "view");
 
         $spreadsheet = new Spreadsheet();
         $sheet = $spreadsheet->getActiveSheet();
@@ -1461,7 +1570,7 @@ class Staff extends MY_Controller
         // Headers — must match import_staff() expected columns exactly
         $headers = [
             'Name', 'Phone Number', 'DOB', 'Email', 'Gender',
-            'Father Name', 'Blood Group', 'Department', 'Position',
+            'Father Name', 'Blood Group', 'Department', 'Role',
             'Employment Type', 'Date Of Joining',
             'Qualification', 'Experience', 'University', 'Year Of Passing',
             'Basic Salary', 'Allowances',
@@ -1491,7 +1600,7 @@ class Staff extends MY_Controller
         // Sample data row (row 2)
         $sample = [
             'Rajesh Kumar', '9876543210', '15-06-1990', 'rajesh@example.com', 'Male',
-            'Suresh Kumar', 'B+', 'Mathematics', 'Teacher',
+            'Suresh Kumar', 'B+', 'Teaching', 'Teacher',
             'Full-time', '01-04-2024',
             'B.Ed', '5', 'Delhi University', '2015',
             '25000', '5000',
@@ -1610,6 +1719,64 @@ class Staff extends MY_Controller
             $lists->setSheetState(\PhpOffice\PhpSpreadsheet\Worksheet\Worksheet::SHEETSTATE_HIDDEN);
         }
 
+        // ── State (col Z) → District (col Y) CASCADING dropdowns ─────────────
+        // Same hidden-sheet + INDIRECT technique as Department→Role above, sourced
+        // from the canonical India geo dataset (assets/data/india_geo.json).
+        if (function_exists('india_geo_states')) {
+            $geoStates = india_geo_states();
+            if (!empty($geoStates)) {
+                $geo = $spreadsheet->createSheet();
+                $geo->setTitle('Geo');
+                $geo->setCellValue('A1', 'State');
+                $geo->setCellValue('B1', 'Idx');
+                $gi = 0;
+                foreach ($geoStates as $stName) {
+                    $gi++;
+                    $grow = $gi + 1;                      // data starts row 2
+                    $geo->setCellValue("A{$grow}", $stName);
+                    $geo->setCellValueExplicit("B{$grow}", $gi, \PhpOffice\PhpSpreadsheet\Cell\DataType::TYPE_NUMERIC);
+
+                    // Districts for this state in their own column (C, D, E …).
+                    $gcol  = \PhpOffice\PhpSpreadsheet\Cell\Coordinate::stringFromColumnIndex(2 + $gi);
+                    $dists = india_geo_districts($stName);
+                    if (empty($dists)) $dists = ['(no districts listed)'];
+                    $geo->setCellValue("{$gcol}1", 'Districts: ' . $stName);
+                    $grr = 1;
+                    foreach ($dists as $dName) {
+                        $grr++;
+                        $geo->setCellValue("{$gcol}{$grr}", $dName);
+                    }
+                    $spreadsheet->addNamedRange(new \PhpOffice\PhpSpreadsheet\NamedRange(
+                        'GDist_' . $gi, $geo, "\${$gcol}\$2:\${$gcol}\$" . $grr
+                    ));
+                }
+                $lastStateRow = count($geoStates) + 1;
+
+                for ($r = 3; $r <= 102; $r++) {
+                    // State dropdown (col Z)
+                    $sv = new \PhpOffice\PhpSpreadsheet\Cell\DataValidation();
+                    $sv->setType(\PhpOffice\PhpSpreadsheet\Cell\DataValidation::TYPE_LIST);
+                    $sv->setAllowBlank(true);
+                    $sv->setShowDropDown(true);
+                    $sv->setShowErrorMessage(false);
+                    $sv->setFormula1("Geo!\$A\$2:\$A\$" . $lastStateRow);
+                    $sheet->getCell("Z{$r}")->setDataValidation($sv);
+
+                    // District dropdown (col Y) — depends on the State cell in the same row
+                    $dv2 = new \PhpOffice\PhpSpreadsheet\Cell\DataValidation();
+                    $dv2->setType(\PhpOffice\PhpSpreadsheet\Cell\DataValidation::TYPE_LIST);
+                    $dv2->setAllowBlank(true);
+                    $dv2->setShowDropDown(true);
+                    $dv2->setShowErrorMessage(false);
+                    $dv2->setFormula1('INDIRECT("GDist_"&VLOOKUP(Z' . $r . ',Geo!$A$2:$B$' . $lastStateRow . ',2,FALSE))');
+                    $sheet->getCell("Y{$r}")->setDataValidation($dv2);
+                }
+
+                // Hide the helper sheet (kept in the file so the formulas resolve).
+                $geo->setSheetState(\PhpOffice\PhpSpreadsheet\Worksheet\Worksheet::SHEETSTATE_HIDDEN);
+            }
+        }
+
         // Auto-width columns
         foreach (range('A', $lastCol) as $col) {
             $sheet->getColumnDimension($col)->setAutoSize(true);
@@ -1624,24 +1791,34 @@ class Staff extends MY_Controller
         $instructions = [
             ['STAFF IMPORT TEMPLATE — INSTRUCTIONS'],
             [''],
-            ['REQUIRED COLUMNS (must not be empty):'],
+            ['REQUIRED COLUMNS (a row is skipped only if these are empty):'],
             ['  - Name: Full name of the staff member'],
             ['  - Phone Number: 10-digit Indian mobile (starts with 6-9)'],
-            ['  - DOB: Date of birth (DD-MM-YYYY or YYYY-MM-DD)'],
-            ['  - Email: Valid email address'],
-            ['  - Gender: Male / Female / Other'],
-            ['  - Father Name: Father\'s full name'],
-            ['  - Position: e.g. Teacher, Senior Teacher, Accountant, Clerk'],
-            ['  - Date Of Joining: DD-MM-YYYY or YYYY-MM-DD'],
-            ['  - Employment Type: Full-time / Part-time / Contract / Temporary'],
-            ['  - Department: e.g. Mathematics, Science, Administration'],
-            ['  - Basic Salary: Numeric value (monthly basic pay)'],
             [''],
-            ['OPTIONAL COLUMNS (leave blank if not available):'],
-            ['  - Blood Group'],
-            ['  - Teaching Subjects: for teachers, comma-separated (e.g. "Mathematics, Science")'],
-            ['  - Qualification, Experience, University, Year Of Passing'],
-            ['  - Allowances (defaults to 0)'],
+            ['EVERYTHING ELSE IS OPTIONAL:'],
+            ['  - Any other column may be left blank. A missing or unrecognized value is'],
+            ['    shown as a WARNING in the upload preview but never blocks the row —'],
+            ['    you can always fill it in later from Edit Staff.'],
+            [''],
+            ['DEPARTMENT & ROLE (managed in "Departments & Roles"):'],
+            ['  - Department (col H): pick from the dropdown — it lists YOUR school\'s'],
+            ['    departments. Choosing one narrows the Role list to that department\'s roles.'],
+            ['  - Role (col I): pick from the dependent dropdown that appears after you'],
+            ['    choose a Department.'],
+            ['  - Typing a Department or Role that does not exist still imports, but the'],
+            ['    preview flags it — create it first in Departments & Roles for a clean match.'],
+            ['  - You can also fix Department/Role right in the upload preview (dropdowns).'],
+            ['  - Every imported staff automatically gets baseline app access; their role'],
+            ['    adds module permissions on top.'],
+            [''],
+            ['TEACHING SUBJECTS (col AB) — NOT the same as Department:'],
+            ['  - For teachers, list the subjects here, comma-separated (e.g. "Mathematics, Science").'],
+            ['  - Department stays the org unit (e.g. "Teaching"); Subjects are what they teach.'],
+            [''],
+            ['OTHER OPTIONAL COLUMNS:'],
+            ['  - DOB, Email, Gender, Father Name, Date Of Joining, Employment Type'],
+            ['  - Blood Group, Qualification, Experience, University, Year Of Passing'],
+            ['  - Basic Salary, Allowances (defaults to 0)'],
             ['  - Bank Name, Account Holder Name, Account Number, IFSC Code'],
             ['  - Emergency Contact Name, Emergency Contact Number'],
             ['  - Street, City, State, Postal Code'],
@@ -1649,6 +1826,7 @@ class Staff extends MY_Controller
             ['PASSWORD GENERATION:'],
             ['  - Auto-generated as: First3Letters of Name + Last3Digits of DOB Year + @'],
             ['  - Example: Name="Rajesh", DOB=1990 → Password = "Raj990@"'],
+            ['  - If DOB is blank, the last 3 digits of the phone number are used instead.'],
             [''],
             ['NOTES:'],
             ['  - Row 2 on "Staff Import" sheet is a SAMPLE row — delete or overwrite it'],
@@ -1660,16 +1838,24 @@ class Staff extends MY_Controller
             ['    so nothing is saved until you confirm'],
             ['  - Gender dropdown: Male / Female / Other'],
             ['  - Employment Type dropdown: Full-time / Part-time / Contract / Temporary'],
+            ['  - State dropdown: pick from the 36 India states/UTs (col "State")'],
+            ['  - District dropdown: after choosing a State, col "City" offers that'],
+            ['    state\'s districts (dependent dropdown). Free text is still accepted —'],
+            ['    the preview flags any State/District it does not recognize, but never'],
+            ['    blocks the row; spellings like "Orissa"/"Pondicherry" are auto-corrected'],
         ];
         foreach ($instructions as $i => $row) {
-            $instrSheet->setCellValue('A' . ($i + 1), $row[0]);
+            $txt  = (string) $row[0];
+            $cell = 'A' . ($i + 1);
+            $instrSheet->setCellValue($cell, $txt);
+            // Title = big bold; section headers (top-level lines ending ":") = bold.
+            if ($i === 0) {
+                $instrSheet->getStyle($cell)->getFont()->setBold(true)->setSize(14);
+            } elseif ($txt !== '' && $txt[0] !== ' ' && substr($txt, -1) === ':') {
+                $instrSheet->getStyle($cell)->getFont()->setBold(true);
+            }
         }
-        $instrSheet->getStyle('A1')->getFont()->setBold(true)->setSize(14);
-        $instrSheet->getStyle('A3')->getFont()->setBold(true);
-        $instrSheet->getStyle('A7')->getFont()->setBold(true);
-        $instrSheet->getStyle('A13')->getFont()->setBold(true);
-        $instrSheet->getStyle('A18')->getFont()->setBold(true);
-        $instrSheet->getColumnDimension('A')->setWidth(80);
+        $instrSheet->getColumnDimension('A')->setWidth(84);
 
         // Switch back to first sheet
         $spreadsheet->setActiveSheetIndex(0);
@@ -1741,7 +1927,7 @@ class Staff extends MY_Controller
 
     public function new_staff()
     {
-        $this->_require_role(self::MANAGE_ROLES);
+        $this->_require_role(self::MANAGE_ROLES, "", "SIS", "manage");
         // [FIX-1] All school info from session
         $school_id    = $this->parent_db_key;
         $school_name  = $this->school_name;
@@ -1981,6 +2167,15 @@ class Staff extends MY_Controller
                 ? $designationInput
                 : $this->_role_id_to_label($primaryRole);
 
+            // CRITICAL: the login CLAIM `role` and the staff `role` field must be a
+            // real ROLE LABEL — the admin panel resolves module access by matching
+            // this against the role catalogue (schools.staffRoles). Designation is a
+            // free-text display title; if it drove the claim (as it used to), a typo
+            // or a stray value like a phone number would match no role and silently
+            // zero the user's panel access. Always derive from the SELECTED role.
+            $roleClaimLabel = $this->_role_id_to_label($primaryRole);
+            if ($roleClaimLabel === '') $roleClaimLabel = $positionLabel;
+
             $staffRecord = [
                 'Name'            => $staffName,
                 'User ID'         => $staffId,
@@ -2050,9 +2245,9 @@ class Staff extends MY_Controller
                 'phone'        => $phoneNumber,
                 'email'        => $emailAddr,
                 'status'       => 'Active',                                                 // new staff is always Active
-                'role'         => $positionLabel,                                           // human-readable label e.g. "Teacher"
+                'role'         => $roleClaimLabel,                                          // ROLE LABEL (panel resolves access by this) — NOT the free-text designation
                 'roleId'       => $primaryRole,                                             // canonical id e.g. "ROLE_TEACHER"
-                'position'     => $positionLabel,
+                'position'     => $positionLabel,                                           // free-text display title (designation)
                 'department'   => $normalizedPostData['department']      ?? '',
                 'gender'       => $normalizedPostData['gender']          ?? '',
                 'employmentType' => $normalizedPostData['employment_type'] ?? '',
@@ -2066,6 +2261,8 @@ class Staff extends MY_Controller
                 'updatedAt' => date('c'),
             ]);
             unset($fsData['Password'], $fsData['Credentials']);
+            // Audit C1: PAN/Aadhar/PF/ESI/salary/bank → server-only staffPrivate.
+            $this->_split_staff_private($staffId, $fsData);
             try {
                 $result = $this->fs->set('staff', $this->fs->docId($staffId), $fsData, true);
                 if (!$result) {
@@ -2150,7 +2347,7 @@ class Staff extends MY_Controller
                         'displayName' => $staffName,
                     ]);
                     $this->firebase->setCanonicalClaims($staffId, [
-                        'role'           => $positionLabel,
+                        'role'           => $roleClaimLabel,   // ROLE LABEL — panel resolves module access by this (not the designation)
                         'school_id'      => $this->school_id,
                         'school_code'    => $this->school_code,
                         'parent_db_key'  => $this->parent_db_key,
@@ -2215,7 +2412,7 @@ class Staff extends MY_Controller
      */
     public function set_status($user_id)
     {
-        $this->_require_role(self::MANAGE_ROLES);
+        $this->_require_role(self::MANAGE_ROLES, "", "SIS", "manage");
         header('Content-Type: application/json');
 
         if ($this->input->method() !== 'post') {
@@ -2479,7 +2676,7 @@ class Staff extends MY_Controller
      */
     public function reset_password(): void
     {
-        $this->_require_role(['Super Admin', 'School Super Admin', 'Admin', 'Principal'], 'reset_staff_password');
+        $this->_require_role(['Super Admin', 'School Super Admin', 'Admin', 'Principal'], 'reset_staff_password', "SIS", "manage");
         header('Content-Type: application/json');
 
         if ($this->input->method() !== 'post') {
@@ -2537,8 +2734,14 @@ class Staff extends MY_Controller
         }
 
         // 2. Set must-change-password claim — the app gates first login on this.
+        // Self-heal the role claim from the canonical role id (roleId/primary_role)
+        // so a reset repairs any staff whose free-text `role` field is stale/bad
+        // (e.g. a designation or phone that would zero their panel access).
+        $rpId = (string) ($staffDoc['roleId'] ?? $staffDoc['primary_role'] ?? '');
+        $roleClaim = $rpId !== '' ? $this->_role_id_to_label($rpId) : (string) ($staffDoc['role'] ?? 'Teacher');
+        if ($roleClaim === '') $roleClaim = (string) ($staffDoc['role'] ?? 'Teacher');
         $this->firebase->setCanonicalClaims($staff_id, [
-            'role'          => (string) ($staffDoc['role'] ?? 'Teacher'),
+            'role'          => $roleClaim,
             'role_fallback' => 'Teacher',
             'school_id'     => $this->school_id,
             'school_code'   => $this->school_code,
@@ -2553,14 +2756,16 @@ class Staff extends MY_Controller
         // 3. Revoke refresh tokens — kicks active sessions on other devices.
         $this->firebase->revokeRefreshTokens($staff_id);
 
-        // 4. Mirror bcrypt hash + must-change flag to Firestore staff doc.
-        //    bcrypt is write-only for record-keeping. mustChangePassword is
-        //    read by the Teacher app to trigger its force-change-password screen.
+        // 4. Mirror ONLY the must-change flag to the Firestore staff doc.
+        //    SECURITY (audit C1): the bcrypt hash is NO LONGER written here. The
+        //    staff doc is same-school readable (parents/students included), so
+        //    storing a password hash — even bcrypt — was a credential leak with
+        //    zero legitimate reader (Firebase Auth is the sole password authority;
+        //    nothing reads Password/Credentials back). mustChangePassword IS read
+        //    by the Teacher app to trigger its force-change-password screen, so it
+        //    stays. Existing docs are scrubbed by Staff_pii_cleanup.
         try {
-            $hashed = password_hash($new_password, PASSWORD_BCRYPT, ['cost' => 12]);
             $this->fs->set('staff', $this->fs->docId($staff_id), [
-                'Credentials'        => ['Id' => $staff_id, 'Password' => $hashed],
-                'Password'           => $hashed,
                 'mustChangePassword' => true,
                 'lastUpdated'        => date('Y-m-d'),
                 'updatedAt'          => date('c'),
@@ -2598,7 +2803,7 @@ class Staff extends MY_Controller
      */
     public function delete_staff($id = null)
     {
-        $this->_require_role(self::MANAGE_ROLES);
+        $this->_require_role(self::MANAGE_ROLES, "", "SIS", "manage");
         header('Content-Type: application/json');
 
         if ($this->input->method() !== 'post') {
@@ -2736,7 +2941,7 @@ class Staff extends MY_Controller
 
     public function edit_staff($user_id)
     {
-        $this->_require_role(self::MANAGE_ROLES);
+        $this->_require_role(self::MANAGE_ROLES, "", "SIS", "edit");
         $school_name  = $this->school_name;
         $session_year = $this->session_year;
 
@@ -2954,6 +3159,10 @@ class Staff extends MY_Controller
             if (isset($formattedData['ProfilePic']))      $formattedData['profilePic']     = $formattedData['ProfilePic'];
 
             unset($formattedData['Password'], $formattedData['Credentials']);
+            // Audit C1: PAN/Aadhar/PF/ESI/bank submitted on this edit go to the
+            // server-only staffPrivate mirror; the readable staff doc is nulled
+            // for those keys. (salaryDetails is handled by the salary block below.)
+            $this->_split_staff_private($user_id, $formattedData);
 
             $updateRes = $this->fs->updateEntity('staff', $user_id, $formattedData);
 
@@ -2999,13 +3208,18 @@ class Staff extends MY_Controller
                     || array_key_exists('allowances', $postData) || array_key_exists('Allowances', $postData)) {
                     $editBasic = (float) ($postData['basicSalary'] ?? $postData['Basicsalary'] ?? 0);
                     $editAllow = (float) ($postData['allowances']  ?? $postData['Allowances']  ?? 0);
-                    $this->fs->updateEntity('staff', $user_id, [
+                    // Audit C1: salary is PII — write it to the server-only
+                    // staffPrivate mirror (upsert), and null the readable staff
+                    // doc's copy so it no longer leaks to parents/students.
+                    $this->fs->setEntity('staffPrivate', $user_id, [
+                        'staffId'       => $user_id,
                         'salaryDetails' => [
                             'basicSalary' => $editBasic,
                             'Allowances'  => $editAllow,
                             'Net Salary'  => $editBasic + $editAllow,
                         ],
-                    ]);
+                    ], true);
+                    $this->fs->updateEntity('staff', $user_id, ['salaryDetails' => null]);
                     if ($editBasic > 0) {
                         $this->_sync_salary_structure($user_id, $editBasic, $editAllow);
                     }
@@ -3061,7 +3275,7 @@ class Staff extends MY_Controller
 
     public function teacher_profile($id)
     {
-        $this->_require_role(self::VIEW_ROLES);
+        $this->_require_role(self::VIEW_ROLES, "", "SIS", "view");
 
         if (!$id || !preg_match('/^[A-Za-z0-9_]+$/', $id)) {
             show_404();
@@ -3086,7 +3300,7 @@ class Staff extends MY_Controller
 
     public function search_teacher()
     {
-        $this->_require_role(self::VIEW_ROLES);
+        $this->_require_role(self::VIEW_ROLES, "", "SIS", "view");
         header('Content-Type: application/json');
 
         $searchResults = [];
@@ -3132,7 +3346,7 @@ class Staff extends MY_Controller
 
     public function fetch_subjects()
     {
-        $this->_require_role(self::VIEW_ROLES);
+        $this->_require_role(self::VIEW_ROLES, "", "SIS", "view");
         header('Content-Type: application/json');
 
         $school_name  = $this->school_name;
@@ -3169,7 +3383,7 @@ class Staff extends MY_Controller
 
     public function assign_duty()
     {
-        $this->_require_role(self::MANAGE_ROLES);
+        $this->_require_role(self::MANAGE_ROLES, "", "SIS", "edit");
         header('Content-Type: application/json');
 
         $classSection = trim((string) $this->input->post('class_section'));
@@ -3246,7 +3460,7 @@ class Staff extends MY_Controller
 
     public function markInactive_duty()
     {
-        $this->_require_role(self::MANAGE_ROLES);
+        $this->_require_role(self::MANAGE_ROLES, "", "SIS", "edit");
         header('Content-Type: application/json');
 
         $class_name   = trim((string) $this->input->post('class_name'));
@@ -3319,7 +3533,7 @@ class Staff extends MY_Controller
 
     public function teacher_id_card()
     {
-        $this->_require_role(self::VIEW_ROLES);
+        $this->_require_role(self::VIEW_ROLES, "", "SIS", "view");
         $session_year = $this->session_year;
 
         // Firestore: query staff assigned to current session
@@ -3351,11 +3565,49 @@ class Staff extends MY_Controller
      */
     public function get_staff_roles()
     {
-        $this->_require_role(self::VIEW_ROLES, 'get_staff_roles');
+        $this->_require_role(self::VIEW_ROLES, 'get_staff_roles', "SIS", "view");
         $schoolDoc = $this->fs->get('schools', $this->school_id);
         $roles = $schoolDoc['staffRoles'] ?? [];
         if (!is_array($roles)) $roles = [];
         $this->json_success(['roles' => $roles]);
+    }
+
+    /**
+     * Lean catalogue for the import preview's Department→Role dropdowns:
+     * active departments (sorted, each with its role_ids[]) + the flat role list
+     * (id/label/department). No staff scan — mirrors the Departments & Roles module.
+     */
+    public function import_catalogue()
+    {
+        $this->_require_role(self::VIEW_ROLES, 'import_catalogue', 'SIS', 'view');
+        $this->output->set_content_type('application/json');
+
+        $school   = $this->fs->get('schools', $this->school_id);
+        $rolesRaw = is_array($school['staffRoles'] ?? null) && !empty($school['staffRoles'])
+            ? $school['staffRoles'] : self::DEFAULT_STAFF_ROLES;
+
+        $roles = [];
+        foreach ($rolesRaw as $rid => $r) {
+            $r = (array) $r;
+            $roles[] = [
+                'id'         => (string) $rid,
+                'label'      => (string) ($r['label'] ?? $rid),
+                'department' => (string) ($r['department'] ?? $r['category'] ?? ''),
+            ];
+        }
+
+        $draw = is_array($school['departments'] ?? null) ? $school['departments'] : [];
+        uasort($draw, static fn($a, $b) => ((int) (((array) $a)['sort_order'] ?? 99)) <=> ((int) (((array) $b)['sort_order'] ?? 99)));
+        $depts = [];
+        foreach ($draw as $d) {
+            $d = (array) $d;
+            if (($d['status'] ?? 'Active') !== 'Active') continue;
+            $nm = trim((string) ($d['name'] ?? ''));
+            if ($nm === '') continue;
+            $depts[] = ['name' => $nm, 'role_ids' => array_values(is_array($d['role_ids'] ?? null) ? $d['role_ids'] : [])];
+        }
+
+        echo json_encode(['status' => 'success', 'departments' => $depts, 'roles' => $roles]);
     }
 
     /**
@@ -3390,7 +3642,7 @@ class Staff extends MY_Controller
      */
     public function get_staff_by_role()
     {
-        $this->_require_role(self::VIEW_ROLES, 'get_staff_by_role');
+        $this->_require_role(self::VIEW_ROLES, 'get_staff_by_role', "SIS", "view");
         $roleId = trim($this->input->post('role_id', TRUE) ?? '');
         if ($roleId === '') return $this->json_error('role_id is required.');
 
@@ -3431,7 +3683,7 @@ class Staff extends MY_Controller
      */
     public function migrate_staff_roles()
     {
-        $this->_require_role(self::MANAGE_ROLES, 'migrate_staff_roles');
+        $this->_require_role(self::MANAGE_ROLES, 'migrate_staff_roles', "SIS", "manage");
 
         // Query all school staff from Firestore
         $staffDocs = $this->fs->schoolWhere('staff', []);
@@ -3524,10 +3776,75 @@ class Staff extends MY_Controller
         if ($staffId === '') return [];
         try {
             $fsDoc = $this->fs->getEntity('staff', $staffId);
-            return (is_array($fsDoc) && !empty($fsDoc)) ? $fsDoc : [];
+            $staff = (is_array($fsDoc) && !empty($fsDoc)) ? $fsDoc : [];
+            // Audit C1: PII lives on the server-only staffPrivate mirror — merge it
+            // back so the edit form + teacher profile still see PAN/salary/bank.
+            return $staff ? $this->_merge_staff_private($staff, $staffId) : $staff;
         } catch (Exception $e) {
             log_message('error', "_get_staff Firestore read failed [{$staffId}]: " . $e->getMessage());
             return [];
         }
+    }
+
+    // ══════════════════════════════════════════════════════════════════════
+    //  Audit C1 — staffPrivate PII split helpers
+    // ══════════════════════════════════════════════════════════════════════
+
+    /**
+     * WRITE side. Move the PII cluster off a staff-doc payload and onto the
+     * server-only `staffPrivate/{schoolId}_{staffId}` mirror. Mutates
+     * $staffDoc in place: every PII key it carries is copied to the private doc
+     * (via setEntity, upsert/merge) and then NULLED on the readable doc — the
+     * same "set to null" scrub idiom the credential cleanup uses, so the field
+     * is actively cleared on a merge-update, never left to leak.
+     *
+     * Only keys PRESENT on $staffDoc are moved/nulled — an edit that doesn't
+     * submit a given field never blanks the private doc's copy of it.
+     */
+    private function _split_staff_private(string $staffId, array &$staffDoc): void
+    {
+        if ($staffId === '') return;
+        $private = [];
+        foreach (self::PII_KEYS as $k) {
+            if (!array_key_exists($k, $staffDoc)) continue;
+            if ($staffDoc[$k] !== null) $private[$k] = $staffDoc[$k];
+            $staffDoc[$k] = null; // scrub from the same-school-readable doc
+        }
+        if (empty($private)) return;
+        $private['staffId'] = $staffId;
+        try {
+            $this->fs->setEntity('staffPrivate', $staffId, $private, true);
+        } catch (\Throwable $e) {
+            log_message('error', "staffPrivate write failed [{$staffId}]: " . $e->getMessage());
+        }
+    }
+
+    /**
+     * READ side. Fetch the server-only staffPrivate mirror and return only its
+     * PII cluster (non-null values), or [] when absent (un-migrated staff keep
+     * their inline values, so nothing overrides and nothing is lost).
+     */
+    private function _load_staff_private(string $staffId): array
+    {
+        if ($staffId === '') return [];
+        try {
+            $doc = $this->fs->getEntity('staffPrivate', $staffId);
+        } catch (\Throwable $e) {
+            log_message('error', "staffPrivate read failed [{$staffId}]: " . $e->getMessage());
+            return [];
+        }
+        if (!is_array($doc)) return [];
+        $out = [];
+        foreach (self::PII_KEYS as $k) {
+            if (array_key_exists($k, $doc) && $doc[$k] !== null) $out[$k] = $doc[$k];
+        }
+        return $out;
+    }
+
+    /** Merge the staffPrivate PII cluster onto a staff profile (private wins). */
+    private function _merge_staff_private(array $profile, string $staffId): array
+    {
+        $priv = $this->_load_staff_private($staffId);
+        return $priv ? array_merge($profile, $priv) : $profile;
     }
 }

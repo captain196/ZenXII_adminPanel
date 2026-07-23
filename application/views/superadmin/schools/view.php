@@ -324,7 +324,10 @@ $cache      = $school['stats_cache']  ?? [];
                     </p>
                     <div class="form-group">
                         <label style="font-size:11px;color:var(--t3);text-transform:uppercase;letter-spacing:.4px;">New Password</label>
-                        <input type="password" class="form-control" id="saSsaResetPw" minlength="8" required>
+                        <span style="position:relative;display:block">
+                            <input type="password" class="form-control" id="saSsaResetPw" minlength="8" required style="padding-right:40px">
+                            <button type="button" aria-label="Show password" title="Show/hide password" onclick="var i=document.getElementById('saSsaResetPw'),s=i.type==='password';i.type=s?'text':'password';this.firstElementChild.className=s?'fa fa-eye-slash':'fa fa-eye';this.setAttribute('aria-label',s?'Hide password':'Show password')" style="position:absolute;right:6px;top:50%;transform:translateY(-50%);background:none;border:none;color:var(--t3);cursor:pointer;padding:6px;font-size:14px"><i class="fa fa-eye"></i></button>
+                        </span>
                         <small style="color:var(--t3);">Min 8 chars, one upper, one lower, one digit.</small>
                     </div>
                 </div>

@@ -227,6 +227,18 @@ document.addEventListener('DOMContentLoaded', function(){
     }
     function esc(s){ var d=document.createElement('div'); d.textContent=s||''; return d.innerHTML; }
 
+    // Harden a fetch Response: reject on HTTP error or a JSON error body so a
+    // DENIED/FAILED request never resolves as a false success.
+    function hjson(r){
+        return r.json().catch(function(){return {};}).then(function(j){
+            if(!r.ok||(j&&(j.status==='error'||j.success===false))){
+                var e=new Error((j&&(j.message||j.error))||('Request failed ('+r.status+')'));
+                e.httpStatus=r.status;e.payload=j;throw e;
+            }
+            return j;
+        });
+    }
+
     function loadData(){
         $('#statDefaulters,#statTotalDue,#statCollRate,#statDemandStatus').text('…');
         $.when(
@@ -234,6 +246,11 @@ document.addEventListener('DOMContentLoaded', function(){
             $.getJSON(BASE+'fees/get_collection_analytics')
         ).then(function(drRes, anRes){
             var dr = drRes[0], an = anRes[0];
+            if((dr && dr.status === 'error') || (an && an.status === 'error')){
+                $('#statDefaulters,#statTotalDue,#statCollRate,#statDemandStatus').text('—');
+                $('#drBody').html('<tr><td colspan="11" class="fm-empty fm-err"><i class="fa fa-exclamation-triangle"></i> '+esc((dr&&dr.message)||(an&&an.message)||'Failed to load defaulter data.')+'</td></tr>');
+                return;
+            }
             defaulterCache = (dr&&dr.defaulters)||[];
             analyticsCache = an||{};
 
@@ -369,12 +386,12 @@ document.addEventListener('DOMContentLoaded', function(){
         fd.append('template', 'fees_due_default');
         ids.forEach(function(id){ fd.append('student_ids[]', id); });
         fetch(BASE + 'fee_management/send_reminder', {method:'POST', body:fd, headers:{'X-Requested-With':'XMLHttpRequest'}})
-            .then(function(r){return r.json();}).then(function(res){
+            .then(hjson).then(function(res){
                 alert((res && res.message) || ('Reminder queued for ' + ids.length + ' students.'));
                 $('.fm-row-chk').prop('checked', false);
                 $('#chkAll').prop('checked', false);
                 updateSelCount();
-            }).catch(function(){ alert('Failed to send reminder.'); })
+            }).catch(function(e){ alert((e && e.message) || 'Failed to send reminder.'); })
             .finally(function(){ $btn.prop('disabled', false).html(original); });
     }
 
@@ -394,12 +411,12 @@ document.addEventListener('DOMContentLoaded', function(){
         fd.append('template', 'Fee reminder');
         ids.forEach(function(id){ fd.append('student_ids[]', id); });
         fetch(BASE + 'fee_management/send_reminder', {method:'POST', body:fd, headers:{'X-Requested-With':'XMLHttpRequest'}})
-            .then(function(r){return r.json();}).then(function(res){
+            .then(hjson).then(function(res){
                 alert((res && res.message) || ('Push sent to ' + ids.length + ' parents.'));
                 $('.fm-row-chk').prop('checked', false);
                 $('#chkAll').prop('checked', false);
                 updateSelCount();
-            }).catch(function(){ alert('Failed to send push.'); })
+            }).catch(function(e){ alert((e && e.message) || 'Failed to send push.'); })
             .finally(function(){ $btn.prop('disabled', false).html(original); });
     }
 
@@ -466,17 +483,12 @@ document.addEventListener('DOMContentLoaded', function(){
         var original = $btn.html();
         $btn.prop('disabled', true).html('<i class="fa fa-spinner fa-spin"></i> Saving…');
         fetch(BASE + 'fee_management/save_blocking_policy', {method:'POST', body:fd, headers:{'X-Requested-With':'XMLHttpRequest'}})
-            .then(function(r){ return r.json(); })
+            .then(hjson)
             .then(function(res){
-                if (res && res.status === 'success') {
-                    $btn.html('<i class="fa fa-check"></i> Saved');
-                    setTimeout(function(){ $btn.html(original).prop('disabled', true); }, 1200);
-                } else {
-                    alert((res && res.message) || 'Save failed');
-                    $btn.html(original).prop('disabled', false);
-                }
+                $btn.html('<i class="fa fa-check"></i> Saved');
+                setTimeout(function(){ $btn.html(original).prop('disabled', true); }, 1200);
             })
-            .catch(function(){ alert('Save failed'); $btn.html(original).prop('disabled', false); });
+            .catch(function(e){ alert((e && e.message) || 'Save failed'); $btn.html(original).prop('disabled', false); });
     }
 
     window.FDR = {

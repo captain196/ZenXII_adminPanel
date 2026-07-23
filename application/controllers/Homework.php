@@ -53,7 +53,7 @@ class Homework extends MY_Controller
      */
     public function index()
     {
-        $this->_require_role(self::VIEW_ROLES, 'homework_view');
+        $this->_require_role(self::VIEW_ROLES, 'homework_view', 'Homework', 'view');
 
         $data = [
             'page_title' => 'Homework Tracking',
@@ -73,7 +73,7 @@ class Homework extends MY_Controller
      */
     public function get_overview()
     {
-        $this->_require_role(self::VIEW_ROLES, 'homework_overview');
+        $this->_require_role(self::VIEW_ROLES, 'homework_overview', 'Homework', 'view');
 
         $all = $this->_fetch_all_homework();
         $today = $this->_school_today();  // Finding #9 2026-05-14 — school-timezone (IST), not server UTC; parity with M1A.7
@@ -166,7 +166,7 @@ class Homework extends MY_Controller
      */
     public function get_homework_list()
     {
-        $this->_require_role(self::VIEW_ROLES, 'homework_list');
+        $this->_require_role(self::VIEW_ROLES, 'homework_list', 'Homework', 'view');
 
         $filterClass   = trim($this->input->post('class') ?? '');
         $filterSection = trim($this->input->post('section') ?? '');
@@ -241,7 +241,7 @@ class Homework extends MY_Controller
      */
     public function get_homework_detail()
     {
-        $this->_require_role(self::VIEW_ROLES, 'homework_detail');
+        $this->_require_role(self::VIEW_ROLES, 'homework_detail', 'Homework', 'view');
 
         $hwId = $this->safe_path_segment($this->input->post('hw_id') ?? '', 'hw_id');
 
@@ -324,7 +324,7 @@ class Homework extends MY_Controller
      */
     public function get_submissions()
     {
-        $this->_require_role(self::VIEW_ROLES, 'homework_submissions');
+        $this->_require_role(self::VIEW_ROLES, 'homework_submissions', 'Homework', 'view');
 
         $hwId = $this->safe_path_segment($this->input->post('hw_id') ?? '', 'hw_id');
 
@@ -381,7 +381,7 @@ class Homework extends MY_Controller
      */
     public function get_class_summary()
     {
-        $this->_require_role(self::VIEW_ROLES, 'homework_class_summary');
+        $this->_require_role(self::VIEW_ROLES, 'homework_class_summary', 'Homework', 'view');
 
         $all    = $this->_fetch_all_homework();
         $groups = [];
@@ -420,7 +420,7 @@ class Homework extends MY_Controller
      */
     public function get_teacher_activity()
     {
-        $this->_require_role(self::VIEW_ROLES, 'homework_teacher_activity');
+        $this->_require_role(self::VIEW_ROLES, 'homework_teacher_activity', 'Homework', 'view');
 
         $all    = $this->_fetch_all_homework();
         $groups = [];
@@ -472,7 +472,7 @@ class Homework extends MY_Controller
      */
     public function get_subject_breakdown()
     {
-        $this->_require_role(self::VIEW_ROLES, 'homework_subject_breakdown');
+        $this->_require_role(self::VIEW_ROLES, 'homework_subject_breakdown', 'Homework', 'view');
 
         $all    = $this->_fetch_all_homework();
         $groups = [];
@@ -509,7 +509,7 @@ class Homework extends MY_Controller
      */
     public function get_overdue_report()
     {
-        $this->_require_role(self::VIEW_ROLES, 'homework_overdue_report');
+        $this->_require_role(self::VIEW_ROLES, 'homework_overdue_report', 'Homework', 'view');
 
         $all   = $this->_fetch_all_homework();
         $today = $this->_school_today();  // Finding #9 2026-05-14 — school-timezone (IST), not server UTC; parity with M1A.7
@@ -551,7 +551,7 @@ class Homework extends MY_Controller
      */
     public function get_trend_data()
     {
-        $this->_require_role(self::VIEW_ROLES, 'homework_trends');
+        $this->_require_role(self::VIEW_ROLES, 'homework_trends', 'Homework', 'view');
 
         $all = $this->_fetch_all_homework();
 
@@ -628,7 +628,7 @@ class Homework extends MY_Controller
      */
     public function get_subjects_for_class()
     {
-        $this->_require_role(self::VIEW_ROLES, 'homework_subjects');
+        $this->_require_role(self::VIEW_ROLES, 'homework_subjects', 'Homework', 'view');
 
         $class = trim($this->input->post('class') ?? '');
 
@@ -719,7 +719,7 @@ class Homework extends MY_Controller
      */
     public function get_students_for_class()
     {
-        $this->_require_role(self::VIEW_ROLES, 'homework_students');
+        $this->_require_role(self::VIEW_ROLES, 'homework_students', 'Homework', 'view');
 
         $class   = $this->safe_path_segment($this->input->post('class') ?? '', 'class');
         $section = $this->safe_path_segment($this->input->post('section') ?? '', 'section');
@@ -766,7 +766,7 @@ class Homework extends MY_Controller
      */
     public function get_class_sections()
     {
-        $this->_require_role(self::VIEW_ROLES, 'homework_class_sections');
+        $this->_require_role(self::VIEW_ROLES, 'homework_class_sections', 'Homework', 'view');
 
         $result = [];
 
@@ -803,7 +803,7 @@ class Homework extends MY_Controller
      */
     public function create_homework()
     {
-        $this->_require_role(self::MANAGE_ROLES, 'homework_create');
+        $this->_require_role(self::MANAGE_ROLES, 'homework_create', 'Homework', 'edit');
 
         $title       = trim($this->input->post('title') ?? '');
         $description = trim($this->input->post('description') ?? '');
@@ -1035,7 +1035,7 @@ class Homework extends MY_Controller
      */
     public function update_homework()
     {
-        $this->_require_role(self::MANAGE_ROLES, 'homework_update');
+        $this->_require_role(self::MANAGE_ROLES, 'homework_update', 'Homework', 'edit');
 
         $hwId = $this->safe_path_segment($this->input->post('hw_id') ?? '', 'hw_id');
 
@@ -1206,7 +1206,7 @@ class Homework extends MY_Controller
      */
     public function delete_homework()
     {
-        $this->_require_role(self::MANAGE_ROLES, 'homework_delete');
+        $this->_require_role(self::MANAGE_ROLES, 'homework_delete', 'Homework', 'manage');
 
         $hwId = $this->safe_path_segment($this->input->post('hw_id') ?? '', 'hw_id');
 
@@ -1398,7 +1398,7 @@ class Homework extends MY_Controller
      */
     public function close_homework()
     {
-        $this->_require_role(self::MANAGE_ROLES, 'homework_close');
+        $this->_require_role(self::MANAGE_ROLES, 'homework_close', 'Homework', 'edit');
 
         $hwId = $this->safe_path_segment($this->input->post('hw_id') ?? '', 'hw_id');
 

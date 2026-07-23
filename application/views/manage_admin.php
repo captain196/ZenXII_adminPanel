@@ -893,14 +893,14 @@
     border-bottom: 1px solid rgba(188,90,60,.2);
     position: sticky; top: 0; z-index: 2;
 }
-.ma-modal-title { font-size: 14px; font-weight: 700; color: #e6f4f1; display: flex; align-items: center; gap: 8px; }
+.ma-modal-title { font-size: 14px; font-weight: 700; color: #F7ECE7; display: flex; align-items: center; gap: 8px; }
 .ma-modal-id { font-size: 11px; color: rgba(230,244,241,.5); font-family: var(--font-m); margin-top: 2px; }
 .ma-modal-close {
     background: none; border: none; color: rgba(230,244,241,.5);
     font-size: 22px; cursor: pointer; padding: 4px 8px; line-height: 1;
     transition: color .2s;
 }
-.ma-modal-close:hover { color: #e6f4f1; }
+.ma-modal-close:hover { color: #F7ECE7; }
 .ma-modal-body { padding: 24px; flex: 1; }
 .ma-modal-grid { display: grid; grid-template-columns: 1fr 1fr; gap: 16px; margin-bottom: 4px; }
 .ma-modal-foot {

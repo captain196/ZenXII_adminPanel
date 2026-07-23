@@ -28,7 +28,10 @@ $csrfHash = $this->security->get_csrf_hash();
   .rpw-body input[type=password],.rpw-body input[type=text]{width:100%;padding:10px 12px;border:1px solid #cbd5e1;border-radius:7px;font-size:14px;outline:none}
   .rpw-body input:focus{border-color:#38bdf8}
   .rpw-row{display:flex;gap:8px;align-items:stretch}
-  .rpw-row input{flex:1}
+  .rpw-inwrap{position:relative;flex:1;display:flex}
+  .rpw-inwrap input{flex:1;padding-right:40px}
+  .rpw-eye{position:absolute;right:4px;top:50%;transform:translateY(-50%);background:none;border:none;color:#94a3b8;cursor:pointer;padding:6px 8px;border-radius:6px;font-size:14px;line-height:1;display:grid;place-items:center}
+  .rpw-eye:hover{color:#0ea5e9;background:#f1f5f9}
   .rpw-row .rpw-gen{flex:0 0 auto;background:#f1f5f9;border:1px solid #cbd5e1;color:#334155;border-radius:7px;padding:0 12px;font-size:12.5px;cursor:pointer}
   .rpw-row .rpw-gen:hover{background:#e2e8f0}
   .rpw-rules{font-size:11.5px;color:#64748b;margin-top:6px;line-height:1.5}
@@ -59,7 +62,10 @@ $csrfHash = $this->security->get_csrf_hash();
     <div class="rpw-body" id="rpwFormPane">
       <label for="rpwNewPw">New password</label>
       <div class="rpw-row">
-        <input type="password" id="rpwNewPw" minlength="8" maxlength="72" autocomplete="off" spellcheck="false">
+        <div class="rpw-inwrap">
+          <input type="password" id="rpwNewPw" minlength="8" maxlength="72" autocomplete="off" spellcheck="false">
+          <button type="button" class="rpw-eye" id="rpwEyeBtn" aria-label="Show password" title="Show password"><i class="fa fa-eye"></i></button>
+        </div>
         <button type="button" class="rpw-gen" id="rpwGenBtn" title="Generate strong password">Generate</button>
       </div>
       <div class="rpw-rules">8–72 chars. Must include uppercase, lowercase, and a digit.</div>
@@ -97,6 +103,17 @@ $csrfHash = $this->security->get_csrf_hash();
   const whoEl    = document.getElementById('rpwWho');
   const newPw    = document.getElementById('rpwNewPw');
   const genBtn   = document.getElementById('rpwGenBtn');
+  const eyeBtn   = document.getElementById('rpwEyeBtn');
+  const eyeIcon  = eyeBtn.querySelector('i');
+
+  function setPwVisible(show) {
+    newPw.type = show ? 'text' : 'password';
+    const lbl = show ? 'Hide password' : 'Show password';
+    eyeBtn.setAttribute('aria-label', lbl);
+    eyeBtn.setAttribute('title', lbl);
+    eyeIcon.className = show ? 'fa fa-eye-slash' : 'fa fa-eye';
+  }
+  eyeBtn.addEventListener('click', () => setPwVisible(newPw.type === 'password'));
   const msg      = document.getElementById('rpwMsg');
   const submit   = document.getElementById('rpwSubmitBtn');
   const cancel   = document.getElementById('rpwCancelBtn');
@@ -111,6 +128,7 @@ $csrfHash = $this->security->get_csrf_hash();
     currentUserId = userId;
     whoEl.textContent = userName + '  ·  ' + userId;
     newPw.value = '';
+    setPwVisible(false);
     msg.textContent = '';
     msg.className = 'rpw-msg';
     formPane.style.display = '';
@@ -143,7 +161,7 @@ $csrfHash = $this->security->get_csrf_hash();
     for (let i = 3; i < 12; i++) pw += all[Math.floor(Math.random()*all.length)];
     // Shuffle
     pw = pw.split('').sort(() => Math.random() - 0.5).join('');
-    newPw.type = 'text';
+    setPwVisible(true);
     newPw.value = pw;
   });
 
@@ -228,8 +246,8 @@ $csrfHash = $this->security->get_csrf_hash();
 
   // Reset to password type after closing.
   backdrop.addEventListener('transitionend', () => {
-    if (!backdrop.classList.contains('open')) newPw.type = 'password';
+    if (!backdrop.classList.contains('open')) setPwVisible(false);
   });
-  cancel.addEventListener('click', () => { newPw.type = 'password'; });
+  cancel.addEventListener('click', () => { setPwVisible(false); });
 })();
 </script>

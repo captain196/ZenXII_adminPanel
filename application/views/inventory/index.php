@@ -7,7 +7,10 @@ $tab_map = [
     'purchases'  => ['panel'=>'panelPurchases', 'icon'=>'fa-shopping-cart','label'=>'Purchases'],
     'stock'      => ['panel'=>'panelStock',     'icon'=>'fa-exchange',  'label'=>'Stock Issues'],
 ];
+$can_edit   = function_exists('has_permission') ? has_permission('Inventory','edit')   : true;
+$can_manage = function_exists('has_permission') ? has_permission('Inventory','manage') : true;
 ?>
+<link rel="stylesheet" href="<?= base_url('assets/css/rbac_ui_kit.css') ?>">
 <style>
 .inv-wrap{padding:20px;max-width:1400px;margin:0 auto}
 .inv-header{display:flex;align-items:center;justify-content:space-between;margin-bottom:24px;flex-wrap:wrap;gap:12px}
@@ -42,7 +45,9 @@ $tab_map = [
 .inv-modal-close{cursor:pointer;color:var(--t3);font-size:1.2rem;background:none;border:none}
 </style>
 
-<div class="content-wrapper"><section class="content"><div class="inv-wrap">
+<div class="content-wrapper">
+<div class="rx-loadbar" id="rxLoadbar"></div>
+<section class="content"><div class="inv-wrap">
   <div class="inv-header"><div>
     <div class="inv-header-icon"><i class="fa fa-cubes"></i> Inventory Management</div>
     <ol class="inv-breadcrumb"><li><a href="<?= base_url('admin') ?>">Dashboard</a></li><li><a href="<?= base_url('operations') ?>">Operations</a></li><li>Inventory</li></ol>
@@ -53,33 +58,39 @@ $tab_map = [
     <?php endforeach; ?>
   </nav>
 
+  <?php if(!$can_edit): ?>
+  <div class="rx-ro-banner"><span class="rx-ro-ic">🔒</span> View-only access — you can browse Inventory records but cannot add, edit, or delete.</div>
+  <?php elseif(!$can_manage): ?>
+  <div class="rx-ro-banner"><span class="rx-ro-ic">🔒</span> Limited access — you can add and edit, but deleting is restricted.</div>
+  <?php endif; ?>
+
   <!-- ITEMS -->
   <div class="inv-panel<?= $at === 'items' ? ' active' : '' ?>" id="panelItems">
-    <div class="inv-card"><div class="inv-card-title"><span>Inventory Items</span><button class="inv-btn inv-btn-primary" onclick="INV.openItemModal()"><i class="fa fa-plus"></i> Add Item</button></div>
+    <div class="inv-card"><div class="inv-card-title"><span>Inventory Items</span><button class="inv-btn inv-btn-primary" onclick="INV.openItemModal()" <?= $can_edit?'':'disabled' ?>><i class="fa fa-plus"></i> Add Item</button></div>
     <table class="inv-table"><thead><tr><th>ID</th><th>Name</th><th>Category</th><th>Unit</th><th>Stock</th><th>Min</th><th>Location</th><th>Actions</th></tr></thead><tbody id="itemsTbody"></tbody></table></div>
   </div>
 
   <!-- CATEGORIES -->
   <div class="inv-panel<?= $at === 'categories' ? ' active' : '' ?>" id="panelCats">
-    <div class="inv-card"><div class="inv-card-title"><span>Categories</span><button class="inv-btn inv-btn-primary" onclick="INV.openCatModal()"><i class="fa fa-plus"></i> Add</button></div>
+    <div class="inv-card"><div class="inv-card-title"><span>Categories</span><button class="inv-btn inv-btn-primary" onclick="INV.openCatModal()" <?= $can_edit?'':'disabled' ?>><i class="fa fa-plus"></i> Add</button></div>
     <table class="inv-table"><thead><tr><th>ID</th><th>Name</th><th>Description</th><th>Actions</th></tr></thead><tbody id="invCatsTbody"></tbody></table></div>
   </div>
 
   <!-- VENDORS -->
   <div class="inv-panel<?= $at === 'vendors' ? ' active' : '' ?>" id="panelVendors">
-    <div class="inv-card"><div class="inv-card-title"><span>Vendors</span><button class="inv-btn inv-btn-primary" onclick="INV.openVndModal()"><i class="fa fa-plus"></i> Add Vendor</button></div>
+    <div class="inv-card"><div class="inv-card-title"><span>Vendors</span><button class="inv-btn inv-btn-primary" onclick="INV.openVndModal()" <?= $can_edit?'':'disabled' ?>><i class="fa fa-plus"></i> Add Vendor</button></div>
     <table class="inv-table"><thead><tr><th>ID</th><th>Name</th><th>Contact</th><th>Email</th><th>GST</th><th>Actions</th></tr></thead><tbody id="vndTbody"></tbody></table></div>
   </div>
 
   <!-- PURCHASES -->
   <div class="inv-panel<?= $at === 'purchases' ? ' active' : '' ?>" id="panelPurchases">
-    <div class="inv-card"><div class="inv-card-title"><span>Purchase Records</span><button class="inv-btn inv-btn-primary" onclick="INV.openPoModal()"><i class="fa fa-plus"></i> Record Purchase</button></div>
+    <div class="inv-card"><div class="inv-card-title"><span>Purchase Records</span><button class="inv-btn inv-btn-primary" onclick="INV.openPoModal()" <?= $can_edit?'':'disabled' ?>><i class="fa fa-plus"></i> Record Purchase</button></div>
     <table class="inv-table"><thead><tr><th>ID</th><th>Date</th><th>Item</th><th>Vendor</th><th>Qty</th><th>Total</th><th>Invoice</th><th>Journal</th></tr></thead><tbody id="poTbody"></tbody></table></div>
   </div>
 
   <!-- STOCK ISSUES -->
   <div class="inv-panel<?= $at === 'stock' ? ' active' : '' ?>" id="panelStock">
-    <div class="inv-card"><div class="inv-card-title"><span>Stock Issues</span><button class="inv-btn inv-btn-primary" onclick="INV.openIssModal()"><i class="fa fa-plus"></i> Issue Stock</button></div>
+    <div class="inv-card"><div class="inv-card-title"><span>Stock Issues</span><button class="inv-btn inv-btn-primary" onclick="INV.openIssModal()" <?= $can_edit?'':'disabled' ?>><i class="fa fa-plus"></i> Issue Stock</button></div>
     <table class="inv-table"><thead><tr><th>ID</th><th>Date</th><th>Item</th><th>Issued To</th><th>Qty</th><th>Purpose</th><th>Status</th><th>Actions</th></tr></thead><tbody id="issTbody"></tbody></table></div>
   </div>
 </div></section></div>
@@ -92,7 +103,7 @@ $tab_map = [
   <div class="inv-form-row"><div class="inv-form-group"><label>Category</label><select id="itmCatId"><option value="">-- None --</option></select></div><div class="inv-form-group"><label>Unit</label><input type="text" id="itmUnit" value="Pcs"></div></div>
   <div class="inv-form-row"><div class="inv-form-group"><label>Min Stock Alert</label><input type="number" id="itmMin" value="0" min="0"></div><div class="inv-form-group"><label>Location</label><input type="text" id="itmLoc"></div></div>
   <div class="inv-form-group"><label>Description</label><textarea id="itmDesc" rows="2"></textarea></div>
-  <button class="inv-btn inv-btn-primary" onclick="INV.saveItem()" style="width:100%;margin-top:8px">Save Item</button>
+  <button class="inv-btn inv-btn-primary" onclick="INV.saveItem()" style="width:100%;margin-top:8px" <?= $can_edit?'':'disabled' ?>>Save Item</button>
 </div></div>
 
 <!-- CATEGORY MODAL -->
@@ -101,7 +112,7 @@ $tab_map = [
   <input type="hidden" id="icatId">
   <div class="inv-form-group"><label>Name *</label><input type="text" id="icatName"></div>
   <div class="inv-form-group"><label>Description</label><textarea id="icatDesc" rows="2"></textarea></div>
-  <button class="inv-btn inv-btn-primary" onclick="INV.saveCat()" style="width:100%;margin-top:8px">Save</button>
+  <button class="inv-btn inv-btn-primary" onclick="INV.saveCat()" style="width:100%;margin-top:8px" <?= $can_edit?'':'disabled' ?>>Save</button>
 </div></div>
 
 <!-- VENDOR MODAL -->
@@ -112,7 +123,7 @@ $tab_map = [
   <div class="inv-form-row"><div class="inv-form-group"><label>Contact</label><input type="text" id="vndContact"></div><div class="inv-form-group"><label>Email</label><input type="email" id="vndEmail"></div></div>
   <div class="inv-form-group"><label>Address</label><textarea id="vndAddress" rows="2"></textarea></div>
   <div class="inv-form-group"><label>GST Number</label><input type="text" id="vndGst"></div>
-  <button class="inv-btn inv-btn-primary" onclick="INV.saveVnd()" style="width:100%;margin-top:8px">Save Vendor</button>
+  <button class="inv-btn inv-btn-primary" onclick="INV.saveVnd()" style="width:100%;margin-top:8px" <?= $can_edit?'':'disabled' ?>>Save Vendor</button>
 </div></div>
 
 <!-- PURCHASE MODAL -->
@@ -122,7 +133,7 @@ $tab_map = [
   <div class="inv-form-row"><div class="inv-form-group"><label>Quantity *</label><input type="number" id="poQty" value="1" min="1"></div><div class="inv-form-group"><label>Unit Price *</label><input type="number" id="poPrice" value="0" min="0" step="0.01"></div></div>
   <div class="inv-form-row"><div class="inv-form-group"><label>Date</label><input type="date" id="poDate"></div><div class="inv-form-group"><label>Invoice No.</label><input type="text" id="poInvoice"></div></div>
   <div class="inv-form-group"><label>Payment Mode</label><select id="poMode"><option value="Cash">Cash</option><option value="Bank">Bank</option></select></div>
-  <button class="inv-btn inv-btn-primary" onclick="INV.savePo()" style="width:100%;margin-top:8px">Save Purchase</button>
+  <button class="inv-btn inv-btn-primary" onclick="INV.savePo()" style="width:100%;margin-top:8px" <?= $can_edit?'':'disabled' ?>>Save Purchase</button>
 </div></div>
 
 <!-- STOCK ISSUE MODAL -->
@@ -131,55 +142,64 @@ $tab_map = [
   <div class="inv-form-group"><label>Item *</label><select id="issItemId"></select></div>
   <div class="inv-form-row"><div class="inv-form-group"><label>Quantity *</label><input type="number" id="issQty" value="1" min="1"></div><div class="inv-form-group"><label>Issued To *</label><input type="text" id="issTo" placeholder="Person / Department"></div></div>
   <div class="inv-form-group"><label>Purpose</label><input type="text" id="issPurpose"></div>
-  <button class="inv-btn inv-btn-primary" onclick="INV.saveIss()" style="width:100%;margin-top:8px">Issue</button>
+  <button class="inv-btn inv-btn-primary" onclick="INV.saveIss()" style="width:100%;margin-top:8px" <?= $can_edit?'':'disabled' ?>>Issue</button>
 </div></div>
 
 <script>
-var _INV_CFG={BASE:'<?= base_url() ?>',CSRF_NAME:'<?= $this->security->get_csrf_token_name() ?>',CSRF_HASH:'<?= $this->security->get_csrf_hash() ?>',activeTab:'<?= $at ?>'};
+var _INV_CFG={BASE:'<?= base_url() ?>',CSRF_NAME:'<?= $this->security->get_csrf_token_name() ?>',CSRF_HASH:'<?= $this->security->get_csrf_hash() ?>',activeTab:'<?= $at ?>',CAN_EDIT:<?= $can_edit?'true':'false' ?>,CAN_MANAGE:<?= $can_manage?'true':'false' ?>};
 document.addEventListener('DOMContentLoaded', function(){
 (function(){
   'use strict';
   var BASE=_INV_CFG.BASE,CN=_INV_CFG.CSRF_NAME,CH=_INV_CFG.CSRF_HASH;
   var categories=[],items=[],vendors=[];
-  function getJSON(u){return $.getJSON(BASE+u)} function post(u,d){d[CN]=CH;return $.post(BASE+u,d)}
+  var CAN_EDIT=_INV_CFG.CAN_EDIT, CAN_MANAGE=_INV_CFG.CAN_MANAGE;
+  var EDIT_ATTR=CAN_EDIT?'':' disabled title="No edit permission"';
+  var DEL_ATTR=CAN_MANAGE?'':' disabled title="No delete permission"';
   function toast(m,ok){var t=$('<div style="position:fixed;top:20px;right:20px;z-index:99999;padding:12px 20px;border-radius:8px;font-size:.85rem;color:#fff;background:'+(ok?'var(--green)':'var(--rose)')+'">'+m+'</div>');$('body').append(t);setTimeout(function(){t.fadeOut(300,function(){t.remove()})},3000)}
   function escH(s){return $('<span>').text(s||'').html()}
+  function errMsg(xhr,def){var m=def||'Request failed';try{var j=xhr.responseJSON;if(!j&&xhr.responseText)j=JSON.parse(xhr.responseText);if(j&&j.message)m=j.message;else if(xhr.status)m=(def||'Request failed')+' ('+xhr.status+')';}catch(e){if(xhr.status)m=(def||'Request failed')+' ('+xhr.status+')';}return m}
+  function getJSON(u){return $.getJSON(BASE+u).fail(function(xhr){toast(errMsg(xhr,'Failed to load data'),false)})}
+  function post(u,d){d[CN]=CH;return $.post(BASE+u,d).fail(function(xhr){toast(errMsg(xhr,'Action failed'),false)})}
+  function skel(id,cols,n){var h='';n=n||4;for(var i=0;i<n;i++){h+='<tr>';for(var c=0;c<cols;c++)h+='<td><div class="rx-skel rx-skel-row"></div></td>';h+='</tr>'}$('#'+id).html(h)}
+  function btnOn(sel){var el=$(sel)[0];if(el)el.classList.add('rx-btnload');return el}
+  function btnOff(el){if(el)el.classList.remove('rx-btnload')}
+  $(document).ajaxStart(function(){$('#rxLoadbar').addClass('on')}).ajaxStop(function(){$('#rxLoadbar').removeClass('on')});
   function catName(id){for(var i=0;i<categories.length;i++) if(categories[i].id===id) return categories[i].name; return id||'—'}
   function vndName(id){for(var i=0;i<vendors.length;i++) if(vendors[i].id===id) return vendors[i].name; return id||'—'}
   window.INV={};
 
-  function loadCats(){getJSON('inventory/get_categories').done(function(r){if(r.status!=='success')return;categories=r.categories||[];
-    var html='';categories.forEach(function(c){html+='<tr><td>'+escH(c.id)+'</td><td>'+escH(c.name)+'</td><td>'+escH(c.description)+'</td><td><button class="inv-btn inv-btn-sm inv-btn-primary" onclick="INV.editCat(\''+c.id+'\')"><i class="fa fa-pencil"></i></button> <button class="inv-btn inv-btn-sm inv-btn-danger" onclick="INV.delCat(\''+c.id+'\')"><i class="fa fa-trash"></i></button></td></tr>'});
+  function loadCats(){skel('invCatsTbody',4);getJSON('inventory/get_categories').done(function(r){if(r.status!=='success'){$('#invCatsTbody').html('<tr><td colspan="4" style="text-align:center;color:var(--rose)">'+escH(r.message||'Failed to load')+'</td></tr>');return}categories=r.categories||[];
+    var html='';categories.forEach(function(c){html+='<tr><td>'+escH(c.id)+'</td><td>'+escH(c.name)+'</td><td>'+escH(c.description)+'</td><td><button class="inv-btn inv-btn-sm inv-btn-primary" onclick="INV.editCat(\''+c.id+'\')"'+EDIT_ATTR+'><i class="fa fa-pencil"></i></button> <button class="inv-btn inv-btn-sm inv-btn-danger" onclick="INV.delCat(\''+c.id+'\')"'+DEL_ATTR+'><i class="fa fa-trash"></i></button></td></tr>'});
     $('#invCatsTbody').html(html||'<tr><td colspan="4" style="text-align:center;color:var(--t3)">No categories</td></tr>');
     var o='<option value="">-- None --</option>';categories.forEach(function(c){o+='<option value="'+c.id+'">'+escH(c.name)+'</option>'});$('#itmCatId').html(o);
   })}
-  function loadItems(){getJSON('inventory/get_items').done(function(r){if(r.status!=='success')return;items=r.items||[];
+  function loadItems(){skel('itemsTbody',8);getJSON('inventory/get_items').done(function(r){if(r.status!=='success'){$('#itemsTbody').html('<tr><td colspan="8" style="text-align:center;color:var(--rose)">'+escH(r.message||'Failed to load')+'</td></tr>');return}items=r.items||[];
     var html='';items.forEach(function(it){
       var stockBadge=it.current_stock<=it.min_stock?'<span class="inv-badge inv-badge-red">'+it.current_stock+'</span>':'<span class="inv-badge inv-badge-green">'+it.current_stock+'</span>';
       html+='<tr><td>'+escH(it.id)+'</td><td>'+escH(it.name)+'</td><td>'+escH(catName(it.category_id))+'</td><td>'+escH(it.unit)+'</td><td>'+stockBadge+'</td><td>'+it.min_stock+'</td><td>'+escH(it.location)+'</td>';
-      html+='<td><button class="inv-btn inv-btn-sm inv-btn-primary" onclick="INV.editItem(\''+it.id+'\')"><i class="fa fa-pencil"></i></button> <button class="inv-btn inv-btn-sm inv-btn-danger" onclick="INV.delItem(\''+it.id+'\')"><i class="fa fa-trash"></i></button></td></tr>';
+      html+='<td><button class="inv-btn inv-btn-sm inv-btn-primary" onclick="INV.editItem(\''+it.id+'\')"'+EDIT_ATTR+'><i class="fa fa-pencil"></i></button> <button class="inv-btn inv-btn-sm inv-btn-danger" onclick="INV.delItem(\''+it.id+'\')"'+DEL_ATTR+'><i class="fa fa-trash"></i></button></td></tr>';
     });
     $('#itemsTbody').html(html||'<tr><td colspan="8" style="text-align:center;color:var(--t3)">No items</td></tr>');
     var o='';items.forEach(function(it){o+='<option value="'+it.id+'">'+escH(it.name)+' (Stock: '+it.current_stock+')</option>'});$('#poItemId,#issItemId').html(o);
   })}
-  function loadVendors(){getJSON('inventory/get_vendors').done(function(r){if(r.status!=='success')return;vendors=r.vendors||[];
+  function loadVendors(){skel('vndTbody',6);getJSON('inventory/get_vendors').done(function(r){if(r.status!=='success'){$('#vndTbody').html('<tr><td colspan="6" style="text-align:center;color:var(--rose)">'+escH(r.message||'Failed to load')+'</td></tr>');return}vendors=r.vendors||[];
     var html='';vendors.forEach(function(v){
       html+='<tr><td>'+escH(v.id)+'</td><td>'+escH(v.name)+'</td><td>'+escH(v.contact)+'</td><td>'+escH(v.email)+'</td><td>'+escH(v.gst)+'</td>';
-      html+='<td><button class="inv-btn inv-btn-sm inv-btn-primary" onclick="INV.editVnd(\''+v.id+'\')"><i class="fa fa-pencil"></i></button> <button class="inv-btn inv-btn-sm inv-btn-danger" onclick="INV.delVnd(\''+v.id+'\')"><i class="fa fa-trash"></i></button></td></tr>';
+      html+='<td><button class="inv-btn inv-btn-sm inv-btn-primary" onclick="INV.editVnd(\''+v.id+'\')"'+EDIT_ATTR+'><i class="fa fa-pencil"></i></button> <button class="inv-btn inv-btn-sm inv-btn-danger" onclick="INV.delVnd(\''+v.id+'\')"'+DEL_ATTR+'><i class="fa fa-trash"></i></button></td></tr>';
     });
     $('#vndTbody').html(html||'<tr><td colspan="6" style="text-align:center;color:var(--t3)">No vendors</td></tr>');
     var o='<option value="">-- None --</option>';vendors.forEach(function(v){o+='<option value="'+v.id+'">'+escH(v.name)+'</option>'});$('#poVndId').html(o);
   })}
-  function loadPurchases(){getJSON('inventory/get_purchases').done(function(r){if(r.status!=='success')return;
+  function loadPurchases(){skel('poTbody',8);getJSON('inventory/get_purchases').done(function(r){if(r.status!=='success'){$('#poTbody').html('<tr><td colspan="8" style="text-align:center;color:var(--rose)">'+escH(r.message||'Failed to load')+'</td></tr>');return}
     var html='';(r.purchases||[]).forEach(function(p){
       html+='<tr><td>'+escH(p.id)+'</td><td>'+escH(p.date)+'</td><td>'+escH(p.item_name)+'</td><td>'+escH(p.vendor_name)+'</td><td>'+p.qty+'</td><td>Rs '+p.total+'</td><td>'+escH(p.invoice_no)+'</td><td style="font-size:.75rem">'+escH(p.journal_id)+'</td></tr>';
     });
     $('#poTbody').html(html||'<tr><td colspan="8" style="text-align:center;color:var(--t3)">No purchases</td></tr>');
   })}
-  function loadIssues(){getJSON('inventory/get_issues').done(function(r){if(r.status!=='success')return;
+  function loadIssues(){skel('issTbody',8);getJSON('inventory/get_issues').done(function(r){if(r.status!=='success'){$('#issTbody').html('<tr><td colspan="8" style="text-align:center;color:var(--rose)">'+escH(r.message||'Failed to load')+'</td></tr>');return}
     var html='';(r.issues||[]).forEach(function(iss){
       var stBadge=iss.status==='Issued'?'<span class="inv-badge inv-badge-blue">Issued</span>':'<span class="inv-badge inv-badge-green">Returned</span>';
-      var act=iss.status==='Issued'?'<button class="inv-btn inv-btn-sm inv-btn-primary" onclick="INV.returnIss(\''+iss.id+'\','+iss.qty+')"><i class="fa fa-undo"></i></button>':'—';
+      var act=iss.status==='Issued'?'<button class="inv-btn inv-btn-sm inv-btn-primary" onclick="INV.returnIss(\''+iss.id+'\','+iss.qty+')"'+EDIT_ATTR+'><i class="fa fa-undo"></i></button>':'—';
       html+='<tr><td>'+escH(iss.id)+'</td><td>'+escH(iss.date)+'</td><td>'+escH(iss.item_name)+'</td><td>'+escH(iss.issued_to)+'</td><td>'+iss.qty+'</td><td>'+escH(iss.purpose)+'</td><td>'+stBadge+'</td><td>'+act+'</td></tr>';
     });
     $('#issTbody').html(html||'<tr><td colspan="8" style="text-align:center;color:var(--t3)">No issues</td></tr>');
@@ -188,30 +208,30 @@ document.addEventListener('DOMContentLoaded', function(){
   // CRUD helpers
   INV.openCatModal=function(){$('#icatId,#icatName,#icatDesc').val('');$('#invCatModalTitle').text('Add Category');$('#invCatModal').addClass('show')};
   INV.closeCatModal=function(){$('#invCatModal').removeClass('show')};
-  INV.editCat=function(id){var c=categories.find(function(x){return x.id===id});if(!c)return;$('#icatId').val(c.id);$('#icatName').val(c.name);$('#icatDesc').val(c.description);$('#invCatModalTitle').text('Edit Category');$('#invCatModal').addClass('show')};
-  INV.saveCat=function(){post('inventory/save_category',{id:$('#icatId').val(),name:$('#icatName').val(),description:$('#icatDesc').val()}).done(function(r){r=typeof r==='string'?JSON.parse(r):r;if(r.status==='success'){toast(r.message,true);INV.closeCatModal();loadCats()}else toast(r.message,false)})};
-  INV.delCat=function(id){if(!confirm('Delete?'))return;post('inventory/delete_category',{id:id}).done(function(r){r=typeof r==='string'?JSON.parse(r):r;if(r.status==='success'){toast(r.message,true);loadCats()}else toast(r.message,false)})};
+  INV.editCat=function(id){if(!CAN_EDIT)return;var c=categories.find(function(x){return x.id===id});if(!c)return;$('#icatId').val(c.id);$('#icatName').val(c.name);$('#icatDesc').val(c.description);$('#invCatModalTitle').text('Edit Category');$('#invCatModal').addClass('show')};
+  INV.saveCat=function(){if(!CAN_EDIT){toast('You do not have edit permission',false);return}var b=btnOn('#invCatModal .inv-btn-primary');post('inventory/save_category',{id:$('#icatId').val(),name:$('#icatName').val(),description:$('#icatDesc').val()}).done(function(r){r=typeof r==='string'?JSON.parse(r):r;if(r.status==='success'){toast(r.message,true);INV.closeCatModal();loadCats()}else toast(r.message,false)}).always(function(){btnOff(b)})};
+  INV.delCat=function(id){if(!CAN_MANAGE){toast('You do not have delete permission',false);return}if(!confirm('Delete?'))return;post('inventory/delete_category',{id:id}).done(function(r){r=typeof r==='string'?JSON.parse(r):r;if(r.status==='success'){toast(r.message,true);loadCats()}else toast(r.message,false)})};
 
   INV.openItemModal=function(){$('#itmId,#itmName,#itmLoc,#itmDesc').val('');$('#itmCatId').val('');$('#itmUnit').val('Pcs');$('#itmMin').val(0);$('#itemModalTitle').text('Add Item');$('#itemModal').addClass('show')};
   INV.closeItemModal=function(){$('#itemModal').removeClass('show')};
-  INV.editItem=function(id){var it=items.find(function(x){return x.id===id});if(!it)return;$('#itmId').val(it.id);$('#itmName').val(it.name);$('#itmCatId').val(it.category_id);$('#itmUnit').val(it.unit);$('#itmMin').val(it.min_stock);$('#itmLoc').val(it.location);$('#itmDesc').val(it.description);$('#itemModalTitle').text('Edit Item');$('#itemModal').addClass('show')};
-  INV.saveItem=function(){post('inventory/save_item',{id:$('#itmId').val(),name:$('#itmName').val(),category_id:$('#itmCatId').val(),unit:$('#itmUnit').val(),min_stock:$('#itmMin').val(),location:$('#itmLoc').val(),description:$('#itmDesc').val()}).done(function(r){r=typeof r==='string'?JSON.parse(r):r;if(r.status==='success'){toast(r.message,true);INV.closeItemModal();loadItems()}else toast(r.message,false)})};
-  INV.delItem=function(id){if(!confirm('Delete item?'))return;post('inventory/delete_item',{id:id}).done(function(r){r=typeof r==='string'?JSON.parse(r):r;if(r.status==='success'){toast(r.message,true);loadItems()}else toast(r.message,false)})};
+  INV.editItem=function(id){if(!CAN_EDIT)return;var it=items.find(function(x){return x.id===id});if(!it)return;$('#itmId').val(it.id);$('#itmName').val(it.name);$('#itmCatId').val(it.category_id);$('#itmUnit').val(it.unit);$('#itmMin').val(it.min_stock);$('#itmLoc').val(it.location);$('#itmDesc').val(it.description);$('#itemModalTitle').text('Edit Item');$('#itemModal').addClass('show')};
+  INV.saveItem=function(){if(!CAN_EDIT){toast('You do not have edit permission',false);return}var b=btnOn('#itemModal .inv-btn-primary');post('inventory/save_item',{id:$('#itmId').val(),name:$('#itmName').val(),category_id:$('#itmCatId').val(),unit:$('#itmUnit').val(),min_stock:$('#itmMin').val(),location:$('#itmLoc').val(),description:$('#itmDesc').val()}).done(function(r){r=typeof r==='string'?JSON.parse(r):r;if(r.status==='success'){toast(r.message,true);INV.closeItemModal();loadItems()}else toast(r.message,false)}).always(function(){btnOff(b)})};
+  INV.delItem=function(id){if(!CAN_MANAGE){toast('You do not have delete permission',false);return}if(!confirm('Delete item?'))return;post('inventory/delete_item',{id:id}).done(function(r){r=typeof r==='string'?JSON.parse(r):r;if(r.status==='success'){toast(r.message,true);loadItems()}else toast(r.message,false)})};
 
   INV.openVndModal=function(){$('#vndId,#vndName,#vndContact,#vndEmail,#vndAddress,#vndGst').val('');$('#vndModalTitle').text('Add Vendor');$('#vndModal').addClass('show')};
   INV.closeVndModal=function(){$('#vndModal').removeClass('show')};
-  INV.editVnd=function(id){var v=vendors.find(function(x){return x.id===id});if(!v)return;$('#vndId').val(v.id);$('#vndName').val(v.name);$('#vndContact').val(v.contact);$('#vndEmail').val(v.email);$('#vndAddress').val(v.address);$('#vndGst').val(v.gst);$('#vndModalTitle').text('Edit Vendor');$('#vndModal').addClass('show')};
-  INV.saveVnd=function(){post('inventory/save_vendor',{id:$('#vndId').val(),name:$('#vndName').val(),contact:$('#vndContact').val(),email:$('#vndEmail').val(),address:$('#vndAddress').val(),gst:$('#vndGst').val()}).done(function(r){r=typeof r==='string'?JSON.parse(r):r;if(r.status==='success'){toast(r.message,true);INV.closeVndModal();loadVendors()}else toast(r.message,false)})};
-  INV.delVnd=function(id){if(!confirm('Delete vendor?'))return;post('inventory/delete_vendor',{id:id}).done(function(r){r=typeof r==='string'?JSON.parse(r):r;if(r.status==='success'){toast(r.message,true);loadVendors()}else toast(r.message,false)})};
+  INV.editVnd=function(id){if(!CAN_EDIT)return;var v=vendors.find(function(x){return x.id===id});if(!v)return;$('#vndId').val(v.id);$('#vndName').val(v.name);$('#vndContact').val(v.contact);$('#vndEmail').val(v.email);$('#vndAddress').val(v.address);$('#vndGst').val(v.gst);$('#vndModalTitle').text('Edit Vendor');$('#vndModal').addClass('show')};
+  INV.saveVnd=function(){if(!CAN_EDIT){toast('You do not have edit permission',false);return}var b=btnOn('#vndModal .inv-btn-primary');post('inventory/save_vendor',{id:$('#vndId').val(),name:$('#vndName').val(),contact:$('#vndContact').val(),email:$('#vndEmail').val(),address:$('#vndAddress').val(),gst:$('#vndGst').val()}).done(function(r){r=typeof r==='string'?JSON.parse(r):r;if(r.status==='success'){toast(r.message,true);INV.closeVndModal();loadVendors()}else toast(r.message,false)}).always(function(){btnOff(b)})};
+  INV.delVnd=function(id){if(!CAN_MANAGE){toast('You do not have delete permission',false);return}if(!confirm('Delete vendor?'))return;post('inventory/delete_vendor',{id:id}).done(function(r){r=typeof r==='string'?JSON.parse(r):r;if(r.status==='success'){toast(r.message,true);loadVendors()}else toast(r.message,false)})};
 
   INV.openPoModal=function(){$('#poQty').val(1);$('#poPrice').val(0);$('#poDate').val(new Date().toISOString().slice(0,10));$('#poInvoice').val('');$('#poMode').val('Cash');$('#poModal').addClass('show')};
   INV.closePoModal=function(){$('#poModal').removeClass('show')};
-  INV.savePo=function(){post('inventory/save_purchase',{item_id:$('#poItemId').val(),vendor_id:$('#poVndId').val(),qty:$('#poQty').val(),unit_price:$('#poPrice').val(),date:$('#poDate').val(),invoice_no:$('#poInvoice').val(),payment_mode:$('#poMode').val()}).done(function(r){r=typeof r==='string'?JSON.parse(r):r;if(r.status==='success'){toast(r.message,true);INV.closePoModal();loadPurchases();loadItems()}else toast(r.message,false)})};
+  INV.savePo=function(){if(!CAN_EDIT){toast('You do not have edit permission',false);return}var b=btnOn('#poModal .inv-btn-primary');post('inventory/save_purchase',{item_id:$('#poItemId').val(),vendor_id:$('#poVndId').val(),qty:$('#poQty').val(),unit_price:$('#poPrice').val(),date:$('#poDate').val(),invoice_no:$('#poInvoice').val(),payment_mode:$('#poMode').val()}).done(function(r){r=typeof r==='string'?JSON.parse(r):r;if(r.status==='success'){toast(r.message,true);INV.closePoModal();loadPurchases();loadItems()}else toast(r.message,false)}).always(function(){btnOff(b)})};
 
   INV.openIssModal=function(){$('#issQty').val(1);$('#issTo,#issPurpose').val('');$('#issModal').addClass('show')};
   INV.closeIssModal=function(){$('#issModal').removeClass('show')};
-  INV.saveIss=function(){post('inventory/save_issue',{item_id:$('#issItemId').val(),qty:$('#issQty').val(),issued_to:$('#issTo').val(),purpose:$('#issPurpose').val()}).done(function(r){r=typeof r==='string'?JSON.parse(r):r;if(r.status==='success'){toast(r.message,true);INV.closeIssModal();loadIssues();loadItems()}else toast(r.message,false)})};
-  INV.returnIss=function(id,qty){var rq=prompt('Return how many?',qty);if(!rq)return;post('inventory/return_issue',{issue_id:id,return_qty:rq}).done(function(r){r=typeof r==='string'?JSON.parse(r):r;if(r.status==='success'){toast(r.message,true);loadIssues();loadItems()}else toast(r.message,false)})};
+  INV.saveIss=function(){if(!CAN_EDIT){toast('You do not have edit permission',false);return}var b=btnOn('#issModal .inv-btn-primary');post('inventory/save_issue',{item_id:$('#issItemId').val(),qty:$('#issQty').val(),issued_to:$('#issTo').val(),purpose:$('#issPurpose').val()}).done(function(r){r=typeof r==='string'?JSON.parse(r):r;if(r.status==='success'){toast(r.message,true);INV.closeIssModal();loadIssues();loadItems()}else toast(r.message,false)}).always(function(){btnOff(b)})};
+  INV.returnIss=function(id,qty){if(!CAN_EDIT){toast('You do not have edit permission',false);return}var rq=prompt('Return how many?',qty);if(!rq)return;post('inventory/return_issue',{issue_id:id,return_qty:rq}).done(function(r){r=typeof r==='string'?JSON.parse(r):r;if(r.status==='success'){toast(r.message,true);loadIssues();loadItems()}else toast(r.message,false)})};
 
   // Init
   loadCats();loadItems();loadVendors();

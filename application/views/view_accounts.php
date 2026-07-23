@@ -318,7 +318,7 @@ document.addEventListener('DOMContentLoaded', function () {
     /* ══ TOKENS — identical to account_book ══ */
     :root {
         --ab-navy: #0b1f3a;
-        --ab-teal: #0e7490;
+        --ab-teal: #BC5A3C;
         --ab-sky: #e0f2fe;
         --ab-green: #16a34a;
         --ab-red: #dc2626;

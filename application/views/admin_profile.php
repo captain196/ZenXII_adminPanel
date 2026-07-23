@@ -212,16 +212,25 @@ select.ap-input{padding-right:30px;-webkit-appearance:none;appearance:none;
                 <div class="ap-grid" style="gap:14px;margin-bottom:16px;">
                     <div>
                         <label class="ap-label">Current Password <span>*</span></label>
-                        <input type="password" class="ap-input" name="current_password" required autocomplete="current-password">
+                        <span style="position:relative;display:block">
+                            <input type="password" class="ap-input" id="curPwd" name="current_password" required autocomplete="current-password" style="padding-right:40px">
+                            <button type="button" aria-label="Show password" title="Show/hide password" onclick="var i=document.getElementById('curPwd'),s=i.type==='password';i.type=s?'text':'password';this.firstElementChild.className=s?'fa fa-eye-slash':'fa fa-eye';this.setAttribute('aria-label',s?'Hide password':'Show password')" style="position:absolute;right:6px;top:50%;transform:translateY(-50%);background:none;border:none;color:#94a3b8;cursor:pointer;padding:6px;font-size:14px"><i class="fa fa-eye"></i></button>
+                        </span>
                     </div>
                     <div>
                         <label class="ap-label">New Password <span>*</span></label>
-                        <input type="password" class="ap-input" name="new_password" id="newPwd" required minlength="8" maxlength="72" autocomplete="new-password">
+                        <span style="position:relative;display:block">
+                            <input type="password" class="ap-input" name="new_password" id="newPwd" required minlength="8" maxlength="72" autocomplete="new-password" style="padding-right:40px">
+                            <button type="button" aria-label="Show password" title="Show/hide password" onclick="var i=document.getElementById('newPwd'),s=i.type==='password';i.type=s?'text':'password';this.firstElementChild.className=s?'fa fa-eye-slash':'fa fa-eye';this.setAttribute('aria-label',s?'Hide password':'Show password')" style="position:absolute;right:6px;top:50%;transform:translateY(-50%);background:none;border:none;color:#94a3b8;cursor:pointer;padding:6px;font-size:14px"><i class="fa fa-eye"></i></button>
+                        </span>
                         <div id="pwdStrength" style="margin-top:6px;display:none;"></div>
                     </div>
                     <div>
                         <label class="ap-label">Confirm New Password <span>*</span></label>
-                        <input type="password" class="ap-input" name="confirm_password" id="confirmPwd" required minlength="8" maxlength="72" autocomplete="new-password">
+                        <span style="position:relative;display:block">
+                            <input type="password" class="ap-input" name="confirm_password" id="confirmPwd" required minlength="8" maxlength="72" autocomplete="new-password" style="padding-right:40px">
+                            <button type="button" aria-label="Show password" title="Show/hide password" onclick="var i=document.getElementById('confirmPwd'),s=i.type==='password';i.type=s?'text':'password';this.firstElementChild.className=s?'fa fa-eye-slash':'fa fa-eye';this.setAttribute('aria-label',s?'Hide password':'Show password')" style="position:absolute;right:6px;top:50%;transform:translateY(-50%);background:none;border:none;color:#94a3b8;cursor:pointer;padding:6px;font-size:14px"><i class="fa fa-eye"></i></button>
+                        </span>
                         <div id="pwdMatch" style="margin-top:6px;display:none;"></div>
                     </div>
                 </div>

@@ -11,35 +11,60 @@
 <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.5.0/css/all.min.css">
 <link href="https://fonts.googleapis.com/css2?family=Clash+Display:wght@400;500;600;700&family=Satoshi:wght@300;400;500;600;700&family=JetBrains+Mono:wght@400;500&display=swap" rel="stylesheet">
 <style>
+/* Burnt Clay system palette — day + night, synced to the login page's theme pref. */
 :root {
-    --brand:     #0d9488;
-    --brand2:    #BC5A3C;
-    --brand3:    #2dd4bf;
-    --brand-dim: rgba(13,148,136,.12);
+    --brand:     #BC5A3C;
+    --brand2:    #9E4830;
+    --brand3:    #DD8464;
+    --brand-dim: rgba(188,90,60,.12);
     --sans:      'Satoshi','Plus Jakarta Sans',system-ui,sans-serif;
     --mono:      'JetBrains Mono',ui-monospace,monospace;
     --display:   'Clash Display','Satoshi',system-ui,sans-serif;
     --ease:      .22s cubic-bezier(.4,0,.2,1);
-    --bg:        #080e08;
-    --surface:   rgba(20,35,20,.92);
-    --border:    rgba(45,212,191,.12);
-    --border2:   rgba(45,212,191,.22);
-    --text:      #e4f0e4;
-    --text2:     #8ab88a;
-    --muted:     #4a6a4a;
-    --input-bg:  rgba(20,40,20,.8);
-    --input-foc: rgba(25,50,25,.95);
+    --wa:        #25D366;
+    --wa-bg:     rgba(37,211,102,.12);
+    /* light defaults (below overridden by [data-theme]) */
+    --red:       #dc2626;
+    --red-bg:    rgba(220,38,38,.06);
+    --red-brd:   rgba(220,38,38,.2);
+    --green-ok:  #16a34a;
+    --card-sh:   0 24px 80px rgba(90,50,25,.14);
+    --cc-bg:     rgba(188,90,60,.05);
+}
+[data-theme="light"] {
+    --bg:        #F7F2ED;
+    --surface:   rgba(255,255,255,.92);
+    --border:    rgba(188,90,60,.15);
+    --border2:   rgba(188,90,60,.28);
+    --text:      #22160F;
+    --text2:     #33261F;
+    --muted:     #9E8578;
+    --input-bg:  rgba(250,245,240,.8);
+    --input-foc: rgba(255,255,255,.95);
+    --card-sh:   0 24px 80px rgba(90,50,25,.14);
+    --cc-bg:     rgba(188,90,60,.05);
+}
+[data-theme="dark"] {
+    --bg:        #17100C;
+    --surface:   rgba(32,23,17,.92);
+    --border:    rgba(212,114,92,.14);
+    --border2:   rgba(212,114,92,.24);
+    --text:      #F4E9E2;
+    --text2:     #C2A89A;
+    --muted:     #7A6A5E;
+    --input-bg:  rgba(32,23,17,.8);
+    --input-foc: rgba(39,26,20,.95);
     --red:       #f87171;
     --red-bg:    rgba(248,113,113,.07);
     --red-brd:   rgba(248,113,113,.2);
     --green-ok:  #4ade80;
-    --wa:        #25D366;
-    --wa-bg:     rgba(37,211,102,.12);
+    --card-sh:   0 32px 80px rgba(0,0,0,.6);
+    --cc-bg:     rgba(0,0,0,.22);
 }
 *{margin:0;padding:0;box-sizing:border-box;}
 body{background:var(--bg);color:var(--text);font-family:var(--sans);min-height:100vh;display:flex;align-items:center;justify-content:center;padding:20px;}
 
-.fp-card{background:var(--surface);border:1px solid var(--border2);border-radius:16px;padding:32px;width:100%;max-width:440px;box-shadow:0 32px 80px rgba(0,0,0,.6);}
+.fp-card{background:var(--surface);border:1px solid var(--border2);border-radius:16px;padding:32px;width:100%;max-width:440px;box-shadow:var(--card-sh);}
 .fp-logo{text-align:center;margin-bottom:22px;}
 .fp-logo img{width:60px;height:60px;object-fit:contain;display:block;margin:0 auto 10px;}
 .fp-logo h1{font-family:var(--display);font-size:21px;color:var(--brand);}
@@ -67,7 +92,11 @@ body{background:var(--bg);color:var(--text);font-family:var(--sans);min-height:1
 .fp-back a i{margin-right:4px;}
 
 /* ── Contact card ── */
-.cc{border:1px solid var(--border2);border-radius:14px;padding:16px;background:rgba(15,30,15,.5);}
+.cc{border:1px solid var(--border2);border-radius:14px;padding:16px;background:var(--cc-bg);}
+.fp-theme-btn{position:fixed;top:18px;right:18px;width:40px;height:40px;border-radius:10px;background:var(--surface);border:1px solid var(--border2);color:var(--text2);cursor:pointer;font-size:14px;display:flex;align-items:center;justify-content:center;transition:all var(--ease);z-index:10;}
+.fp-theme-btn:hover{border-color:var(--brand3);color:var(--text);}
+[data-theme="light"] .ico-moon{display:none;}
+[data-theme="dark"]  .ico-sun{display:none;}
 .cc-head{display:flex;align-items:center;gap:10px;margin-bottom:12px;}
 .cc-head i{color:var(--brand);font-size:18px;}
 .cc-head .cc-title{font-size:15px;font-weight:600;color:var(--text);}
@@ -84,8 +113,16 @@ body{background:var(--bg);color:var(--text);font-family:var(--sans);min-height:1
 .cc-act:hover{filter:brightness(1.25);}
 .cc-act.wa{background:var(--wa-bg);color:var(--wa);}
 </style>
+<script>
+/* Apply saved/time theme before paint — shares the login page's preference keys. */
+(function(){try{var k=localStorage.getItem('graderadmin_theme'),m=localStorage.getItem('graderadmin_manual')==='1',h=new Date().getHours();document.documentElement.setAttribute('data-theme',(m&&k)?k:((h>=6&&h<18)?'light':'dark'));}catch(e){document.documentElement.setAttribute('data-theme','dark');}})();
+</script>
 </head>
 <body>
+
+<button class="fp-theme-btn" id="fpThemeBtn" title="Toggle theme">
+    <i class="fas fa-sun ico-sun"></i><i class="fas fa-moon ico-moon"></i>
+</button>
 
 <div class="fp-card">
     <div class="fp-logo">
@@ -228,6 +265,9 @@ function resetFlow(){
 }
 
 document.getElementById('fpAdminId').addEventListener('keydown',function(e){ if(e.key==='Enter') findContact(); });
+
+/* Theme toggle — writes the same keys the login page reads, so they stay in sync. */
+(function(){var b=document.getElementById('fpThemeBtn'),h=document.documentElement;if(!b)return;b.addEventListener('click',function(){var n=h.getAttribute('data-theme')==='dark'?'light':'dark';h.setAttribute('data-theme',n);try{localStorage.setItem('graderadmin_theme',n);localStorage.setItem('graderadmin_manual','1');}catch(e){}});})();
 </script>
 </body>
 </html>

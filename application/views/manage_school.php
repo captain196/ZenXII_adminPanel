@@ -499,8 +499,8 @@ document.getElementById('addSchoolForm').addEventListener('submit', function(e) 
 /* ── Manage Schools — matches existing ERP theme (navy/teal/amber) ── */
 :root {
     --ms-navy:    #1a2332;
-    --ms-teal:    #0d9488;
-    --ms-teal-lt: #ccfbf1;
+    --ms-teal:    #BC5A3C;
+    --ms-teal-lt: #F7ECE7;
     --ms-amber:   #d97706;
     --ms-red:     #dc2626;
     --ms-green:   #16a34a;
@@ -567,7 +567,7 @@ document.getElementById('addSchoolForm').addEventListener('submit', function(e) 
 .ms-stat-blue  .ms-stat-icon { background: #eff6ff; color: #3b82f6; }
 .ms-stat-green .ms-stat-icon { background: #f0fdf4; color: var(--ms-green); }
 .ms-stat-amber .ms-stat-icon { background: #fffbeb; color: var(--ms-amber); }
-.ms-stat-teal  .ms-stat-icon { background: #f0fdfa; color: var(--ms-teal); }
+.ms-stat-teal  .ms-stat-icon { background: #F7ECE7; color: var(--ms-teal); }
 .ms-stat-label { font-size: 11px; color: var(--ms-muted); font-weight: 600; text-transform: uppercase; letter-spacing: .5px; }
 .ms-stat-val   { font-size: 22px; font-weight: 800; color: var(--ms-navy); line-height: 1.2; }
 

@@ -32,6 +32,12 @@ class Hr extends MY_Controller
     /** Roles that may view HR data */
     private const VIEW_ROLES  = ['Super Admin', 'School Super Admin', 'Admin', 'Principal', 'HR Manager', 'Teacher'];
 
+    // ── Audit C1: PII split ────────────────────────────────────────────────
+    // These sensitive fields live on the server-only `staffPrivate` mirror, NOT
+    // on the same-school-readable `staff` doc. HR payroll/payslip reads merge
+    // them back via the helpers below. Keep in lockstep with Staff.php.
+    private const PII_KEYS = ['panNumber', 'aadharNumber', 'pfNumber', 'esiNumber', 'salaryDetails', 'bankDetails'];
+
     // ── Leave tuning constants (LOW — extracted magic numbers) ──────────
     /** Reject approving a leave whose start date is older than this window. */
     private const LEAVE_STALE_WINDOW_DAYS = 60;
@@ -179,12 +185,90 @@ class Hr extends MY_Controller
         try {
             $fsDocs = $this->fs->schoolWhere('staff', [['staffId', '==', $staffId]]);
             if (is_array($fsDocs) && !empty($fsDocs)) {
-                return is_array($fsDocs[0]['data'] ?? null) ? $fsDocs[0]['data'] : $fsDocs[0];
+                $p = is_array($fsDocs[0]['data'] ?? null) ? $fsDocs[0]['data'] : $fsDocs[0];
+                // Audit C1: merge the server-only PII mirror so payslip PAN/PF/
+                // ESI/bank + the salary-structure fallback still resolve.
+                return is_array($p) ? $this->_merge_staff_private($p, $staffId) : $p;
             }
         } catch (\Exception $e) {
             log_message('error', "HR _fsGetStaffProfile failed for {$staffId}: " . $e->getMessage());
         }
         return null;
+    }
+
+    // ══════════════════════════════════════════════════════════════════
+    //  Audit C1 — staffPrivate PII merge (READ side; HR never writes staff)
+    // ══════════════════════════════════════════════════════════════════
+
+    /**
+     * Read one staffPrivate/{schoolId}_{staffId} doc and return only its PII
+     * cluster (non-null values), or [] when absent.
+     */
+    private function _load_staff_private(string $staffId): array
+    {
+        if ($staffId === '') return [];
+        try {
+            $doc = $this->fs->getEntity('staffPrivate', $staffId);
+        } catch (\Throwable $e) {
+            log_message('error', "HR staffPrivate read failed [{$staffId}]: " . $e->getMessage());
+            return [];
+        }
+        if (!is_array($doc)) return [];
+        $out = [];
+        foreach (self::PII_KEYS as $k) {
+            if (array_key_exists($k, $doc) && $doc[$k] !== null) $out[$k] = $doc[$k];
+        }
+        return $out;
+    }
+
+    /** Merge the staffPrivate PII cluster onto a single staff profile. */
+    private function _merge_staff_private(array $profile, string $staffId): array
+    {
+        $priv = $this->_load_staff_private($staffId);
+        return $priv ? array_merge($profile, $priv) : $profile;
+    }
+
+    /**
+     * One-shot map of every staffPrivate doc in THIS tenant, keyed by staffId,
+     * each value trimmed to the PII cluster. Lets bulk payroll loops merge the
+     * mirror without an extra read per staff member.
+     */
+    private function _load_staff_private_map(): array
+    {
+        $map = [];
+        try {
+            $rows = $this->fs->schoolWhere('staffPrivate', []);
+        } catch (\Throwable $e) {
+            log_message('error', 'HR staffPrivate map read failed: ' . $e->getMessage());
+            return [];
+        }
+        if (!is_array($rows)) return [];
+        foreach ($rows as $doc) {
+            $d = is_array($doc['data'] ?? null) ? $doc['data'] : $doc;
+            if (!is_array($d)) continue;
+            $sid = $d['staffId'] ?? '';
+            if ($sid === '') continue;
+            $out = [];
+            foreach (self::PII_KEYS as $k) {
+                if (array_key_exists($k, $d) && $d[$k] !== null) $out[$k] = $d[$k];
+            }
+            if (!empty($out)) $map[$sid] = $out;
+        }
+        return $map;
+    }
+
+    /** Merge a staffPrivate map (from _load_staff_private_map) onto a
+     *  staffId-keyed profiles array. Private values win. */
+    private function _apply_staff_private_map(array $profiles): array
+    {
+        $priv = $this->_load_staff_private_map();
+        if (empty($priv)) return $profiles;
+        foreach ($profiles as $sid => $p) {
+            if (is_array($p) && isset($priv[$sid])) {
+                $profiles[$sid] = array_merge($p, $priv[$sid]);
+            }
+        }
+        return $profiles;
     }
 
     // ====================================================================
@@ -1473,7 +1557,7 @@ class Hr extends MY_Controller
      */
     public function lock_payroll_month()
     {
-        $this->_require_role(self::ADMIN_ROLES, 'lock_payroll_month');
+        $this->_require_role(self::ADMIN_ROLES, 'lock_payroll_month', 'HR', 'manage');
 
         $month = trim($this->input->post('month') ?? '');
         $year  = trim($this->input->post('year') ?? '');
@@ -1580,7 +1664,7 @@ class Hr extends MY_Controller
      */
     public function index()
     {
-        $this->_require_role(self::VIEW_ROLES, 'hr_view');
+        $this->_require_role(self::VIEW_ROLES, 'hr_view', 'HR', 'view');
 
         $tab = $this->uri->segment(2, 'dashboard');
         $allowed = ['dashboard', 'departments', 'recruitment', 'leaves', 'payroll', 'appraisals'];
@@ -1603,7 +1687,7 @@ class Hr extends MY_Controller
      */
     public function get_dashboard()
     {
-        $this->_require_role(self::VIEW_ROLES, 'hr_dashboard');
+        $this->_require_role(self::VIEW_ROLES, 'hr_dashboard', 'HR', 'view');
 
         // Staff counts from Firestore — single read, bucketed into both
         // total and active so the dashboard can surface them as separate
@@ -1823,7 +1907,7 @@ class Hr extends MY_Controller
      */
     public function get_departments()
     {
-        $this->_require_role(self::VIEW_ROLES, 'get_departments');
+        $this->_require_role(self::VIEW_ROLES, 'get_departments', 'HR', 'view');
 
         // 1. Firestore FIRST
         $depts = [];
@@ -1930,7 +2014,7 @@ class Hr extends MY_Controller
      */
     public function save_department()
     {
-        $this->_require_role(self::HR_ROLES, 'save_department');
+        $this->_require_role(self::HR_ROLES, 'save_department', 'HR', 'edit');
 
         $id          = trim($this->input->post('id') ?? '');
         $name        = trim($this->input->post('name') ?? '');
@@ -2074,7 +2158,7 @@ class Hr extends MY_Controller
      */
     public function delete_department()
     {
-        $this->_require_role(self::HR_ROLES, 'delete_department');
+        $this->_require_role(self::HR_ROLES, 'delete_department', 'HR', 'manage');
 
         $id = $this->safe_path_segment(trim($this->input->post('id') ?? ''), 'id');
 
@@ -2152,7 +2236,7 @@ class Hr extends MY_Controller
      */
     public function get_jobs()
     {
-        $this->_require_role(self::VIEW_ROLES, 'get_jobs');
+        $this->_require_role(self::VIEW_ROLES, 'get_jobs', 'HR', 'view');
 
         $filterStatus = trim($this->input->get('status') ?? '');
         $list = [];
@@ -2212,7 +2296,7 @@ class Hr extends MY_Controller
      */
     public function save_job()
     {
-        $this->_require_role(self::HR_ROLES, 'save_job');
+        $this->_require_role(self::HR_ROLES, 'save_job', 'HR', 'edit');
 
         $id                  = trim($this->input->post('id') ?? '');
         $title               = trim($this->input->post('title') ?? '');
@@ -2452,6 +2536,10 @@ class Hr extends MY_Controller
                 'issued_date'     => date('Y-m-d'),
                 'created_at'      => date('c'),
                 'sentAt'          => date('c'),              // Android canonical
+                // Header bell orders by `timestamp` (docs lacking it are
+                // excluded) — surface HR recruitment notices there too.
+                'timestamp'       => date('c'),
+                'timestampMs'     => round(microtime(true) * 1000),
                 'updated_at'      => date('c'),
                 'updatedAt'       => date('c'),
                 'status'          => 'sent',
@@ -2587,7 +2675,7 @@ HTML;
      */
     public function delete_job()
     {
-        $this->_require_role(self::HR_ROLES, 'delete_job');
+        $this->_require_role(self::HR_ROLES, 'delete_job', 'HR', 'manage');
 
         $id = $this->safe_path_segment(trim($this->input->post('id') ?? ''), 'id');
 
@@ -2647,7 +2735,7 @@ HTML;
      */
     public function view_circular()
     {
-        $this->_require_role(self::VIEW_ROLES, 'view_circular');
+        $this->_require_role(self::VIEW_ROLES, 'view_circular', 'HR', 'view');
         header('Content-Type: application/json');
 
         $jobId      = trim($this->input->get('job_id') ?? '');
@@ -2699,7 +2787,7 @@ HTML;
      */
     public function regenerate_circular()
     {
-        $this->_require_role(self::HR_ROLES, 'regenerate_circular');
+        $this->_require_role(self::HR_ROLES, 'regenerate_circular', 'HR', 'edit');
 
         $jobId = trim($this->input->post('job_id') ?? '');
         if (!$jobId) $this->json_error('Job ID required.');
@@ -2741,7 +2829,7 @@ HTML;
      */
     public function get_applicants()
     {
-        $this->_require_role(self::HR_ROLES, 'get_applicants');
+        $this->_require_role(self::HR_ROLES, 'get_applicants', 'HR', 'edit');
 
         $filterJob    = trim($this->input->get('job_id') ?? '');
         $filterStatus = trim($this->input->get('status') ?? '');
@@ -2788,7 +2876,7 @@ HTML;
      */
     public function save_applicant()
     {
-        $this->_require_role(self::HR_ROLES, 'save_applicant');
+        $this->_require_role(self::HR_ROLES, 'save_applicant', 'HR', 'edit');
 
         $id            = trim($this->input->post('id') ?? '');
         $jobId         = trim($this->input->post('job_id') ?? '');
@@ -2890,7 +2978,7 @@ HTML;
      */
     public function update_applicant_status()
     {
-        $this->_require_role(self::HR_ROLES, 'update_applicant_status');
+        $this->_require_role(self::HR_ROLES, 'update_applicant_status', 'HR', 'edit');
 
         $id     = $this->safe_path_segment(trim($this->input->post('id') ?? ''), 'id');
         $status = trim($this->input->post('status') ?? '');
@@ -2938,7 +3026,7 @@ HTML;
      */
     public function delete_applicant()
     {
-        $this->_require_role(self::HR_ROLES, 'delete_applicant');
+        $this->_require_role(self::HR_ROLES, 'delete_applicant', 'HR', 'manage');
 
         $id = $this->safe_path_segment(trim($this->input->post('id') ?? ''), 'id');
 
@@ -2974,7 +3062,7 @@ HTML;
      */
     public function get_leave_types()
     {
-        $this->_require_role(self::VIEW_ROLES, 'get_leave_types');
+        $this->_require_role(self::VIEW_ROLES, 'get_leave_types', 'HR', 'view');
 
         $list = [];
         $allTypes = $this->_fsGetLeaveType('');
@@ -2995,7 +3083,7 @@ HTML;
      */
     public function save_leave_type()
     {
-        $this->_require_role(self::HR_ROLES, 'save_leave_type');
+        $this->_require_role(self::HR_ROLES, 'save_leave_type', 'HR', 'edit');
 
         $id           = trim($this->input->post('id') ?? '');
         $name         = trim($this->input->post('name') ?? '');
@@ -3128,7 +3216,7 @@ HTML;
      */
     public function delete_leave_type()
     {
-        $this->_require_role(self::HR_ROLES, 'delete_leave_type');
+        $this->_require_role(self::HR_ROLES, 'delete_leave_type', 'HR', 'manage');
 
         $id = $this->safe_path_segment(trim($this->input->post('id') ?? ''), 'id');
 
@@ -3192,7 +3280,7 @@ HTML;
      */
     public function seed_leave_types()
     {
-        $this->_require_role(self::HR_ROLES, 'seed_leave_types');
+        $this->_require_role(self::HR_ROLES, 'seed_leave_types', 'HR', 'manage');
 
         $defaults = [
             ['name' => 'Casual Leave',        'code' => 'CL',       'days_per_year' => 12, 'paid' => true,  'carry_forward' => false, 'max_carry' => 0,  'description' => 'Short-duration personal leave for unforeseen needs'],
@@ -3287,7 +3375,7 @@ HTML;
      */
     public function get_leave_audit_log()
     {
-        $this->_require_role(self::VIEW_ROLES, 'get_leave_audit_log');
+        $this->_require_role(self::VIEW_ROLES, 'get_leave_audit_log', 'HR', 'view');
 
         $list = [];
 
@@ -3327,7 +3415,7 @@ HTML;
      */
     public function get_leave_balances()
     {
-        $this->_require_role(self::VIEW_ROLES, 'get_leave_balances');
+        $this->_require_role(self::VIEW_ROLES, 'get_leave_balances', 'HR', 'view');
 
         $year    = trim($this->input->get('year') ?? date('Y'));
         $staffId = trim($this->input->get('staff_id') ?? '');
@@ -3339,7 +3427,7 @@ HTML;
         // H10 (privilege): non-HR viewers (e.g. Teacher) may only read their
         // OWN balances. Force staff_id to the caller's own id ($this->admin_id
         // is the raw uid = staffId) and ignore any requested staff_id.
-        $isHr = in_array($this->admin_role, self::HR_ROLES, true);
+        $isHr = (function_exists('has_permission') && has_permission('HR', 'edit')) || in_array($this->admin_role, self::HR_ROLES, true);
         if (!$isHr) {
             $staffId = (string) ($this->admin_id ?? '');
             if ($staffId === '') {
@@ -3405,7 +3493,7 @@ HTML;
      */
     public function allocate_leave_balances()
     {
-        $this->_require_role(self::HR_ROLES, 'allocate_leave');
+        $this->_require_role(self::HR_ROLES, 'allocate_leave', 'HR', 'edit');
 
         $year = trim($this->input->post('year') ?? date('Y'));
         if (!preg_match('/^\d{4}$/', $year)) {
@@ -3537,7 +3625,7 @@ HTML;
      */
     public function get_leave_requests()
     {
-        $this->_require_role(self::VIEW_ROLES, 'get_leave_requests');
+        $this->_require_role(self::VIEW_ROLES, 'get_leave_requests', 'HR', 'view');
 
         $filterStatus  = trim($this->input->get('status') ?? '');
         $filterStaffId = trim($this->input->get('staff_id') ?? '');
@@ -3545,7 +3633,7 @@ HTML;
         // H10 (privilege): non-HR viewers (e.g. Teacher) may only list their OWN
         // requests. Force the staff filter to the caller's own id regardless of
         // any requested staff_id. HR_ROLES keep full cross-staff visibility.
-        $isHr = in_array($this->admin_role, self::HR_ROLES, true);
+        $isHr = (function_exists('has_permission') && has_permission('HR', 'edit')) || in_array($this->admin_role, self::HR_ROLES, true);
         if (!$isHr) {
             $filterStaffId = (string) ($this->admin_id ?? '');
             if ($filterStaffId === '') {
@@ -3642,7 +3730,7 @@ HTML;
      */
     public function apply_leave()
     {
-        $this->_require_role(self::VIEW_ROLES, 'apply_leave');
+        $this->_require_role(self::VIEW_ROLES, 'apply_leave', 'HR', 'view');
 
         $staffId  = $this->safe_path_segment(trim($this->input->post('staff_id') ?? ''), 'staff_id');
         $typeId   = $this->safe_path_segment(trim($this->input->post('type_id') ?? ''), 'type_id');
@@ -3653,7 +3741,7 @@ HTML;
         // H10 (privilege): a non-HR caller (e.g. Teacher) may only apply for
         // THEMSELVES. Force staff_id to the caller's own id ($this->admin_id is
         // the raw uid = staffId); only HR_ROLES may apply on behalf of others.
-        if (!in_array($this->admin_role, self::HR_ROLES, true)) {
+        if (!(function_exists('has_permission') && has_permission('HR', 'edit')) && !in_array($this->admin_role, self::HR_ROLES, true)) {
             $ownId = (string) ($this->admin_id ?? '');
             if ($ownId === '') {
                 $this->json_error('You are not permitted to apply leave for another staff member.');
@@ -3896,7 +3984,7 @@ HTML;
      */
     public function decide_leave()
     {
-        $this->_require_role(self::HR_ROLES, 'decide_leave');
+        $this->_require_role(self::HR_ROLES, 'decide_leave', 'HR', 'edit');
 
         $id       = $this->safe_path_segment(trim($this->input->post('id') ?? ''), 'id');
         $decision = trim($this->input->post('decision') ?? '');
@@ -4267,7 +4355,7 @@ HTML;
      */
     public function cancel_leave()
     {
-        $this->_require_role(self::HR_ROLES, 'cancel_leave');
+        $this->_require_role(self::HR_ROLES, 'cancel_leave', 'HR', 'edit');
 
         $id = $this->safe_path_segment(trim($this->input->post('id') ?? ''), 'id');
 
@@ -4688,7 +4776,7 @@ HTML;
      */
     public function get_salary_structures()
     {
-        $this->_require_role(self::ADMIN_ROLES, 'get_salary_structures');
+        $this->_require_role(self::ADMIN_ROLES, 'get_salary_structures', 'HR', 'manage');
 
         $staffId = trim($this->input->get('staff_id') ?? '');
 
@@ -4753,7 +4841,7 @@ HTML;
      */
     public function save_salary_structure()
     {
-        $this->_require_role(self::ADMIN_ROLES, 'save_salary_structure');
+        $this->_require_role(self::ADMIN_ROLES, 'save_salary_structure', 'HR', 'manage');
 
         $staffId = $this->safe_path_segment(trim($this->input->post('staff_id') ?? ''), 'staff_id');
 
@@ -4854,7 +4942,7 @@ HTML;
      */
     public function delete_salary_structure()
     {
-        $this->_require_role(self::ADMIN_ROLES, 'delete_salary_structure');
+        $this->_require_role(self::ADMIN_ROLES, 'delete_salary_structure', 'HR', 'manage');
 
         $id = $this->safe_path_segment(trim($this->input->post('id') ?? ''), 'salary_id');
 
@@ -4938,7 +5026,7 @@ HTML;
      */
     public function get_payroll_runs()
     {
-        $this->_require_role(self::ADMIN_ROLES, 'get_payroll_runs');
+        $this->_require_role(self::ADMIN_ROLES, 'get_payroll_runs', 'HR', 'manage');
 
         $list = [];
 
@@ -5035,7 +5123,7 @@ HTML;
      */
     public function preflight_payroll()
     {
-        $this->_require_role(self::ADMIN_ROLES, 'preflight_payroll');
+        $this->_require_role(self::ADMIN_ROLES, 'preflight_payroll', 'HR', 'manage');
 
         $month = trim($this->input->get('month') ?? '');
         $year  = trim($this->input->get('year') ?? '');
@@ -5189,7 +5277,7 @@ HTML;
      */
     public function auto_create_payroll_accounts()
     {
-        $this->_require_role(self::ADMIN_ROLES, 'auto_create_payroll_accounts');
+        $this->_require_role(self::ADMIN_ROLES, 'auto_create_payroll_accounts', 'HR', 'manage');
 
         // Read existing CoA from Firestore
         $coa = [];
@@ -5347,7 +5435,7 @@ HTML;
      */
     public function generate_payroll()
     {
-        $this->_require_role(self::ADMIN_ROLES, 'generate_payroll');
+        $this->_require_role(self::ADMIN_ROLES, 'generate_payroll', 'HR', 'manage');
 
         $month = trim($this->input->post('month') ?? '');
         $year  = trim($this->input->post('year') ?? '');
@@ -5393,6 +5481,9 @@ HTML;
         if (empty($roster)) {
             $this->json_error('No staff found in the current session roster.');
         }
+        // Audit C1: merge the server-only PII mirror so salaryDetails is present
+        // for the auto-create-structure fallback (_auto_create_from_profile).
+        $roster = $this->_apply_staff_private_map($roster);
 
         // Get all salary structures (Firestore)
         $salaryStructures = [];
@@ -5984,7 +6075,7 @@ HTML;
      */
     public function get_payroll_slips()
     {
-        $this->_require_role(self::ADMIN_ROLES, 'get_payroll_slips');
+        $this->_require_role(self::ADMIN_ROLES, 'get_payroll_slips', 'HR', 'manage');
 
         $runId = trim($this->input->get('run_id') ?? '');
         if ($runId === '') {
@@ -6042,7 +6133,7 @@ HTML;
      */
     public function finalize_payroll()
     {
-        $this->_require_role(self::ADMIN_ROLES, 'finalize_payroll');
+        $this->_require_role(self::ADMIN_ROLES, 'finalize_payroll', 'HR', 'manage');
 
         $runId = $this->safe_path_segment(trim($this->input->post('run_id') ?? ''), 'run_id');
 
@@ -6081,7 +6172,7 @@ HTML;
      */
     public function approve_payroll()
     {
-        $this->_require_role(self::ADMIN_ROLES, 'approve_payroll');
+        $this->_require_role(self::ADMIN_ROLES, 'approve_payroll', 'HR', 'manage');
 
         $runId = $this->safe_path_segment(trim($this->input->post('run_id') ?? ''), 'run_id');
 
@@ -6120,13 +6211,13 @@ HTML;
      */
     public function download_payslip()
     {
-        $this->_require_role(self::VIEW_ROLES, 'download_payslip');
+        $this->_require_role(self::VIEW_ROLES, 'download_payslip', 'HR', 'view');
 
         $runId   = $this->safe_path_segment(trim($this->input->get('run_id') ?? ''), 'run_id');
         $staffId = trim($this->input->get('staff_id') ?? '');
 
         // Non-admin can only download own
-        if (!in_array($this->admin_role, self::ADMIN_ROLES, true)) {
+        if (!(function_exists('has_permission') && has_permission('HR', 'manage')) && !in_array($this->admin_role, self::ADMIN_ROLES, true)) {
             $staffId = $this->admin_id;
         }
         $staffId = $this->safe_path_segment($staffId, 'staff_id');
@@ -6190,7 +6281,7 @@ HTML;
      */
     public function export_payroll_report()
     {
-        $this->_require_role(self::ADMIN_ROLES, 'export_payroll_report');
+        $this->_require_role(self::ADMIN_ROLES, 'export_payroll_report', 'HR', 'manage');
 
         $type  = trim($this->input->get('type') ?? 'salary_register');
         $runId = trim($this->input->get('run_id') ?? '');
@@ -6510,7 +6601,7 @@ HTML;
      */
     public function mark_payroll_paid()
     {
-        $this->_require_role(self::ADMIN_ROLES, 'mark_payroll_paid');
+        $this->_require_role(self::ADMIN_ROLES, 'mark_payroll_paid', 'HR', 'manage');
 
         $runId            = $this->safe_path_segment(trim($this->input->post('run_id') ?? ''), 'run_id');
         $paymentMode      = trim($this->input->post('payment_mode') ?? 'Bank Transfer');
@@ -6653,7 +6744,7 @@ HTML;
      */
     public function get_payslip()
     {
-        $this->_require_role(self::ADMIN_ROLES, 'get_payslip');
+        $this->_require_role(self::ADMIN_ROLES, 'get_payslip', 'HR', 'manage');
 
         $runId   = trim($this->input->get('run_id') ?? '');
         $staffId = trim($this->input->get('staff_id') ?? '');
@@ -6723,7 +6814,7 @@ HTML;
      */
     public function my_payslips()
     {
-        $this->_require_role(self::VIEW_ROLES, 'my_payslips');
+        $this->_require_role(self::VIEW_ROLES, 'my_payslips', 'HR', 'view');
 
         $staffId = $this->admin_id;
         if (empty($staffId)) {
@@ -6864,7 +6955,7 @@ HTML;
      */
     public function delete_payroll_run()
     {
-        $this->_require_role(self::ADMIN_ROLES, 'delete_payroll_run');
+        $this->_require_role(self::ADMIN_ROLES, 'delete_payroll_run', 'HR', 'manage');
 
         $runId = $this->safe_path_segment(trim($this->input->post('run_id') ?? ''), 'run_id');
 
@@ -6914,7 +7005,7 @@ HTML;
      */
     public function get_appraisals()
     {
-        $this->_require_role(self::VIEW_ROLES, 'get_appraisals');
+        $this->_require_role(self::VIEW_ROLES, 'get_appraisals', 'HR', 'view');
 
         $filterStaffId = trim($this->input->get('staff_id') ?? '');
         $filterStatus  = trim($this->input->get('status') ?? '');
@@ -6966,7 +7057,7 @@ HTML;
      */
     public function save_appraisal()
     {
-        $this->_require_role(self::HR_ROLES, 'save_appraisal');
+        $this->_require_role(self::HR_ROLES, 'save_appraisal', 'HR', 'edit');
 
         $id               = trim($this->input->post('id') ?? '');
         $staffId          = $this->safe_path_segment(trim($this->input->post('staff_id') ?? ''), 'staff_id');
@@ -7105,7 +7196,7 @@ HTML;
      */
     public function submit_appraisal()
     {
-        $this->_require_role(self::HR_ROLES, 'submit_appraisal');
+        $this->_require_role(self::HR_ROLES, 'submit_appraisal', 'HR', 'edit');
 
         $id = $this->safe_path_segment(trim($this->input->post('id') ?? ''), 'id');
 
@@ -7153,7 +7244,7 @@ HTML;
      */
     public function review_appraisal()
     {
-        $this->_require_role(self::HR_ROLES, 'review_appraisal');
+        $this->_require_role(self::HR_ROLES, 'review_appraisal', 'HR', 'edit');
 
         $id       = $this->safe_path_segment(trim($this->input->post('id') ?? ''), 'id');
         $comments = trim($this->input->post('comments') ?? '');
@@ -7199,7 +7290,7 @@ HTML;
      */
     public function delete_appraisal()
     {
-        $this->_require_role(self::HR_ROLES, 'delete_appraisal');
+        $this->_require_role(self::HR_ROLES, 'delete_appraisal', 'HR', 'manage');
 
         $id = $this->safe_path_segment(trim($this->input->post('id') ?? ''), 'id');
 
@@ -7239,7 +7330,7 @@ HTML;
      */
     public function get_staff_list()
     {
-        $this->_require_role(self::VIEW_ROLES, 'get_staff_list');
+        $this->_require_role(self::VIEW_ROLES, 'get_staff_list', 'HR', 'view');
 
         // Firestore-first: read staff directly from staff collection
         $list = [];
@@ -7281,7 +7372,7 @@ HTML;
      */
     public function backfill_salary_structures()
     {
-        $this->_require_role(self::ADMIN_ROLES, 'backfill_salary_structures');
+        $this->_require_role(self::ADMIN_ROLES, 'backfill_salary_structures', 'HR', 'manage');
 
         $school  = $this->school_name;
         $session = $this->session_year;
@@ -7302,6 +7393,8 @@ HTML;
             $this->json_success(['message' => 'No staff found.', 'created' => 0, 'skipped' => 0]);
             return;
         }
+        // Audit C1: merge server-only salaryDetails for the structure backfill.
+        $profiles = $this->_apply_staff_private_map($profiles);
 
         // Get existing structures (Firestore)
         $existing = [];
@@ -7398,7 +7491,7 @@ HTML;
      */
     public function get_report()
     {
-        $this->_require_role(self::VIEW_ROLES, 'get_report');
+        $this->_require_role(self::VIEW_ROLES, 'get_report', 'HR', 'manage');
 
         $type = trim($this->input->get('type') ?? 'staff');
 
@@ -7953,7 +8046,7 @@ HTML;
      */
     public function unlock_payroll()
     {
-        $this->_require_role(self::ADMIN_ROLES, 'unlock_payroll');
+        $this->_require_role(self::ADMIN_ROLES, 'unlock_payroll', 'HR', 'manage');
 
         $runId  = $this->safe_path_segment(trim($this->input->post('run_id') ?? ''), 'run_id');
         $reason = trim((string) $this->input->post('reason'));
@@ -8010,7 +8103,7 @@ HTML;
      */
     public function regenerate_staff_payroll()
     {
-        $this->_require_role(self::ADMIN_ROLES, 'regenerate_staff_payroll');
+        $this->_require_role(self::ADMIN_ROLES, 'regenerate_staff_payroll', 'HR', 'manage');
 
         $runId   = $this->safe_path_segment(trim($this->input->post('run_id') ?? ''), 'run_id');
         $staffId = $this->safe_path_segment(trim($this->input->post('staff_id') ?? ''), 'staff_id');
@@ -8086,6 +8179,8 @@ HTML;
             }
         } catch (\Exception $e) {}
         if (!is_array($profile)) $this->json_error('Staff profile not found.');
+        // Audit C1: merge server-only salaryDetails for the auto-structure fallback.
+        $profile = $this->_merge_staff_private($profile, $staffId);
 
         // ── M-2: Inactive-staff warning (don't block regenerate) ───
         $regenWarnings = [];

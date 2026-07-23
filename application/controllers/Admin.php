@@ -80,6 +80,51 @@ class Admin extends MY_Controller
         $this->load->view('include/footer');
     }
 
+    /**
+     * Professional "Access restricted" screen. Every full-page RBAC denial
+     * (MY_Controller::_require_role, require_permission(), per-controller
+     * _deny_access) redirects here via rbac_denied_url() instead of silently
+     * bouncing to the dashboard. Reachable by any authenticated admin — auth is
+     * enforced by MY_Controller; this page itself has no permission gate (so it
+     * can never deny-loop). Query: ?module=<Name>&need=<view|edit|manage>.
+     */
+    public function access_denied()
+    {
+        if (function_exists('session_write_close')) @session_write_close();
+
+        $module = trim((string) $this->input->get('module', TRUE));
+        $need   = strtolower(trim((string) $this->input->get('need', TRUE)));
+        if (!in_array($need, ['view', 'edit', 'manage'], TRUE)) {
+            $need = '';
+        }
+
+        // What the user currently holds on this module — a helpful comparison.
+        $have = '';
+        if ($module !== '' && function_exists('rbac_granted_level')) {
+            $perms  = $this->session->userdata('rbac_permissions') ?: [];
+            $levels = $this->session->userdata('rbac_levels') ?: [];
+            $have   = rbac_granted_level($module, $perms, $levels) ?: '';
+        }
+
+        $data = [
+            'admin_name'      => $this->admin_name,
+            'admin_role'      => $this->admin_role,
+            'school_id'       => $this->school_id,
+            'admin_id'        => $this->admin_id,
+            'schoolName'      => $this->school_name,
+            'Session'         => $this->session_year,
+            'school_logo_url' => base_url('tools/dist/img/default-school.png'),
+            'denied_module'   => $module,
+            'denied_need'     => $need,
+            'denied_have'     => $have,
+        ];
+
+        http_response_code(403);
+        $this->load->view('include/header', $data);
+        $this->load->view('errors/access_denied', $data);
+        $this->load->view('include/footer');
+    }
+
     // ====================================================================
     //  GLOBAL SEARCH — topbar "search anything" (people + entities)
     // ====================================================================
@@ -1156,7 +1201,8 @@ class Admin extends MY_Controller
                 if ($phone  !== '') $update['Phone']  = $phone;
                 if ($gender !== '') $update['Gender'] = $gender;
 
-                $this->fs->updateEntity('admins', $admin_id, $update);
+                $this->load->helper('admin_roster'); // FOLD: STA→staff, ADM→admins
+                $this->fs->updateEntity(admin_record_collection($admin_id), $admin_id, $update);
                 $this->session->set_userdata('admin_name', $name);
                 $this->json_success(['message' => 'Profile updated successfully.']);
                 return;
@@ -1166,7 +1212,8 @@ class Admin extends MY_Controller
         }
 
         // GET: Load profile page
-        $adminData = $this->fs->getEntity('admins', $admin_id) ?? [];
+        $this->load->helper('admin_roster'); // FOLD: STA→staff, ADM→admins
+        $adminData = $this->fs->getEntity(admin_record_collection($admin_id), $admin_id) ?? [];
 
         $data = [
             'profile' => [
@@ -1188,7 +1235,9 @@ class Admin extends MY_Controller
 
     public function manage_admin()
     {
-        $this->_require_role(self::ADMIN_ROLES);
+        // Additive graded bridge: a custom role holding 'Admin Users' can view the
+        // admin-management surface; the ADMIN_ROLES name-list still passes built-ins.
+        $this->_require_role(self::ADMIN_ROLES, 'manage_admin', 'Admin Users', 'view');
 
         if ($this->input->method() === 'post') {
             header('Content-Type: application/json');
@@ -1221,7 +1270,8 @@ class Admin extends MY_Controller
 
             // ── Fetch single admin ────────────────────────────────────────
             if ($adminId && !$this->input->post('name')) {
-                $adminDetails = $this->fs->getEntity('admins', $adminId);
+                $this->load->helper('admin_roster'); // FOLD: STA→staff, ADM→admins
+                $adminDetails = $this->fs->getEntity(admin_record_collection($adminId), $adminId);
 
                 if ($adminDetails) {
                     unset($adminDetails['Credentials']);
@@ -1256,40 +1306,61 @@ class Admin extends MY_Controller
             // retry tier inside the claim-doc system is exhausted, we
             // return a controlled 503 instead of silently producing a
             // possibly-duplicate ID.
+            // FOLD: admins are staff records now — resolve the role LABEL to a
+            // ROLE_* id. No escalation: the new staff carries ONLY its nominal role
+            // (a full admin comes from choosing the 'Admin' role → ROLE_ADMIN). Mint
+            // an STA id (never ADM). $schoolDoc gives the catalogue for label→id.
+            $schoolDoc   = $this->fs->get('schools', $this->school_id);
+            $catalogue   = is_array($schoolDoc['staffRoles'] ?? null) ? $schoolDoc['staffRoles'] : [];
+            $nominal_rid = null;
+            foreach ($catalogue as $rid => $rentry) {
+                if (is_array($rentry) && ((string) ($rentry['label'] ?? '') === $role || (string) $rid === $role)) {
+                    $nominal_rid = (string) $rid; break;
+                }
+            }
+            $staff_roles = $nominal_rid !== null ? [$nominal_rid] : [];
+
             $this->load->library('id_generator');
-            $newAdminId = null;
+            $newStaffId = null;
             try {
-                $newAdminId = $this->id_generator->withClaim('ADM', function ($admId) use ($dob, $email, $gender, $name, $phone, $role) {
-                    $adminData = [
+                $newStaffId = $this->id_generator->withClaim('STA', function ($sid) use ($dob, $email, $gender, $name, $phone, $role, $staff_roles) {
+                    $staffData = [
                         'schoolId'      => $this->school_id,
-                        'adminId'       => $admId,
+                        'staffId'       => $sid,
+                        'staff_roles'   => $staff_roles,
                         'AccessHistory' => [
                             'LastLogin'     => date('c'),
                             'LoginAttempts' => 0,
                             'LoginIP'       => $this->input->ip_address(),
                         ],
-                        'Created On' => date('c'),
-                        'DOB'         => $dob ? date('d-m-Y', strtotime($dob)) : '',
-                        'Email'       => $email,
-                        'Gender'      => $gender,
-                        'Name'        => $name,
-                        'PhoneNumber' => $phone,
-                        'Role'        => $role,
-                        'Status'      => 'Active',
-                        'updatedAt'   => date('c'),
+                        'Created On'    => date('c'),
+                        'DOB'           => $dob ? date('d-m-Y', strtotime($dob)) : '',
+                        'Email'         => $email,
+                        'email'         => $email,
+                        'Gender'        => $gender,
+                        'Name'          => $name,
+                        'name'          => $name,
+                        'PhoneNumber'   => $phone,
+                        'Phone Number'  => $phone,
+                        'Role'          => $role,
+                        'role'          => $role,
+                        'Status'        => 'Active',
+                        'status'        => 'Active',
+                        'mustChangePassword' => true,
+                        'created_by'    => (string) ($this->admin_id ?? ''),
+                        'updatedAt'     => date('c'),
                     ];
-                    // Any exception or a returned `false` triggers an
-                    // automatic releaseClaim on the ADM id — no orphan
-                    // claim-doc, no burnt ID number.
-                    $this->fs->set('admins', $this->fs->docId($admId), $adminData, true);
-                    return $admId;
+                    // Any exception or a returned `false` triggers an automatic
+                    // releaseClaim on the STA id — no orphan claim-doc, no burnt number.
+                    $this->fs->set('staff', $this->fs->docId($sid), $staffData, true);
+                    return $sid;
                 });
             } catch (\Throwable $e) {
                 log_message('error', 'ID_GEN_INTEGRATION admin_create_failed school=' . $this->school_id . ' err=' . $e->getMessage());
                 $this->json_error('Could not create admin right now. Please retry in a moment.', 503);
                 return;
             }
-            if (!$newAdminId) {
+            if (!$newStaffId) {
                 // Firestore write returned null/false without throwing —
                 // withClaim released the claim automatically; we just
                 // surface a clean error.
@@ -1303,27 +1374,32 @@ class Admin extends MY_Controller
             // doc already exists and should be kept (auth sync can be
             // retried separately from admin management UI).
             try {
-                $authEmail = Firebase::authEmail($newAdminId);
+                $authEmail = Firebase::authEmail($newStaffId);
                 $this->firebase->createFirebaseUser($authEmail, $password, [
-                    'uid'         => $newAdminId,
+                    'uid'         => $newStaffId,
                     'displayName' => $name,
                 ]);
-                $this->firebase->setCanonicalClaims($newAdminId, [
+                $this->firebase->setCanonicalClaims($newStaffId, [
                     'role'          => $role,
                     'role_fallback' => 'Admin',
                     'school_id'     => $this->school_id,
                     'school_code'   => $this->school_code,
                     'parent_db_key' => $this->parent_db_key,
+                    // Force set-new-password on first login (panel + app gates read this).
+                    'extra'         => [
+                        'must_change_password' => true,
+                    ],
                 ]);
             } catch (Exception $e) {
                 log_message('error', 'Admin::manage_admin Firebase Auth failed: ' . $e->getMessage());
             }
 
-            $this->json_success(['message' => 'Admin created.', 'adminId' => $newAdminId]);
+            $this->json_success(['message' => 'Admin created.', 'adminId' => $newStaffId]);
 
         } else {
-            // ── GET: List all admins from Firestore ───────────────────────
-            $adminDocs = $this->fs->schoolWhere('admins', [], 'Name', 'ASC');
+            // ── GET: List all admins ─ roster = staff(ROLE_ADMIN) ∪ legacy admins ─
+            $this->load->helper('admin_roster');
+            $roster = admin_roster_rows($this->fs, $this->school_id);
 
             $data = [
                 'adminList'     => [],
@@ -1332,22 +1408,20 @@ class Admin extends MY_Controller
                 'adminId'       => null,
             ];
 
-            $count = count($adminDocs);
+            $count = count($roster);
             $data['adminId'] = 'ADM' . str_pad($count + 1, 4, '0', STR_PAD_LEFT);
 
-            foreach ($adminDocs as $doc) {
-                $d = $doc['data'] ?? $doc;
-                $value = $doc['data'];
-                $key   = $value['adminId'] ?? $d['id'];
-                $status = $value['Status'] ?? 'Unknown';
-                $entry  = [
+            foreach ($roster as $r) {
+                $key      = $r['id'];
+                $isActive = ($r['status'] === 'active');
+                $entry    = [
                     'id'     => $key,
-                    'name'   => $value['Name']  ?? 'Unknown',
-                    'role'   => $value['Role']  ?? 'Unknown',
-                    'status' => $status,
+                    'name'   => $r['name'] !== '' ? $r['name'] : 'Unknown',
+                    'role'   => $r['role'] !== '' ? $r['role'] : 'Unknown',
+                    'status' => $isActive ? 'Active' : ucfirst($r['status'] !== '' ? $r['status'] : 'Unknown'),
                 ];
 
-                if ($status === 'Active') {
+                if ($isActive) {
                     $data['activeAdmins'][]  = $entry;
                     $data['adminList'][]     = "{$key} - {$entry['name']} - {$entry['role']}";
                 } else {
@@ -1363,7 +1437,7 @@ class Admin extends MY_Controller
 
     public function edit_admin()
     {
-        $this->_require_role(self::ADMIN_ROLES);
+        $this->_require_role(self::ADMIN_ROLES, 'edit_admin', 'Admin Users', 'manage');
         header('Content-Type: application/json');
 
         $admin_id  = trim((string) $this->input->post('admin_id'));
@@ -1382,7 +1456,8 @@ class Admin extends MY_Controller
             'Gender'      => trim((string) $this->input->post('admin_gender')),
         ];
 
-        $result = $this->fs->updateEntity('admins', $admin_id, $update_data);
+        $this->load->helper('admin_roster'); // FOLD: STA→staff, ADM→admins
+        $result = $this->fs->updateEntity(admin_record_collection($admin_id), $admin_id, $update_data);
 
         if ($result) {
             $this->json_success();
@@ -1396,7 +1471,7 @@ class Admin extends MY_Controller
      */
     public function updateUserData()
     {
-        $this->_require_role(self::ADMIN_ROLES);
+        $this->_require_role(self::ADMIN_ROLES, 'update_user_data', 'Admin Users', 'manage');
         header('Content-Type: application/json');
 
         $modalId   = trim((string) $this->input->post('modal_id'));
@@ -1421,7 +1496,8 @@ class Admin extends MY_Controller
         }
 
         try {
-            $this->fs->updateEntity('admins', $modalId, $userData);
+            $this->load->helper('admin_roster'); // FOLD: STA→staff, ADM→admins
+            $this->fs->updateEntity(admin_record_collection($modalId), $modalId, $userData);
             $this->json_success(['message' => 'Data updated successfully.']);
         } catch (Exception $e) {
             log_message('error', 'Admin updateUserData: ' . $e->getMessage());

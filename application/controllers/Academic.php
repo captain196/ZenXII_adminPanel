@@ -155,7 +155,7 @@ class Academic extends MY_Controller
 
     public function index()
     {
-        $this->_require_role(['Super Admin', 'School Super Admin', 'Admin', 'Principal', 'Academic Coordinator', 'Teacher'], 'academic_view');
+        $this->_require_role(['Super Admin', 'School Super Admin', 'Admin', 'Principal', 'Academic Coordinator', 'Teacher'], 'academic_view', 'Academic', 'view');
 
         $data['session_year']       = $this->session_year;
         $data['school_name']        = $this->school_name;
@@ -177,7 +177,7 @@ class Academic extends MY_Controller
      */
     public function get_classes_subjects()
     {
-        $this->_require_role(['Super Admin', 'School Super Admin', 'Admin', 'Principal', 'Academic Coordinator', 'Teacher'], 'academic_data');
+        $this->_require_role(['Super Admin', 'School Super Admin', 'Admin', 'Principal', 'Academic Coordinator', 'Teacher'], 'academic_data', 'Academic', 'view');
         $school  = $this->school_name;
         $session = $this->session_year;
 
@@ -196,7 +196,7 @@ class Academic extends MY_Controller
      */
     public function get_all_teachers()
     {
-        $this->_require_role(['Super Admin', 'School Super Admin', 'Admin', 'Principal', 'Academic Coordinator', 'Teacher'], 'academic_data');
+        $this->_require_role(['Super Admin', 'School Super Admin', 'Admin', 'Principal', 'Academic Coordinator', 'Teacher'], 'academic_data', 'Academic', 'view');
 
         $teachers = [];
 
@@ -268,7 +268,7 @@ class Academic extends MY_Controller
      */
     public function get_subject_assignments()
     {
-        $this->_require_role(['Super Admin', 'School Super Admin', 'Admin', 'Principal', 'Academic Coordinator', 'Teacher'], 'view_subject_assignments');
+        $this->_require_role(['Super Admin', 'School Super Admin', 'Admin', 'Principal', 'Academic Coordinator', 'Teacher'], 'view_subject_assignments', 'Academic', 'view');
 
         $school  = $this->school_name;
         $session = $this->session_year;
@@ -399,7 +399,7 @@ class Academic extends MY_Controller
      */
     public function save_subject_assignments()
     {
-        $this->_require_role(['Super Admin', 'School Super Admin', 'Admin', 'Principal', 'Academic Coordinator'], 'save_subject_assignments');
+        $this->_require_role(['Super Admin', 'School Super Admin', 'Admin', 'Principal', 'Academic Coordinator'], 'save_subject_assignments', 'Academic', 'manage');
 
         $classKey   = trim($this->input->post('class_key') ?? '');
         $sectionKey = trim($this->input->post('section_key') ?? '');
@@ -533,7 +533,7 @@ class Academic extends MY_Controller
      */
     public function get_subject_assignments_for_section()
     {
-        $this->_require_role(['Super Admin', 'School Super Admin', 'Admin', 'Principal', 'Academic Coordinator', 'Teacher'], 'view_subject_assignments');
+        $this->_require_role(['Super Admin', 'School Super Admin', 'Admin', 'Principal', 'Academic Coordinator', 'Teacher'], 'view_subject_assignments', 'Academic', 'view');
 
         $classKey = trim($this->input->post('class_key') ?? '');
         $sectionKey = trim($this->input->post('section_key') ?? '');
@@ -596,7 +596,7 @@ class Academic extends MY_Controller
      */
     public function get_class_matrix()
     {
-        $this->_require_role(['Super Admin', 'School Super Admin', 'Admin', 'Principal', 'Academic Coordinator', 'Teacher'], 'view_class_matrix');
+        $this->_require_role(['Super Admin', 'School Super Admin', 'Admin', 'Principal', 'Academic Coordinator', 'Teacher'], 'view_class_matrix', 'Academic', 'view');
 
         $classInput = trim($this->input->post('class_key') ?? '');
         if ($classInput === '') {
@@ -692,7 +692,7 @@ class Academic extends MY_Controller
      */
     public function save_class_matrix()
     {
-        $this->_require_role(['Super Admin', 'School Super Admin', 'Admin', 'Principal', 'Academic Coordinator'], 'save_class_matrix');
+        $this->_require_role(['Super Admin', 'School Super Admin', 'Admin', 'Principal', 'Academic Coordinator'], 'save_class_matrix', 'Academic', 'manage');
 
         $classInput = trim($this->input->post('class_key') ?? '');
         $rawMatrix  = $this->input->post('matrix');
@@ -885,7 +885,7 @@ class Academic extends MY_Controller
      */
     public function get_eligible_teachers()
     {
-        $this->_require_role(['Super Admin', 'School Super Admin', 'Admin', 'Principal', 'Academic Coordinator'], 'view_subject_assignments');
+        $this->_require_role(['Super Admin', 'School Super Admin', 'Admin', 'Principal', 'Academic Coordinator'], 'view_subject_assignments', 'Academic', 'manage');
 
         $code = trim($this->input->post('subject_code') ?? '');
         $name = trim($this->input->post('subject_name') ?? '');
@@ -917,7 +917,7 @@ class Academic extends MY_Controller
      */
     public function copy_subject_assignments()
     {
-        $this->_require_role(['Super Admin', 'School Super Admin', 'Admin', 'Principal', 'Academic Coordinator'], 'copy_subject_assignments');
+        $this->_require_role(['Super Admin', 'School Super Admin', 'Admin', 'Principal', 'Academic Coordinator'], 'copy_subject_assignments', 'Academic', 'manage');
 
         $fromKey = $this->safe_path_segment(trim($this->input->post('from_key') ?? ''), 'from_key');
         $toKey   = $this->safe_path_segment(trim($this->input->post('to_key') ?? ''), 'to_key');
@@ -1168,7 +1168,7 @@ class Academic extends MY_Controller
 
     public function get_curriculum()
     {
-        $this->_require_role(['Super Admin', 'School Super Admin', 'Admin', 'Principal', 'Academic Coordinator', 'Teacher'], 'view_curriculum');
+        $this->_require_role(['Super Admin', 'School Super Admin', 'Admin', 'Principal', 'Academic Coordinator', 'Teacher'], 'view_curriculum', 'Academic', 'view');
         try {
             return $this->json_success($this->_curriculum_svc()->getCurriculum(
                 (string)($this->input->post('class_section') ?? ''),
@@ -1181,7 +1181,7 @@ class Academic extends MY_Controller
 
     public function save_curriculum()
     {
-        $this->_require_role(['Super Admin', 'School Super Admin', 'Admin', 'Principal', 'Academic Coordinator', 'Teacher'], 'save_curriculum');
+        $this->_require_role(['Super Admin', 'School Super Admin', 'Admin', 'Principal', 'Academic Coordinator', 'Teacher'], 'save_curriculum', 'Academic', 'edit');
         try {
             return $this->json_success($this->_curriculum_svc()->saveCurriculum(
                 (string)($this->input->post('class_section') ?? ''),
@@ -1196,7 +1196,7 @@ class Academic extends MY_Controller
 
     public function update_topic_status()
     {
-        $this->_require_role(['Super Admin', 'School Super Admin', 'Admin', 'Principal', 'Academic Coordinator', 'Teacher'], 'update_curriculum');
+        $this->_require_role(['Super Admin', 'School Super Admin', 'Admin', 'Principal', 'Academic Coordinator', 'Teacher'], 'update_curriculum', 'Academic', 'edit');
         try {
             return $this->json_success($this->_curriculum_svc()->updateTopicStatus(
                 (string)($this->input->post('class_section') ?? ''),
@@ -1213,7 +1213,7 @@ class Academic extends MY_Controller
 
     public function delete_topic()
     {
-        $this->_require_role(['Super Admin', 'School Super Admin', 'Admin', 'Principal', 'Academic Coordinator'], 'delete_curriculum');
+        $this->_require_role(['Super Admin', 'School Super Admin', 'Admin', 'Principal', 'Academic Coordinator'], 'delete_curriculum', 'Academic', 'manage');
         try {
             return $this->json_success($this->_curriculum_svc()->deleteTopic(
                 (string)($this->input->post('class_section') ?? ''),
@@ -1233,7 +1233,7 @@ class Academic extends MY_Controller
 
     public function get_lesson_plan()
     {
-        $this->_require_role(['Super Admin', 'School Super Admin', 'Admin', 'Principal', 'Academic Coordinator', 'Teacher'], 'view_lesson_plan');
+        $this->_require_role(['Super Admin', 'School Super Admin', 'Admin', 'Principal', 'Academic Coordinator', 'Teacher'], 'view_lesson_plan', 'Academic', 'view');
         try {
             $plan = $this->_lesson_plan_svc()->getLessonPlan(
                 trim((string)($this->input->post('teacher_id') ?: $this->admin_id)),
@@ -1248,7 +1248,7 @@ class Academic extends MY_Controller
 
     public function get_daily_plan()
     {
-        $this->_require_role(['Super Admin', 'School Super Admin', 'Admin', 'Principal', 'Academic Coordinator', 'Teacher'], 'view_lesson_plan');
+        $this->_require_role(['Super Admin', 'School Super Admin', 'Admin', 'Principal', 'Academic Coordinator', 'Teacher'], 'view_lesson_plan', 'Academic', 'view');
         try {
             // Envelope under `daily` because json_success merges the payload
             // into the top-level object — numeric-keyed arrays would
@@ -1264,7 +1264,7 @@ class Academic extends MY_Controller
 
     public function save_lesson_plan()
     {
-        $this->_require_role(['Super Admin', 'School Super Admin', 'Admin', 'Principal', 'Academic Coordinator', 'Teacher'], 'edit_lesson_plan');
+        $this->_require_role(['Super Admin', 'School Super Admin', 'Admin', 'Principal', 'Academic Coordinator', 'Teacher'], 'edit_lesson_plan', 'Academic', 'edit');
         try {
             return $this->json_success($this->_lesson_plan_svc()->saveLessonPlan([
                 'class_name'       => (string)($this->input->post('class_name')     ?? ''),
@@ -1287,7 +1287,7 @@ class Academic extends MY_Controller
 
     public function get_monthly_plan()
     {
-        $this->_require_role(['Super Admin', 'School Super Admin', 'Admin', 'Principal', 'Academic Coordinator', 'Teacher'], 'view_lesson_plan');
+        $this->_require_role(['Super Admin', 'School Super Admin', 'Admin', 'Principal', 'Academic Coordinator', 'Teacher'], 'view_lesson_plan', 'Academic', 'view');
         try {
             return $this->json_success($this->_lesson_plan_svc()->getMonthlyPlan(
                 trim((string)($this->input->post('teacher_id') ?: $this->admin_id)),
@@ -1312,7 +1312,7 @@ class Academic extends MY_Controller
 
     public function analytics_syllabus_progress()
     {
-        $this->_require_role(self::ANALYTICS_ADMIN_ROLES, 'view_analytics');
+        $this->_require_role(self::ANALYTICS_ADMIN_ROLES, 'view_analytics', 'Academic', 'view');
         try {
             return $this->json_success(['rows' => $this->_analytics_svc()->getSyllabusProgress()]);
         } catch (Service_exception $e) { return $this->json_error($e->getMessage()); }
@@ -1320,7 +1320,7 @@ class Academic extends MY_Controller
 
     public function analytics_daily_monitoring()
     {
-        $this->_require_role(self::ANALYTICS_ADMIN_ROLES, 'view_analytics');
+        $this->_require_role(self::ANALYTICS_ADMIN_ROLES, 'view_analytics', 'Academic', 'view');
         try {
             return $this->json_success($this->_analytics_svc()->getDailyMonitoring(
                 trim((string)($this->input->post('date') ?: date('Y-m-d')))
@@ -1330,7 +1330,7 @@ class Academic extends MY_Controller
 
     public function analytics_delays()
     {
-        $this->_require_role(self::ANALYTICS_ADMIN_ROLES, 'view_analytics');
+        $this->_require_role(self::ANALYTICS_ADMIN_ROLES, 'view_analytics', 'Academic', 'view');
         try {
             return $this->json_success($this->_analytics_svc()->getDelays());
         } catch (Service_exception $e) { return $this->json_error($e->getMessage()); }
@@ -1338,7 +1338,7 @@ class Academic extends MY_Controller
 
     public function analytics_subject_progress()
     {
-        $this->_require_role(self::ANALYTICS_ADMIN_ROLES, 'view_analytics');
+        $this->_require_role(self::ANALYTICS_ADMIN_ROLES, 'view_analytics', 'Academic', 'view');
         try {
             return $this->json_success(['rows' => $this->_analytics_svc()->getSubjectProgress(
                 trim((string)($this->input->post('class_section') ?? ''))
@@ -1348,7 +1348,7 @@ class Academic extends MY_Controller
 
     public function parent_daily_lessons()
     {
-        $this->_require_role(self::ANALYTICS_PARENT_ROLES, 'view_parent_planner');
+        $this->_require_role(self::ANALYTICS_PARENT_ROLES, 'view_parent_planner', 'Academic', 'view');
         try {
             return $this->json_success($this->_analytics_svc()->getParentDailyLessons(
                 trim((string)($this->input->post('class_section') ?? '')),
@@ -1359,7 +1359,7 @@ class Academic extends MY_Controller
 
     public function parent_subject_progress()
     {
-        $this->_require_role(self::ANALYTICS_PARENT_ROLES, 'view_parent_planner');
+        $this->_require_role(self::ANALYTICS_PARENT_ROLES, 'view_parent_planner', 'Academic', 'view');
         try {
             return $this->json_success($this->_analytics_svc()->getParentSubjectProgress(
                 trim((string)($this->input->post('class_section') ?? ''))
@@ -1373,7 +1373,7 @@ class Academic extends MY_Controller
 
     public function get_calendar_events()
     {
-        $this->_require_role(['Super Admin', 'School Super Admin', 'Admin', 'Principal', 'Academic Coordinator', 'Teacher'], 'view_calendar');
+        $this->_require_role(['Super Admin', 'School Super Admin', 'Admin', 'Principal', 'Academic Coordinator', 'Teacher'], 'view_calendar', 'Academic', 'view');
         try {
             return $this->json_success($this->_calendar_svc()->getEvents(
                 trim($this->input->post('month') ?? '')
@@ -1385,7 +1385,7 @@ class Academic extends MY_Controller
 
     public function save_event()
     {
-        $this->_require_role(['Super Admin', 'School Super Admin', 'Admin', 'Principal', 'Academic Coordinator'], 'manage_calendar');
+        $this->_require_role(['Super Admin', 'School Super Admin', 'Admin', 'Principal', 'Academic Coordinator'], 'manage_calendar', 'Academic', 'manage');
         try {
             return $this->json_success($this->_calendar_svc()->saveEvent(
                 trim($this->input->post('id')          ?? ''),
@@ -1403,7 +1403,7 @@ class Academic extends MY_Controller
 
     public function delete_event()
     {
-        $this->_require_role(['Super Admin', 'School Super Admin', 'Admin', 'Principal', 'Academic Coordinator'], 'manage_calendar');
+        $this->_require_role(['Super Admin', 'School Super Admin', 'Admin', 'Principal', 'Academic Coordinator'], 'manage_calendar', 'Academic', 'manage');
         try {
             return $this->json_success($this->_calendar_svc()->deleteEvent(
                 trim($this->input->post('id') ?? '')
@@ -1419,7 +1419,7 @@ class Academic extends MY_Controller
 
     public function get_master_timetable()
     {
-        $this->_require_role(['Super Admin', 'School Super Admin', 'Admin', 'Principal', 'Academic Coordinator', 'Teacher'], 'view_timetable');
+        $this->_require_role(['Super Admin', 'School Super Admin', 'Admin', 'Principal', 'Academic Coordinator', 'Teacher'], 'view_timetable', 'Academic', 'view');
         try {
             return $this->json_success($this->_timetable_svc()->getMasterTimetable(
                 $this->_get_session_classes()
@@ -1431,7 +1431,7 @@ class Academic extends MY_Controller
 
     public function save_period()
     {
-        $this->_require_role(['Super Admin', 'School Super Admin', 'Admin', 'Principal', 'Academic Coordinator'], 'edit_timetable');
+        $this->_require_role(['Super Admin', 'School Super Admin', 'Admin', 'Principal', 'Academic Coordinator'], 'edit_timetable', 'Academic', 'manage');
         try {
             return $this->json_success($this->_timetable_svc()->savePeriod(
                 $this->safe_path_segment(trim($this->input->post('class_key') ?? ''), 'class_key'),
@@ -1457,7 +1457,7 @@ class Academic extends MY_Controller
      */
     public function detect_conflicts()
     {
-        $this->_require_role(['Super Admin', 'School Super Admin', 'Admin', 'Principal', 'Academic Coordinator', 'Teacher'], 'view_timetable');
+        $this->_require_role(['Super Admin', 'School Super Admin', 'Admin', 'Principal', 'Academic Coordinator', 'Teacher'], 'view_timetable', 'Academic', 'view');
         try {
             return $this->json_success($this->_timetable_svc()->detectConflicts(
                 trim($this->input->post('subject')         ?? ''),
@@ -1478,7 +1478,7 @@ class Academic extends MY_Controller
 
     public function get_substitutes()
     {
-        $this->_require_role(['Super Admin', 'School Super Admin', 'Admin', 'Principal', 'Academic Coordinator', 'Teacher'], 'view_substitutes');
+        $this->_require_role(['Super Admin', 'School Super Admin', 'Admin', 'Principal', 'Academic Coordinator', 'Teacher'], 'view_substitutes', 'Academic', 'view');
         try {
             return $this->json_success($this->_substitute_svc()->getSubstitutes(
                 trim($this->input->post('date')      ?? ''),
@@ -1531,7 +1531,7 @@ class Academic extends MY_Controller
 
     public function save_substitute()
     {
-        $this->_require_role(['Super Admin', 'School Super Admin', 'Admin', 'Principal', 'Academic Coordinator'], 'manage_substitutes');
+        $this->_require_role(['Super Admin', 'School Super Admin', 'Admin', 'Principal', 'Academic Coordinator'], 'manage_substitutes', 'Academic', 'manage');
         try {
             // NOTE: class_section + subject are LEGACY-FALLBACK fields only —
             // used when the new `assignments[]` array is empty. Pass raw (do NOT
@@ -1592,7 +1592,7 @@ class Academic extends MY_Controller
 
     public function update_substitute()
     {
-        $this->_require_role(['Super Admin', 'School Super Admin', 'Admin', 'Principal', 'Academic Coordinator'], 'manage_substitutes');
+        $this->_require_role(['Super Admin', 'School Super Admin', 'Admin', 'Principal', 'Academic Coordinator'], 'manage_substitutes', 'Academic', 'manage');
         try {
             return $this->json_success($this->_substitute_svc()->updateSubstituteStatus(
                 trim($this->input->post('id')     ?? ''),
@@ -1605,7 +1605,7 @@ class Academic extends MY_Controller
 
     public function delete_substitute()
     {
-        $this->_require_role(['Super Admin', 'School Super Admin', 'Admin', 'Principal', 'Academic Coordinator'], 'manage_substitutes');
+        $this->_require_role(['Super Admin', 'School Super Admin', 'Admin', 'Principal', 'Academic Coordinator'], 'manage_substitutes', 'Academic', 'manage');
         try {
             return $this->json_success($this->_substitute_svc()->deleteSubstitute(
                 trim($this->input->post('id') ?? '')
@@ -1620,7 +1620,7 @@ class Academic extends MY_Controller
      */
     public function get_teacher_schedule()
     {
-        $this->_require_role(['Super Admin', 'School Super Admin', 'Admin', 'Principal', 'Academic Coordinator', 'Teacher'], 'view_schedule');
+        $this->_require_role(['Super Admin', 'School Super Admin', 'Admin', 'Principal', 'Academic Coordinator', 'Teacher'], 'view_schedule', 'Academic', 'view');
         $teacherId = trim($this->input->post('teacher_id') ?? '');
         $date      = trim($this->input->post('date') ?? '');
 
@@ -1706,7 +1706,7 @@ class Academic extends MY_Controller
      */
     public function get_timetable_settings()
     {
-        $this->_require_role(['Super Admin', 'School Super Admin', 'Admin', 'Principal', 'Academic Coordinator', 'Teacher'], 'view_tt_settings');
+        $this->_require_role(['Super Admin', 'School Super Admin', 'Admin', 'Principal', 'Academic Coordinator', 'Teacher'], 'view_tt_settings', 'Academic', 'view');
         try {
             return $this->json_success($this->_timetable_svc()->getSettings());
         } catch (Service_exception $e) {
@@ -1719,7 +1719,7 @@ class Academic extends MY_Controller
      */
     public function save_timetable_settings()
     {
-        $this->_require_role(['Super Admin', 'School Super Admin', 'Admin', 'Principal', 'Academic Coordinator'], 'save_tt_settings');
+        $this->_require_role(['Super Admin', 'School Super Admin', 'Admin', 'Principal', 'Academic Coordinator'], 'save_tt_settings', 'Academic', 'manage');
         try {
             return $this->json_success($this->_timetable_svc()->saveSettings(
                 trim($this->input->post('start_time')    ?? ''),
@@ -1744,7 +1744,7 @@ class Academic extends MY_Controller
      */
     public function get_section_timetable()
     {
-        $this->_require_role(['Super Admin', 'School Super Admin', 'Admin', 'Principal', 'Academic Coordinator', 'Teacher'], 'view_timetable');
+        $this->_require_role(['Super Admin', 'School Super Admin', 'Admin', 'Principal', 'Academic Coordinator', 'Teacher'], 'view_timetable', 'Academic', 'view');
 
         $class   = $this->safe_path_segment(trim($this->input->post('class_name') ?? ''), 'class_name');
         $section = $this->safe_path_segment(trim($this->input->post('section_name') ?? ''), 'section_name');
@@ -1804,7 +1804,7 @@ class Academic extends MY_Controller
      */
     public function save_section_timetable()
     {
-        $this->_require_role(['Super Admin', 'School Super Admin', 'Admin', 'Principal', 'Academic Coordinator'], 'edit_timetable');
+        $this->_require_role(['Super Admin', 'School Super Admin', 'Admin', 'Principal', 'Academic Coordinator'], 'edit_timetable', 'Academic', 'manage');
         try {
             return $this->json_success($this->_timetable_svc()->saveSectionTimetable(
                 $this->safe_path_segment(trim($this->input->post('class_name')   ?? ''), 'class_name'),
@@ -1823,7 +1823,7 @@ class Academic extends MY_Controller
      */
     public function get_class_subjects()
     {
-        $this->_require_role(['Super Admin', 'School Super Admin', 'Admin', 'Principal', 'Academic Coordinator', 'Teacher'], 'academic_data');
+        $this->_require_role(['Super Admin', 'School Super Admin', 'Admin', 'Principal', 'Academic Coordinator', 'Teacher'], 'academic_data', 'Academic', 'view');
 
         $className = trim($this->input->post('class_name') ?? '');
 
@@ -2035,7 +2035,7 @@ class Academic extends MY_Controller
      */
     public function auto_generate_timetable()
     {
-        $this->_require_role(['Super Admin', 'School Super Admin', 'Admin', 'Principal', 'Academic Coordinator'], 'edit_timetable');
+        $this->_require_role(['Super Admin', 'School Super Admin', 'Admin', 'Principal', 'Academic Coordinator'], 'edit_timetable', 'Academic', 'manage');
         try {
             return $this->json_success($this->_timetable_svc()->autoGenerate(
                 ($this->input->post('confirm') === '1'),
@@ -2076,7 +2076,7 @@ class Academic extends MY_Controller
      */
     public function get_absent_teachers()
     {
-        $this->_require_role(['Super Admin', 'School Super Admin', 'Admin', 'Principal', 'Academic Coordinator'], 'manage_substitutes');
+        $this->_require_role(['Super Admin', 'School Super Admin', 'Admin', 'Principal', 'Academic Coordinator'], 'manage_substitutes', 'Academic', 'manage');
 
         $dateStr = trim($this->input->post('date') ?? '');
         if ($dateStr === '' || !strtotime($dateStr)) {
@@ -2179,7 +2179,7 @@ class Academic extends MY_Controller
      */
     public function get_absent_teacher_schedule()
     {
-        $this->_require_role(['Super Admin', 'School Super Admin', 'Admin', 'Principal', 'Academic Coordinator'], 'manage_substitutes');
+        $this->_require_role(['Super Admin', 'School Super Admin', 'Admin', 'Principal', 'Academic Coordinator'], 'manage_substitutes', 'Academic', 'manage');
 
         $teacherId = trim($this->input->post('teacher_id') ?? '');
         $dateStr   = trim($this->input->post('date') ?? '');
@@ -2339,7 +2339,7 @@ class Academic extends MY_Controller
 
     public function suggest_substitutes()
     {
-        $this->_require_role(['Super Admin', 'School Super Admin', 'Admin', 'Principal', 'Academic Coordinator'], 'manage_substitutes');
+        $this->_require_role(['Super Admin', 'School Super Admin', 'Admin', 'Principal', 'Academic Coordinator'], 'manage_substitutes', 'Academic', 'manage');
 
         $absentTid = trim($this->input->post('absent_teacher_id') ?? '');
         $dateStr   = trim($this->input->post('date') ?? '');

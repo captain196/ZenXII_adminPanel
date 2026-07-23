@@ -179,9 +179,13 @@
                 'X-Requested-With': 'XMLHttpRequest'  /* marks request as AJAX       */
             }
         })
-        .then(function (res) { return res.text(); })
         .then(function (res) {
-            if (res.trim() === '1') {
+            return res.text().then(function (body) { return { ok: res.ok, status: res.status, body: body }; });
+        })
+        .then(function (r) {
+            /* Fail closed: a 403/500 (res.ok === false) must never read as
+               success even if the body somehow contained '1'. */
+            if (r.ok && (r.body || '').trim() === '1') {
                 showToast('Fee title saved successfully!', 'success');
                 setTimeout(function () {
                     window.location.href = '<?= base_url('fees/fees_structure') ?>';
@@ -204,9 +208,9 @@
 
     :root {
         --fm-navy: #0f1f3d;
-        --fm-teal: #0d7377;
-        --fm-teal2: #14a085;
-        --fm-sky: #e6f4f1;
+        --fm-teal: #BC5A3C;
+        --fm-teal2: #9E4830;
+        --fm-sky: #F7ECE7;
         --fm-gold: #d97706;
         --fm-red: #e53e3e;
         --fm-green: #27ae60;
@@ -215,7 +219,7 @@
         --fm-border: #d1e8e4;
         --fm-bg: #f0f6f5;
         --fm-card: #ffffff;
-        --fm-shadow: 0 2px 16px rgba(13, 115, 119, .10);
+        --fm-shadow: 0 2px 16px rgba(188,90,60, .10);
         --fm-radius: 14px;
     }
 
@@ -358,7 +362,7 @@
     .fm-input:focus,
     .fm-select:focus {
         border-color: var(--fm-teal);
-        box-shadow: 0 0 0 3px rgba(13, 115, 119, .12);
+        box-shadow: 0 0 0 3px rgba(188,90,60, .12);
         background: var(--fm-card);
     }
 

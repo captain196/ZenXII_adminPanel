@@ -23,7 +23,7 @@ $esc = function($v) { return htmlspecialchars($v, ENT_QUOTES, 'UTF-8'); };
         :root {
             --gold:#BC5A3C; --gold2:#9E4830; --gold3:#D4725C;
             --gold-dim:rgba(188,90,60,.10); --gold-ring:rgba(188,90,60,.22);
-            --bg:#f0f7f5; --bg2:#ffffff; --bg3:#e6f4f1;
+            --bg:#F7F4F1; --bg2:#ffffff; --bg3:#F7ECE7;
             --border:rgba(188,90,60,.15);
             --t1:#0c1e38; --t2:#1a5c56; --t3:#5a9e98;
             --r:12px;
@@ -251,12 +251,16 @@ $esc = function($v) { return htmlspecialchars($v, ENT_QUOTES, 'UTF-8'); };
                     <input type="text" name="address" maxlength="200">
                 </div>
                 <div class="pf-fg">
-                    <label>City</label>
-                    <input type="text" name="city" maxlength="80">
+                    <label>State</label>
+                    <select name="state" data-india-state data-india-fill data-india-placeholder="Select State">
+                        <option value="">Select State</option>
+                    </select>
                 </div>
                 <div class="pf-fg">
-                    <label>State</label>
-                    <input type="text" name="state" maxlength="80">
+                    <label>District</label>
+                    <select name="city" data-india-district="state" data-india-placeholder="Select District">
+                        <option value="">Select District</option>
+                    </select>
                 </div>
                 <div class="pf-fg">
                     <label>Pincode</label>
@@ -295,6 +299,15 @@ $esc = function($v) { return htmlspecialchars($v, ENT_QUOTES, 'UTF-8'); };
                     <span style="font-size:13px;line-height:1.5;color:var(--t2,#374151);">
                         I confirm the information above is correct and consent to <strong><?= $esc($school_profile['display_name'] ?? $school_id) ?></strong> storing and processing this application data for admission purposes. I understand my contact details may be used to communicate about this application.
                     </span>
+                </label>
+            </div>
+
+            <!-- Honeypot (bot guard): a real applicant never sees or fills
+                 this. Any value → the server drops the submission. Kept off-
+                 screen (not display:none) so naive bots still "see" it. -->
+            <div class="pf-hp" aria-hidden="true" style="position:absolute;left:-9999px;top:-9999px;height:0;width:0;overflow:hidden;">
+                <label>Company Website (leave blank)
+                    <input type="text" name="company_website" tabindex="-1" autocomplete="off">
                 </label>
             </div>
 
@@ -351,6 +364,7 @@ $esc = function($v) { return htmlspecialchars($v, ENT_QUOTES, 'UTF-8'); };
     <div class="pf-footer">Powered by ZenXii ERP</div>
 </div>
 
+<script src="<?= base_url('assets/js/india_geo.js') ?>"></script>
 <script>
 // PUBLIC ADMISSION FIX — CSRF from meta tags + AJAX submission
 var csrfName  = document.querySelector('meta[name="csrf-name"]').content;
@@ -358,6 +372,8 @@ var csrfToken = document.querySelector('meta[name="csrf-token"]').content;
 
 function showAlert(msg, isError) {
     var el = document.getElementById('formAlert');
+    el.setAttribute('role', 'alert');        // announce to screen readers (#15)
+    el.setAttribute('aria-live', 'assertive');
     el.textContent = msg;
     el.className = 'pf-alert ' + (isError ? 'pf-alert-err' : 'pf-alert-ok');
     el.style.display = 'block';
@@ -392,6 +408,10 @@ document.getElementById('admissionForm').addEventListener('submit', function(e) 
             document.getElementById('appIdDisplay').textContent = data.app_id || 'Submitted';
             // Store for payment flow
             window._appId = data.app_id;
+            // Ownership token (HIGH #5): initiate_payment now requires the
+            // HMAC token issued to THIS browser at submit time, so a stranger
+            // can't enumerate app_ids to start payments / harvest PII.
+            window._payToken = data.payment_token || '';
             // Receipt link — Tier-A QW #1. Hidden by default; revealed when
             // the server returns a receipt_url (always returned for new
             // submissions; absent on legacy responses to keep this safe).
@@ -426,7 +446,7 @@ function initiatePayment() {
     btn.disabled = true;
     btn.innerHTML = '<i class="fa-solid fa-spinner fa-spin"></i> Processing...';
 
-    var fd = new URLSearchParams({ app_id: window._appId });
+    var fd = new URLSearchParams({ app_id: window._appId, token: window._payToken || '' });
     fd.append(csrfName, csrfToken);
 
     fetch('<?= base_url("admission/pay/" . urlencode($school_id)) ?>', {

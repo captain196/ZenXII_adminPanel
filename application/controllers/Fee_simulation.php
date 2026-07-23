@@ -74,7 +74,7 @@ class Fee_simulation extends MY_Controller
      */
     public function run()
     {
-        $this->_require_role(['Admin', 'Super Admin'], 'run_simulation');
+        $this->_require_role(['Admin', 'Super Admin'], 'run_simulation', 'Configuration', 'manage');
 
         set_time_limit(600); // 10 minutes max
         ini_set('memory_limit', '512M');
@@ -146,7 +146,7 @@ class Fee_simulation extends MY_Controller
      */
     public function cleanup()
     {
-        $this->_require_role(['Admin', 'Super Admin'], 'cleanup_simulation');
+        $this->_require_role(['Admin', 'Super Admin'], 'cleanup_simulation', 'Configuration', 'manage');
         $this->firebase->delete(self::SIM_NAMESPACE);
         $this->json_success(['message' => 'Simulation data cleaned up.']);
     }
@@ -156,7 +156,7 @@ class Fee_simulation extends MY_Controller
      */
     public function index()
     {
-        $this->_require_role(['Admin', 'Super Admin']);
+        $this->_require_role(['Admin', 'Super Admin'], '', 'Configuration', 'view');
         $this->load->view('include/header');
         $this->load->view('fees/simulation');
         $this->load->view('include/footer');
@@ -623,7 +623,7 @@ class Fee_simulation extends MY_Controller
      */
     public function run_school()
     {
-        $this->_require_role(['Admin', 'Super Admin'], 'run_school_sim');
+        $this->_require_role(['Admin', 'Super Admin'], 'run_school_sim', 'Configuration', 'manage');
         set_time_limit(120);
         header('Content-Type: application/json');
 
@@ -671,7 +671,7 @@ class Fee_simulation extends MY_Controller
      */
     public function run_parallel()
     {
-        $this->_require_role(['Admin', 'Super Admin'], 'run_parallel_sim');
+        $this->_require_role(['Admin', 'Super Admin'], 'run_parallel_sim', 'Configuration', 'manage');
         set_time_limit(1800); // 30 minutes
         ini_set('memory_limit', '1G');
         header('Content-Type: application/json');

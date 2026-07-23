@@ -49,7 +49,7 @@ class Fee_concessions extends MY_Controller
     /** Render the management page (or the "Under construction" placeholder). */
     public function index()
     {
-        $this->_require_role(self::VIEW_ROLES, 'fee_concessions_index');
+        $this->_require_role(self::VIEW_ROLES, 'fee_concessions_index', 'Fees', 'view');
         $data = [
             'concession_ui_enabled' => $this->_concession_ui_enabled(),
             'service_ui_enabled'    => $this->_service_ui_enabled(),
@@ -67,7 +67,7 @@ class Fee_concessions extends MY_Controller
 
     public function list_concessions()
     {
-        $this->_require_role(self::VIEW_ROLES, 'fee_concessions_list');
+        $this->_require_role(self::VIEW_ROLES, 'fee_concessions_list', 'Fees', 'view');
         if (!$this->_concession_ui_enabled()) return $this->json_error('Concession UI not enabled.');
 
         $userId = trim((string) $this->input->post('student_id'));
@@ -88,7 +88,7 @@ class Fee_concessions extends MY_Controller
 
     public function create_concession()
     {
-        $this->_require_role(self::MANAGE_ROLES, 'fee_concessions_create');
+        $this->_require_role(self::MANAGE_ROLES, 'fee_concessions_create', 'Fees', 'manage');
         if (!$this->_concession_ui_enabled()) return $this->json_error('Concession UI not enabled.');
         if ($this->input->method() !== 'post')  return $this->json_error('POST required.');
 
@@ -142,7 +142,7 @@ class Fee_concessions extends MY_Controller
 
     public function revoke_concession()
     {
-        $this->_require_role(self::MANAGE_ROLES, 'fee_concessions_revoke');
+        $this->_require_role(self::MANAGE_ROLES, 'fee_concessions_revoke', 'Fees', 'manage');
         if (!$this->_concession_ui_enabled()) return $this->json_error('Concession UI not enabled.');
         if ($this->input->method() !== 'post') return $this->json_error('POST required.');
 
@@ -170,7 +170,7 @@ class Fee_concessions extends MY_Controller
      */
     public function check_active_concessions()
     {
-        $this->_require_role(self::VIEW_ROLES, 'fee_concessions_check_active');
+        $this->_require_role(self::VIEW_ROLES, 'fee_concessions_check_active', 'Fees', 'view');
 
         $userId = trim((string) $this->input->post('student_id'));
         if ($userId === '' || !$this->safe_path_segment($userId)) return $this->json_error('Invalid student_id.');
@@ -216,7 +216,7 @@ class Fee_concessions extends MY_Controller
      */
     public function check_school_active_concessions()
     {
-        $this->_require_role(self::VIEW_ROLES, 'fee_concessions_check_school');
+        $this->_require_role(self::VIEW_ROLES, 'fee_concessions_check_school', 'Fees', 'view');
 
         $rows = [];
         try {
@@ -252,7 +252,7 @@ class Fee_concessions extends MY_Controller
 
     public function list_enrollments()
     {
-        $this->_require_role(self::VIEW_ROLES, 'fee_concessions_list_enrollments');
+        $this->_require_role(self::VIEW_ROLES, 'fee_concessions_list_enrollments', 'Fees', 'view');
         if (!$this->_service_ui_enabled()) return $this->json_error('Service-enrollment UI not enabled.');
 
         $userId = trim((string) $this->input->post('student_id'));
@@ -273,7 +273,7 @@ class Fee_concessions extends MY_Controller
 
     public function enroll_service()
     {
-        $this->_require_role(self::MANAGE_ROLES, 'fee_concessions_enroll');
+        $this->_require_role(self::MANAGE_ROLES, 'fee_concessions_enroll', 'Fees', 'manage');
         if (!$this->_service_ui_enabled()) return $this->json_error('Service-enrollment UI not enabled.');
         if ($this->input->method() !== 'post') return $this->json_error('POST required.');
 
@@ -319,7 +319,7 @@ class Fee_concessions extends MY_Controller
 
     public function discontinue_service()
     {
-        $this->_require_role(self::MANAGE_ROLES, 'fee_concessions_discontinue');
+        $this->_require_role(self::MANAGE_ROLES, 'fee_concessions_discontinue', 'Fees', 'manage');
         if (!$this->_service_ui_enabled()) return $this->json_error('Service-enrollment UI not enabled.');
         if ($this->input->method() !== 'post') return $this->json_error('POST required.');
 

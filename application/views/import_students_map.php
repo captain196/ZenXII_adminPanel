@@ -54,6 +54,26 @@
 .imp-hidden { display:none; }
 .spin { display:inline-block; width:14px; height:14px; border:2px solid rgba(255,255,255,.5); border-top-color:#fff; border-radius:50%; animation:impspin .7s linear infinite; }
 @keyframes impspin { to { transform:rotate(360deg); } }
+/* Connected progress stepper — mirrors the upload page so the wizard advances
+   (step 3 is active on this Map & Preview screen). Uses this page's own tokens. */
+.imp-steps { list-style:none; display:flex; padding:0; margin:0 0 20px; }
+.imp-steps li { flex:1; position:relative; display:flex; flex-direction:column; align-items:center; text-align:center; padding:0 6px; }
+.imp-steps li:not(:last-child)::after { content:""; position:absolute; top:17px; height:2px; border-radius:2px; left:calc(50% + 22px); right:calc(-50% + 22px); background:var(--border,#e5e7eb); z-index:0; }
+.imp-steps li.done::after { background:#16a34a; }
+.imp-step-n { position:relative; z-index:1; box-sizing:border-box; width:34px; height:34px; border-radius:50%; margin-bottom:9px; background:var(--bg2,#fff); color:var(--t3,#9ca3af); border:2px solid var(--border,#d1d5db); display:flex; align-items:center; justify-content:center; font-weight:800; font-size:.9rem; }
+.imp-steps li.done .imp-step-n { background:#16a34a; color:#fff; border-color:#16a34a; }
+.imp-steps li.active .imp-step-n { background:var(--gold,#BC5A3C); color:#fff; border-color:var(--gold,#BC5A3C); box-shadow:0 0 0 4px rgba(188,90,60,.18); }
+.imp-step-tx { display:flex; flex-direction:column; gap:1px; }
+.imp-step-t { font-weight:700; font-size:.9rem; color:var(--t3,#9ca3af); }
+.imp-step-d { font-size:.8rem; color:var(--t3,#9ca3af); opacity:.85; }
+.imp-steps li.done .imp-step-t, .imp-steps li.active .imp-step-t { color:var(--t1,#111827); }
+@media (max-width:720px){
+  .imp-steps { flex-direction:column; align-items:stretch; }
+  .imp-steps li { flex-direction:row; align-items:flex-start; text-align:left; gap:12px; padding:0 0 18px; }
+  .imp-steps li:last-child { padding-bottom:0; }
+  .imp-steps li:not(:last-child)::after { top:34px; bottom:4px; left:16px; right:auto; width:2px; height:auto; }
+  .imp-step-n { margin-bottom:0; }
+}
 </style>
 
 <div class="content-wrapper">
@@ -70,9 +90,25 @@
         <a href="<?= base_url('sis/master_student') ?>" class="imp-btn ghost"><i class="fa fa-arrow-left"></i> Start over</a>
     </div>
 
+    <!-- Progress stepper (this is step 3 of the import flow) -->
+    <ol class="imp-steps" aria-label="Import steps" role="list">
+      <li class="done" aria-label="Step 1: Get the template (done)">
+        <span class="imp-step-n"><i class="fa fa-check"></i></span>
+        <span class="imp-step-tx"><span class="imp-step-t">Get the template</span><span class="imp-step-d">Start from our sheet</span></span>
+      </li>
+      <li class="done" aria-label="Step 2: Upload your file (done)">
+        <span class="imp-step-n"><i class="fa fa-check"></i></span>
+        <span class="imp-step-tx"><span class="imp-step-t">Upload your file</span><span class="imp-step-d">File received</span></span>
+      </li>
+      <li class="active" aria-current="step" aria-label="Step 3: Map &amp; preview (current)">
+        <span class="imp-step-n">3</span>
+        <span class="imp-step-tx"><span class="imp-step-t">Map &amp; preview</span><span class="imp-step-d">Match, check, import</span></span>
+      </li>
+    </ol>
+
     <!-- STEP 1 — MAPPING -->
     <div class="imp-card" id="mapCard">
-        <h2>1. Match your columns</h2>
+        <h2>Match your columns</h2>
         <p class="hint">We pre-filled the best guess for each column. Fix any that look wrong, or set them to “— Ignore —”. Required fields must be mapped.</p>
         <?php if (!empty($learnedApplied)): ?>
         <div class="alert" style="background:#eef2ff;color:#3730a3;border:1px solid #c7d2fe;border-radius:8px;padding:9px 13px;font-size:.84rem;margin-bottom:12px;">
@@ -93,7 +129,7 @@
 
     <!-- STEP 2 — PREVIEW -->
     <div class="imp-card imp-hidden" id="prevCard">
-        <h2>2. Preview &amp; fix</h2>
+        <h2>Preview &amp; fix</h2>
         <p class="hint">Values below are cleaned/normalized. Red rows have blocking errors and won't import; amber rows import with warnings. You can edit any cell, then re-validate.</p>
         <div class="sum-chips" id="sumChips"></div>
         <div class="prev-wrap">
@@ -137,7 +173,7 @@
 
     <!-- STEP 3 — RESULT -->
     <div class="imp-card imp-hidden" id="resultCard">
-        <h2>3. Result</h2>
+        <h2>Result</h2>
         <div id="resultMsg" style="font-size:.9rem;line-height:1.6;"></div>
         <div class="imp-actions">
             <a href="<?= base_url('sis/all_student') ?>" class="imp-btn primary"><i class="fa fa-users"></i> Go to Student List</a>

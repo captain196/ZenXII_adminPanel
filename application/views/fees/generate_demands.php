@@ -204,7 +204,7 @@ let GD_CSRF_HASH = '<?= $this->security->get_csrf_hash() ?>';
 .gd-err { margin-top:12px; padding:12px 14px; background:rgba(220,38,38,.08); border:1px solid rgba(220,38,38,.25); border-left:4px solid #dc2626; border-radius:8px; font-size:13px; color:#7f1d1d; }
 .gd-err strong { color:#7f1d1d; }
 
-.gd-progress { padding:16px 18px; background:rgba(188,90,60,.06); border:1px solid rgba(188,90,60,.20); border-radius:8px; color:#134e4a; font-size:13.5px; line-height:1.6; }
+.gd-progress { padding:16px 18px; background:rgba(188,90,60,.06); border:1px solid rgba(188,90,60,.20); border-radius:8px; color:#9E4830; font-size:13.5px; line-height:1.6; }
 .gd-prog-head { display:flex; align-items:center; justify-content:space-between; margin-bottom:10px; }
 .gd-prog-step { display:inline-block; padding:3px 10px; background:var(--gold,#BC5A3C); color:#fff; border-radius:12px; font-size:11px; font-weight:700; text-transform:uppercase; letter-spacing:.4px; }
 .gd-prog-pct { font-size:14px; font-weight:800; color:var(--gold,#BC5A3C); font-variant-numeric:tabular-nums; }
@@ -293,9 +293,10 @@ let GD_CSRF_HASH = '<?= $this->security->get_csrf_hash() ?>';
                 body: fd,
                 credentials: 'same-origin',
             });
-            const j = await res.json();
+            const j = await res.json().catch(() => ({}));
             absorbCsrf(j);
-            if (j.status !== 'success') throw new Error(j.message || 'Preview failed');
+            /* fetch does NOT reject on 403/500 — fail closed on HTTP or body error. */
+            if (!res.ok || j.status !== 'success') throw new Error(j.message || ('Preview failed (' + res.status + ')'));
             renderPreview(j.data || j);
             $previewCard.style.display = '';
             $previewCard.scrollIntoView({ behavior:'smooth', block:'start' });
@@ -509,8 +510,8 @@ let GD_CSRF_HASH = '<?= $this->security->get_csrf_hash() ?>';
                 method: 'GET',
                 credentials: 'same-origin',
             });
-            const j = await res.json();
-            if (j.status !== 'success') throw new Error(j.message || 'Poll failed');
+            const j = await res.json().catch(() => ({}));
+            if (!res.ok || j.status !== 'success') throw new Error(j.message || ('Poll failed (' + res.status + ')'));
             const job = j.data || j;
 
             if (job.status === 'pending' || job.status === 'running') {
@@ -578,9 +579,11 @@ let GD_CSRF_HASH = '<?= $this->security->get_csrf_hash() ?>';
                 body: fd,
                 credentials: 'same-origin',
             });
-            const j = await res.json();
+            const j = await res.json().catch(() => ({}));
             absorbCsrf(j);
-            if (j.status !== 'success') throw new Error(j.message || 'Could not queue job');
+            /* fetch does NOT reject on 403/500 — a denied generate must land in the
+               catch below (Failed card), never fall through as a queued job. */
+            if (!res.ok || j.status !== 'success') throw new Error(j.message || ('Could not queue job (' + res.status + ')'));
 
             const payload = j.data || j;
             const jobId = payload.jobId;

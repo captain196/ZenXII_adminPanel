@@ -41,6 +41,9 @@ class Operations extends MY_Controller
 
     private function _require_ops_admin()
     {
+        // Unified RBAC capability path (Operations manage). Legacy name-gate kept as fallback.
+        // NOTE: DEAD CODE — this helper is never called anywhere in the controller.
+        if (has_permission('Operations', 'manage')) return;
         if (!in_array($this->admin_role, self::OPS_ADMIN_ROLES, true)) {
             $this->json_error('Access denied.', 403);
         }
@@ -48,6 +51,8 @@ class Operations extends MY_Controller
 
     private function _require_ops_view()
     {
+        // Unified RBAC capability path (Operations view). Legacy name-gate kept as fallback.
+        if (has_permission('Operations', 'view')) return;
         if (!in_array($this->admin_role, self::OPS_VIEW_ROLES, true)) {
             $this->json_error('Access denied.', 403);
         }
@@ -72,7 +77,7 @@ class Operations extends MY_Controller
      */
     public function index()
     {
-        $this->_require_role(self::VIEW_ROLES, 'ops_view');
+        $this->_require_role(self::VIEW_ROLES, 'ops_view', 'Operations', 'view');
         $data = ['active_tab' => 'dashboard'];
         $this->load->view('include/header', $data);
         $this->load->view('operations/index', $data);
@@ -92,7 +97,7 @@ class Operations extends MY_Controller
      */
     public function get_summary()
     {
-        $this->_require_role(self::VIEW_ROLES, 'ops_summary');
+        $this->_require_role(self::VIEW_ROLES, 'ops_summary', 'Operations', 'view');
         $this->_require_ops_view();
 
         $stats = [

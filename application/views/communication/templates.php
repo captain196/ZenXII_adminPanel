@@ -47,7 +47,7 @@ $at = $active_tab ?? 'templates';
 .tpl-vars{margin-top:8px;font-size:11px;color:var(--t3);font-family:var(--font-m)}
 .tpl-vars code{background:var(--gold-dim);padding:2px 6px;border-radius:4px;font-size:11px;cursor:pointer;margin:2px}
 .tpl-vars code:hover{background:var(--gold);color:#fff}
-.tpl-preview{background:var(--bg3,#e6f4f1);border:1px solid var(--border);border-radius:8px;padding:14px;margin-top:10px;font-size:13px;color:var(--t1);font-family:var(--font-b);display:none}
+.tpl-preview{background:var(--bg3,#F7ECE7);border:1px solid var(--border);border-radius:8px;padding:14px;margin-top:10px;font-size:13px;color:var(--t1);font-family:var(--font-b);display:none}
 .cm-toast{position:fixed;top:20px;right:20px;z-index:10000;padding:12px 20px;border-radius:8px;font-size:13px;font-weight:600;font-family:var(--font-b);color:#fff;display:none;max-width:400px;box-shadow:0 8px 24px rgba(0,0,0,.15)}
 .cm-toast.success{background:#22c55e;display:block}.cm-toast.error{background:#ef4444;display:block}
 </style>

@@ -1,3 +1,4 @@
+<?php $ev_can_manage = function_exists('has_permission') ? has_permission('Events','manage') : true; ?>
 <style>
 .ptm-wrap{padding:20px;max-width:1400px;margin:0 auto}
 .ptm-header{display:flex;align-items:flex-start;justify-content:space-between;margin-bottom:20px;flex-wrap:wrap;gap:12px}
@@ -63,6 +64,17 @@
 
 .ptm-toast{position:fixed;top:20px;right:20px;padding:12px 18px;border-radius:8px;color:#fff;font-family:var(--font-b);font-size:13px;font-weight:600;z-index:9999;display:none;box-shadow:0 4px 12px rgba(0,0,0,.2)}
 .ptm-toast.success{background:#22c55e;display:block}.ptm-toast.error{background:#ef4444;display:block}
+
+/* ── shared loading / polish (ev-*) ──────────────────────── */
+@keyframes ev-loadbar-slide{0%{left:-40%;width:40%}50%{width:58%}100%{left:100%;width:40%}}@keyframes ev-spin{to{transform:rotate(360deg)}}@keyframes ev-shimmer{0%{background-position:200% 0}100%{background-position:-200% 0}}
+.ev-loadbar{position:fixed;top:0;left:0;right:0;height:3px;z-index:99999;background:var(--gold-dim,rgba(188,90,60,.15));overflow:hidden;opacity:0;transition:opacity .18s;pointer-events:none}.ev-loadbar.on{opacity:1}
+.ev-loadbar:before{content:'';position:absolute;top:0;height:100%;width:40%;left:-40%;border-radius:3px;background:linear-gradient(90deg,transparent,var(--gold,#BC5A3C),transparent);animation:ev-loadbar-slide 1.1s ease-in-out infinite}
+.ev-spin{display:inline-block;width:14px;height:14px;border:2px solid currentColor;border-top-color:transparent;border-radius:50%;animation:ev-spin .7s linear infinite;vertical-align:-2px}
+.is-loading{position:relative;color:transparent!important;pointer-events:none;opacity:.9}.is-loading:after{content:'';position:absolute;top:50%;left:50%;width:15px;height:15px;margin:-8px 0 0 -8px;border:2px solid currentColor;border-top-color:transparent;border-radius:50%;color:#fff;animation:ev-spin .7s linear infinite}
+.ev-rel{position:relative}.ev-loading-overlay{position:absolute;inset:0;z-index:20;display:flex;align-items:center;justify-content:center;gap:10px;background:rgba(127,127,127,.06);font-size:13px;font-weight:650;color:var(--t2)}.ev-loading-overlay .ev-spin{width:20px;height:20px;color:var(--gold,#BC5A3C)}
+.ev-skel{background:linear-gradient(90deg,var(--bg2,#f1f1f1) 25%,var(--bg3,#e7e7e7) 37%,var(--bg2,#f1f1f1) 63%);background-size:200% 100%;animation:ev-shimmer 1.3s ease-in-out infinite;border-radius:8px}.ev-skel-row{height:14px;margin:8px 0}
+.ev-ro-banner{display:flex;align-items:center;gap:9px;padding:10px 14px;margin:0 0 12px;border-radius:10px;font-size:13px;font-weight:600;background:rgba(37,99,235,.08);color:#1d4ed8;border:1px solid rgba(37,99,235,.2)}
+@media(prefers-reduced-motion:reduce){.ev-loadbar:before,.ev-spin,.is-loading:after,.ev-skel{animation:none}}
 </style>
 
 <?php
@@ -88,6 +100,10 @@ if ($isEdit) {
 ?>
 
 <div class="content-wrapper"><section class="content"><div class="ptm-wrap">
+<div class="ev-loadbar" id="evLoadbar"></div>
+<?php if (!$ev_can_manage): ?>
+<div class="ev-ro-banner"><i class="fa fa-lock"></i> View-only — managing PTMs needs manage access.</div>
+<?php endif; ?>
 <div class="ptm-header">
   <div>
     <div class="ptm-title">
@@ -216,7 +232,13 @@ if ($isEdit) {
 // returns a fresh csrf_token field.
 var CSRF_NAME  = '<?= $this->security->get_csrf_token_name() ?>';
 var CSRF_TOKEN = '<?= $this->security->get_csrf_hash() ?>';
+var EV_CAN_MANAGE = <?= $ev_can_manage ? 'true' : 'false' ?>;
 (function(){
+  // Global loadbar busy counter — bS() before each fetch, bE() in finally.
+  var _b = 0;
+  function bS(){ _b++; document.getElementById('evLoadbar')?.classList.add('on'); }
+  function bE(){ _b = Math.max(0, _b - 1); if (!_b) document.getElementById('evLoadbar')?.classList.remove('on'); }
+
   // Edit-mode payload from the controller. `null` for the new-PTM page.
   const PTM_EDIT = <?= $isEdit ? json_encode([
     'ptmEventId'  => $ptmEdit['ptmEventId'] ?? '',
@@ -245,11 +267,15 @@ var CSRF_TOKEN = '<?= $this->security->get_csrf_hash() ?>';
   let missingKeys = new Set();
 
   async function loadSections(){
+    bS();
     try {
       const res = await fetch('<?= base_url('ptm/get_sections') ?>', {credentials:'same-origin'});
-      const data = await res.json();
+      const data = await res.json().catch(() => ({}));
+      if (!res.ok || (data && (data.status === 'error' || data.success === false))) {
+        throw new Error((data && (data.message || data.error)) || ('Request failed (' + res.status + ')'));
+      }
       sections = (data && data.sections) || (data && data.data && data.data.sections) || [];
-    } catch (e) { sections = []; }
+    } catch (e) { sections = []; } finally { bE(); }
     const sel = $('#sectionPicker');
     if (!sections.length) {
       sel.innerHTML = '<option value="">No classes found — add students first</option>';
@@ -298,19 +324,26 @@ var CSRF_TOKEN = '<?= $this->security->get_csrf_hash() ?>';
           +  '&section='   + encodeURIComponent(opt.dataset.sec);
     }
     status.textContent = 'Loading…';
+    list.innerHTML = '<div class="ev-skel ev-skel-row" style="width:80%"></div><div class="ev-skel ev-skel-row" style="width:65%"></div><div class="ev-skel ev-skel-row" style="width:72%"></div>';
 
     let resp = null;
+    bS();
     try {
       const res = await fetch(url, {credentials:'same-origin'});
-      resp = await res.json();
+      resp = await res.json().catch(() => ({}));
+      if (!res.ok || (resp && (resp.status === 'error' || resp.success === false))) {
+        throw new Error((resp && (resp.message || resp.error)) || ('Request failed (' + res.status + ')'));
+      }
     } catch (e) {
-      list.innerHTML = '<div class="ptm-mapping-empty">Couldn’t load mapping — retry.</div>';
+      list.innerHTML = '<div class="ptm-mapping-empty">Couldn’t load mapping — ' + esc(e.message || 'retry') + '.</div>';
       warn.style.display = 'none';
       mapping = []; missingKeys = new Set();
       status.textContent = 'failed';
       gateSaveButton();
+      bE();
       return;
     }
+    bE();
 
     mapping     = (resp && resp.sections) || (resp && resp.data && resp.data.sections) || [];
     const miss  = (resp && resp.missing)  || (resp && resp.data && resp.data.missing)  || [];
@@ -365,7 +398,8 @@ var CSRF_TOKEN = '<?= $this->security->get_csrf_hash() ?>';
             && mapping.length > 0
             && missingKeys.size === 0
             && ($('#audienceScope').value !== 'specific' || $('#sectionPicker').value !== '');
-    $('#saveBtn').disabled = !ok;
+    // Manage is required to save; without it the button stays disabled.
+    $('#saveBtn').disabled = !ok || !EV_CAN_MANAGE;
   }
 
   function refreshPreview(){
@@ -435,6 +469,7 @@ var CSRF_TOKEN = '<?= $this->security->get_csrf_hash() ?>';
   window.PTM = {
     save: async function(e){
       if (e) e.preventDefault();
+      if (!EV_CAN_MANAGE) { toast('View-only — managing PTMs needs manage access', 'error'); return false; }
       const form = $('#ptmForm');
       const title = form.title.value.trim();
       const date  = form.date.value;
@@ -487,7 +522,10 @@ var CSRF_TOKEN = '<?= $this->security->get_csrf_hash() ?>';
         return { ok: r.ok, status: r.status, body: j };
       };
 
-      $('#saveBtn').disabled = true;
+      const saveBtn = $('#saveBtn');
+      saveBtn.disabled = true;
+      saveBtn.classList.add('is-loading');
+      bS();
       try {
         let res = await postSave(false);
 
@@ -527,9 +565,12 @@ var CSRF_TOKEN = '<?= $this->security->get_csrf_hash() ?>';
           toast((res.body && res.body.message) || 'Save failed', 'error');
         }
       } catch (e) {
-        toast('Save failed', 'error');
+        toast((e && e.message) || 'Save failed', 'error');
       } finally {
-        $('#saveBtn').disabled = false;
+        saveBtn.classList.remove('is-loading');
+        saveBtn.disabled = false;
+        bE();
+        gateSaveButton();
       }
       return false;
     }
@@ -545,12 +586,24 @@ var CSRF_TOKEN = '<?= $this->security->get_csrf_hash() ?>';
   });
   $('#sectionPicker').addEventListener('change', () => { refreshMapping(); });
 
+  // View-only: disable (not hide) every editing control. Server still
+  // enforces; this just keeps the read data visible without letting an
+  // unauthorised admin attempt a write.
+  function applyReadonly(){
+    if (EV_CAN_MANAGE) return;
+    document.querySelectorAll('#ptmForm input, #ptmForm select, #ptmForm textarea')
+      .forEach(el => { el.disabled = true; });
+    const sb = $('#saveBtn');
+    if (sb) { sb.disabled = true; sb.title = 'View-only — managing PTMs needs manage access'; }
+  }
+
   // Bootstrap
   loadSections().then(async () => {
     if (PTM_EDIT) applyEditPrefill();
     await refreshMapping();
     refreshPreview();
     gateSaveButton();
+    applyReadonly();
   });
 })();
 </script>

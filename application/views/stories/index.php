@@ -1,4 +1,14 @@
 <?php defined('BASEPATH') or exit('No direct script access allowed'); ?>
+<?php
+/* ── RBAC level flags ─────────────────────────────────────────────────
+   Stories mapping:
+     EDIT   = moderate / bulk-moderate a story's status (also admin upload)
+     MANAGE = delete a story permanently
+   view = read.                                                          */
+$can_edit   = function_exists('has_permission') ? has_permission('Stories', 'edit')   : true;
+$can_manage = function_exists('has_permission') ? has_permission('Stories', 'manage') : true;
+?>
+<link rel="stylesheet" href="<?= base_url('assets/css/rbac_ui_kit.css') ?>">
 
 <style>
 /* ── Stories Module ─────────────────────────────────────────────── */
@@ -192,7 +202,9 @@
 }
 </style>
 
-<div class="content-wrapper"><section class="content"><div class="st-wrap">
+<div class="content-wrapper">
+<div class="rx-loadbar" id="rxLoadbar"></div>
+<section class="content"><div class="st-wrap">
 
 <!-- Header -->
 <div class="st-header"><div>
@@ -200,11 +212,17 @@
     <ol class="st-breadcrumb"><li><a href="<?= base_url('admin') ?>">Dashboard</a></li><li>Stories</li></ol>
 </div>
 <div style="display:flex;gap:8px">
-    <button class="st-btn st-btn-outline" onclick="ST.toggleBulk()" id="bulkToggleBtn"><i class="fa fa-check-square-o"></i> Bulk Select</button>
-    <button class="st-btn st-btn-primary" onclick="ST.openUpload()"><i class="fa fa-plus-circle"></i> Post Admin Story</button>
+    <button class="st-btn st-btn-outline" onclick="ST.toggleBulk()" id="bulkToggleBtn" <?= $can_edit ? '' : 'disabled title="Edit access required to moderate"' ?>><i class="fa fa-check-square-o"></i> Bulk Select</button>
+    <button class="st-btn st-btn-primary" onclick="ST.openUpload()" <?= $can_edit ? '' : 'disabled title="Edit access required to post"' ?>><i class="fa fa-plus-circle"></i> Post Admin Story</button>
     <button class="st-btn st-btn-outline" onclick="ST.refresh()"><i class="fa fa-refresh"></i> Refresh</button>
 </div>
 </div>
+
+<?php if (!$can_edit): ?>
+<div class="rx-ro-banner"><i class="fa fa-eye rx-ro-ic"></i> View-only access — you can browse stories and analytics, but moderating, posting, and deleting are restricted.</div>
+<?php elseif (!$can_manage): ?>
+<div class="rx-ro-banner"><i class="fa fa-pencil rx-ro-ic"></i> Edit access — you can moderate (flag / remove) and post stories, but permanently deleting a story requires Manage access.</div>
+<?php endif; ?>
 
 <!-- ══════════════════════════════════════════════════════════════
      Admin Upload Modal — Phase C
@@ -377,8 +395,8 @@
     <div class="st-bulk-bar" id="bulkBar">
         <div class="st-bulk-count"><span id="bulkCount">0</span> story(ies) selected</div>
         <div class="st-bulk-actions">
-            <button class="st-btn st-btn-amber st-btn-sm" onclick="ST.bulkAction('flagged')"><i class="fa fa-flag"></i> Flag Selected</button>
-            <button class="st-btn st-btn-danger st-btn-sm" onclick="ST.bulkAction('removed')"><i class="fa fa-ban"></i> Remove Selected</button>
+            <button class="st-btn st-btn-amber st-btn-sm" onclick="ST.bulkAction('flagged')" <?= $can_edit ? '' : 'disabled title="Edit access required"' ?>><i class="fa fa-flag"></i> Flag Selected</button>
+            <button class="st-btn st-btn-danger st-btn-sm" onclick="ST.bulkAction('removed')" <?= $can_edit ? '' : 'disabled title="Edit access required"' ?>><i class="fa fa-ban"></i> Remove Selected</button>
         </div>
     </div>
 
@@ -463,6 +481,12 @@ ST.CSRF = {
     name: $('meta[name=csrf-name]').attr('content'),
     token: $('meta[name=csrf-token]').attr('content')
 };
+// RBAC level flags — EDIT gates moderation/upload, MANAGE gates delete.
+ST.CAN_EDIT = <?= $can_edit ? 'true' : 'false' ?>;
+ST.CAN_MANAGE = <?= $can_manage ? 'true' : 'false' ?>;
+// Top progress bar — driven off every in-flight jQuery AJAX call.
+$(document).ajaxStart(function() { $('#rxLoadbar').addClass('on'); });
+$(document).ajaxStop(function()  { $('#rxLoadbar').removeClass('on'); });
 ST.stories = [];
 ST.analytics = null;
 ST.teachers = [];
@@ -474,6 +498,7 @@ ST.charts = {};
 // Phase C — Admin Upload
 // ══════════════════════════════════════════════════════════════════
 ST.openUpload = function() {
+    if (!ST.CAN_EDIT) { ST.toast('You do not have permission to post admin stories.', 'error'); return; }
     document.getElementById('adminStoryForm').reset();
     document.getElementById('asProgressWrap').style.display = 'none';
     document.getElementById('asProgressBar').style.width = '0%';
@@ -517,6 +542,7 @@ ST.closeUpload = function() {
 };
 
 ST.submitUpload = function() {
+    if (!ST.CAN_EDIT) { alert('You do not have permission to post admin stories.'); return; }
     var fileEl  = document.getElementById('asMedia');
     var typeEl  = document.getElementById('asType');
     var priEl   = document.getElementById('asPriority');
@@ -555,6 +581,7 @@ ST.submitUpload = function() {
     var pct   = document.getElementById('asProgressPct');
     var label = document.getElementById('asProgressLabel');
     btn.disabled = true;
+    $('#rxLoadbar').addClass('on');
     wrap.style.display = 'block';
     bar.classList.remove('as-indeterminate');
     if (label) label.textContent = 'Uploading';
@@ -578,6 +605,7 @@ ST.submitUpload = function() {
     };
     xhr.onload = function() {
         btn.disabled = false;
+        $('#rxLoadbar').removeClass('on');
         bar.classList.remove('as-indeterminate');
         var resp;
         try { resp = JSON.parse(xhr.responseText); } catch (_) {
@@ -597,6 +625,7 @@ ST.submitUpload = function() {
     };
     xhr.onerror = function() {
         btn.disabled = false;
+        $('#rxLoadbar').removeClass('on');
         alert('Network error during upload.');
     };
     xhr.send(fd);
@@ -732,6 +761,7 @@ $(document).on('click', '.st-tab', function() {
 // ── Bulk Mode ───────────────────────────────────────────────────
 
 ST.toggleBulk = function() {
+    if (!ST.CAN_EDIT) { ST.toast('You do not have permission to moderate stories.', 'error'); return; }
     ST.bulkMode = !ST.bulkMode;
     ST.selected = {};
     var grid = document.getElementById('storyGrid');
@@ -767,6 +797,7 @@ ST.onStorySelect = function(teacherId, storyId, checked) {
 };
 
 ST.bulkAction = function(status) {
+    if (!ST.CAN_EDIT) { ST.toast('You do not have permission to moderate stories.', 'error'); return; }
     var items = Object.values(ST.selected);
     if (!items.length) { ST.toast('No stories selected.', 'error'); return; }
     if (!confirm('Change ' + items.length + ' story(ies) to "' + status + '"?')) return;
@@ -985,6 +1016,22 @@ ST.openDetail = function(teacherId, storyId) {
         var tid = ST.jsArg(s.teacherId);
         var sid = ST.jsArg(s.storyId);
 
+        // Reaction summary — emoji chips with counts (server-maintained
+        // reactionCounts map). Empty → a muted "No reactions yet."
+        var rc = s.reactionCounts || {};
+        var totalReactions = 0;
+        var reactionChips = '';
+        Object.keys(rc).forEach(function(emoji) {
+            var n = parseInt(rc[emoji], 10) || 0;
+            if (n <= 0) return;
+            totalReactions += n;
+            reactionChips += '<span style="display:inline-flex;align-items:center;gap:3px;margin-right:8px;font-size:14px">'
+                + ST.esc(emoji) + '<span style="font-size:12px;color:var(--t3)">' + n + '</span></span>';
+        });
+        var reactionsHtml = totalReactions > 0
+            ? reactionChips
+            : '<span style="color:var(--t4)">No reactions yet.</span>';
+
         var html = '<div class="st-detail-media">' + mediaHtml + '</div>'
             + '<div class="st-detail-row">'
             + '<div class="st-detail-col">'
@@ -998,6 +1045,7 @@ ST.openDetail = function(teacherId, storyId) {
             + '<div class="st-detail-field"><div class="st-detail-label">Created</div><div class="st-detail-value">' + ST.fmtDate(s.createdAt) + '</div></div>'
             + '<div class="st-detail-field"><div class="st-detail-label">Expires</div><div class="st-detail-value">' + ST.fmtDate(expiresAt) + (isExpired ? ' <span class="st-badge st-badge-gray" style="margin-left:6px">expired</span>' : '') + '</div></div>'
             + '<div class="st-detail-field"><div class="st-detail-label">Views</div><div class="st-detail-value" style="font-size:18px;font-weight:700;color:var(--gold)">' + (s.viewCount || 0) + '</div></div>'
+            + '<div class="st-detail-field"><div class="st-detail-label">Reactions (' + totalReactions + ')</div><div class="st-detail-value">' + reactionsHtml + '</div></div>'
             + '</div></div>';
 
         // "Viewed by" list — who opened this story (admin oversight).
@@ -1008,8 +1056,9 @@ ST.openDetail = function(teacherId, storyId) {
         } else {
             html += '<div style="max-height:180px;overflow-y:auto;border:1px solid var(--border);border-radius:8px;padding:6px 10px;margin-top:4px">';
             viewers.forEach(function(v) {
+                var emoji = v.emoji ? ' <span style="font-size:13px">' + ST.esc(v.emoji) + '</span>' : '';
                 html += '<div style="display:flex;justify-content:space-between;gap:10px;padding:4px 0;font-size:13px;border-bottom:1px solid var(--border)">'
-                    + '<span style="color:var(--t2)">' + ST.esc(v.userName || v.userId || 'Unknown') + '</span>'
+                    + '<span style="color:var(--t2)">' + ST.esc(v.userName || v.userId || 'Unknown') + emoji + '</span>'
                     + '<span style="color:var(--t4);font-size:11px">' + (v.viewedAt ? ST.timeAgo(v.viewedAt) : '') + '</span>'
                     + '</div>';
             });
@@ -1026,14 +1075,17 @@ ST.openDetail = function(teacherId, storyId) {
                 + '</div>';
         }
 
-        // Moderation actions
+        // Moderation actions — Flag/Remove gated at EDIT, Delete at MANAGE.
+        // Disabled (not hidden) below the level so the story stays inspectable.
+        var edAttr = ST.CAN_EDIT ? '' : ' disabled title="Edit access required"';
+        var mgAttr = ST.CAN_MANAGE ? '' : ' disabled title="Manage access required"';
         html += '<div class="st-detail-moderation">'
             + '<h5>Moderation Actions</h5>'
-            + '<textarea class="st-mod-reason" id="modReason" placeholder="Reason for moderation (optional)..."></textarea>'
+            + '<textarea class="st-mod-reason" id="modReason" placeholder="Reason for moderation (optional)..."' + (ST.CAN_EDIT ? '' : ' disabled') + '></textarea>'
             + '<div class="st-mod-actions">'
-            + '<button class="st-btn st-btn-amber st-btn-sm" onclick="ST.moderate(\'' + tid + '\',\'' + sid + '\',\'flagged\')"><i class="fa fa-flag"></i> Flag</button>'
-            + '<button class="st-btn st-btn-danger st-btn-sm" onclick="ST.moderate(\'' + tid + '\',\'' + sid + '\',\'removed\')"><i class="fa fa-ban"></i> Remove</button>'
-            + '<button class="st-btn st-btn-danger" onclick="ST.deleteStory(\'' + tid + '\',\'' + sid + '\')" style="margin-left:auto"><i class="fa fa-trash"></i> Delete Permanently</button>'
+            + '<button class="st-btn st-btn-amber st-btn-sm" onclick="ST.moderate(\'' + tid + '\',\'' + sid + '\',\'flagged\')"' + edAttr + '><i class="fa fa-flag"></i> Flag</button>'
+            + '<button class="st-btn st-btn-danger st-btn-sm" onclick="ST.moderate(\'' + tid + '\',\'' + sid + '\',\'removed\')"' + edAttr + '><i class="fa fa-ban"></i> Remove</button>'
+            + '<button class="st-btn st-btn-danger" onclick="ST.deleteStory(\'' + tid + '\',\'' + sid + '\')" style="margin-left:auto"' + mgAttr + '><i class="fa fa-trash"></i> Delete Permanently</button>'
             + '</div></div>';
 
         document.getElementById('modalBody').innerHTML = html;
@@ -1057,6 +1109,7 @@ document.addEventListener('keydown', function(e) {
 // ── Moderation Actions ──────────────────────────────────────────
 
 ST.moderate = function(teacherId, storyId, status) {
+    if (!ST.CAN_EDIT) { ST.toast('You do not have permission to moderate stories.', 'error'); return; }
     var reason = (document.getElementById('modReason') || {}).value || '';
     ST.ajaxPost('stories/moderate_story', {
         teacher_id: teacherId,
@@ -1077,6 +1130,7 @@ ST.moderate = function(teacherId, storyId, status) {
 };
 
 ST.deleteStory = function(teacherId, storyId) {
+    if (!ST.CAN_MANAGE) { ST.toast('You do not have permission to delete stories.', 'error'); return; }
     if (!confirm('Permanently delete this story? This cannot be undone.')) return;
     ST.ajaxPost('stories/delete_story', {
         teacher_id: teacherId,
@@ -1115,6 +1169,7 @@ ST.loadFlagged = function() {
             return;
         }
 
+        var edAttr = ST.CAN_EDIT ? '' : ' disabled title="Edit access required"';
         var html = '<table class="st-table"><thead><tr><th></th><th>Teacher</th><th>Caption</th><th>Type</th><th>Views</th><th>Created</th><th>Actions</th></tr></thead><tbody>';
         list.forEach(function(s) {
             var avatar = ST.safeUrl(s.teacherProfilePic) || ST.defaultAvatar;
@@ -1128,7 +1183,7 @@ ST.loadFlagged = function() {
                 + '<td>' + (s.viewCount || 0) + '</td>'
                 + '<td style="white-space:nowrap">' + ST.fmtDate(s.createdAt) + '</td>'
                 + '<td style="white-space:nowrap">'
-                + '<button class="st-btn st-btn-danger st-btn-sm" onclick="ST.moderate(\'' + tid + '\',\'' + sid + '\',\'removed\')" title="Remove"><i class="fa fa-ban"></i></button> '
+                + '<button class="st-btn st-btn-danger st-btn-sm" onclick="ST.moderate(\'' + tid + '\',\'' + sid + '\',\'removed\')" title="Remove"' + edAttr + '><i class="fa fa-ban"></i></button> '
                 + '<button class="st-btn st-btn-outline st-btn-sm" onclick="ST.openDetail(\'' + tid + '\',\'' + sid + '\')" title="View Details"><i class="fa fa-eye"></i></button>'
                 + '</td></tr>';
         });

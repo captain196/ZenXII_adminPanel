@@ -299,7 +299,7 @@ document.addEventListener('DOMContentLoaded', function() {
 /* ── Tokens matching fees_counter exactly ── */
 :root {
     --fc-navy: #0b1f3a;
-    --fc-teal: #0e7490;
+    --fc-teal: #BC5A3C;
     --fc-sky: #e0f2fe;
     --fc-green: #16a34a;
     --fc-red: #dc2626;
@@ -750,7 +750,7 @@ document.addEventListener('DOMContentLoaded', function() {
 
 .fr-table tfoot .fr-td-total {
     background: rgba(14, 116, 144, .45);
-    color: #5eead4;
+    color: #BC5A3C;
 }
 
 /* ── Buttons ── */

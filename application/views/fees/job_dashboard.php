@@ -143,12 +143,21 @@ table.jd-tbl td.num{font-variant-numeric:tabular-nums;text-align:right;}
   };
   const esc = s => String(s==null?'':s).replace(/[&<>"']/g, c => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'})[c]);
   const absorbCsrf = r => { if (r && r._csrf_token) CSRF_HASH = r._csrf_token; };
-  const getJSON = async url => { const r = await fetch(url, { credentials: 'same-origin' }); const j = await r.json(); absorbCsrf(j); return j; };
+  const guardJSON = async (r) => {
+    const j = await r.json().catch(() => ({}));
+    absorbCsrf(j);
+    if (!r.ok || (j && (j.status === 'error' || j.success === false))) {
+      const e = new Error((j && (j.message || j.error)) || ('Request failed (' + r.status + ')'));
+      e.httpStatus = r.status; e.payload = j; throw e;
+    }
+    return j;
+  };
+  const getJSON = async url => { const r = await fetch(url, { credentials: 'same-origin' }); return guardJSON(r); };
   const postJSON = async (url, body) => {
     const fd = new FormData(); fd.append(CSRF_NAME, CSRF_HASH);
     for (const k in body) fd.append(k, body[k]);
     const r = await fetch(url, { method: 'POST', credentials: 'same-origin', body: fd });
-    const j = await r.json(); absorbCsrf(j); return j;
+    return guardJSON(r);
   };
 
   function statusPill(s){ return `<span class="jd-pill ${esc(s||'unknown')}">${esc(s||'?')}</span>`; }
@@ -180,7 +189,11 @@ table.jd-tbl td.num{font-variant-numeric:tabular-nums;text-align:right;}
       tb.querySelectorAll('tr[data-jobid]').forEach(tr => {
         tr.onclick = () => { selectedJobId = tr.getAttribute('data-jobid'); loadJobs(); loadDetail(); };
       });
-    } catch(e){ console.error('loadJobs', e); }
+    } catch(e){
+      console.error('loadJobs', e);
+      const tb = document.querySelector('#jd-jobs tbody');
+      if (tb) tb.innerHTML = `<tr><td colspan="8" class="jd-detail-empty">Failed to load jobs: ${esc(e.message)}</td></tr>`;
+    }
   }
 
   async function loadDetail(){
@@ -192,7 +205,7 @@ table.jd-tbl td.num{font-variant-numeric:tabular-nums;text-align:right;}
       const d = j.data;
       box.innerHTML = renderDetail(d);
       wireActions();
-    } catch(e){ console.error('loadDetail', e); }
+    } catch(e){ console.error('loadDetail', e); box.innerHTML = `<div class="jd-detail-empty">Failed to load job detail: ${esc(e.message)}</div>`; }
   }
 
   function renderDetail(d){
@@ -317,10 +330,16 @@ table.jd-tbl td.num{font-variant-numeric:tabular-nums;text-align:right;}
       `).join('');
       box.querySelectorAll('a[data-ack]').forEach(a => a.onclick = async ev => {
         ev.preventDefault();
-        await postJSON(`${BASE}fees/alert_ack`, { alertId: a.getAttribute('data-ack') });
-        loadAlerts();
+        try {
+          await postJSON(`${BASE}fees/alert_ack`, { alertId: a.getAttribute('data-ack') });
+          loadAlerts();
+        } catch(e){ alert('Acknowledge failed: ' + e.message); }
       });
-    } catch(e){ console.error('loadAlerts', e); }
+    } catch(e){
+      console.error('loadAlerts', e);
+      const box = document.getElementById('jd-alerts');
+      if (box) box.innerHTML = `<div class="jd-detail-empty">Failed to load alerts: ${esc(e.message)}</div>`;
+    }
   }
 
   function tick(){ loadJobs(); if (selectedJobId) loadDetail(); loadAlerts(); }

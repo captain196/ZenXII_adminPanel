@@ -493,9 +493,9 @@ document.getElementById('sfUserId').addEventListener('keydown', function(e) {
 
 :root {
     --sfr-navy:    var(--bg4, #1a2332);
-    --sfr-teal:    var(--gold, #0d9488);
+    --sfr-teal:    var(--gold, #BC5A3C);
     --sfr-teal2:   var(--gold2, #BC5A3C);
-    --sfr-sky:     var(--gold-dim, #f0fdfa);
+    --sfr-sky:     var(--gold-dim, #F7ECE7);
     --sfr-green:   #16a34a;
     --sfr-red:     #dc2626;
     --sfr-amber:   #d97706;
@@ -640,7 +640,7 @@ document.getElementById('sfUserId').addEventListener('keydown', function(e) {
 }
 .sfr-input:focus {
     border-color: var(--sfr-teal);
-    box-shadow: 0 0 0 3px rgba(13,148,136,.13);
+    box-shadow: 0 0 0 3px rgba(188,90,60,.13);
 }
 .sfr-input::placeholder { color: var(--sfr-muted); opacity: .6; }
 
@@ -654,11 +654,11 @@ document.getElementById('sfUserId').addEventListener('keydown', function(e) {
 .sfr-btn-primary {
     background: var(--sfr-teal);
     color: #fff;
-    box-shadow: 0 2px 8px rgba(13,148,136,.28);
+    box-shadow: 0 2px 8px rgba(188,90,60,.28);
 }
 .sfr-btn-primary:hover {
     background: var(--sfr-teal2);
-    box-shadow: 0 4px 16px rgba(13,148,136,.38);
+    box-shadow: 0 4px 16px rgba(188,90,60,.38);
     transform: translateY(-1px);
 }
 .sfr-btn-ghost {
@@ -682,13 +682,13 @@ document.getElementById('sfUserId').addEventListener('keydown', function(e) {
     content: ''; position: absolute;
     right: -40px; top: -40px;
     width: 200px; height: 200px;
-    background: rgba(13,148,136,.1); border-radius: 50%; pointer-events: none;
+    background: rgba(188,90,60,.1); border-radius: 50%; pointer-events: none;
 }
 .sfr-banner::after {
     content: ''; position: absolute;
     right: 80px; bottom: -60px;
     width: 140px; height: 140px;
-    background: rgba(13,148,136,.06); border-radius: 50%; pointer-events: none;
+    background: rgba(188,90,60,.06); border-radius: 50%; pointer-events: none;
 }
 .sfr-banner.visible { display: block; }
 
@@ -715,7 +715,7 @@ document.getElementById('sfUserId').addEventListener('keydown', function(e) {
     text-transform: uppercase; letter-spacing: .7px; font-weight: 600; margin-bottom: 5px;
 }
 .sfr-bf-val { font-size: .88rem; font-weight: 700; color: #fff; white-space: nowrap; }
-.sfr-bf-val.teal  { color: #5eead4; }
+.sfr-bf-val.teal  { color: #BC5A3C; }
 .sfr-bf-val.green { color: #86efac; }
 .sfr-bf-val.amber { color: #fcd34d; }
 
@@ -779,7 +779,7 @@ document.getElementById('sfUserId').addEventListener('keydown', function(e) {
     padding: 3px 10px 3px 8px; border-radius: 20px;
     background: var(--sfr-sky); color: var(--sfr-teal2);
     font-size: .7rem; font-weight: 800;
-    border: 1px solid rgba(13,148,136,.18); white-space: nowrap;
+    border: 1px solid rgba(188,90,60,.18); white-space: nowrap;
 }
 .sfr-pill i { font-size: .82rem; }
 

@@ -1,4 +1,18 @@
 <?php defined('BASEPATH') OR exit('No direct script access allowed'); ?>
+<?php
+/* ── RBAC level flags (Red Flags) ──────────────────────────────────────────
+   edit   = resolve a flag, create/add a flag, bulk-resolve
+   manage = delete (soft-delete) a flag, restore a deleted flag
+   Mirrors Red_flags::{resolve,create,bulk_resolve}=edit and {delete,restore}=
+   manage. Layered ON TOP of the existing teacher class/section scoping — this
+   only adds the level gate; scoping is untouched. Server re-enforces every
+   mutation (_require_role), so these flags only keep the UI honest.
+   $can_manage may already be provided by the controller; recompute both here
+   from has_permission so the exact required level is mirrored. */
+$can_edit   = function_exists('has_permission') ? has_permission('Red Flags', 'edit')   : true;
+$can_manage = function_exists('has_permission') ? has_permission('Red Flags', 'manage') : (isset($can_manage) ? $can_manage : true);
+?>
+<link rel="stylesheet" href="<?= base_url('assets/css/rbac_ui_kit.css') ?>">
 
 <style>
 /* ══════════════════════════════════════════════════════════════════
@@ -125,13 +139,22 @@
 .rf-kpi.week .rf-kpi-icon     { background: var(--rf-blue-dim); color: var(--rf-blue); }
 
 .rf-kpi-val {
-    font-size: 28px; font-weight: 800; color: var(--rf-t1);
-    font-family: var(--font-d); line-height: 1;
+    font-size: 26px; font-weight: 700; color: var(--rf-t1);
+    font-family: var(--font-m); line-height: 1;
 }
 .rf-kpi-label {
     font-size: 12px; color: var(--rf-t3); margin-top: 6px;
     font-weight: 600; text-transform: uppercase; letter-spacing: .3px;
 }
+
+/* ── Top progress bar (global action/loading feedback) ──────── */
+.rf-toploader {
+    position: fixed; top: 0; left: 0; height: 3px; width: 0;
+    z-index: 100001; background: var(--rf-primary);
+    box-shadow: 0 0 8px var(--rf-primary-glow); border-radius: 0 3px 3px 0;
+    opacity: 0; transition: width .25s ease, opacity .35s ease; pointer-events: none;
+}
+.rf-toploader.on { opacity: 1; }
 
 /* ── Loading skeleton ───────────────────────────────────────── */
 .rf-skel {
@@ -167,7 +190,7 @@
 }
 .rf-section-hd i { color: var(--rf-primary); font-size: 16px; }
 .rf-section-title {
-    font-size: 15px; font-weight: 700; color: var(--rf-t1); font-family: var(--font-d);
+    font-size: 15px; font-weight: 700; color: var(--rf-t1); font-family: var(--font-b);
 }
 .rf-section-hd .rf-section-extra { margin-left: auto; font-size: 12px; color: var(--rf-t3); }
 .rf-section-body { padding: 20px; }
@@ -185,7 +208,7 @@
 }
 .rf-chart-title {
     font-size: 14px; font-weight: 700; color: var(--rf-t1);
-    font-family: var(--font-d); margin-bottom: 16px;
+    font-family: var(--font-b); margin-bottom: 16px;
     display: flex; align-items: center; gap: 8px;
 }
 .rf-chart-title i { color: var(--rf-primary); }
@@ -445,12 +468,12 @@
     width: 64px; height: 64px; border-radius: 14px;
     background: var(--rf-primary); display: flex; align-items: center;
     justify-content: center; font-size: 24px; font-weight: 800;
-    color: #fff; font-family: var(--font-d); flex-shrink: 0;
+    color: #fff; font-family: var(--font-m); flex-shrink: 0;
 }
 .rf-student-info { flex: 1; }
 .rf-student-info h3 {
     font-size: 18px; font-weight: 700; color: var(--rf-t1);
-    font-family: var(--font-d); margin: 0 0 4px;
+    font-family: var(--font-b); margin: 0 0 4px;
 }
 .rf-student-meta {
     display: flex; gap: 16px; flex-wrap: wrap; font-size: 12px; color: var(--rf-t3);
@@ -467,7 +490,7 @@
     text-align: center; min-width: 80px;
 }
 .rf-student-stat-val {
-    font-size: 20px; font-weight: 800; color: var(--rf-t1); font-family: var(--font-d);
+    font-size: 20px; font-weight: 800; color: var(--rf-t1); font-family: var(--font-m);
 }
 .rf-student-stat-lbl {
     font-size: 10px; color: var(--rf-t3); text-transform: uppercase;
@@ -517,7 +540,7 @@
 }
 .rf-compare-val {
     font-size: 32px; font-weight: 800; color: var(--rf-t1);
-    font-family: var(--font-d);
+    font-family: var(--font-m);
 }
 .rf-compare-lbl { font-size: 12px; color: var(--rf-t3); margin-top: 4px; }
 .rf-compare-change {
@@ -547,7 +570,7 @@
     margin-bottom: 20px;
 }
 .rf-modal-title {
-    font-size: 16px; font-weight: 700; color: var(--rf-t1); font-family: var(--font-d);
+    font-size: 16px; font-weight: 700; color: var(--rf-t1); font-family: var(--font-b);
 }
 .rf-modal-close {
     cursor: pointer; color: var(--rf-t3); font-size: 20px;
@@ -604,7 +627,7 @@
     font-family: var(--font-b); margin-bottom: 8px;
 }
 .rf-heat-cell .rf-heat-val {
-    font-size: 22px; font-weight: 800; color: var(--rf-t1); font-family: var(--font-d);
+    font-size: 22px; font-weight: 800; color: var(--rf-t1); font-family: var(--font-m);
 }
 .rf-heat-cell .rf-heat-sub {
     font-size: 10px; color: var(--rf-t3); font-family: var(--font-m);
@@ -626,7 +649,7 @@
 }
 .rf-create-title {
     font-size: 16px; font-weight: 700; color: var(--rf-t1);
-    font-family: var(--font-d); margin-bottom: 24px;
+    font-family: var(--font-b); margin-bottom: 24px;
     display: flex; align-items: center; gap: 10px;
 }
 .rf-create-title i { color: var(--rf-red); }
@@ -673,8 +696,15 @@
      HTML STRUCTURE
      ═══════════════════════════════════════════════════════════════ -->
 <div class="content-wrapper">
+<div class="rx-loadbar" id="rxLoadbar"></div>
 <section class="content">
 <div class="rf-wrap">
+
+    <?php if (!$can_edit): ?>
+        <div class="rx-ro-banner"><i class="fa fa-eye rx-ro-ic"></i> View-only access — you can browse flags and analytics, but cannot create, resolve, bulk-resolve, delete or restore flags.</div>
+    <?php elseif (!$can_manage): ?>
+        <div class="rx-ro-banner"><i class="fa fa-info-circle rx-ro-ic"></i> Limited access — you can create and resolve flags, but deleting or restoring flags requires Manage access.</div>
+    <?php endif; ?>
 
     <!-- Page Header -->
     <div class="rf-header">
@@ -689,7 +719,7 @@
             </div>
         </div>
         <div style="display:flex;gap:10px;align-items:center;flex-wrap:wrap;">
-            <button class="rf-btn primary" onclick="RF.openCreateModal()"><i class="fa fa-plus"></i> Create Flag</button>
+            <button class="rf-btn primary" onclick="RF.openCreateModal()" <?php if (!$can_edit): ?>disabled title="You do not have edit access"<?php endif; ?>><i class="fa fa-plus"></i> Create Flag</button>
             <button class="rf-btn outline" onclick="RF.refresh()"><i class="fa fa-refresh"></i> Refresh</button>
         </div>
     </div>
@@ -888,7 +918,7 @@
             <div class="rf-bulk-bar" id="rf-bulk-bar">
                 <input type="checkbox" class="rf-check" id="rf-select-all" onchange="RF.toggleSelectAll()">
                 <span class="rf-bulk-count"><span id="rf-bulk-count">0</span> selected</span>
-                <button class="rf-btn success sm" onclick="RF.bulkResolve()"><i class="fa fa-check"></i> Resolve Selected</button>
+                <button class="rf-btn success sm" onclick="RF.bulkResolve()" <?php if (!$can_edit): ?>disabled title="You do not have edit access"<?php endif; ?>><i class="fa fa-check"></i> Resolve Selected</button>
             </div>
 
             <!-- Flags Table -->
@@ -1113,6 +1143,29 @@ function __rfInitRedFlags() {
     // hardcoded `true`. Server enforcement (_require_role) remains the actual
     // gate; this just avoids showing view-only roles buttons that always 403.
     var CAN_MANAGE = <?php echo !empty($can_manage) ? 'true' : 'false'; ?>;
+    // Level split (mirrors the endpoints): EDIT = resolve / create / bulk-resolve;
+    // MANAGE = delete / restore. A Teacher may hold VIEW but not EDIT — such a
+    // user sees flags (scoped to their classes) with every mutation disabled.
+    // Server re-enforces via _require_role regardless of these UI flags.
+    var CAN_EDIT = <?php echo !empty($can_edit) ? 'true' : 'false'; ?>;
+
+    // Shared RBAC loadbar (assets/css/rbac_ui_kit.css). Ref-counted and driven
+    // from RFLoader.start/done — the single choke-point every request passes
+    // through — so it stays lit until the last overlapping request settles.
+    var RXBar = {
+        _n: 0,
+        _el: function() { return document.getElementById('rxLoadbar'); },
+        start: function() { this._n++; var el = this._el(); if (el) el.classList.add('on'); },
+        done:  function() { this._n = Math.max(0, this._n - 1); if (this._n === 0) { var el = this._el(); if (el) el.classList.remove('on'); } }
+    };
+
+    // Client-side guard so keyboard / stale-DOM paths can't fire a doomed
+    // mutation. Returns false (and toasts) when the user lacks the level.
+    function rbacGuard(level) {
+        var ok = (level === 'manage') ? CAN_MANAGE : CAN_EDIT;
+        if (!ok) { toast(level === 'manage' ? 'You do not have Manage access for Red Flags.' : 'You do not have Edit access for Red Flags.', 'error'); return false; }
+        return true;
+    }
 
     /** XSS-safe text escaper */
     function esc(str) {
@@ -1191,6 +1244,47 @@ function __rfInitRedFlags() {
         }
     }
 
+    /* Top progress bar — thin bar pinned to the top of the viewport giving
+     * immediate, panel-wide feedback for every in-flight request (create /
+     * resolve / delete / restore / bulk / data loads). Ref-counted so
+     * overlapping requests keep it visible until the last one settles. */
+    var RFLoader = {
+        _el: null, _count: 0, _prog: 0, _timer: null,
+        _bar: function() {
+            if (!this._el) {
+                this._el = $('<div class="rf-toploader" aria-hidden="true"></div>').appendTo('body')[0];
+            }
+            return this._el;
+        },
+        _set: function(p) { this._prog = p; this._bar().style.width = p + '%'; },
+        start: function() {
+            RXBar.start();                           // drive the shared RBAC loadbar too
+            this._count++;
+            if (this._count > 1) return;
+            var el = this._bar();
+            this._set(0);
+            el.classList.add('on');
+            void el.offsetWidth;                     // force reflow so width animates from 0
+            this._set(12);
+            var self = this;
+            this._timer = setInterval(function() {
+                if (self._prog < 90) self._set(self._prog + (90 - self._prog) * 0.18);
+            }, 300);
+        },
+        done: function() {
+            RXBar.done();
+            this._count = Math.max(0, this._count - 1);
+            if (this._count > 0) return;
+            var self = this, el = this._bar();
+            if (this._timer) { clearInterval(this._timer); this._timer = null; }
+            this._set(100);
+            setTimeout(function() {
+                el.classList.remove('on');
+                setTimeout(function() { self._set(0); }, 350);
+            }, 250);
+        }
+    };
+
     /** AJAX helper */
     function ajax(endpoint, data, method) {
         method = method || 'POST';
@@ -1206,9 +1300,11 @@ function __rfInitRedFlags() {
             opts.data = data || {};
             opts.data[CSRF_NAME] = CSRF_HASH;
         }
+        RFLoader.start();
         return $.ajax(opts).always(function(r) {
             var d = r.responseJSON || r;
             updateCsrf(d);
+            RFLoader.done();
         });
     }
 
@@ -1628,27 +1724,27 @@ function __rfInitRedFlags() {
                 // used by the Flag Management table.
                 html += '<div class="rf-timeline-actions">';
                 if (f.status === 'Active') {
+                    // Resolve = EDIT. Disabled (not hidden) for view-only roles.
                     html += '<button type="button" class="rf-btn success sm rf-quick-resolve"'
                         +   ' data-class-key="'   + esc(f.classKey)   + '"'
                         +   ' data-section-key="' + esc(f.sectionKey) + '"'
                         +   ' data-student-id="'  + esc(f.studentId)  + '"'
                         +   ' data-flag-id="'     + esc(f.flagId)     + '"'
-                        +   ' title="Resolve flag">'
+                        +   (CAN_EDIT ? '' : ' disabled')
+                        +   ' title="' + (CAN_EDIT ? 'Resolve flag' : 'You do not have edit access') + '">'
                         + '<i class="fa fa-check"></i></button>';
                 } else {
                     html += '<span class="rf-status-badge resolved-s" style="margin-right:6px">Resolved</span>';
                 }
-                // Delete button is rendered for everyone; the server enforces
-                // permission via _require_role on the actual delete endpoint.
-                // Hiding client-side based on CAN_MANAGE was producing false
-                // negatives when the session role string didn't match the
-                // whitelist exactly (case / underscore drift).
+                // Delete = MANAGE. Disabled (not hidden) below that level; the
+                // server re-enforces via _require_role on the delete endpoint.
                 html += '<button type="button" class="rf-btn danger sm rf-quick-delete"'
                     +   ' data-class-key="'   + esc(f.classKey)   + '"'
                     +   ' data-section-key="' + esc(f.sectionKey) + '"'
                     +   ' data-student-id="'  + esc(f.studentId)  + '"'
                     +   ' data-flag-id="'     + esc(f.flagId)     + '"'
-                    +   ' title="Delete flag">'
+                    +   (CAN_MANAGE ? '' : ' disabled')
+                    +   ' title="' + (CAN_MANAGE ? 'Delete flag' : 'You do not have manage access') + '">'
                     + '<i class="fa fa-trash"></i></button>';
                 html += '</div>';
 
@@ -1822,20 +1918,19 @@ function __rfInitRedFlags() {
                     +   '<div class="rf-action-group">'
                     +     '<button class="rf-btn outline sm" title="Details" onclick="RF.toggleExpand(' + i + ')"><i class="fa fa-eye"></i></button>';
 
-                // Management actions are shown only to roles that can actually
-                // perform them (server-authoritative CAN_MANAGE) — view-only
-                // roles no longer see buttons that just 403. Server still
-                // enforces every mutation regardless.
-                if (CAN_MANAGE) {
-                    if (f.status === 'Active') {
-                        html += '<button class="rf-btn success sm" title="Resolve" onclick="RF.resolveFlag(\'' + esc(f.classKey) + '\',\'' + esc(f.sectionKey) + '\',\'' + esc(f.studentId) + '\',\'' + esc(f.flagId) + '\')"><i class="fa fa-check"></i></button>';
-                    }
-                    // Deleted flags get a Restore button instead of Delete.
-                    if (f.status === 'Deleted') {
-                        html += '<button class="rf-btn outline sm" title="Restore" onclick="RF.restoreFlag(\'' + esc(f.flagId) + '\')"><i class="fa fa-undo"></i></button>';
-                    } else {
-                        html += '<button class="rf-btn danger sm" title="Delete" onclick="RF.deleteFlag(\'' + esc(f.classKey) + '\',\'' + esc(f.sectionKey) + '\',\'' + esc(f.studentId) + '\',\'' + esc(f.flagId) + '\')"><i class="fa fa-trash"></i></button>';
-                    }
+                // Level-gated management actions. Resolve = EDIT; Delete /
+                // Restore = MANAGE. Controls above the user's level are DISABLED
+                // (not hidden) so the affordance stays visible while the flag
+                // data itself remains fully readable. Server re-enforces every
+                // mutation via _require_role regardless of these UI states.
+                if (f.status === 'Active') {
+                    html += '<button class="rf-btn success sm" title="' + (CAN_EDIT ? 'Resolve' : 'You do not have edit access') + '"' + (CAN_EDIT ? '' : ' disabled') + ' onclick="RF.resolveFlag(\'' + esc(f.classKey) + '\',\'' + esc(f.sectionKey) + '\',\'' + esc(f.studentId) + '\',\'' + esc(f.flagId) + '\')"><i class="fa fa-check"></i></button>';
+                }
+                // Deleted flags get a Restore button instead of Delete.
+                if (f.status === 'Deleted') {
+                    html += '<button class="rf-btn outline sm" title="' + (CAN_MANAGE ? 'Restore' : 'You do not have manage access') + '"' + (CAN_MANAGE ? '' : ' disabled') + ' onclick="RF.restoreFlag(\'' + esc(f.flagId) + '\')"><i class="fa fa-undo"></i></button>';
+                } else {
+                    html += '<button class="rf-btn danger sm" title="' + (CAN_MANAGE ? 'Delete' : 'You do not have manage access') + '"' + (CAN_MANAGE ? '' : ' disabled') + ' onclick="RF.deleteFlag(\'' + esc(f.classKey) + '\',\'' + esc(f.sectionKey) + '\',\'' + esc(f.studentId) + '\',\'' + esc(f.flagId) + '\')"><i class="fa fa-trash"></i></button>';
                 }
                 html += '</div></td></tr>';
 
@@ -1914,6 +2009,7 @@ function __rfInitRedFlags() {
 
         /* ── Resolve single flag ── */
         resolveFlag: function(classKey, sectionKey, studentId, flagId) {
+            if (!rbacGuard('edit')) return;
             showConfirm('Resolve Flag', 'Mark this flag as resolved?',
                 '<i class="fa fa-check-circle" style="color:var(--rf-green)"></i>', 'success',
                 function() {
@@ -1934,6 +2030,7 @@ function __rfInitRedFlags() {
 
         /* ── Delete flag ── */
         deleteFlag: function(classKey, sectionKey, studentId, flagId) {
+            if (!rbacGuard('manage')) return;
             showConfirm('Delete Flag', 'This action cannot be undone. Are you sure?',
                 '<i class="fa fa-trash" style="color:var(--rf-red)"></i>', 'danger',
                 function() {
@@ -1978,6 +2075,7 @@ function __rfInitRedFlags() {
 
         /* ── Restore a soft-deleted flag (admin only) ── */
         restoreFlag: function(flagId) {
+            if (!rbacGuard('manage')) return;
             showConfirm('Restore Flag', 'Bring this deleted flag back to Active?',
                 '<i class="fa fa-undo" style="color:var(--rf-primary)"></i>', 'primary',
                 function() {
@@ -1995,6 +2093,7 @@ function __rfInitRedFlags() {
 
         /* ── Bulk resolve ── */
         bulkResolve: function() {
+            if (!rbacGuard('edit')) return;
             var checked = [];
             $('.rf-flag-check:checked').each(function() {
                 var parts = $(this).data('key').split('|');
@@ -2192,7 +2291,7 @@ function __rfInitRedFlags() {
 
                 if (f.status === 'Active') {
                     html += '<div class="rf-timeline-actions">'
-                        + '<button class="rf-btn success sm" onclick="RF.resolveFlag(\'' + esc(f.classKey) + '\',\'' + esc(f.sectionKey) + '\',\'' + esc(f.studentId) + '\',\'' + esc(f.flagId) + '\')"><i class="fa fa-check"></i> Resolve</button>'
+                        + '<button class="rf-btn success sm"' + (CAN_EDIT ? '' : ' disabled title="You do not have edit access"') + ' onclick="RF.resolveFlag(\'' + esc(f.classKey) + '\',\'' + esc(f.sectionKey) + '\',\'' + esc(f.studentId) + '\',\'' + esc(f.flagId) + '\')"><i class="fa fa-check"></i> Resolve</button>'
                         + '</div>';
                 }
 
@@ -2375,13 +2474,13 @@ function __rfInitRedFlags() {
                 + '</div>'
                 + '<div style="display:flex;gap:12px;flex-wrap:wrap">'
                 + '<div style="flex:1;min-width:120px;padding:12px;background:var(--rf-green-dim);border-radius:var(--rf-r-sm);text-align:center">'
-                + '<div style="font-size:20px;font-weight:800;color:var(--rf-green);font-family:var(--font-d)">' + under24 + '</div>'
+                + '<div style="font-size:20px;font-weight:800;color:var(--rf-green);font-family:var(--font-m)">' + under24 + '</div>'
                 + '<div style="font-size:11px;color:var(--rf-t3);margin-top:2px">Under 24h</div></div>'
                 + '<div style="flex:1;min-width:120px;padding:12px;background:var(--rf-amber-dim);border-radius:var(--rf-r-sm);text-align:center">'
-                + '<div style="font-size:20px;font-weight:800;color:var(--rf-amber);font-family:var(--font-d)">' + under72 + '</div>'
+                + '<div style="font-size:20px;font-weight:800;color:var(--rf-amber);font-family:var(--font-m)">' + under72 + '</div>'
                 + '<div style="font-size:11px;color:var(--rf-t3);margin-top:2px">24h - 72h</div></div>'
                 + '<div style="flex:1;min-width:120px;padding:12px;background:var(--rf-red-dim);border-radius:var(--rf-r-sm);text-align:center">'
-                + '<div style="font-size:20px;font-weight:800;color:var(--rf-red);font-family:var(--font-d)">' + over72 + '</div>'
+                + '<div style="font-size:20px;font-weight:800;color:var(--rf-red);font-family:var(--font-m)">' + over72 + '</div>'
                 + '<div style="font-size:11px;color:var(--rf-t3);margin-top:2px">Over 72h</div></div>'
                 + '</div>'
             );
@@ -2392,6 +2491,7 @@ function __rfInitRedFlags() {
            ════════════════════════════════════════════════════════ */
 
         openCreateModal: function() {
+            if (!rbacGuard('edit')) return;
             $('#rf-create-form')[0].reset();
             $('#cf-student').html('<option value="">Select class first</option>');
             $('#cf-subject').html('<option value="">Select class first</option>');
@@ -2409,6 +2509,7 @@ function __rfInitRedFlags() {
 
             // Cross-controller call — Academic owns subject data, so route
             // there directly instead of duplicating the lookup here.
+            RFLoader.start();
             $.ajax({
                 url: ROOT + 'academic/get_class_subjects',
                 type: 'POST',
@@ -2441,6 +2542,8 @@ function __rfInitRedFlags() {
                 $(targetSel).html(html);
             }).fail(function () {
                 $(targetSel).html('<option value="">Failed to load</option>');
+            }).always(function () {
+                RFLoader.done();
             });
         },
 
@@ -2517,6 +2620,7 @@ function __rfInitRedFlags() {
 
         submitCreateFlag: function(e) {
             e.preventDefault();
+            if (!rbacGuard('edit')) return false;
             var classVal = $('#cf-class').val();
             if (!classVal) { toast('Please select a class', 'error'); return false; }
 

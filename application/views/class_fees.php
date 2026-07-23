@@ -279,8 +279,19 @@ function loadDueFees() {
             'X-Requested-With': 'XMLHttpRequest'
         }
     })
-    .then(function(r) { return r.text(); })
-    .then(function(raw) {
+    .then(function(r) {
+        var _ok = r.ok, _st = r.status;
+        return r.text().then(function(t) { return { ok: _ok, status: _st, raw: t }; });
+    })
+    .then(function(resp) {
+        /* Fail closed on HTTP 403/401/500 — fetch does not reject on those,
+           so without this a denied request would fall through to JSON.parse. */
+        if (!resp.ok) {
+            tbody.innerHTML = '<tr><td colspan="9" class="cf-empty-res"><i class="fa fa-exclamation-triangle"></i><p>Request failed (' + resp.status + '). Please retry.</p></td></tr>';
+            cfToast('Request failed (' + resp.status + ')', 'error');
+            return;
+        }
+        var raw = resp.raw;
         var data;
         try { data = JSON.parse(raw); } catch(e) {
             tbody.innerHTML = '<tr><td colspan="9" class="cf-empty-res"><i class="fa fa-exclamation-triangle"></i><p>Server error — check PHP logs.</p></td></tr>';
@@ -543,7 +554,7 @@ document.addEventListener('DOMContentLoaded', function() {
     /* ── Design tokens — identical to fees_counter ── */
     :root {
         --fc-navy: #0b1f3a;
-        --fc-teal: #0e7490;
+        --fc-teal: #BC5A3C;
         --fc-sky: #e0f2fe;
         --fc-green: #16a34a;
         --fc-red: #dc2626;

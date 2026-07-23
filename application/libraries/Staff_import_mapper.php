@@ -203,7 +203,27 @@ class Staff_import_mapper {
             }
             $out[$label] = $val;
         }
+        // Cross-field India geo normalization (needs the whole row, not one cell).
+        self::canon_geo($out, $fields);
         return $out;
+    }
+
+    /** Correct District spelling once the row's State is known — a cross-field
+     *  pass the per-cell transforms can't do. Silent; validate_row surfaces misses. */
+    private static function canon_geo(array &$out, array $fields): void
+    {
+        if (!function_exists('india_geo_match_district')) return;
+        foreach ([['state', 'city'], ['perm_state', 'perm_city']] as $pair) {
+            list($sk, $ck) = $pair;
+            if (!isset($fields[$sk], $fields[$ck])) continue;
+            $sl = $fields[$sk]['label'] ?? $sk;
+            $cl = $fields[$ck]['label'] ?? $ck;
+            $state = $out[$sl] ?? '';
+            $city  = $out[$cl] ?? '';
+            if ($state === '' || $city === '') continue;
+            $canon = india_geo_match_district($state, $city);
+            if ($canon !== '') $out[$cl] = $canon;
+        }
     }
 
     /** Apply a single transform to a raw cell value. */
@@ -221,6 +241,14 @@ class Staff_import_mapper {
                 return $v;
             case 'date':
                 return self::normalize_date($value);
+            case 'india_state':
+                // Canonicalize an India state/UT spelling; keep as typed if unknown
+                // (validate_row then flags the off-enum value as a warning).
+                if (function_exists('india_geo_match_state')) {
+                    $canon = india_geo_match_state($value);
+                    if ($canon !== '') return $canon;
+                }
+                return $value;
             case 'trim':
             default:
                 return $value;
@@ -321,6 +349,29 @@ class Staff_import_mapper {
                 }
             }
         }
+
+        // ── India geo cross-field checks (State / District) ──────────────────
+        if (function_exists('india_geo_match_state')) {
+            foreach ([['state', 'city'], ['perm_state', 'perm_city']] as $pair) {
+                list($sk, $ck) = $pair;
+                if (!isset($fields[$sk])) continue;
+                $sl   = $fields[$sk]['label'] ?? $sk;
+                $sVal = isset($mapped[$sl]) ? trim((string) $mapped[$sl]) : '';
+                if ($sVal === '') continue;
+                if (india_geo_match_state($sVal) === '') {
+                    $warnings[] = "{$sl} \"{$sVal}\" is not a recognized India state/UT — left as typed";
+                    continue; // can't check the district against an unknown state
+                }
+                if (isset($fields[$ck])) {
+                    $cl   = $fields[$ck]['label'] ?? $ck;
+                    $cVal = isset($mapped[$cl]) ? trim((string) $mapped[$cl]) : '';
+                    if ($cVal !== '' && india_geo_match_district($sVal, $cVal) === '') {
+                        $warnings[] = "{$cl} \"{$cVal}\" is not a listed district of {$sVal} — left as typed";
+                    }
+                }
+            }
+        }
+
         return ['errors' => $errors, 'warnings' => $warnings];
     }
 }

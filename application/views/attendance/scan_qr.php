@@ -1,4 +1,11 @@
-<?php defined('BASEPATH') or exit('No direct script access allowed'); ?>
+<?php defined('BASEPATH') or exit('No direct script access allowed');
+    // Level gating — scanning a QR MARKS attendance, so it is an EDIT action.
+    $att_can_edit   = function_exists('has_permission') ? has_permission('Attendance', 'edit')   : true;
+    $att_can_manage = function_exists('has_permission') ? has_permission('Attendance', 'manage') : true;
+?>
+
+<!-- Attendance Design System (shared, cacheable) — provides the loading primitives (.att-loadbar, .att-btn.is-loading). -->
+<link rel="stylesheet" href="<?= base_url('assets/css/attendance_design_system.css') ?>?v=2.1.0">
 
 <style>
     .scan-wrap { max-width: 640px; margin: 0 auto; padding: 24px 20px; }
@@ -16,7 +23,7 @@
     .scan-btn { flex: 1; padding: 12px 16px; border: none; border-radius: 8px; cursor: pointer;
                 font-weight: 600; font-size: .9rem; }
     .scan-btn.primary { background: var(--gold, #BC5A3C); color: #fff; }
-    .scan-btn.primary:hover { background: #9c4a30; }   /* darker clay (was a leftover teal #115e59) */
+    .scan-btn.primary:hover { background: #9c4a30; }   /* darker clay (was a leftover teal #9E4830) */
     .scan-btn.ghost { background: var(--bg3); color: var(--t2); border: 1px solid var(--border); }
 
     .scan-result { margin-top: 18px; padding: 14px 16px; border-radius: 8px; display: none;
@@ -42,9 +49,21 @@
     .scan-row.err .badge { background: #fee2e2; color: #991b1b; }
 
     .scan-hint { font-size: .82rem; color: var(--t3); margin-top: 14px; line-height: 1.5; }
+
+    /* View-only notice (shown when the user lacks Attendance › edit) */
+    .scan-viewonly {
+        display: flex; align-items: flex-start; gap: 10px;
+        margin-bottom: 16px; padding: 12px 16px; border-radius: 8px;
+        background: #fef9c3; color: #854d0e; border: 1px solid #fde047;
+        font-size: .86rem; line-height: 1.45;
+    }
+    .scan-viewonly i { margin-top: 2px; }
+    .scan-input:disabled, .scan-btn:disabled { opacity: .55; cursor: not-allowed; }
 </style>
 
 <div class="content-wrapper">
+<!-- Top progress bar — reflects the in-flight scan submit. -->
+<div class="att-loadbar" id="attLoadbar"></div>
 <div class="scan-wrap">
 
     <div class="scan-hdr">
@@ -58,15 +77,22 @@
     </div>
 
     <div class="scan-card">
+        <?php if (!$att_can_edit): ?>
+        <div class="scan-viewonly" role="status">
+            <i class="fa fa-eye"></i>
+            <span><strong>View-only</strong> — you don't have permission to mark attendance via QR. Ask an administrator for Attendance &rsaquo; edit access.</span>
+        </div>
+        <?php endif; ?>
+
         <label for="scanInput" style="font-size: .85rem; color: var(--t2); font-weight: 600; display: block; margin-bottom: 8px;">
             QR token
         </label>
-        <input id="scanInput" class="scan-input" type="text" autofocus
-               placeholder="Paste or scan QR token here (form auto-submits on Enter)">
+        <input id="scanInput" class="scan-input" type="text" <?= $att_can_edit ? 'autofocus' : 'disabled' ?>
+               placeholder="<?= $att_can_edit ? 'Paste or scan QR token here (form auto-submits on Enter)' : 'Marking is disabled in view-only mode' ?>">
 
         <div class="scan-actions">
-            <button id="scanBtn"   class="scan-btn primary" type="button"><i class="fa fa-check"></i> Mark Present</button>
-            <button id="scanClear" class="scan-btn ghost"   type="button">Clear</button>
+            <button id="scanBtn"   class="scan-btn primary" type="button" <?= $att_can_edit ? '' : 'disabled' ?>><i class="fa fa-check"></i> Mark Present</button>
+            <button id="scanClear" class="scan-btn ghost"   type="button" <?= $att_can_edit ? '' : 'disabled' ?>>Clear</button>
         </div>
 
         <div id="scanResult" class="scan-result" role="status" aria-live="polite"></div>
@@ -93,12 +119,18 @@
     var endpoint  = '<?= base_url('attendance/scan_qr') ?>';
     var csrfName  = '<?= $this->security->get_csrf_token_name() ?>';
     var csrfToken = '<?= $this->security->get_csrf_hash() ?>';
+    var CAN_EDIT  = <?= $att_can_edit ? 'true' : 'false' ?>;
 
     var inputEl   = document.getElementById('scanInput');
     var btnEl     = document.getElementById('scanBtn');
     var clearEl   = document.getElementById('scanClear');
     var resultEl  = document.getElementById('scanResult');
     var historyEl = document.getElementById('scanHistory');
+
+    /* ── Top progress bar — busy counter (one scan at a time, but kept consistent). ── */
+    var _busy = 0;
+    function busyStart(){ _busy++; var b = document.getElementById('attLoadbar'); if (b) b.classList.add('on'); }
+    function busyEnd(){ _busy = Math.max(0, _busy - 1); if (!_busy) { var b = document.getElementById('attLoadbar'); if (b) b.classList.remove('on'); } }
 
     function showResult(kind, html) {
         resultEl.className = 'scan-result ' + kind;
@@ -126,6 +158,11 @@
     }
 
     function submit() {
+        // Edit-gated: view-only users can never trigger a mark (server also enforces).
+        if (!CAN_EDIT) {
+            showResult('err', '<i class="fa fa-eye"></i> View-only — you can\'t mark via QR.');
+            return;
+        }
         var token = (inputEl.value || '').trim();
         if (!token) {
             showResult('err', '<i class="fa fa-exclamation-circle"></i> Token is empty.');
@@ -134,12 +171,14 @@
         }
 
         btnEl.disabled = true;
+        btnEl.classList.add('is-loading');
         btnEl.innerHTML = '<i class="fa fa-spinner fa-spin"></i> Marking...';
 
         var body = new URLSearchParams();
         body.append('qr_token', token);
         body.append(csrfName, csrfToken);
 
+        busyStart();
         fetch(endpoint, {
             method: 'POST',
             headers: {
@@ -148,10 +187,19 @@
             },
             body: body.toString()
         })
-        .then(function (r) { return r.json().then(function (d) { return { ok: r.ok, body: d }; }); })
+        // Fail-closed: parse defensively and treat any non-2xx (401/403/500) or error
+        // envelope as a rejection — a denied scan must NEVER read as a silent success.
+        .then(function (r) { return r.json().catch(function(){ return {}; }).then(function (d) { return { ok: r.ok, status: r.status, body: d }; }); })
         .then(function (env) {
             var d = env.body || {};
             if (d.csrf_token) csrfToken = d.csrf_token;
+
+            if (!env.ok && d.status !== 'success') {
+                var m = (d && d.message) ? d.message : ('Request failed (' + env.status + ')');
+                showResult('err', '<i class="fa fa-times-circle"></i> ' + escapeHtml(m));
+                appendHistory('err', 'Error', m, '');
+                return;
+            }
 
             if (d.status === 'success' && d.code === 'success') {
                 showResult('ok', '<i class="fa fa-check-circle"></i> ' +
@@ -174,7 +222,9 @@
             appendHistory('err', 'Network', 'Network error', '');
         })
         .finally(function () {
+            busyEnd();
             btnEl.disabled = false;
+            btnEl.classList.remove('is-loading');
             btnEl.innerHTML = '<i class="fa fa-check"></i> Mark Present';
             // Clear + refocus so the next scan is ready.
             inputEl.value = '';

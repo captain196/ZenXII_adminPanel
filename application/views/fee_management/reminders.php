@@ -316,12 +316,21 @@ document.addEventListener('DOMContentLoaded', function() {
         if (!document.getElementById('late_fee_enabled').checked) fd.set('late_fee_enabled', '0');
 
         fetch(BASE + 'fee_management/save_reminder_settings', { method: 'POST', body: fd })
-            .then(function(r) { return r.json(); })
-            .then(function(data) {
-                if (data.csrf_hash) CSRF_HASH = data.csrf_hash;
-                showToast(data.message || 'Settings saved.', data.status === 'success' ? 'success' : 'error');
+            .then(function(r) {
+                return r.json().catch(function(){ return {}; }).then(function(data) {
+                    if (data.csrf_hash) CSRF_HASH = data.csrf_hash;
+                    /* fetch does NOT reject on 403/500 — fail closed here so a denied
+                       save never shows a success toast. */
+                    if (!r.ok || data.status === 'error' || data.success === false) {
+                        throw new Error(data.message || ('Request failed (' + r.status + ')'));
+                    }
+                    return data;
+                });
             })
-            .catch(function() { showToast('Network error. Try again.', 'error'); })
+            .then(function(data) {
+                showToast(data.message || 'Settings saved.', 'success');
+            })
+            .catch(function(e) { showToast((e && e.message) || 'Network error. Try again.', 'error'); })
             .finally(function() {
                 btn.disabled = false;
                 btn.innerHTML = '<i class="fa fa-save"></i> Save Settings';
@@ -343,7 +352,15 @@ document.addEventListener('DOMContentLoaded', function() {
         icon.className = 'fa fa-spinner fa-spin';
 
         fetch(BASE + 'fee_management/fetch_due_students?<?= $this->security->get_csrf_token_name() ?>=<?= $this->security->get_csrf_hash() ?>')
-            .then(function(r) { return r.json(); })
+            .then(function(r) {
+                return r.json().catch(function(){ return {}; }).then(function(data) {
+                    if (data.csrf_hash) CSRF_HASH = data.csrf_hash;
+                    if (!r.ok || data.status === 'error' || data.success === false) {
+                        throw new Error(data.message || ('Request failed (' + r.status + ')'));
+                    }
+                    return data;
+                });
+            })
             .then(function(data) {
                 if (data.csrf_hash) CSRF_HASH = data.csrf_hash;
                 spinner.style.display = 'none';
@@ -439,10 +456,10 @@ document.addEventListener('DOMContentLoaded', function() {
                 applyDueFilter();
                 updateSendBtnState();
             })
-            .catch(function() {
+            .catch(function(err) {
                 spinner.style.display = 'none';
                 icon.className = 'fa fa-refresh';
-                showToast('Failed to fetch due students.', 'error');
+                showToast((err && err.message) || 'Failed to fetch due students.', 'error');
             });
     };
 
@@ -559,14 +576,22 @@ document.addEventListener('DOMContentLoaded', function() {
         fd.append('channel', 'push');
 
         fetch(BASE + 'fee_management/send_reminder', { method: 'POST', body: fd })
-            .then(function(r) { return r.json(); })
-            .then(function(data) {
-                if (data.csrf_hash) CSRF_HASH = data.csrf_hash;
-                var ok = data.status === 'success';
-                showToast(data.message || 'Reminders sent.', ok ? 'success' : 'error');
-                if (ok) scanDueStudents();
+            .then(function(r) {
+                return r.json().catch(function(){ return {}; }).then(function(data) {
+                    if (data.csrf_hash) CSRF_HASH = data.csrf_hash;
+                    /* Fail closed: a denied/failed send must not show a success toast
+                       nor trigger the optimistic rescan. */
+                    if (!r.ok || data.status === 'error' || data.success === false) {
+                        throw new Error(data.message || ('Request failed (' + r.status + ')'));
+                    }
+                    return data;
+                });
             })
-            .catch(function() { showToast('Failed to send reminders.', 'error'); })
+            .then(function(data) {
+                showToast(data.message || 'Reminders sent.', 'success');
+                scanDueStudents();
+            })
+            .catch(function(e) { showToast((e && e.message) || 'Failed to send reminders.', 'error'); })
             .finally(function() {
                 btn.firstElementChild.className = 'fa fa-paper-plane';
                 updateSendBtnState();
@@ -588,7 +613,15 @@ document.addEventListener('DOMContentLoaded', function() {
         if (to) url += '&to=' + to;
 
         fetch(url)
-            .then(function(r) { return r.json(); })
+            .then(function(r) {
+                return r.json().catch(function(){ return {}; }).then(function(data) {
+                    if (data.csrf_hash) CSRF_HASH = data.csrf_hash;
+                    if (!r.ok || data.status === 'error' || data.success === false) {
+                        throw new Error(data.message || ('Request failed (' + r.status + ')'));
+                    }
+                    return data;
+                });
+            })
             .then(function(data) {
                 if (data.csrf_hash) CSRF_HASH = data.csrf_hash;
                 spinner.style.display = 'none';
@@ -616,9 +649,9 @@ document.addEventListener('DOMContentLoaded', function() {
                 document.getElementById('logTableBody').innerHTML = html;
                 wrap.style.display = '';
             })
-            .catch(function() {
+            .catch(function(err) {
                 spinner.style.display = 'none';
-                showToast('Failed to load reminder log.', 'error');
+                showToast((err && err.message) || 'Failed to load reminder log.', 'error');
             });
     };
 
@@ -684,7 +717,7 @@ document.addEventListener('DOMContentLoaded', function() {
 .fm-rem-tabs { display: flex; gap: 2px; background: var(--fm-white); border-radius: var(--fm-radius) var(--fm-radius) 0 0; box-shadow: var(--fm-shadow); overflow: hidden; margin-bottom: 0; }
 .fm-rem-tab { flex: 1; padding: 11px 14px; border: none; background: transparent; cursor: pointer; font-family: var(--fm-font); font-size: .82rem; font-weight: 600; color: #64748b; display: flex; align-items: center; justify-content: center; gap: 6px; position: relative; transition: color .2s var(--fm-ease), background .2s var(--fm-ease); }
 .fm-rem-tab::after { content: ''; position: absolute; bottom: 0; left: 20%; right: 20%; height: 2.5px; background: var(--fm-teal); border-radius: 2px 2px 0 0; transform: scaleX(0); transition: transform .25s var(--fm-ease); }
-.fm-rem-tab:hover { color: var(--fm-navy); background: rgba(13,115,119,.04); }
+.fm-rem-tab:hover { color: var(--fm-navy); background: rgba(188,90,60,.04); }
 .fm-rem-tab.active { color: var(--fm-teal); }
 .fm-rem-tab.active::after { transform: scaleX(1); }
 
@@ -709,7 +742,7 @@ document.addEventListener('DOMContentLoaded', function() {
 .fm-label { display: block; font-size: .73rem; font-weight: 600; color: #475569; margin-bottom: 4px; text-transform: uppercase; letter-spacing: .3px; }
 .fm-req { color: var(--fm-red); }
 .fm-input, .fm-select, .fm-textarea { width: 100%; padding: 8px 11px; font-family: var(--fm-font); font-size: .82rem; border: 1.5px solid var(--fm-border); border-radius: 6px; background: var(--fm-white); color: var(--fm-navy); transition: border-color .2s var(--fm-ease), box-shadow .2s var(--fm-ease); outline: none; box-sizing: border-box; }
-.fm-input:focus, .fm-select:focus, .fm-textarea:focus { border-color: var(--fm-teal); box-shadow: 0 0 0 3px rgba(13,115,119,.12); }
+.fm-input:focus, .fm-select:focus, .fm-textarea:focus { border-color: var(--fm-teal); box-shadow: 0 0 0 3px rgba(188,90,60,.12); }
 .fm-textarea { resize: vertical; min-height: 70px; line-height: 1.5; }
 .fm-hint { display: block; font-size: .7rem; color: #94a3b8; margin-top: 3px; }
 .fm-divider { border: 0; border-top: 1px dashed var(--fm-border); margin: 18px 0 14px; }
@@ -729,10 +762,10 @@ document.addEventListener('DOMContentLoaded', function() {
 .fm-btn { display: inline-flex; align-items: center; gap: 6px; padding: 9px 18px; font-family: var(--fm-font); font-size: .8rem; font-weight: 600; border: none; border-radius: 6px; cursor: pointer; transition: background .2s var(--fm-ease), transform .1s var(--fm-ease), box-shadow .2s var(--fm-ease); }
 .fm-btn:active { transform: scale(.97); }
 .fm-btn--primary { background: var(--fm-teal); color: #fff; }
-.fm-btn--primary:hover { background: #0a5f62; box-shadow: 0 2px 8px rgba(13,115,119,.25); }
+.fm-btn--primary:hover { background: #0a5f62; box-shadow: 0 2px 8px rgba(188,90,60,.25); }
 .fm-btn--primary:disabled { opacity: .55; pointer-events: none; }
 .fm-btn--outline { background: transparent; color: var(--fm-teal); border: 1.5px solid var(--fm-teal); }
-.fm-btn--outline:hover { background: rgba(13,115,119,.06); }
+.fm-btn--outline:hover { background: rgba(188,90,60,.06); }
 .fm-btn--sm { padding: 6px 13px; font-size: .76rem; }
 .fm-ml-auto { margin-left: auto; }
 .fm-form-actions { margin-top: 18px; display: flex; justify-content: flex-end; gap: 10px; }
@@ -752,7 +785,7 @@ document.addEventListener('DOMContentLoaded', function() {
 .fm-table thead th { background: #f8fafc; padding: 9px 12px; font-size: .7rem; font-weight: 700; color: #64748b; text-transform: uppercase; letter-spacing: .4px; border-bottom: 2px solid var(--fm-border); text-align: left; white-space: nowrap; }
 .fm-table tbody td { padding: 10px 12px; border-bottom: 1px solid #f1f5f9; vertical-align: middle; }
 .fm-table tbody tr:nth-child(even) { background: #fafbfc; }
-.fm-table tbody tr:hover { background: rgba(13,115,119,.05); }
+.fm-table tbody tr:hover { background: rgba(188,90,60,.05); }
 .fm-text-bold { font-weight: 700; }
 .fm-text-muted { color: #94a3b8; font-style: italic; }
 
@@ -769,7 +802,7 @@ document.addEventListener('DOMContentLoaded', function() {
 .fm-quickfilter .fm-qf-search { flex: 1 1 220px; position: relative; }
 .fm-quickfilter .fm-qf-search i { position: absolute; left: 10px; top: 50%; transform: translateY(-50%); color: #94a3b8; font-size: .85rem; }
 .fm-quickfilter .fm-qf-search input { width: 100%; padding: 8px 10px 8px 30px; border: 1px solid var(--fm-border); border-radius: 6px; font-size: .8rem; background: var(--fm-white); }
-.fm-quickfilter .fm-qf-search input:focus { outline: none; border-color: var(--fm-teal); box-shadow: 0 0 0 2px rgba(13,115,119,.15); }
+.fm-quickfilter .fm-qf-search input:focus { outline: none; border-color: var(--fm-teal); box-shadow: 0 0 0 2px rgba(188,90,60,.15); }
 .fm-quickfilter select { padding: 8px 10px; border: 1px solid var(--fm-border); border-radius: 6px; font-size: .8rem; background: var(--fm-white); min-width: 150px; cursor: pointer; }
 .fm-quickfilter .fm-qf-count { align-self: center; font-size: .72rem; color: #64748b; padding: 0 8px; font-weight: 600; letter-spacing: .3px; text-transform: uppercase; }
 
@@ -788,7 +821,7 @@ document.addEventListener('DOMContentLoaded', function() {
 /* ---------- Badges ---------- */
 .fm-badge { display: inline-block; padding: 2px 8px; font-size: .7rem; font-weight: 600; border-radius: 20px; line-height: 1.5; white-space: nowrap; }
 .fm-badge--gold { background: rgba(217,119,6,.12); color: #b45309; }
-.fm-badge--teal { background: rgba(13,115,119,.12); color: var(--fm-teal); }
+.fm-badge--teal { background: rgba(188,90,60,.12); color: var(--fm-teal); }
 .fm-badge--navy { background: rgba(15,31,61,.1); color: var(--fm-navy); }
 .fm-badge--green { background: rgba(39,174,96,.12); color: #1a7a42; }
 .fm-badge--red { background: rgba(229,62,62,.12); color: #c53030; }

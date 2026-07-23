@@ -7,7 +7,7 @@
          cause), and set the theme + an explicit <html> background before any CSS
          paints. Night-theme users get color-scheme:dark set via the script below. -->
     <meta name="color-scheme" content="light">
-    <script>(function(){try{var t=localStorage.getItem('graderiq_theme');if(!t){var h=new Date().getHours();t=(h>=6&&h<18)?'day':'night';}var d=document.documentElement,dark=(t==='night');d.setAttribute('data-theme',t);d.style.backgroundColor='#f0f7f5';/* light base kills inter-page black flash; chrome stays dark via CSS --bg2/3, dashboard via .db-root */}catch(e){}})();</script>
+    <script>(function(){try{var t=localStorage.getItem('graderiq_theme');if(!t){var h=new Date().getHours();t=(h>=6&&h<18)?'day':'night';}var d=document.documentElement,dark=(t==='night');d.setAttribute('data-theme',t);d.style.backgroundColor='#F7F4F1';/* light base kills inter-page black flash; chrome stays dark via CSS --bg2/3, dashboard via .db-root */}catch(e){}})();</script>
     <meta charset="utf-8">
     <meta http-equiv="X-UA-Compatible" content="IE=edge">
     <title>ZenXii Admin</title>
@@ -153,13 +153,130 @@
            for the fixed topbar; with the topbar hidden that margin would expose the
            dark body strip behind it (the "dark bar"). Zero both. */
         .content-wrapper { margin-left: 0 !important; margin-top: 0 !important; box-shadow: none !important; }
+        /* AdminLTE's layout JS pins .content-wrapper min-height to the WINDOW height
+           on every resize. Inside the shell's auto-sizing iframe the window IS the
+           iframe, so that inline height feeds the fitFrame->ResizeObserver loop and
+           the page grows without bound ("scroll keeps expanding"). Zero it out — the
+           shell sizes the iframe to real content, so no viewport-height is needed. */
+        html, body { height: auto !important; min-height: 0 !important; }
+        .content-wrapper, .content { min-height: 0 !important; height: auto !important; }
         body.att-embed { overflow-x: hidden !important; background: transparent !important; }
         /* Breadcrumb is redundant inside a shell tab — the tab already names the page. */
         body.att-embed .att-breadcrumb { display: none !important; }
         body.att-embed .content > .container-fluid,
         body.att-embed .content { padding-top: 14px !important; }
+        /* Inside a tab-shell iframe the page's own view-switcher, "Back" link
+           and — importantly — its OWN header duplicate the shell chrome above
+           it. Hide them (covers attendance sub-pages AND admission CRM views).
+           The shell's own header (.att-shell-head / .ac-shell-head) is a
+           different class and stays. */
+        body.att-embed .ac-viewsw, body.att-embed .ac-back,
+        body.att-embed .ac-head, body.att-embed .aa-hdr, body.att-embed .leads-hdr,
+        body.att-embed .att-header, body.att-embed .sl-page-head,
+        body.att-embed .sr-hdr, body.att-embed .au-page-hdr, body.att-embed .pl-page-hdr {
+            display: none !important; }
+        /* Don't force full-viewport height inside an embedded page, and trim the
+           big top/bottom padding — the shell auto-sizes the iframe to real
+           content so the PARENT scrolls once with no stray blank space. */
+        body.att-embed .ac-wrap, body.att-embed .aa-wrap, body.att-embed .leads-wrap {
+            min-height: 0 !important; padding-top: 6px !important; padding-bottom: 14px !important; }
+        /* Neutralize inner viewport-locked scroll containers (e.g. the attendance
+           register .sa-grid-wrap / .att-grid-wrap) so content flows and the
+           PARENT page scrolls once — no inner scroll, no blank space. */
+        body.att-embed [class*="grid-wrap"] { max-height: none !important; overflow-x: auto !important; overflow-y: visible !important; }
     </style>
+    <script>
+    /* Embedded page → notify the parent shell when a fixed-position modal opens,
+       so the shell can pin its iframe to the viewport. (A position:fixed modal
+       inside an auto-height iframe would otherwise center in the middle of the
+       tall iframe, i.e. off-screen.) Covers admission (.ac-overlay/#credModal/
+       #acBusyOverlay), the Funnel detail modal (.lead-modal-bg) and
+       attendance (.att-modal-overlay). */
+    (function(){
+        if (window.parent === window) return;
+        function anyOpen(){
+            var els = document.querySelectorAll('.ac-overlay, .att-modal-overlay, .lead-modal-bg, #credModal, #acBusyOverlay');
+            for (var i=0;i<els.length;i++){ try { if (getComputedStyle(els[i]).display !== 'none') return true; } catch(e){} }
+            return false;
+        }
+        var last = null;
+        function report(){ var v = anyOpen(); if (v !== last){ last = v; try { window.parent.postMessage({shellModal:v}, '*'); } catch(e){} } }
+        try { new MutationObserver(report).observe(document.documentElement, {subtree:true, childList:true, attributes:true, attributeFilter:['class','style']}); } catch(e){}
+        window.addEventListener('load', report);
+    })();
+
+    /* Embedded CRM page → forward page-level toasts (#pageAlert) to the shell so
+       they render in the real viewport, not off-screen at the top of the tall
+       auto-height iframe (the reported "delayed / missed toast"). Suppresses the
+       in-iframe copy while embedded. */
+    (function(){
+        var el = document.getElementById('pageAlert');
+        if (!el) return;
+        var lastMsg = '';
+        function fwd(){
+            if (getComputedStyle(el).display === 'none') { lastMsg = ''; return; }
+            var msg = (el.textContent || '').trim();
+            if (!msg || msg === lastMsg) return;
+            lastMsg = msg;
+            var type = /ac-alert-error/.test(el.className) ? 'error' : (/ac-alert-success/.test(el.className) ? 'success' : 'info');
+            try { window.parent.postMessage({shellToast:{msg:msg, type:type}}, '*'); } catch(e){}
+            el.style.display = 'none';   // don't also show the off-screen in-iframe copy
+        }
+        try { new MutationObserver(fwd).observe(el, {attributes:true, childList:true, characterData:true, subtree:true, attributeFilter:['style','class']}); } catch(e){}
+    })();
+    </script>
 <?php endif; ?>
+    <script>
+    /* Shared modal accessibility for the Admission-CRM / dialog overlays:
+       focus management (move focus in, trap Tab, restore on close), Escape to
+       close, and role/aria-modal. Self-gating: only initializes when a matching
+       overlay exists in the DOM (i.e. a CRM/attendance page), so it is an inert
+       no-op on every other admin page. Complements the modal-pin observer. */
+    (function(){
+        var SEL = '.ac-overlay, .lead-modal-bg, .att-modal-overlay';
+        if (!document.querySelector(SEL + ', #credModal')) return;   // not a modal page → skip
+        var FOCUSABLE = 'a[href],button:not([disabled]),input:not([disabled]),select:not([disabled]),textarea:not([disabled]),[tabindex]:not([tabindex="-1"])';
+        var active = null, lastFocus = null;
+        function vis(m){ try { return getComputedStyle(m).display !== 'none' && m.offsetWidth + m.offsetHeight > 0; } catch(e){ return false; } }
+        function foc(m){ return Array.prototype.filter.call(m.querySelectorAll(FOCUSABLE), function(el){ return el.offsetWidth + el.offsetHeight > 0; }); }
+        function openModal(m){
+            if (active === m) return;
+            active = m; lastFocus = document.activeElement;
+            if (!m.getAttribute('role')) m.setAttribute('role', 'dialog');
+            m.setAttribute('aria-modal', 'true');
+            var f = foc(m); if (f.length) setTimeout(function(){ try { f[0].focus(); } catch(e){} }, 40);
+        }
+        function closeModal(){
+            var prev = lastFocus; active = null; lastFocus = null;
+            if (prev && prev.focus) { try { prev.focus(); } catch(e){} }
+        }
+        function tryClose(m){
+            /* Prefer the view's own close control (keeps its JS state in sync);
+               fall back to removing the .active class the CRM overlays use. */
+            var btn = m.querySelector('[data-modal-close],[onclick*="close"],[onclick*="Close"],.ac-x,.modal-close,.lead-modal-x');
+            if (btn) { btn.click(); return; }
+            m.classList.remove('active');
+        }
+        document.addEventListener('keydown', function(e){
+            if (!active) return;
+            if (e.key === 'Escape' || e.keyCode === 27) { e.preventDefault(); tryClose(active); return; }
+            if (e.key === 'Tab' || e.keyCode === 9) {
+                var f = foc(active); if (!f.length) { e.preventDefault(); return; }
+                var first = f[0], last = f[f.length - 1];
+                if (e.shiftKey && document.activeElement === first) { e.preventDefault(); last.focus(); }
+                else if (!e.shiftKey && document.activeElement === last) { e.preventDefault(); first.focus(); }
+            }
+        }, true);
+        function scan(){
+            var open = null, all = document.querySelectorAll(SEL + ', #credModal');
+            for (var i = 0; i < all.length; i++) { if (vis(all[i])) { open = all[i]; break; } }
+            if (open && open !== active) openModal(open);
+            else if (!open && active) closeModal();
+        }
+        try { new MutationObserver(scan).observe(document.documentElement, {subtree:true, childList:true, attributes:true, attributeFilter:['class','style']}); } catch(e){}
+        if (document.readyState !== 'loading') scan(); else document.addEventListener('DOMContentLoaded', scan);
+    })();
+    </script>
 </head>
 
 
@@ -359,7 +476,7 @@
     background:linear-gradient(90deg,#3A1811,#5A2A1C,#3A1811);
     border-bottom:1px solid rgba(188,90,60,.4);
     padding:8px 20px;display:flex;align-items:center;gap:10px;
-    font-family:var(--font-b);font-size:12.5px;color:#b2e0da;
+    font-family:var(--font-b);font-size:12.5px;color:#F3E4DC;
     box-shadow:0 2px 12px rgba(0,0,0,.35);">
     <i class="fa fa-exclamation-triangle" style="color:#D4725C;font-size:14px;flex-shrink:0;"></i>
     <span style="flex:1;"><?= htmlspecialchars($subscription_warning, ENT_QUOTES, 'UTF-8') ?></span>
@@ -411,12 +528,19 @@
     <section class="sidebar">
         <?php
         // ── RBAC sidebar helper ──────────────────────────────────────
-        // $rbac_permissions is shared by MY_Controller. Bypass roles
-        // (Super Admin, Admin) already have all modules in the array.
+        // $rbac_permissions is shared by MY_Controller and already reflects the
+        // caller's fully-resolved effective access (role union + overrides, with
+        // the ROLE_ADMIN backfill / fold safety net applied). The menu therefore
+        // MIRRORS enforcement: gate on the shared map, not on a hardcoded role
+        // name. Only the two true god roles short-circuit (matching
+        // RBAC_BYPASS_ROLES) — 'Admin' was dropped here in lockstep with its
+        // removal from the bypass list, so a restricted admin no longer sees menu
+        // items the controller would 403 (and an all-modules admin still sees
+        // everything, because $rp already holds every module for them).
         $rp = isset($rbac_permissions) && is_array($rbac_permissions) ? $rbac_permissions : [];
         $can = function(string $module) use ($rp, $admin_role) {
-            // Bypass roles always see everything
-            if (isset($admin_role) && in_array($admin_role, ['Super Admin', 'School Super Admin', 'Admin'], true)) return true;
+            // Bypass god roles always see everything (mirrors RBAC_BYPASS_ROLES).
+            if (isset($admin_role) && in_array($admin_role, ['Super Admin', 'School Super Admin'], true)) return true;
             if (in_array($module, $rp, true)) return true;
             // Parent/child inheritance (mirrors has_permission): a child is
             // granted by its umbrella parent; an umbrella group shows if the role
@@ -466,9 +590,14 @@
                  ═══════════════════════════════════════════════════════════ -->
             <?php if (isset($school_features) && in_array('Staff Management', $school_features) && ($can('HR') || $can('SIS'))): ?>
             <li class="g-sec">Staff</li>
-            <?php if ($can('HR')): ?>
+            <?php /* Supersession (Tier 3): the "Departments & Roles" (Org) sidebar door
+               was COLLAPSED into "Staff & Roles" (Staff_access Tab 1) — the 3-tab
+               superset that edits the SAME schools.staffRoles/departments. Org routes
+               stay live (deep links + backfill_legacy_departments), only the duplicate
+               menu entry is removed. Re-add the <li> to base_url('org') to restore. */ ?>
+            <?php if ($can('Admin Users')): ?>
             <li class="sidebar-single">
-                <a href="<?= base_url('org') ?>"><i class="fa fa-sitemap"></i><span>Departments &amp; Roles</span></a>
+                <a href="<?= base_url('staff_access') ?>"><i class="fa fa-shield"></i><span>Staff &amp; Roles</span></a>
             </li>
             <?php endif; ?>
             <li class="treeview">
@@ -503,15 +632,17 @@
             <li class="g-sec">Students</li>
             <li class="treeview">
                 <a href="#"><i class="fa fa-filter"></i><span>Admission CRM</span><span class="pull-right-container"><i class="fa fa-angle-left pull-right"></i></span></a>
+                <!-- Admission CRM — 6 funnel-ordered sections (IA reorg 2026-07).
+                     Board (Pipeline) & Funnel (Leads) are now VIEWS inside
+                     Applications, reachable via the in-page view switcher, so
+                     they no longer need their own sidebar rows. -->
                 <ul class="treeview-menu">
-                    <li><a href="<?= base_url('sis/crm') ?>"><i class="fa fa-circle-o"></i>CRM Dashboard</a></li>
-                    <li><a href="<?= base_url('sis/admission_leads') ?>"><i class="fa fa-circle-o"></i>Admission Leads</a></li>
+                    <li><a href="<?= base_url('sis/crm') ?>"><i class="fa fa-circle-o"></i>Overview</a></li>
                     <li><a href="<?= base_url('sis/inquiries') ?>"><i class="fa fa-circle-o"></i>Inquiries</a></li>
                     <li><a href="<?= base_url('sis/applications') ?>"><i class="fa fa-circle-o"></i>Applications</a></li>
-                    <li><a href="<?= base_url('sis/pipeline') ?>"><i class="fa fa-circle-o"></i>Pipeline</a></li>
                     <li><a href="<?= base_url('sis/waitlist') ?>"><i class="fa fa-circle-o"></i>Waiting List</a></li>
-                    <li><a href="<?= base_url('sis/crm_settings') ?>"><i class="fa fa-circle-o"></i>CRM Settings</a></li>
                     <li><a href="<?= base_url('sis/admission_analytics') ?>"><i class="fa fa-circle-o"></i>Analytics</a></li>
+                    <li><a href="<?= base_url('sis/crm_settings') ?>"><i class="fa fa-circle-o"></i>Settings</a></li>
                 </ul>
             </li>
             <li class="treeview">

@@ -151,8 +151,16 @@ function post(url,data){
   fd.append(csrfName,csrfHash);
   for(var k in data) fd.append(k,data[k]);
   return fetch(BASE+url,{method:'POST',body:fd,headers:{'X-CSRF-Token':csrfHash,'X-Requested-With':'XMLHttpRequest'}})
-    .then(function(r){return r.json();})
-    .then(function(r){if(r.csrf_hash)csrfHash=r.csrf_hash;return r;});
+    .then(function(r){
+      return r.json().catch(function(){return {};}).then(function(j){
+        if(j&&j.csrf_hash)csrfHash=j.csrf_hash;
+        if(!r.ok||(j&&(j.status==='error'||j.success===false))){
+          var e=new Error((j&&(j.message||j.error))||('Request failed ('+r.status+')'));
+          e.httpStatus=r.status;e.payload=j;throw e;
+        }
+        return j;
+      });
+    });
 }
 
 // Last successful search (saved so we can render a "Back" button when drilling
@@ -181,7 +189,7 @@ function doAuditSearch(){
       lastSearchQuery=q; lastSearchType='student_id';
     }
     renderAuditResults(r,el);
-  }).catch(function(){el.innerHTML='<div style="padding:20px;color:#dc2626">Search failed.</div>';});
+  }).catch(function(e){el.innerHTML='<div style="padding:20px;color:#dc2626">'+esc(e.message||'Search failed.')+'</div>';});
 }
 
 // Restore the previous student-id search (the receipt list).
@@ -446,7 +454,7 @@ function loadStale(){
     // 'Advance Balance Sync Failures' list removed in Phase 9.
 
     el.innerHTML=h;
-  });
+  }).catch(function(e){el.innerHTML='<div style="color:#dc2626;padding:20px">'+esc(e.message||'Failed to scan for stale transactions.')+'</div>';});
 }
 
 // Diagnose a stale processing record
@@ -502,7 +510,7 @@ function diagnoseIssue(idempKey,receiptNo,studentId){
     }
 
     diagDiv.innerHTML=h;
-  });
+  }).catch(function(e){diagDiv.innerHTML='<span style="color:#dc2626">'+esc(e.message||'Diagnosis failed.')+'</span>';});
 }
 
 // View a receipt in the audit search tab. Mark navigation source as 'recovery'
@@ -566,7 +574,7 @@ function confirmResolve(action,key,label){
     } else {
       alert(r.message||'Action failed. Please try again.');
     }
-  }).catch(function(){alert('Request failed.');});
+  }).catch(function(e){alert(e.message||'Request failed.');});
 }
 
 // recalcAdvance removed in Phase 9 — wallet subsystem gone.

@@ -37,13 +37,24 @@ if (!admin.apps.length) admin.initializeApp();
 const db = admin.firestore();
 const REGION = 'us-central1';
 
-// Keep in sync with rbac_helper.php.
-const RBAC_MODULES = [
-  'SIS', 'Fees', 'Accounting', 'Attendance', 'Examinations', 'Results', 'LMS',
-  'Certificates', 'HR', 'Events', 'Communication', 'Operations', 'Library',
-  'Transport', 'Hostel', 'Inventory', 'Assets', 'Academic', 'Reports',
-  'Configuration', 'Admin Users', 'Stories', 'Homework', 'Red Flags',
-];
+// SINGLE SOURCE: rbac_modules.json (bundled beside this file), the SAME catalogue
+// the PHP resolver (rbac_helper.php) loads — so the CF caps mirror and the PHP
+// resolver can never drift (that drift once lost Device Management/Message Monitor
+// on the app side). Emergency inline fallback only if the JSON is unreadable.
+let RBAC_MODULES;
+try {
+  RBAC_MODULES = require('./rbac_modules.json').modules;
+  if (!Array.isArray(RBAC_MODULES) || RBAC_MODULES.length === 0) throw new Error('empty catalogue');
+} catch (e) {
+  logger.error('staffCapabilities: rbac_modules.json unreadable — using inline emergency fallback', e);
+  RBAC_MODULES = [
+    'SIS', 'Fees', 'Accounting', 'Attendance', 'Examinations', 'Results', 'LMS',
+    'Certificates', 'HR', 'Events', 'Communication', 'Operations', 'Library',
+    'Transport', 'Hostel', 'Inventory', 'Assets', 'Academic', 'Reports',
+    'Configuration', 'Admin Users', 'Stories', 'Homework', 'Red Flags',
+    'Device Management', 'Message Monitor',
+  ];
+}
 const MODULE_SET = new Set(RBAC_MODULES);
 const LEVEL_RANK = { view: 1, edit: 2, manage: 3 };
 const BYPASS_ROLES = new Set(['Super Admin', 'School Super Admin', 'Admin']);
@@ -56,18 +67,24 @@ function maxLevel(a, b) {
  * Union of {modules, levels} for a set of role refs (labels OR ROLE_* ids)
  * against a school's staffRoles catalogue. Mirrors PHP resolve_role_access().
  */
-function resolveCapabilities(staffRoles, roleRefs) {
+function resolveCapabilities(staffRoles, roleRefs, legacyRoles) {
+  // Admin-tier (drives staffCapabilities.admin → rules isAdmin() for folded
+  // admins whose token role is now a nominal label): true if any role is a
+  // bypass label, the ROLE_ADMIN id, or a role whose catalogue label is a bypass.
+  let isAdmin = false;
+
   for (const r of roleRefs) {
     if (BYPASS_ROLES.has(r)) {
       const levels = {};
       RBAC_MODULES.forEach((m) => { levels[m] = 'manage'; });
-      return { modules: [...RBAC_MODULES], levels };
+      return { modules: [...RBAC_MODULES], levels, admin: true };
     }
   }
 
   const modules = {};
   const levels = {};
   for (const ref of roleRefs) {
+    if (ref === 'ROLE_ADMIN') isAdmin = true;
     let role = staffRoles[ref] || null;      // match by ROLE_* id
     if (!role) {                             // else by label
       for (const rid of Object.keys(staffRoles)) {
@@ -75,7 +92,20 @@ function resolveCapabilities(staffRoles, roleRefs) {
         if (rr && String(rr.label || '') === ref) { role = rr; break; }
       }
     }
-    if (!role) continue;
+    if (!role) {
+      // FALLBACK: legacy schools.roles[label] (read-only) for un-folded tenants —
+      // mirrors PHP resolve_role_access(); legacy carries no level signal → 'manage'.
+      const legacy = legacyRoles && legacyRoles[ref];
+      if (legacy && Array.isArray(legacy.permissions)) {
+        for (const m of legacy.permissions) {
+          if (!MODULE_SET.has(m)) continue;
+          modules[m] = true;
+          if (!levels[m]) levels[m] = 'manage';
+        }
+      }
+      continue;
+    }
+    if (BYPASS_ROLES.has(String(role.label || ''))) isAdmin = true;
 
     const perms = Array.isArray(role.permissions) ? role.permissions : [];
     const plvls = (role.permissionLevels && typeof role.permissionLevels === 'object')
@@ -87,7 +117,27 @@ function resolveCapabilities(staffRoles, roleRefs) {
       levels[m] = levels[m] ? maxLevel(levels[m], lvl) : lvl;
     }
   }
-  return { modules: Object.keys(modules), levels };
+  return { modules: Object.keys(modules), levels, admin: isAdmin };
+}
+
+/**
+ * Apply a staff member's PER-PERSON overrides (Unified Staff Access, tab 3) on top
+ * of role-resolved caps. Mirrors PHP apply_access_overrides(): extra grants add a
+ * module (raising level), deny removes it absolutely (wins over roles + extra).
+ *   extra: { module: {level} }   deny: { module: {...} } | [module,...]
+ */
+function applyOverrides(caps, extra, deny) {
+  const mods = new Set(caps.modules);
+  const levels = Object.assign({}, caps.levels);
+  for (const m of Object.keys(extra || {})) {
+    if (!MODULE_SET.has(m)) continue;
+    const lv = (extra[m] && extra[m].level) ? String(extra[m].level) : 'view';
+    mods.add(m);
+    levels[m] = levels[m] ? maxLevel(levels[m], lv) : lv;
+  }
+  const denyKeys = Array.isArray(deny) ? deny.map(String) : Object.keys(deny || {});
+  for (const m of denyKeys) { mods.delete(m); delete levels[m]; }
+  return { modules: [...mods], levels };
 }
 
 /** Rebuild one staff member's capability doc. Returns the module list or null. */
@@ -103,18 +153,23 @@ async function rebuildForStaff(schoolId, staffUid) {
   roleRefs = [...new Set(roleRefs.filter(Boolean))];
 
   const schoolSnap = await db.collection('schools').doc(schoolId).get();
-  const staffRoles = (schoolSnap.exists && schoolSnap.data()
-    && typeof schoolSnap.data().staffRoles === 'object' && schoolSnap.data().staffRoles)
-    ? schoolSnap.data().staffRoles : {};
+  const schoolData = (schoolSnap.exists && schoolSnap.data()) ? schoolSnap.data() : {};
+  const staffRoles = (typeof schoolData.staffRoles === 'object' && schoolData.staffRoles) ? schoolData.staffRoles : {};
+  const legacyRoles = (typeof schoolData.roles === 'object' && schoolData.roles) ? schoolData.roles : {};
 
-  const { modules, levels } = resolveCapabilities(staffRoles, roleRefs);
+  const base = resolveCapabilities(staffRoles, roleRefs, legacyRoles);
+  // Per-person overrides (Unified Staff Access tab 3) — extra grants + absolute denies.
+  const extra = (staff.extra && typeof staff.extra === 'object') ? staff.extra : {};
+  const deny  = (staff.deny  && typeof staff.deny  === 'object') ? staff.deny  : {};
+  const eff = applyOverrides({ modules: base.modules, levels: base.levels }, extra, deny);
   await db.collection('staffCapabilities').doc(staffUid).set({
     schoolId,
-    modules,
-    levels,
+    modules: eff.modules,
+    levels: eff.levels,
+    admin: base.admin, // rules isAdmin() OR-arm for folded admins (nominal role claim)
     updatedAt: admin.firestore.FieldValue.serverTimestamp(),
   });
-  return modules;
+  return eff.modules;
 }
 
 // ─── Path 1: staff-app callable ────────────────────────────────────
@@ -140,9 +195,14 @@ exports.onStaffRolesChanged = onDocumentWritten(
     const before = event.data && event.data.before && event.data.before.exists ? event.data.before.data() : {};
     if (!after) return; // deletion — stale caps age out / next refresh fixes
 
-    const rolesBefore = JSON.stringify([before.staff_roles || null, before.primary_role || null, before.role || null]);
-    const rolesAfter = JSON.stringify([after.staff_roles || null, after.primary_role || null, after.role || null]);
-    if (rolesBefore === rolesAfter) return; // no role-relevant change
+    // Capability-relevant fields: roles AND per-person overrides (extra/deny). The
+    // guard MUST include extra/deny — a ⛔ Prohibit or extra grant writes only those
+    // fields, and if they were excluded the caps doc (which backs BOTH the app and
+    // the Firestore rules) would never rebuild, leaving a revocation silently
+    // ineffective until an unrelated role edit happened to fire this trigger.
+    const relBefore = JSON.stringify([before.staff_roles || null, before.primary_role || null, before.role || null, before.extra || null, before.deny || null]);
+    const relAfter = JSON.stringify([after.staff_roles || null, after.primary_role || null, after.role || null, after.extra || null, after.deny || null]);
+    if (relBefore === relAfter) return; // no capability-relevant change
 
     const schoolId = String(after.schoolId || after.school_id || '');
     const staffUid = String(after.staffId || after.userId || '');
@@ -163,9 +223,20 @@ exports.onSchoolRolesChanged = onDocumentWritten(
     if (JSON.stringify(before.staffRoles || null) === JSON.stringify(after.staffRoles || null)) return;
 
     const schoolId = event.params.schoolId;
-    const q = await db.collection('staff').where('schoolId', '==', schoolId).get();
-    logger.info(`[staff-caps] school-roles-change ${schoolId} → rebuilding ${q.size} staff`);
-    for (const doc of q.docs) {
+    // M4: cover BOTH tenant keyings. Some staff docs carry camel `schoolId`, others
+    // only snake `school_id` (or just the `{schoolId}_` doc-id prefix). A single
+    // `schoolId ==` filter silently skips the snake-only docs, so a catalogue change
+    // never refreshes their caps → stale-grant window. Query both, then dedupe by
+    // doc id so a doc carrying both keys isn't rebuilt twice.
+    const [camelQ, snakeQ] = await Promise.all([
+      db.collection('staff').where('schoolId', '==', schoolId).get(),
+      db.collection('staff').where('school_id', '==', schoolId).get(),
+    ]);
+    const staffDocs = new Map();
+    for (const doc of camelQ.docs) staffDocs.set(doc.id, doc);
+    for (const doc of snakeQ.docs) staffDocs.set(doc.id, doc);
+    logger.info(`[staff-caps] school-roles-change ${schoolId} → rebuilding ${staffDocs.size} staff`);
+    for (const doc of staffDocs.values()) {
       const staff = doc.data() || {};
       const staffUid = String(staff.staffId || staff.userId || '');
       if (!staffUid) continue;

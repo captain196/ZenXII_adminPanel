@@ -1,259 +1,175 @@
 <?php
 defined('BASEPATH') or exit('No direct script access allowed');
-// LEAD SYSTEM — Admission analytics dashboard
+// LEAD SYSTEM — Admission analytics (rebuilt to the CRM prototype, 2026-07).
 $esc = function($v) { return htmlspecialchars($v ?? '', ENT_QUOTES, 'UTF-8'); };
 
 $statusColors = [
-    'new'        => '#3b82f6',
-    'contacted'  => '#f59e0b',
-    'interested' => '#8b5cf6',
-    'approved'   => '#22c55e',
-    'admitted'   => '#BC5A3C',
-    'enrolled'   => '#059669',
-    'rejected'   => '#ef4444',
+    'new'=>'#4E82E0','contacted'=>'#DD9433','interested'=>'#9576DA','approved'=>'#2FA875',
+    'admitted'=>'#C05A3B','enrolled'=>'#2AA79C','rejected'=>'#DB5A48',
 ];
+$sourceMeta = [
+    'public_form' => ['label'=>'Public form', 'color'=>'#4E82E0'],
+    'crm'         => ['label'=>'CRM',         'color'=>'#9576DA'],
+    'manual'      => ['label'=>'Manual',      'color'=>'#DD9433'],
+];
+$thisMonth = !empty($by_month) ? (int) end($by_month) : 0;
+$avPal = ['#4E82E0','#DD9433','#9576DA','#2FA875','#C05A3B','#3BB0C9','#E06A9B','#6E8AA8'];
+$tint = function($hex,$a){ $h=ltrim($hex,'#'); if(strlen($h)===3)$h=$h[0].$h[0].$h[1].$h[1].$h[2].$h[2]; $n=hexdec($h); return 'rgba('.(($n>>16)&255).','.(($n>>8)&255).','.($n&255).','.$a.')'; };
 ?>
-
 <style>
-.aa-wrap { padding:20px; max-width:1400px; margin:0 auto; }
-.aa-hdr { display:flex; align-items:center; justify-content:space-between; margin-bottom:22px; }
-.aa-hdr h1 { font-size:1.25rem; color:var(--t1); font-family:var(--font-b); margin:0; }
-.aa-hdr .aa-session { font-size:13px; color:var(--t3); background:var(--bg3); padding:5px 14px; border-radius:20px; }
+.aa-wrap { padding:24px 22px 52px; max-width:1240px; }
+.ac-back { color:var(--t3); font-size:13px; text-decoration:none; display:inline-flex; align-items:center; gap:6px; margin-bottom:14px; }
+.ac-back:hover { color:var(--gold); }
+.aa-hdr { display:flex; align-items:center; gap:14px; padding:18px 22px; margin-bottom:18px;
+    background:var(--bg2); border:1px solid var(--border); border-radius:var(--r); box-shadow:var(--sh); }
+.aa-hdr .ico { width:44px; height:44px; border-radius:10px; background:var(--gold); display:flex; align-items:center; justify-content:center;
+    color:#fff; font-size:18px; box-shadow:0 0 18px var(--gold-glow); flex:0 0 auto; }
+.aa-hdr h1 { font-size:18px; font-weight:700; color:var(--t1); font-family:var(--font-d); margin:0; }
+.aa-hdr .sub { font-size:12px; color:var(--t3); margin-top:2px; }
+.aa-hdr .sess { margin-left:auto; font-size:12px; color:var(--t2); background:var(--bg3); border:1px solid var(--border); padding:5px 12px; border-radius:20px; }
 
-/* Top metric cards */
-.aa-cards { display:grid; grid-template-columns:repeat(auto-fit,minmax(200px,1fr)); gap:16px; margin-bottom:24px; }
-.aa-card {
-    background:var(--bg2); border:1px solid var(--border); border-radius:10px;
-    padding:20px 24px; position:relative; overflow:hidden;
-}
-.aa-card::before {
-    content:''; position:absolute; top:0; left:0; width:4px; height:100%;
-    border-radius:10px 0 0 10px;
-}
-.aa-card.c-total::before  { background:#3b82f6; }
-.aa-card.c-admit::before  { background:#BC5A3C; }
-.aa-card.c-conv::before   { background:#8b5cf6; }
-.aa-card.c-public::before { background:#f59e0b; }
-.aa-card.c-new::before    { background:#ef4444; }
-.aa-card .aa-card-val { font-size:2rem; font-weight:800; color:var(--t1); line-height:1; }
-.aa-card .aa-card-lbl { font-size:11px; color:var(--t3); text-transform:uppercase; letter-spacing:.4px; margin-top:4px; }
-.aa-card .aa-card-sub { font-size:12px; color:var(--t3); margin-top:6px; }
+.aa-cards { display:grid; grid-template-columns:repeat(4,1fr); gap:13px; margin-bottom:18px; }
+.aa-card { background:var(--bg2); border:1px solid var(--border); border-radius:14px; padding:15px 16px; box-shadow:var(--sh); }
+.aa-card .lbl { font-size:11.5px; font-weight:600; color:var(--t3); text-transform:uppercase; letter-spacing:.04em; display:flex; align-items:center; gap:7px; }
+.aa-card .dot { width:8px; height:8px; border-radius:50%; flex:0 0 auto; }
+.aa-card .val { font-size:27px; font-weight:750; margin-top:8px; color:var(--t1); line-height:1; letter-spacing:-.02em; }
+.aa-card .sub { font-size:11.5px; color:var(--t3); margin-top:3px; }
 
-/* Chart grid */
-.aa-charts { display:grid; grid-template-columns:1fr 1fr; gap:20px; margin-bottom:24px; }
-@media(max-width:900px) { .aa-charts { grid-template-columns:1fr; } }
+.aa-charts { display:grid; grid-template-columns:1fr 1fr; gap:16px; margin-bottom:16px; }
+@media(max-width:900px){ .aa-charts { grid-template-columns:1fr; } .aa-cards { grid-template-columns:repeat(2,1fr); } }
+.aa-box { background:var(--bg2); border:1px solid var(--border); border-radius:14px; box-shadow:var(--sh); }
+.aa-box-h { padding:14px 18px; border-bottom:1px solid var(--border); font-size:14px; font-weight:700; color:var(--t1); }
+.aa-box-b { padding:16px 18px; }
 
-.aa-chart-box {
-    background:var(--bg2); border:1px solid var(--border); border-radius:10px; padding:20px 24px;
-}
-.aa-chart-title {
-    font-size:13px; font-weight:700; color:var(--t1); margin-bottom:16px;
-    display:flex; align-items:center; gap:8px;
-}
-.aa-chart-title i { color:var(--gold); }
+.bar-row { display:flex; align-items:center; gap:10px; margin-bottom:10px; font-size:12.5px; }
+.bar-row:last-child { margin-bottom:0; }
+.bar-k { width:84px; color:var(--t2); text-align:right; white-space:nowrap; overflow:hidden; text-overflow:ellipsis; flex:0 0 auto; }
+.bar-track { flex:1; height:22px; background:var(--bg3); border-radius:6px; overflow:hidden; }
+.bar-track i { display:block; height:100%; border-radius:6px; }
+.bar-v { width:30px; text-align:right; font-weight:700; color:var(--t1); }
 
-/* Pure CSS bar chart */
-.bar-chart { display:flex; flex-direction:column; gap:8px; }
-.bar-row { display:flex; align-items:center; gap:10px; }
-.bar-label { width:80px; font-size:12px; color:var(--t2); text-align:right; white-space:nowrap; overflow:hidden; text-overflow:ellipsis; }
-.bar-track { flex:1; height:24px; background:var(--bg3); border-radius:6px; overflow:hidden; position:relative; }
-.bar-fill {
-    height:100%; border-radius:6px; transition:width .6s cubic-bezier(.4,0,.2,1);
-    display:flex; align-items:center; padding-left:8px;
-    font-size:11px; font-weight:600; color:#fff; min-width:0;
-}
-.bar-count { font-size:12px; color:var(--t3); width:36px; text-align:right; }
+.donut { display:flex; align-items:center; gap:20px; flex-wrap:wrap; }
+.donut .ring { width:140px; height:140px; border-radius:50%; flex:0 0 auto; }
+.donut .leg { display:flex; flex-direction:column; gap:9px; }
+.donut .leg div { display:flex; align-items:center; gap:9px; font-size:12.5px; color:var(--t2); }
+.donut .leg .sw { width:11px; height:11px; border-radius:3px; }
+.donut .leg b { color:var(--t1); margin-left:6px; }
 
-/* Pure CSS donut chart */
-.donut-wrap { display:flex; align-items:center; gap:24px; flex-wrap:wrap; }
-.donut-svg { width:160px; height:160px; flex-shrink:0; }
-.donut-legend { display:flex; flex-direction:column; gap:6px; }
-.donut-leg-item { display:flex; align-items:center; gap:8px; font-size:12px; color:var(--t2); }
-.donut-leg-dot { width:10px; height:10px; border-radius:50%; flex-shrink:0; }
-.donut-leg-val { font-weight:700; margin-left:auto; min-width:28px; text-align:right; }
+.trend { display:flex; align-items:flex-end; gap:10px; height:140px; padding-top:8px; }
+.trend .t { flex:1; display:flex; flex-direction:column; align-items:center; gap:6px; justify-content:flex-end; height:100%; }
+.trend .t i { width:100%; max-width:38px; border-radius:6px 6px 0 0; background:var(--gold); opacity:.9; }
+.trend .t .v { font-size:11px; color:var(--t2); font-weight:700; }
+.trend .t .m { font-size:11px; color:var(--t3); }
 
-/* Monthly trend */
-.trend-chart { display:flex; align-items:flex-end; gap:6px; height:120px; padding-top:10px; }
-.trend-bar-wrap { flex:1; display:flex; flex-direction:column; align-items:center; height:100%; justify-content:flex-end; }
-.trend-bar {
-    width:100%; max-width:40px; background:var(--gold); border-radius:4px 4px 0 0;
-    transition:height .5s cubic-bezier(.4,0,.2,1); position:relative;
-}
-.trend-bar:hover { opacity:.85; }
-.trend-bar-val { font-size:10px; color:var(--t1); font-weight:700; text-align:center; margin-bottom:2px; }
-.trend-bar-lbl { font-size:10px; color:var(--t3); margin-top:4px; white-space:nowrap; }
-
-/* Recent leads table */
-.aa-recent { background:var(--bg2); border:1px solid var(--border); border-radius:10px; padding:20px 24px; margin-bottom:24px; }
-.aa-recent h3 { font-size:13px; font-weight:700; color:var(--t1); margin-bottom:12px; display:flex; align-items:center; gap:8px; }
-.aa-recent h3 i { color:var(--gold); }
-.aa-tbl { width:100%; border-collapse:collapse; }
-.aa-tbl th { font-size:10px; text-transform:uppercase; color:var(--t3); letter-spacing:.4px; text-align:left; padding:6px 10px; border-bottom:1px solid var(--border); }
-.aa-tbl td { font-size:12px; padding:8px 10px; border-bottom:1px solid var(--border); color:var(--t1); }
-.aa-tbl tr:hover td { background:var(--gold-dim); }
-.aa-badge {
-    display:inline-block; padding:2px 8px; border-radius:12px; font-size:10px; font-weight:600;
-    text-transform:uppercase; letter-spacing:.3px;
-}
-
-.aa-empty { text-align:center; padding:40px; color:var(--t3); }
-.aa-empty i { font-size:2rem; margin-bottom:8px; display:block; }
+.aa-empty { text-align:center; padding:48px; color:var(--t3); }
+.aa-empty i { font-size:2.2rem; margin-bottom:10px; display:block; opacity:.5; }
 </style>
 
+<div class="content-wrapper">
 <div class="aa-wrap">
 
-<div class="aa-hdr">
-    <h1><i class="fa fa-chart-bar" style="color:var(--gold);margin-right:8px;"></i>Admission Analytics</h1>
-    <span class="aa-session"><i class="fa fa-calendar"></i> <?= $esc($session_year) ?></span>
-</div>
+    <a href="<?= base_url('admission_crm') ?>" class="ac-back"><i class="fa fa-arrow-left"></i> Back to Overview</a>
+
+    <div class="aa-hdr">
+        <div class="ico"><i class="fa fa-line-chart"></i></div>
+        <div>
+            <h1>Admission Analytics</h1>
+            <div class="sub">Conversion, sources &amp; demand — the deep numbers behind the Overview</div>
+        </div>
+        <span class="sess"><i class="fa fa-calendar"></i> <?= $esc($session_year) ?></span>
+    </div>
 
 <?php if ($total === 0): ?>
-<div class="aa-empty">
-    <i class="fa fa-inbox"></i>
-    <p>No admission data for this session yet.</p>
-    <p style="font-size:12px;margin-top:8px;">Leads from the public admission form and CRM will appear here.</p>
-</div>
+    <div class="aa-box"><div class="aa-empty"><i class="fa fa-inbox"></i>No admission data for this session yet.<br><span style="font-size:12px;">Leads from the public form &amp; CRM will appear here.</span></div></div>
 <?php else: ?>
 
-<!-- ── Top Metric Cards ── -->
-<div class="aa-cards">
-    <div class="aa-card c-total">
-        <div class="aa-card-val"><?= $total ?></div>
-        <div class="aa-card-lbl">Total Leads</div>
-        <div class="aa-card-sub"><?= $by_source['public_form'] ?> public, <?= $by_source['crm'] ?> CRM</div>
+    <!-- Metric tiles -->
+    <div class="aa-cards">
+        <div class="aa-card"><div class="lbl"><span class="dot" style="background:#4E82E0"></span>Total applications</div><div class="val"><?= (int)$total ?></div><div class="sub">this session</div></div>
+        <div class="aa-card"><div class="lbl"><span class="dot" style="background:#2FA875"></span>Conversion rate</div><div class="val"><?= $esc($conversion_rate) ?>%</div><div class="sub">admitted / total</div></div>
+        <div class="aa-card"><div class="lbl"><span class="dot" style="background:#C05A3B"></span>Admitted</div><div class="val"><?= (int)$admitted ?></div><div class="sub"><?= (int)($by_status['approved'] ?? 0) ?> approved pending</div></div>
+        <div class="aa-card"><div class="lbl"><span class="dot" style="background:#DD9433"></span>This month</div><div class="val"><?= (int)$thisMonth ?></div><div class="sub">new applications</div></div>
     </div>
-    <div class="aa-card c-admit">
-        <div class="aa-card-val"><?= $admitted ?></div>
-        <div class="aa-card-lbl">Admitted</div>
-        <div class="aa-card-sub"><?= ($by_status['approved'] ?? 0) ?> approved pending</div>
-    </div>
-    <div class="aa-card c-conv">
-        <div class="aa-card-val"><?= $conversion_rate ?>%</div>
-        <div class="aa-card-lbl">Conversion Rate</div>
-        <div class="aa-card-sub">admitted / total leads</div>
-    </div>
-    <div class="aa-card c-new">
-        <div class="aa-card-val"><?= ($by_status['new'] ?? 0) ?></div>
-        <div class="aa-card-lbl">New (Unprocessed)</div>
-        <div class="aa-card-sub">require follow-up</div>
-    </div>
-    <div class="aa-card c-public">
-        <div class="aa-card-val"><?= $by_source['public_form'] ?></div>
-        <div class="aa-card-lbl">From Public Form</div>
-        <div class="aa-card-sub"><?= $total > 0 ? round(($by_source['public_form'] / $total) * 100) : 0 ?>% of total</div>
-    </div>
-</div>
 
-<!-- ── Charts Row ── -->
-<div class="aa-charts">
+    <div class="aa-charts">
+        <!-- Applications by class -->
+        <div class="aa-box">
+            <div class="aa-box-h">Applications by class</div>
+            <div class="aa-box-b">
+                <?php if (empty($by_class)): ?><div class="aa-empty" style="padding:24px">No class data</div><?php else:
+                    $maxC = max(1, max($by_class)); $ci = 0;
+                    foreach ($by_class as $cls => $count): $col = $avPal[$ci++ % count($avPal)]; ?>
+                <div class="bar-row">
+                    <div class="bar-k" title="<?= $esc($cls) ?>"><?= $esc($cls) ?></div>
+                    <div class="bar-track"><i style="width:<?= max(round($count / $maxC * 100),3) ?>%;background:<?= $col ?>"></i></div>
+                    <div class="bar-v"><?= (int)$count ?></div>
+                </div>
+                <?php endforeach; endif; ?>
+            </div>
+        </div>
 
-    <!-- Bar chart: Leads by Class -->
-    <div class="aa-chart-box">
-        <div class="aa-chart-title"><i class="fa fa-school"></i> Leads by Class</div>
-        <?php
-        $maxClassCount = max(1, max($by_class ?: [1]));
-        ?>
-        <div class="bar-chart">
-        <?php foreach ($by_class as $cls => $count): ?>
-            <div class="bar-row">
-                <div class="bar-label" title="<?= $esc($cls) ?>"><?= $esc($cls) ?></div>
-                <div class="bar-track">
-                    <div class="bar-fill" style="width:<?= round(($count / $maxClassCount) * 100) ?>%;background:var(--gold);">
-                        <?= $count >= 3 ? $count : '' ?>
+        <!-- By source (donut) -->
+        <div class="aa-box">
+            <div class="aa-box-h">By source</div>
+            <div class="aa-box-b">
+                <?php
+                $srcActive = array_filter($by_source, fn($v) => $v > 0);
+                if (empty($srcActive)): ?><div class="aa-empty" style="padding:24px">No source data</div><?php else:
+                    $srcTot = max(1, array_sum($srcActive)); $acc = 0; $segs = [];
+                    foreach ($srcActive as $k => $v) { $col = $sourceMeta[$k]['color'] ?? '#6E8AA8'; $a0 = $acc / $srcTot * 360; $acc += $v; $a1 = $acc / $srcTot * 360; $segs[] = "{$col} {$a0}deg {$a1}deg"; }
+                ?>
+                <div class="donut">
+                    <div class="ring" style="background:conic-gradient(<?= implode(',', $segs) ?>);-webkit-mask:radial-gradient(circle 42px at center,transparent 98%,#000 100%);mask:radial-gradient(circle 42px at center,transparent 98%,#000 100%)"></div>
+                    <div class="leg">
+                        <?php foreach ($srcActive as $k => $v): $m = $sourceMeta[$k] ?? ['label'=>ucfirst($k),'color'=>'#6E8AA8']; ?>
+                        <div><span class="sw" style="background:<?= $m['color'] ?>"></span><?= $esc($m['label']) ?><b><?= (int)$v ?></b></div>
+                        <?php endforeach; ?>
                     </div>
                 </div>
-                <div class="bar-count"><?= $count ?></div>
-            </div>
-        <?php endforeach; ?>
-        </div>
-    </div>
-
-    <!-- Donut chart: Leads by Status -->
-    <div class="aa-chart-box">
-        <div class="aa-chart-title"><i class="fa fa-pie-chart"></i> Leads by Status</div>
-        <div class="donut-wrap">
-            <svg class="donut-svg" viewBox="0 0 42 42">
-                <circle cx="21" cy="21" r="15.9" fill="transparent" stroke="var(--bg3)" stroke-width="5"/>
-                <?php
-                $radius = 15.9;
-                $circumference = 2 * M_PI * $radius;
-                $offset = 0;
-                $activeStatuses = array_filter($by_status, fn($v) => $v > 0);
-                foreach ($activeStatuses as $st => $cnt):
-                    $pct = $cnt / max($total, 1);
-                    $dashLen = $pct * $circumference;
-                    $dashGap = $circumference - $dashLen;
-                    $color = $statusColors[$st] ?? '#94a3b8';
-                ?>
-                <circle cx="21" cy="21" r="<?= $radius ?>" fill="transparent"
-                        stroke="<?= $color ?>" stroke-width="5"
-                        stroke-dasharray="<?= round($dashLen, 2) ?> <?= round($dashGap, 2) ?>"
-                        stroke-dashoffset="<?= round(-$offset, 2) ?>"
-                        style="transition:stroke-dashoffset .5s;"/>
-                <?php
-                    $offset += $dashLen;
-                endforeach;
-                ?>
-                <text x="21" y="21" text-anchor="middle" dominant-baseline="central"
-                      style="font-size:5px;font-weight:800;fill:var(--t1);font-family:var(--font-b);">
-                    <?= $total ?>
-                </text>
-            </svg>
-            <div class="donut-legend">
-            <?php foreach ($activeStatuses as $st => $cnt): ?>
-                <div class="donut-leg-item">
-                    <span class="donut-leg-dot" style="background:<?= $statusColors[$st] ?? '#94a3b8' ?>"></span>
-                    <span><?= ucfirst($esc($st)) ?></span>
-                    <span class="donut-leg-val"><?= $cnt ?></span>
-                </div>
-            <?php endforeach; ?>
+                <?php endif; ?>
             </div>
         </div>
     </div>
-</div>
 
-<!-- ── Monthly Trend ── -->
-<?php if (!empty($by_month)): ?>
-<div class="aa-chart-box" style="margin-bottom:24px;">
-    <div class="aa-chart-title"><i class="fa fa-line-chart"></i> Monthly Trend</div>
-    <?php $maxMonth = max(1, max($by_month)); ?>
-    <div class="trend-chart">
-    <?php foreach ($by_month as $monthKey => $cnt): ?>
-        <?php
-        $barHeight = round(($cnt / $maxMonth) * 100);
-        $label = date('M y', strtotime($monthKey . '-01'));
-        ?>
-        <div class="trend-bar-wrap">
-            <div class="trend-bar-val"><?= $cnt ?></div>
-            <div class="trend-bar" style="height:<?= max($barHeight, 4) ?>%;"></div>
-            <div class="trend-bar-lbl"><?= $label ?></div>
+    <!-- Applications over time -->
+    <?php if (!empty($by_month)): ?>
+    <div class="aa-box" style="margin-bottom:16px;">
+        <div class="aa-box-h">Applications over time <span style="font-weight:500;color:var(--t3);font-size:12px;">— last <?= count($by_month) ?> months</span></div>
+        <div class="aa-box-b">
+            <?php $maxM = max(1, max($by_month)); ?>
+            <div class="trend">
+                <?php foreach ($by_month as $mk => $cnt): $h = round($cnt / $maxM * 100); ?>
+                <div class="t"><span class="v"><?= (int)$cnt ?></span><i style="height:<?= max($h,4) ?>%"></i><span class="m"><?= date('M y', strtotime($mk.'-01')) ?></span></div>
+                <?php endforeach; ?>
+            </div>
         </div>
-    <?php endforeach; ?>
     </div>
-</div>
-<?php endif; ?>
+    <?php endif; ?>
 
-<!-- ── Recent Leads ── -->
-<?php if (!empty($recent_leads)): ?>
-<div class="aa-recent">
-    <h3><i class="fa fa-clock-o"></i> Recent Leads</h3>
-    <table class="aa-tbl">
-        <thead><tr><th>ID</th><th>Student</th><th>Class</th><th>Source</th><th>Status</th><th>Date</th></tr></thead>
-        <tbody>
-        <?php foreach ($recent_leads as $l): ?>
-            <tr>
-                <td><code style="font-size:11px;"><?= $esc($l['id']) ?></code></td>
-                <td style="font-weight:600;"><?= $esc($l['name']) ?></td>
-                <td><?= $esc($l['class']) ?></td>
-                <td><?= $l['source'] === 'public_form' ? 'Public' : 'CRM' ?></td>
-                <td><span class="aa-badge" style="background:<?= $statusColors[$l['status']] ?? '#94a3b8' ?>20;color:<?= $statusColors[$l['status']] ?? '#94a3b8' ?>;"><?= $esc($l['status']) ?></span></td>
-                <td style="color:var(--t3);font-size:11px;"><?= $esc($l['date']) ?></td>
-            </tr>
-        <?php endforeach; ?>
-        </tbody>
-    </table>
-</div>
-<?php endif; ?>
+    <!-- Recent leads -->
+    <?php if (!empty($recent_leads)): ?>
+    <div class="aa-box">
+        <div class="aa-box-h">Recent leads</div>
+        <div class="aa-box-b" style="padding:0;overflow-x:auto;">
+            <table style="width:100%;border-collapse:collapse;font-size:13px;">
+                <thead><tr><?php foreach (['Student','Class','Source','Status','Date'] as $h): ?><th style="text-align:left;font-size:11px;text-transform:uppercase;letter-spacing:.05em;color:var(--t3);font-weight:700;padding:11px 18px;border-bottom:1px solid var(--border);"><?= $h ?></th><?php endforeach; ?></tr></thead>
+                <tbody>
+                <?php foreach ($recent_leads as $l): $sc = $statusColors[$l['status']] ?? '#6E8AA8'; ?>
+                    <tr>
+                        <td style="padding:11px 18px;border-bottom:1px solid var(--border);font-weight:600;"><?= $esc($l['name']) ?> <span style="font-weight:400;color:var(--t3);font-size:11px;"><?= $esc($l['id']) ?></span></td>
+                        <td style="padding:11px 18px;border-bottom:1px solid var(--border);"><?= $esc($l['class']) ?></td>
+                        <td style="padding:11px 18px;border-bottom:1px solid var(--border);"><?= $l['source'] === 'public_form' ? 'Public' : 'CRM' ?></td>
+                        <td style="padding:11px 18px;border-bottom:1px solid var(--border);"><span style="display:inline-flex;padding:3px 10px;border-radius:20px;font-size:11.5px;font-weight:650;background:<?= $tint($sc,.14) ?>;color:<?= $sc ?>;"><?= $esc($l['status']) ?></span></td>
+                        <td style="padding:11px 18px;border-bottom:1px solid var(--border);color:var(--t3);font-size:12px;"><?= $esc($l['date']) ?></td>
+                    </tr>
+                <?php endforeach; ?>
+                </tbody>
+            </table>
+        </div>
+    </div>
+    <?php endif; ?>
 
 <?php endif; /* total === 0 */ ?>
+
+</div>
 </div>

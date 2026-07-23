@@ -334,17 +334,21 @@
                             </div>
 
                             <div class="nsa-field">
-                                <label for="city">City</label>
-                                <input type="text" id="city" name="city"
-                                       value="<?= htmlspecialchars($staff_data['Address']['City'] ?? '') ?>"
-                                       class="nsa-input" required>
+                                <label for="state">State</label>
+                                <select id="state" name="state" class="nsa-input"
+                                        data-india-state data-india-fill
+                                        data-india-selected="<?= htmlspecialchars($staff_data['Address']['State'] ?? '') ?>" required>
+                                    <option value=""><?= ($staff_data['Address']['State'] ?? '') !== '' ? htmlspecialchars($staff_data['Address']['State']) : 'Select State' ?></option>
+                                </select>
                             </div>
 
                             <div class="nsa-field">
-                                <label for="state">State</label>
-                                <input type="text" id="state" name="state"
-                                       value="<?= htmlspecialchars($staff_data['Address']['State'] ?? '') ?>"
-                                       class="nsa-input" required>
+                                <label for="city">District</label>
+                                <select id="city" name="city" class="nsa-input"
+                                        data-india-district="state"
+                                        data-india-selected="<?= htmlspecialchars($staff_data['Address']['City'] ?? '') ?>" required>
+                                    <option value=""><?= ($staff_data['Address']['City'] ?? '') !== '' ? htmlspecialchars($staff_data['Address']['City']) : 'Select District' ?></option>
+                                </select>
                             </div>
 
                             <div class="nsa-field">
@@ -376,16 +380,20 @@
                                            class="nsa-input" placeholder="House no., Street name">
                                 </div>
                                 <div class="nsa-field">
-                                    <label for="perm_city">City</label>
-                                    <input type="text" id="perm_city" name="perm_city"
-                                           value="<?= htmlspecialchars($staff_data['permanentAddress']['city'] ?? '') ?>"
-                                           class="nsa-input" placeholder="City / District">
+                                    <label for="perm_state">State</label>
+                                    <select id="perm_state" name="perm_state" class="nsa-input"
+                                            data-india-state data-india-fill
+                                            data-india-selected="<?= htmlspecialchars($staff_data['permanentAddress']['state'] ?? '') ?>">
+                                        <option value=""><?= ($staff_data['permanentAddress']['state'] ?? '') !== '' ? htmlspecialchars($staff_data['permanentAddress']['state']) : 'Select State' ?></option>
+                                    </select>
                                 </div>
                                 <div class="nsa-field">
-                                    <label for="perm_state">State</label>
-                                    <input type="text" id="perm_state" name="perm_state"
-                                           value="<?= htmlspecialchars($staff_data['permanentAddress']['state'] ?? '') ?>"
-                                           class="nsa-input" placeholder="State">
+                                    <label for="perm_city">District</label>
+                                    <select id="perm_city" name="perm_city" class="nsa-input"
+                                            data-india-district="perm_state"
+                                            data-india-selected="<?= htmlspecialchars($staff_data['permanentAddress']['city'] ?? '') ?>">
+                                        <option value=""><?= ($staff_data['permanentAddress']['city'] ?? '') !== '' ? htmlspecialchars($staff_data['permanentAddress']['city']) : 'Select District' ?></option>
+                                    </select>
                                 </div>
                                 <div class="nsa-field">
                                     <label for="perm_postal_code">Postal Code</label>
@@ -686,6 +694,7 @@
 </div><!-- /.content-wrapper -->
 
 
+<script src="<?= base_url('assets/js/india_geo.js') ?>"></script>
 <script>
 
 /* ── Toast ── */
@@ -818,11 +827,17 @@ document.addEventListener('DOMContentLoaded', function() {
         sameChk.addEventListener('change', function() {
             if (this.checked) {
                 permBlock.style.display = 'none';
-                ['street','city','state','postal_code'].forEach(function(k){
+                ['street','state','postal_code'].forEach(function(k){
                     var src = document.getElementById(k);
                     var dst = document.getElementById('perm_' + k);
                     if (src && dst) dst.value = src.value;
                 });
+                // District select must cascade off the copied permanent state.
+                if (window.IndiaGeo) {
+                    IndiaGeo.fillDistricts(document.getElementById('perm_state'), document.getElementById('perm_city'), document.getElementById('city').value);
+                } else {
+                    var pc = document.getElementById('perm_city'); if (pc) pc.value = document.getElementById('city').value;
+                }
             } else {
                 permBlock.style.display = '';
             }
@@ -1170,18 +1185,18 @@ function submitEditForm() {
 @import url('https://fonts.googleapis.com/css2?family=Instrument+Sans:wght@400;500;600;700&family=Lora:wght@500;600;700&display=swap');
 
 :root {
-    --nsa-navy:   #0c1e38;
-    --nsa-green:  #0d7a5f;
+    --nsa-navy:   #2A1C12;
+    --nsa-green:  #2FA875;
     --nsa-teal:   #BC5A3C;
-    --nsa-sky:    #e6f4f1;
-    --nsa-dark:   #15803d;
+    --nsa-sky:    #F7ECE7;
+    --nsa-dark:   #2FA875;
     --nsa-red:    #dc2626;
     --nsa-amber:  #d97706;
-    --nsa-text:   #1a2535;
-    --nsa-muted:  #64748b;
-    --nsa-border: #e2e8f0;
+    --nsa-text:   #22160F;
+    --nsa-muted:  #7A6A5E;
+    --nsa-border: #E7DED6;
     --nsa-white:  #ffffff;
-    --nsa-bg:     #f0f7f5;
+    --nsa-bg:     #F7F4F1;
     --nsa-shadow: 0 1px 12px rgba(12,30,56,.07);
     --nsa-radius: 12px;
 }
@@ -1344,7 +1359,7 @@ function submitEditForm() {
 .nsa-net-salary-box {
     display: flex; align-items: center; justify-content: space-between;
     padding: 12px 18px;
-    background: linear-gradient(135deg, var(--nsa-sky) 0%, #d1fae5 100%);
+    background: linear-gradient(135deg, var(--nsa-sky) 0%, #F3E4DC 100%);
     border: 1.5px solid rgba(188,90,60,.25);
     border-radius: 10px;
 }
@@ -1450,7 +1465,7 @@ function submitEditForm() {
 .phone-ig { display: flex; align-items: stretch; }
 .phone-ig .phone-pfx {
     display: flex; align-items: center; padding: 0 11px;
-    background: var(--nsa-sky, #e6f4f1); color: var(--nsa-text, #1a2535);
+    background: var(--nsa-sky, #F7ECE7); color: var(--nsa-text, #22160F);
     border: 1px solid var(--nsa-border, #e2e8f0); border-right: none;
     border-radius: 8px 0 0 8px; font-size: 13px; font-weight: 600; white-space: nowrap;
 }
@@ -1501,7 +1516,7 @@ function submitEditForm() {
 .nsa-role-chip {
     display: inline-flex; align-items: center; gap: 4px;
     padding: 4px 10px; border-radius: 16px; font-size: 12px; font-weight: 600;
-    background: var(--nsa-sky, #e6f4f1); color: var(--nsa-teal, #BC5A3C);
+    background: var(--nsa-sky, #F7ECE7); color: var(--nsa-teal, #BC5A3C);
     border: 1px solid rgba(188,90,60,.2); cursor: pointer; transition: all .15s;
 }
 .nsa-role-chip:hover { background: rgba(188,90,60,.15); }

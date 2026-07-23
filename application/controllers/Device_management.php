@@ -40,7 +40,7 @@ class Device_management extends MY_Controller
      */
     public function index(): void
     {
-        $this->_require_role(self::ALLOWED_ROLES, 'device_management_view');
+        $this->_require_role(self::ALLOWED_ROLES, 'device_management_view', 'Device Management', 'view');
 
         $data = [
             'page_title' => 'Device Management',
@@ -60,7 +60,7 @@ class Device_management extends MY_Controller
      */
     public function get_overview(): void
     {
-        $this->_require_role(self::ALLOWED_ROLES, 'device_overview');
+        $this->_require_role(self::ALLOWED_ROLES, 'device_overview', 'Device Management', 'view');
 
         try {
             $users = $this->_collect_all_users();
@@ -153,7 +153,7 @@ class Device_management extends MY_Controller
      */
     public function search_user(): void
     {
-        $this->_require_role(self::ALLOWED_ROLES, 'device_search_user');
+        $this->_require_role(self::ALLOWED_ROLES, 'device_search_user', 'Device Management', 'view');
 
         $query = trim($this->input->post('query', TRUE) ?? '');
         if ($query === '') {
@@ -245,7 +245,7 @@ class Device_management extends MY_Controller
      */
     public function list_devices(): void
     {
-        $this->_require_role(self::ALLOWED_ROLES, 'device_list');
+        $this->_require_role(self::ALLOWED_ROLES, 'device_list', 'Device Management', 'view');
 
         $userId = trim($this->input->post('user_id', TRUE) ?? '');
         if ($userId === '') {
@@ -276,7 +276,7 @@ class Device_management extends MY_Controller
      */
     public function remove_device(): void
     {
-        $this->_require_role(['Super Admin', 'Admin'], 'device_remove');
+        $this->_require_role(['Super Admin', 'Admin'], 'device_remove', 'Device Management', 'manage');
 
         $userId   = trim($this->input->post('user_id', TRUE) ?? '');
         $deviceId = trim($this->input->post('device_id', TRUE) ?? '');
@@ -313,7 +313,7 @@ class Device_management extends MY_Controller
      */
     public function block_device(): void
     {
-        $this->_require_role(['Super Admin', 'Admin'], 'device_block');
+        $this->_require_role(['Super Admin', 'Admin'], 'device_block', 'Device Management', 'manage');
 
         $userId   = trim($this->input->post('user_id', TRUE) ?? '');
         $deviceId = trim($this->input->post('device_id', TRUE) ?? '');
@@ -352,7 +352,7 @@ class Device_management extends MY_Controller
      */
     public function unblock_device(): void
     {
-        $this->_require_role(['Super Admin', 'Admin'], 'device_unblock');
+        $this->_require_role(['Super Admin', 'Admin'], 'device_unblock', 'Device Management', 'manage');
 
         $userId     = trim($this->input->post('user_id', TRUE) ?? '');
         $deviceId   = trim($this->input->post('device_id', TRUE) ?? '');
@@ -405,7 +405,7 @@ class Device_management extends MY_Controller
      */
     public function get_all_users_devices(): void
     {
-        $this->_require_role(self::ALLOWED_ROLES, 'device_bulk_overview');
+        $this->_require_role(self::ALLOWED_ROLES, 'device_bulk_overview', 'Device Management', 'view');
 
         try {
             $users = $this->_collect_all_users();
@@ -472,7 +472,7 @@ class Device_management extends MY_Controller
      */
     public function get_suspicious_activity(): void
     {
-        $this->_require_role(self::ALLOWED_ROLES, 'device_security_alerts');
+        $this->_require_role(self::ALLOWED_ROLES, 'device_security_alerts', 'Device Management', 'view');
 
         try {
             $users  = $this->_collect_all_users();
@@ -597,7 +597,7 @@ class Device_management extends MY_Controller
      */
     public function bulk_remove(): void
     {
-        $this->_require_role(['Super Admin', 'Admin'], 'device_bulk_remove');
+        $this->_require_role(['Super Admin', 'Admin'], 'device_bulk_remove', 'Device Management', 'manage');
 
         $userId = trim($this->input->post('user_id', TRUE) ?? '');
         if ($userId === '') {

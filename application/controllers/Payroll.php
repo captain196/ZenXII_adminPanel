@@ -81,7 +81,7 @@ class Payroll extends MY_Controller
      */
     public function index(): void
     {
-        $this->_require_role(self::FINANCE_ROLES);
+        $this->_require_role(self::FINANCE_ROLES, "", "HR", "view");
         $data = [
             'page_title'      => 'Payroll Posting',
             'flag_enabled'    => (bool) $this->config->item('payroll_engine_integration'),
@@ -99,7 +99,7 @@ class Payroll extends MY_Controller
 
     public function preview_accrual(): void
     {
-        $this->_require_role(self::FINANCE_ROLES);
+        $this->_require_role(self::FINANCE_ROLES, "", "HR", "view");
         $payload = $this->_collectAccrualPayload();
         $err = $this->_validateAccrualPayload($payload);
         if ($err !== '') $this->json_error($err);
@@ -120,7 +120,7 @@ class Payroll extends MY_Controller
 
     public function preview_payout(): void
     {
-        $this->_require_role(self::FINANCE_ROLES);
+        $this->_require_role(self::FINANCE_ROLES, "", "HR", "view");
         $payload = $this->_collectPayoutPayload();
         $err = $this->_validatePayoutPayload($payload);
         if ($err !== '') $this->json_error($err);
@@ -146,7 +146,7 @@ class Payroll extends MY_Controller
 
     public function preview_statutory(): void
     {
-        $this->_require_role(self::FINANCE_ROLES);
+        $this->_require_role(self::FINANCE_ROLES, "", "HR", "view");
         $payload = $this->_collectStatutoryPayload();
         $err = $this->_validateStatutoryPayload($payload);
         if ($err !== '') $this->json_error($err);
@@ -176,7 +176,7 @@ class Payroll extends MY_Controller
 
     public function post_accrual(): void
     {
-        $this->_require_role(self::FINANCE_ROLES);
+        $this->_require_role(self::FINANCE_ROLES, "", "HR", "edit");
         if (!$this->_assertFlagEnabled()) return;
         $payload = $this->_collectAccrualPayload();
         $err = $this->_validateAccrualPayload($payload);
@@ -190,7 +190,7 @@ class Payroll extends MY_Controller
 
     public function post_payout(): void
     {
-        $this->_require_role(self::FINANCE_ROLES);
+        $this->_require_role(self::FINANCE_ROLES, "", "HR", "edit");
         if (!$this->_assertFlagEnabled()) return;
         $payload = $this->_collectPayoutPayload();
         $err = $this->_validatePayoutPayload($payload);
@@ -204,7 +204,7 @@ class Payroll extends MY_Controller
 
     public function post_statutory_deposit(): void
     {
-        $this->_require_role(self::FINANCE_ROLES);
+        $this->_require_role(self::FINANCE_ROLES, "", "HR", "edit");
         if (!$this->_assertFlagEnabled()) return;
         $payload = $this->_collectStatutoryPayload();
         $err = $this->_validateStatutoryPayload($payload);
@@ -218,7 +218,7 @@ class Payroll extends MY_Controller
 
     public function post_reversal(): void
     {
-        $this->_require_role(self::FINANCE_ROLES);
+        $this->_require_role(self::FINANCE_ROLES, "", "HR", "manage");
         if (!$this->_assertFlagEnabled()) return;
         $originalEntryId = trim((string) $this->input->post('original_entry_id'));
         $reason          = trim((string) $this->input->post('reason'));
@@ -257,7 +257,7 @@ class Payroll extends MY_Controller
      */
     public function get_period_accruals(): void
     {
-        $this->_require_role(self::FINANCE_ROLES);
+        $this->_require_role(self::FINANCE_ROLES, "", "HR", "view");
         $period = trim((string) $this->input->get('period_label'));
         if ($period === '') $this->json_error('period_label is required.');
         $repo = $this->_opsRepo();
@@ -267,7 +267,7 @@ class Payroll extends MY_Controller
 
     public function get_period_payouts(): void
     {
-        $this->_require_role(self::FINANCE_ROLES);
+        $this->_require_role(self::FINANCE_ROLES, "", "HR", "view");
         $period = trim((string) $this->input->get('period_label'));
         if ($period === '') $this->json_error('period_label is required.');
         $repo = $this->_opsRepo();
@@ -277,7 +277,7 @@ class Payroll extends MY_Controller
 
     public function get_period_statutory(): void
     {
-        $this->_require_role(self::FINANCE_ROLES);
+        $this->_require_role(self::FINANCE_ROLES, "", "HR", "view");
         $period = trim((string) $this->input->get('period_label'));
         if ($period === '') $this->json_error('period_label is required.');
         $repo = $this->_opsRepo();
@@ -287,7 +287,7 @@ class Payroll extends MY_Controller
 
     public function get_employee_history(): void
     {
-        $this->_require_role(self::FINANCE_ROLES);
+        $this->_require_role(self::FINANCE_ROLES, "", "HR", "view");
         $emp = trim((string) $this->input->get('employee_id'));
         if ($emp === '') $this->json_error('employee_id is required.');
         $repo = $this->_opsRepo();
@@ -306,7 +306,7 @@ class Payroll extends MY_Controller
      */
     public function get_recent_posts(): void
     {
-        $this->_require_role(self::FINANCE_ROLES);
+        $this->_require_role(self::FINANCE_ROLES, "", "HR", "view");
         $rows = (array) $this->firebase->firestoreQuery('accounting', [
             ['schoolId', '==', $this->school_id],
             ['session',  '==', $this->session_year],

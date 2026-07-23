@@ -399,7 +399,7 @@ function toast(msg, err) {
     --ap-bg: var(--bg, #f0f6f5);
     --ap-card: var(--bg2, #ffffff);
     --ap-bg3: var(--bg3, #f7faf9);
-    --ap-shadow: var(--sh, 0 2px 16px rgba(13,115,119,.10));
+    --ap-shadow: var(--sh, 0 2px 16px rgba(188,90,60,.10));
     --ap-radius: var(--r, 12px);
     --ap-green: #15803d;
     --ap-red: #dc2626;

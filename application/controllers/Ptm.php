@@ -102,9 +102,13 @@ class Ptm extends MY_Controller
 
     private function _require_admin(): void
     {
+        // Unified RBAC: an Events:manage capability holder passes; the legacy
+        // ADMIN_ROLES name-list stays as the fallback so no system role loses
+        // access. (Ptm shares the Events module — see the constructor gate.)
+        if (has_permission('Events', 'manage')) return;
         if (!in_array($this->admin_role, self::ADMIN_ROLES, true)) {
             if ($this->input->is_ajax_request()) $this->json_error('Access denied.', 403);
-            redirect(base_url('admin'));
+            redirect(rbac_denied_url('Events', 'manage'));
         }
     }
 
@@ -159,7 +163,7 @@ class Ptm extends MY_Controller
     public function index()
     {
         if (!in_array($this->admin_role, self::VIEW_ROLES, true)) {
-            redirect(base_url('admin'));
+            redirect(rbac_denied_url('Events', 'view'));
         }
         $data = ['active_tab' => 'ptm'];
         $this->load->view('include/header', $data);
@@ -205,7 +209,7 @@ class Ptm extends MY_Controller
     public function rsvps(string $ptmEventId = '')
     {
         if (!in_array($this->admin_role, self::VIEW_ROLES, true)) {
-            redirect(base_url('admin'));
+            redirect(rbac_denied_url('Events', 'view'));
         }
         if ($ptmEventId === '') redirect(base_url('ptm'));
 

@@ -259,21 +259,23 @@ document.addEventListener('DOMContentLoaded', function() {
         xhr.onload = function() {
             btn.disabled = false;
             btn.innerHTML = '<i class="fa fa-save"></i> Save Configuration';
-            try {
-                var res = JSON.parse(xhr.responseText);
-                if (res.csrf_hash) csrfHash = res.csrf_hash;
+            var res = null;
+            try { res = JSON.parse(xhr.responseText); } catch (ex) {}
+            if (res && res.csrf_hash) {
+                csrfHash = res.csrf_hash;
                 var csrfInput = document.getElementById('fmCsrfToken');
-                if (csrfInput && res.csrf_hash) csrfInput.value = res.csrf_hash;
-
-                if (res.status === 'success' || res.success) {
-                    showToast(res.message || 'Configuration saved', 'success');
-                    updateStatusPanel(fd);
-                } else {
-                    showToast(res.message || 'Failed to save', 'error');
-                }
-            } catch (ex) {
-                showToast('Invalid server response', 'error');
+                if (csrfInput) csrfInput.value = res.csrf_hash;
             }
+            // A denied (403) / session (401) / server (500) response — or an
+            // error-flagged body — must never show success. XHR delivers these
+            // to onload just like a 2xx, so gate on the HTTP status too, not
+            // only the body flag.
+            if (xhr.status < 200 || xhr.status >= 300 || !res || (res.status !== 'success' && !res.success)) {
+                showToast((res && res.message) || (res ? 'Failed to save' : 'Invalid server response'), 'error');
+                return;
+            }
+            showToast(res.message || 'Configuration saved', 'success');
+            updateStatusPanel(fd);
         };
         xhr.onerror = function() {
             btn.disabled = false;
@@ -378,7 +380,7 @@ document.addEventListener('DOMContentLoaded', function() {
     --fm-border: var(--border, #d1e8e4);
     --fm-bg: var(--bg, #f0f6f5);
     --fm-card: var(--bg2, #ffffff);
-    --fm-shadow: var(--sh, 0 2px 16px rgba(13,115,119,.10));
+    --fm-shadow: var(--sh, 0 2px 16px rgba(188,90,60,.10));
     --fm-radius: var(--r, 12px);
     font-family: 'Plus Jakarta Sans', var(--font-b, sans-serif);
     padding: 18px 22px 40px;
@@ -460,13 +462,13 @@ document.addEventListener('DOMContentLoaded', function() {
 }
 .fm-gw-provider:hover {
     border-color: var(--fm-teal);
-    box-shadow: 0 4px 20px rgba(13,115,119,.12);
+    box-shadow: 0 4px 20px rgba(188,90,60,.12);
     transform: translateY(-2px);
 }
 .fm-gw-provider-active {
     border-color: var(--fm-teal);
     background: var(--fm-sky);
-    box-shadow: 0 4px 20px rgba(13,115,119,.15);
+    box-shadow: 0 4px 20px rgba(188,90,60,.15);
 }
 .fm-gw-provider-active .fm-gw-check {
     opacity: 1;
@@ -551,7 +553,7 @@ document.addEventListener('DOMContentLoaded', function() {
 .fm-input:focus {
     outline: none;
     border-color: var(--fm-teal);
-    box-shadow: 0 0 0 3px rgba(13,115,119,.1);
+    box-shadow: 0 0 0 3px rgba(188,90,60,.1);
 }
 .fm-input[readonly] { background: var(--bg3, #f7faf9); color: var(--fm-muted); cursor: default; }
 .fm-input-ro { background: var(--bg3, #f7faf9); color: var(--fm-muted); font-size: 12px; }

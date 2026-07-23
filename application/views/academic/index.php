@@ -1,4 +1,12 @@
 <?php defined('BASEPATH') or exit('No direct script access allowed'); ?>
+<?php
+    // Graded RBAC — the view self-computes the user's Academic level so the UI can
+    // reflect it (server still enforces via _require_role). edit → save curriculum /
+    // lesson plans / topic status; manage → subject assignments, matrix, timetable,
+    // substitutes, calendar events, deletes.
+    $acad_can_edit   = function_exists('has_permission') ? has_permission('Academic', 'edit')   : true;
+    $acad_can_manage = function_exists('has_permission') ? has_permission('Academic', 'manage') : true;
+?>
 
 <style>
 html{font-size:16px !important}
@@ -263,9 +271,31 @@ html{font-size:16px !important}
 .sa-toggle input:checked + .track:before{transform:translateX(16px);background:#fff}
 .sa-remove{width:28px;height:28px;border-radius:6px;border:none;background:transparent;color:var(--t3);cursor:pointer;transition:color .15s}
 .sa-remove:hover{color:#dc2626}
+/* ── Loading & progress primitives (shared across all Academic tabs) ── */
+@keyframes ac-loadbar-slide{0%{left:-40%;width:40%}50%{width:58%}100%{left:100%;width:40%}}
+@keyframes ac-spin{to{transform:rotate(360deg)}}
+@keyframes ac-shimmer{0%{background-position:200% 0}100%{background-position:-200% 0}}
+.ac-loadbar{position:fixed;top:0;left:0;right:0;height:3px;z-index:99999;background:var(--gold-dim,rgba(188,90,60,.15));overflow:hidden;opacity:0;transition:opacity .18s ease;pointer-events:none}
+.ac-loadbar.on{opacity:1}
+.ac-loadbar:before{content:'';position:absolute;top:0;height:100%;width:40%;left:-40%;border-radius:3px;background:linear-gradient(90deg,transparent,var(--gold,#BC5A3C),transparent);animation:ac-loadbar-slide 1.1s ease-in-out infinite}
+.ac-spin{display:inline-block;width:14px;height:14px;border:2px solid currentColor;border-top-color:transparent;border-radius:50%;animation:ac-spin .7s linear infinite;vertical-align:-2px}
+.is-loading{position:relative;color:transparent !important;pointer-events:none;opacity:.9}
+.is-loading:after{content:'';position:absolute;top:50%;left:50%;width:15px;height:15px;margin:-8px 0 0 -8px;border:2px solid currentColor;border-top-color:transparent;border-radius:50%;color:#fff;animation:ac-spin .7s linear infinite}
+.is-loading.ac-btn-light:after,.is-loading[data-spin="dark"]:after{color:var(--gold,#BC5A3C)}
+.ac-rel{position:relative}
+.ac-loading-overlay{position:absolute;inset:0;z-index:20;display:flex;align-items:center;justify-content:center;gap:10px;background:rgba(127,127,127,.06);backdrop-filter:blur(1px);-webkit-backdrop-filter:blur(1px);font-size:13px;font-weight:650;color:var(--t2);border-radius:inherit}
+.ac-loading-overlay .ac-spin{width:20px;height:20px;color:var(--gold,#BC5A3C)}
+.ac-skel{background:linear-gradient(90deg,var(--bg2,#f1f1f1) 25%,var(--bg3,#e7e7e7) 37%,var(--bg2,#f1f1f1) 63%);background-size:200% 100%;animation:ac-shimmer 1.3s ease-in-out infinite;border-radius:8px}
+.ac-skel-row{height:14px;margin:8px 0}
+/* read-only banner shown when the user lacks the level for a tab's actions */
+.ac-ro-banner{display:flex;align-items:center;gap:9px;padding:10px 14px;margin:0 0 12px;border-radius:10px;font-size:13px;font-weight:600;background:rgba(37,99,235,.08);color:#1d4ed8;border:1px solid rgba(37,99,235,.2)}
+/* permission-gated controls — disabled, never hidden */
+.ac-btn-disabled,.ac-btn:disabled,button.ac-btn[disabled]{opacity:.5 !important;cursor:not-allowed !important;pointer-events:none;box-shadow:none !important}
+@media (prefers-reduced-motion:reduce){.ac-loadbar:before,.ac-spin,.is-loading:after,.ac-skel{animation-duration:.01ms;animation-iteration-count:1}}
 </style>
 
 <div class="content-wrapper">
+<div class="ac-loadbar" id="acLoadbar"></div>
 <div class="ac-wrap">
 
     <!-- Header -->
@@ -298,9 +328,8 @@ html{font-size:16px !important}
                     <select id="saClassSelect" style="padding:5px 10px;border:1px solid var(--border);border-radius:6px;background:var(--bg3);color:var(--t1);font-size:12px;min-width:160px">
                         <option value="">Select Class...</option>
                     </select>
-                    <?php if (in_array($admin_role ?? '', ['Admin', 'Principal', 'Super Admin', 'School Super Admin'])): ?>
+                    <?php // Gating is applied client-side (disable, not hide) via acApplyGating() using $acad_can_manage ?>
                     <button class="ac-btn ac-btn-s ac-btn-sm" onclick="AC.sa.copyFrom()" title="Copy assignments from another class"><i class="fa fa-copy"></i> Copy From</button>
-                    <?php endif; ?>
                     <button class="ac-btn ac-btn-s ac-btn-sm" onclick="AC.sa.load(this)"><i class="fa fa-refresh"></i> Refresh</button>
                 </div>
             </div>
@@ -332,8 +361,7 @@ html{font-size:16px !important}
                     <!-- Assigned subjects table -->
                     <div id="saTable" style="margin-bottom:16px"></div>
 
-                    <!-- Add subject area -->
-                    <?php if (in_array($admin_role ?? '', ['Admin', 'Principal', 'Super Admin', 'School Super Admin'])): ?>
+                    <!-- Add subject area (gated client-side via $acad_can_manage) -->
                     <div style="border-top:1px solid var(--border);padding-top:14px">
                         <h4 style="font-size:12px;font-weight:700;color:var(--t2);margin-bottom:10px"><i class="fa fa-plus-circle" style="color:var(--gold)"></i> Add Subject from Catalog</h4>
                         <div id="saCatalog" style="display:flex;gap:6px;flex-wrap:wrap"></div>
@@ -341,7 +369,6 @@ html{font-size:16px !important}
                             <button class="ac-btn ac-btn-p" onclick="AC.sa.save(this)"><i class="fa fa-save"></i> Save Assignments</button>
                         </div>
                     </div>
-                    <?php endif; ?>
                 </div>
             </div>
         </div>
@@ -361,7 +388,7 @@ html{font-size:16px !important}
                     <div id="psSummaryContent" style="font-size:12px;color:var(--t1);line-height:1.8"><span style="color:var(--t3)"><i class="fa fa-spinner fa-spin"></i> Loading schedule…</span></div>
                 </div>
 
-                <?php if (in_array($admin_role ?? '', ['Admin', 'Principal', 'Super Admin', 'School Super Admin'])): ?>
+                <?php // Config always renders; gated client-side (disable, not hide) via $acad_can_manage ?>
                 <!-- Timing Configuration -->
                 <div style="margin-bottom:20px">
                     <h4 style="font-size:12px;font-weight:700;color:var(--t2);margin-bottom:12px"><i class="fa fa-clock-o" style="color:var(--gold);margin-right:4px"></i> School Timings</h4>
@@ -407,9 +434,6 @@ html{font-size:16px !important}
                 <div style="border-top:1px solid var(--border);padding-top:14px">
                     <button class="ac-btn ac-btn-p" onclick="AC.ps.save(this)"><i class="fa fa-save"></i> Save Schedule</button>
                 </div>
-                <?php else: ?>
-                <div class="ac-empty"><i class="fa fa-lock"></i>Only Admin or Principal can modify the period schedule</div>
-                <?php endif; ?>
             </div>
         </div>
     </div>
@@ -541,9 +565,8 @@ html{font-size:16px !important}
                     <select id="ttClassFilter" style="padding:5px 10px;border:1px solid var(--border);border-radius:6px;background:var(--bg3);color:var(--t1);font-size:12px;min-width:120px">
                         <option value="">All Classes</option>
                     </select>
-                    <?php if (in_array($admin_role ?? '', ['Admin', 'Principal', 'Super Admin', 'School Super Admin'])): ?>
+                    <?php // Gated client-side (disable, not hide) via $acad_can_manage ?>
                     <button class="ac-btn ac-btn-p ac-btn-sm" onclick="AC.tt.autoGenerate()" title="Auto-generate full timetable from subject assignments"><i class="fa fa-magic"></i> Auto Generate</button>
-                    <?php endif; ?>
                     <button class="ac-btn ac-btn-s ac-btn-sm" onclick="AC.tt.copyDay()" title="Copy this day's timetable to another day"><i class="fa fa-copy"></i> Copy Day</button>
                     <button class="ac-btn ac-btn-s ac-btn-sm" onclick="AC.tt.printTT()" title="Print timetable"><i class="fa fa-print"></i> Print</button>
                     <button class="ac-btn ac-btn-s ac-btn-sm" onclick="AC.tt.load(this)"><i class="fa fa-refresh"></i> Refresh</button>
@@ -763,18 +786,32 @@ var CSRF_TOKEN = '<?= $this->security->get_csrf_hash() ?>';
 
 /* ── Helpers ── */
 function esc(s){var d=document.createElement('div');d.textContent=s||'';return d.innerHTML}
+// Top progress bar — driven by a busy counter so EVERY request shows it.
+var _acBusy = 0;
+function acBusyStart(){ _acBusy++; var b=document.getElementById('acLoadbar'); if(b) b.classList.add('on'); }
+function acBusyEnd(){ _acBusy=Math.max(0,_acBusy-1); if(!_acBusy){ var b=document.getElementById('acLoadbar'); if(b) b.classList.remove('on'); } }
 function post(url,params){
     params = params || {};
     params[CSRF_NAME] = CSRF_TOKEN;
+    acBusyStart();
     return fetch(BASE+url,{
         method:'POST',
         headers:{'Content-Type':'application/x-www-form-urlencoded','X-Requested-With':'XMLHttpRequest'},
         body:new URLSearchParams(params).toString(),
         credentials:'include'
-    }).then(function(r){return r.json()}).then(function(d){
-        if(d.csrf_token) CSRF_TOKEN=d.csrf_token;
-        return d;
-    });
+    }).then(function(r){
+        // Fail-closed: the server is the source of truth. A denied (403) / failed
+        // (400/500) response is non-2xx here, so reject with the real message
+        // instead of resolving into a false "success". Callers must .catch it.
+        return r.json().catch(function(){return {};}).then(function(d){
+            if(d && d.csrf_token) CSRF_TOKEN=d.csrf_token;
+            if(!r.ok){
+                var e=new Error((d && (d.message||d.error)) || ('Request failed ('+r.status+')'));
+                e.httpStatus=r.status; e.payload=d; throw e;
+            }
+            return d;
+        });
+    }).finally(acBusyEnd);
 }
 function toast(msg,ok){
     var t=document.getElementById('acToast');
@@ -957,9 +994,78 @@ function acPsSkeletonHTML(){
     return h;
 }
 
-/* ── RBAC ── */
+/* ── RBAC ──
+   Graded Academic permission, sourced from the server-computed PHP flags so the
+   UI reflects the SAME truth the controller enforces. edit → curriculum /
+   lesson-plan / topic-status writes. manage → subject assignments, matrix,
+   timetable, substitutes, calendar events, deletes. Read/browse = everyone. */
 var _role='<?= htmlspecialchars($admin_role ?? "Admin", ENT_QUOTES) ?>';
-var _canEdit=(_role==='Admin'||_role==='Principal'||_role==='Super Admin'||_role==='School Super Admin');
+var AC_CAN_EDIT   = <?= $acad_can_edit   ? 'true' : 'false' ?>;
+var AC_CAN_MANAGE = <?= $acad_can_manage ? 'true' : 'false' ?>;
+// Inline Subject×Section matrix + timetable-cell editing are MANAGE-level, so
+// the render gate reflects the real manage permission (was role-name based).
+var _canEdit = AC_CAN_MANAGE;
+
+/* Belt-and-suspenders JS guard — server still enforces, but block the mutation
+   client-side and explain why. level: 'edit' | 'manage'. Returns true if allowed. */
+function acGuard(level){
+    var ok = (level==='manage') ? AC_CAN_MANAGE : AC_CAN_EDIT;
+    if(!ok) toast(level==='manage'
+        ? "View-only — you don't have permission to manage this."
+        : "View-only — you don't have permission to edit this.", false);
+    return ok;
+}
+/* Prepend a read-only banner to a pane (once). */
+function acRoBanner(paneId, text){
+    var pane=document.getElementById(paneId);
+    if(!pane || pane.querySelector('.ac-ro-banner')) return;
+    var b=document.createElement('div');
+    b.className='ac-ro-banner';
+    b.innerHTML='<i class="fa fa-lock" aria-hidden="true"></i> '+esc(text);
+    pane.insertBefore(b, pane.firstChild);
+}
+/* Disable (never hide) every button/input inside a pane whose onclick matches
+   one of the given substrings — plus optional extra selectors. */
+function acDisable(paneId, matchers, selectors){
+    var pane=document.getElementById(paneId);
+    if(!pane) return;
+    pane.querySelectorAll('button[onclick]').forEach(function(btn){
+        var oc=btn.getAttribute('onclick')||'';
+        for(var i=0;i<matchers.length;i++){
+            if(oc.indexOf(matchers[i])>-1){
+                btn.disabled=true; btn.classList.add('ac-btn-disabled');
+                btn.setAttribute('aria-disabled','true');
+                if(!btn.title) btn.title='You do not have permission for this action';
+                break;
+            }
+        }
+    });
+    (selectors||[]).forEach(function(sel){
+        pane.querySelectorAll(sel).forEach(function(el){
+            el.disabled=true; el.classList.add('ac-btn-disabled');
+        });
+    });
+}
+/* Apply level gating across every tab once the DOM is ready. */
+function acApplyGating(){
+    if(!AC_CAN_MANAGE){
+        acRoBanner('pane-subjects',   "View-only — you can view subject assignments but can't change them.");
+        acDisable('pane-subjects', ['AC.sa.copyFrom','AC.sa.save','AC.sa.addSub']);
+        acRoBanner('pane-scheduling', "View-only — you can view the period schedule but can't edit it.");
+        acDisable('pane-scheduling', ['AC.ps.save','AC.ps.addRecess'], ['#psStartTime','#psEndTime','#psPeriods']);
+        acRoBanner('pane-timetable',  "View-only — you can view the timetable but can't edit it.");
+        acDisable('pane-timetable', ['AC.tt.autoGenerate','AC.tt.copyDay']);
+        acRoBanner('pane-substitutes',"View-only — you can view substitute records but can't assign them.");
+        acDisable('pane-substitutes', ['AC.sub.showForm','AC.sub.saveNew']);
+        acRoBanner('pane-calendar',   "View-only — you can view the calendar but can't add or edit events.");
+        acDisable('pane-calendar', ['AC.cal.showAddForm','AC.cal.saveEvent','AC.cal.deleteEditingEvent']);
+    }
+    if(!AC_CAN_EDIT){
+        acRoBanner('pane-curriculum', "View-only — you can view the curriculum but can't edit it.");
+        acDisable('pane-curriculum', ['AC.cur.toggleForm','AC.cur.addTopic']);
+        acRoBanner('pane-planner',    "View-only — you can view lesson plans but can't edit them.");
+    }
+}
 
 /* ── Tab Switching ── */
 document.getElementById('acTabs').addEventListener('click',function(e){
@@ -990,6 +1096,11 @@ function loadSharedData(cb){
             _classes=d.classes||[];
             _subjects=d.subjects||{};
         }
+        cb();
+    }).catch(function(e){
+        // Fail-closed but don't hang the caller — proceed so the tab can show
+        // its own empty/error state instead of an eternal skeleton.
+        toast((e&&e.message)||'Failed to load class data',false);
         cb();
     });
 }
@@ -1057,6 +1168,9 @@ AC.sa = {
 
                 document.getElementById('saContent').innerHTML='';
             });
+        }).catch(function(e){
+            document.getElementById('saContent').innerHTML='<div class="ac-empty"><i class="fa fa-exclamation-triangle"></i> '+esc((e&&e.message)||'Failed to load subject assignments')+'</div>';
+            AC.sa._loaded=false; // allow a retry on next tab visit
         });
     },
 
@@ -1464,6 +1578,7 @@ AC.sa = {
     },
 
     addSub:function(code,name,category){
+        if(!acGuard('manage')) return;
         AC.sa._matrix.subjects.push({code:code,name:name,category:category||'Core',periods_week:0,same_for_all:true,class_wide_teacher_id:'',class_wide_teacher_name:'',section_teachers:{}});
         AC.sa._renderMatrix();
         var sel=document.getElementById('saClassSelect');
@@ -1480,6 +1595,7 @@ AC.sa = {
     },
 
     save:function(btn){
+        if(!acGuard('manage')) return;
         if(!AC.sa._currentKey){toast('Select a class first',false);return}
         var M=AC.sa._matrix, subs=M.subjects||[], ps=AC.sa._periodSettings;
 
@@ -1491,11 +1607,13 @@ AC.sa = {
             if(totalP>ps.maxPeriodsPerWeek){ toast('Total periods ('+totalP+') exceeds max ('+ps.maxPeriodsPerWeek+'). Reduce before saving.',false); return; }
         }
 
+        if(btn){btn.classList.add('is-loading');btn.disabled=true;}
         if(window.ZXLoader) ZXLoader.show('Saving matrix…');
         post('academic/save_class_matrix',{
             class_key:AC.sa._currentClassKey||AC.sa._currentKey,
             matrix:JSON.stringify({sections:M.sections||[],subjects:subs,class_teachers:M.class_teachers||{}})
         }).then(function(d){
+            if(btn){btn.classList.remove('is-loading');btn.disabled=false;}
             if(window.ZXLoader) ZXLoader.hide(true);
             if(d.status==='success'){
                 toast('Saved '+d.count+' assignments',true);
@@ -1504,12 +1622,14 @@ AC.sa = {
                 AC.sa._loadMatrix(AC.sa._currentClassKey||AC.sa._currentKey);
             } else toast(d.message,false);
         }).catch(function(e){
+            if(btn){btn.classList.remove('is-loading');btn.disabled=false;}
             if(window.ZXLoader) ZXLoader.hide(true);
-            toast('Failed to save assignments',false);
+            toast((e&&e.message)||'Failed to save assignments',false);
         });
     },
 
     copyFrom:function(){
+        if(!acGuard('manage')) return;
         if(!AC.sa._currentKey){toast('Select a destination class first',false);return}
         var curFbKey=AC.sa._currentKey;
         var opts=AC.sa._classes.filter(function(c){return AC.sa._toFbKey(c.key)!==curFbKey});
@@ -1533,6 +1653,8 @@ AC.sa = {
                     toast('Copied '+d.count+' assignments',true);
                     AC.sa.load();
                 } else toast(d.message,false);
+            }).catch(function(e){
+                toast((e&&e.message)||'Failed to copy assignments',false);
             });
         });
     }
@@ -1703,6 +1825,7 @@ AC.ps = {
     },
 
     save:function(btn){
+        if(!acGuard('manage')) return;
         var start=document.getElementById('psStartTime').value;
         var end=document.getElementById('psEndTime').value;
         var periods=parseInt(document.getElementById('psPeriods').value)||0;
@@ -1722,12 +1845,14 @@ AC.ps = {
         });
         if(workingDays.length===0){toast('Select at least one working day',false);return}
 
+        if(btn){btn.classList.add('is-loading');btn.disabled=true;}
         if(window.ZXLoader) ZXLoader.show('Saving schedule…');
         post('academic/save_timetable_settings',{
             start_time:start,end_time:end,no_of_periods:periods,
             recesses:JSON.stringify(recesses),
             working_days:JSON.stringify(workingDays)
         }).then(function(d){
+            if(btn){btn.classList.remove('is-loading');btn.disabled=false;}
             if(window.ZXLoader) ZXLoader.hide(true);
             if(d.status==='success'){
                 toast('Schedule saved (period = '+d.length_of_period+' min)',true);
@@ -1735,8 +1860,9 @@ AC.ps = {
                 if(AC.tt._loaded) AC.tt.load();
             } else toast(d.message,false);
         }).catch(function(e){
+            if(btn){btn.classList.remove('is-loading');btn.disabled=false;}
             if(window.ZXLoader) ZXLoader.hide(true);
-            toast('Failed to save schedule',false);
+            toast((e&&e.message)||'Failed to save schedule',false);
         });
     },
 
@@ -1865,7 +1991,13 @@ AC.cur = {
                 }
                 AC.cur.render();
                 toast('Loaded '+AC.cur.totalTopics+' topics',true);
-            } else toast(d.message,false);
+            } else {
+                document.getElementById('curTopics').innerHTML='<div class="ac-empty"><i class="fa fa-exclamation-triangle"></i> '+esc(d.message||'Failed to load')+'</div>';
+                toast(d.message||'Failed to load',false);
+            }
+        }).catch(function(e){
+            document.getElementById('curTopics').innerHTML='<div class="ac-empty"><i class="fa fa-exclamation-triangle"></i> '+esc((e&&e.message)||'Failed to load curriculum')+'</div>';
+            toast((e&&e.message)||'Failed to load curriculum',false);
         });
     },
     render: function(){
@@ -1923,6 +2055,7 @@ AC.cur = {
         if(f.classList.contains('show')) document.getElementById('curTopicTitle').focus();
     },
     addTopic: function(btn){
+        if(!acGuard('edit')) return;
         var title=document.getElementById('curTopicTitle').value.trim();
         if(!title){toast('Topic title required',false);return}
         AC.cur.topics.push({
@@ -1940,6 +2073,7 @@ AC.cur = {
         document.getElementById('curTopicPeriods').value='1';
     },
     setStatus: function(idx,status,btn){
+        if(!acGuard('edit')) return;
         var cs=document.getElementById('curClass').value;
         var sub=document.getElementById('curSubject').value;
         var topic = AC.cur.topics[idx] || {};
@@ -1963,9 +2097,12 @@ AC.cur = {
                 AC.cur.render();
                 toast('Status updated',true);
             } else toast(d.message,false);
+        }).catch(function(e){
+            toast((e&&e.message)||'Failed to update status',false);
         });
     },
     deleteTopic: function(idx,btn){
+        if(!acGuard('manage')) return;
         _confirmModal({
             title:'Delete this topic',
             body:'The topic will be removed from the curriculum.',
@@ -1995,9 +2132,12 @@ AC.cur = {
                 AC.cur.render();
                 toast('Topic deleted',true);
             } else toast(d.message,false);
+        }).catch(function(e){
+            toast((e&&e.message)||'Failed to delete topic',false);
         });
     },
     saveFull: function(btn){
+        if(!acGuard('edit')) return;
         var cs=document.getElementById('curClass').value;
         var sub=document.getElementById('curSubject').value;
         if(!cs||!sub) return;
@@ -2014,6 +2154,8 @@ AC.cur = {
                 AC.cur.render();
                 toast('Curriculum saved',true);
             } else toast(d.message,false);
+        }).catch(function(e){
+            toast((e&&e.message)||'Failed to save curriculum',false);
         });
     }
 };
@@ -2038,6 +2180,11 @@ AC.cal = {
         post('academic/get_calendar_events',{month:ym}).then(function(d){
             AC.cal.events=(d.status==='success')?(d.events||[]):[];
             AC.cal.renderGrid();
+            if(d.status!=='success') toast(d.message||'Failed to load events',false);
+        }).catch(function(e){
+            AC.cal.events=[];
+            AC.cal.renderGrid();
+            toast((e&&e.message)||'Failed to load calendar',false);
         });
     },
     prevMonth:function(){AC.cal.month--;if(AC.cal.month<0){AC.cal.month=11;AC.cal.year--}AC.cal.loadMonth()},
@@ -2120,6 +2267,7 @@ AC.cal = {
         AC.cal.deleteEvent(id);
     },
     saveEvent:function(btn){
+        if(!acGuard('manage')) return;
         var title=document.getElementById('calTitle').value.trim();
         var start=document.getElementById('calStart').value;
         if(!title||!start){toast('Title and date required',false);return}
@@ -2136,9 +2284,12 @@ AC.cal = {
                 AC.cal.loadMonth();
                 toast('Event saved',true);
             } else toast(d.message,false);
+        }).catch(function(e){
+            toast((e&&e.message)||'Failed to save event',false);
         });
     },
     deleteEvent:function(id){
+        if(!acGuard('manage')) return;
         _confirmModal({
             title:'Delete this event',
             body:'The event will be removed from the calendar.',
@@ -2149,6 +2300,8 @@ AC.cal = {
             post('academic/delete_event',{id:id}).then(function(d){
                 if(d.status==='success'){AC.cal.loadMonth();toast('Event deleted',true)}
                 else toast(d.message,false);
+            }).catch(function(e){
+                toast((e&&e.message)||'Failed to delete event',false);
             });
         });
     }
@@ -2198,6 +2351,9 @@ AC.tt = {
                 } else {
                     document.getElementById('ttGridWrap').innerHTML='<div class="ac-empty"><i class="fa fa-exclamation-triangle"></i> '+esc(d.message)+'</div>';
                 }
+            }).catch(function(e){
+                if(btn){btn.classList.remove('loading');btn.disabled=false}
+                document.getElementById('ttGridWrap').innerHTML='<div class="ac-empty"><i class="fa fa-exclamation-triangle"></i> '+esc((e&&e.message)||'Failed to load timetable')+'</div>';
             });
         });
     },
@@ -2923,6 +3079,10 @@ AC.tt = {
                     toast(d.message,false);
                 }
                 saving=false;
+            }).catch(function(e){
+                restoreCell();
+                toast((e&&e.message)||'Failed to save period',false);
+                saving=false;
             });
         }
 
@@ -2943,6 +3103,7 @@ AC.tt = {
     },
 
     autoGenerate:function(){
+        if(!acGuard('manage')) return;
         _confirmModal({
             title:'Auto-generate weekly timetable',
             body:'This will auto-generate a complete weekly timetable for ALL sections based on subject assignments.\n\nExisting timetable data will be REPLACED.\n\nProceed?',
@@ -2972,13 +3133,18 @@ AC.tt = {
                         } else {
                             toast(d2.message||'Save failed',false);
                         }
+                    }).catch(function(e){
+                        toast((e&&e.message)||'Failed to save timetable',false);
                     });
                 });
+            }).catch(function(e){
+                toast((e&&e.message)||'Failed to generate timetable',false);
             });
         });
     },
 
     copyDay:function(){
+        if(!acGuard('manage')) return;
         var fromDay=AC.tt.day;
         if(fromDay==='_week'){toast('Switch to a specific day first',false);return}
         var days=['Monday','Tuesday','Wednesday','Thursday','Friday','Saturday'];
@@ -3027,6 +3193,9 @@ AC.tt = {
             toast('Copied '+fromDay+' → '+toDay+' ('+promises.length+' cells)',true);
             AC.tt._detectAllConflicts();
             AC.tt.render();
+        }).catch(function(e){
+            toast((e&&e.message)||'Failed to copy day — reloading',false);
+            AC.tt.load();
         });
     },
 
@@ -3129,6 +3298,9 @@ AC.sub = {
                 abs.value=absent[0].id;
                 AC.sub._loadSchedule();
             }
+        }).catch(function(e){
+            abs.innerHTML='<option value="">'+esc((e&&e.message)||'Error loading teachers')+'</option>';
+            toast((e&&e.message)||'Failed to load absent teachers',false);
         });
     },
 
@@ -3263,6 +3435,7 @@ AC.sub = {
 
     /* ── Save: collect checked periods with their per-period substitute assignments ── */
     saveNew:function(btn){
+        if(!acGuard('manage')) return;
         try {
         var date=document.getElementById('subDate').value;
         var absEl=document.getElementById('subAbsent');
@@ -3338,6 +3511,10 @@ AC.sub = {
         withBtn(btn,post('academic/get_substitutes',{date:date})).then(function(d){
             AC.sub.records=(d.status==='success')?(d.substitutes||[]):[];
             AC.sub.render();
+            if(d.status!=='success') toast(d.message||'Failed to load',false);
+        }).catch(function(e){
+            AC.sub.records=[];
+            document.getElementById('subList').innerHTML='<div class="ac-empty"><i class="fa fa-exclamation-triangle"></i> '+esc((e&&e.message)||'Failed to load substitutes')+'</div>';
         });
     },
 
@@ -3461,12 +3638,16 @@ AC.sub = {
     hideForm:function(){document.getElementById('subForm').classList.remove('show')},
 
     setStatus:function(id,status){
+        if(!acGuard('manage')) return;
         post('academic/update_substitute',{id:id,status:status}).then(function(d){
             if(d.status==='success'){AC.sub.load();toast('Status updated',true)}
             else toast(d.message,false);
+        }).catch(function(e){
+            toast((e&&e.message)||'Failed to update status',false);
         });
     },
     del:function(id){
+        if(!acGuard('manage')) return;
         _confirmModal({
             title:'Delete this substitute record',
             body:'The substitute assignment will be removed.',
@@ -3477,6 +3658,8 @@ AC.sub = {
             post('academic/delete_substitute',{id:id}).then(function(d){
                 if(d.status==='success'){AC.sub.load();toast('Deleted',true)}
                 else toast(d.message,false);
+            }).catch(function(e){
+                toast((e&&e.message)||'Failed to delete',false);
             });
         });
     }
@@ -3513,6 +3696,9 @@ AC.wl = {
                     }
                     AC.wl._compute();
                     AC.wl.render();
+                }).catch(function(e){
+                    if(btn){btn.classList.remove('loading');btn.disabled=false}
+                    document.getElementById('wlTable').innerHTML='<div class="ac-empty"><i class="fa fa-exclamation-triangle"></i> '+esc((e&&e.message)||'Failed to load workload analytics')+'</div>';
                 });
             });
         } else {
@@ -3779,6 +3965,9 @@ AC.lp = {
             if(mt.status==='success'){ AC.lp._mt=mt; AC.lp._populateClassSection(mt); }
             else toast('Failed to load timetable: '+(mt.message||''),false);
             if(te.status==='success'){ _teachers=te.teachers||[]; AC.lp._populateTeachers(); }
+        }).catch(function(e){
+            AC.lp._loaded=false; // allow retry on next visit
+            toast((e&&e.message)||'Failed to load planner data',false);
         });
     },
 
@@ -3874,6 +4063,9 @@ AC.lp = {
                 toast(d.message||'Failed to load plans',false);
             }
             AC.lp._renderDaily(dayName);
+        }).catch(function(e){
+            document.getElementById('lpDailyContent').innerHTML='<div class="ac-empty"><i class="fa fa-exclamation-triangle"></i> '+esc((e&&e.message)||'Failed to load lesson plans')+'</div>';
+            toast((e&&e.message)||'Failed to load lesson plans',false);
         });
     },
 
@@ -3996,6 +4188,7 @@ AC.lp = {
     },
 
     save:function(btn){
+        if(!acGuard('edit')) return;
         var tr=btn.closest('tr');
         var s=AC.lp._state;
         var pi=+tr.dataset.pi;
@@ -4041,6 +4234,8 @@ AC.lp = {
                 return;
             }
             toast(d.message||'Save failed',false);
+        }).catch(function(e){
+            toast((e&&e.message)||'Failed to save lesson plan',false);
         });
     },
 
@@ -4062,6 +4257,9 @@ AC.lp = {
         return post('academic/get_monthly_plan',{teacher_id:s.teacherId, year:s.monthY, month:s.monthM}).then(function(d){
             if(d.status!=='success'){ toast(d.message||'Failed',false); return; }
             AC.lp._renderMonth(d);
+        }).catch(function(e){
+            document.getElementById('lpCalContent').innerHTML='<div class="ac-empty"><i class="fa fa-exclamation-triangle"></i> '+esc((e&&e.message)||'Failed to load monthly plan')+'</div>';
+            toast((e&&e.message)||'Failed to load monthly plan',false);
         });
     },
 
@@ -4122,5 +4320,6 @@ AC.lp = {
 };
 
 /* ── Init on page load — scheduling tab is the default visible pane ── */
+acApplyGating();
 AC.ps.init();
 </script>

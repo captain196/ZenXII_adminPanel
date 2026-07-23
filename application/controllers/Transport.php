@@ -46,11 +46,13 @@ class Transport extends MY_Controller
 
     private function _require_manage()
     {
+        if (has_permission('Transport', 'manage')) return;
         if (!in_array($this->admin_role, self::TRN_MANAGE_ROLES, true))
             $this->json_error('Access denied.', 403);
     }
     private function _require_view()
     {
+        if (has_permission('Transport', 'view')) return;
         if (!in_array($this->admin_role, self::TRN_VIEW_ROLES, true))
             $this->json_error('Access denied.', 403);
     }
@@ -68,7 +70,7 @@ class Transport extends MY_Controller
 
     public function index()
     {
-        $this->_require_role(self::VIEW_ROLES, 'transport_view');
+        $this->_require_role(self::VIEW_ROLES, 'transport_view', 'Transport', 'view');
         $tab = $this->uri->segment(2, 'vehicles');
         $data = ['active_tab' => $tab];
         $this->load->view('include/header', $data);
@@ -82,7 +84,7 @@ class Transport extends MY_Controller
 
     public function get_vehicles()
     {
-        $this->_require_role(self::VIEW_ROLES, 'transport_view');
+        $this->_require_role(self::VIEW_ROLES, 'transport_view', 'Transport', 'view');
         $this->_require_view();
         $rows = $this->firebase->firestoreQuery(self::COL_VEHICLES,
             [['schoolId', '==', $this->school_name]], 'number', 'ASC');
@@ -99,7 +101,7 @@ class Transport extends MY_Controller
 
     public function save_vehicle()
     {
-        $this->_require_role(self::MANAGE_ROLES, 'save_vehicle');
+        $this->_require_role(self::MANAGE_ROLES, 'save_vehicle', 'Transport', 'edit');
         $this->_require_manage();
         $id          = trim($this->input->post('id') ?? '');
         $number      = trim($this->input->post('number') ?? '');
@@ -153,7 +155,7 @@ class Transport extends MY_Controller
 
     public function delete_vehicle()
     {
-        $this->_require_role(self::MANAGE_ROLES, 'delete_vehicle');
+        $this->_require_role(self::MANAGE_ROLES, 'delete_vehicle', 'Transport', 'manage');
         $this->_require_manage();
         $id = $this->safe_path_segment(trim($this->input->post('id') ?? ''), 'vehicle_id');
 
@@ -176,7 +178,7 @@ class Transport extends MY_Controller
 
     public function get_routes()
     {
-        $this->_require_role(self::VIEW_ROLES, 'transport_view');
+        $this->_require_role(self::VIEW_ROLES, 'transport_view', 'Transport', 'view');
         $this->_require_view();
         $rows = $this->firebase->firestoreQuery(self::COL_ROUTES,
             [['schoolId', '==', $this->school_name]], 'name', 'ASC');
@@ -193,7 +195,7 @@ class Transport extends MY_Controller
 
     public function save_route()
     {
-        $this->_require_role(self::MANAGE_ROLES, 'save_route');
+        $this->_require_role(self::MANAGE_ROLES, 'save_route', 'Transport', 'edit');
         $this->_require_manage();
         $id         = trim($this->input->post('id') ?? '');
         $name       = trim($this->input->post('name') ?? '');
@@ -231,7 +233,7 @@ class Transport extends MY_Controller
 
     public function delete_route()
     {
-        $this->_require_role(self::MANAGE_ROLES, 'delete_route');
+        $this->_require_role(self::MANAGE_ROLES, 'delete_route', 'Transport', 'manage');
         $this->_require_manage();
         $id = $this->safe_path_segment(trim($this->input->post('id') ?? ''), 'route_id');
 
@@ -265,7 +267,7 @@ class Transport extends MY_Controller
     /** GET — Stops for a route. ?route_id=RT0001 */
     public function get_stops()
     {
-        $this->_require_role(self::VIEW_ROLES, 'transport_view');
+        $this->_require_role(self::VIEW_ROLES, 'transport_view', 'Transport', 'view');
         $this->_require_view();
         $routeId = trim($this->input->get('route_id') ?? '');
 
@@ -289,7 +291,7 @@ class Transport extends MY_Controller
 
     public function save_stop()
     {
-        $this->_require_role(self::MANAGE_ROLES, 'save_stop');
+        $this->_require_role(self::MANAGE_ROLES, 'save_stop', 'Transport', 'edit');
         $this->_require_manage();
         $id         = trim($this->input->post('id') ?? '');
         $routeId    = $this->safe_path_segment(trim($this->input->post('route_id') ?? ''), 'route_id');
@@ -325,7 +327,7 @@ class Transport extends MY_Controller
 
     public function delete_stop()
     {
-        $this->_require_role(self::MANAGE_ROLES, 'delete_stop');
+        $this->_require_role(self::MANAGE_ROLES, 'delete_stop', 'Transport', 'manage');
         $this->_require_manage();
         $id = $this->safe_path_segment(trim($this->input->post('id') ?? ''), 'stop_id');
         $this->fs->remove(self::COL_STOPS, $this->fs->docId($id));
@@ -338,7 +340,7 @@ class Transport extends MY_Controller
 
     public function get_assignments()
     {
-        $this->_require_role(self::VIEW_ROLES, 'transport_view');
+        $this->_require_role(self::VIEW_ROLES, 'transport_view', 'Transport', 'view');
         $this->_require_view();
         $rows = $this->firebase->firestoreQuery(self::COL_ASSIGNMENTS,
             [['schoolId', '==', $this->school_name]], 'student_name', 'ASC');
@@ -355,7 +357,7 @@ class Transport extends MY_Controller
 
     public function save_assignment()
     {
-        $this->_require_role(self::MANAGE_ROLES, 'save_assignment');
+        $this->_require_role(self::MANAGE_ROLES, 'save_assignment', 'Transport', 'edit');
         $this->_require_manage();
         $studentId = $this->safe_path_segment(trim($this->input->post('student_id') ?? ''), 'student_id');
         $routeId   = $this->safe_path_segment(trim($this->input->post('route_id') ?? ''), 'route_id');
@@ -446,7 +448,7 @@ class Transport extends MY_Controller
 
     public function delete_assignment()
     {
-        $this->_require_role(self::MANAGE_ROLES, 'delete_assignment');
+        $this->_require_role(self::MANAGE_ROLES, 'delete_assignment', 'Transport', 'manage');
         $this->_require_manage();
         $studentId = $this->safe_path_segment(trim($this->input->post('student_id') ?? ''), 'student_id');
 
@@ -467,7 +469,7 @@ class Transport extends MY_Controller
     /** GET — Search students for assignment. ?q=name */
     public function search_students()
     {
-        $this->_require_role(self::VIEW_ROLES, 'transport_view');
+        $this->_require_role(self::VIEW_ROLES, 'transport_view', 'Transport', 'view');
         $this->_require_view();
         $q = trim($this->input->get('q') ?? '');
         if (strlen($q) < 2) {

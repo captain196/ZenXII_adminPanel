@@ -609,6 +609,9 @@ $route['admission/submit/(:any)']               = 'Admission_public/submit/$1';
 $route['admission/pay/(:any)']                  = 'Admission_public/initiate_payment/$1';
 $route['admission/payment_callback/(:any)']     = 'Admission_public/payment_callback/$1';
 $route['admission/payment_status/(:any)']       = 'Admission_public/payment_status/$1';
+// Server-to-server Razorpay webhook (reconciliation, C4). CSRF-exempt — see
+// config.php csrf_exclude_uris. Verified by HMAC(webhook_secret).
+$route['admission/payment_webhook/(:any)']      = 'Admission_public/payment_webhook/$1';
 // Receipt — `admission/receipt/{schoolId}/{appId}/{token}` (Tier-A QW #1).
 $route['admission/receipt/(:any)/(:any)/(:any)'] = 'Admission_public/receipt/$1/$2/$3';
 
@@ -788,6 +791,7 @@ $route['payroll/get_employee_history']                  = 'Payroll/get_employee_
 $route['staff/master_staff']                              = 'Staff/master_staff';
 $route['staff/import_staff']                              = 'Staff/import_staff';
 $route['staff/preview_import']                            = 'Staff/preview_import';
+$route['staff/import_catalogue']                          = 'Staff/import_catalogue';
 $route['staff/import_validate']                           = 'Staff/import_validate';
 $route['staff/import_commit']                             = 'Staff/import_commit';
 $route['staff/import_credentials_pdf']                    = 'Staff/import_credentials_pdf';
@@ -1355,4 +1359,25 @@ $route['audit_logs/filter_logs']                     = 'AuditLogs/filter_logs';
 $route['audit_logs/get_user_activity']               = 'AuditLogs/get_user_activity';
 $route['audit_logs/get_stats']                       = 'AuditLogs/get_stats';
 $route['audit_logs/archive_old']                     = 'AuditLogs/archive_old';
+
+// ── Unified Staff Access (Staff & Roles) ──────────────────────────────────
+$route['staff_access']                               = 'Staff_access/index';
+$route['staff_access/get_catalogue']                 = 'Staff_access/get_catalogue';
+$route['staff_access/save_role']                     = 'Staff_access/save_role';
+$route['staff_access/set_role_level']                = 'Staff_access/set_role_level';
+$route['staff_access/save_role_access']              = 'Staff_access/save_role_access';
+$route['staff_access/delete_role']                   = 'Staff_access/delete_role';
+$route['staff_access/get_staff_directory']           = 'Staff_access/get_staff_directory';
+$route['staff_access/get_staff_detail/(:any)']       = 'Staff_access/get_staff_detail/$1';
+$route['staff_access/toggle_staff_role']             = 'Staff_access/toggle_staff_role';
+$route['staff_access/set_primary_role']              = 'Staff_access/set_primary_role';
+$route['staff_access/add_extra']                     = 'Staff_access/add_extra';
+$route['staff_access/remove_extra']                  = 'Staff_access/remove_extra';
+$route['staff_access/add_deny']                      = 'Staff_access/add_deny';
+$route['staff_access/remove_deny']                   = 'Staff_access/remove_deny';
+$route['staff_access/onboard_staff']                 = 'Staff_access/onboard_staff';
+$route['staff_access/save_department']               = 'Staff_access/save_department';
+$route['staff_access/delete_department']             = 'Staff_access/delete_department';
+$route['staff_access/reorder_departments']           = 'Staff_access/reorder_departments';
+$route['staff_access/move_role']                     = 'Staff_access/move_role';
 

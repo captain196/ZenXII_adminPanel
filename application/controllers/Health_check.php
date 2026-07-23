@@ -50,7 +50,7 @@ class Health_check extends MY_Controller
 
     public function index()
     {
-        $this->_require_role(self::ADMIN_ROLES, 'view_health_check');
+        $this->_require_role(self::ADMIN_ROLES, 'view_health_check', 'Configuration', 'view');
         $data['modules']      = $this->_modules();
         $data['session_year'] = $this->session_year;
         $data['school_name']  = $this->school_name;
@@ -63,7 +63,7 @@ class Health_check extends MY_Controller
 
     public function run()
     {
-        $this->_require_role(self::ADMIN_ROLES, 'run_health_check');
+        $this->_require_role(self::ADMIN_ROLES, 'run_health_check', 'Configuration', 'manage');
         $module = trim($this->input->post('module') ?? '');
         $modules = $this->_modules();
 
@@ -94,7 +94,7 @@ class Health_check extends MY_Controller
 
     public function run_all()
     {
-        $this->_require_role(self::ADMIN_ROLES, 'run_all_health_checks');
+        $this->_require_role(self::ADMIN_ROLES, 'run_all_health_checks', 'Configuration', 'manage');
         $modules   = $this->_modules();
         $allResults = [];
         $totalP = 0;

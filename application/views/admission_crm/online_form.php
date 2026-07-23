@@ -17,7 +17,7 @@ $displayName = $profile['display_name'] ?? $school_name;
         :root {
             --gold:#BC5A3C; --gold2:#9E4830; --gold3:#D4725C;
             --gold-dim:rgba(188,90,60,.10); --gold-ring:rgba(188,90,60,.22);
-            --bg:#f0f7f5; --bg2:#ffffff; --bg3:#e6f4f1;
+            --bg:#F7F4F1; --bg2:#ffffff; --bg3:#F7ECE7;
             --border:rgba(188,90,60,.15);
             --t1:#0c1e38; --t2:#1a5c56; --t3:#5a9e98;
             --r:12px;
@@ -126,53 +126,53 @@ $displayName = $profile['display_name'] ?? $school_name;
         <form id="admissionForm">
             <div class="of-section"><i class="fa-solid fa-user"></i> Student Information</div>
             <div class="of-grid">
-                <div class="of-fg"><label>Student Name <span class="req">*</span></label><input type="text" name="student_name" required></div>
+                <div class="of-fg"><label for="ofStudentName">Student Name <span class="req">*</span></label><input type="text" id="ofStudentName" name="student_name" required></div>
                 <div class="of-fg">
-                    <label>Class Applying For <span class="req">*</span></label>
-                    <select name="class" required>
+                    <label for="ofClass">Class Applying For <span class="req">*</span></label>
+                    <select id="ofClass" name="class" required>
                         <option value="">-- Select Class --</option>
                         <?php foreach ($classes as $c): ?>
                         <option value="<?= htmlspecialchars(str_replace('Class ', '', $c['class_name'])) ?>"><?= htmlspecialchars($c['class_name']) ?></option>
                         <?php endforeach; ?>
                     </select>
                 </div>
-                <div class="of-fg"><label>Date of Birth</label><input type="date" name="dob"></div>
+                <div class="of-fg"><label for="ofDob">Date of Birth</label><input type="date" id="ofDob" name="dob"></div>
                 <div class="of-fg">
-                    <label>Gender</label>
-                    <select name="gender"><option value="">-- Select --</option><option>Male</option><option>Female</option><option>Other</option></select>
+                    <label for="ofGender">Gender</label>
+                    <select id="ofGender" name="gender"><option value="">-- Select --</option><option>Male</option><option>Female</option><option>Other</option></select>
                 </div>
-                <div class="of-fg"><label>Blood Group</label><input type="text" name="blood_group" placeholder="e.g. O+"></div>
-                <div class="of-fg"><label>Category</label><input type="text" name="category" placeholder="e.g. General, OBC"></div>
-                <div class="of-fg"><label>Religion</label><input type="text" name="religion"></div>
-                <div class="of-fg"><label>Nationality</label><input type="text" name="nationality" value="Indian"></div>
+                <div class="of-fg"><label for="ofBloodGroup">Blood Group</label><input type="text" id="ofBloodGroup" name="blood_group" placeholder="e.g. O+"></div>
+                <div class="of-fg"><label for="ofCategory">Category</label><input type="text" id="ofCategory" name="category" placeholder="e.g. General, OBC"></div>
+                <div class="of-fg"><label for="ofReligion">Religion</label><input type="text" id="ofReligion" name="religion"></div>
+                <div class="of-fg"><label for="ofNationality">Nationality</label><input type="text" id="ofNationality" name="nationality" value="Indian"></div>
             </div>
 
             <div class="of-section"><i class="fa-solid fa-people-roof"></i> Parent / Guardian</div>
             <div class="of-grid">
-                <div class="of-fg"><label>Parent / Guardian Name <span class="req">*</span></label><input type="text" name="parent_name" required></div>
-                <div class="of-fg"><label>Phone <span class="req">*</span></label><input type="tel" name="phone" required></div>
-                <div class="of-fg"><label>Father's Name</label><input type="text" name="father_name"></div>
-                <div class="of-fg"><label>Father's Occupation</label><input type="text" name="father_occupation"></div>
-                <div class="of-fg"><label>Mother's Name</label><input type="text" name="mother_name"></div>
-                <div class="of-fg"><label>Mother's Occupation</label><input type="text" name="mother_occupation"></div>
-                <div class="of-fg of-fg-full"><label>Email</label><input type="email" name="email"></div>
+                <div class="of-fg"><label for="ofParentName">Parent / Guardian Name <span class="req">*</span></label><input type="text" id="ofParentName" name="parent_name" required></div>
+                <div class="of-fg"><label for="ofPhone">Phone <span class="req">*</span></label><input type="tel" id="ofPhone" name="phone" required></div>
+                <div class="of-fg"><label for="ofFatherName">Father's Name</label><input type="text" id="ofFatherName" name="father_name"></div>
+                <div class="of-fg"><label for="ofFatherOcc">Father's Occupation</label><input type="text" id="ofFatherOcc" name="father_occupation"></div>
+                <div class="of-fg"><label for="ofMotherName">Mother's Name</label><input type="text" id="ofMotherName" name="mother_name"></div>
+                <div class="of-fg"><label for="ofMotherOcc">Mother's Occupation</label><input type="text" id="ofMotherOcc" name="mother_occupation"></div>
+                <div class="of-fg of-fg-full"><label for="ofEmail">Email</label><input type="email" id="ofEmail" name="email"></div>
             </div>
 
             <div class="of-section"><i class="fa-solid fa-location-dot"></i> Address</div>
-            <div class="of-fg"><label>Street Address</label><input type="text" name="address"></div>
+            <div class="of-fg"><label for="ofAddress">Street Address</label><input type="text" id="ofAddress" name="address"></div>
             <div class="of-grid">
-                <div class="of-fg"><label>City</label><input type="text" name="city"></div>
-                <div class="of-fg"><label>State</label><input type="text" name="state"></div>
-                <div class="of-fg"><label>Pincode</label><input type="text" name="pincode"></div>
+                <div class="of-fg"><label for="ofState">State</label><select id="ofState" name="state" data-india-state data-india-fill data-india-placeholder="Select State"><option value="">Select State</option></select></div>
+                <div class="of-fg"><label for="ofCity">District</label><select id="ofCity" name="city" data-india-district="state" data-india-placeholder="Select District"><option value="">Select District</option></select></div>
+                <div class="of-fg"><label for="ofPincode">Pincode</label><input type="text" id="ofPincode" name="pincode"></div>
             </div>
 
             <div class="of-section"><i class="fa-solid fa-school"></i> Previous School</div>
             <div class="of-grid">
-                <div class="of-fg"><label>School Name</label><input type="text" name="previous_school"></div>
-                <div class="of-fg"><label>Class</label><input type="text" name="previous_class"></div>
+                <div class="of-fg"><label for="ofPrevSchool">School Name</label><input type="text" id="ofPrevSchool" name="previous_school"></div>
+                <div class="of-fg"><label for="ofPrevClass">Class</label><input type="text" id="ofPrevClass" name="previous_class"></div>
             </div>
 
-            <div class="of-fg"><label>Additional Notes</label><textarea name="notes" rows="3" placeholder="Any additional information..."></textarea></div>
+            <div class="of-fg"><label for="ofNotes">Additional Notes</label><textarea id="ofNotes" name="notes" rows="3" placeholder="Any additional information..."></textarea></div>
 
             <button type="submit" class="of-submit" id="submitBtn">
                 <i class="fa-solid fa-paper-plane"></i> Submit Application
@@ -191,6 +191,7 @@ $displayName = $profile['display_name'] ?? $school_name;
     <div class="of-footer">Powered by ZenXii ERP</div>
 </div>
 
+<script src="<?= base_url('assets/js/india_geo.js') ?>"></script>
 <script>
 var csrfName  = document.querySelector('meta[name="csrf-name"]').content;
 var csrfToken = document.querySelector('meta[name="csrf-token"]').content;

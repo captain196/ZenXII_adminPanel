@@ -573,13 +573,15 @@ class Entity_firestore_sync
             'session'     => $data['session'] ?? $data['Session'] ?? $this->session,
             'updatedAt'   => date('c'),
 
-            // Phase A (2026-04-08): statutory + profile fields
+            // Phase A (2026-04-08): non-sensitive profile fields only.
             'altPhone'      => $data['altPhone']      ?? '',
             'maritalStatus' => $data['maritalStatus']  ?? '',
-            'panNumber'     => $data['panNumber']      ?? '',
-            'aadharNumber'  => $data['aadharNumber']   ?? '',
-            'pfNumber'      => $data['pfNumber']       ?? '',
-            'esiNumber'     => $data['esiNumber']      ?? '',
+            // SECURITY (audit C1): panNumber / aadharNumber / pfNumber / esiNumber
+            // are NO LONGER written to the same-school-readable `staff` doc here.
+            // This Dual_write mirror path (Dual_write::syncStaff) would otherwise
+            // re-introduce the exact PII leak C1 closed. Those fields live only in
+            // the owner-readable/server-written `staffPrivate` doc now; the canonical
+            // writer is Staff.php (_split_staff_private).
         ];
         return $this->_write('staff', $docId, $doc);
     }

@@ -442,6 +442,11 @@ class Communication_helper
             'targetRoles'   => $targetRoles,
             'status'        => 'sent',
             'sentAt'        => $nowIso,
+            // Header notification bell (NoticeAnnouncement::getRecentNotices)
+            // orders by `timestamp` DESC; Firestore excludes docs missing that
+            // field, so without these an Event/PTM notice never shows in the bell.
+            'timestamp'     => $nowIso,
+            'timestampMs'   => (int) round(microtime(true) * 1000),
             // Event-source metadata (preserved alongside canonical fields)
             'eventCategory' => $catKey,
             'startDate'     => $startDate,

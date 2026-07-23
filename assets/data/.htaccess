@@ -1,0 +1,13 @@
+# The site-root .htaccess denies *.json globally to protect config files
+# (composer.json, firebase/google-services, etc.). This directory holds only
+# PUBLIC reference data (india_geo.json) that the address forms fetch over HTTP,
+# so re-allow .json here — scoped to this directory only.
+<FilesMatch "\.json$">
+    <IfModule mod_authz_core.c>
+        Require all granted
+    </IfModule>
+    <IfModule !mod_authz_core.c>
+        Order allow,deny
+        Allow from all
+    </IfModule>
+</FilesMatch>

@@ -512,20 +512,22 @@ document.addEventListener('DOMContentLoaded', function(){
         if(!confirm('Generate fee demands for '+selectedStudent.name+'?\n\nThis creates bills for every academic month based on the fee chart. Existing demands are skipped.')) return;
         var body = {}; body.student_id = selectedStudent.id; body[csrfName] = csrfHash;
         $.post(BASE+'fees/generate_demands_for_student', body, function(r){
-            r = typeof r==='string' ? JSON.parse(r) : r;
+            try { r = typeof r==='string' ? JSON.parse(r) : r; } catch(e){ r = null; }
+            if (!r || r.status === 'error') { alert((r && r.message) || 'Failed to generate demands.'); return; }
             alert(r.message || 'Done');
             loadLedger();
-        });
+        }).fail(function(){ alert('Failed to generate demands. Check your session and retry.'); });
     }
 
     function computeFines(){
         if(!selectedStudent) return;
         var body = {}; body.student_id = selectedStudent.id; body[csrfName] = csrfHash;
         $.post(BASE+'fees/auto_compute_fines', body, function(r){
-            r = typeof r==='string' ? JSON.parse(r) : r;
+            try { r = typeof r==='string' ? JSON.parse(r) : r; } catch(e){ r = null; }
+            if (!r || r.status === 'error') { alert((r && r.message) || 'Failed to compute fines.'); return; }
             alert(r.message || 'Done');
             loadLedger();
-        });
+        }).fail(function(){ alert('Failed to compute fines. Check your session and retry.'); });
     }
 
     // ── CSV export (client-side) ──

@@ -289,8 +289,8 @@
   --fm-navy: var(--t1, #0f1f3d);
   --fm-navy2: var(--t2, #1a2d52);
   --fm-teal: var(--gold, #BC5A3C);
-  --fm-teal-dim: var(--gold-dim, rgba(13,115,119,.10));
-  --fm-teal-ring: var(--gold-ring, rgba(13,115,119,.22));
+  --fm-teal-dim: var(--gold-dim, rgba(188,90,60,.10));
+  --fm-teal-ring: var(--gold-ring, rgba(188,90,60,.22));
   --fm-sky: var(--gold-dim, rgba(188,90,60,.10));
   --fm-gold: #d97706;
   --fm-red: #E05C6F;
@@ -387,7 +387,7 @@
 /* Buttons */
 .fm-btn { display: inline-flex; align-items: center; gap: 6px; padding: 8px 16px; font-size: .8rem; font-weight: 600; font-family: var(--fm-font); border: none; border-radius: var(--fm-radius-sm); cursor: pointer; transition: all .2s var(--fm-ease); outline: none; white-space: nowrap; }
 .fm-btn--primary { background: var(--fm-teal); color: #fff; }
-.fm-btn--primary:hover { background: #0a5f62; box-shadow: 0 2px 8px rgba(13,115,119,.25); }
+.fm-btn--primary:hover { background: #0a5f62; box-shadow: 0 2px 8px rgba(188,90,60,.25); }
 .fm-btn--primary:disabled { opacity: .5; cursor: not-allowed; }
 .fm-btn--ghost { background: transparent; color: var(--fm-t2); border: 1px solid var(--fm-border); }
 .fm-btn--ghost:hover { border-color: var(--fm-teal); color: var(--fm-teal); background: var(--fm-teal-dim); }
@@ -403,7 +403,7 @@
 .fm-table { width: 100%; border-collapse: collapse; font-size: .8rem; }
 .fm-table thead th { background: var(--fm-sky); padding: 9px 12px; font-size: .7rem; font-weight: 700; text-transform: uppercase; letter-spacing: .04em; color: var(--fm-t2); text-align: left; border-bottom: 2px solid var(--fm-border); white-space: nowrap; }
 .fm-table tbody td { padding: 9px 12px; border-bottom: 1px solid var(--fm-border); vertical-align: middle; color: var(--fm-t1); }
-.fm-table tbody tr:hover { background: rgba(13,115,119,.03); }
+.fm-table tbody tr:hover { background: rgba(188,90,60,.03); }
 .fm-table .fm-name-cell { font-weight: 600; }
 
 /* Badges */
@@ -412,7 +412,7 @@
 .fm-badge--fixed { background: rgba(15,31,61,.07); color: var(--fm-navy); }
 .fm-badge--active { background: rgba(39,174,96,.10); color: var(--fm-green); }
 .fm-badge--inactive { background: rgba(229,62,62,.08); color: var(--fm-red); }
-.fm-badge--sibling { background: rgba(13,115,119,.10); color: var(--fm-teal); }
+.fm-badge--sibling { background: rgba(188,90,60,.10); color: var(--fm-teal); }
 .fm-badge--early_bird { background: rgba(217,119,6,.10); color: var(--fm-gold); }
 .fm-badge--merit { background: rgba(39,174,96,.10); color: var(--fm-green); }
 .fm-badge--staff_ward { background: rgba(15,31,61,.08); color: var(--fm-navy2); }

@@ -91,6 +91,18 @@ const MARK_REGISTRY = {
     },
     data: (d) => ({ flagId: String(d.flagId || ''), studentId: String(d.studentId || ''), severity: String(d.severity || 'low').toLowerCase(), flagType: String(d.flagType || d.type || '').toLowerCase() }),
   },
+  FLAG_RESOLVED:     {
+    audience: AUDIENCE.USERS, idField: 'studentId', type: 'red_flag_resolved',
+    notify: (d) => {
+      const studentName = String(d.studentName || '').slice(0, 80);
+      const subjectStr = String(d.subject || '').slice(0, 40);
+      return {
+        title: ['✅ Flag Resolved', studentName].filter(Boolean).join(' · ') || 'Flag resolved',
+        body: (subjectStr ? `${subjectStr}: ` : '') + 'A flag about your child has been resolved.',
+      };
+    },
+    data: (d) => ({ flagId: String(d.flagId || ''), studentId: String(d.studentId || ''), severity: String(d.severity || 'low').toLowerCase(), flagType: String(d.flagType || d.type || '').toLowerCase() }),
+  },
   LEAVE_DECIDED:       { audience: AUDIENCE.USERS, idField: 'studentId', type: 'leave_update', fTitle: 'Leave Update', fBody: '', dataKeys: ['leaveId', 'startDate', 'endDate'] },
   STAFF_LEAVE_DECIDED: { audience: AUDIENCE.USERS, idField: 'staffId',   type: 'leave_update', fTitle: 'Leave Update', fBody: '', dataKeys: ['leaveId', 'startDate', 'endDate'] },
   ATTENDANCE_MARKED:   { audience: AUDIENCE.USERS, idField: 'studentId', type: 'student_absent', fTitle: 'Attendance', fBody: '', dataKeys: ['day', 'month', 'class', 'section', 'mark'] },
@@ -413,6 +425,14 @@ exports.onStoryReactionWritten = storyCounters.onStoryReactionWritten;
 const storyAudience = require("./storyAudience");
 exports.refreshStoryAudience = storyAudience.refreshStoryAudience;
 exports.onStudentClassChanged = storyAudience.onStudentClassChanged;
+
+// Server-maintained per-staff capability doc (staffCapabilities/{uid}) consulted
+// by the rules via get() to enforce per-module access on client writes. Mirrors
+// the PHP resolver resolve_role_access(). See ./staffCapabilities.js.
+const staffCaps = require("./staffCapabilities");
+exports.refreshStaffCapabilities = staffCaps.refreshStaffCapabilities;
+exports.onStaffRolesChanged      = staffCaps.onStaffRolesChanged;
+exports.onSchoolRolesChanged     = staffCaps.onSchoolRolesChanged;
 
 // ─── PTM creation → async push fan-out (Phase D perf) ──────────────
 //

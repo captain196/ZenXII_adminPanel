@@ -323,15 +323,19 @@
                             </div>
 
                             <div class="nsa-field">
-                                <label>City</label>
-                                <input type="text" id="city" name="city"
-                                       class="nsa-input" placeholder="City / District">
+                                <label>State</label>
+                                <select id="state" name="state" class="nsa-input"
+                                        data-india-state data-india-fill data-india-placeholder="Select State">
+                                    <option value="">Select State</option>
+                                </select>
                             </div>
 
                             <div class="nsa-field">
-                                <label>State</label>
-                                <input type="text" id="state" name="state"
-                                       class="nsa-input" placeholder="State">
+                                <label>District</label>
+                                <select id="city" name="city" class="nsa-input"
+                                        data-india-district="state" data-india-placeholder="Select District">
+                                    <option value="">Select District</option>
+                                </select>
                             </div>
 
                             <div class="nsa-field">
@@ -360,14 +364,18 @@
                                            class="nsa-input" placeholder="House no., Street name">
                                 </div>
                                 <div class="nsa-field">
-                                    <label>City</label>
-                                    <input type="text" id="perm_city" name="perm_city"
-                                           class="nsa-input" placeholder="City / District">
+                                    <label>State</label>
+                                    <select id="perm_state" name="perm_state" class="nsa-input"
+                                            data-india-state data-india-fill data-india-placeholder="Select State">
+                                        <option value="">Select State</option>
+                                    </select>
                                 </div>
                                 <div class="nsa-field">
-                                    <label>State</label>
-                                    <input type="text" id="perm_state" name="perm_state"
-                                           class="nsa-input" placeholder="State">
+                                    <label>District</label>
+                                    <select id="perm_city" name="perm_city" class="nsa-input"
+                                            data-india-district="perm_state" data-india-placeholder="Select District">
+                                        <option value="">Select District</option>
+                                    </select>
                                 </div>
                                 <div class="nsa-field">
                                     <label>Postal Code</label>
@@ -711,6 +719,7 @@
 </div>
 
 
+<script src="<?= base_url('assets/js/india_geo.js') ?>"></script>
 <script>
 
 
@@ -1069,9 +1078,14 @@ document.addEventListener('DOMContentLoaded', function() {
             if (this.checked) {
                 permBlock.style.display = 'none';
                 document.getElementById('perm_street').value = document.getElementById('street').value;
-                document.getElementById('perm_city').value = document.getElementById('city').value;
                 document.getElementById('perm_state').value = document.getElementById('state').value;
                 document.getElementById('perm_postal_code').value = document.getElementById('postal_code').value;
+                // Mirror district into the permanent select, cascading off the copied state.
+                if (window.IndiaGeo) {
+                    IndiaGeo.fillDistricts(document.getElementById('perm_state'), document.getElementById('perm_city'), document.getElementById('city').value);
+                } else {
+                    document.getElementById('perm_city').value = document.getElementById('city').value;
+                }
             } else {
                 permBlock.style.display = '';
             }
@@ -1414,18 +1428,18 @@ document.addEventListener('DOMContentLoaded', function() {
 @import url('https://fonts.googleapis.com/css2?family=Instrument+Sans:wght@400;500;600;700&family=Lora:wght@500;600;700&display=swap');
 
 :root {
-    --nsa-navy:   #0c1e38;
-    --nsa-green:  #0d7a5f;
+    --nsa-navy:   #2A1C12;
+    --nsa-green:  #2FA875;
     --nsa-teal:   #BC5A3C;
-    --nsa-sky:    #e6f4f1;
-    --nsa-dark:   #15803d;
+    --nsa-sky:    #F7ECE7;
+    --nsa-dark:   #2FA875;
     --nsa-red:    #dc2626;
     --nsa-amber:  #d97706;
-    --nsa-text:   #1a2535;
-    --nsa-muted:  #64748b;
-    --nsa-border: #e2e8f0;
+    --nsa-text:   #22160F;
+    --nsa-muted:  #7A6A5E;
+    --nsa-border: #E7DED6;
     --nsa-white:  #ffffff;
-    --nsa-bg:     #f0f7f5;
+    --nsa-bg:     #F7F4F1;
     --nsa-shadow: 0 1px 12px rgba(12,30,56,.07);
     --nsa-radius: 12px;
 }
@@ -1592,7 +1606,7 @@ html, body, .content-wrapper { background: var(--nsa-bg) !important; }
 .nsa-net-salary-box {
     display: flex; align-items: center; justify-content: space-between;
     padding: 12px 18px;
-    background: linear-gradient(135deg, var(--nsa-sky) 0%, #d1fae5 100%);
+    background: linear-gradient(135deg, var(--nsa-sky) 0%, #F3E4DC 100%);
     border: 1.5px solid rgba(188,90,60,.25);
     border-radius: 10px;
 }
@@ -1811,7 +1825,7 @@ html, body, .content-wrapper { background: var(--nsa-bg) !important; }
     padding: 12px 18px;
     margin-bottom: 16px;
     font: 500 13px/1.5 var(--nsa-font, 'Plus Jakarta Sans', sans-serif);
-    color: var(--nsa-dark, #0c1e38);
+    color: var(--nsa-text, #22160F);
     display: flex; align-items: center; gap: 8px;
 }
 .nsa-ats-banner i { color: #BC5A3C; font-size: 16px; }
@@ -1827,7 +1841,7 @@ html, body, .content-wrapper { background: var(--nsa-bg) !important; }
 .nsa-role-chip {
     display: inline-flex; align-items: center; gap: 4px;
     padding: 4px 10px; border-radius: 16px; font-size: 12px; font-weight: 600;
-    background: var(--nsa-sky, #e6f4f1); color: var(--nsa-teal, #BC5A3C);
+    background: var(--nsa-sky, #F7ECE7); color: var(--nsa-teal, #BC5A3C);
     border: 1px solid rgba(188,90,60,.2); cursor: pointer; transition: all .15s;
 }
 .nsa-role-chip:hover { background: rgba(188,90,60,.15); }

@@ -712,7 +712,7 @@ document.addEventListener('DOMContentLoaded', function() {
   --fm-navy-light: var(--t2, #1a2d52);
   --fm-teal: var(--gold, #BC5A3C);
   --fm-teal-light: var(--gold2, #9E4830);
-  --fm-teal-dim: var(--gold-dim, rgba(13,115,119,.10));
+  --fm-teal-dim: var(--gold-dim, rgba(188,90,60,.10));
   --fm-sky: var(--gold-dim, rgba(188,90,60,.10));
   --fm-gold: #d97706;
   --fm-gold-dim: rgba(217,119,6,.10);
@@ -821,7 +821,7 @@ document.addEventListener('DOMContentLoaded', function() {
   padding: 9px 12px; border-bottom: 1px solid var(--fm-border); color: var(--fm-text);
   vertical-align: middle;
 }
-.fm-table tbody tr:hover { background: rgba(13,115,119,.02); }
+.fm-table tbody tr:hover { background: rgba(188,90,60,.02); }
 .fm-mono { font-family: 'JetBrains Mono', monospace; font-size: 12.5px; letter-spacing: -.2px; }
 .fm-amount { font-weight: 600; color: var(--fm-navy); white-space: nowrap; }
 

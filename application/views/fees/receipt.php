@@ -141,7 +141,7 @@ body {
 
 /* ── Title band ── */
 .receipt-title-band {
-    background:#f0fdfa; padding:11px 28px;
+    background:#F7ECE7; padding:11px 28px;
     display:flex; justify-content:space-between; align-items:center; gap:12px;
     border-bottom:1px solid #d1fae5;
 }
@@ -238,7 +238,7 @@ body {
 .fee-table tr:nth-child(even) td { background:#fafbfc; }
 .fee-table .head-tag {
     display:inline-block;
-    background:#ccfbf1;
+    background:#F7ECE7;
     color:#BC5A3C;
     font-size:10px; font-weight:700;
     padding:1px 7px;
@@ -291,13 +291,13 @@ body {
 /* Carry-forward line — shown only when advance_credit > 0 (legacy receipts) */
 .advance-block {
     margin-bottom:14px;
-    background:#f0fdfa;
+    background:#F7ECE7;
     border:1px solid #EBC3B4;
     border-left:4px solid #BC5A3C;
     border-radius:6px;
     padding:11px 14px;
     font-size:12.5px;
-    color:#134e4a;
+    color:#9E4830;
 }
 .advance-block .ad-row {
     display:flex; justify-content:space-between;
@@ -328,8 +328,8 @@ body {
 /* Amount in words */
 .amount-words {
     padding:9px 14px;
-    background:#f0fdfa;
-    border:1px solid #ccfbf1;
+    background:#F7ECE7;
+    border:1px solid #F7ECE7;
     border-radius:6px;
     font-size:12.5px; color:#BC5A3C; font-weight:600;
     margin-bottom:18px;

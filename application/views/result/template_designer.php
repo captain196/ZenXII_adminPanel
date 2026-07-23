@@ -1,9 +1,13 @@
 <?php defined('BASEPATH') OR exit('No direct script access allowed');
 $flashError = $this->session->flashdata('error');
+$can_edit   = function_exists('has_permission') ? has_permission('Results','edit')   : true;
+$can_manage = function_exists('has_permission') ? has_permission('Results','manage') : true;
 ?>
+<link rel="stylesheet" href="<?= base_url('assets/css/rbac_ui_kit.css') ?>">
 
 <div class="content-wrapper">
 <div class="rt-wrap">
+  <div class="rx-loadbar" id="rxLoadbar"></div>
 
   <!-- ── Page Header ──────────────────────────────────────────────── -->
   <div class="rt-header">
@@ -19,6 +23,10 @@ $flashError = $this->session->flashdata('error');
 
   <?php if ($flashError): ?>
   <div class="rt-alert rt-alert-err"><?= htmlspecialchars($flashError) ?></div>
+  <?php endif; ?>
+
+  <?php if (!$can_manage): ?>
+  <div class="rx-ro-banner"><span class="rx-ro-ic">&#128274;</span> View-only — you can view and preview templates, but need manage access to save changes.</div>
   <?php endif; ?>
 
   <div class="rt-layout">
@@ -107,7 +115,7 @@ $flashError = $this->session->flashdata('error');
 
         <div id="rtSaveRow" class="rt-save-row">
           <div id="rtSaveMsg" class="rt-save-msg" style="display:none;"></div>
-          <button id="rtSaveBtn" class="rt-btn-primary">
+          <button id="rtSaveBtn" class="rt-btn-primary"<?= !$can_manage ? ' disabled' : '' ?>>
             <i class="fa fa-save"></i> Save Template
           </button>
         </div>
@@ -142,7 +150,26 @@ $flashError = $this->session->flashdata('error');
 (function () {
   'use strict';
 
-  var STRUCTURE = <?= json_encode($structure) ?>;
+  var STRUCTURE  = <?= json_encode($structure) ?>;
+  var CAN_MANAGE = <?= $can_manage ? 'true' : 'false' ?>;
+
+  // ── RBAC UI kit: loadbar busy-counter + fail-closed fetch ───────────
+  var rxBusy = 0, rxBar = document.getElementById('rxLoadbar');
+  function rxLoadStart() { rxBusy++; if (rxBar) rxBar.classList.add('on'); }
+  function rxLoadEnd()   { rxBusy = Math.max(0, rxBusy - 1); if (rxBusy === 0 && rxBar) rxBar.classList.remove('on'); }
+  function rxFetch(url, opts) {
+    rxLoadStart();
+    return fetch(url, opts).then(function (r) {
+      if (!r.ok) { throw new Error('Server error (' + r.status + '). Please try again.'); }
+      return r.json().then(function (d) {
+        if (d && (d.status === 'error' || d.success === false)) {
+          throw new Error((d && d.message) || 'Request failed.');
+        }
+        return d;
+      });
+    }).then(function (d) { rxLoadEnd(); return d; },
+            function (e) { rxLoadEnd(); throw e; });
+  }
 
   var examSel    = document.getElementById('rtExamSel');
   var classSel   = document.getElementById('rtClassSel');
@@ -196,8 +223,7 @@ $flashError = $this->session->flashdata('error');
     if (!this.value) { subjectSel.disabled = true; checkLoadReady(); return; }
     var classKey = classSel.value;
     // Fetch subjects via AJAX
-    fetch('<?= base_url('exam/get_subjects') ?>?class=' + encodeURIComponent(classKey))
-      .then(function (r) { return r.json(); })
+    rxFetch('<?= base_url('exam/get_subjects') ?>?class=' + encodeURIComponent(classKey))
       .then(function (d) {
         subjectSel.innerHTML = '<option value="">-- Choose Subject --</option>';
         (d.subjects || []).forEach(function (s) {
@@ -206,6 +232,11 @@ $flashError = $this->session->flashdata('error');
           subjectSel.appendChild(opt);
         });
         subjectSel.disabled = false;
+        checkLoadReady();
+      })
+      .catch(function (e) {
+        subjectSel.innerHTML = '<option value="">-- Choose Subject --</option>';
+        subjectSel.disabled = true;
         checkLoadReady();
       });
   });
@@ -227,8 +258,7 @@ $flashError = $this->session->flashdata('error');
             + '&sectionKey=' + encodeURIComponent(sectionKey)
             + '&subject=' + encodeURIComponent(subject);
 
-    fetch(url)
-      .then(function (r) { return r.json(); })
+    rxFetch(url)
       .then(function (d) {
         compBody.innerHTML = '';
         rowIdx = 0;
@@ -242,6 +272,13 @@ $flashError = $this->session->flashdata('error');
           addRow('', '');
         }
         recalcTotal();
+      })
+      .catch(function (e) {
+        compBody.innerHTML = '';
+        rowIdx = 0;
+        addRow('', '');
+        recalcTotal();
+        showMsg((e && e.message) || 'Could not load the existing template.', true);
       });
   });
 
@@ -296,6 +333,11 @@ $flashError = $this->session->flashdata('error');
   }
 
   saveBtn.addEventListener('click', function () {
+    if (!CAN_MANAGE) {
+      showMsg('View-only — you need manage access to save templates.', true);
+      return;
+    }
+
     var examId     = examSel.value;
     var classKey   = classSel.value;
     var sectionKey = sectionSel.value;
@@ -327,7 +369,7 @@ $flashError = $this->session->flashdata('error');
     }
 
     saveBtn.disabled = true;
-    saveBtn.innerHTML = '<i class="fa fa-spinner fa-spin"></i> Saving…';
+    saveBtn.classList.add('rx-btnload');
 
     var fd = new FormData();
     fd.append('examId',     examId);
@@ -337,21 +379,16 @@ $flashError = $this->session->flashdata('error');
     fd.append('components', JSON.stringify(components));
     fd.append('<?= $this->security->get_csrf_token_name() ?>', '<?= $this->security->get_csrf_hash() ?>');
 
-    fetch('<?= base_url('result/save_template') ?>', { method: 'POST', body: fd })
-      .then(function (r) { return r.json(); })
+    rxFetch('<?= base_url('result/save_template') ?>', { method: 'POST', body: fd })
       .then(function (d) {
         saveBtn.disabled = false;
-        saveBtn.innerHTML = '<i class="fa fa-save"></i> Save Template';
-        if (d.success) {
-          showMsg('Template saved! Total max: ' + d.totalMaxMarks, false);
-        } else {
-          showMsg(d.message || 'Save failed.', true);
-        }
+        saveBtn.classList.remove('rx-btnload');
+        showMsg('Template saved! Total max: ' + d.totalMaxMarks, false);
       })
-      .catch(function () {
+      .catch(function (e) {
         saveBtn.disabled = false;
-        saveBtn.innerHTML = '<i class="fa fa-save"></i> Save Template';
-        showMsg('Network error.', true);
+        saveBtn.classList.remove('rx-btnload');
+        showMsg((e && e.message) || 'Save failed.', true);
       });
   });
 

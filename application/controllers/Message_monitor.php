@@ -86,6 +86,12 @@ class Message_monitor extends MY_Controller
      */
     private function _require_admin(): void
     {
+        // Capability short-circuit (graded RBAC). Off-catalogue module: this is a
+        // no-op for holders today, but keeps the gate consistent with the migration.
+        // ADMIN_ROLES → manage per the level policy.
+        if (has_permission('Message Monitor', 'manage')) {
+            return;
+        }
         if (!in_array($this->admin_role, self::ADMIN_ROLES, true)) {
             $this->json_error('Access denied.', 403);
         }
@@ -197,7 +203,7 @@ class Message_monitor extends MY_Controller
      */
     public function index(): void
     {
-        $this->_require_role(self::VIEW_ROLES, 'message_monitor');
+        $this->_require_role(self::VIEW_ROLES, 'message_monitor', 'Message Monitor', 'view');
 
         $data = [
             'page_title'  => 'Message Monitor',
@@ -229,7 +235,7 @@ class Message_monitor extends MY_Controller
      */
     public function get_conversations(): void
     {
-        $this->_require_role(self::VIEW_ROLES, 'message_monitor_conversations');
+        $this->_require_role(self::VIEW_ROLES, 'message_monitor_conversations', 'Message Monitor', 'view');
 
         // ── Collect & sanitise filters ──
         $teacher     = trim($this->input->post('teacher') ?? '');
@@ -354,7 +360,7 @@ class Message_monitor extends MY_Controller
      */
     public function get_conversation_detail(): void
     {
-        $this->_require_role(self::VIEW_ROLES, 'message_monitor_detail');
+        $this->_require_role(self::VIEW_ROLES, 'message_monitor_detail', 'Message Monitor', 'view');
 
         $conversationId = $this->safe_path_segment(
             trim($this->input->post('conversation_id') ?? ''),
@@ -416,7 +422,7 @@ class Message_monitor extends MY_Controller
      */
     public function get_analytics(): void
     {
-        $this->_require_role(self::VIEW_ROLES, 'message_monitor_analytics');
+        $this->_require_role(self::VIEW_ROLES, 'message_monitor_analytics', 'Message Monitor', 'view');
 
         $allConvos = $this->_fetch_all_conversations();
 
@@ -545,7 +551,7 @@ class Message_monitor extends MY_Controller
      */
     public function search_messages(): void
     {
-        $this->_require_role(self::VIEW_ROLES, 'message_monitor_search');
+        $this->_require_role(self::VIEW_ROLES, 'message_monitor_search', 'Message Monitor', 'view');
 
         $query = trim($this->input->post('query') ?? '');
         if (mb_strlen($query) < 2) {
@@ -619,7 +625,7 @@ class Message_monitor extends MY_Controller
      */
     public function get_teacher_stats(): void
     {
-        $this->_require_role(self::VIEW_ROLES, 'message_monitor_teacher_stats');
+        $this->_require_role(self::VIEW_ROLES, 'message_monitor_teacher_stats', 'Message Monitor', 'view');
 
         $allConvos = $this->_fetch_all_conversations();
         if (empty($allConvos)) {
@@ -795,7 +801,7 @@ class Message_monitor extends MY_Controller
      */
     public function get_activity_timeline(): void
     {
-        $this->_require_role(self::VIEW_ROLES, 'message_monitor_timeline');
+        $this->_require_role(self::VIEW_ROLES, 'message_monitor_timeline', 'Message Monitor', 'view');
 
         $period  = min(90, max(7, (int) ($this->input->post('period') ?? 7)));
         $startTs = (time() - ($period * 86400)) * 1000;
@@ -886,7 +892,7 @@ class Message_monitor extends MY_Controller
      */
     public function get_flagged_content(): void
     {
-        $this->_require_role(self::ADMIN_ROLES, 'message_monitor_flagged');
+        $this->_require_role(self::ADMIN_ROLES, 'message_monitor_flagged', 'Message Monitor', 'manage');
 
         $keywords  = $this->_load_flagged_keywords();
         $allConvos = $this->_fetch_all_conversations();
@@ -1019,7 +1025,7 @@ class Message_monitor extends MY_Controller
      */
     public function export_conversation(): void
     {
-        $this->_require_role(self::VIEW_ROLES, 'message_monitor_export');
+        $this->_require_role(self::VIEW_ROLES, 'message_monitor_export', 'Message Monitor', 'view');
 
         $conversationId = $this->safe_path_segment(
             trim($this->input->post('conversation_id') ?? ''),

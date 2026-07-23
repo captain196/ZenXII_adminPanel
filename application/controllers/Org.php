@@ -41,7 +41,7 @@ class Org extends MY_Controller
     /** The Departments & Roles management page. */
     public function index()
     {
-        $this->_require_role(self::VIEW_ROLES);
+        $this->_require_role(self::VIEW_ROLES, '', 'HR', 'view');
         $this->load->view('include/header');
         $this->load->view('org/index');
         $this->load->view('include/footer');
@@ -53,7 +53,7 @@ class Org extends MY_Controller
      */
     public function get_data()
     {
-        $this->_require_role(self::VIEW_ROLES, 'get_data');
+        $this->_require_role(self::VIEW_ROLES, 'get_data', 'HR', 'view');
 
         $school = $this->fs->get('schools', $this->school_id);
         if (!is_array($school)) $school = [];
@@ -138,7 +138,7 @@ class Org extends MY_Controller
      */
     public function save_role()
     {
-        $this->_require_role(self::MANAGE_ROLES, 'save_role');
+        $this->_require_role(self::MANAGE_ROLES, 'save_role', 'HR', 'edit');
 
         $roleId   = trim((string) $this->input->post('role_id', TRUE));
         $label    = trim((string) $this->input->post('label', TRUE));
@@ -165,6 +165,12 @@ class Org extends MY_Controller
         }
 
         $existing = is_array($allRoles[$roleId] ?? null) ? $allRoles[$roleId] : null;
+
+        // SECURITY (audit C2 remainder): shared role-editing ceiling — a non-god may
+        // only edit roles less privileged than their own (blocks self-widening +
+        // editing admin/higher roles via this HR-gated duplicate write path). Same
+        // guard as Staff_access / AdminUsers.
+        if ($err = rbac_role_edit_error($allRoles, $roleId)) { return $this->json_error($err); }
 
         $flagsRaw = $this->input->post('flags');
         $flags = is_array($flagsRaw) ? array_values(array_filter(array_map('strval', $flagsRaw))) : [];
@@ -248,7 +254,7 @@ class Org extends MY_Controller
      */
     public function delete_role()
     {
-        $this->_require_role(self::MANAGE_ROLES, 'delete_role');
+        $this->_require_role(self::MANAGE_ROLES, 'delete_role', 'HR', 'manage');
 
         $roleId = trim((string) $this->input->post('role_id', TRUE));
         if ($roleId === '') return $this->json_error('role_id is required.');
@@ -259,6 +265,9 @@ class Org extends MY_Controller
 
         if ($existing === null) return $this->json_error('Role not found.');
         if (!empty($existing['is_system'])) return $this->json_error('System roles cannot be deleted (they can be hidden by removing them from every department).');
+        // SECURITY (audit C2 remainder): a non-god may not delete an admin / held /
+        // ≥-own-tier role (same shared ceiling as editing).
+        if ($err = rbac_role_edit_error($allRoles, $roleId)) { return $this->json_error($err); }
 
         // Block deletion if any staff member currently holds this role. Legacy
         // staff may hold it via `primary_role` or only via the free-text
@@ -321,7 +330,7 @@ class Org extends MY_Controller
      */
     public function backfill_legacy_departments()
     {
-        $this->_require_role(self::MANAGE_ROLES, 'backfill_legacy_departments');
+        $this->_require_role(self::MANAGE_ROLES, 'backfill_legacy_departments', 'HR', 'edit');
 
         $school = $this->fs->get('schools', $this->school_id);
         if (!is_array($school)) {

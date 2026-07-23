@@ -65,7 +65,7 @@ class Assets extends MY_Controller
 
     public function index()
     {
-        $this->_require_role(self::VIEW_ROLES);
+        $this->_require_role(self::VIEW_ROLES, '', 'Assets', 'view');
         $tab = $this->uri->segment(2, 'registry');
         $data = ['active_tab' => $tab];
         $this->load->view('include/header', $data);
@@ -79,7 +79,7 @@ class Assets extends MY_Controller
 
     public function get_categories()
     {
-        $this->_require_role(self::VIEW_ROLES);
+        $this->_require_role(self::VIEW_ROLES, '', 'Assets', 'view');
         $cats = $this->firebase->get($this->_cats());
         $list = [];
         if (is_array($cats)) {
@@ -90,7 +90,7 @@ class Assets extends MY_Controller
 
     public function save_category()
     {
-        $this->_require_role(self::MANAGE_ROLES);
+        $this->_require_role(self::MANAGE_ROLES, '', 'Assets', 'edit');
         $id     = trim($this->input->post('id') ?? '');
         $name   = trim($this->input->post('name') ?? '');
         $depRate = max(0, (float) ($this->input->post('depreciation_rate') ?? 10));
@@ -117,7 +117,7 @@ class Assets extends MY_Controller
 
     public function delete_category()
     {
-        $this->_require_role(self::MANAGE_ROLES);
+        $this->_require_role(self::MANAGE_ROLES, '', 'Assets', 'manage');
         $id = $this->safe_path_segment(trim($this->input->post('id') ?? ''), 'category_id');
         $assets = $this->firebase->get($this->_assets());
         if (is_array($assets)) {
@@ -138,7 +138,7 @@ class Assets extends MY_Controller
     /** GET — List assets. ?page=1&limit=50 for pagination */
     public function get_assets()
     {
-        $this->_require_role(self::VIEW_ROLES);
+        $this->_require_role(self::VIEW_ROLES, '', 'Assets', 'view');
         $assets = $this->firebase->get($this->_assets());
         $list = [];
         if (is_array($assets)) {
@@ -154,7 +154,7 @@ class Assets extends MY_Controller
     /** POST — Register/update an asset. Creates purchase journal for new assets. */
     public function save_asset()
     {
-        $this->_require_role(self::MANAGE_ROLES);
+        $this->_require_role(self::MANAGE_ROLES, '', 'Assets', 'edit');
         $id           = trim($this->input->post('id') ?? '');
         $name         = trim($this->input->post('name') ?? '');
         $categoryId   = trim($this->input->post('category_id') ?? '');
@@ -228,7 +228,7 @@ class Assets extends MY_Controller
 
     public function delete_asset()
     {
-        $this->_require_role(self::MANAGE_ROLES);
+        $this->_require_role(self::MANAGE_ROLES, '', 'Assets', 'manage');
         $id = $this->safe_path_segment(trim($this->input->post('id') ?? ''), 'asset_id');
 
         // Check active assignments
@@ -269,7 +269,7 @@ class Assets extends MY_Controller
 
     public function get_assignments()
     {
-        $this->_require_role(self::VIEW_ROLES);
+        $this->_require_role(self::VIEW_ROLES, '', 'Assets', 'view');
         $filterAssetId = trim($this->input->get('asset_id') ?? '');
         $assignments = $this->firebase->get($this->_assignments());
         $list = [];
@@ -285,7 +285,7 @@ class Assets extends MY_Controller
 
     public function save_assignment()
     {
-        $this->_require_role(self::MANAGE_ROLES);
+        $this->_require_role(self::MANAGE_ROLES, '', 'Assets', 'edit');
         $assetId    = $this->safe_path_segment(trim($this->input->post('asset_id') ?? ''), 'asset_id');
         $assignedTo = trim($this->input->post('assigned_to') ?? '');
         $assignType = trim($this->input->post('assign_type') ?? 'staff');
@@ -316,7 +316,7 @@ class Assets extends MY_Controller
 
     public function return_assignment()
     {
-        $this->_require_role(self::MANAGE_ROLES);
+        $this->_require_role(self::MANAGE_ROLES, '', 'Assets', 'edit');
         $asnId = $this->safe_path_segment(trim($this->input->post('assignment_id') ?? ''), 'assignment_id');
 
         $asn = $this->firebase->get($this->_assignments($asnId));
@@ -340,7 +340,7 @@ class Assets extends MY_Controller
     /** GET — List maintenance records. ?asset_id=AST0001&page=1&limit=50 */
     public function get_maintenance()
     {
-        $this->_require_role(self::VIEW_ROLES);
+        $this->_require_role(self::VIEW_ROLES, '', 'Assets', 'view');
         $filterAssetId = trim($this->input->get('asset_id') ?? '');
         $maint = $this->firebase->get($this->_maintenance());
         $list = [];
@@ -363,7 +363,7 @@ class Assets extends MY_Controller
 
     public function save_maintenance()
     {
-        $this->_require_role(self::MANAGE_ROLES);
+        $this->_require_role(self::MANAGE_ROLES, '', 'Assets', 'edit');
         $id       = trim($this->input->post('id') ?? '');
         $assetId  = $this->safe_path_segment(trim($this->input->post('asset_id') ?? ''), 'asset_id');
         $type     = trim($this->input->post('type') ?? 'Repair');
@@ -414,7 +414,7 @@ class Assets extends MY_Controller
      */
     public function compute_depreciation()
     {
-        $this->_require_role(self::MANAGE_ROLES);
+        $this->_require_role(self::MANAGE_ROLES, '', 'Assets', 'edit');
 
         $assets = $this->firebase->get($this->_assets());
         if (!is_array($assets) || empty($assets)) $this->json_error('No assets found.');
@@ -498,7 +498,7 @@ class Assets extends MY_Controller
     /** GET — Depreciation report. */
     public function get_depreciation_report()
     {
-        $this->_require_role(self::VIEW_ROLES);
+        $this->_require_role(self::VIEW_ROLES, '', 'Assets', 'view');
         $assets = $this->firebase->get($this->_assets());
         $list = [];
         if (is_array($assets)) {

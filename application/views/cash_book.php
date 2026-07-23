@@ -587,7 +587,7 @@ document.addEventListener('DOMContentLoaded', function () {
 /* BUG 13 FIX: was missing entirely — all var(--ab-*) resolved to empty */
 :root {
     --cb-navy:   #0b1f3a;
-    --cb-teal:   #0e7490;
+    --cb-teal:   #BC5A3C;
     --cb-sky:    #e0f2fe;
     --cb-green:  #16a34a;
     --cb-red:    #dc2626;

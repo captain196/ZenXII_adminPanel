@@ -1,6 +1,13 @@
 <?php defined('BASEPATH') OR exit('No direct script access allowed'); ?>
+<?php
+  // RBAC level flags (Examinations module). Merit List is a read/view surface.
+  $can_edit   = function_exists('has_permission') ? has_permission('Examinations','edit')   : true;
+  $can_manage = function_exists('has_permission') ? has_permission('Examinations','manage') : true;
+?>
+<link rel="stylesheet" href="<?= base_url('assets/css/rbac_ui_kit.css') ?>">
 
 <div class="content-wrapper">
+<div class="rx-loadbar" id="rxLoadbar"></div>
 <div class="eml-wrap">
 
   <!-- ── Page Header ──────────────────────────────────────────────── -->
@@ -290,6 +297,11 @@ document.addEventListener('DOMContentLoaded', function(){
   // ── Class/Section structure from PHP ────────────────────────────
   var STRUCTURE = <?= json_encode($structure, JSON_UNESCAPED_UNICODE) ?>;
 
+  // ── RBAC UI kit: top loading bar driven by any jQuery AJAX ─────
+  var _rxBar = document.getElementById('rxLoadbar');
+  $(document).ajaxStart(function(){ if (_rxBar) _rxBar.classList.add('on'); })
+             .ajaxStop(function(){  if (_rxBar) _rxBar.classList.remove('on'); });
+
   // ── XSS helper ─────────────────────────────────────────────────
   var _escEl = document.createElement('div');
   function esc(str) {
@@ -336,6 +348,7 @@ document.addEventListener('DOMContentLoaded', function(){
 
     $('#emlResults, #emlEmpty, #emlHeaderActions').hide();
     $('#emlLoading').show();
+    var $btn = $('#emlGenerateBtn').addClass('rx-btnload').prop('disabled', true);
 
     $.ajax({
       url: BASE_URL + 'examination/get_merit_data',
@@ -346,7 +359,10 @@ document.addEventListener('DOMContentLoaded', function(){
         refreshCsrf(r);
         $('#emlLoading').hide();
 
-        if (!r || r.status !== 'success') {
+        // Fail-closed: a merit list only renders on an explicit success flag.
+        // Anything else (error status, missing body, success:false) surfaces
+        // the server message and shows the empty state — never a phantom list.
+        if (!r || r.status !== 'success' || r.success === false) {
           alert(r && r.message ? r.message : 'Failed to load merit data.');
           $('#emlEmpty').show();
           return;
@@ -357,10 +373,15 @@ document.addEventListener('DOMContentLoaded', function(){
         renderSubjectToppers(r.subjectToppers || {});
         $('#emlResults, #emlHeaderActions').show();
       },
-      error: function() {
+      error: function(xhr) {
         $('#emlLoading').hide();
         $('#emlEmpty').show();
-        alert('Network error. Please try again.');
+        var m = 'Network error. Please try again.';
+        try { var j = xhr && xhr.responseJSON; if (j && j.message) m = j.message; } catch (e) {}
+        alert(m);
+      },
+      complete: function() {
+        $btn.removeClass('rx-btnload').prop('disabled', false);
       }
     });
   };

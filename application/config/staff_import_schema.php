@@ -67,11 +67,13 @@ $config['staff_import_fields'] = [
         'aliases'  => ['fathers name', "father's name", 'father', 'guardian name'],
     ],
 
-    // ── Role / job (role resolved via the controller chain, not required here)
+    // ── Role / job (role resolved via the controller chain, not required here).
+    //    Label is "Role" (the Departments & Roles concept); "position"/"designation"
+    //    stay as aliases so older sheets and previously-downloaded templates still map.
     'role' => [
-        'label'    => 'Position',
+        'label'    => 'Role',
         'required' => false,
-        'aliases'  => ['role', 'role id', 'designation', 'job title', 'post', 'job role'],
+        'aliases'  => ['position', 'role id', 'designation', 'job title', 'post', 'job role'],
     ],
     'department' => [
         'label'    => 'Department',
@@ -148,11 +150,11 @@ $config['staff_import_fields'] = [
     // ── Address (optional) ───────────────────────────────────────────────
     'street'      => ['label' => 'Street',      'aliases' => ['address', 'street address', 'address line']],
     'city'        => ['label' => 'City',        'aliases' => ['town', 'district']],
-    'state'       => ['label' => 'State',       'aliases' => ['province']],
+    'state'       => ['label' => 'State',       'aliases' => ['province'], 'transform' => 'india_state'],
     'postal_code' => ['label' => 'Postal Code', 'aliases' => ['pincode', 'pin code', 'pin', 'zip', 'zip code'], 'transform' => 'digits_only'],
 
     'perm_street'      => ['label' => 'Permanent Street',      'aliases' => ['permanent address']],
-    'perm_city'        => ['label' => 'Permanent City',        'aliases' => []],
-    'perm_state'       => ['label' => 'Permanent State',       'aliases' => []],
+    'perm_city'        => ['label' => 'Permanent City',        'aliases' => ['permanent district']],
+    'perm_state'       => ['label' => 'Permanent State',       'aliases' => [], 'transform' => 'india_state'],
     'perm_postal_code' => ['label' => 'Permanent Postal Code', 'aliases' => ['permanent pincode', 'permanent pin'], 'transform' => 'digits_only'],
 ];

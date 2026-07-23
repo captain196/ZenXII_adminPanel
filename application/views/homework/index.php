@@ -1,4 +1,14 @@
 <?php defined('BASEPATH') or exit('No direct script access allowed'); ?>
+<?php
+/* ── RBAC level flags (Homework) ───────────────────────────────────────────
+   edit   = create / update / close homework
+   manage = delete homework
+   Server still enforces every mutation (Homework_* endpoints); these only
+   drive the UI so view-only roles don't see controls that always 403. */
+$can_edit   = function_exists('has_permission') ? has_permission('Homework', 'edit')   : true;
+$can_manage = function_exists('has_permission') ? has_permission('Homework', 'manage') : true;
+?>
+<link rel="stylesheet" href="<?= base_url('assets/css/rbac_ui_kit.css') ?>">
 
 <style>
 /* ── Homework Tracking Module ───────────────────────────────── */
@@ -24,7 +34,16 @@
     --hw-purple: #7c3aed;
 }
 
-.hw-wrap { padding: 24px 28px 40px; font-family: var(--font-b, 'Plus Jakarta Sans', sans-serif); }
+.hw-wrap { padding: 24px 28px 40px; font-family: var(--font-b, 'Plus Jakarta Sans', sans-serif); font-size: 13px; }
+
+/* ── Top progress bar (global action/loading feedback) ──────── */
+.hw-toploader {
+    position: fixed; top: 0; left: 0; height: 3px; width: 0;
+    z-index: 100001; background: linear-gradient(90deg, var(--hw-primary), var(--hw-primary2));
+    box-shadow: 0 0 8px var(--hw-primary-glow); border-radius: 0 3px 3px 0;
+    opacity: 0; transition: width .25s ease, opacity .35s ease; pointer-events: none;
+}
+.hw-toploader.on { opacity: 1; }
 
 /* ── Page Header ──────────────────────────────────────────── */
 .hw-page-header {
@@ -32,15 +51,15 @@
     margin-bottom: 24px; flex-wrap: wrap; gap: 14px;
 }
 .hw-page-header h2 {
-    margin: 0; font-size: 1.6rem; font-weight: 700; color: var(--hw-t1);
+    margin: 0; font-size: 18px; font-weight: 700; color: var(--hw-t1);
     display: flex; align-items: center; gap: 12px; font-family: var(--font-d);
 }
 .hw-page-header h2 i {
-    color: var(--hw-primary); font-size: 1.3rem; width: 44px; height: 44px;
+    color: var(--hw-primary); font-size: 15px; width: 40px; height: 40px;
     display: flex; align-items: center; justify-content: center;
     background: var(--hw-primary-dim); border-radius: 10px;
 }
-.hw-page-sub { font-size: 0.9rem; color: var(--hw-t3); font-weight: 400; font-family: var(--font-b); }
+.hw-page-sub { font-size: 13px; color: var(--hw-t3); font-weight: 400; font-family: var(--font-b); }
 
 /* ── Tabs ─────────────────────────────────────────────────── */
 .hw-tabs {
@@ -50,11 +69,11 @@
 }
 .hw-tab {
     padding: 11px 22px; cursor: pointer; font-weight: 600; color: var(--hw-t2);
-    border-radius: 8px; transition: all .2s; font-size: 0.95rem; white-space: nowrap;
+    border-radius: 8px; transition: all .2s; font-size: 12.5px; white-space: nowrap;
     display: flex; align-items: center; gap: 8px; text-decoration: none; border: none;
     background: transparent;
 }
-.hw-tab i { font-size: 1rem; opacity: .7; }
+.hw-tab i { font-size: 13px; opacity: .7; }
 .hw-tab:hover { color: var(--hw-primary); background: var(--hw-primary-dim); }
 .hw-tab:hover i { opacity: 1; }
 .hw-tab.active { color: #fff; background: var(--hw-primary); box-shadow: 0 2px 8px var(--hw-primary-glow); }
@@ -93,11 +112,11 @@
 .hw-stat-card.rate .hw-stat-icon    { background: rgba(37,99,235,0.1); color: var(--hw-blue); }
 
 .hw-stat-value {
-    font-size: 28px; font-weight: 800; color: var(--hw-t1);
-    font-family: var(--font-d); line-height: 1;
+    font-size: 26px; font-weight: 700; color: var(--hw-t1);
+    font-family: var(--font-m); line-height: 1;
 }
 .hw-stat-label {
-    font-size: 13px; color: var(--hw-t3); margin-top: 6px;
+    font-size: 12px; color: var(--hw-t3); margin-top: 6px;
     font-weight: 600; text-transform: uppercase; letter-spacing: .3px;
 }
 .hw-stat-sub { font-size: 12px; color: var(--hw-t3); margin-top: 4px; }
@@ -118,11 +137,11 @@
     background: var(--hw-bg3); flex-wrap: wrap; gap: 12px;
 }
 .hw-card-head h3 {
-    margin: 0; font-size: 1.1rem; font-weight: 700; color: var(--hw-t1);
-    display: flex; align-items: center; gap: 10px; font-family: var(--font-d);
+    margin: 0; font-size: 14px; font-weight: 700; color: var(--hw-t1);
+    display: flex; align-items: center; gap: 10px; font-family: var(--font-b);
 }
 .hw-card-head h3 i {
-    color: var(--hw-primary); font-size: 1rem; width: 34px; height: 34px;
+    color: var(--hw-primary); font-size: 13px; width: 34px; height: 34px;
     display: flex; align-items: center; justify-content: center;
     background: var(--hw-primary-dim); border-radius: 8px;
 }
@@ -141,7 +160,7 @@
 }
 .hw-filter-bar select, .hw-filter-bar input[type="text"], .hw-filter-bar input[type="date"] {
     padding: 9px 14px; border: 1px solid var(--hw-border); border-radius: 8px;
-    font-size: 14px; background: var(--hw-bg2); color: var(--hw-t1);
+    font-size: 13px; background: var(--hw-bg2); color: var(--hw-t1);
     min-width: 140px; transition: border-color .2s, box-shadow .2s;
 }
 .hw-filter-bar select:focus, .hw-filter-bar input:focus {
@@ -150,10 +169,10 @@
 
 /* ── Table ─────────────────────────────────────────────────── */
 .hw-table-wrap { overflow-x: auto; }
-.hw-table { width: 100%; border-collapse: collapse; font-size: 14px; }
+.hw-table { width: 100%; border-collapse: collapse; font-size: 13px; }
 .hw-table thead th {
     padding: 13px 16px; text-align: left; font-weight: 700;
-    color: var(--hw-t2); font-size: 12px; text-transform: uppercase;
+    color: var(--hw-t2); font-size: 11px; text-transform: uppercase;
     letter-spacing: .4px; border-bottom: 1px solid var(--hw-border);
     background: var(--hw-bg3); white-space: nowrap;
 }
@@ -193,10 +212,11 @@
 /* ── Buttons ──────────────────────────────────────────────── */
 .hw-btn {
     padding: 9px 20px; border: none; border-radius: 8px; font-weight: 600;
-    font-size: 14px; cursor: pointer; transition: all .2s;
+    font-size: 13px; cursor: pointer; transition: all .2s;
     display: inline-flex; align-items: center; gap: 7px; text-decoration: none;
 }
 .hw-btn:hover { transform: translateY(-1px); }
+.hw-btn:disabled, .hw-btn[disabled] { opacity: .45; cursor: not-allowed; transform: none !important; box-shadow: none; }
 .hw-btn-primary { background: var(--hw-primary); color: #fff; box-shadow: 0 2px 6px var(--hw-primary-glow); }
 .hw-btn-primary:hover { background: var(--hw-primary2); box-shadow: 0 4px 12px var(--hw-primary-glow); }
 .hw-btn-outline { background: transparent; color: var(--hw-primary); border: 1.5px solid var(--hw-primary); }
@@ -217,7 +237,7 @@
 .hw-chart-title {
     font-size: 14px; font-weight: 700; color: var(--hw-t1);
     margin-bottom: 14px; display: flex; align-items: center; gap: 8px;
-    font-family: var(--font-d);
+    font-family: var(--font-b);
 }
 .hw-chart-title i { color: var(--hw-primary); }
 .hw-chart-canvas { width: 100% !important; max-height: 280px; }
@@ -251,14 +271,14 @@
     display: flex; align-items: center; justify-content: space-between;
     background: var(--hw-bg3); border-radius: 16px 16px 0 0;
 }
-.hw-modal-head h4 { margin: 0; font-size: 1.15rem; font-weight: 700; color: var(--hw-t1); font-family: var(--font-d); }
+.hw-modal-head h4 { margin: 0; font-size: 15px; font-weight: 700; color: var(--hw-t1); font-family: var(--font-b); }
 .hw-modal-close {
-    background: var(--hw-bg); border: none; font-size: 1.2rem; cursor: pointer;
+    background: var(--hw-bg); border: none; font-size: 18px; cursor: pointer;
     color: var(--hw-t2); width: 32px; height: 32px; border-radius: 8px;
     display: flex; align-items: center; justify-content: center; transition: background .15s;
 }
 .hw-modal-close:hover { background: rgba(220,38,38,.1); color: var(--hw-red); }
-.hw-modal-body { padding: 24px; font-size: 14px; }
+.hw-modal-body { padding: 24px; font-size: 13px; }
 .hw-modal-foot {
     padding: 16px 24px; border-top: 1px solid var(--hw-border);
     display: flex; justify-content: flex-end; gap: 12px;
@@ -273,7 +293,7 @@
 }
 .hw-fg input, .hw-fg select, .hw-fg textarea {
     width: 100%; padding: 10px 14px; border: 1px solid var(--hw-border);
-    border-radius: 8px; font-size: 14px; background: var(--hw-bg);
+    border-radius: 8px; font-size: 13px; background: var(--hw-bg);
     color: var(--hw-t1); transition: border-color .2s, box-shadow .2s;
 }
 .hw-fg input:focus, .hw-fg select:focus, .hw-fg textarea:focus {
@@ -306,7 +326,7 @@
 .hw-gauge canvas { width: 64px; height: 64px; }
 .hw-gauge-val {
     position: absolute; inset: 0; display: flex; align-items: center; justify-content: center;
-    font-size: 14px; font-weight: 800; color: var(--hw-t1); font-family: var(--font-d);
+    font-size: 14px; font-weight: 800; color: var(--hw-t1); font-family: var(--font-m);
 }
 
 /* ── Checkbox multi-select ────────────────────────────────── */
@@ -397,13 +417,21 @@
 <script src="https://cdn.jsdelivr.net/npm/chart.js@4.4.4/dist/chart.umd.min.js"></script>
 
 <div class="content-wrapper">
+<div class="rx-loadbar" id="rxLoadbar"></div>
 <section class="content">
 <div class="hw-wrap">
+
+    <?php if (!$can_edit): ?>
+        <div class="rx-ro-banner"><i class="fa fa-eye rx-ro-ic"></i> View-only access — you can browse homework, submissions and analytics, but cannot create, edit, close or delete homework.</div>
+    <?php elseif (!$can_manage): ?>
+        <div class="rx-ro-banner"><i class="fa fa-info-circle rx-ro-ic"></i> Limited access — you can create, edit and close homework, but deleting homework requires Manage access.</div>
+    <?php endif; ?>
 
     <!-- ── Page Header ────────────────────────────────────────────── -->
     <div class="hw-page-header">
         <h2><i class="fa fa-book"></i> Homework Tracking <span class="hw-page-sub">| <?= htmlspecialchars($session_year) ?></span></h2>
-        <button class="hw-btn hw-btn-primary" id="btnCreateHwHeader" onclick="HW.create.openTab()" style="font-weight:600;">
+        <button class="hw-btn hw-btn-primary" id="btnCreateHwHeader" onclick="HW.create.openTab()" style="font-weight:600;"
+            <?php if (!$can_edit): ?>disabled title="You do not have edit access"<?php endif; ?>>
             <i class="fa fa-plus-circle"></i> Create Homework
         </button>
     </div>
@@ -721,7 +749,7 @@
 
                     <div style="display:flex;gap:12px;">
                         <button type="button" class="hw-btn hw-btn-outline" onclick="HW.create.preview()"><i class="fa fa-eye"></i> Preview</button>
-                        <button type="button" id="createSubmitBtn" class="hw-btn hw-btn-primary" onclick="HW.create.submit()"><i class="fa fa-paper-plane"></i> Create Homework</button>
+                        <button type="button" id="createSubmitBtn" class="hw-btn hw-btn-primary" onclick="HW.create.submit()" <?php if (!$can_edit): ?>disabled title="You do not have edit access"<?php endif; ?>><i class="fa fa-paper-plane"></i> Create Homework</button>
                     </div>
                 </form>
             </div>
@@ -794,7 +822,7 @@
         </div>
         <div class="hw-modal-foot">
             <button class="hw-btn hw-btn-outline" id="editCancelBtn" onclick="HW.edit.close()">Cancel</button>
-            <button class="hw-btn hw-btn-primary" id="editSaveBtn" onclick="HW.edit.save()"><i class="fa fa-save"></i> Save Changes</button>
+            <button class="hw-btn hw-btn-primary" id="editSaveBtn" onclick="HW.edit.save()" <?php if (!$can_edit): ?>disabled title="You do not have edit access"<?php endif; ?>><i class="fa fa-save"></i> Save Changes</button>
         </div>
     </div>
 </div>
@@ -810,8 +838,8 @@
         </div>
         <div class="hw-modal-body" id="hwConfirmMessage"></div>
         <div class="hw-modal-foot">
-            <button class="hw-btn hw-btn-outline" onclick="HW.confirmDialog.cancel()">Cancel</button>
-            <button class="hw-btn hw-btn-danger" id="hwConfirmOkBtn" onclick="HW.confirmDialog.confirm()">OK</button>
+            <button class="hw-btn hw-btn-outline" id="hwConfirmCancelBtn" onclick="HW.confirmDialog.cancel()">Cancel</button>
+            <button class="hw-btn hw-btn-danger" id="hwConfirmOkBtn" onclick="HW.confirmDialog.confirm()" style="min-width:96px;">OK</button>
         </div>
     </div>
 </div>
@@ -837,17 +865,105 @@ var CSRF = {
     token: document.querySelector('meta[name=csrf-token]').getAttribute('content')
 };
 
+/* RBAC level flags — mirror of the server-side has_permission() gate.
+   Client MUST NOT trust these (every endpoint re-checks); they only keep the
+   UI honest so view-only roles don't see controls that would just 403. */
+var CAN_EDIT   = <?php echo !empty($can_edit)   ? 'true' : 'false'; ?>;   // create / update / close
+var CAN_MANAGE = <?php echo !empty($can_manage) ? 'true' : 'false'; ?>;   // delete
+
+/* Shared RBAC loadbar (assets/css/rbac_ui_kit.css). Ref-counted alongside the
+   module's own top-loader so overlapping requests keep it lit until the last
+   one settles. */
+var RXBar = {
+    _n: 0,
+    _el: function() { return document.getElementById('rxLoadbar'); },
+    start: function() { this._n++; var el = this._el(); if (el) el.classList.add('on'); },
+    done:  function() { this._n = Math.max(0, this._n - 1); if (this._n === 0) { var el = this._el(); if (el) el.classList.remove('on'); } }
+};
+
+/* Guard helper — returns true (and toasts) when the user lacks the level, so
+   callers can bail before firing a doomed request. */
+function rbacGuard(level) {
+    var ok = (level === 'manage') ? CAN_MANAGE : CAN_EDIT;
+    if (!ok) { toast(level === 'manage' ? 'You do not have Manage access for Homework.' : 'You do not have Edit access for Homework.', 'error'); return false; }
+    return true;
+}
+
+/* ── Top progress bar ──────────────────────────────────────────
+ * A thin bar pinned to the top of the viewport that gives immediate,
+ * panel-wide feedback for every in-flight request (create / update /
+ * delete / close / data loads). Ref-counted so overlapping requests
+ * keep it visible until the last one settles. Creeps toward 90% while
+ * work is pending, then snaps to 100% and fades. */
+var HWLoader = {
+    _el: null, _count: 0, _prog: 0, _timer: null,
+    _bar: function() {
+        if (!this._el) {
+            var el = document.createElement('div');
+            el.className = 'hw-toploader';
+            el.setAttribute('aria-hidden', 'true');
+            document.body.appendChild(el);
+            this._el = el;
+        }
+        return this._el;
+    },
+    _set: function(p) { this._prog = p; this._bar().style.width = p + '%'; },
+    start: function() {
+        this._count++;
+        if (this._count > 1) return;                 // already running
+        var el = this._bar();
+        this._set(0);
+        el.classList.add('on');
+        // force reflow so the width transition animates from 0
+        void el.offsetWidth;
+        this._set(12);
+        var self = this;
+        this._timer = setInterval(function() {
+            if (self._prog < 90) self._set(self._prog + (90 - self._prog) * 0.18);
+        }, 300);
+    },
+    done: function() {
+        this._count = Math.max(0, this._count - 1);
+        if (this._count > 0) return;                 // other requests still pending
+        var self = this, el = this._bar();
+        if (this._timer) { clearInterval(this._timer); this._timer = null; }
+        this._set(100);
+        setTimeout(function() {
+            el.classList.remove('on');
+            setTimeout(function() { self._set(0); }, 350);
+        }, 250);
+    }
+};
+
 function ajaxPost(url, data, cb) {
     data[CSRF.name] = CSRF.token;
+    HWLoader.start();
+    RXBar.start();
     $.ajax({
         url: BASE + url, type: 'POST', data: data, dataType: 'json',
         success: function(r) {
-            if (r.csrf_token) CSRF.token = r.csrf_token;
+            if (r && r.csrf_token) CSRF.token = r.csrf_token;
+            HWLoader.done();
+            RXBar.done();
+            // Fail-closed: a 200 that isn't an explicit success is treated as
+            // an error. Never let a malformed / empty / {success:false} body
+            // read as a phantom success — normalise it so every caller's
+            // `r.status !== 'success'` branch fires with a real message.
+            if (!r || typeof r !== 'object') {
+                cb({ status: 'error', message: 'Malformed server response' });
+                return;
+            }
+            if (r.status !== 'success' && (r.status === 'error' || r.success === false)) {
+                cb({ status: 'error', message: r.message || 'Request failed' });
+                return;
+            }
             cb(r);
         },
         error: function(x) {
             if (x.responseJSON && x.responseJSON.csrf_token) CSRF.token = x.responseJSON.csrf_token;
-            cb({ status: 'error', message: x.responseJSON ? x.responseJSON.message : 'Request failed' });
+            HWLoader.done();
+            RXBar.done();
+            cb({ status: 'error', message: (x.responseJSON && x.responseJSON.message) ? x.responseJSON.message : 'Request failed' });
         }
     });
 }
@@ -1013,7 +1129,7 @@ function getChartColors() {
         primary: cs.getPropertyValue('--gold').trim() || '#BC5A3C',
         green: '#16a34a', red: '#dc2626', amber: '#d97706', blue: '#2563eb',
         purple: '#7c3aed', gray: '#6b7280',
-        t1: cs.getPropertyValue('--t1').trim() || '#e6f4f1',
+        t1: cs.getPropertyValue('--t1').trim() || '#F7ECE7',
         t3: cs.getPropertyValue('--t3').trim() || '#5a9e98',
         border: cs.getPropertyValue('--border').trim() || 'rgba(188,90,60,0.12)',
         bg3: cs.getPropertyValue('--bg3').trim() || '#0f2545',
@@ -1240,7 +1356,7 @@ HW.dash = {
                 // entry. Stops propagation so it doesn't also open the
                 // detail modal. After close, we re-load the panel to drop
                 // the row.
-                var closeBtn = '<button class="hw-btn hw-btn-sm hw-btn-success" title="Close homework" onclick="event.stopPropagation();HW.dash._closeOverdue(\'' + escJs(h.class) + '\',\'' + escJs(h.section) + '\',\'' + escJs(h.id) + '\')"><i class="fa fa-check"></i></button>';
+                var closeBtn = '<button class="hw-btn hw-btn-sm hw-btn-success" title="' + (CAN_EDIT ? 'Close homework' : 'You do not have edit access') + '"' + (CAN_EDIT ? '' : ' disabled') + ' onclick="event.stopPropagation();HW.dash._closeOverdue(\'' + escJs(h.class) + '\',\'' + escJs(h.section) + '\',\'' + escJs(h.id) + '\')"><i class="fa fa-check"></i></button>';
                 html += '<div class="hw-alert-item" role="button" tabindex="0" onclick="HW.detail.open(\'' + escJs(h.class) + '\',\'' + escJs(h.section) + '\',\'' + escJs(h.id) + '\')">' +
                     '<div class="hw-alert-dot red"></div>' +
                     '<div class="hw-alert-info"><div class="hw-alert-title">' + esc(h.title) + '</div>' +
@@ -1257,8 +1373,10 @@ HW.dash = {
     // round-trip through the list tab. Reloads both Overdue and Recent
     // panels on success since closing flips a row from active → closed.
     _closeOverdue: function(cls, sec, hwId) {
-        HW.confirmDialog.open('Close this homework? Students will no longer be able to submit.', function() {  // BUG-007
+        if (!rbacGuard('edit')) return;
+        HW.confirmDialog.open('Close this homework? Students will no longer be able to submit.', function(done) {  // BUG-007
             ajaxPost('homework/close_homework', { class: cls, section: sec, hw_id: hwId }, function(r) {
+                done();
                 if (r.status !== 'success') { toast(r.message || 'Failed to close', 'error'); return; }
                 toast('Homework closed');
                 HW.dash.loadOverdue();
@@ -1335,9 +1453,9 @@ HW.list = {
                     '<td>' + statusBadge(h.status) + '</td>' +
                     '<td>' + progressBar(h.rate) + '</td>' +
                     '<td style="white-space:nowrap;" onclick="event.stopPropagation();">' +
-                        '<button class="hw-btn hw-btn-sm hw-btn-outline" title="Edit" onclick="HW.edit.open(\'' + escJs(h.class) + '\',\'' + escJs(h.section) + '\',\'' + escJs(h.id) + '\')"><i class="fa fa-pencil"></i></button> ' +
-                        (sl === 'active' || sl === 'overdue' ? '<button class="hw-btn hw-btn-sm hw-btn-success" title="Close" onclick="HW.actions.close(\'' + escJs(h.class) + '\',\'' + escJs(h.section) + '\',\'' + escJs(h.id) + '\')"><i class="fa fa-check"></i></button> ' : '') +
-                        '<button class="hw-btn hw-btn-sm hw-btn-danger" title="Delete" onclick="HW.actions.remove(\'' + escJs(h.class) + '\',\'' + escJs(h.section) + '\',\'' + escJs(h.id) + '\')"><i class="fa fa-trash"></i></button>' +
+                        '<button class="hw-btn hw-btn-sm hw-btn-outline" title="' + (CAN_EDIT ? 'Edit' : 'You do not have edit access') + '"' + (CAN_EDIT ? '' : ' disabled') + ' onclick="HW.edit.open(\'' + escJs(h.class) + '\',\'' + escJs(h.section) + '\',\'' + escJs(h.id) + '\')"><i class="fa fa-pencil"></i></button> ' +
+                        (sl === 'active' || sl === 'overdue' ? '<button class="hw-btn hw-btn-sm hw-btn-success" title="' + (CAN_EDIT ? 'Close' : 'You do not have edit access') + '"' + (CAN_EDIT ? '' : ' disabled') + ' onclick="HW.actions.close(\'' + escJs(h.class) + '\',\'' + escJs(h.section) + '\',\'' + escJs(h.id) + '\')"><i class="fa fa-check"></i></button> ' : '') +
+                        '<button class="hw-btn hw-btn-sm hw-btn-danger" title="' + (CAN_MANAGE ? 'Delete' : 'You do not have manage access') + '"' + (CAN_MANAGE ? '' : ' disabled') + ' onclick="HW.actions.remove(\'' + escJs(h.class) + '\',\'' + escJs(h.section) + '\',\'' + escJs(h.id) + '\')"><i class="fa fa-trash"></i></button>' +
                     '</td></tr>';
             });
             setHtml('hwListBody', html);
@@ -1415,12 +1533,12 @@ HW.detail = {
             // Close-Homework, forcing the user to dismiss and find the row
             // again to edit/delete.
             var foot = '<button class="hw-btn hw-btn-outline" onclick="HW.detail.close()">Close</button>';
-            foot += ' <button class="hw-btn hw-btn-outline" onclick="HW.detail.close();HW.edit.open(\'' + escJs(h.class) + '\',\'' + escJs(h.section) + '\',\'' + escJs(h.id) + '\')"><i class="fa fa-pencil"></i> Edit</button>';
+            foot += ' <button class="hw-btn hw-btn-outline"' + (CAN_EDIT ? '' : ' disabled title="You do not have edit access"') + ' onclick="HW.detail.close();HW.edit.open(\'' + escJs(h.class) + '\',\'' + escJs(h.section) + '\',\'' + escJs(h.id) + '\')"><i class="fa fa-pencil"></i> Edit</button>';
             var hsl = (h.status || '').toLowerCase();
             if (hsl === 'active' || hsl === 'overdue') {
-                foot += ' <button class="hw-btn hw-btn-success" onclick="HW.actions.close(\'' + escJs(h.class) + '\',\'' + escJs(h.section) + '\',\'' + escJs(h.id) + '\');HW.detail.close();"><i class="fa fa-check"></i> Close Homework</button>';
+                foot += ' <button class="hw-btn hw-btn-success"' + (CAN_EDIT ? '' : ' disabled title="You do not have edit access"') + ' onclick="HW.actions.close(\'' + escJs(h.class) + '\',\'' + escJs(h.section) + '\',\'' + escJs(h.id) + '\');HW.detail.close();"><i class="fa fa-check"></i> Close Homework</button>';
             }
-            foot += ' <button class="hw-btn hw-btn-danger" onclick="HW.actions.remove(\'' + escJs(h.class) + '\',\'' + escJs(h.section) + '\',\'' + escJs(h.id) + '\');HW.detail.close();"><i class="fa fa-trash"></i> Delete</button>';
+            foot += ' <button class="hw-btn hw-btn-danger"' + (CAN_MANAGE ? '' : ' disabled title="You do not have manage access"') + ' onclick="HW.actions.remove(\'' + escJs(h.class) + '\',\'' + escJs(h.section) + '\',\'' + escJs(h.id) + '\');HW.detail.close();"><i class="fa fa-trash"></i> Delete</button>';
             setHtml('detailModalFoot', foot);
         });
     },
@@ -1494,6 +1612,7 @@ HW.edit = {
     },
 
     save: function() {
+        if (!rbacGuard('edit')) return;
         var saveBtn = document.getElementById('editSaveBtn');
         var cancelBtn = document.getElementById('editCancelBtn');
         var originalHtml = saveBtn ? saveBtn.innerHTML : '';
@@ -1540,25 +1659,29 @@ HW.edit = {
 /* ── ACTIONS (Close, Delete) ──────────────────────────────── */
 HW.actions = {
     close: function(cls, sec, hwId) {
-        HW.confirmDialog.open('Close this homework? Students will no longer be able to submit.', function() {  // BUG-007
+        if (!rbacGuard('edit')) return;
+        HW.confirmDialog.open('Close this homework? Students will no longer be able to submit.', function(done) {  // BUG-007
             ajaxPost('homework/close_homework', { class: cls, section: sec, hw_id: hwId }, function(r) {
+                done();
                 if (r.status !== 'success') { toast(r.message || 'Failed', 'error'); return; }
                 toast('Homework closed successfully');
                 if (HW.list._loaded) HW.list.refresh();
                 HW.dash.init();
             });
-        });
+        }, { okText: 'Close', loadingText: 'Closing…' });
     },
 
     remove: function(cls, sec, hwId) {
-        HW.confirmDialog.open('Delete this homework permanently? This cannot be undone.', function() {  // BUG-007
+        if (!rbacGuard('manage')) return;
+        HW.confirmDialog.open('Delete this homework permanently? This cannot be undone.', function(done) {  // BUG-007
             ajaxPost('homework/delete_homework', { class: cls, section: sec, hw_id: hwId }, function(r) {
+                done();
                 if (r.status !== 'success') { toast(r.message || 'Failed', 'error'); return; }
                 toast('Homework deleted successfully');
                 if (HW.list._loaded) HW.list.refresh();
                 HW.dash.init();
             });
-        }, { okText: 'Delete' });
+        }, { okText: 'Delete', loadingText: 'Deleting…' });
     }
 };
 
@@ -1993,6 +2116,8 @@ HW.create = {
             return;
         }
 
+        if (!rbacGuard('edit')) return;
+
         HW.confirmDialog.open('Create homework for ' + sections.length + ' section(s)?', function() {  // BUG-007
             var data = {
                 class:    cls,
@@ -2071,27 +2196,59 @@ HW.create = {
 // using the existing .hw-modal-* primitives (CSS at lines ~234-262).
 // Callback-based: callers wrap their "on confirm" body in the second arg.
 HW.confirmDialog = {
-    _onYes: null,
+    _onYes: null, _opts: {}, _busy: false,
     open: function(message, onYes, opts) {
         opts = opts || {};
+        this._opts = opts;
+        this._busy = false;
         document.getElementById('hwConfirmTitle').textContent = opts.title || 'Confirm';
         document.getElementById('hwConfirmMessage').textContent = message;
-        document.getElementById('hwConfirmOkBtn').textContent = opts.okText || 'OK';
+        var okBtn = document.getElementById('hwConfirmOkBtn');
+        okBtn.textContent = opts.okText || 'OK';
+        okBtn.disabled = false;
+        var cancelBtn = document.getElementById('hwConfirmCancelBtn');
+        if (cancelBtn) cancelBtn.disabled = false;
         this._onYes = (typeof onYes === 'function') ? onYes : null;
         document.getElementById('hwConfirmModal').classList.add('show');
         // Focus the OK button so Enter/Space activates the affirmative path
-        setTimeout(function() {
-            var btn = document.getElementById('hwConfirmOkBtn');
-            if (btn) btn.focus();
-        }, 0);
+        setTimeout(function() { if (okBtn) okBtn.focus(); }, 0);
     },
+    // The affirmative handler receives a `done` callback. If it accepts one
+    // (async action — network round-trip), the dialog stays open showing a
+    // spinner on OK until `done()` is called, so create/delete/close give
+    // in-place feedback instead of closing into a silent wait. Handlers that
+    // take no argument keep the old fire-and-close behaviour.
     confirm: function() {
+        if (this._busy) return;
         var fn = this._onYes;
+        if (!fn) { this.cancel(); return; }
         this._onYes = null;
+        var self = this;
+        if (fn.length >= 1) {
+            this._busy = true;
+            var okBtn = document.getElementById('hwConfirmOkBtn');
+            var cancelBtn = document.getElementById('hwConfirmCancelBtn');
+            okBtn.dataset.label = okBtn.textContent;
+            okBtn.disabled = true;
+            okBtn.innerHTML = '<i class="fa fa-spinner fa-spin"></i> ' + (this._opts.loadingText || 'Working…');
+            if (cancelBtn) cancelBtn.disabled = true;
+            fn(function() { self._close(); });
+        } else {
+            this._close();
+            fn();
+        }
+    },
+    _close: function() {
+        this._busy = false;
+        var okBtn = document.getElementById('hwConfirmOkBtn');
+        if (okBtn && okBtn.dataset.label) { okBtn.textContent = okBtn.dataset.label; delete okBtn.dataset.label; }
+        if (okBtn) okBtn.disabled = false;
+        var cancelBtn = document.getElementById('hwConfirmCancelBtn');
+        if (cancelBtn) cancelBtn.disabled = false;
         document.getElementById('hwConfirmModal').classList.remove('show');
-        if (fn) fn();
     },
     cancel: function() {
+        if (this._busy) return;                       // don't dismiss mid-request
         this._onYes = null;
         document.getElementById('hwConfirmModal').classList.remove('show');
     }

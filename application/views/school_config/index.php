@@ -448,12 +448,16 @@
             </div>
             <div class="sc-grid sc-grid-3">
                 <div class="sc-field">
-                    <label>City</label>
-                    <input type="text" id="pf_city" maxlength="60" placeholder="City">
+                    <label>State</label>
+                    <select id="pf_state" data-india-state data-india-fill data-india-placeholder="Select State">
+                        <option value="">Select State</option>
+                    </select>
                 </div>
                 <div class="sc-field">
-                    <label>State</label>
-                    <input type="text" id="pf_state" maxlength="60" placeholder="State">
+                    <label>District</label>
+                    <select id="pf_city" data-india-district="pf_state" data-india-placeholder="Select District">
+                        <option value="">Select District</option>
+                    </select>
                 </div>
                 <div class="sc-field">
                     <label>Pincode</label>
@@ -1162,6 +1166,7 @@
 
 <div id="scToast"></div>
 
+<script src="<?= base_url('assets/js/india_geo.js') ?>"></script>
 <script>
 (function () {
 'use strict';
@@ -1292,6 +1297,10 @@ function renderProfile(p) {
         var el = document.getElementById('pf_' + f);
         if (el) el.value = p[f] || '';
     });
+    // District select must cascade off the state select value (setting .value alone won't populate it).
+    if (window.IndiaGeo) {
+        IndiaGeo.fillDistricts(document.getElementById('pf_state'), document.getElementById('pf_city'), p.city || '');
+    }
     if (p.logo_url) {
         document.getElementById('logoImg').src = p.logo_url;
         document.getElementById('logoImg').style.display = 'block';

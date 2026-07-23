@@ -55,7 +55,7 @@ class School_backup extends MY_Controller
      */
     public function index()
     {
-        $this->_require_role(self::ALLOWED_ROLES, 'school_backup_view');
+        $this->_require_role(self::ALLOWED_ROLES, 'school_backup_view', 'Configuration', 'view');
 
         $data = [
             'page_title'    => 'Backup Management',
@@ -81,7 +81,7 @@ class School_backup extends MY_Controller
      */
     public function get_backups()
     {
-        $this->_require_role(self::ALLOWED_ROLES, 'school_backup_list');
+        $this->_require_role(self::ALLOWED_ROLES, 'school_backup_list', 'Configuration', 'view');
 
         try {
             $rows = $this->backup_service->get_school_backups($this->school_name);
@@ -119,7 +119,7 @@ class School_backup extends MY_Controller
      */
     public function get_schedule()
     {
-        $this->_require_role(self::ALLOWED_ROLES, 'school_backup_schedule');
+        $this->_require_role(self::ALLOWED_ROLES, 'school_backup_schedule', 'Configuration', 'view');
 
         try {
             $path     = "Schools/{$this->school_name}/Config/BackupSchedule";
@@ -151,7 +151,7 @@ class School_backup extends MY_Controller
         if ($this->input->method() !== 'post') {
             return $this->json_error('POST required', 405);
         }
-        $this->_require_role(self::ALLOWED_ROLES, 'school_backup_save_schedule');
+        $this->_require_role(self::ALLOWED_ROLES, 'school_backup_save_schedule', 'Configuration', 'edit');
 
         $enabled   = filter_var($this->input->post('enabled'), FILTER_VALIDATE_BOOLEAN);
         $retention = (int) ($this->input->post('retention') ?? 7);
@@ -204,7 +204,7 @@ class School_backup extends MY_Controller
         if ($this->input->method() !== 'post') {
             return $this->json_error('POST required', 405);
         }
-        $this->_require_role(self::ALLOWED_ROLES, 'school_backup_create');
+        $this->_require_role(self::ALLOWED_ROLES, 'school_backup_create', 'Configuration', 'manage');
 
         try {
             // ── Rate limit: check today's manual backups ─────────────────
@@ -267,7 +267,7 @@ class School_backup extends MY_Controller
      */
     public function download($backup_id = '')
     {
-        $this->_require_role(self::ALLOWED_ROLES, 'school_backup_download');
+        $this->_require_role(self::ALLOWED_ROLES, 'school_backup_download', 'Configuration', 'manage');
 
         $backup_id = preg_replace('/[^A-Za-z0-9_\-]/', '', trim($backup_id));
         if (empty($backup_id)) {

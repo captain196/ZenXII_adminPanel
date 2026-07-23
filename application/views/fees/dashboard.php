@@ -188,6 +188,10 @@ document.addEventListener('DOMContentLoaded', function(){
 
             // Recent transactions
             renderRecentTable(r.recent_transactions);
+        }).fail(function(){
+            $('#statCollected,#statDue,#statToday,#statRate').text('Error');
+            $('#tblClass tbody').html('<tr><td colspan="5" class="fd-empty"><i class="fa fa-exclamation-triangle"></i> Failed to load. Check your session and retry.</td></tr>');
+            $('#tblRecent tbody').html('<tr><td colspan="5" class="fd-empty"><i class="fa fa-exclamation-triangle"></i> Failed to load.</td></tr>');
         });
     }
 
@@ -384,7 +388,7 @@ document.addEventListener('DOMContentLoaded', function(){
 .fd-btn-primary { background: var(--gold, #BC5A3C); color: #fff; }
 .fd-btn-primary:hover { background: var(--gold2, #9E4830); color: #fff; text-decoration: none; }
 .fd-btn-ghost { background: transparent; color: var(--t2, #4a6a60); border: 1px solid var(--border, #d1ddd8); }
-.fd-btn-ghost:hover { background: var(--bg3, #e6f4f1); color: var(--t1); text-decoration: none; }
+.fd-btn-ghost:hover { background: var(--bg3, #F7ECE7); color: var(--t1); text-decoration: none; }
 .fd-btn-sm { padding: 7px 12px; font-size: 12px; }
 
 /* Stat Cards */
@@ -469,7 +473,7 @@ document.addEventListener('DOMContentLoaded', function(){
 
 /* Progress bar */
 .fd-bar-wrap {
-    width: 80px; height: 8px; background: var(--bg3, #e6f4f1);
+    width: 80px; height: 8px; background: var(--bg3, #F7ECE7);
     border-radius: 4px; overflow: hidden; display: inline-block; vertical-align: middle;
 }
 .fd-bar { height: 100%; border-radius: 4px; transition: width .4s ease; }
@@ -488,7 +492,7 @@ document.addEventListener('DOMContentLoaded', function(){
 .fd-mode-val { font-weight: 600; color: var(--t1); font-variant-numeric: tabular-nums; }
 .fd-mode-tag {
     display: inline-block; padding: 2px 8px; border-radius: 4px;
-    font-size: 11px; font-weight: 600; background: var(--bg3, #e6f4f1); color: var(--t2);
+    font-size: 11px; font-weight: 600; background: var(--bg3, #F7ECE7); color: var(--t2);
 }
 
 /* Quick Links */
@@ -501,7 +505,7 @@ document.addEventListener('DOMContentLoaded', function(){
 .fd-qlink {
     display: flex; flex-direction: column; align-items: center; gap: 8px;
     padding: 16px 10px; border-radius: 10px;
-    background: var(--bg3, #e6f4f1); color: var(--t2, #4a6a60);
+    background: var(--bg3, #F7ECE7); color: var(--t2, #4a6a60);
     text-decoration: none; transition: all .2s; font-size: 12px; font-weight: 600;
     text-align: center;
 }

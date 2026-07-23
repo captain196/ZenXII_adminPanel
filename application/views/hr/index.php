@@ -848,7 +848,7 @@
       </div>
       <div class="hr-fg">
         <label>Department</label>
-        <input type="text" id="apDepartment" readonly placeholder="Auto-filled from staff" style="background:var(--bg3,#e6f4f1);cursor:not-allowed;">
+        <input type="text" id="apDepartment" readonly placeholder="Auto-filled from staff" style="background:var(--bg3,#F7ECE7);cursor:not-allowed;">
       </div>
       <div class="hr-fg">
         <label>Appraisal Type <span class="req">*</span></label>
@@ -880,7 +880,7 @@
       </div>
       <div class="hr-fg">
         <label>Status</label>
-        <input type="text" id="apStatus" value="Draft" readonly style="background:var(--bg3,#e6f4f1);cursor:not-allowed;">
+        <input type="text" id="apStatus" value="Draft" readonly style="background:var(--bg3,#F7ECE7);cursor:not-allowed;">
       </div>
     </div>
     <div class="hr-fg-group" style="margin-top:8px;">

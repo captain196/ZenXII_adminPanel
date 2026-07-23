@@ -1,4 +1,26 @@
 <?php defined('BASEPATH') or exit('No direct script access allowed'); ?>
+<?php
+    /* ── Access levels (defense-in-depth; controller remains source of truth) ──
+     * This legacy view is READ-ONLY for everyone (search + display; no marking
+     * or save controls exist here), so there is nothing to disable at edit
+     * level. The vars are computed for parity with the newer register views. */
+    $att_can_edit   = function_exists('has_permission') ? has_permission('Attendance', 'edit')   : true;
+    $att_can_manage = function_exists('has_permission') ? has_permission('Attendance', 'manage') : true;
+?>
+
+<!-- Attendance Design System (shared) — provides the loading/progress primitives
+     (att-loadbar, att-spin, att-btn.is-loading…). See assets/css/attendance_design_system.css -->
+<link rel="stylesheet" href="<?= base_url('assets/css/attendance_design_system.css') ?>?v=2.1.0">
+
+<!-- Top progress bar — driven by attBusyStart/attBusyEnd on every request -->
+<div class="att-loadbar" id="attLoadbar"></div>
+<script>
+    /* Shared busy counter: any in-flight fetch turns the top loadbar on; it
+       clears only when the LAST request settles (success OR error). */
+    var _attBusy = 0;
+    function attBusyStart(){ _attBusy++; var b=document.getElementById('attLoadbar'); if(b)b.classList.add('on'); }
+    function attBusyEnd(){ _attBusy=Math.max(0,_attBusy-1); if(!_attBusy){ var b=document.getElementById('attLoadbar'); if(b)b.classList.remove('on'); } }
+</script>
 
 <div class="content-wrapper">
     <div class="at-wrap">
@@ -173,8 +195,11 @@
         /* ────────────────────────────────────────────────────────
            STEP 1 — Load classes on page load (JS only, BUG FIX 1)
         ──────────────────────────────────────────────────────── */
+        attBusyStart();
         fetch('<?= base_url("student/get_classes") ?>')
             .then(function(r) {
+                // FAIL-CLOSED: a 403/500 must not fall through as a "success".
+                if (!r.ok) throw new Error('Request failed (' + r.status + ')');
                 return r.json();
             })
             .then(function(classes) {
@@ -191,7 +216,8 @@
             })
             .catch(function() {
                 selClass.innerHTML = '<option value="" disabled selected>Error loading classes</option>';
-            });
+            })
+            .finally(function(){ attBusyEnd(); });
 
         /* ────────────────────────────────────────────────────────
            STEP 2 — Load sections when class changes
@@ -203,12 +229,15 @@
             var fd = new FormData();
             fd.append(csrfName, csrfToken);
             fd.append('class_name', this.value);
+            attBusyStart();
             fetch('<?= base_url("student/get_sections_by_class") ?>', {
                     method: 'POST',
                     headers: { 'X-Requested-With': 'XMLHttpRequest' },
                     body: fd
                 })
                 .then(function(r) {
+                    // FAIL-CLOSED: reject on 403/500 so we don't render a stale list.
+                    if (!r.ok) throw new Error('Request failed (' + r.status + ')');
                     return r.json();
                 })
                 .then(function(sections) {
@@ -227,7 +256,8 @@
                 .catch(function() {
                     selSection.innerHTML = '<option value="" disabled selected>Error loading sections</option>';
                     selSection.disabled = false;
-                });
+                })
+                .finally(function(){ attBusyEnd(); });
         });
 
         /* ────────────────────────────────────────────────────────
@@ -239,7 +269,7 @@
             var mon = selMonth.value;
 
             if (!cls || !sec || !mon) {
-                alert('Please select Class, Section and Month.');
+                showError('Please select Class, Section and Month before searching.');
                 return;
             }
 
@@ -247,6 +277,7 @@
             btnSearch.disabled = true;
             btnSearch.innerHTML = '<i class="fa fa-spinner fa-spin"></i> Searching…';
 
+            attBusyStart();
             fetch('<?= base_url("student/fetchAttendance") ?>', {
                     method: 'POST',
                     headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
@@ -256,6 +287,9 @@
                         '&month=' + encodeURIComponent(mon)
                 })
                 .then(function(r) {
+                    // FAIL-CLOSED: a denied/failed request must land in .catch,
+                    // never render an empty grid as if the search succeeded.
+                    if (!r.ok) throw new Error('Request failed (' + r.status + ')');
                     return r.json();
                 })
                 .then(function(data) {
@@ -276,7 +310,8 @@
                     btnSearch.disabled = false;
                     btnSearch.innerHTML = '<i class="fa fa-search"></i> Search';
                     showError('Server error — please try again.');
-                });
+                })
+                .finally(function(){ attBusyEnd(); });
         });
 
         /* ────────────────────────────────────────────────────────
@@ -705,7 +740,7 @@
     align-items: center;
     justify-content: space-between;
 }
-.at-modal-head h4 { margin: 0; font-family: var(--font-d); font-size: 16px; font-weight: 700; color: #e6f4f1; }
+.at-modal-head h4 { margin: 0; font-family: var(--font-d); font-size: 16px; font-weight: 700; color: #F7ECE7; }
 .at-modal-head h4 i { color: var(--gold); }
 .at-modal-x {
     background: none; border: none;

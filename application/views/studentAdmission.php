@@ -227,7 +227,7 @@
 
                             <div class="sa-field">
                                 <label>District <span class="req">*</span></label>
-                                <select name="city" id="city" class="sa-select" required>
+                                <select name="city" id="city" class="sa-select" data-india-district="state" required>
                                     <option value="">Select District</option>
                                 </select>
                             </div>
@@ -574,6 +574,7 @@
 
 
 
+<script src="<?= base_url('assets/js/india_geo.js') ?>"></script>
 <script>
 /* ================================================================
    studentAdmission.php — all original IDs and logic preserved
@@ -892,41 +893,7 @@ document.addEventListener('DOMContentLoaded', function() {
         }
     });
 
-    /* State → district */
-    var stateDistricts = {
-        "Uttar Pradesh": ["Agra","Aligarh","Allahabad","Ambedkar Nagar","Amethi","Amroha","Auraiya","Azamgarh","Baghpat","Bahraich","Ballia","Balrampur","Banda","Barabanki","Bareilly","Basti","Bhadohi","Bijnor","Budaun","Bulandshahr","Chandauli","Chitrakoot","Deoria","Etah","Etawah","Faizabad","Farrukhabad","Fatehpur","Firozabad","Gautam Buddha Nagar","Ghaziabad","Ghazipur","Gonda","Gorakhpur","Hamirpur","Hapur","Hardoi","Hathras","Jalaun","Jaunpur","Jhansi","Kannauj","Kanpur Dehat","Kanpur Nagar","Kasganj","Kaushambi","Kushinagar","Lakhimpur Kheri","Lalitpur","Lucknow","Maharajganj","Mahoba","Mainpuri","Mathura","Mau","Meerut","Mirzapur","Moradabad","Muzaffarnagar","Pilibhit","Pratapgarh","Raebareli","Rampur","Saharanpur","Sambhal","Sant Kabir Nagar","Shahjahanpur","Shamli","Shravasti","Siddharthnagar","Sitapur","Sonbhadra","Sultanpur","Unnao","Varanasi"],
-        "Uttarakhand": ["Almora","Bageshwar","Chamoli","Champawat","Dehradun","Haridwar","Nainital","Pauri Garhwal","Pithoragarh","Rudraprayag","Tehri Garhwal","Udham Singh Nagar","Uttarkashi"],
-        "Delhi": ["Central Delhi","East Delhi","New Delhi","North Delhi","North East Delhi","North West Delhi","South Delhi","South East Delhi","South West Delhi","West Delhi"],
-        "Maharashtra": ["Mumbai","Pune","Nagpur","Nashik","Thane","Aurangabad","Solapur","Kolhapur","Amravati","Nanded","Sangli","Jalgaon","Latur"],
-        "Rajasthan": ["Ajmer","Alwar","Banswara","Baran","Barmer","Bharatpur","Bhilwara","Bikaner","Bundi","Chittorgarh","Churu","Dausa","Dholpur","Dungarpur","Hanumangarh","Jaipur","Jaisalmer","Jalore","Jhalawar","Jhunjhunu","Jodhpur","Karauli","Kota","Nagaur","Pali","Pratapgarh","Rajsamand","Sawai Madhopur","Sikar","Sirohi","Sri Ganganagar","Tonk","Udaipur"],
-        "Gujarat": ["Ahmedabad","Amreli","Anand","Aravalli","Banaskantha","Bharuch","Bhavnagar","Botad","Chhota Udaipur","Dahod","Dang","Devbhoomi Dwarka","Gandhinagar","Gir Somnath","Jamnagar","Junagadh","Kheda","Kutch","Mahisagar","Mehsana","Morbi","Narmada","Navsari","Panchmahal","Patan","Porbandar","Rajkot","Sabarkantha","Surat","Surendranagar","Tapi","Vadodara","Valsad"],
-        "Karnataka": ["Bagalkot","Ballari","Belagavi","Bengaluru Rural","Bengaluru Urban","Bidar","Chamarajanagara","Chikballapur","Chikkamagaluru","Chitradurga","Dakshina Kannada","Davanagere","Dharwad","Gadag","Hassan","Haveri","Kalaburagi","Kodagu","Kolar","Koppal","Mandya","Mysuru","Raichur","Ramanagara","Shivamogga","Tumakuru","Udupi","Uttara Kannada","Vijayanagara","Vijayapura","Yadgir"],
-        "Tamil Nadu": ["Ariyalur","Chengalpattu","Chennai","Coimbatore","Cuddalore","Dharmapuri","Dindigul","Erode","Kallakurichi","Kancheepuram","Kanyakumari","Karur","Krishnagiri","Madurai","Mayiladuthurai","Nagapattinam","Namakkal","Nilgiris","Perambalur","Pudukkottai","Ramanathapuram","Ranipet","Salem","Sivaganga","Tenkasi","Thanjavur","Theni","Thoothukudi","Tiruchirappalli","Tirunelveli","Tirupathur","Tiruppur","Tiruvallur","Tiruvannamalai","Tiruvarur","Vellore","Villupuram","Virudhunagar"],
-        "Kerala": ["Alappuzha","Ernakulam","Idukki","Kannur","Kasaragod","Kollam","Kottayam","Kozhikode","Malappuram","Palakkad","Pathanamthitta","Thiruvananthapuram","Thrissur","Wayanad"],
-        "West Bengal": ["Alipurduar","Bankura","Birbhum","Cooch Behar","Dakshin Dinajpur","Darjeeling","Hooghly","Howrah","Jalpaiguri","Jhargram","Kalimpong","Kolkata","Malda","Murshidabad","Nadia","North 24 Parganas","Paschim Bardhaman","Paschim Medinipur","Purba Bardhaman","Purba Medinipur","Purulia","South 24 Parganas","Uttar Dinajpur"],
-        "Bihar": ["Araria","Arwal","Aurangabad","Banka","Begusarai","Bhagalpur","Bhojpur","Buxar","Darbhanga","East Champaran","Gaya","Gopalganj","Jamui","Jehanabad","Kaimur","Katihar","Khagaria","Kishanganj","Lakhisarai","Madhepura","Madhubani","Munger","Muzaffarpur","Nalanda","Nawada","Patna","Purnia","Rohtas","Saharsa","Samastipur","Saran","Sheikhpura","Sheohar","Sitamarhi","Siwan","Supaul","Vaishali","West Champaran"],
-        "Punjab": ["Amritsar","Barnala","Bathinda","Faridkot","Fatehgarh Sahib","Fazilka","Ferozepur","Gurdaspur","Hoshiarpur","Jalandhar","Kapurthala","Ludhiana","Mansa","Moga","Mohali","Muktsar","Nawanshahr","Pathankot","Patiala","Roopnagar","Sangrur","Tarn Taran"],
-        "Haryana": ["Ambala","Bhiwani","Charkhi Dadri","Faridabad","Fatehabad","Gurugram","Hisar","Jhajjar","Jind","Kaithal","Karnal","Kurukshetra","Mahendragarh","Nuh","Palwal","Panchkula","Panipat","Rewari","Rohtak","Sirsa","Sonipat","Yamunanagar"]
-    };
-
-    var stateEl = document.getElementById('state');
-    if (stateEl) {
-        stateEl.addEventListener('change', function() {
-            var distSel = document.getElementById('city');
-            if (!distSel) return;
-            distSel.innerHTML = '<option value="">Select District</option>';
-            var list = stateDistricts[this.value];
-            if (list) {
-                list.forEach(function(d) {
-                    var o = document.createElement('option');
-                    o.value = o.textContent = d;
-                    distSel.appendChild(o);
-                });
-            } else {
-                distSel.innerHTML = '<option value="">No districts listed</option>';
-            }
-        });
-    }
+    /* State → district cascade handled by shared IndiaGeo (assets/js/india_geo.js) */
 
     /* Sidebar active highlight on scroll */
     var sections = document.querySelectorAll('.sa-section');
@@ -974,12 +941,14 @@ document.addEventListener('DOMContentLoaded', function() {
                 }}
             }
             if (L.address) document.getElementById('street') && (document.getElementById('street').value = L.address);
-            if (L.city) document.getElementById('city') && (document.getElementById('city').value = L.city);
             if (L.state) {
                 var stEl = document.getElementById('state');
-                if (stEl) { for (var j = 0; j < stEl.options.length; j++) {
-                    if (stEl.options[j].value === L.state) { stEl.selectedIndex = j; stEl.dispatchEvent(new Event('change')); break; }
-                }}
+                if (stEl) {
+                    stEl.value = L.state;
+                    if (window.IndiaGeo) IndiaGeo.fillDistricts(stEl, document.getElementById('city'), L.city || '');
+                }
+            } else if (L.city) {
+                document.getElementById('city') && (document.getElementById('city').value = L.city);
             }
             if (L.pincode) document.getElementById('postal_code') && (document.getElementById('postal_code').value = L.pincode);
             if (L.religion) {
@@ -1041,15 +1010,15 @@ document.addEventListener('DOMContentLoaded', function() {
 @import url('https://fonts.googleapis.com/css2?family=Instrument+Sans:wght@400;500;600;700&family=Lora:wght@500;600;700&display=swap');
 
 :root {
-    --sa-navy:   #0c1e38;
+    --sa-navy:   #2A1C12;
     --sa-blue:   #BC5A3C;
-    --sa-sky:    #e6f4f1;
-    --sa-green:  #15803d;
+    --sa-sky:    #F7ECE7;
+    --sa-green:  #2FA875;
     --sa-red:    #dc2626;
     --sa-amber:  #d97706;
-    --sa-text:   #1a2535;
+    --sa-text:   #22160F;
     --sa-muted:  #64748b;
-    --sa-border: #e2e8f0;
+    --sa-border: #E7DED6;
     --sa-white:  #ffffff;
     --sa-bg:     #f1f5fb;
     --sa-shadow: 0 1px 12px rgba(12,30,56,.07);

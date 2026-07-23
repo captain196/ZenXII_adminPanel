@@ -13,7 +13,7 @@
     --sg-border:  var(--border, #e5e7eb);
     --sg-bg:      var(--bg, #f4f6f9);
     --sg-white:   var(--bg2, #ffffff);
-    --sg-bg3:     var(--bg3, #e6f4f1);
+    --sg-bg3:     var(--bg3, #F7ECE7);
     --sg-shadow:  var(--sh, 0 2px 8px rgba(0,0,0,.08));
     --sg-radius:  10px;
     --sg-amber:   #d97706;
@@ -210,7 +210,7 @@
     border: 1.5px solid var(--sg-border); transition: all .18s; position: relative;
 }
 .sg-item:hover { transform: translateY(-3px); box-shadow: 0 6px 20px rgba(0,0,0,.12); border-color: var(--sg-teal); }
-.sg-item.selected { border-color: var(--sg-teal); box-shadow: 0 0 0 3px rgba(13,148,136,.2); }
+.sg-item.selected { border-color: var(--sg-teal); box-shadow: 0 0 0 3px rgba(188,90,60,.2); }
 .sg-item-media { width: 100%; height: 150px; object-fit: cover; display: block; cursor: pointer; }
 .sg-item-video-wrap { position: relative; width: 100%; height: 150px; overflow: hidden; cursor: pointer; }
 .sg-item-video-wrap img, .sg-item-video-wrap video { width: 100%; height: 100%; object-fit: cover; display: block; background:#000; }

@@ -1,0 +1,10 @@
+{
+  "$comment": "SINGLE SOURCE OF TRUTH for the RBAC module catalogue. Read by BOTH the PHP resolver (application/helpers/rbac_helper.php → RBAC_MODULES) and the staffCapabilities Cloud Function (functions/staffCapabilities.js). Lives under functions/ so the Firebase Functions deploy bundles it. Editing this list updates both systems at once — this replaces the two hand-maintained copies that silently drifted (Device Management / Message Monitor were added to PHP but not the CF, so demoted admins lost app-side access). Keep ordering stable; keep names byte-exact (incl. spaces, e.g. 'Red Flags').",
+  "modules": [
+    "SIS", "Fees", "Accounting", "Attendance", "Examinations", "Results",
+    "LMS", "Certificates", "HR", "Events", "Communication", "Operations",
+    "Library", "Transport", "Hostel", "Inventory", "Assets",
+    "Academic", "Reports", "Configuration", "Admin Users", "Stories", "Homework",
+    "Red Flags", "Device Management", "Message Monitor"
+  ]
+}

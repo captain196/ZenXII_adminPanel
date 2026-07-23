@@ -72,6 +72,7 @@ class Stories extends MY_Controller
 
     private function _require_view(): void
     {
+        if (has_permission('Stories', 'view')) return;
         if (!in_array($this->admin_role, self::VIEW_ROLES, true)) {
             $this->_deny_access();
         }
@@ -79,6 +80,7 @@ class Stories extends MY_Controller
 
     private function _require_moderate(): void
     {
+        if (has_permission('Stories', 'edit')) return;
         if (!in_array($this->admin_role, self::MODERATE_ROLES, true)) {
             $this->_deny_access();
         }
@@ -86,6 +88,7 @@ class Stories extends MY_Controller
 
     private function _require_delete(): void
     {
+        if (has_permission('Stories', 'manage')) return;
         if (!in_array($this->admin_role, self::DELETE_ROLES, true)) {
             $this->_deny_access();
         }
@@ -96,7 +99,7 @@ class Stories extends MY_Controller
         if ($this->input->is_ajax_request()) {
             $this->json_error('Access denied.', 403);
         }
-        redirect(base_url('admin'));
+        redirect(rbac_denied_url('Stories', 'view'));
     }
 
     // ── Text helpers ────────────────────────────────────────────────────
@@ -229,6 +232,12 @@ class Stories extends MY_Controller
             'createdAt'         => $createdMs,
             'expiresAt'         => $expiryMs,
             'viewCount'         => (int) ($d['viewCount'] ?? 0),
+            // Denormalised emoji → count map (server-maintained by the
+            // onStoryReactionWritten CF). Surfaced so the detail view can show
+            // reaction analytics, not just who viewed.
+            'reactionCounts'    => (isset($d['reactionCounts']) && is_array($d['reactionCounts']))
+                                    ? array_map('intval', $d['reactionCounts'])
+                                    : [],
             'status'            => $status,
             'effectiveStatus'   => $isExpired ? 'expired' : $status,
             'audienceClassKeys' => $audience,
@@ -299,7 +308,7 @@ class Stories extends MY_Controller
      */
     public function index()
     {
-        $this->_require_role(self::VIEW_ROLES, 'stories_view');
+        $this->_require_role(self::VIEW_ROLES, 'stories_view', 'Stories', 'view');
         $this->_require_view();
 
         $data = ['page_title' => 'Stories Management'];
@@ -324,7 +333,7 @@ class Stories extends MY_Controller
      */
     public function get_stories()
     {
-        $this->_require_role(self::VIEW_ROLES, 'stories_view');
+        $this->_require_role(self::VIEW_ROLES, 'stories_view', 'Stories', 'view');
         $this->_require_view();
 
         $filterTeacher  = trim($this->input->get('teacher') ?? '');
@@ -388,7 +397,7 @@ class Stories extends MY_Controller
      */
     public function get_story_detail(string $storyId = '')
     {
-        $this->_require_role(self::VIEW_ROLES, 'stories_view');
+        $this->_require_role(self::VIEW_ROLES, 'stories_view', 'Stories', 'view');
         $this->_require_view();
 
         if ($storyId === '') {
@@ -403,27 +412,48 @@ class Stories extends MY_Controller
         [$docId, $d] = $owned;
 
         $story = $this->_map_story($docId, $d);
+        // Per-user reactions (userId → emoji), read once and merged into the
+        // viewer list below so oversight sees WHO reacted with WHAT.
+        $reactionByUser = $this->_story_reactions($docId);
         // "Who viewed" — names of everyone (students/parents + staff) who
-        // opened this story. Admin-panel oversight always sees this list.
-        $story['viewers'] = $this->_story_viewers($docId);
+        // opened this story, each annotated with their emoji (if any).
+        // Admin-panel oversight always sees this list.
+        $story['viewers'] = $this->_story_viewers($docId, $reactionByUser);
 
         $this->json_success(['story' => $story]);
     }
 
     /**
      * Read the `viewers` subcollection for a story → newest-first list of
-     * [userId, userName, viewedAt(ms)]. Best-effort; empty on any failure.
+     * [userId, userName, viewedAt(ms), emoji]. The optional $reactionByUser
+     * map (userId → emoji) annotates each viewer with their reaction and
+     * absorbs reactors who somehow aren't in viewers. Best-effort; empty on
+     * any failure.
      */
-    private function _story_viewers(string $docId): array
+    private function _story_viewers(string $docId, array $reactionByUser = []): array
     {
         $viewers = [];
+        $seen = [];
         foreach ($this->firebase->firestoreListSubcollection(self::COLLECTION, $docId, 'viewers') as $row) {
             $vd = $row['data'] ?? null;
             if (!is_array($vd)) continue;
+            $uid = (string) ($vd['userId'] ?? $row['id']);
+            $seen[$uid] = true;
             $viewers[] = [
-                'userId'   => (string) ($vd['userId'] ?? $row['id']),
+                'userId'   => $uid,
                 'userName' => (string) ($vd['userName'] ?? ''),
                 'viewedAt' => $this->_to_millis($vd['viewedAt'] ?? 0),
+                'emoji'    => (string) ($reactionByUser[$uid] ?? ''),
+            ];
+        }
+        // Defensive union: reactors with no viewer doc still appear.
+        foreach ($reactionByUser as $uid => $emoji) {
+            if (isset($seen[$uid])) continue;
+            $viewers[] = [
+                'userId'   => (string) $uid,
+                'userName' => '',
+                'viewedAt' => 0,
+                'emoji'    => (string) $emoji,
             ];
         }
         usort($viewers, function ($a, $b) { return $b['viewedAt'] <=> $a['viewedAt']; });
@@ -431,11 +461,28 @@ class Stories extends MY_Controller
     }
 
     /**
+     * Read the `reactions` subcollection for a story → [userId => emoji].
+     * Best-effort; empty on any failure.
+     */
+    private function _story_reactions(string $docId): array
+    {
+        $out = [];
+        foreach ($this->firebase->firestoreListSubcollection(self::COLLECTION, $docId, 'reactions') as $row) {
+            $rd = $row['data'] ?? null;
+            if (!is_array($rd)) continue;
+            $uid   = (string) ($rd['userId'] ?? $row['id']);
+            $emoji = (string) ($rd['emoji'] ?? '');
+            if ($uid !== '' && $emoji !== '') $out[$uid] = $emoji;
+        }
+        return $out;
+    }
+
+    /**
      * GET: Stories analytics.
      */
     public function get_analytics()
     {
-        $this->_require_role(self::VIEW_ROLES, 'stories_view');
+        $this->_require_role(self::VIEW_ROLES, 'stories_view', 'Stories', 'view');
         $this->_require_view();
 
         $now = time();
@@ -532,7 +579,7 @@ class Stories extends MY_Controller
      */
     public function moderate_story()
     {
-        $this->_require_role(self::MODERATE_ROLES, 'moderate_story');
+        $this->_require_role(self::MODERATE_ROLES, 'moderate_story', 'Stories', 'edit');
         $this->_require_moderate();
 
         $storyId   = $this->_story_id_param($this->input->post('story_id') ?? '');
@@ -572,7 +619,7 @@ class Stories extends MY_Controller
      */
     public function delete_story()
     {
-        $this->_require_role(self::DELETE_ROLES, 'delete_story');
+        $this->_require_role(self::DELETE_ROLES, 'delete_story', 'Stories', 'manage');
         $this->_require_delete();
 
         $storyId = $this->_story_id_param($this->input->post('story_id') ?? '');
@@ -599,7 +646,7 @@ class Stories extends MY_Controller
      */
     public function get_teachers()
     {
-        $this->_require_role(self::VIEW_ROLES, 'stories_view');
+        $this->_require_role(self::VIEW_ROLES, 'stories_view', 'Stories', 'view');
         $this->_require_view();
 
         $byAuthor = [];
@@ -631,7 +678,7 @@ class Stories extends MY_Controller
      */
     public function get_audience_options()
     {
-        $this->_require_role(self::MODERATE_ROLES, 'stories_audience');
+        $this->_require_role(self::MODERATE_ROLES, 'stories_audience', 'Stories', 'edit');
         $this->_require_moderate();
 
         $options = array_values($this->_school_audience_map());
@@ -651,7 +698,7 @@ class Stories extends MY_Controller
      */
     public function bulk_moderate()
     {
-        $this->_require_role(self::MODERATE_ROLES, 'bulk_moderate');
+        $this->_require_role(self::MODERATE_ROLES, 'bulk_moderate', 'Stories', 'edit');
         $this->_require_moderate();
 
         $newStatus = trim($this->input->post('status') ?? '');

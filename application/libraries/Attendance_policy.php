@@ -123,21 +123,68 @@ class Attendance_policy
             return $this->_reject($base, 'method_disabled');
         }
 
-        // ── Gate 2: geofence configured + active ─────────────────────
-        $gps      = is_array($policy['gps'] ?? null) ? $policy['gps'] : [];
-        $geofence = is_array($gps['geofence'] ?? null) ? $gps['geofence'] : [];
-        $active   = !empty($geofence['active']);
-        $centerLat = $geofence['centerLat'] ?? null;
-        $centerLng = $geofence['centerLng'] ?? null;
-        $radius    = (float) ($geofence['radius'] ?? 0);
-        if (!$active || !gf_valid_coord($centerLat, $centerLng) || $radius <= 0) {
+        // ── Gate 2: geofence(s) configured + active ──────────────────
+        // Multi-campus: a school may define several campuses; a punch is valid
+        // inside ANY active one. Source of truth is gps.geofences[]; the legacy
+        // singular gps.geofence is accepted as a one-campus list for full
+        // backward compatibility (old policies + app writers unchanged).
+        $gps = is_array($policy['gps'] ?? null) ? $policy['gps'] : [];
+        $rawFences = [];
+        if (isset($gps['geofences']) && is_array($gps['geofences'])) {
+            $rawFences = $gps['geofences'];
+        } elseif (is_array($gps['geofence'] ?? null)) {
+            $rawFences = [$gps['geofence']];
+        }
+        // Keep only ACTIVE fences with valid coordinates and a usable radius.
+        $fences = [];
+        foreach ($rawFences as $f) {
+            if (!is_array($f) || empty($f['active'])) {
+                continue;
+            }
+            $flat = $f['centerLat'] ?? null;
+            $flng = $f['centerLng'] ?? null;
+            $frad = (float) ($f['radius'] ?? 0);
+            if (!gf_valid_coord($flat, $flng) || $frad <= 0) {
+                continue;
+            }
+            $fences[] = [
+                'lat'    => (float) $flat,
+                'lng'    => (float) $flng,
+                'radius' => $frad,
+                'id'     => (string) ($f['id'] ?? ''),
+                'name'   => (string) ($f['name'] ?? ''),
+            ];
+        }
+        if (empty($fences)) {
             return $this->_reject($base, 'gps_disabled');
         }
 
-        // Distance is computed once and carried into every subsequent
-        // outcome (including rejections) for the audit trail.
-        $distance = gf_haversine($lat, $lng, (float) $centerLat, (float) $centerLng);
-        $base['distanceMeters'] = is_finite($distance) ? round($distance, 1) : null;
+        // Distance to the NEAREST campus, and whether the fix falls inside ANY
+        // campus (the matched one). Computed up-front and carried into every
+        // subsequent outcome (including rejections) for the audit trail.
+        $tolerance = (float) ($gps['boundaryToleranceMeters'] ?? 0.0);
+        $nearest = null;   // ['distance'=>, 'fence'=>] — closest campus regardless of membership
+        $matched = null;   // ['distance'=>, 'fence'=>] — closest campus the fix is INSIDE
+        foreach ($fences as $f) {
+            $d = gf_haversine($lat, $lng, $f['lat'], $f['lng']);
+            if (!is_finite($d)) {
+                continue;
+            }
+            if ($nearest === null || $d < $nearest['distance']) {
+                $nearest = ['distance' => $d, 'fence' => $f];
+            }
+            if (gf_within_radius($d, $f['radius'], $tolerance)) {
+                if ($matched === null || $d < $matched['distance']) {
+                    $matched = ['distance' => $d, 'fence' => $f];
+                }
+            }
+        }
+        $refDist = $matched !== null ? $matched['distance'] : ($nearest !== null ? $nearest['distance'] : null);
+        $base['distanceMeters'] = ($refDist !== null && is_finite($refDist)) ? round($refDist, 1) : null;
+        if ($matched !== null) {
+            $base['geofenceId']   = $matched['fence']['id'];
+            $base['geofenceName'] = $matched['fence']['name'];
+        }
 
         // ── Gate 3: mock-location rejection ──────────────────────────
         $allowMock = !empty($gps['allowMockLocation']);
@@ -152,9 +199,8 @@ class Attendance_policy
             return $this->_reject($base, 'poor_accuracy');
         }
 
-        // ── Gate 5: geofence membership ──────────────────────────────
-        $tolerance = (float) ($gps['boundaryToleranceMeters'] ?? 0.0);
-        if (!gf_within_radius($distance, $radius, $tolerance)) {
+        // ── Gate 5: geofence membership (inside ANY active campus) ───
+        if ($matched === null) {
             return $this->_reject($base, 'outside_geofence');
         }
 
@@ -259,8 +305,15 @@ class Attendance_policy
 
     private function _evaluate_checkout(array $base, array $w, int $nowMin, array $context): array
     {
-        // No check-out time gating — you may clock out at any time; the hours
-        // worked decide the day (this is what makes early half-day checkouts work).
+        // No check-out TIME gate — you may clock out at any time; the hours
+        // worked (and the optional early-out cutoff) decide the day.
+
+        // Optional 'Early-Out Before': clocking out before this time is an early
+        // departure. In the HOURS model the worked-hours already decide the day,
+        // so a genuine full-hours worker who came in early is NOT penalised; in
+        // the CLASSIC (no-hours) model it is the only downgrade signal → Half-day.
+        $earlyOutMin = ($w['earlyOutBefore'] !== null) ? $this->_to_minutes($w['earlyOutBefore']) : null;
+        $leftEarly   = ($earlyOutMin !== null && $nowMin < $earlyOutMin);
 
         // Worked-hours classification — ONLY when a schedule (full/half hours)
         // is configured AND today's check-in time is known. Downgrades the day
@@ -285,6 +338,15 @@ class Attendance_policy
             $d['workedMinutes'] = $worked;
             return $d;
         }
+
+        // Classic model (no hours schedule): the ONLY downgrade signal is the
+        // early-out cutoff — clocking out before it → Half-day (M). Otherwise
+        // the day keeps its check-in mark (audit-only).
+        if ($leftEarly) {
+            $d = $this->_allow($base, self::STATUS_HALF, true);
+            $d['earlyOut'] = true;
+            return $d;
+        }
         return $this->_allow($base, null, false); // allowed, audit-only
     }
 
@@ -304,10 +366,16 @@ class Attendance_policy
         $grace      = (int)    ($sched['graceMinutes']  ?? $w['gracePeriodMin'] ?? self::DEFAULT_GRACE_MIN);
         $latestRaw  = (string) ($sched['latestCheckIn'] ?? $w['latestCheckIn']  ?? '');
         $earliestRaw = (string) ($sched['earliestCheckIn'] ?? $w['earliestCheckIn'] ?? '');
+        $earlyOutRaw = (string) ($sched['earlyOutBefore'] ?? '');
+        $shiftEndRaw = (string) ($sched['shiftEnd'] ?? '');
 
         return [
             'shiftStart'      => $shiftStart,
+            'shiftEnd'        => ($shiftEndRaw !== '') ? $shiftEndRaw : null,
             'gracePeriodMin'  => $grace,
+            // Optional early-departure cutoff — clocking out before it (in the
+            // classic, no-hours model) downgrades the day to Half-day.
+            'earlyOutBefore'  => ($earlyOutRaw !== '') ? $earlyOutRaw : null,
             // Optional opening cutoff; '' or the sentinel 00:00 both mean "no opening gate".
             'earliestCheckIn' => ($earliestRaw !== '' && $earliestRaw !== '00:00') ? $earliestRaw : null,
             // Optional hard cutoff; '' or the sentinel 23:59 both mean "no cutoff".

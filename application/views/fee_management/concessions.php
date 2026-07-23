@@ -138,7 +138,21 @@ function fcPost(url, data) {
     var fd = new FormData();
     Object.keys(data).forEach(function(k){ fd.append(k, data[k] == null ? '' : data[k]); });
     fd.append(FC_CSRF_NAME, FC_CSRF_TOKEN);
-    return fetch(url, { method:'POST', body: fd, headers:{ 'X-Requested-With':'XMLHttpRequest' } }).then(function(r){return r.json();});
+    return fetch(url, { method:'POST', body: fd, headers:{ 'X-Requested-With':'XMLHttpRequest' } }).then(function(r){
+        return r.json().catch(function(){ return {}; }).then(function(j){
+            /* Keep the rotating CSRF token in sync if the server sends one. */
+            if (j && j.csrf_hash)  FC_CSRF_TOKEN = j.csrf_hash;
+            if (j && j.csrf_token) FC_CSRF_TOKEN = j.csrf_token;
+            /* Reject on HTTP failure (fetch does NOT reject on 403/500) or on a
+               server-signalled error body, so callers can never mistake a denied
+               action for success. */
+            if (!r.ok || (j && (j.status === 'error' || j.success === false))) {
+                var e = new Error((j && (j.message || j.error)) || ('Request failed (' + r.status + ')'));
+                e.httpStatus = r.status; e.payload = j; throw e;
+            }
+            return j;
+        });
+    });
 }
 
 function fcLoad() {
@@ -160,6 +174,8 @@ function fcLoad() {
                      + '<td style="padding:6px 8px;">' + fcEsc(c.status) + '</td>'
                      + '<td style="padding:6px 8px;">' + (c.status === 'active' ? '<button onclick="fcRevoke(\'' + fcEsc(c._id) + '\')" style="padding:3px 8px;background:#c00;color:#fff;border:none;border-radius:4px;cursor:pointer;font-size:11px;">Revoke</button>' : '') + '</td></tr>';
             }).join('') + '</tbody></table>';
+    }).catch(function(e){
+        document.getElementById('fcConcessionsList').innerHTML = '<span style="color:var(--danger,#c00);">' + fcEsc((e && e.message) || 'Load failed') + '</span>';
     });
     <?php endif; ?>
     <?php if ($service_ui_enabled): ?>
@@ -177,6 +193,8 @@ function fcLoad() {
                      + '<td style="padding:6px 8px;">' + fcEsc(e.status) + '</td>'
                      + '<td style="padding:6px 8px;">' + (e.status === 'active' ? '<button onclick="fcDiscontinue(\'' + fcEsc(e._id) + '\')" style="padding:3px 8px;background:#c00;color:#fff;border:none;border-radius:4px;cursor:pointer;font-size:11px;">Discontinue</button>' : '') + '</td></tr>';
             }).join('') + '</tbody></table>';
+    }).catch(function(err){
+        document.getElementById('fcEnrollmentsList').innerHTML = '<span style="color:var(--danger,#c00);">' + fcEsc((err && err.message) || 'Load failed') + '</span>';
     });
     <?php endif; ?>
 }
@@ -197,16 +215,20 @@ function fcCreateConcession(ev) {
         approved_by:    fm.approved_by.value,
     };
     fcPost('<?= base_url('fee_concessions/create_concession') ?>', d).then(function(r){
-        alert(r.message || (r.status === 'success' ? 'Saved.' : 'Failed.'));
-        if (r.status === 'success') { fm.reset(); fcLoad(); }
+        alert((r && r.message) || 'Saved.');
+        fm.reset(); fcLoad();
+    }).catch(function(e){
+        alert((e && e.message) || 'Failed.');
     });
     return false;
 }
 function fcRevoke(id) {
     if (!confirm('Revoke this concession?')) return;
     fcPost('<?= base_url('fee_concessions/revoke_concession') ?>', { concession_id: id }).then(function(r){
-        alert(r.message || (r.status === 'success' ? 'Revoked.' : 'Failed.'));
-        if (r.status === 'success') fcLoad();
+        alert((r && r.message) || 'Revoked.');
+        fcLoad();
+    }).catch(function(e){
+        alert((e && e.message) || 'Failed.');
     });
 }
 <?php endif; ?>
@@ -226,8 +248,10 @@ function fcEnroll(ev) {
         effective_to:   fm.effective_to.value,
     };
     fcPost('<?= base_url('fee_concessions/enroll_service') ?>', d).then(function(r){
-        alert(r.message || (r.status === 'success' ? 'Saved.' : 'Failed.'));
-        if (r.status === 'success') { fm.reset(); fcLoad(); }
+        alert((r && r.message) || 'Saved.');
+        fm.reset(); fcLoad();
+    }).catch(function(e){
+        alert((e && e.message) || 'Failed.');
     });
     return false;
 }
@@ -235,8 +259,10 @@ function fcDiscontinue(id) {
     var to = prompt('Effective-to date (YYYY-MM-DD)?', new Date().toISOString().slice(0,10));
     if (!to) return;
     fcPost('<?= base_url('fee_concessions/discontinue_service') ?>', { enrollment_id: id, effective_to: to }).then(function(r){
-        alert(r.message || (r.status === 'success' ? 'Discontinued.' : 'Failed.'));
-        if (r.status === 'success') fcLoad();
+        alert((r && r.message) || 'Discontinued.');
+        fcLoad();
+    }).catch(function(e){
+        alert((e && e.message) || 'Failed.');
     });
 }
 <?php endif; ?>

@@ -20,7 +20,7 @@ $pCount     = (int) $participant_count;
 
 // Category styling
 $catMap = [
-    'event'    => ['label' => 'School Event',       'icon' => 'fa-star',          'accent' => '#BC5A3C', 'accent2' => '#D4725C', 'bg' => '#f0fdfa'],
+    'event'    => ['label' => 'School Event',       'icon' => 'fa-star',          'accent' => '#BC5A3C', 'accent2' => '#D4725C', 'bg' => '#F7ECE7'],
     'cultural' => ['label' => 'Cultural Program',   'icon' => 'fa-paint-brush',   'accent' => '#7c3aed', 'accent2' => '#a78bfa', 'bg' => '#f5f3ff'],
     'sports'   => ['label' => 'Sports Competition', 'icon' => 'fa-trophy',        'accent' => '#d97706', 'accent2' => '#fbbf24', 'bg' => '#fffbeb'],
 ];

@@ -364,7 +364,7 @@ class Fee_management extends MY_Controller
      */
     public function categories()
     {
-        $this->_require_role(self::VIEW_ROLES, 'fee_mgmt_view');
+        $this->_require_role(self::VIEW_ROLES, 'fee_mgmt_view', 'Fees', 'view');
         $data = [];
         $data['feesStructure'] = $this->_getFeesStructure();
         $data['page_title']    = 'Fee Titles & Categories';
@@ -379,7 +379,7 @@ class Fee_management extends MY_Controller
      */
     public function discounts()
     {
-        $this->_require_role(self::VIEW_ROLES, 'fee_mgmt_view');
+        $this->_require_role(self::VIEW_ROLES, 'fee_mgmt_view', 'Fees', 'view');
         $data = [];
         $catRows = $this->firebase->firestoreQuery('feeCategories', [
             ['schoolId', '==', $this->school_name],
@@ -405,7 +405,7 @@ class Fee_management extends MY_Controller
      */
     public function scholarships()
     {
-        $this->_require_role(self::VIEW_ROLES, 'fee_mgmt_view');
+        $this->_require_role(self::VIEW_ROLES, 'fee_mgmt_view', 'Fees', 'view');
         $data = [];
         $data['page_title'] = 'Scholarships';
 
@@ -419,7 +419,7 @@ class Fee_management extends MY_Controller
      */
     public function refunds()
     {
-        $this->_require_role(self::VIEW_ROLES, 'fee_mgmt_view');
+        $this->_require_role(self::VIEW_ROLES, 'fee_mgmt_view', 'Fees', 'view');
         $data = [];
         $data['fee_titles']  = $this->_getAllFeeTitles();
         $data['page_title']  = 'Fee Refunds';
@@ -434,7 +434,7 @@ class Fee_management extends MY_Controller
      */
     public function reminders()
     {
-        $this->_require_role(self::VIEW_ROLES, 'fee_mgmt_view');
+        $this->_require_role(self::VIEW_ROLES, 'fee_mgmt_view', 'Fees', 'view');
         $data = [];
         $settingsDoc = $this->firebase->firestoreGet('feeSettings', "{$this->school_name}_{$this->session_year}_reminders");
         $data['settings']   = is_array($settingsDoc) ? $settingsDoc : [];
@@ -450,7 +450,7 @@ class Fee_management extends MY_Controller
      */
     public function gateway()
     {
-        $this->_require_role(self::VIEW_ROLES, 'fee_mgmt_view');
+        $this->_require_role(self::VIEW_ROLES, 'fee_mgmt_view', 'Fees', 'view');
         $data = [];
         $config = $this->firebase->firestoreGet('feeSettings', "{$this->school_name}_{$this->session_year}_gateway");
         if (is_array($config)) {
@@ -477,7 +477,7 @@ class Fee_management extends MY_Controller
      */
     public function online_payments()
     {
-        $this->_require_role(self::VIEW_ROLES, 'fee_mgmt_view');
+        $this->_require_role(self::VIEW_ROLES, 'fee_mgmt_view', 'Fees', 'view');
         $data = [];
         $config = $this->firebase->firestoreGet('feeSettings', "{$this->school_name}_{$this->session_year}_gateway");
         $data['gateway_mode'] = is_array($config) && isset($config['mode']) ? $config['mode'] : '';
@@ -497,7 +497,7 @@ class Fee_management extends MY_Controller
      */
     public function fetch_fee_titles()
     {
-        $this->_require_role(self::VIEW_ROLES, 'fetch_fee_titles');
+        $this->_require_role(self::VIEW_ROLES, 'fetch_fee_titles', 'Fees', 'view');
         $structure = $this->_getFeesStructure();
         $titles = [];
         foreach (['Monthly', 'Yearly'] as $type) {
@@ -516,7 +516,7 @@ class Fee_management extends MY_Controller
      */
     public function save_fee_title()
     {
-        $this->_require_role(self::FINANCE_ROLES, 'save_fee_title');
+        $this->_require_role(self::FINANCE_ROLES, 'save_fee_title', 'Fees', 'edit');
         $feeTitle = trim(ucwords(strtolower($this->_post('fee_title'))));
         $feeType  = $this->_post('fee_type');
 
@@ -554,7 +554,7 @@ class Fee_management extends MY_Controller
      */
     public function delete_fee_title()
     {
-        $this->_require_role(self::FINANCE_ROLES, 'delete_fee_title');
+        $this->_require_role(self::FINANCE_ROLES, 'delete_fee_title', 'Fees', 'manage');
         $feeTitle = $this->_post('fee_title');
         $feeType  = $this->_post('fee_type');
 
@@ -591,7 +591,7 @@ class Fee_management extends MY_Controller
      */
     public function fetch_categories()
     {
-        $this->_require_role(self::VIEW_ROLES, 'fetch_categories');
+        $this->_require_role(self::VIEW_ROLES, 'fetch_categories', 'Fees', 'view');
         $rows = $this->firebase->firestoreQuery('feeCategories', [
             ['schoolId', '==', $this->school_name],
         ]);
@@ -615,7 +615,7 @@ class Fee_management extends MY_Controller
      */
     public function save_category()
     {
-        $this->_require_role(self::FINANCE_ROLES, 'save_category');
+        $this->_require_role(self::FINANCE_ROLES, 'save_category', 'Fees', 'edit');
         // Accept both naming conventions (category_name OR name, etc.)
         $name        = $this->_post('category_name') ?: $this->_post('name');
         $description = $this->_post('description');
@@ -681,7 +681,7 @@ class Fee_management extends MY_Controller
      */
     public function delete_category()
     {
-        $this->_require_role(self::FINANCE_ROLES, 'delete_category');
+        $this->_require_role(self::FINANCE_ROLES, 'delete_category', 'Fees', 'manage');
         $catId = $this->safe_path_segment(trim($this->input->post('category_id') ?? ''), 'category_id');
 
         // Verify it exists
@@ -703,7 +703,7 @@ class Fee_management extends MY_Controller
      */
     public function fetch_discounts()
     {
-        $this->_require_role(self::VIEW_ROLES, 'fetch_discounts');
+        $this->_require_role(self::VIEW_ROLES, 'fetch_discounts', 'Fees', 'view');
         $rows = $this->firebase->firestoreQuery('feeDiscountPolicies', [
             ['schoolId', '==', $this->school_name],
         ]);
@@ -723,7 +723,7 @@ class Fee_management extends MY_Controller
      */
     public function save_discount()
     {
-        $this->_require_role(self::FINANCE_ROLES, 'save_discount');
+        $this->_require_role(self::FINANCE_ROLES, 'save_discount', 'Fees', 'edit');
 
         // SCHEMA NOTE — the JS form posts these field names:
         //   policy_name, discount_type, value, criteria, max_cap, is_active,
@@ -833,7 +833,7 @@ class Fee_management extends MY_Controller
      */
     public function delete_discount()
     {
-        $this->_require_role(self::FINANCE_ROLES, 'delete_discount');
+        $this->_require_role(self::FINANCE_ROLES, 'delete_discount', 'Fees', 'manage');
         $discId = $this->safe_path_segment(trim($this->input->post('discount_id') ?? ''), 'discount_id');
 
         $existing = $this->firebase->firestoreGet('feeDiscountPolicies', "{$this->school_name}_{$discId}");
@@ -858,7 +858,7 @@ class Fee_management extends MY_Controller
      */
     public function fetch_eligible_students()
     {
-        $this->_require_role(self::FINANCE_ROLES, 'fetch_eligible');
+        $this->_require_role(self::FINANCE_ROLES, 'fetch_eligible', 'Fees', 'edit');
         $discId = $this->safe_path_segment(trim($this->input->post('discount_id') ?? ''), 'discount_id');
 
         $policy = $this->firebase->firestoreGet('feeDiscountPolicies', "{$this->school_name}_{$discId}");
@@ -972,7 +972,7 @@ class Fee_management extends MY_Controller
      */
     public function apply_discount()
     {
-        $this->_require_role(self::FINANCE_ROLES, 'apply_discount');
+        $this->_require_role(self::FINANCE_ROLES, 'apply_discount', 'Fees', 'edit');
         $discId     = $this->safe_path_segment(trim($this->input->post('discount_id') ?? ''), 'discount_id');
         $studentRaw = $this->input->post('student_ids');
         // Phase 17: optional expiry. If supplied, fetch_fee_details will
@@ -1164,7 +1164,7 @@ class Fee_management extends MY_Controller
      */
     public function fetch_scholarships()
     {
-        $this->_require_role(self::VIEW_ROLES, 'fetch_scholarships');
+        $this->_require_role(self::VIEW_ROLES, 'fetch_scholarships', 'Fees', 'view');
         $scholRows = $this->firebase->firestoreQuery('feeScholarships', [
             ['schoolId', '==', $this->school_name],
         ]);
@@ -1201,7 +1201,7 @@ class Fee_management extends MY_Controller
      */
     public function save_scholarship()
     {
-        $this->_require_role(self::FINANCE_ROLES, 'save_scholarship');
+        $this->_require_role(self::FINANCE_ROLES, 'save_scholarship', 'Fees', 'edit');
         $name    = trim($this->input->post('name'));
         $type    = trim($this->input->post('type'));
         $value   = floatval($this->input->post('value'));
@@ -1254,7 +1254,7 @@ class Fee_management extends MY_Controller
      */
     public function delete_scholarship()
     {
-        $this->_require_role(self::FINANCE_ROLES, 'delete_scholarship');
+        $this->_require_role(self::FINANCE_ROLES, 'delete_scholarship', 'Fees', 'manage');
         $scholId = $this->safe_path_segment(trim($this->input->post('scholarship_id') ?? ''), 'scholarship_id');
 
         $existing = $this->firebase->firestoreGet('feeScholarships', "{$this->school_name}_{$scholId}");
@@ -1282,7 +1282,7 @@ class Fee_management extends MY_Controller
      */
     public function fetch_awards()
     {
-        $this->_require_role(self::VIEW_ROLES, 'fetch_awards');
+        $this->_require_role(self::VIEW_ROLES, 'fetch_awards', 'Fees', 'view');
         $scholId = trim($this->input->get('scholarship_id'));
 
         $conditions = [['schoolId', '==', $this->school_name]];
@@ -1311,7 +1311,7 @@ class Fee_management extends MY_Controller
      */
     public function award_scholarship()
     {
-        $this->_require_role(self::FINANCE_ROLES, 'award_scholarship');
+        $this->_require_role(self::FINANCE_ROLES, 'award_scholarship', 'Fees', 'edit');
         $scholId     = $this->safe_path_segment(trim($this->input->post('scholarship_id') ?? ''), 'scholarship_id');
         $studentId   = $this->safe_path_segment(trim($this->input->post('student_id') ?? ''), 'student_id');
         $studentName = trim($this->input->post('student_name'));
@@ -1501,7 +1501,7 @@ class Fee_management extends MY_Controller
      */
     public function revoke_scholarship()
     {
-        $this->_require_role(self::FINANCE_ROLES, 'revoke_scholarship');
+        $this->_require_role(self::FINANCE_ROLES, 'revoke_scholarship', 'Fees', 'manage');
         $awardId = $this->safe_path_segment(trim($this->input->post('award_id') ?? ''), 'award_id');
 
         $award = $this->firebase->firestoreGet('scholarshipAwards', "{$this->school_name}_{$awardId}");
@@ -1625,7 +1625,7 @@ class Fee_management extends MY_Controller
      */
     public function fetch_refunds()
     {
-        $this->_require_role(self::VIEW_ROLES, 'fetch_refunds');
+        $this->_require_role(self::VIEW_ROLES, 'fetch_refunds', 'Fees', 'view');
         $this->_bootFsTxn();
         $filterStatus = trim((string) $this->input->get('status'));
 
@@ -1689,7 +1689,7 @@ class Fee_management extends MY_Controller
      */
     public function create_refund()
     {
-        $this->_require_role(self::ADMIN_ROLES, 'create_refund');
+        $this->_require_role(self::ADMIN_ROLES, 'create_refund', 'Fees', 'manage');
         $this->_bootFsTxn();
 
         $studentId   = trim((string) $this->input->post('student_id'));
@@ -1794,7 +1794,7 @@ class Fee_management extends MY_Controller
      */
     public function update_refund_status()
     {
-        $this->_require_role(self::ADMIN_ROLES, 'update_refund_status');
+        $this->_require_role(self::ADMIN_ROLES, 'update_refund_status', 'Fees', 'manage');
         $this->_bootFsTxn();
 
         $refId   = $this->safe_path_segment(trim((string) $this->input->post('refund_id')), 'refund_id');
@@ -1830,7 +1830,7 @@ class Fee_management extends MY_Controller
      */
     public function approve_refund()
     {
-        $this->_require_role(self::ADMIN_ROLES, 'approve_refund');
+        $this->_require_role(self::ADMIN_ROLES, 'approve_refund', 'Fees', 'manage');
         $_POST['status'] = 'approved';
         $this->update_refund_status();
     }
@@ -1840,7 +1840,7 @@ class Fee_management extends MY_Controller
      */
     public function reject_refund()
     {
-        $this->_require_role(self::ADMIN_ROLES, 'reject_refund');
+        $this->_require_role(self::ADMIN_ROLES, 'reject_refund', 'Fees', 'manage');
         $_POST['status'] = 'rejected';
         $this->update_refund_status();
     }
@@ -1853,7 +1853,7 @@ class Fee_management extends MY_Controller
      */
     public function process_refund()
     {
-        $this->_require_role(self::ADMIN_ROLES, 'process_refund');
+        $this->_require_role(self::ADMIN_ROLES, 'process_refund', 'Fees', 'manage');
         // L1.0 period-lock enforcement — block refund posting if
         // today's date falls within a closed accounting period.
         // Refund creates a NEW reversal journal entry; same gating
@@ -1967,7 +1967,7 @@ class Fee_management extends MY_Controller
      */
     public function unstick_refund()
     {
-        $this->_require_role(self::ADMIN_ROLES, 'unstick_refund');
+        $this->_require_role(self::ADMIN_ROLES, 'unstick_refund', 'Fees', 'manage');
         $this->_bootFsTxn();
 
         // Unstick writes 3-4 Firestore docs. Same rationale as process_refund
@@ -2068,7 +2068,7 @@ class Fee_management extends MY_Controller
      */
     public function retry_refund_journal()
     {
-        $this->_require_role(self::ADMIN_ROLES, 'retry_refund_journal');
+        $this->_require_role(self::ADMIN_ROLES, 'retry_refund_journal', 'Fees', 'manage');
         $this->_bootFsTxn();
 
         // Ledger write + index writes + closing-balance updates. Slow
@@ -2123,7 +2123,7 @@ class Fee_management extends MY_Controller
      */
     public function get_reminder_settings()
     {
-        $this->_require_role(self::VIEW_ROLES, 'get_reminder_settings');
+        $this->_require_role(self::VIEW_ROLES, 'get_reminder_settings', 'Fees', 'view');
         $settings = $this->firebase->firestoreGet('feeSettings', "{$this->school_name}_{$this->session_year}_reminders");
         if (!is_array($settings)) {
             $settings = [
@@ -2146,7 +2146,7 @@ class Fee_management extends MY_Controller
      */
     public function save_reminder_settings()
     {
-        $this->_require_role(self::FINANCE_ROLES, 'save_reminder_settings');
+        $this->_require_role(self::FINANCE_ROLES, 'save_reminder_settings', 'Fees', 'edit');
         $autoRemind     = ($this->input->post('auto_remind') === '1'
                           || $this->input->post('auto_remind') === 'true') ? true : false;
         $daysBeforeDue  = $this->input->post('days_before_due');
@@ -2202,7 +2202,7 @@ class Fee_management extends MY_Controller
      */
     public function fetch_due_students()
     {
-        $this->_require_role(self::VIEW_ROLES, 'fetch_due_students');
+        $this->_require_role(self::VIEW_ROLES, 'fetch_due_students', 'Fees', 'view');
         // Fee_firestore_txn is used statically at line ~2204 for
         // periodToMonth(). Bootstrap the library so the class file is
         // loaded before the static call.
@@ -2343,7 +2343,7 @@ class Fee_management extends MY_Controller
      */
     public function send_reminder()
     {
-        $this->_require_role(self::FINANCE_ROLES, 'send_reminder');
+        $this->_require_role(self::FINANCE_ROLES, 'send_reminder', 'Fees', 'edit');
         $studentRaw = $this->input->post('student_ids');
         $month      = trim((string) $this->input->post('month'));
         // New (2026-04-17): accept channel so Defaulter Report can send
@@ -2532,7 +2532,7 @@ class Fee_management extends MY_Controller
      */
     public function fetch_reminder_log()
     {
-        $this->_require_role(self::VIEW_ROLES, 'fetch_reminder_log');
+        $this->_require_role(self::VIEW_ROLES, 'fetch_reminder_log', 'Fees', 'view');
         $rows = $this->firebase->firestoreQuery('feeReminderLog', [
             ['schoolId', '==', $this->school_name],
         ], 'sent_date', 'DESC');
@@ -2556,7 +2556,7 @@ class Fee_management extends MY_Controller
      */
     public function get_gateway_config()
     {
-        $this->_require_role(self::ADMIN_ROLES, 'get_gateway_config');
+        $this->_require_role(self::ADMIN_ROLES, 'get_gateway_config', 'Fees', 'manage');
         $config = $this->firebase->firestoreGet('feeSettings', "{$this->school_name}_{$this->session_year}_gateway");
         if (!is_array($config)) {
             $config = [
@@ -2593,7 +2593,7 @@ class Fee_management extends MY_Controller
      */
     public function save_gateway_config()
     {
-        $this->_require_role(self::ADMIN_ROLES, 'save_gateway_config');
+        $this->_require_role(self::ADMIN_ROLES, 'save_gateway_config', 'Fees', 'manage');
         $provider      = trim($this->input->post('provider'));
         $apiKey        = trim($this->input->post('api_key'));
         $apiSecret     = trim($this->input->post('api_secret'));
@@ -2695,7 +2695,7 @@ class Fee_management extends MY_Controller
      */
     public function fetch_online_payments()
     {
-        $this->_require_role(self::VIEW_ROLES, 'fetch_online_payments');
+        $this->_require_role(self::VIEW_ROLES, 'fetch_online_payments', 'Fees', 'view');
 
         // Filters from view (POST). Empty / missing means no filter.
         $filterStatus = trim((string) ($this->input->post('status') ?? ''));
@@ -3528,7 +3528,7 @@ class Fee_management extends MY_Controller
      */
     public function get_blocking_policy()
     {
-        $this->_require_role(self::ADMIN_ROLES, 'get_blocking_policy');
+        $this->_require_role(self::ADMIN_ROLES, 'get_blocking_policy', 'Fees', 'manage');
         $this->load->library('Fee_dues_check', null, 'duesCheck');
         $this->duesCheck->init($this->firebase, $this->school_name, $this->session_year);
         $this->json_success(['policy' => $this->duesCheck->getPolicy()]);
@@ -3541,7 +3541,7 @@ class Fee_management extends MY_Controller
      */
     public function save_blocking_policy()
     {
-        $this->_require_role(self::ADMIN_ROLES, 'save_blocking_policy');
+        $this->_require_role(self::ADMIN_ROLES, 'save_blocking_policy', 'Fees', 'manage');
         $this->load->library('Fee_dues_check', null, 'duesCheck');
         $this->duesCheck->init($this->firebase, $this->school_name, $this->session_year);
 
@@ -3573,7 +3573,7 @@ class Fee_management extends MY_Controller
      */
     public function create_payment_order()
     {
-        $this->_require_role(self::FINANCE_ROLES, 'create_payment_order');
+        $this->_require_role(self::FINANCE_ROLES, 'create_payment_order', 'Fees', 'edit');
 
         $this->_init_payment_service();
 
@@ -3610,7 +3610,7 @@ class Fee_management extends MY_Controller
      */
     public function simulate_payment()
     {
-        $this->_require_role(self::FINANCE_ROLES, 'simulate_payment');
+        $this->_require_role(self::FINANCE_ROLES, 'simulate_payment', 'Fees', 'edit');
 
         $gwConfig = $this->firebase->firestoreGet('feeSettings', "{$this->school_name}_{$this->session_year}_gateway");
         $mode = is_array($gwConfig) ? ($gwConfig['mode'] ?? 'test') : 'test';
@@ -3644,7 +3644,7 @@ class Fee_management extends MY_Controller
      */
     public function verify_payment()
     {
-        $this->_require_role(self::FINANCE_ROLES, 'verify_payment');
+        $this->_require_role(self::FINANCE_ROLES, 'verify_payment', 'Fees', 'edit');
 
         $gwOrderId   = trim($this->input->post('gateway_order_id') ?? '');
         $gwPaymentId = trim($this->input->post('gateway_payment_id') ?? '');
@@ -4190,7 +4190,7 @@ class Fee_management extends MY_Controller
      */
     public function retry_payment_processing()
     {
-        $this->_require_role(['Admin'], 'retry_payment_processing');
+        $this->_require_role(['Admin'], 'retry_payment_processing', 'Fees', 'manage');
 
         $recordId = trim($this->input->post('order_record_id') ?? '');
         if ($recordId === '') $this->json_error('Order record ID is required.');
@@ -4331,7 +4331,7 @@ class Fee_management extends MY_Controller
      */
     public function get_fee_summary()
     {
-        $this->_require_role(self::VIEW_ROLES, 'get_fee_summary');
+        $this->_require_role(self::VIEW_ROLES, 'get_fee_summary', 'Fees', 'view');
         $schoolFs = $this->school_name;
         $sy       = $this->session_year;
 
@@ -4441,7 +4441,7 @@ class Fee_management extends MY_Controller
      */
     public function carry_forward_fees()
     {
-        $this->_require_role(self::ADMIN_ROLES, 'carry_forward_fees');
+        $this->_require_role(self::ADMIN_ROLES, 'carry_forward_fees', 'Fees', 'manage');
 
         $fromSession = trim($this->input->post('from_session') ?? '');
         $toSession   = trim($this->input->post('to_session') ?? '');
@@ -4546,7 +4546,7 @@ class Fee_management extends MY_Controller
     /** GET — Payment Reconciliation page */
     public function payment_reconciliation()
     {
-        $this->_require_role(self::ADMIN_ROLES);
+        $this->_require_role(self::ADMIN_ROLES, '', 'Fees', 'manage');
         $this->load->view('include/header');
         $this->load->view('fee_management/payment_reconciliation');
         $this->load->view('include/footer');
@@ -4555,7 +4555,7 @@ class Fee_management extends MY_Controller
     /** POST — Get reconciliation data */
     public function get_reconciliation_data()
     {
-        $this->_require_role(self::ADMIN_ROLES, 'get_reconciliation_data');
+        $this->_require_role(self::ADMIN_ROLES, 'get_reconciliation_data', 'Fees', 'manage');
 
         $dateFrom  = trim($this->input->post('date_from') ?? '');
         $dateTo    = trim($this->input->post('date_to') ?? '');
@@ -4727,7 +4727,7 @@ class Fee_management extends MY_Controller
      */
     public function migrate_to_demands()
     {
-        $this->_require_role(self::ADMIN_ROLES, 'migrate_demands');
+        $this->_require_role(self::ADMIN_ROLES, 'migrate_demands', 'Fees', 'manage');
 
         $this->load->library('Fee_migration', null, 'migration');
         $this->load->library('Fee_audit', null, 'fee_audit');
@@ -4778,7 +4778,7 @@ class Fee_management extends MY_Controller
     public function integrity_report()
     {
         // Only admin roles
-        $this->_require_role(['Super Admin', 'School Super Admin', 'Admin']);
+        $this->_require_role(['Super Admin', 'School Super Admin', 'Admin'], '', 'Fees', 'manage');
 
         try {
             $report = $this->feeIntegrity->runAll();
@@ -4833,7 +4833,7 @@ class Fee_management extends MY_Controller
      */
     public function firestore_bulk_sync()
     {
-        $this->_require_role(self::ADMIN_ROLES, 'firestore_bulk_sync');
+        $this->_require_role(self::ADMIN_ROLES, 'firestore_bulk_sync', 'Fees', 'manage');
 
         // One-off admin operation: Firestore REST client makes synchronous
         // HTTP calls (15s cURL timeout each), and the full walk across

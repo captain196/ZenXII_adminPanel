@@ -6,6 +6,8 @@ $tabs = [
     'participation' => ['icon' => 'fa-users',        'label' => 'Participation',  'url' => 'events/participation'],
 ];
 $at = $active_tab ?? 'calendar';
+$ev_can_edit   = function_exists('has_permission') ? has_permission('Events','edit')   : true;
+$ev_can_manage = function_exists('has_permission') ? has_permission('Events','manage') : true;
 ?>
 <style>
 .ev-wrap{padding:20px;max-width:1400px;margin:0 auto}
@@ -53,8 +55,25 @@ $at = $active_tab ?? 'calendar';
 .ev-detail-row{display:flex;gap:8px;margin-bottom:10px;font-size:14px;font-family:var(--font-b)}
 .ev-detail-label{color:var(--t3);min-width:100px;font-weight:600}
 .ev-detail-val{color:var(--t1)}
+
+/* Category legend */
+.cal-legend{display:flex;flex-wrap:wrap;gap:16px;justify-content:center;margin:-4px 0 18px;font-family:var(--font-b)}
+.cal-leg{display:inline-flex;align-items:center;gap:6px;font-size:12px;font-weight:600;color:var(--t3)}
+.cal-leg-dot{width:11px;height:11px;border-radius:3px;display:inline-block}
+.cal-leg-dot.cat-event{background:#3b82f6}.cal-leg-dot.cat-cultural{background:#8b5cf6}.cal-leg-dot.cat-sports{background:#f59e0b}
+
+@keyframes ev-loadbar-slide{0%{left:-40%;width:40%}50%{width:58%}100%{left:100%;width:40%}}@keyframes ev-spin{to{transform:rotate(360deg)}}@keyframes ev-shimmer{0%{background-position:200% 0}100%{background-position:-200% 0}}
+.ev-loadbar{position:fixed;top:0;left:0;right:0;height:3px;z-index:99999;background:var(--gold-dim,rgba(188,90,60,.15));overflow:hidden;opacity:0;transition:opacity .18s;pointer-events:none}.ev-loadbar.on{opacity:1}
+.ev-loadbar:before{content:'';position:absolute;top:0;height:100%;width:40%;left:-40%;border-radius:3px;background:linear-gradient(90deg,transparent,var(--gold,#BC5A3C),transparent);animation:ev-loadbar-slide 1.1s ease-in-out infinite}
+.ev-spin{display:inline-block;width:14px;height:14px;border:2px solid currentColor;border-top-color:transparent;border-radius:50%;animation:ev-spin .7s linear infinite;vertical-align:-2px}
+.is-loading{position:relative;color:transparent!important;pointer-events:none;opacity:.9}.is-loading:after{content:'';position:absolute;top:50%;left:50%;width:15px;height:15px;margin:-8px 0 0 -8px;border:2px solid currentColor;border-top-color:transparent;border-radius:50%;color:#fff;animation:ev-spin .7s linear infinite}.ev-btn-outline.is-loading:after,.ev-btn-ghost.is-loading:after{color:var(--gold,#BC5A3C)}
+.ev-rel{position:relative}.ev-loading-overlay{position:absolute;inset:0;z-index:20;display:flex;align-items:center;justify-content:center;gap:10px;background:rgba(127,127,127,.06);font-size:13px;font-weight:650;color:var(--t2)}.ev-loading-overlay .ev-spin{width:20px;height:20px;color:var(--gold,#BC5A3C)}
+.ev-skel{background:linear-gradient(90deg,var(--bg2,#f1f1f1) 25%,var(--bg3,#e7e7e7) 37%,var(--bg2,#f1f1f1) 63%);background-size:200% 100%;animation:ev-shimmer 1.3s ease-in-out infinite;border-radius:8px}.ev-skel-row{height:14px;margin:8px 0}
+.ev-ro-banner{display:flex;align-items:center;gap:9px;padding:10px 14px;margin:0 0 12px;border-radius:10px;font-size:13px;font-weight:600;background:rgba(37,99,235,.08);color:#1d4ed8;border:1px solid rgba(37,99,235,.2)}
+@media(prefers-reduced-motion:reduce){.ev-loadbar:before,.ev-spin,.is-loading:after,.ev-skel{animation:none}}
 </style>
 
+<div class="ev-loadbar" id="evLoadbar"></div>
 <div class="content-wrapper"><section class="content"><div class="ev-wrap">
 <div class="ev-header"><div>
     <div class="ev-header-icon"><i class="fa fa-calendar-check-o"></i> Events &amp; Activities</div>
@@ -73,6 +92,11 @@ $at = $active_tab ?? 'calendar';
         <div class="cal-title" id="calTitle">--</div>
         <button class="cal-nav-btn" onclick="CAL.next()"><i class="fa fa-chevron-right"></i></button>
         <button class="cal-nav-btn" onclick="CAL.today()" style="margin-left:12px">Today</button>
+    </div>
+    <div class="cal-legend">
+        <span class="cal-leg"><i class="cal-leg-dot cat-event"></i> Event</span>
+        <span class="cal-leg"><i class="cal-leg-dot cat-cultural"></i> Cultural</span>
+        <span class="cal-leg"><i class="cal-leg-dot cat-sports"></i> Sports</span>
     </div>
     <div class="cal-grid" id="calGrid"></div>
 </div>
@@ -106,8 +130,20 @@ CAL.prev = function(){ CAL.month--; if(CAL.month<1){CAL.month=12;CAL.year--;} CA
 CAL.next = function(){ CAL.month++; if(CAL.month>12){CAL.month=1;CAL.year++;} CAL.load(); };
 CAL.today = function(){ var d=new Date(); CAL.month=d.getMonth()+1; CAL.year=d.getFullYear(); CAL.load(); };
 
+CAL.renderSkeleton = function() {
+    var grid = document.getElementById('calGrid');
+    var html = '';
+    CAL.days.forEach(function(d){ html += '<div class="cal-head">' + d + '</div>'; });
+    for (var i = 0; i < 42; i++) {
+        html += '<div class="cal-cell"><div class="ev-skel" style="width:30%;height:12px"></div>' +
+                '<div class="ev-skel ev-skel-row" style="width:80%;margin-top:10px"></div></div>';
+    }
+    grid.innerHTML = html;
+};
+
 CAL.load = function() {
     document.getElementById('calTitle').textContent = CAL.months[CAL.month] + ' ' + CAL.year;
+    CAL.renderSkeleton();
     $.ajax({
         url: EV.BASE + 'events/get_calendar',
         type: 'GET',
@@ -203,5 +239,6 @@ CAL.showDetail = function(id) {
 };
 CAL.closeDetail = function(){ document.getElementById('evtDetailModal').classList.remove('show'); };
 
+$(document).ajaxStart(function(){ $('#evLoadbar').addClass('on'); }).ajaxStop(function(){ $('#evLoadbar').removeClass('on'); });
 document.addEventListener('DOMContentLoaded', function(){ CAL.load(); });
 </script>

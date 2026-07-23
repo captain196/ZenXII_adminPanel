@@ -135,16 +135,39 @@ service cloud.firestore {
         && tenantActive(request.auth.token.school_id)
         && request.resource.data.schoolId is string
         && request.resource.data.schoolId.size() > 0
-        && (
-          request.resource.data.schoolId == request.auth.token.school_id ||
-          request.resource.data.schoolCode == request.auth.token.school_id
-        );
+        // D7 (2026-07-12): schoolCode write-arm removed — every current
+        // Admin/Teacher/Parent write sets schoolId (audited: no schoolId-less
+        // write exists), so the spoofable `schoolCode == school_id` fallback
+        // (F-2) was vestigial on the write path. Read-side isSameSchool()/
+        // isSameSchoolStrict() KEEP their schoolCode arm to still serve legacy
+        // schoolCode-only documents on reads.
+        && request.resource.data.schoolId == request.auth.token.school_id;
     }
 
+    // FOLD: after the Admin→staff fold a demoted admin's token role is their
+    // NOMINAL label (e.g. "HR Manager"), no longer "Admin", so the legacy role
+    // arm alone would drop them from all isAdmin()-gated writes. The second arm
+    // recognises them via the server-maintained staffCapabilities.admin flag
+    // (set by the CF when the resolved roles include ROLE_ADMIN / a bypass role).
+    // Fail-safe: caps doc absent → falls back to the role arm (no new lockout).
+    // No per-gate edits — all 77 isAdmin() call sites inherit this transparently.
     function isAdmin() {
       return isAuth()
         && tenantActive(request.auth.token.school_id)
-        && request.auth.token.role in ['Admin', 'admin', 'School Super Admin', 'school_super_admin', 'Super Admin', 'super_admin', 'Principal'];
+        && (
+          // True admin LABELS only. 'Principal' REMOVED (audit C3): a Principal is
+          // not an admin by default, so trusting the bare label let a panel-
+          // restricted Principal write freely to staff/students/sections via the
+          // client SDK (escalation-by-label). A Principal who IS meant to be an
+          // admin gets ROLE_ADMIN → the CF sets staffCapabilities.admin==true and
+          // the capability arm below grants them — so no legitimate admin loses
+          // access, but the unearned label grant is gone.
+          request.auth.token.role in ['Admin', 'admin', 'School Super Admin', 'school_super_admin', 'Super Admin', 'super_admin']
+          || (
+            exists(/databases/$(database)/documents/staffCapabilities/$(request.auth.uid))
+            && get(/databases/$(database)/documents/staffCapabilities/$(request.auth.uid)).data.admin == true
+          )
+        );
     }
 
     // Staff = any authenticated, same-school user who is NOT a student or
@@ -166,6 +189,42 @@ service cloud.firestore {
 
     function isSuperAdmin() {
       return isAuth() && request.auth.token.role in ['Super Admin', 'super_admin'];
+    }
+
+    // ─── Unified Staff RBAC — per-module capability lookup ────────────
+    // staffCapabilities/{uid} (uid == staffId) is the server-maintained module
+    // set written by the staffCapabilities Cloud Function (mirrors the PHP
+    // resolve_role_access union resolver). hasCapability() FAILS OPEN when the
+    // doc is absent — a staff member who predates the CF or hasn't been backfilled
+    // is allowed, so ADDING a capability gate can never lock out an un-migrated
+    // account. It only denies once the doc EXISTS and omits the module. These
+    // gates are added ONLY to the isStaff() WRITE arms of app-facing modules —
+    // never to read arms, parent/student arms, or shared helpers.
+    function staffCapsExist() {
+      return exists(/databases/$(database)/documents/staffCapabilities/$(request.auth.uid));
+    }
+    function hasCapability(module) {
+      return !staffCapsExist()
+        || get(/databases/$(database)/documents/staffCapabilities/$(request.auth.uid))
+             .data.get('modules', []).hasAny([module]);
+    }
+    function rbacLevelRank(l) {
+      return l == 'manage' ? 3 : (l == 'edit' ? 2 : 1);
+    }
+    // Like hasCapability but ALSO enforces the graded level (view < edit < manage).
+    // Fail-open when the caps doc is absent (pre-rollout). Used to gate the WRITE
+    // actions of BASELINE modules (Stories/Events/Communication) — a view-only
+    // baseline holder can read/participate but not moderate or delete.
+    function hasCapabilityLevel(module, level) {
+      return !staffCapsExist()
+        || (
+          get(/databases/$(database)/documents/staffCapabilities/$(request.auth.uid))
+            .data.get('modules', []).hasAny([module])
+          && rbacLevelRank(
+               get(/databases/$(database)/documents/staffCapabilities/$(request.auth.uid))
+                 .data.get('levels', {}).get(module, 'view')
+             ) >= rbacLevelRank(level)
+        );
     }
 
     // Per-student fee collections need to differentiate "this parent
@@ -255,9 +314,27 @@ service cloud.firestore {
     }
 
     // ── Staff ────────────────────────────────────────────────────
+    // The staff doc is same-school readable (parents/students read it for teacher
+    // search + PTM), so it must hold ONLY non-sensitive fields (name, role, photo,
+    // department, phone). Sensitive PII (PAN/Aadhaar/PF/ESI/salary/bank) and
+    // credentials live in staffPrivate below — see audit C1.
     match /staff/{docId} {
       allow read: if isSameSchool();
       allow write: if isAdmin();
+    }
+
+    // ── Staff Private (audit C1) ─────────────────────────────────
+    // Sensitive PII (PAN/Aadhaar/PF/ESI/salary/bank) that the readable staff doc
+    // no longer holds. OWNER-ONLY read: a staff member may read their OWN private
+    // doc (their My-Profile screen shows their PAN/bank) — docId is
+    // `{schoolId}_{staffId}` and uid == staffId under synthetic-email auth, so the
+    // owner check is exact. Peers, parents and students are denied (the whole point
+    // of C1). Writes are server-only: the PHP backend (service account) bypasses
+    // rules, so HR/payroll writes + the migration still work; no client may write.
+    match /staffPrivate/{docId} {
+      allow read: if isAuth()
+                  && docId == (request.auth.token.school_id + '_' + request.auth.uid);
+      allow write: if false;
     }
 
     // ── Subjects ─────────────────────────────────────────────────
@@ -366,7 +443,12 @@ service cloud.firestore {
     //
     match /homework/{docId} {
       allow read:   if isSameSchoolStrict();
-      allow create: if isStaff() && isSameSchoolWrite();
+      // Unified RBAC: teacher-create requires the Homework capability (fail-open
+      // until the caps doc exists — see hasCapability). The parent submissionCount
+      // arm below is untouched. Same one-line pattern applies to the other
+      // app-facing WRITE arms (Stories, Events/galleryMedia, studentFlags, marks,
+      // lessonPlans) — to be composed per-module before the rollout enforces.
+      allow create: if isStaff() && isSameSchoolWrite() && hasCapability('Homework');
 
       // Staff path — edit/close homework. Finding #26 hardening (2026-07-01):
       // restrict to the OWNING teacher (teacherId == auth.uid) OR an admin /
@@ -561,8 +643,8 @@ service cloud.firestore {
     // account anyway.
     match /lessonPlans/{docId} {
       allow read:   if isSameSchool();
-      allow create: if isStaff() && isSameSchoolWrite();
-      allow update: if isStaff() && isSameSchool();
+      allow create: if isStaff() && isSameSchoolWrite() && hasCapability('Academic');
+      allow update: if isStaff() && isSameSchool() && hasCapability('Academic');
       allow delete: if isAdmin() && isSameSchool();
     }
 
@@ -657,7 +739,7 @@ service cloud.firestore {
     // to the caller's claim while keeping legitimate teacher writes working.
     match /marks/{docId} {
       allow read: if isStaffOrOwnStudent();
-      allow write: if isStaff() && isSameSchoolWrite();
+      allow write: if isStaff() && isSameSchoolWrite() && hasCapability('Results');
     }
 
     // ── Results ──────────────────────────────────────────────────
@@ -872,6 +954,25 @@ service cloud.firestore {
     // (2026-05-07.)
     match /feeOnlinePayments/{docId} { allow read, write: if false; }
 
+    // ── Admission CRM — server-only ──────────────────────────────
+    // crmApplications / crmInquiries / crmWaitlist / crmSettings /
+    // crmRateLimits and admissionPayments are written and read
+    // exclusively by the PHP backend (Sis.php CRM methods +
+    // Admission_public) via the service account, which bypasses these
+    // rules. The PUBLIC admission form also writes via the service
+    // account, so there is NO client create path to validate here.
+    // Direct client access is a bug — deny explicitly (matches the
+    // existing default-deny catch-all; additive intent-lock, no
+    // behavioral change). admissionPayments holds order_id / amount /
+    // HMAC signatures and must never be client-readable. (2026-07-14.)
+    match /crmApplications/{docId}   { allow read, write: if false; }
+    match /crmInquiries/{docId}      { allow read, write: if false; }
+    match /crmWaitlist/{docId}       { allow read, write: if false; }
+    match /crmSettings/{docId}       { allow read, write: if false; }
+    match /crmRateLimits/{docId}     { allow read, write: if false; }
+    match /crmEnrollLocks/{docId}    { allow read, write: if false; }
+    match /admissionPayments/{docId} { allow read, write: if false; }
+
     // ── Fee refunds ──────────────────────────────────────────────
     // Refund docs are per-student. Previously readable by any user in
     // the same school — which leaked other parents' refund history.
@@ -899,7 +1000,15 @@ service cloud.firestore {
       // 2026-07-03: add isSameSchoolWrite() so an update can't rewrite the
       // doc's schoolId to another tenant (isSameSchool only validates the
       // EXISTING doc). Mirrors the events "Audit C5" hardening.
-      allow update: if isStaff() && isSameSchool() && isSameSchoolWrite();
+      // 2026-07-11 (notice hardening X7): update is now admin-OR-author only.
+      // Previously ANY staff could edit/vandalize ANY circular (no ownership
+      // check). Legitimate authoring goes through the admin panel service
+      // account, which bypasses these rules entirely, so this only removes
+      // the rogue-staff-SDK vector. authorId is stamped by every writer.
+      allow update: if isSameSchool() && isSameSchoolWrite() && (
+        isAdmin()
+        || (isStaff() && resource.data.get('authorId', '') == request.auth.uid)
+      );
       allow delete: if isAdmin();
     }
 
@@ -908,7 +1017,11 @@ service cloud.firestore {
     match /notices/{docId} {
       allow read: if isSameSchool();
       allow create: if isStaff() && isSameSchoolWrite();
-      allow update: if isStaff() && isSameSchool() && isSameSchoolWrite();
+      // 2026-07-11 (notice hardening X7): admin-OR-author only — see circulars.
+      allow update: if isSameSchool() && isSameSchoolWrite() && (
+        isAdmin()
+        || (isStaff() && resource.data.get('authorId', '') == request.auth.uid)
+      );
       allow delete: if isAdmin();
     }
 
@@ -951,7 +1064,10 @@ service cloud.firestore {
     match /events/{docId} {
       allow read: if isSameSchool();
       allow create: if isStaff() && isSameSchoolWrite();
-      allow update: if isStaff() && isSameSchool();
+      // D6 (2026-07-12): add isSameSchoolWrite() so an update payload's
+      // schoolId is re-bound to the caller's claim (was isSameSchool()-only,
+      // which validated the existing doc but not the incoming schoolId).
+      allow update: if isStaff() && isSameSchool() && isSameSchoolWrite();
       allow delete: if isAdmin();
     }
 
@@ -1123,10 +1239,19 @@ service cloud.firestore {
 
     match /galleryMedia/{docId} {
       allow read:   if isSameSchool();
-      allow create: if isStaff() && isSameSchoolWrite();
-      allow update: if isStaff() && isSameSchool() && isSameSchoolWrite();
+      // FOLD baseline gating: gallery media lives under the Events module, which
+      // ROLE_BASELINE_APP grants at 'view' — so a plain hasCapability('Events')
+      // would be a no-op (everyone holds it). Publishing/editing media is content
+      // work, so require Events at 'edit'; deletion at owner / admin / Events:manage.
+      // hasCapabilityLevel() FAILS OPEN while caps are un-backfilled (rollout-safe).
+      allow create: if isStaff() && isSameSchoolWrite()
+                    && hasCapabilityLevel('Events', 'edit');
+      allow update: if isStaff() && isSameSchool() && isSameSchoolWrite()
+                    && hasCapabilityLevel('Events', 'edit');
       allow delete: if isStaff() && isSameSchool()
-                    && (resource.data.uploadedBy == request.auth.uid || isAdmin());
+                    && (resource.data.uploadedBy == request.auth.uid
+                        || isAdmin()
+                        || hasCapabilityLevel('Events', 'manage'));
     }
 
     // ── Event participants ───────────────────────────────────────
@@ -1186,9 +1311,13 @@ service cloud.firestore {
       allow create: if isStaff()
         && request.resource.data.schoolId == request.auth.token.school_id;
 
-      // Staff delete only their own school's stories.
+      // Staff delete only their own school's stories — and Stories is a BASELINE
+      // module (everyone holds it at view), so deletion is gated at the graded
+      // MANAGE level: a view/edit holder (teacher, peon) can post/moderate but
+      // cannot destroy stories. (Same pattern applies to galleryMedia/ptmRsvps.)
       allow delete: if isStaff()
-        && resource.data.schoolId == request.auth.token.school_id;
+        && resource.data.schoolId == request.auth.token.school_id
+        && hasCapabilityLevel('Stories', 'manage');
 
       // UPDATE is STAFF-ONLY and may NOT touch the engagement counters
       // (SEC-4). viewCount / reactionCounts are maintained EXCLUSIVELY
@@ -1515,7 +1644,10 @@ service cloud.firestore {
 
     // ── Salary Slips ─────────────────────────────────────────────
     match /salarySlips/{docId} {
-      allow read: if isSameSchool();
+      // Own payslip only (app getMySalarySlips filters staffId==uid; uid==staffId).
+      // Admins read all via the panel (Admin SDK, bypasses rules).
+      // Was isSameSchool() — leaked every staff payslip to any same-school token incl parents/students.
+      allow read: if resource.data.staffId == request.auth.uid || (isAdmin() && isSameSchool());
       allow write: if isAdmin();
     }
 
@@ -1527,8 +1659,13 @@ service cloud.firestore {
     // and shouldn't be visible to parents/students browsing the SDK.
     match /pushRequests/{docId} {
       allow read: if isStaff() && isSameSchool();
-      allow create: if isAuth() && isSameSchoolWrite();
-      allow update: if isAuth() && isSameSchool();
+      // Create/update gated to STAFF (not any authed user). The real writers are
+      // the Admin SDK (PHP) and the Cloud Function, which bypass rules entirely;
+      // an `isAuth()` create let any same-school user — including a PARENT via raw
+      // SDK — forge a `mark:NOTICE_CREATED, target_group:'All School'` doc and
+      // fan a spoofed school-wide push. Staff-only closes that.
+      allow create: if isStaff() && isSameSchoolWrite();
+      allow update: if isStaff() && isSameSchool();
       allow delete: if isStaff();
     }
 
@@ -1560,13 +1697,19 @@ service cloud.firestore {
 
     // ── HR Applicants (recruitment) ──────────────────────────────
     match /hrApplicants/{docId} {
-      allow read: if isSameSchool();
+      // Candidate PII (applications). HR/admin only — no app client reads applicants
+      // (the app reads hrJobs openings, never hrApplicants). Panel reads via Admin SDK.
+      // Was isSameSchool() — exposed applicant contact details to any same-school token.
+      allow read: if isAdmin() && isSameSchool();
       allow write: if isAdmin();
     }
 
     // ── Appraisals ──────────────────────────────────────────────
     match /appraisals/{docId} {
-      allow read: if isSameSchool();
+      // Own appraisal only (app getMyAppraisals filters staffId==uid; uid==staffId).
+      // Admins read all via the panel (Admin SDK, bypasses rules).
+      // Was isSameSchool() — leaked every staff appraisal to any same-school token.
+      allow read: if resource.data.staffId == request.auth.uid || (isAdmin() && isSameSchool());
       allow write: if isAdmin();
     }
 
@@ -1574,6 +1717,16 @@ service cloud.firestore {
     match /rbacRoles/{docId} {
       allow read: if isSameSchool();
       allow write: if isAdmin();
+    }
+
+    // ── Staff Capabilities (unified RBAC entitlement index) ──────
+    // Server-maintained by the staffCapabilities Cloud Function (mirrors the PHP
+    // resolve_role_access union resolver). Rules consult it via get() to enforce
+    // per-module access on client writes. A staff member may read their OWN doc
+    // (drives app UI); it is NEVER client-writable — the CF (Admin SDK) owns it.
+    match /staffCapabilities/{uid} {
+      allow read: if isAuth() && uid == request.auth.uid;
+      allow write: if false;
     }
 
     // ── Student Red Flags (canonical Firestore source) ──────────
@@ -1624,6 +1777,7 @@ service cloud.firestore {
       // invisible to the createdAtMs-ordered feeds.
       allow create: if isStaff()
         && isSameSchoolWrite()
+        && hasCapability('Red Flags')
         && request.resource.data.teacherId == request.auth.uid
         && request.resource.data.studentId != ''
         && request.resource.data.flagId != ''

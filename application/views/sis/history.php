@@ -109,7 +109,7 @@ html { font-size: 16px !important; }
                         <tr>
                             <td style="padding:6px 8px;border:1px solid var(--border);font-weight:600;color:var(--t2);"><?= htmlspecialchars((string) $field) ?></td>
                             <td style="padding:6px 8px;border:1px solid var(--border);color:#b91c1c;text-decoration:line-through;text-decoration-color:#fca5a5;"><?= htmlspecialchars($stringify($pair['old'] ?? null)) ?></td>
-                            <td style="padding:6px 8px;border:1px solid var(--border);color:#15803d;font-weight:500;"><?= htmlspecialchars($stringify($pair['new'] ?? null)) ?></td>
+                            <td style="padding:6px 8px;border:1px solid var(--border);color:#2FA875;font-weight:500;"><?= htmlspecialchars($stringify($pair['new'] ?? null)) ?></td>
                         </tr>
                     <?php endforeach; ?>
                     </tbody>

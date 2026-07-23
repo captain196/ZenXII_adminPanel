@@ -93,6 +93,19 @@ class Staff_attendance_finaliser
         $autoAbsent = array_key_exists('autoAbsent', $policy) ? !empty($policy['autoAbsent']) : true;
         if (!$autoAbsent) return $out;
 
+        // FAIL CLOSED (watertight 2026-07-20): if the holiday calendar could not be
+        // READ (a transient Firestore failure, not a genuinely empty calendar), do
+        // NOT persist any auto-absent this run — otherwise a real holiday would be
+        // baked into payroll as Absent and never self-correct. load_ok() returns
+        // true for an empty calendar and only false on an actual read failure.
+        if (!$this->ci->holiday_service->load_ok()) {
+            log_message('warning', 'Staff_attendance_finaliser: holiday calendar unreadable — skipping run (fail-closed); will retry next run.');
+            return $out;
+        }
+        // Whether the calendar has ANY holidays — gates the retroactive A→H pass so
+        // docs with only past 'A' days are re-examined only when holidays exist.
+        $hasHolidays = !empty($this->ci->holiday_service->all_holiday_dates());
+
         $weeklyOffs = (array) ($policy['weeklyOffs'] ?? []);
 
         foreach ($monthKeys as $monthKey) {
@@ -115,9 +128,10 @@ class Staff_attendance_finaliser
                 if ($staffId === '' || $dayWise === '') continue;
                 $out['scanned']++;
 
-                // Quick skip: no past vacant day → nothing to do (cheap pre-check
-                // before the fresh re-read).
-                if (!$this->_has_past_vacant($dayWise, $monthKey, $todayISO)) continue;
+                // Quick skip: nothing fillable → no work (cheap pre-check before the
+                // fresh re-read). Fillable = a past 'V' (needs closing) OR, when the
+                // calendar has holidays, a past 'A' (may need retroactive A→H).
+                if (!$this->_has_past_fillable($dayWise, $monthKey, $todayISO, $hasHolidays)) continue;
 
                 // Fresh re-read to shrink the race window against a concurrent
                 // correction on a past day of the same month. Prefer the
@@ -200,13 +214,20 @@ class Staff_attendance_finaliser
 
     /* ─── private helpers ──────────────────────────────────────────────── */
 
-    /** Cheap pre-check: is there at least one past 'V' day worth finalising? */
-    private function _has_past_vacant(string $dayWise, string $monthKey, string $todayISO): bool
+    /**
+     * Cheap pre-check: is there any past day worth (re)finalising?
+     *  - a past 'V' (unmarked) always needs closing;
+     *  - a past 'A' needs re-examination ONLY when the calendar has holidays,
+     *    because it may now fall on a holiday added after it was auto-absented.
+     */
+    private function _has_past_fillable(string $dayWise, string $monthKey, string $todayISO, bool $hasHolidays): bool
     {
         $len = strlen($dayWise);
         for ($d = 1; $d <= $len; $d++) {
-            if (strtoupper($dayWise[$d - 1]) !== 'V') continue;
-            if (sprintf('%s-%02d', $monthKey, $d) < $todayISO) return true;
+            if (sprintf('%s-%02d', $monthKey, $d) >= $todayISO) continue; // past only
+            $ch = strtoupper($dayWise[$d - 1]);
+            if ($ch === 'V') return true;
+            if ($ch === 'A' && $hasHolidays) return true;
         }
         return false;
     }
@@ -215,28 +236,38 @@ class Staff_attendance_finaliser
      * "No-vacant" overlay — identical semantics to Staff_attendance::_overlay_daywise
      * (kept in sync): past 'V' → 'H' (holiday) / 'O' (weekly-off) / 'A' (working day).
      * autoAbsent is already asserted true by the caller.
+     *
+     * RETROACTIVE (2026-07-20): a past 'A' that now falls on a holiday is corrected
+     * to 'H'. This fixes days auto-absented BEFORE the holiday was authored in the
+     * Academic Calendar. Only 'A' (and 'V') are eligible — P/L/T/M/W/O are genuine
+     * marks and are never touched. workingDays is unaffected (neither A nor H counts).
      */
     private function _overlay(string $dayWise, string $monthKey, array $weeklyOffs, string $todayISO): string
     {
         $len = strlen($dayWise);
         for ($d = 1; $d <= $len; $d++) {
-            if (strtoupper($dayWise[$d - 1]) !== 'V') continue;
+            $ch = strtoupper($dayWise[$d - 1]);
+            if ($ch !== 'V' && $ch !== 'A') continue;         // only unmarked / auto-absent
             $dateISO = sprintf('%s-%02d', $monthKey, $d);
             if ($dateISO >= $todayISO) continue;              // today + future untouched
-            // FAIL CLOSED (audit finding M3): if the holiday lookup errors we
-            // must NOT default the day to Absent — the finaliser PERSISTS its
-            // result, so a transient holiday_service outage would permanently
-            // mark staff Absent on an actual holiday and feed payroll. Skip the
-            // day (leave it 'V'); the next daily run retries it.
+            // FAIL CLOSED (audit finding M3): if the per-date holiday lookup errors
+            // we must NOT default the day to Absent — the finaliser PERSISTS its
+            // result, so a transient outage would permanently mark staff Absent on an
+            // actual holiday and feed payroll. Skip the day (leave it as-is); the
+            // next daily run retries it. (run() also fail-closes the whole run when
+            // the calendar is unreadable via holiday_service->load_ok().)
             try { $isHol = $this->ci->holiday_service->is_holiday($dateISO); }
             catch (\Throwable $e) { continue; }
             if ($isHol) {
-                $dayWise[$d - 1] = 'H';
-            } elseif (in_array(date('D', strtotime($dateISO)), $weeklyOffs, true)) {
-                $dayWise[$d - 1] = 'O';
-            } else {
-                $dayWise[$d - 1] = 'A';
+                $dayWise[$d - 1] = 'H';                        // V→H or retroactive A→H
+            } elseif ($ch === 'V') {
+                if (in_array(date('D', strtotime($dateISO)), $weeklyOffs, true)) {
+                    $dayWise[$d - 1] = 'O';
+                } else {
+                    $dayWise[$d - 1] = 'A';
+                }
             }
+            // $ch === 'A' and not a holiday → leave the genuine Absent untouched.
         }
         return $dayWise;
     }

@@ -52,6 +52,7 @@ class Ats extends MY_Controller
 
     private function _require_admin()
     {
+        if (has_permission('HR', 'manage')) return;
         if (!in_array($this->admin_role, self::ADMIN_ROLES, true)) {
             $this->json_error('Access denied.', 403);
         }
@@ -59,6 +60,7 @@ class Ats extends MY_Controller
 
     private function _require_view()
     {
+        if (has_permission('HR', 'view')) return;
         if (!in_array($this->admin_role, self::VIEW_ROLES, true)) {
             $this->json_error('Access denied.', 403);
         }
@@ -154,7 +156,7 @@ class Ats extends MY_Controller
      */
     public function index()
     {
-        $this->_require_role(self::VIEW_ROLES, 'ats_view');
+        $this->_require_role(self::VIEW_ROLES, 'ats_view', 'HR', 'view');
 
         $data = ['active_tab' => 'pipeline'];
         $this->load->view('include/header', $data);

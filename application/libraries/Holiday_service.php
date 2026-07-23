@@ -52,6 +52,12 @@ class Holiday_service
     /** Max calendarEvents updatedAt across holiday docs (ISO-8601). null until load. */
     private $_lastUpdated = null;
 
+    /** Whether the most recent holiday-map resolve SUCCEEDED (false = Firestore
+     *  read failed, as opposed to a genuinely empty calendar). null until first
+     *  load. Lets fail-closed callers (the payroll finaliser) avoid baking a real
+     *  holiday into payroll as Absent on a transient read failure. */
+    private ?bool $_loadedOk = null;
+
     /**
      * @param object $fs       a Firestore_service already init()'d to the school
      * @param string $schoolId SCH_XXXXXX (used for the cache key)
@@ -70,6 +76,7 @@ class Holiday_service
         $this->ready    = true;
         $this->memo     = null;
         $this->_lastUpdated = null;
+        $this->_loadedOk    = null;
         return $this;
     }
 
@@ -90,6 +97,19 @@ class Holiday_service
         if (!preg_match('/^\d{4}-\d{2}-\d{2}$/', $dateISO)) return false;
         $map = $this->_load();
         return isset($map[$dateISO]);
+    }
+
+    /**
+     * Did the most recent holiday-map resolve SUCCEED? Returns false only when the
+     * Firestore read actually FAILED — a genuinely empty calendar returns true.
+     * Fail-closed callers (the payroll finaliser) use this to avoid persisting a
+     * real holiday as Absent on a transient read failure. Triggers a load if needed.
+     */
+    public function load_ok(): bool
+    {
+        if (!$this->ready) return false;
+        $this->_load();
+        return $this->_loadedOk === true;
     }
 
     /**
@@ -182,16 +202,23 @@ class Holiday_service
                 && $cached['exp'] > time() && is_array($cached['holidays'])) {
                 $this->memo = $cached['holidays'];
                 $this->_lastUpdated = $cached['lastUpdated'] ?? null;
+                // The file cache is written ONLY after a successful load (below),
+                // so a cache hit always represents a good resolve.
+                $this->_loadedOk = true;
                 return $this->memo;
             }
             @unlink($file); // expired/corrupt
         }
 
         // Tier 3: Firestore — the ONE place that queries calendarEvents.
+        // _query_firestore sets $this->_loadedOk (true on success, false on read failure).
         $map = $this->_query_firestore();
         $this->memo = $map;
 
-        if ($file !== null) {
+        // Persist to the file cache ONLY on a successful load. Caching a failed
+        // (empty) read would hide real holidays for the whole TTL window and make
+        // a transient blip look like "no holidays" to every reader for 5 minutes.
+        if ($file !== null && $this->_loadedOk === true) {
             $dir = dirname($file);
             if (!is_dir($dir)) @mkdir($dir, 0700, true);
             @file_put_contents($file, json_encode([
@@ -239,15 +266,19 @@ class Holiday_service
                 $this->_expand_range($start, $end, $name, $out);
             }
         } catch (\Throwable $e) {
-            // Fail open — a holiday-read failure must never break a punch.
+            // Fail open for punch flows — a holiday-read failure must never break a
+            // punch. But record that the load FAILED so fail-closed callers (the
+            // payroll finaliser) can tell this apart from a genuinely empty calendar.
             // Guard log_message so the fail-open path can't itself throw.
             if (function_exists('log_message')) {
                 log_message('error', 'Holiday_service::_query_firestore failed: ' . $e->getMessage());
             }
             $this->_lastUpdated = null;
+            $this->_loadedOk    = false;
             return [];
         }
         $this->_lastUpdated = ($maxUpd !== '') ? $maxUpd : null;
+        $this->_loadedOk    = true;
         return $out;
     }
 

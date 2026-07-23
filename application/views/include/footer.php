@@ -401,6 +401,33 @@ $__hide_site_footer = in_array($__ctrl_ftr, ['attendance', 'staff_attendance'], 
 <script>
 (function () {
   'use strict';
+  // ── Global toast — one canonical helper any page can call: showToast(msg, type)
+  //    type = 'error' (default) | 'success' | 'info'. Injects its own container +
+  //    styles once (a11y live-region), so no page has to hand-roll a toast. Used
+  //    by AJAX error handlers panel-wide (RBAC 403s, save failures, etc.).
+  (function () {
+    if (window.showToast) return;
+    var css = '#zx-toastwrap{position:fixed;top:16px;right:16px;z-index:99999;display:flex;flex-direction:column;gap:8px;pointer-events:none}'
+      + '.zx-toast{min-width:220px;max-width:360px;padding:12px 16px;border-radius:10px;color:#fff;font:600 13.5px/1.45 ui-sans-serif,system-ui,-apple-system,"Segoe UI",Roboto,sans-serif;'
+      + 'box-shadow:0 8px 28px rgba(0,0,0,.22);opacity:0;transform:translateY(-8px);transition:opacity .22s ease,transform .22s ease;pointer-events:auto}'
+      + '.zx-toast.show{opacity:1;transform:none}'
+      + '.zx-toast.error{background:#C0453B}.zx-toast.success{background:#3E8E5A}.zx-toast.info{background:#3E6FA8}';
+    var st = document.createElement('style'); st.textContent = css; document.head.appendChild(st);
+    var wrap = null;
+    window.showToast = function (msg, type) {
+      if (!wrap) { wrap = document.createElement('div'); wrap.id = 'zx-toastwrap'; document.body.appendChild(wrap); }
+      var t = document.createElement('div');
+      t.className = 'zx-toast ' + (type === 'success' ? 'success' : (type === 'info' ? 'info' : 'error'));
+      t.setAttribute('role', 'status'); t.setAttribute('aria-live', 'polite');
+      t.textContent = String(msg == null ? '' : msg);
+      wrap.appendChild(t);
+      requestAnimationFrame(function () { t.classList.add('show'); });
+      setTimeout(function () {
+        t.classList.remove('show');
+        setTimeout(function () { if (t.parentNode) t.parentNode.removeChild(t); }, 260);
+      }, 4000);
+    };
+  })();
   window.zxBtnLoad = function (btn, text) {
     if (!btn || btn.getAttribute('data-zx-loading') === '1') return;
     btn.setAttribute('data-zx-loading', '1');

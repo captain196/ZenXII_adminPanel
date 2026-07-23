@@ -381,7 +381,13 @@ class MY_Controller extends CI_Controller
                     // another admin disables this account mid-session, force logout.
                     if (!empty($this->admin_id) && !empty($this->school_id)) {
                         try {
-                            $staffDoc = $this->fs->getEntity('staff', "{$this->school_id}_{$this->admin_id}");
+                            // getEntity() auto-injects the {schoolId}_ prefix via
+                            // docId(); pass the RAW admin_id (passing a pre-prefixed
+                            // id double-prefixed to staff/{schoolId}_{schoolId}_{id},
+                            // which never resolved → a disabled admin was NEVER force-
+                            // logged-out mid-session. Matches the raw-id call used by
+                            // the RBAC refresh + Bearer bridge).
+                            $staffDoc = $this->fs->getEntity('staff', (string) $this->admin_id);
                             $adminStatus = is_array($staffDoc)
                                 ? (string) ($staffDoc['status'] ?? $staffDoc['Status'] ?? 'Active')
                                 : '';
@@ -477,20 +483,60 @@ class MY_Controller extends CI_Controller
             || !$this->input->is_ajax_request()
             || ($rbacNow - $rbacTs) >= 5;
         if ($rbacStale) {
-            // Resolve the UNION of the caller's roles: their primary role LABEL
-            // (from the claim) plus any staff_roles[] captured at login. Before
-            // staff_roles is seeded this is just [admin_role] — identical to the
-            // legacy single-role resolution — but it lights up the union the moment
-            // login populates staff_roles. Returns the flat module list AND the
-            // per-module level map (rbac_levels).
-            $staffRolesSess = $this->session->userdata('staff_roles');
-            $roleSet = array_merge(
-                [$this->admin_role ?? ''],
-                is_array($staffRolesSess) ? $staffRolesSess : []
-            );
-            $fresh        = resolve_role_access($this->firebase, $this->school_name, $roleSet);
-            $freshModules = $fresh['modules'];
-            $freshLevels  = $fresh['levels'];
+            $roleLabel = (string) ($this->admin_role ?? '');
+            $isBypass  = in_array($roleLabel, RBAC_BYPASS_ROLES, true);
+
+            if ($isBypass) {
+                // God roles (Super / School Super Admin): full access, NO Firestore
+                // read — resolve_role_access short-circuits bypass roles.
+                $fresh        = resolve_role_access($this->firebase, $this->school_name, [$roleLabel]);
+                $freshModules = $fresh['modules'];
+                $freshLevels  = $fresh['levels'];
+            } else {
+                // ── Unified RBAC: resolve EFFECTIVE access from the AUTHORITATIVE
+                // staff doc — the UNION of the member's staff_roles[] (+ their claim
+                // role LABEL) THEN their per-person extra/deny overrides — via the
+                // single resolve_effective_access() source of truth. This finally
+                // lights up the multi-role union that MY_Controller previously read
+                // from a session key that login never seeded: assigning several roles
+                // in Staff Access now takes effect on the very next request, no
+                // re-login. One indexed staff read on the throttled rbacStale refresh
+                // (the same doc the override path already fetched — no extra read).
+                $freshModules = [];
+                $freshLevels  = [];
+                try {
+                    $staffDoc = $this->fs->getEntity('staff', $this->admin_id);
+                    if (!is_array($staffDoc)) { $staffDoc = []; }
+                    // Guarantee the claim role LABEL is in the union even when the
+                    // staff doc's staff_roles[] is missing/empty (pre-backfill safety).
+                    $staffDoc['role'] = $roleLabel;
+                    $eff          = resolve_effective_access($this->firebase, $this->school_name, $staffDoc);
+                    $freshModules = $eff['modules'];
+                    $freshLevels  = $eff['levels'];
+                } catch (\Throwable $e) {
+                    log_message('error', 'MY_Controller RBAC resolve failed: ' . $e->getMessage());
+                }
+
+                // ── FOLD SAFETY NET (Admin demotion — step-6 point-of-no-return) ──
+                // 'Admin' is no longer a hardcoded RBAC_BYPASS role; it must resolve
+                // ROLE_ADMIN from the catalogue (backfilled to all modules @ manage by
+                // Admin_role_backfill). On a tenant NOT yet backfilled that entry is
+                // absent → empty modules → total lockout of a legitimate admin. Until
+                // the all-tenant backfill is CONFIRMED, a resolved-empty 'Admin' self-
+                // heals to full access and logs LOUDLY, so the coverage gap surfaces
+                // in logs — never as a locked-out human. Remove this net only after
+                // Admin_role_backfill is verified run for every tenant (rollout
+                // runbook: RBAC_RETIREMENT_INVESTIGATION).
+                if ($freshModules === [] && strcasecmp($roleLabel, 'Admin') === 0) {
+                    log_message('error',
+                        'RBAC FOLD SAFETY NET engaged: Admin resolved EMPTY on school='
+                        . "[{$this->school_name}] admin=[{$this->admin_id}] — ROLE_ADMIN not "
+                        . 'backfilled for this tenant; granting full access. Run Admin_role_backfill.');
+                    $freshModules = RBAC_MODULES;
+                    $freshLevels  = array_fill_keys(RBAC_MODULES, 'manage');
+                }
+            }
+
             // Guard against a transient Firestore blip (which returns []) wiping a
             // user's access mid-session: accept an empty result only when we have
             // no prior perms. A genuine full-revoke still applies on re-login.
@@ -920,7 +966,7 @@ class MY_Controller extends CI_Controller
         }
     }
 
-    protected function _require_role(array $allowed, string $action = ''): void
+    protected function _require_role(array $allowed, string $action = '', ?string $module = null, string $level = 'view'): void
     {
         $role = $this->admin_role ?? '';
 
@@ -928,24 +974,53 @@ class MY_Controller extends CI_Controller
         if (strcasecmp($role, 'Super Admin') === 0) return;
         if (strcasecmp($role, 'School Super Admin') === 0) return;
 
-        // Case-insensitive role match (Firebase role values may vary in casing)
-        foreach ($allowed as $a) {
-            if (strcasecmp($role, $a) === 0) return;
+        // ── Unified RBAC capability bridge (graded-authoritative) ───────────
+        // When a call supplies ($module, $level), a holder of that capability at
+        // >= the required level passes — this lets a CUSTOM / union role reach the
+        // action without being enumerated in $allowed.
+        //
+        // CRITICAL: if the user HOLDS the module but at a LOWER level than
+        // required, the graded map is AUTHORITATIVE — we deny and must NOT fall
+        // through to the legacy role-name list. Otherwise a built-in role name
+        // (e.g. 'Teacher' sitting in an attendance MARK list) would re-grant the
+        // action and silently defeat a deliberately-lowered level (view-only
+        // Teacher still marking attendance). Only users who do NOT hold the module
+        // at all (module === null, or an unmigrated / claim-only role with no
+        // resolved permissions) still fall through to the name list, so no legacy
+        // role is locked out mid-migration.
+        $graded_authoritative = false;
+        if ($module !== null && function_exists('has_permission')) {
+            if (has_permission($module, $level)) {
+                return;
+            }
+            if (function_exists('rbac_user_holds_module') && rbac_user_holds_module($module)) {
+                $graded_authoritative = true;
+            }
+        }
+
+        // Legacy role-name allow-list — the migration fallback. Skipped when the
+        // graded map is authoritative for this module (see above).
+        if (!$graded_authoritative) {
+            foreach ($allowed as $a) {
+                if (strcasecmp($role, $a) === 0) return;
+            }
         }
 
         $label = $action ? " ({$action})" : '';
+        $capInfo = $module !== null ? " module=[{$module}] level=[{$level}]" : '';
         log_message('error',
             "RBAC denied: role=[{$role}] admin=[{$this->admin_id}]"
-            . " school=[{$this->school_name}]{$label}"
+            . " school=[{$this->school_name}]{$label}{$capInfo}"
         );
 
         if ($this->input->is_ajax_request()) {
             $this->json_error('You do not have permission to perform this action.', 403);
         }
 
-        // Redirect to dashboard instead of showing a harsh 403 error page
-        $this->session->set_flashdata('error', 'You do not have access to that page.');
-        redirect('admin/index');
+        // Full-page: professional "Access restricted" screen (Admin::access_denied)
+        // instead of a silent bounce to the dashboard. Pass module + level when
+        // the call supplied them so the screen can show exactly what's required.
+        redirect(rbac_denied_url($module, $level));
     }
 
     // =========================================================================

@@ -1,4 +1,11 @@
 <?php defined('BASEPATH') OR exit('No direct script access allowed'); ?>
+<?php
+  // RBAC level flags (Examinations module). Viewing the tabulation sheet is a
+  // read surface; Bulk Compute (writes computed results) requires MANAGE.
+  $can_edit   = function_exists('has_permission') ? has_permission('Examinations','edit')   : true;
+  $can_manage = function_exists('has_permission') ? has_permission('Examinations','manage') : true;
+?>
+<link rel="stylesheet" href="<?= base_url('assets/css/rbac_ui_kit.css') ?>">
 
 <style>
 /* ═══════════════════════════════════════════════════════════════════════
@@ -168,7 +175,7 @@
 /* Grade color */
 .etb-grade { font-weight: 700; }
 .etb-grade-aplus { color: #059669; }
-.etb-grade-a     { color: #0d9488; }
+.etb-grade-a     { color: #BC5A3C; }
 .etb-grade-bplus { color: #2563eb; }
 .etb-grade-b     { color: #6366f1; }
 .etb-grade-c     { color: #d97706; }
@@ -347,8 +354,16 @@
 </style>
 
 <div class="content-wrapper">
+<div class="rx-loadbar" id="rxLoadbar"></div>
 <section class="content">
 <div class="etb-wrap">
+
+  <?php if (!$can_manage): ?>
+  <div class="rx-ro-banner">
+    <i class="fa fa-eye rx-ro-ic"></i>
+    View-only — you can view and print tabulation sheets. Running Bulk Compute requires the Manage permission.
+  </div>
+  <?php endif; ?>
 
   <!-- ── Page Header ──────────────────────────────────────────────── -->
   <div class="etb-header">
@@ -364,7 +379,8 @@
       <button class="etb-btn etb-btn-outline" onclick="window.print()" id="etbPrintBtn" disabled>
         <i class="fa fa-print"></i> Print
       </button>
-      <button class="etb-btn etb-btn-primary" id="etbBulkBtn">
+      <button class="etb-btn etb-btn-primary" id="etbBulkBtn"
+              <?= $can_manage ? '' : 'disabled title="Requires the Manage permission"' ?>>
         <i class="fa fa-calculator"></i> Bulk Compute
       </button>
     </div>
@@ -493,6 +509,15 @@
   var CSRF_NAME  = '<?= $this->security->get_csrf_token_name() ?>';
   var csrfHash   = '<?= $this->security->get_csrf_hash() ?>';
   var SESSION    = '<?= htmlspecialchars($this->session_year ?? '') ?>';
+  var CAN_MANAGE = <?= $can_manage ? 'true' : 'false' ?>;   // RBAC: gate Bulk Compute (writes results)
+
+  /* ── RBAC UI kit: top loading bar via a fetch busy counter ───────── */
+  var _rxBar = document.getElementById('rxLoadbar');
+  var _rxN   = 0;
+  function rxBusy(on) {
+    _rxN = Math.max(0, _rxN + (on ? 1 : -1));
+    if (_rxBar) _rxBar.classList.toggle('on', _rxN > 0);
+  }
 
   /* ── DOM refs ────────────────────────────────────────────────────── */
   var examSel    = document.getElementById('etbExamSel');
@@ -561,6 +586,9 @@
     emptyDiv.style.display  = 'none';
     tableWrap.style.display = 'none';
     printBtn.disabled       = true;
+    loadBtn.classList.add('rx-btnload');
+    loadBtn.disabled = true;
+    rxBusy(true);
 
     var fd = new FormData();
     fd.append('examId', examId);
@@ -568,14 +596,16 @@
     fd.append('sectionKey', sectionKey);
     fd.append(CSRF_NAME, csrfHash);
 
+    var _httpOk = true;
     fetch(BASE_URL + 'examination/get_tabulation_data', { method: 'POST', body: fd })
-      .then(function (r) { return r.json(); })
+      .then(function (r) { _httpOk = r.ok; return r.json(); })
       .then(function (r) {
         loading.style.display = 'none';
-        if (r.csrf_token) csrfHash = r.csrf_token;
-        if (!r.status || r.status !== 'success') {
+        if (r && r.csrf_token) csrfHash = r.csrf_token;
+        // Fail-closed: render only on an explicit success flag over a 2xx.
+        if (!_httpOk || !r || r.status !== 'success' || r.success === false) {
           emptyDiv.style.display = '';
-          emptyDiv.querySelector('p').textContent = r.message || 'No data found.';
+          emptyDiv.querySelector('p').textContent = (r && r.message) || 'No data found.';
           return;
         }
         renderTable(r);
@@ -586,6 +616,11 @@
         loading.style.display = 'none';
         emptyDiv.style.display = '';
         emptyDiv.querySelector('p').textContent = 'Network error. Please try again.';
+      })
+      .then(function () {
+        rxBusy(false);
+        loadBtn.classList.remove('rx-btnload');
+        loadBtn.disabled = false;
       });
   }
 

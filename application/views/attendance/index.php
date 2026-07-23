@@ -8,6 +8,9 @@
 <div class="container-fluid">
 <div class="att-wrap">
 
+    <!-- Top progress bar — reflects any in-flight request (busy counter). -->
+    <div class="att-loadbar" id="attLoadbar"></div>
+
     <!-- Page Header -->
     <div class="att-header">
         <div class="att-header-left">
@@ -22,30 +25,36 @@
         </div>
     </div>
 
-    <!-- Today's Quick Stats -->
+    <!-- Today's Quick Stats — each card links to where you'd act on that number.
+         The sidebar owns section navigation; the dashboard turns the live figures
+         themselves into the way in (click Absent → the student register, etc.). -->
     <div class="att-kpi-grid-5">
-        <div class="att-kpi att-kpi-success">
+        <div class="att-kpi att-kpi-success att-kpi--clickable" role="link" tabindex="0"
+             data-href="<?= base_url('attendance/mark') ?>#student" title="Open the student register">
             <div class="att-kpi-icon"><i class="fa fa-check-circle"></i></div>
             <div class="att-kpi-value" id="attStatPresent"><div class="att-kpi-loading"></div></div>
             <div class="att-kpi-label">Students Present Today</div>
         </div>
-        <div class="att-kpi att-kpi-danger">
+        <div class="att-kpi att-kpi-danger att-kpi--clickable" role="link" tabindex="0"
+             data-href="<?= base_url('attendance/mark') ?>#student" title="Open the student register">
             <div class="att-kpi-icon"><i class="fa fa-times-circle"></i></div>
             <div class="att-kpi-value" id="attStatAbsent"><div class="att-kpi-loading"></div></div>
             <div class="att-kpi-label">Students Absent Today</div>
         </div>
-        <div class="att-kpi att-kpi-warning">
+        <div class="att-kpi att-kpi-warning att-kpi--clickable" role="link" tabindex="0"
+             data-href="<?= base_url('attendance/mark') ?>#student" title="Open the student register">
             <div class="att-kpi-icon"><i class="fa fa-clock-o"></i></div>
             <div class="att-kpi-value" id="attStatLate"><div class="att-kpi-loading"></div></div>
             <div class="att-kpi-label">Late Arrivals Today</div>
         </div>
-        <div class="att-kpi att-kpi-info">
+        <div class="att-kpi att-kpi-info att-kpi--clickable" role="link" tabindex="0"
+             data-href="<?= base_url('attendance/mark') ?>#staff" title="Open the staff register">
             <div class="att-kpi-icon"><i class="fa fa-user-circle"></i></div>
             <div class="att-kpi-value" id="attStatStaff"><div class="att-kpi-loading"></div></div>
             <div class="att-kpi-label">Staff Present Today</div>
         </div>
-        <div class="att-kpi att-kpi-purple att-kpi--clickable" id="attCorrectionsCard"
-             onclick="window.location='<?= base_url('attendance/approvals') ?>#corrections'"
+        <div class="att-kpi att-kpi-purple att-kpi--clickable" id="attCorrectionsCard" role="link" tabindex="0"
+             data-href="<?= base_url('attendance/approvals') ?>#corrections"
              title="Open Approvals — Student Corrections">
             <div class="att-kpi-icon"><i class="fa fa-flag-checkered"></i></div>
             <div class="att-kpi-value" id="attStatCorrections"><div class="att-kpi-loading"></div></div>
@@ -53,28 +62,12 @@
         </div>
     </div>
 
-    <!-- Quick Actions -->
+    <!-- Primary daily action. Everything else (Approvals, Reports, Settings, QR)
+         lives in the Attendance sidebar section — the dashboard no longer mirrors
+         the whole menu; it surfaces the one job you come here to do. -->
     <div class="att-actions">
-        <a href="<?= base_url('attendance/control') ?>" class="att-btn att-btn-primary">
-            <i class="fa fa-shield"></i> Attendance Control Panel
-        </a>
-        <a href="<?= base_url('attendance/mark') ?>#student" class="att-btn att-btn-outline">
-            <i class="fa fa-users"></i> Mark Student Attendance
-        </a>
-        <a href="<?= base_url('attendance/mark') ?>#staff" class="att-btn att-btn-outline">
-            <i class="fa fa-id-badge"></i> Mark Staff Attendance
-        </a>
-        <a href="<?= base_url('attendance/mark') ?>#scan" class="att-btn att-btn-outline">
-            <i class="fa fa-qrcode"></i> QR Scan
-        </a>
-        <a href="<?= base_url('attendance/reports') ?>#analytics" class="att-btn att-btn-outline">
-            <i class="fa fa-bar-chart"></i> View Analytics
-        </a>
-        <a href="<?= base_url('attendance/reports') ?>#audit" class="att-btn att-btn-outline">
-            <i class="fa fa-history"></i> Audit Log
-        </a>
-        <a href="<?= base_url('attendance/approvals') ?>#regularization" class="att-btn att-btn-outline">
-            <i class="fa fa-user-clock"></i> Regularization Requests
+        <a href="<?= base_url('attendance/mark') ?>" class="att-btn att-btn-primary">
+            <i class="fa fa-check-square-o"></i> Mark Today's Attendance
         </a>
     </div>
 
@@ -98,12 +91,12 @@
                     </tr>
                 </thead>
                 <tbody id="attPunchBody">
-                    <tr>
-                        <td colspan="6" class="att-empty">
-                            <i class="fa fa-spinner fa-spin"></i>
-                            Loading punch log...
-                        </td>
-                    </tr>
+                    <!-- Skeleton rows — shimmer until the log loads (or an empty/error state replaces them). -->
+                    <tr><td colspan="6"><div class="att-skel att-skel-row"></div></td></tr>
+                    <tr><td colspan="6"><div class="att-skel att-skel-row" style="width:82%"></div></td></tr>
+                    <tr><td colspan="6"><div class="att-skel att-skel-row" style="width:90%"></div></td></tr>
+                    <tr><td colspan="6"><div class="att-skel att-skel-row" style="width:76%"></div></td></tr>
+                    <tr><td colspan="6"><div class="att-skel att-skel-row" style="width:88%"></div></td></tr>
                 </tbody>
             </table>
         </div>
@@ -126,20 +119,29 @@
         return d.innerHTML;
     }
 
+    /* ── Top progress bar — busy counter so parallel requests share one bar ── */
+    var _busy = 0;
+    function busyStart(){ _busy++; var b = document.getElementById('attLoadbar'); if (b) b.classList.add('on'); }
+    function busyEnd(){ _busy = Math.max(0, _busy - 1); if (!_busy) { var b = document.getElementById('attLoadbar'); if (b) b.classList.remove('on'); } }
+
     function postData(url, data) {
         var fd = new FormData();
         fd.append(CSRF_NAME, CSRF_HASH);
         if (data) { Object.keys(data).forEach(function(k){ fd.append(k, data[k]); }); }
+        busyStart();
         return fetch(BASE + url, { method: 'POST', body: fd, credentials: 'same-origin' })
             .then(function(r) {
-                var ct = r.headers.get('content-type') || '';
-                if (ct.indexOf('application/json') === -1) throw new Error('Non-JSON response');
-                return r.json();
+                // Fail-closed: fetch does NOT reject on 401/403/500, so a denied/failed
+                // call must be turned into a rejection here — never a silent success.
+                return r.json().catch(function(){ return {}; }).then(function(j) {
+                    if (j && j.csrf_hash) { CSRF_HASH = j.csrf_hash; }
+                    if (!r.ok || (j && (j.status === 'error' || j.success === false))) {
+                        throw new Error((j && (j.message || j.error)) || ('Request failed (' + r.status + ')'));
+                    }
+                    return j;
+                });
             })
-            .then(function(data) {
-                if (data.csrf_hash) { CSRF_HASH = data.csrf_hash; }
-                return data;
-            });
+            .finally(busyEnd);
     }
 
     function setText(id, val) {
@@ -217,6 +219,7 @@
     /* ── Pending corrections count ──────────────────────── */
     function loadCorrectionsCount() {
         // Use GET — correction_list is a GET endpoint and credentials carry the session.
+        busyStart();
         fetch(BASE + 'attendance/correction/list?status=pending&limit=100', {
             credentials: 'same-origin'
         })
@@ -234,8 +237,25 @@
                 else       card.classList.remove('has-pending');
             }
         })
-        .catch(function() { setText('attStatCorrections', '--'); });
+        .catch(function() { setText('attStatCorrections', '--'); })
+        .finally(busyEnd);
     }
+
+    /* ── KPI cards act as links ──────────────────────────────
+       Each stat card carries data-href; clicking (or Enter/Space when focused,
+       since they are role="link" tabindex="0") navigates there. Delegated so it
+       covers all current and future cards without per-card handlers. */
+    document.addEventListener('click', function(e){
+        var card = e.target.closest && e.target.closest('.att-kpi--clickable[data-href]');
+        if (card) window.location = card.getAttribute('data-href');
+    });
+    document.addEventListener('keydown', function(e){
+        if (e.key !== 'Enter' && e.key !== ' ' && e.key !== 'Spacebar') return;
+        var card = e.target.closest && e.target.closest('.att-kpi--clickable[data-href]');
+        if (!card) return;
+        e.preventDefault();
+        window.location = card.getAttribute('data-href');
+    });
 
     /* ── Init: load all three IN PARALLEL ───────────────────
        Previously chained behind loadStats(), so a slow dashboard_stats blocked

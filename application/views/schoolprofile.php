@@ -463,19 +463,54 @@ if (!is_array($activities)) $activities = [];
 
 <style>
 /* ── School Profile — matches ERP theme ── */
+/* Burnt Clay system palette — theme-aware; follows the shell's day/night toggle. */
 :root {
-    --sp-navy: #1a2332;
-    --sp-teal: #0d9488;
-    --sp-teal-lt: #ccfbf1;
+    --sp-primary:       #BC5A3C;              /* terracotta brand */
+    --sp-primary-hover: #9E4830;
+    --sp-primary-lt:    #F4E3DA;              /* soft clay fill  */
+    --sp-primary-ln:    rgba(188, 90, 60, .20); /* clay hairline */
+
+    --sp-blue:  #2563eb;
     --sp-amber: #d97706;
-    --sp-red: #dc2626;
+    --sp-red:   #dc2626;
     --sp-green: #16a34a;
-    --sp-muted: #6b7280;
-    --sp-border: #e5e7eb;
-    --sp-bg: #f4f6f9;
-    --sp-white: #ffffff;
-    --sp-shadow: 0 2px 8px rgba(0, 0, 0, .08);
-    --sp-radius: 10px;
+
+    --sp-heading: #22160F;
+    --sp-text:    #33261F;
+    --sp-muted:   #9E8578;
+    --sp-border:  #ECDCCF;
+    --sp-bg:      #F7F2ED;                    /* page canvas   */
+    --sp-white:   #ffffff;                    /* card surface  */
+    --sp-subtle:  #FAF5F0;                    /* inset / heads */
+    --sp-shadow:  0 2px 8px rgba(80, 40, 20, .08);
+    --sp-radius:  10px;
+
+    /* Hero banner — kept dark in both themes; warm clay instead of cold navy */
+    --sp-hero-grad:   linear-gradient(135deg, #2A1D15 0%, #5A3320 55%, #7A4128 100%);
+    --sp-hero-accent: rgba(188, 90, 60, .28);
+    --sp-hero-shadow: 0 4px 20px rgba(42, 29, 21, .35);
+    --sp-hero-icon:   #E5A088;               /* light clay on dark hero */
+
+    /* Legacy aliases — existing markup uses --sp-teal / --sp-navy */
+    --sp-teal:    var(--sp-primary);
+    --sp-teal-lt: var(--sp-primary-lt);
+    --sp-navy:    var(--sp-heading);
+}
+
+[data-theme="night"] {
+    --sp-primary:       #D4725C;             /* lighter clay for dark bg */
+    --sp-primary-hover: #BC5A3C;
+    --sp-primary-lt:    rgba(212, 114, 92, .16);
+    --sp-primary-ln:    rgba(212, 114, 92, .28);
+
+    --sp-heading: #ffffff;
+    --sp-text:    #F4E9E2;
+    --sp-muted:   #A89A90;
+    --sp-border:  rgba(255, 255, 255, .08);
+    --sp-bg:      #17100C;
+    --sp-white:   #201711;
+    --sp-subtle:  #271A14;
+    --sp-shadow:  0 1px 3px rgba(0, 0, 0, .3), 0 1px 2px rgba(0, 0, 0, .2);
 }
 
 .sp-wrap {
@@ -544,12 +579,12 @@ if (!is_array($activities)) $activities = [];
 }
 
 .sp-btn-primary {
-    background: var(--sp-teal);
+    background: var(--sp-primary);
     color: #fff;
 }
 
 .sp-btn-primary:hover {
-    background: #BC5A3C;
+    background: var(--sp-primary-hover);
 }
 
 .sp-btn-ghost {
@@ -574,7 +609,7 @@ if (!is_array($activities)) $activities = [];
 
 /* ── Hero banner ── */
 .sp-hero {
-    background: linear-gradient(135deg, var(--sp-navy) 0%, #243450 60%, #1f3a5f 100%);
+    background: var(--sp-hero-grad);
     border-radius: var(--sp-radius);
     padding: 28px 32px;
     margin-bottom: 22px;
@@ -582,7 +617,7 @@ if (!is_array($activities)) $activities = [];
     align-items: center;
     gap: 24px;
     flex-wrap: wrap;
-    box-shadow: 0 4px 20px rgba(26, 35, 50, .3);
+    box-shadow: var(--sp-hero-shadow);
     position: relative;
     overflow: hidden;
 }
@@ -594,7 +629,7 @@ if (!is_array($activities)) $activities = [];
     top: -40px;
     width: 220px;
     height: 220px;
-    background: rgba(13, 148, 136, .12);
+    background: var(--sp-hero-accent);
     border-radius: 50%;
 }
 
@@ -647,7 +682,7 @@ if (!is_array($activities)) $activities = [];
 }
 
 .sp-hero-tag i {
-    color: var(--sp-teal);
+    color: var(--sp-hero-icon);
 }
 
 .sp-hero-right {
@@ -708,7 +743,7 @@ if (!is_array($activities)) $activities = [];
 }
 
 .sp-stat-blue {
-    border-left-color: #3b82f6;
+    border-left-color: var(--sp-blue);
 }
 
 .sp-stat-green {
@@ -735,23 +770,23 @@ if (!is_array($activities)) $activities = [];
 }
 
 .sp-stat-blue .sp-stat-icon {
-    background: #eff6ff;
-    color: #3b82f6;
+    background: rgba(37, 99, 235, .12);
+    color: var(--sp-blue);
 }
 
 .sp-stat-green .sp-stat-icon {
-    background: #f0fdf4;
+    background: rgba(22, 163, 74, .12);
     color: var(--sp-green);
 }
 
 .sp-stat-amber .sp-stat-icon {
-    background: #fffbeb;
+    background: rgba(217, 119, 6, .12);
     color: var(--sp-amber);
 }
 
 .sp-stat-teal .sp-stat-icon {
-    background: #f0fdfa;
-    color: var(--sp-teal);
+    background: var(--sp-primary-lt);
+    color: var(--sp-primary);
 }
 
 .sp-stat-label {
@@ -801,7 +836,7 @@ if (!is_array($activities)) $activities = [];
     gap: 10px;
     padding: 16px 20px;
     border-bottom: 1.5px solid var(--sp-border);
-    background: #f8fafc;
+    background: var(--sp-subtle);
 }
 
 .sp-card-head h3 {
@@ -880,7 +915,7 @@ if (!is_array($activities)) $activities = [];
 }
 
 .sp-sub-progress {
-    background: #e5e7eb;
+    background: var(--sp-border);
     border-radius: 20px;
     height: 8px;
     overflow: hidden;
@@ -934,7 +969,7 @@ if (!is_array($activities)) $activities = [];
     color: var(--sp-teal);
     font-size: 12px;
     font-weight: 600;
-    border: 1px solid rgba(13, 148, 136, .2);
+    border: 1px solid var(--sp-primary-ln);
 }
 
 .sp-feature-pill i {
@@ -988,7 +1023,7 @@ if (!is_array($activities)) $activities = [];
 }
 
 .sp-pay-item {
-    background: #f8fafc;
+    background: var(--sp-subtle);
     border-radius: 8px;
     padding: 14px 16px;
     border: 1px solid var(--sp-border);

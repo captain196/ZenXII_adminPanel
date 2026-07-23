@@ -137,7 +137,16 @@ function post(url,data){
   var fd=new FormData();fd.append(csrfName,csrfHash);
   for(var k in data)fd.append(k,data[k]);
   return fetch(BASE+url,{method:'POST',body:fd,headers:{'X-CSRF-Token':csrfHash,'X-Requested-With':'XMLHttpRequest'}})
-    .then(function(r){return r.json();}).then(function(r){if(r.csrf_hash)csrfHash=r.csrf_hash;return r;});
+    .then(function(r){
+      return r.json().catch(function(){return {};}).then(function(j){
+        if(j&&j.csrf_hash)csrfHash=j.csrf_hash;
+        if(!r.ok||(j&&(j.status==='error'||j.success===false))){
+          var e=new Error((j&&(j.message||j.error))||('Request failed ('+r.status+')'));
+          e.httpStatus=r.status;e.payload=j;throw e;
+        }
+        return j;
+      });
+    });
 }
 
 function prTab(tab,btn){
@@ -271,6 +280,8 @@ function loadRecon(){
     document.getElementById('prFailedBadge').textContent=r.fees_failed?r.fees_failed.length:0;
     document.getElementById('prOrphanBadge').textContent=r.orphans?r.orphans.length:0;
     document.getElementById('prDupBadge').textContent=r.duplicates?r.duplicates.length:0;
+  }).catch(function(e){
+    document.getElementById('panelFailed').innerHTML='<div class="pr-empty" style="color:#dc2626">'+esc(e.message||'Failed to load reconciliation data.')+'</div>';
   });
 }
 
@@ -367,12 +378,10 @@ function retryPayment(recordId,btn){
   if(!confirm('Retry fee processing for this payment?\n\nThis will attempt to create the receipt and fee records again.\n\nRecord: '+recordId))return;
   btn.disabled=true;btn.innerHTML='<i class="fa fa-spinner fa-spin"></i>';
   post('fee_management/retry_payment_processing',{order_record_id:recordId}).then(function(r){
-    if(r.status==='success'){
-      btn.innerHTML='<i class="fa fa-check"></i> Done';btn.style.color='#BC5A3C';btn.style.borderColor='#BC5A3C';
-      setTimeout(loadRecon,1000);
-    } else {
-      alert(r.message||'Retry failed.');btn.disabled=false;btn.innerHTML='<i class="fa fa-refresh"></i> Retry';
-    }
+    btn.innerHTML='<i class="fa fa-check"></i> Done';btn.style.color='#BC5A3C';btn.style.borderColor='#BC5A3C';
+    setTimeout(loadRecon,1000);
+  }).catch(function(e){
+    alert(e.message||'Retry failed.');btn.disabled=false;btn.innerHTML='<i class="fa fa-refresh"></i> Retry';
   });
 }
 

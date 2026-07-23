@@ -1,4 +1,17 @@
 <?php defined('BASEPATH') OR exit('No direct script access allowed'); ?>
+<?php
+    /* ── Access levels (defense-in-depth; controller remains source of truth) ──
+     * In these marking views, marking/saving counts as EDIT.
+     * MANAGE gates correction DECIDE/approve + lock (none inline here yet). */
+    $att_can_edit   = function_exists('has_permission') ? has_permission('Attendance', 'edit')   : true;
+    $att_can_manage = function_exists('has_permission') ? has_permission('Attendance', 'manage') : true;
+?>
+
+<!-- Attendance Design System (shared, cacheable) — see assets/css/attendance_design_system.css.
+     staff.php inlines most classes but relies on the external file for .att-header*
+     (header card + icon box). Linked BEFORE the inline <style> so page-specific inline
+     rules still win on any overlap. Mirrors student.php. -->
+<link rel="stylesheet" href="<?= base_url('assets/css/attendance_design_system.css') ?>?v=2.1.0">
 
 <style>
 :root {
@@ -90,7 +103,18 @@
    hide to the id (not the class) prevents that collision — see student.php,
    which never hides .att-toolbar. JS toggles #attToolbar.visible after load. */
 #attToolbar { display: none; }
-#attToolbar.visible { display: flex; }
+/* Sticky action/save bar — stays in view while the register scrolls. */
+#attToolbar.visible { display: flex; position: sticky; top: 0; z-index: 20; }
+/* Unsaved-changes affordance: amber ring on the action bar until saved. */
+#attToolbar.att-has-unsaved {
+    border-color: var(--att-l);
+    box-shadow: inset 0 0 0 1px var(--att-l), var(--att-shadow);
+}
+/* Keyboard focus — visible ring on the focused mark cell. */
+.att-cell:focus-visible { outline: 2px solid var(--att-primary); outline-offset: 1px; }
+/* Read-only (view-level) — grid shown but not interactive. */
+.att-grid-wrap.att-readonly .att-cell { cursor: default; }
+.att-grid-wrap.att-readonly .att-cell:hover { transform: none; box-shadow: none; }
 .att-toolbar-section { display: flex; gap: 8px; align-items: center; }
 .att-toolbar-divider { width: 1px; height: 28px; background: var(--att-border); margin: 0 6px; }
 .att-day-picker {
@@ -117,59 +141,70 @@
     border: 1px solid var(--att-border); box-shadow: var(--att-shadow);
     overflow: auto; max-height: calc(100vh - 260px);
 }
-.att-grid {
+.att-mgrid {
+    /* fixed layout → every column takes its defined <th> width for BOTH header
+       and body, so the date headers always sit exactly above their marks
+       (auto layout let a sticky header size its columns independently). */
+    table-layout: fixed;
     width: max-content; min-width: 100%; border-collapse: separate;
     border-spacing: 0; font-family: var(--att-font);
 }
-.att-grid thead { position: sticky; top: 0; z-index: 10; }
-.att-grid th {
+/* Header is intentionally NOT position:sticky. In a horizontally-scrollable
+   container Safari mis-sizes sticky table-header cells (they stop honoring the
+   column widths), which drifts the date headers off the marks below. A plain,
+   non-sticky header renders on the exact same table column grid as the body, so
+   every date sits precisely above its column. */
+.att-mgrid thead th { position: static; }
+.att-mgrid th {
     background: var(--att-bg3); color: var(--att-text2); font-size: 11px;
     font-weight: 600; text-transform: uppercase; letter-spacing: .3px;
     padding: 10px 6px; text-align: center; white-space: nowrap;
     border-bottom: 2px solid var(--att-border);
 }
-.att-grid th.att-th-name { text-align: left; padding-left: 14px; min-width: 160px; }
-.att-grid th.att-th-id { text-align: left; min-width: 90px; }
-.att-grid th.att-th-summary { min-width: 110px; }
-.att-grid th.att-th-day { width: 36px; }
-.att-grid th.att-col-sunday { background: rgba(239,68,68,.10); color: #dc2626; }
-.att-grid th.att-col-holiday { background: rgba(139,92,246,.14); color: #7c3aed; }
+.att-mgrid th.att-th-idx { width: 46px; }
+.att-mgrid th.att-th-name { text-align: left; padding-left: 14px; width: 180px; }
+.att-mgrid th.att-th-id { text-align: left; width: 92px; }
+.att-mgrid th.att-th-summary { width: 120px; }
+.att-mgrid th.att-th-day { width: 38px; }
+.att-mgrid th.att-col-sunday { background: rgba(239,68,68,.10); color: #dc2626; }
+.att-mgrid th.att-col-holiday { background: rgba(139,92,246,.14); color: #7c3aed; }
 
-.att-grid td {
+.att-mgrid td {
     padding: 4px; text-align: center; border-bottom: 1px solid var(--att-border);
     font-size: 13px; color: var(--att-text); vertical-align: middle;
 }
-.att-grid td.att-td-idx { font-family: var(--att-font-m); font-size: 12px; color: var(--att-text3); padding: 4px 8px; }
-.att-grid td.att-td-name {
+.att-mgrid td.att-td-idx { font-family: var(--att-font-m); font-size: 12px; color: var(--att-text3); padding: 4px 8px; }
+.att-mgrid td.att-td-name {
     text-align: left; padding-left: 14px; font-weight: 500;
     white-space: nowrap; overflow: hidden; text-overflow: ellipsis; max-width: 180px;
 }
-.att-grid td.att-td-id {
+.att-mgrid td.att-td-id {
     text-align: left; font-family: var(--att-font-m); font-size: 11px; color: var(--att-text3);
 }
-.att-grid td.att-td-summary {
+.att-mgrid td.att-td-summary {
     font-family: var(--att-font-m); font-size: 11px; white-space: nowrap;
 }
-.att-grid td.att-col-sunday { background: var(--att-sunday); border-left: 1px solid rgba(239,68,68,.10); border-right: 1px solid rgba(239,68,68,.10); }
-.att-grid td.att-col-holiday { background: var(--att-holiday); border-left: 1px solid rgba(139,92,246,.10); border-right: 1px solid rgba(139,92,246,.10); }
-/* Future days: visually grayed, not editable. Header gets the same wash. */
-.att-grid th.att-col-future,
-.att-grid td.att-col-future {
-    background: repeating-linear-gradient(45deg, rgba(148,163,184,.06) 0 6px, transparent 6px 12px);
+.att-mgrid td.att-col-sunday { background: var(--att-sunday); border-left: 1px solid rgba(239,68,68,.10); border-right: 1px solid rgba(239,68,68,.10); }
+.att-mgrid td.att-col-holiday { background: var(--att-holiday); border-left: 1px solid rgba(139,92,246,.10); border-right: 1px solid rgba(139,92,246,.10); }
+/* Future days: not yet editable. Kept visually uniform with the rest of the
+   grid — only the date number is muted and the marks are lightly dimmed, so the
+   future half doesn't read as a washed-out / broken block. */
+.att-mgrid th.att-col-future,
+.att-mgrid td.att-col-future {
     color: var(--att-text3);
 }
-.att-grid td.att-col-future .att-cell { cursor: not-allowed; opacity: .32; }
-.att-grid td.att-col-future .att-cell:hover { transform: none; }
+.att-mgrid td.att-col-future .att-cell { cursor: not-allowed; opacity: .5; }
+.att-mgrid td.att-col-future .att-cell:hover { transform: none; }
 /* Sundays and Holidays are also locked — same cursor + dim treatment.
    The existing red/purple column tint stays so the reason is still legible. */
-.att-grid td.att-col-sunday .att-cell,
-.att-grid td.att-col-holiday .att-cell { cursor: not-allowed; opacity: .55; }
-.att-grid td.att-col-sunday .att-cell:hover,
-.att-grid td.att-col-holiday .att-cell:hover { transform: none; }
+.att-mgrid td.att-col-sunday .att-cell,
+.att-mgrid td.att-col-holiday .att-cell { cursor: not-allowed; opacity: .55; }
+.att-mgrid td.att-col-sunday .att-cell:hover,
+.att-mgrid td.att-col-holiday .att-cell:hover { transform: none; }
 
-.att-grid tbody tr:hover td { background: var(--att-bg3); }
-.att-grid tbody tr:hover td.att-col-sunday { background: rgba(239,68,68,.12); }
-.att-grid tbody tr:hover td.att-col-holiday { background: rgba(139,92,246,.16); }
+.att-mgrid tbody tr:hover td { background: var(--att-bg3); }
+.att-mgrid tbody tr:hover td.att-col-sunday { background: rgba(239,68,68,.12); }
+.att-mgrid tbody tr:hover td.att-col-holiday { background: rgba(139,92,246,.16); }
 
 /* ── Day Cells ── */
 .att-cell {
@@ -273,8 +308,43 @@
     .att-legend { margin-left: 0; margin-top: 8px; }
     .att-toolbar-divider { display: none; }
     .att-modal { padding: 16px; }
+    .att-kpis { grid-template-columns: repeat(2, 1fr) !important; }
 }
+
+/* ── Summary KPIs (redesign) — additive, computed after load ── */
+.att-kpis { display: grid; grid-template-columns: repeat(5, 1fr); gap: 12px; margin-bottom: 16px; }
+.att-kpis:empty { display: none; }
+.att-kpi {
+    position: relative; overflow: hidden; background: var(--att-card);
+    border: 1px solid var(--att-border); border-radius: var(--att-r);
+    padding: 14px 15px 12px; box-shadow: var(--att-shadow);
+}
+.att-kpi::before {
+    content: ''; position: absolute; left: 0; top: 0; bottom: 0; width: 3px;
+    background: var(--k, var(--att-primary)); opacity: .85;
+}
+.att-kpi-label { font-family: var(--att-font); font-size: 11px; font-weight: 600; letter-spacing: .04em; text-transform: uppercase; color: var(--att-text3); }
+.att-kpi-val { font-family: var(--att-font); font-size: 26px; font-weight: 800; line-height: 1.1; margin-top: 7px; letter-spacing: -.01em; font-variant-numeric: tabular-nums; color: var(--att-text); }
+.att-kpi-val small { font-size: 14px; font-weight: 600; color: var(--att-text3); }
+.att-kpi-sub { font-family: var(--att-font); font-size: 11.5px; color: var(--att-text2); margin-top: 3px; }
+
+/* ── Skeleton shimmer (redesign) ── */
+.att-sk { display: block; border-radius: 6px;
+    background: linear-gradient(90deg, var(--att-bg3) 25%, var(--att-bg2) 50%, var(--att-bg3) 75%);
+    background-size: 200% 100%; animation: attShim 1.3s linear infinite; }
+@keyframes attShim { to { background-position: -200% 0; } }
+
+/* ── Live status pill (redesign) ── */
+.att-status { display: inline-flex; align-items: center; gap: 7px; font-family: var(--att-font); font-size: 12px; font-weight: 600; color: var(--att-text2); }
+.att-status:empty { display: none; }
+.att-status .att-status-sp { width: 13px; height: 13px; border-radius: 50%; border: 2px solid var(--att-border); border-top-color: var(--att-primary); animation: attSpin .7s linear infinite; display: none; flex: 0 0 auto; }
+.att-status.is-loading .att-status-sp { display: inline-block; }
+@keyframes attSpin { to { transform: rotate(360deg); } }
+@media (prefers-reduced-motion: reduce) { .att-sk { animation: none; } .att-status .att-status-sp { animation: none; } }
 </style>
+
+<!-- Top progress bar — driven by attBusyStart/attBusyEnd on every request -->
+<div class="att-loadbar" id="attLoadbar"></div>
 
 <div class="content-wrapper">
 <section class="content">
@@ -295,6 +365,17 @@
             </div>
         </div>
     </div>
+
+    <?php if (!$att_can_edit): ?>
+    <!-- Read-only banner (view-level access) — data still shown; editing blocked -->
+    <div class="att-alert att-alert-info show" style="margin-bottom:16px;">
+        <i class="fa fa-eye"></i>
+        <span><strong>View-only access</strong> — you can see attendance but can't mark or edit it.</span>
+    </div>
+    <?php endif; ?>
+
+    <!-- Summary KPIs (redesign) — populated by renderKpis() after each load -->
+    <div class="att-kpis" id="attKpis"></div>
 
     <!-- Filter Card — shared .att-toolbar (consistent with Student Attendance) -->
     <div class="att-toolbar">
@@ -335,10 +416,14 @@
             </select>
         </div>
         <div class="att-fg" style="align-self:flex-end;">
-            <button type="button" class="att-btn att-btn-primary" id="attLoadBtn">
-                <i class="fa fa-search"></i> Load Attendance
+            <button type="button" class="att-btn att-btn-outline" id="attLoadBtn" title="Reload this month from the server">
+                <i class="fa fa-refresh"></i> Refresh
             </button>
         </div>
+        <div style="flex:1 1 auto;"></div>
+        <span class="att-status" id="attStatus" style="align-self:flex-end;">
+            <span class="att-status-sp"></span><span id="attStatusText"></span>
+        </span>
     </div>
 
     <!-- Toolbar -->
@@ -347,15 +432,18 @@
             <button type="button" class="att-btn att-btn-primary att-btn-sm" id="attSaveBtn" disabled>
                 <i class="fa fa-save"></i> Save Changes
             </button>
+            <span id="attDirtyCount" style="font-family:var(--att-font);font-size:11px;color:var(--att-l);font-weight:700;display:none;">
+                <i class="fa fa-pencil"></i> <em id="attDirtyNum">0</em> unsaved
+            </span>
         </div>
         <div class="att-toolbar-divider"></div>
         <div class="att-toolbar-section">
             <label style="font-family:var(--att-font);font-size:12px;font-weight:600;color:var(--att-text3);">Day:</label>
-            <input type="number" id="attDayPicker" class="att-day-picker" min="1" max="31" value="1">
-            <button type="button" class="att-btn att-btn-outline att-btn-sm" data-bulk="P">
+            <input type="number" id="attDayPicker" class="att-day-picker" min="1" max="31" value="1"<?= $att_can_edit ? '' : ' disabled' ?>>
+            <button type="button" class="att-btn att-btn-outline att-btn-sm" data-bulk="P"<?= $att_can_edit ? '' : ' disabled' ?>>
                 <i class="fa fa-check"></i> All Present
             </button>
-            <button type="button" class="att-btn att-btn-outline att-btn-sm" data-bulk="H">
+            <button type="button" class="att-btn att-btn-outline att-btn-sm" data-bulk="H"<?= $att_can_edit ? '' : ' disabled' ?>>
                 <i class="fa fa-star"></i> Holiday
             </button>
         </div>
@@ -382,12 +470,12 @@
     <!-- Empty State -->
     <div class="att-empty" id="attEmpty" style="display:none;">
         <i class="fa fa-calendar-o"></i>
-        <p>Select a month and click Load to view staff attendance.</p>
+        <p>No staff attendance found for this month.</p>
     </div>
 
     <!-- Grid -->
     <div class="att-grid-wrap" id="attGridWrap" style="display:none;">
-        <table class="att-grid" id="attGrid">
+        <table class="att-mgrid" id="attGrid">
             <thead id="attGridHead"></thead>
             <tbody id="attGridBody"></tbody>
         </table>
@@ -430,6 +518,17 @@
     var CSRF_HASH = '<?= $this->security->get_csrf_hash() ?>';
     var BASE = '<?= base_url() ?>';
 
+    // Access level (mirrors server RBAC — defense-in-depth only).
+    var CAN_EDIT = <?= $att_can_edit ? 'true' : 'false' ?>;
+
+    /* ── Busy counter → top loadbar ──
+       Any in-flight fetch turns the bar on; it clears only when the LAST
+       request settles (success OR error). Wired into postData below so every
+       call gets it automatically. */
+    var _attBusy = 0;
+    function attBusyStart(){ _attBusy++; var b=document.getElementById('attLoadbar'); if(b)b.classList.add('on'); }
+    function attBusyEnd(){ _attBusy=Math.max(0,_attBusy-1); if(!_attBusy){ var b=document.getElementById('attLoadbar'); if(b)b.classList.remove('on'); } }
+
     /* ── State ── */
     var state = {
         staff: [],
@@ -458,6 +557,11 @@
     var elModalTitle = document.getElementById('attModalTitle');
     var elModalBody  = document.getElementById('attModalBody');
     var elToast    = document.getElementById('attToast');
+    var elKpis       = document.getElementById('attKpis');
+    var elStatus     = document.getElementById('attStatus');
+    var elStatusText = document.getElementById('attStatusText');
+    var elDirty      = document.getElementById('attDirtyCount');
+    var elDirtyNum   = document.getElementById('attDirtyNum');
 
     /* ── Helpers ── */
     function esc(s) {
@@ -541,22 +645,119 @@
         if (data) {
             Object.keys(data).forEach(function(k){ fd.append(k, data[k]); });
         }
+        // FAIL-CLOSED: fetch never rejects on 403/401/500, so we inspect the
+        // parsed body + HTTP status and THROW on any failure. Callers show the
+        // thrown message in .catch and only flip UI to "saved" in the resolved
+        // .then — never optimistically.
+        // Drive the top progress bar for EVERY request routed through here.
+        attBusyStart();
         return fetch(BASE + url, { method: 'POST', body: fd })
             .then(function(r) {
-                var ct = r.headers.get('content-type') || '';
-                if (ct.indexOf('application/json') !== -1) return r.json();
                 return r.text().then(function(t) {
-                    try { return JSON.parse(t); } catch(e) { throw new Error('Invalid response'); }
+                    var j = {};
+                    try { j = t ? JSON.parse(t) : {}; } catch (e) { j = {}; }
+                    if (j && j.csrf_hash) CSRF_HASH = j.csrf_hash;
+                    if (!r.ok || (j && (j.status === 'error' || j.success === false))) {
+                        throw new Error((j && (j.message || j.error)) || ('Request failed (' + r.status + ')'));
+                    }
+                    return j;
                 });
             })
-            .then(function(j) {
-                if (j && j.csrf_hash) CSRF_HASH = j.csrf_hash;
-                return j;
-            });
+            .finally(function(){ attBusyEnd(); });
     }
+
+    /* ── Live status pill (redesign) ── */
+    function setStatus(mode, text) {
+        if (!elStatus) return;
+        elStatus.classList.toggle('is-loading', mode === 'loading');
+        if (elStatusText) elStatusText.textContent = text || '';
+    }
+
+    /* ── Skeleton tiles shown while a month loads (redesign) ── */
+    function kpiSkeleton() {
+        if (!elKpis) return;
+        var h = '';
+        for (var i = 0; i < 5; i++) {
+            h += '<div class="att-kpi">'
+               +   '<span class="att-sk" style="width:62px;height:10px"></span>'
+               +   '<span class="att-sk" style="width:48px;height:22px;margin-top:12px"></span>'
+               +   '<span class="att-sk" style="width:84px;height:9px;margin-top:9px"></span>'
+               + '</div>';
+        }
+        elKpis.innerHTML = h;
+    }
+
+    /**
+     * Summary KPIs (redesign) — derived entirely from the already-loaded
+     * state.attendance, so it adds ZERO server calls. "Today" resolves to the
+     * current date for the live month, else the last day of a past month.
+     */
+    function renderKpis() {
+        if (!elKpis) return;
+        if (!state.staff.length) { elKpis.innerHTML = ''; return; }
+
+        var now = new Date();
+        var isCurrent = (state.year === now.getFullYear() &&
+                         getMonthIndex(state.month) === now.getMonth());
+        var refDay = isCurrent ? Math.min(now.getDate(), state.daysInMonth) : state.daysInMonth;
+        var di = refDay - 1;
+
+        var presentT = 0, absentT = 0, leaveT = 0, avgSum = 0, avgN = 0;
+        state.staff.forEach(function(s) {
+            var arr = state.attendance[s.id];
+            if (!arr) return;
+            var v = arr[di];
+            if (v === 'P' || v === 'T') presentT++;
+            else if (v === 'A') absentT++;
+            else if (v === 'L') leaveT++;
+
+            var c = { P:0, A:0, L:0, T:0 };
+            arr.forEach(function(x){ if (c[x] !== undefined) c[x]++; });
+            var workable = c.P + c.A + c.L + c.T;
+            if (workable > 0) { avgSum += Math.round((c.P + c.T) / workable * 100); avgN++; }
+        });
+        var avg = avgN ? Math.round(avgSum / avgN) : 0;
+        var head = state.staff.length;
+        var when = isCurrent ? 'today' : (state.month.slice(0,3) + ' ' + refDay);
+
+        var tiles = [
+            { k:'var(--att-primary)', label:'Total staff',     val:head,     sub:'on the roster' },
+            { k:'var(--att-p)',       label:'Present ' + when,  val:presentT, sub:head ? Math.round(presentT/head*100) + '% of roster' : '' },
+            { k:'var(--att-a)',       label:'Absent ' + when,   val:absentT,  sub:absentT ? 'need follow-up' : 'none' },
+            { k:'var(--att-l)',       label:'On leave ' + when, val:leaveT,   sub:leaveT ? 'approved' : 'none' },
+            { k:'var(--att-t)',       label:'Month average',    val:avg, unit:'%', sub:'attendance rate' }
+        ];
+        elKpis.innerHTML = tiles.map(function(t){
+            return '<div class="att-kpi" style="--k:' + t.k + '">'
+                 +   '<div class="att-kpi-label">' + esc(t.label) + '</div>'
+                 +   '<div class="att-kpi-val">' + t.val + (t.unit ? '<small>' + t.unit + '</small>' : '') + '</div>'
+                 +   '<div class="att-kpi-sub">' + esc(t.sub) + '</div>'
+                 + '</div>';
+        }).join('');
+    }
+
+    /* ── Single-scroll fit (redesign) ──
+     * Size the register to fill the remaining viewport so it is the ONE scroll
+     * region — sticky day-header + name column stay pinned — instead of a short
+     * boxed scroller stacked above a second page scrollbar. Measures the grid's
+     * live top offset (adapts to KPIs / toolbar wrapping) rather than a brittle
+     * fixed calc(). Re-runs on resize. */
+    function fitGrid() {
+        if (!elGridWrap || elGridWrap.style.display === 'none') return;
+        var top = elGridWrap.getBoundingClientRect().top;
+        var avail = window.innerHeight - top - 14;   /* leave a little breathing room */
+        elGridWrap.style.maxHeight = Math.max(240, avail) + 'px';
+    }
+    var _fitRaf = null;
+    window.addEventListener('resize', function() {
+        if (_fitRaf) cancelAnimationFrame(_fitRaf);
+        _fitRaf = requestAnimationFrame(fitGrid);
+    });
 
     /* ── Load ── */
     elLoadBtn.addEventListener('click', loadAttendance);
+    // Redesign: month picker drives loading (no required "Load" click) …
+    elMonth.addEventListener('change', loadAttendance);
 
     function loadAttendance() {
         var mon = elMonth.value;
@@ -568,13 +769,21 @@
         elEmpty.style.display = 'none';
         elToolbar.classList.remove('visible');
         elLoading.classList.add('visible');
+        setStatus('loading', 'Loading ' + mon + '…');
+        kpiSkeleton();
+        elLoadBtn.classList.add('is-loading');
+        elLoadBtn.disabled = true;
 
         postData('attendance/fetch_staff', { month: mon })
             .then(function(res) {
                 elLoading.classList.remove('visible');
+                elLoadBtn.classList.remove('is-loading');
+                elLoadBtn.disabled = false;
                 if (!res || res.status === 'error') {
                     showToast(res ? res.message : 'Failed to load data.', 'error');
                     elEmpty.style.display = 'block';
+                    if (elKpis) elKpis.innerHTML = '';
+                    setStatus('', '');
                     return;
                 }
                 state.staff = res.staff || [];
@@ -588,6 +797,8 @@
                 if (state.staff.length === 0) {
                     showToast('No staff found for this month.', 'error');
                     elEmpty.style.display = 'block';
+                    if (elKpis) elKpis.innerHTML = '';
+                    setStatus('', 'No data · ' + mon);
                     return;
                 }
 
@@ -614,14 +825,22 @@
                 if (parseInt(elDayPick.value, 10) > parseInt(elDayPick.max, 10)) elDayPick.value = 1;
 
                 renderGrid();
+                renderKpis();
                 elGridWrap.style.display = 'block';
+                elGridWrap.classList.toggle('att-readonly', !CAN_EDIT);
                 elToolbar.classList.add('visible');
                 updateSaveBtn();
+                setStatus('ready', 'Updated · ' + state.month);
+                fitGrid();   /* size the register to fill the viewport → single scroll */
             })
-            .catch(function() {
+            .catch(function(e) {
                 elLoading.classList.remove('visible');
-                showToast('Network error loading attendance.', 'error');
+                elLoadBtn.classList.remove('is-loading');
+                elLoadBtn.disabled = false;
+                showToast((e && e.message) ? e.message : 'Network error loading attendance.', 'error');
                 elEmpty.style.display = 'block';
+                if (elKpis) elKpis.innerHTML = '';
+                setStatus('', '');
             });
     }
 
@@ -669,8 +888,11 @@
                 if (dayState(day) === 'future') tdCls += ' att-col-future';
                 var dirtyMark = state.dirty.has(s.id) && att[d] !== state.original[s.id].charAt(d) ? ' att-dirty' : '';
                 var clock = v === 'T' ? '<span class="att-clock"><i class="fa fa-clock-o"></i></span>' : '';
+                // Only genuinely editable cells are keyboard-focusable.
+                var editable = CAN_EDIT && !dateLockReason(day);
+                var cellAttrs = editable ? ' tabindex="0" role="button" aria-label="Toggle mark, day ' + day + '"' : '';
                 bHtml += '<td class="' + tdCls + '">';
-                bHtml += '<span class="att-cell' + dirtyMark + '" data-v="' + v + '" data-sid="' + esc(s.id) + '" data-d="' + d + '">';
+                bHtml += '<span class="att-cell' + dirtyMark + '" data-v="' + v + '" data-sid="' + esc(s.id) + '" data-d="' + d + '"' + cellAttrs + '>';
                 bHtml += v + clock + '</span></td>';
             }
             bHtml += '<td class="att-td-summary">' + summaryText(att) + '</td>';
@@ -705,7 +927,25 @@
     }
 
     function updateSaveBtn() {
+        // View-only: Save can never enable, and no "unsaved" affordance shows.
+        if (!CAN_EDIT) {
+            elSaveBtn.disabled = true;
+            if (elDirty) elDirty.style.display = 'none';
+            if (elToolbar) elToolbar.classList.remove('att-has-unsaved');
+            return;
+        }
         elSaveBtn.disabled = state.dirty.size === 0;
+        // Visible unsaved-changes indicator that clears on confirmed save.
+        if (elDirty) {
+            if (state.dirty.size > 0) {
+                if (elDirtyNum) elDirtyNum.textContent = state.dirty.size;
+                elDirty.style.display = 'inline';
+                elToolbar.classList.add('att-has-unsaved');
+            } else {
+                elDirty.style.display = 'none';
+                elToolbar.classList.remove('att-has-unsaved');
+            }
+        }
     }
 
     function markDirty(sid) {
@@ -719,10 +959,14 @@
         updateSaveBtn();
     }
 
-    /* ── Cell Click ── */
-    elBody.addEventListener('click', function(e) {
-        var cell = e.target.closest('.att-cell');
+    /* ── Cell toggle (click + keyboard) ── */
+    function toggleCell(cell) {
         if (!cell) return;
+        // View-only users can read the register but never mutate it.
+        if (!CAN_EDIT) {
+            showToast('View-only access — you can see attendance but can\'t mark or edit it.', 'error');
+            return;
+        }
         var sid = cell.getAttribute('data-sid');
         var d = parseInt(cell.getAttribute('data-d'), 10);
         var day = d + 1;
@@ -736,6 +980,18 @@
         state.attendance[sid][d] = nextMark(curr);
         updateCell(sid, d);
         markDirty(sid);
+    }
+
+    elBody.addEventListener('click', function(e) {
+        toggleCell(e.target.closest('.att-cell'));
+    });
+    // Keyboard-friendly: Enter / Space cycles the focused cell.
+    elBody.addEventListener('keydown', function(e) {
+        if (e.key !== 'Enter' && e.key !== ' ' && e.key !== 'Spacebar') return;
+        var cell = e.target.closest('.att-cell');
+        if (!cell) return;
+        e.preventDefault();
+        toggleCell(cell);
     });
 
     /* ── Double-click Row → Modal ── */
@@ -800,6 +1056,10 @@
     /* ── Bulk Actions ── */
     document.querySelectorAll('[data-bulk]').forEach(function(btn) {
         btn.addEventListener('click', function() {
+            if (!CAN_EDIT) {
+                showToast('View-only access — bulk marking is disabled.', 'error');
+                return;
+            }
             var mark = btn.getAttribute('data-bulk');
             var day = parseInt(elDayPick.value, 10);
             if (day < 1 || day > state.daysInMonth) {
@@ -864,7 +1124,7 @@
         });
 
         elSaveBtn.disabled = true;
-        elSaveBtn.innerHTML = '<i class="fa fa-spinner fa-spin"></i> Saving...';
+        elSaveBtn.classList.add('is-loading');
 
         postData('attendance/save_staff', {
             month: mon,
@@ -872,7 +1132,7 @@
             late: JSON.stringify(lateObj)
         })
         .then(function(res) {
-            elSaveBtn.innerHTML = '<i class="fa fa-save"></i> Save Changes';
+            elSaveBtn.classList.remove('is-loading');
             if (res && res.status === 'success') {
                 var skipped = Array.isArray(res.skipped) ? res.skipped : [];
                 var savedCount = (typeof res.saved === 'number') ? res.saved : 0;
@@ -901,10 +1161,12 @@
                 elSaveBtn.disabled = false;
             }
         })
-        .catch(function() {
-            elSaveBtn.innerHTML = '<i class="fa fa-save"></i> Save Changes';
+        .catch(function(e) {
+            // Fail-closed: server rejected (403/500/status:error) — nothing was
+            // committed to state.original, so dirty marks stay highlighted.
+            elSaveBtn.classList.remove('is-loading');
             elSaveBtn.disabled = false;
-            showToast('Network error while saving.', 'error');
+            showToast((e && e.message) ? e.message : 'Network error while saving.', 'error');
         });
     }
 
@@ -961,6 +1223,7 @@
     }
 
     elSaveBtn.addEventListener('click', function() {
+        if (!CAN_EDIT) return;   // hardened: view-only can never save
         if (state.dirty.size === 0) return;
         var pastEdits = collectPastEdits();
         if (pastEdits.length > 0) {
@@ -1020,6 +1283,14 @@
             e.returnValue = '';
         }
     });
+
+    /* ── Auto-load on arrival (redesign) ──
+     * The month <select> defaults to the current month (server-marked selected),
+     * so the register + KPIs populate immediately — no "Load" click required.
+     * Falls back gracefully: if no month is selectable, nothing fires. */
+    if (elMonth && elMonth.value) {
+        loadAttendance();
+    }
 
 })();
 </script>

@@ -346,11 +346,11 @@ document.getElementById('btnDel').addEventListener('click', function() {
         toast('Deleted');
         load();
     })
-    .catch(function() {
+    .catch(function(e) {
         btn.disabled = false;
         btn.innerHTML = '<i class="fa fa-trash-o"></i> Delete';
         closeDlg();
-        toast('Failed', 1);
+        toast((e && e.message) || 'Failed', 1);
     });
 });
 
@@ -363,9 +363,19 @@ function rpc(method, url, data) {
         for (var k in data) fd.append(k, data[k]);
         opts.body = fd;
     }
-    return fetch(B + url, opts).then(function(r) { return r.json(); }).then(function(r) {
-        if (r.csrf_token) CH = r.csrf_token;
-        return r;
+    return fetch(B + url, opts).then(function(r) {
+        return r.json().catch(function() { return {}; }).then(function(j) {
+            if (j && j.csrf_token) CH = j.csrf_token;
+            // The server is the source of truth: an HTTP error (e.g. 403 permission,
+            // 401 session) or a {status:'error'}/{success:false} body must REJECT so
+            // callers can't show a false "success" for an action the server denied.
+            if (!r.ok || (j && (j.status === 'error' || j.success === false))) {
+                var e = new Error((j && (j.message || j.error)) || ('Request failed (' + r.status + ')'));
+                e.httpStatus = r.status; e.payload = j;
+                throw e;
+            }
+            return j;
+        });
     });
 }
 

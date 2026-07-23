@@ -46,10 +46,18 @@ class Hostel extends MY_Controller
     // ── RBAC helpers ───────────────────────────────────────────────────
     private function _require_manage(): void
     {
+        // Unified RBAC capability path — a Hostel:edit holder (custom/union role)
+        // passes this L3 gate. Level is 'edit' (not 'manage') because this helper
+        // guards BOTH routine writes (save_*, gated 'edit' at the base) and
+        // destructive ops (delete_*, already gated 'manage' at the base call);
+        // using 'manage' here would wrongly block edit-tier operators on saves.
+        if (has_permission('Hostel', 'edit')) return;
         if (!in_array($this->admin_role, self::HST_MANAGE_ROLES, true)) $this->json_error('Access denied.', 403);
     }
     private function _require_view(): void
     {
+        // Unified RBAC capability path — a Hostel:view holder passes this L3 gate.
+        if (has_permission('Hostel', 'view')) return;
         if (!in_array($this->admin_role, self::HST_VIEW_ROLES, true)) $this->json_error('Access denied.', 403);
     }
 
@@ -74,7 +82,7 @@ class Hostel extends MY_Controller
     // ====================================================================
     public function index()
     {
-        $this->_require_role(self::VIEW_ROLES, 'hostel_view');
+        $this->_require_role(self::HST_VIEW_ROLES, 'hostel_view', 'Hostel', 'view');
         $tab = $this->uri->segment(2, 'buildings');
         $data = ['active_tab' => $tab];
         $this->load->view('include/header', $data);
@@ -87,7 +95,7 @@ class Hostel extends MY_Controller
     // ====================================================================
     public function get_buildings()
     {
-        $this->_require_role(self::VIEW_ROLES, 'hostel_view');
+        $this->_require_role(self::HST_VIEW_ROLES, 'hostel_view', 'Hostel', 'view');
         $this->_require_view();
         $rows = $this->firebase->firestoreQuery(self::COL_BUILDINGS,
             [['schoolId', '==', $this->school_name]], 'name', 'ASC');
@@ -102,7 +110,7 @@ class Hostel extends MY_Controller
 
     public function save_building()
     {
-        $this->_require_role(self::MANAGE_ROLES, 'save_building');
+        $this->_require_role(self::HST_MANAGE_ROLES, 'save_building', 'Hostel', 'edit');
         $this->_require_manage();
         $id         = trim($this->input->post('id') ?? '');
         $name       = trim($this->input->post('name') ?? '');
@@ -147,7 +155,7 @@ class Hostel extends MY_Controller
 
     public function delete_building()
     {
-        $this->_require_role(self::MANAGE_ROLES, 'delete_building');
+        $this->_require_role(self::HST_MANAGE_ROLES, 'delete_building', 'Hostel', 'manage');
         $this->_require_manage();
         $id = $this->safe_path_segment(trim($this->input->post('id') ?? ''), 'building_id');
 
@@ -167,7 +175,7 @@ class Hostel extends MY_Controller
     // ====================================================================
     public function get_rooms()
     {
-        $this->_require_role(self::VIEW_ROLES, 'hostel_view');
+        $this->_require_role(self::HST_VIEW_ROLES, 'hostel_view', 'Hostel', 'view');
         $this->_require_view();
         $buildingId = trim($this->input->get('building_id') ?? '');
 
@@ -190,7 +198,7 @@ class Hostel extends MY_Controller
 
     public function save_room()
     {
-        $this->_require_role(self::MANAGE_ROLES, 'save_room');
+        $this->_require_role(self::HST_MANAGE_ROLES, 'save_room', 'Hostel', 'edit');
         $this->_require_manage();
         $id         = trim($this->input->post('id') ?? '');
         $buildingId = $this->safe_path_segment(trim($this->input->post('building_id') ?? ''), 'building_id');
@@ -236,7 +244,7 @@ class Hostel extends MY_Controller
 
     public function delete_room()
     {
-        $this->_require_role(self::MANAGE_ROLES, 'delete_room');
+        $this->_require_role(self::HST_MANAGE_ROLES, 'delete_room', 'Hostel', 'manage');
         $this->_require_manage();
         $id   = $this->safe_path_segment(trim($this->input->post('id') ?? ''), 'room_id');
         $room = $this->fs->getEntity(self::COL_ROOMS, $id);
@@ -252,7 +260,7 @@ class Hostel extends MY_Controller
     // ====================================================================
     public function get_allocations()
     {
-        $this->_require_role(self::VIEW_ROLES, 'hostel_view');
+        $this->_require_role(self::HST_VIEW_ROLES, 'hostel_view', 'Hostel', 'view');
         $this->_require_view();
         $rows = $this->firebase->firestoreQuery(self::COL_ALLOCS,
             [['schoolId', '==', $this->school_name]]);
@@ -267,7 +275,7 @@ class Hostel extends MY_Controller
 
     public function save_allocation()
     {
-        $this->_require_role(self::MANAGE_ROLES, 'save_allocation');
+        $this->_require_role(self::HST_MANAGE_ROLES, 'save_allocation', 'Hostel', 'edit');
         $this->_require_manage();
         $studentId = $this->safe_path_segment(trim($this->input->post('student_id') ?? ''), 'student_id');
         $roomId    = $this->safe_path_segment(trim($this->input->post('room_id') ?? ''), 'room_id');
@@ -368,7 +376,7 @@ class Hostel extends MY_Controller
 
     public function delete_allocation()
     {
-        $this->_require_role(self::MANAGE_ROLES, 'delete_allocation');
+        $this->_require_role(self::HST_MANAGE_ROLES, 'delete_allocation', 'Hostel', 'manage');
         $this->_require_manage();
         $studentId = $this->safe_path_segment(trim($this->input->post('student_id') ?? ''), 'student_id');
 
@@ -411,7 +419,7 @@ class Hostel extends MY_Controller
     // ====================================================================
     public function get_attendance()
     {
-        $this->_require_role(self::VIEW_ROLES, 'hostel_view');
+        $this->_require_role(self::HST_VIEW_ROLES, 'hostel_view', 'Hostel', 'view');
         $this->_require_view();
         $date = trim($this->input->get('date') ?? date('Y-m-d'));
         if (!preg_match('/^\d{4}-\d{2}-\d{2}$/', $date)) $date = date('Y-m-d');
@@ -449,7 +457,7 @@ class Hostel extends MY_Controller
 
     public function save_attendance()
     {
-        $this->_require_role(self::MANAGE_ROLES, 'save_attendance');
+        $this->_require_role(self::HST_MANAGE_ROLES, 'save_attendance', 'Hostel', 'edit');
         $this->_require_manage();
         $date = trim($this->input->post('date') ?? date('Y-m-d'));
         if (!preg_match('/^\d{4}-\d{2}-\d{2}$/', $date)) $this->json_error('Invalid date.');
@@ -485,7 +493,7 @@ class Hostel extends MY_Controller
     // ====================================================================
     public function get_stats()
     {
-        $this->_require_role(self::VIEW_ROLES, 'hostel_view');
+        $this->_require_role(self::HST_VIEW_ROLES, 'hostel_view', 'Hostel', 'view');
         $this->_require_view();
 
         $bRows = $this->firebase->firestoreQuery(self::COL_BUILDINGS,
@@ -539,7 +547,7 @@ class Hostel extends MY_Controller
 
     public function search_students()
     {
-        $this->_require_role(self::VIEW_ROLES, 'hostel_view');
+        $this->_require_role(self::HST_VIEW_ROLES, 'hostel_view', 'Hostel', 'view');
         $this->_require_view();
         $results = $this->operations_accounting->search_students($this->input->get('q') ?? '');
         foreach ($results as &$r) {
