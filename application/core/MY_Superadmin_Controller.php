@@ -141,8 +141,12 @@ class MY_Superadmin_Controller extends CI_Controller
             . "script-src 'self' 'unsafe-inline' https://cdnjs.cloudflare.com https://cdn.jsdelivr.net https://cdn.datatables.net; "
             . "style-src 'self' 'unsafe-inline' https://fonts.googleapis.com https://cdnjs.cloudflare.com https://cdn.jsdelivr.net https://cdn.datatables.net https://api.fontshare.com; "
             . "font-src 'self' https://fonts.gstatic.com https://cdnjs.cloudflare.com https://cdn.fontshare.com; "
-            . "img-src 'self' data: blob: https://*.googleapis.com https://*.firebasestorage.googleapis.com; "
-            . "connect-src 'self' https://*.firebaseio.com https://*.firebasedatabase.app https://cdnjs.cloudflare.com https://cdn.jsdelivr.net; "
+            . "img-src 'self' data: blob: https://*.googleapis.com https://firebasestorage.googleapis.com https://storage.googleapis.com; "
+            // media-src MUST be explicit — see MY_Controller::_send_security_headers().
+            // Omitting it makes <video> fall back to default-src 'self' and every
+            // Firebase Storage video is refused by the browser.
+            . "media-src 'self' data: blob: https://*.googleapis.com https://firebasestorage.googleapis.com https://storage.googleapis.com; "
+            . "connect-src 'self' https://*.firebaseio.com https://*.firebasedatabase.app https://*.googleapis.com https://firebasestorage.googleapis.com https://storage.googleapis.com https://cdnjs.cloudflare.com https://cdn.jsdelivr.net; "
             . "frame-ancestors 'none'; "
             . "base-uri 'self'; "
             . "form-action 'self';";

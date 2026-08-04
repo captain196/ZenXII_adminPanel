@@ -1205,6 +1205,25 @@ class Schools extends MY_Controller
     }
 
     // ── Gallery: upload media to event album ────────────────────────────
+    /**
+     * Receive ONE slice of a gallery media upload.
+     *
+     * Shared implementation lives in MY_Controller (_receive_chunk) so gallery
+     * and stories cannot drift; the endpoint stays here so it keeps the gallery
+     * role gate. See the CHUNKED UPLOAD SUPPORT block in MY_Controller for why
+     * chunking is used instead of raising the PHP ini.
+     */
+    public function uploadMediaChunk()
+    {
+        $this->_require_role(self::ADMIN_ROLES, 'upload_media', 'Events', 'manage');
+        header('Content-Type: application/json');
+
+        [$ok, $msg] = $this->_receive_chunk('gallery');
+        echo json_encode($ok
+            ? ['status' => 'success', 'received' => $msg]
+            : ['status' => 'error', 'message' => $msg]);
+    }
+
     public function uploadMedia()
     {
         $this->_require_role(self::ADMIN_ROLES, 'upload_media', 'Events', 'manage');
@@ -1221,20 +1240,45 @@ class Schools extends MY_Controller
         if (!in_array($eventId, $specialIds)) {
             $eventId = $this->safe_path_segment($eventId, 'event_id');
         }
-        if (!isset($_FILES['file'])) {
-            echo json_encode(['status' => 'error', 'message' => 'No file uploaded']);
-            return;
+        // ── Resolve the file: chunked (default) or single-POST (legacy) ──
+        // Chunked uploads sidestep upload_max_filesize/post_max_size entirely;
+        // see uploadMediaChunk(). Both paths produce the same $_FILES-shaped
+        // array, so everything downstream is identical.
+        $chunkId    = trim($this->input->post('chunk_upload_id') ?? '');
+        $chunkDir   = null;
+        if ($chunkId !== '') {
+            $chunkDir = $this->_chunk_dir($chunkId, 'gallery');
+            $file = $this->_assemble_chunks(
+                $chunkId,
+                'gallery',
+                (string) $this->input->post('file_name'),
+                $this->input->post('total_chunks')
+            );
+            if ($file === null) {
+                echo json_encode(['status' => 'error', 'message' => 'Upload was incomplete — some parts did not arrive. Please try again.']);
+                return;
+            }
+        } else {
+            if (!isset($_FILES['file'])) {
+                echo json_encode(['status' => 'error', 'message' => 'No file uploaded']);
+                return;
+            }
+            $file = $_FILES['file'];
         }
-
-        $file          = $_FILES['file'];
 
         // ── Guard the PHP upload itself (FIX) ────────────────────────
         // A partial/failed upload (over upload_max_filesize, aborted, etc.)
         // leaves a missing/invalid tmp file; surface it before reading size.
         if (!isset($file['error']) || $file['error'] !== UPLOAD_ERR_OK) {
+            $this->_chunk_cleanup($chunkDir);
             echo json_encode(['status' => 'error', 'message' => 'File upload failed or was incomplete. Please try again.']);
             return;
         }
+
+        // Staged parts must never outlive the request, on ANY exit path below
+        // (validation reject, quota reject, Firebase failure, fatal). Without
+        // this a rejected upload would leak up to 100 MB into the staging dir.
+        $this->_chunk_cleanup_on_shutdown($chunkDir);
 
         $fileName      = $file['name'];
         $fileTmpPath   = $file['tmp_name'];
@@ -1254,7 +1298,12 @@ class Schools extends MY_Controller
         // ── Enforce storage limits ──────────────────────────────────
         $limits                 = self::GALLERY_LIMITS;
         $allowedImageExtensions = ['jpg', 'jpeg', 'png', 'webp'];
-        $allowedVideoExtensions = ['mp4', 'mov', 'avi', 'mkv', 'webm'];
+        // Browser-playable containers ONLY. .avi and .mkv were accepted here
+        // before: the upload succeeded, the Firestore row was written and the
+        // tile rendered, but NO browser can ever play them — the media was dead
+        // on arrival. .mov is kept because Chrome plays H.264/AAC .mov fine.
+        // Keep this list in sync with Stories::upload_story (mp4/quicktime/3gpp/webm).
+        $allowedVideoExtensions = ['mp4', 'mov', 'webm'];
         $maxImageSize           = $limits['max_image_size_mb'] * 1024 * 1024;
         $maxVideoSize           = $limits['max_video_size_mb'] * 1024 * 1024;
 
@@ -1263,7 +1312,7 @@ class Schools extends MY_Controller
             return;
         }
         if ($fileType == '2' && (!in_array($fileExtension, $allowedVideoExtensions) || $fileSize > $maxVideoSize)) {
-            echo json_encode(['status' => 'error', 'message' => "Invalid video format or size exceeded (max {$limits['max_video_size_mb']}MB). Allowed: mp4, mov, avi, webm."]);
+            echo json_encode(['status' => 'error', 'message' => "Invalid video format or size exceeded (max {$limits['max_video_size_mb']}MB). Allowed: mp4, mov, webm."]);
             return;
         }
 
@@ -1271,8 +1320,9 @@ class Schools extends MY_Controller
         // Extension + client-sent type are trivially spoofable. Sniff the
         // real MIME from the file bytes via finfo and reject any mismatch.
         $allowedImageMimes = ['image/jpeg', 'image/png', 'image/webp'];
-        $allowedVideoMimes = ['video/mp4', 'video/quicktime', 'video/x-msvideo',
-                              'video/avi', 'video/x-matroska', 'video/webm'];
+        // Mirrors $allowedVideoExtensions — x-msvideo/avi/x-matroska removed
+        // because no browser can decode them (see note above).
+        $allowedVideoMimes = ['video/mp4', 'video/quicktime', 'video/webm'];
         $realMime = '';
         if (function_exists('finfo_open')) {
             $finfo = finfo_open(FILEINFO_MIME_TYPE);
@@ -1368,6 +1418,26 @@ class Schools extends MY_Controller
                 $this->firebase->uploadFile($thumbLocal, $thumbStoragePath);
                 $mediaData['thumbnail'] = $this->firebase->getDownloadUrl($thumbStoragePath);
                 @unlink($thumbLocal);
+            } else {
+                // Poster extraction failed. This used to pass silently and write
+                // thumbnail='' / duration='0:00', so every video on the server
+                // showed a blank tile with no trace of why. Overwhelmingly this
+                // means ffmpeg is not installed (or shell_exec is disabled):
+                //   sudo apt-get install -y ffmpeg
+                // Video_poster_backfill can repair rows written while it was
+                // missing. The upload itself still succeeds by design.
+                $mediaData['thumbnail'] = '';
+                log_message('error',
+                    'Gallery video poster extraction FAILED (thumbnail will be empty). '
+                    . 'ffmpeg=' . $ffmpeg . ' ffprobe=' . $ffprobe
+                    . ' shell_exec_disabled=' . (function_exists('shell_exec') ? 'no' : 'YES')
+                    . ' ffmpeg_resolved=' . (@is_executable($ffmpeg) ? 'yes' : 'no/unknown')
+                    . ' media_id=' . $mediaId . ' school=' . $schoolId);
+            }
+            if ($durationSecs <= 0) {
+                log_message('error',
+                    'Gallery video duration probe returned nothing (duration will be 0:00). '
+                    . 'Same likely cause as the poster failure: ffprobe missing. media_id=' . $mediaId);
             }
         }
 

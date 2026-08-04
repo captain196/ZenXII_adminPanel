@@ -226,7 +226,9 @@ service firebase.storage {
                    && request.auth.token.school_id == schoolId
                    && !(request.auth.token.role in
                         ['Student','student','Parent','parent','Guardian','guardian'])
-                   && request.resource.size < 50 * 1024 * 1024;
+                   // `<=`, not `<` — every other block in this file uses `<=`,
+                   // so a file of exactly 50 MiB was rejected here alone.
+                   && request.resource.size <= 50 * 1024 * 1024;
     }
 
     // ─── L7: STUDENTS (Sis.php:1601 lowercase variant) ──────────────────

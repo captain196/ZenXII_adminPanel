@@ -610,6 +610,90 @@ function extractFileName(url) {
     } catch (e) { return 'Unknown'; }
 }
 
+/* ── Chunked upload ──────────────────────────────────────────────────
+ * 4 MB slices: comfortably under a stock post_max_size of 8M while keeping
+ * the request count low (a 25 MB video = 7 requests). Sequential, because
+ * the server concatenates parts by index and we want backpressure rather
+ * than N parallel requests fighting for the same connection.
+ */
+var CHUNK_SIZE = 4 * 1024 * 1024;
+
+function randomUploadId() {
+    // 32 hex chars — the server validates this shape strictly before using it
+    // in a path, so it can never escape the temp dir.
+    var b = new Uint8Array(16);
+    (window.crypto || window.msCrypto).getRandomValues(b);
+    return Array.from(b).map(function (x) {
+        return ('0' + x.toString(16)).slice(-2);
+    }).join('');
+}
+
+function uploadInChunks(file, type, onProgress) {
+    var uploadId = randomUploadId();
+    var totalChunks = Math.max(1, Math.ceil(file.size / CHUNK_SIZE));
+
+    function sendChunk(index) {
+        if (index >= totalChunks) return Promise.resolve();
+        var start = index * CHUNK_SIZE;
+        var fd = new FormData();
+        fd.append('chunk', file.slice(start, start + CHUNK_SIZE), 'part');
+        fd.append('upload_id', uploadId);
+        fd.append('chunk_index', String(index));
+        fd.append('total_chunks', String(totalChunks));
+        fd.append(CSRF_NAME, CSRF_HASH);
+
+        if (onProgress && totalChunks > 1) {
+            onProgress(' (' + Math.round((index / totalChunks) * 100) + '%)');
+        }
+
+        return fetch(BASE + '/schools/uploadMediaChunk', { method: 'POST', body: fd })
+            .then(function (r) {
+                // fetch does NOT reject on 4xx/5xx — check explicitly or a denied
+                // chunk reads as success and we finalize a truncated file.
+                if (!r.ok) throw new Error('chunk ' + index + ' HTTP ' + r.status);
+                return r.json();
+            })
+            .then(function (d) {
+                if (!d || d.status !== 'success') {
+                    throw new Error((d && d.message) || 'chunk ' + index + ' rejected');
+                }
+                return sendChunk(index + 1);
+            });
+    }
+
+    return sendChunk(0).then(function () {
+        if (onProgress) onProgress(' (finishing…)');
+        var fd = new FormData();
+        fd.append('chunk_upload_id', uploadId);
+        fd.append('total_chunks', String(totalChunks));
+        fd.append('file_name', file.name);
+        fd.append('type', type);
+        fd.append('event_id', SG.currentAlbum.event_id);
+        fd.append(CSRF_NAME, CSRF_HASH);
+        return fetch(BASE + '/schools/uploadMedia', { method: 'POST', body: fd })
+            .then(function (r) {
+                if (!r.ok) throw new Error('finalize HTTP ' + r.status);
+                return r.json();
+            });
+    });
+}
+
+// Escape a value before interpolating it into an HTML *attribute*. Media URLs
+// come from Firestore and were previously dropped into src="..." raw, so a
+// crafted galleryMedia.url could break out of the attribute (stored XSS).
+function escAttr(s) {
+    return String(s == null ? '' : s)
+        .replace(/&/g, '&amp;').replace(/"/g, '&quot;').replace(/'/g, '&#39;')
+        .replace(/</g, '&lt;').replace(/>/g, '&gt;');
+}
+
+// Only ever hand http(s) URLs to src=. Blocks javascript:/data: payloads and
+// gs:// paths (which no browser can fetch anyway).
+function safeMediaUrl(u) {
+    var s = String(u == null ? '' : u);
+    return /^https?:\/\//i.test(s) ? s : '';
+}
+
 function formatDate(ts) {
     if (!ts) return '';
     var d = typeof ts === 'number' ? new Date(ts * 1000) : new Date(ts);
@@ -878,15 +962,20 @@ function renderGrid(items, gridId, type) {
 
         var mediaHtml = '';
         if (type === 'image') {
-            mediaHtml = '<img loading="lazy" src="' + media.url + '" class="sg-item-media" alt="' + name + '" onclick="openLightbox(\'' + safeUrl + '\',\'image\')">';
+            mediaHtml = '<img loading="lazy" src="' + escAttr(safeMediaUrl(media.url)) + '" class="sg-item-media" alt="' + escAttr(name) + '" onclick="openLightbox(\'' + safeUrl + '\',\'image\')">';
         } else {
             var duration = media.duration || '';
             // Poster: use a real thumbnail when present; otherwise show the
             // video's first frame via a <video> seeked to #t=0.1. An <img> can't
             // render an .mp4 (that left a blank tile behind the play button).
+            // NOTE: the fallback only works because media-src is now allowed in
+            // the CSP (MY_Controller::_send_security_headers); it was silently
+            // refused before. If `thumbnail` is empty here for every video, check
+            // that ffmpeg is installed on the server — Schools::uploadMedia writes
+            // thumbnail='' without error when the shell_exec poster grab fails.
             var poster = media.thumbnail
-                ? '<img loading="lazy" src="' + media.thumbnail + '" alt="' + name + '">'
-                : '<video src="' + media.url + '#t=0.1" muted preload="metadata" playsinline></video>';
+                ? '<img loading="lazy" src="' + escAttr(safeMediaUrl(media.thumbnail)) + '" alt="' + escAttr(name) + '">'
+                : '<video src="' + escAttr(safeMediaUrl(media.url)) + '#t=0.1" muted preload="metadata" playsinline></video>';
             mediaHtml = '<div class="sg-item-video-wrap" onclick="openLightbox(\'' + safeUrl + '\',\'video\')">'
                 + poster
                 + '<div class="sg-play-btn"><i class="fa fa-play-circle"></i></div>'
@@ -1076,17 +1165,29 @@ function openLightbox(url, type) {
     var inner = document.getElementById('sgLightboxInner');
     var btnHtml = '<button class="sg-lightbox-close" onclick="closeLightbox()">&times;</button>';
 
+    var safe = escAttr(safeMediaUrl(url));
+
     if (type === 'image') {
-        inner.innerHTML = btnHtml + '<img src="' + url + '" alt="Preview">';
+        inner.innerHTML = btnHtml + '<img src="' + safe + '" alt="Preview">';
     } else {
-        // Derive the MIME from the real extension — hardcoding video/mp4 made
-        // legitimately-uploaded .mov/.webm/.mkv/.avi files fail to play.
-        var mimeMap = { mp4:'video/mp4', webm:'video/webm', mov:'video/quicktime',
-                        mkv:'video/x-matroska', avi:'video/x-msvideo', ogg:'video/ogg', ogv:'video/ogg' };
-        var m = (url.split('?')[0].match(/\.([a-z0-9]+)$/i) || [,''])[1].toLowerCase();
-        var vType = mimeMap[m] || 'video/mp4';
-        inner.innerHTML = btnHtml + '<video controls autoplay style="max-width:90vw;max-height:85vh;border-radius:8px;background:#000;">' +
-            '<source src="' + url + '" type="' + vType + '">Your browser does not support video.</video>';
+        // Do NOT set type= on the source. A <source> carrying an explicit MIME is
+        // skipped outright when canPlayType() returns "" — and Chrome/Firefox
+        // return "" for video/quicktime, video/x-matroska and video/x-msvideo.
+        // That meant a perfectly playable H.264 .mov was never even attempted.
+        // Setting src on <video> directly lets the browser sniff the container.
+        inner.innerHTML = btnHtml +
+            '<video controls autoplay playsinline src="' + safe + '" ' +
+            'style="max-width:90vw;max-height:85vh;border-radius:8px;background:#000;">' +
+            'Your browser does not support video.</video>';
+        var v = inner.querySelector('video');
+        if (v) {
+            v.addEventListener('error', function () {
+                inner.innerHTML = btnHtml +
+                    '<div style="color:#fff;padding:32px;text-align:center;max-width:420px">' +
+                    "This video couldn't be played.<br><small>The format may be unsupported " +
+                    'by your browser (.avi and .mkv never play), or the file may be missing.</small></div>';
+            });
+        }
     }
 
     lb.classList.add('open');
@@ -1136,8 +1237,17 @@ function handleFiles(files) {
     Array.from(files).forEach(function(f) {
         var ext = f.name.split('.').pop().toLowerCase();
         var isImg = ['jpg','jpeg','png','webp'].includes(ext);
-        var isVid = ['mp4','mov','avi','mkv','webm'].includes(ext);
-        if (!isImg && !isVid) { showToast('Skipped ' + f.name + ' — unsupported format.', 'error'); return; }
+        // Mirrors Schools::uploadMedia $allowedVideoExtensions. avi/mkv are NOT
+        // here on purpose — no browser can play them, so accepting the upload
+        // just produces a permanently unplayable tile.
+        var isVid = ['mp4','mov','webm'].includes(ext);
+        if (!isImg && !isVid) {
+            var deadFormat = ['avi','mkv','flv','wmv','m4v','mpg','mpeg'].includes(ext);
+            showToast(deadFormat
+                ? 'Skipped ' + f.name + ' — ' + ext.toUpperCase() + ' cannot be played in a browser. Convert to MP4 first.'
+                : 'Skipped ' + f.name + ' — unsupported format.', 'error');
+            return;
+        }
         if (isImg && f.size > maxImgMB*1024*1024) { showToast(f.name + ' exceeds ' + maxImgMB + 'MB limit.', 'error'); return; }
         if (isVid && f.size > maxVidMB*1024*1024) { showToast(f.name + ' exceeds ' + maxVidMB + 'MB limit.', 'error'); return; }
         validFiles.push(f);
@@ -1176,26 +1286,30 @@ function handleFiles(files) {
 
         var file = validFiles[i];
         var type = file.type.startsWith('image') ? '1' : '2';
-        var fd = new FormData();
-        fd.append('file', file);
-        fd.append('type', type);
-        fd.append('event_id', SG.currentAlbum.event_id);
-        fd.append(CSRF_NAME, CSRF_HASH);
 
-        statusEl.textContent = 'Uploading ' + (i+1) + ' of ' + total + ': ' + file.name;
         statusEl.style.color = 'var(--sg-teal)';
 
-        fetch(BASE + '/schools/uploadMedia', { method: 'POST', body: fd })
-            .then(function(r) { return r.json(); })
-            .then(function(d) {
-                if (d.status !== 'success') { failed++; showToast('Failed: ' + file.name, 'error'); }
-            })
-            .catch(function() { failed++; })
-            .finally(function() {
-                done++;
-                bar.style.width = Math.round((done / total) * 100) + '%';
-                next(i + 1);
-            });
+        // Upload in slices so no single request ever approaches the server's
+        // post_max_size. Prod runs mod_php at a stock 8M while the gallery
+        // allows 25 MB videos — an over-limit POST makes PHP drop $_POST AND
+        // $_FILES, so CI's CSRF check 403s and the upload silently does nothing.
+        // Slicing makes this independent of server ini values (which we cannot
+        // deploy anyway — the prod .htaccess is skip-worktree).
+        uploadInChunks(file, type, function (label) {
+            statusEl.textContent = 'Uploading ' + (i + 1) + ' of ' + total + ': ' + file.name + label;
+        }).then(function (d) {
+            if (!d || d.status !== 'success') {
+                failed++;
+                showToast('Failed: ' + file.name + (d && d.message ? ' — ' + d.message : ''), 'error');
+            }
+        }).catch(function () {
+            failed++;
+            showToast('Failed: ' + file.name, 'error');
+        }).finally(function () {
+            done++;
+            bar.style.width = Math.round((done / total) * 100) + '%';
+            next(i + 1);
+        });
     }
 
     next(0);

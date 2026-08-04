@@ -23,8 +23,16 @@ class Common_model extends CI_Model
             $this->firebaseStorage = $CI->firebase->getStorageBucket();
         } else {
             // Fallback: initialize independently (e.g. CLI context without MY_Controller)
-            $serviceAccountPath = __DIR__ . '/../config/graders-1c047-firebase-adminsdk-z1a10-ca28a54060.json';
-            $databaseUri = 'https://graders-1c047-default-rtdb.asia-southeast1.firebasedatabase.app/';
+            //
+            // These pointed at graders-1c047 — a DIFFERENT Firebase project, whose
+            // service-account file does not even exist in application/config, and
+            // whose bucket has no security rules deployed (storage.rules classifies
+            // it as deprecated). Any CLI/cron path reaching this branch either
+            // fataled on the missing key file or read and wrote the wrong project
+            // entirely. Kept in sync with Firebase.php:46-48, the single source of
+            // truth for project credentials.
+            $serviceAccountPath = __DIR__ . '/../config/graderadmin-firebase-adminsdk-a1sml-2b5f1862a7.json';
+            $databaseUri = 'https://graderadmin-default-rtdb.firebaseio.com/';
 
             $firebase = (new \Kreait\Firebase\Factory)
                 ->withServiceAccount($serviceAccountPath)
@@ -40,7 +48,9 @@ class Common_model extends CI_Model
         $storage = new StorageClient([
             'keyFilePath' => $serviceAccountPath
         ]);
-        $this->firebaseStorage = $storage->bucket('graders-1c047.appspot.com');
+        // Must match Firebase.php:116 — all three client systems (admin panel,
+        // Teacher app, Parent app) read and write graderadmin.appspot.com.
+        $this->firebaseStorage = $storage->bucket('graderadmin.appspot.com');
     }
 
 

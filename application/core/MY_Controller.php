@@ -81,6 +81,186 @@ class MY_Controller extends CI_Controller
     }
 
     // ─────────────────────────────────────────────────────────────────────
+    // CHUNKED UPLOAD SUPPORT
+    //
+    // Production runs mod_php with a stock `upload_max_filesize=2M` /
+    // `post_max_size=8M`, while gallery advertises 25 MB videos and stories
+    // 50 MB. A single over-limit POST makes PHP discard BOTH $_POST and
+    // $_FILES — the CSRF token lives in $_POST, so CI's global CSRF check
+    // fires first and returns a bare 403: the upload silently does nothing,
+    // with no error and nothing in the logs.
+    //
+    // Raising the ini was rejected as a fix: .user.ini is ignored by mod_php,
+    // and the prod .htaccess is skip-worktree so a php_value block would never
+    // deploy. Instead the CLIENT slices the file so no single request ever
+    // approaches post_max_size, making uploads independent of server config.
+    //
+    // These helpers are shared so Schools (gallery) and Stories cannot drift.
+    // The public endpoints stay in each controller so each keeps its OWN role
+    // gate — deliberately NOT a public method here, which would expose an
+    // upload endpoint on every controller extending MY_Controller.
+    // ─────────────────────────────────────────────────────────────────────
+
+    /** Absolute ceiling for one staged upload — disk-fill backstop. */
+    protected const CHUNK_MAX_TOTAL_BYTES = 100 * 1024 * 1024;
+    /** Max parts per upload (4 MB client slices × 64 = 256 MB addressable). */
+    protected const CHUNK_MAX_PARTS = 64;
+
+    /**
+     * Staging dir for one in-flight chunked upload.
+     *
+     * $uploadId is validated to 32 hex chars so it can never contain a path
+     * separator or traversal sequence, and the directory is namespaced by the
+     * authenticated admin so two admins can never collide or read each other's
+     * parts. Returns null when the id is malformed.
+     */
+    protected function _chunk_dir(string $uploadId, string $scope): ?string
+    {
+        if (!preg_match('/^[a-f0-9]{32}$/', $uploadId)) {
+            return null;
+        }
+        $owner = preg_replace('/[^A-Za-z0-9_-]/', '', (string) ($this->admin_id ?? 'anon'));
+        $scope = preg_replace('/[^A-Za-z0-9_-]/', '', $scope);
+        return rtrim($this->_upload_staging_dir(), "/\\")
+            . DIRECTORY_SEPARATOR . 'chunk_' . $scope . '_' . $owner . '_' . $uploadId;
+    }
+
+    /** Remove a staging dir and everything in it. Best-effort. */
+    protected function _chunk_cleanup(?string $dir): void
+    {
+        if (!$dir || !is_dir($dir)) {
+            return;
+        }
+        foreach ((glob($dir . DIRECTORY_SEPARATOR . '*') ?: []) as $f) {
+            @unlink($f);
+        }
+        @rmdir($dir);
+    }
+
+    /**
+     * Receive and stage ONE slice. Returns [ok(bool), message(string)].
+     * Callers echo the JSON themselves so each module keeps its own envelope.
+     *
+     * Parts are written to their own index-named file rather than appended to
+     * a single stream, so an out-of-order or retried slice cannot corrupt the
+     * result and a lost slice is detectable at assembly time.
+     */
+    protected function _receive_chunk(string $scope, string $fileField = 'chunk'): array
+    {
+        $uploadId = trim((string) $this->input->post('upload_id'));
+        $index    = $this->input->post('chunk_index');
+        $total    = $this->input->post('total_chunks');
+
+        $dir = $this->_chunk_dir($uploadId, $scope);
+        if ($dir === null) {
+            return [false, 'Invalid upload id.'];
+        }
+        if (!ctype_digit((string) $index) || !ctype_digit((string) $total)) {
+            return [false, 'Invalid chunk index.'];
+        }
+        $index = (int) $index;
+        $total = (int) $total;
+        if ($total < 1 || $total > static::CHUNK_MAX_PARTS || $index < 0 || $index >= $total) {
+            return [false, 'Chunk index out of range.'];
+        }
+        if (!isset($_FILES[$fileField]) || ($_FILES[$fileField]['error'] ?? 1) !== UPLOAD_ERR_OK) {
+            // Most likely the slice itself exceeded upload_max_filesize; say so
+            // rather than emitting a generic "upload failed".
+            return [false, 'Chunk upload failed. The chunk may exceed the server limit.'];
+        }
+        if (!is_dir($dir) && !@mkdir($dir, 0700, true)) {
+            return [false, 'Could not stage the upload.'];
+        }
+
+        $staged = 0;
+        foreach ((glob($dir . DIRECTORY_SEPARATOR . 'part_*') ?: []) as $f) {
+            $staged += (int) @filesize($f);
+        }
+        if ($staged + (int) $_FILES[$fileField]['size'] > static::CHUNK_MAX_TOTAL_BYTES) {
+            $this->_chunk_cleanup($dir);
+            return [false, 'Upload exceeds the maximum allowed size.'];
+        }
+
+        $partPath = $dir . DIRECTORY_SEPARATOR . sprintf('part_%03d', $index);
+        if (!@move_uploaded_file($_FILES[$fileField]['tmp_name'], $partPath)) {
+            return [false, 'Could not write the chunk.'];
+        }
+        return [true, (string) $index];
+    }
+
+    /**
+     * Concatenate staged parts into one file and return a $_FILES-shaped array,
+     * so existing upload pipelines (extension gate, finfo MIME sniff, size cap,
+     * quota, poster extraction, Firestore sync, rollback) run unchanged.
+     *
+     * Returns null on any inconsistency — a missing slice is refused rather than
+     * assembled into a truncated file that would fail an opaque MIME check later.
+     */
+    protected function _assemble_chunks(string $uploadId, string $scope, string $fileName, $expectedParts): ?array
+    {
+        $dir = $this->_chunk_dir($uploadId, $scope);
+        if ($dir === null || !is_dir($dir)) {
+            return null;
+        }
+        $parts = glob($dir . DIRECTORY_SEPARATOR . 'part_*') ?: [];
+        sort($parts, SORT_STRING);   // zero-padded index names → correct order
+        if (!ctype_digit((string) $expectedParts) || count($parts) !== (int) $expectedParts) {
+            $this->_chunk_cleanup($dir);
+            return null;
+        }
+
+        $assembled = $dir . DIRECTORY_SEPARATOR . 'assembled';
+        $out = @fopen($assembled, 'wb');
+        if ($out === false) {
+            $this->_chunk_cleanup($dir);
+            return null;
+        }
+        foreach ($parts as $p) {
+            $in = @fopen($p, 'rb');
+            if ($in === false) {
+                fclose($out);
+                $this->_chunk_cleanup($dir);
+                return null;
+            }
+            stream_copy_to_stream($in, $out);
+            fclose($in);
+        }
+        fclose($out);
+
+        return [
+            'name'     => $fileName,
+            'type'     => '',              // never trusted; finfo sniffs the real MIME
+            'tmp_name' => $assembled,
+            'error'    => UPLOAD_ERR_OK,
+            'size'     => (int) filesize($assembled),
+            // Marker so callers can relax an is_uploaded_file() check, which is
+            // false for an assembled file by definition. The path is server-built
+            // from a hex-validated id inside our own staging dir, never client input.
+            '_zx_assembled' => true,
+        ];
+    }
+
+    /**
+     * Guarantee staged parts never outlive the request, on ANY exit path
+     * (validation reject, quota reject, remote failure, fatal error).
+     */
+    protected function _chunk_cleanup_on_shutdown(?string $dir): void
+    {
+        if ($dir === null) {
+            return;
+        }
+        register_shutdown_function(function () use ($dir) {
+            if (!is_dir($dir)) {
+                return;
+            }
+            foreach ((glob($dir . DIRECTORY_SEPARATOR . '*') ?: []) as $f) {
+                @unlink($f);
+            }
+            @rmdir($dir);
+        });
+    }
+
+    // ─────────────────────────────────────────────────────────────────────
     public function __construct()
     {
         parent::__construct();
@@ -606,8 +786,13 @@ class MY_Controller extends CI_Controller
             . "script-src 'self' 'unsafe-inline' https://cdnjs.cloudflare.com https://cdn.jsdelivr.net https://cdn.datatables.net; "
             . "style-src 'self' 'unsafe-inline' https://fonts.googleapis.com https://cdnjs.cloudflare.com https://cdn.jsdelivr.net https://cdn.datatables.net https://api.fontshare.com; "
             . "font-src 'self' https://fonts.gstatic.com https://cdnjs.cloudflare.com https://cdn.fontshare.com; "
-            . "img-src 'self' data: blob: https://*.googleapis.com https://*.firebasestorage.googleapis.com; "
-            . "connect-src 'self' https://*.firebaseio.com https://*.firebasedatabase.app https://cdnjs.cloudflare.com https://cdn.jsdelivr.net; "
+            . "img-src 'self' data: blob: https://*.googleapis.com https://firebasestorage.googleapis.com https://storage.googleapis.com; "
+            // media-src MUST be explicit: without it <video>/<audio> fall back to
+            // default-src 'self', which blocks every Firebase Storage video with
+            // "Refused to load media from ...". Gallery/Stories videos live on
+            // firebasestorage.googleapis.com, so they render a blank tile otherwise.
+            . "media-src 'self' data: blob: https://*.googleapis.com https://firebasestorage.googleapis.com https://storage.googleapis.com; "
+            . "connect-src 'self' https://*.firebaseio.com https://*.firebasedatabase.app https://*.googleapis.com https://firebasestorage.googleapis.com https://storage.googleapis.com https://cdnjs.cloudflare.com https://cdn.jsdelivr.net; "
             . ($embed ? "frame-ancestors 'self'; " : "frame-ancestors 'none'; ")
             . "base-uri 'self'; "
             . "form-action 'self';";

@@ -228,6 +228,11 @@ class Stories extends MY_Controller
             'teacherProfilePic' => $authorPic,
             'mediaUrl'          => (string) ($d['mediaUrl'] ?? ''),
             'mediaType'         => $type,
+            // Poster frame for video stories; "" for images and for videos
+            // uploaded before posters were generated (callers fall back to the
+            // <video> first-frame trick). Written by BOTH the panel and the
+            // Teacher app under the same key.
+            'thumbnailUrl'      => (string) ($d['thumbnailUrl'] ?? ''),
             'caption'           => (string) ($d['caption'] ?? ''),
             'createdAt'         => $createdMs,
             'expiresAt'         => $expiryMs,
@@ -789,6 +794,26 @@ class Stories extends MY_Controller
     //  Storage path:  schools/{schoolId}/stories/{adminId}/{epochMillis}.{ext}
     //  Firestore doc: stories/{schoolId}_admin_{adminId}_{epochMillis}
     // ══════════════════════════════════════════════════════════════════
+    /**
+     * Receive ONE slice of a story media upload.
+     *
+     * Shared implementation lives in MY_Controller (_receive_chunk); the
+     * endpoint stays here so it keeps the stories moderation gate. Stories
+     * allow 50 MB video against a stock post_max_size of 8M, so a single POST
+     * could never carry a real clip — see MY_Controller's CHUNKED UPLOAD
+     * SUPPORT block for the full rationale.
+     */
+    public function upload_story_chunk()
+    {
+        $this->_require_moderate();
+        $this->output->set_content_type('application/json');
+
+        [$ok, $msg] = $this->_receive_chunk('stories');
+        $this->output->set_output(json_encode($ok
+            ? ['status' => 'success', 'received' => $msg]
+            : ['status' => 'error', 'message' => $msg]));
+    }
+
     public function upload_story()
     {
         $this->_require_moderate();
@@ -835,10 +860,31 @@ class Stories extends MY_Controller
         }
 
         // ── 2. Validate file ──────────────────────────────────────────
-        if (!isset($_FILES['media']) || $_FILES['media']['error'] !== UPLOAD_ERR_OK) {
-            $this->json_error('Media file is required.');
+        // Resolve from staged chunks (default) or a single POST (legacy client).
+        // Both produce the same $_FILES-shaped array so everything below is
+        // identical either way. See MY_Controller CHUNKED UPLOAD SUPPORT.
+        $chunkId  = trim((string) $this->input->post('chunk_upload_id'));
+        $chunkDir = null;
+        if ($chunkId !== '') {
+            $chunkDir = $this->_chunk_dir($chunkId, 'stories');
+            // Staged parts must not outlive the request on ANY exit path — every
+            // json_error() below is a hard exit.
+            $this->_chunk_cleanup_on_shutdown($chunkDir);
+            $file = $this->_assemble_chunks(
+                $chunkId,
+                'stories',
+                (string) $this->input->post('file_name'),
+                $this->input->post('total_chunks')
+            );
+            if ($file === null) {
+                $this->json_error('Upload was incomplete — some parts did not arrive. Please try again.');
+            }
+        } else {
+            if (!isset($_FILES['media']) || $_FILES['media']['error'] !== UPLOAD_ERR_OK) {
+                $this->json_error('Media file is required.');
+            }
+            $file = $_FILES['media'];
         }
-        $file = $_FILES['media'];
         $size = (int) ($file['size'] ?? 0);
         $maxBytes = $type === 'image' ? self::MAX_IMAGE_BYTES : self::MAX_VIDEO_BYTES;
         if ($size <= 0 || $size > $maxBytes) {
@@ -856,7 +902,12 @@ class Stories extends MY_Controller
             'video' => ['video/mp4', 'video/quicktime', 'video/3gpp', 'video/webm'],
         ];
         $tmp = (string) ($file['tmp_name'] ?? '');
-        if ($tmp === '' || !is_uploaded_file($tmp)) {
+        // is_uploaded_file() is false for an assembled chunk file by definition,
+        // so it only applies to the single-POST path. The assembled path is not
+        // weaker: its tmp_name is built server-side from a hex-validated upload
+        // id inside our own staging dir and is never client-supplied.
+        $isAssembled = !empty($file['_zx_assembled']);
+        if ($tmp === '' || (!$isAssembled && !is_uploaded_file($tmp)) || !is_file($tmp)) {
             $this->json_error('Invalid upload.');
         }
         $mime = '';
@@ -930,6 +981,41 @@ class Stories extends MY_Controller
             $this->json_error('Storage upload succeeded but download URL was empty.');
         }
 
+        // ── 4b. Video poster frame ────────────────────────────────────
+        // Stories previously stored NO poster, so both the admin grid and the
+        // detail view fell back to rendering the <video> element itself as the
+        // thumbnail — which downloads metadata for every story on the page (and
+        // was blocked outright before media-src was added to the CSP). The
+        // Teacher app already writes `thumbnailUrl`; this brings the panel to
+        // the same contract so both apps can show a still while buffering.
+        // Best-effort: a poster failure must never fail the upload.
+        $thumbnailUrl = '';
+        if ($type === 'video') {
+            $ffmpeg     = defined('FFMPEG_PATH') ? FFMPEG_PATH : 'ffmpeg';
+            $thumbName  = "thumb_{$ts}.jpg";
+            $thumbLocal = rtrim($this->_upload_staging_dir(), "/\\") . DIRECTORY_SEPARATOR . $thumbName;
+            $thumbCmd   = "\"$ffmpeg\" -i " . escapeshellarg($file['tmp_name'])
+                        . " -ss 00:00:01.000 -vframes 1 -q:v 2 " . escapeshellarg($thumbLocal);
+            shell_exec($thumbCmd);
+
+            if (is_file($thumbLocal) && filesize($thumbLocal) > 0) {
+                $thumbRemote = "schools/{$schoolId}/stories/{$adminId}/{$thumbName}";
+                if ($this->firebase->uploadFile($thumbLocal, $thumbRemote)) {
+                    $thumbnailUrl = $this->firebase->getDownloadUrl($thumbRemote);
+                }
+                @unlink($thumbLocal);
+            } else {
+                // Silent failure here is what left gallery videos posterless for
+                // months — log it so the cause (missing ffmpeg / disabled
+                // shell_exec) is visible instead of guessed at.
+                log_message('error',
+                    'Story video poster extraction FAILED (thumbnailUrl will be empty). '
+                    . 'ffmpeg=' . $ffmpeg
+                    . ' shell_exec_available=' . (function_exists('shell_exec') ? 'yes' : 'NO')
+                    . ' story_ts=' . $ts . ' school=' . $schoolId);
+            }
+        }
+
         // ── 5. Write canonical Firestore doc ──────────────────────────
         $storyId   = "{$schoolId}_admin_{$adminId}_{$ts}";
         $expiresAt = $ts + (self::DEFAULT_EXPIRY_HOURS * 3600 * 1000);
@@ -951,6 +1037,10 @@ class Stories extends MY_Controller
             // Content
             'mediaUrl'        => $downloadUrl,
             'type'            => $type,
+            // Poster frame for video ("" for images and when extraction failed).
+            // Matches the Teacher app's field name — note stories use
+            // `thumbnailUrl` (camel) while galleryMedia uses `thumbnail`.
+            'thumbnailUrl'    => $thumbnailUrl,
             'caption'         => $caption,
             'priority'        => $priority,
             // Lifecycle — canonical expiry = expiresAtTs (Firestore Timestamp).

@@ -1,0 +1,19 @@
+[
+  {
+    "origin": [
+      "https://zenxii.com",
+      "https://www.zenxii.com",
+      "http://localhost:8080"
+    ],
+    "method": ["GET", "HEAD"],
+    "maxAgeSeconds": 3600,
+    "responseHeader": [
+      "Content-Type",
+      "Content-Length",
+      "Content-Range",
+      "Accept-Ranges",
+      "Range",
+      "Cache-Control"
+    ]
+  }
+]

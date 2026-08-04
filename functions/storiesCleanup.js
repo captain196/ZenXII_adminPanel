@@ -91,9 +91,15 @@ exports.onStoryDeleted = onDocumentDeleted('stories/{storyId}', async (event) =>
   const data = event.data?.data() || {};
   const mediaUrl = data.mediaUrl || '';
   const path = extractStoragePath(mediaUrl);
+  // Video stories upload their poster as a SEPARATE Storage object
+  // (stories/{schoolCode}/{teacherId}/thumb_*.jpg). Only mediaUrl was deleted
+  // here, so every expired or deleted video story leaked its poster into the
+  // bucket permanently. Best-effort, exactly like the media delete.
+  const thumbPath = extractStoragePath(data.thumbnailUrl || '');
 
-  const [mediaDeleted, viewersDeleted, reactionsDeleted] = await Promise.all([
+  const [mediaDeleted, thumbDeleted, viewersDeleted, reactionsDeleted] = await Promise.all([
     deleteStorageMedia(path),
+    thumbPath ? deleteStorageMedia(thumbPath) : Promise.resolve(false),
     deleteEngagementSubcollection(storyId, 'viewers').catch((e) => {
       logger.warn(`viewers cleanup failed for ${storyId}: ${e.message}`);
       return 0;
@@ -106,6 +112,7 @@ exports.onStoryDeleted = onDocumentDeleted('stories/{storyId}', async (event) =>
 
   logger.info(
     `[story-cleanup] ${storyId} → storage=${mediaDeleted ? 'ok' : 'skip'}, ` +
+    `thumb=${thumbDeleted ? 'ok' : 'skip'}, ` +
     `viewers=${viewersDeleted}, reactions=${reactionsDeleted}`
   );
 });

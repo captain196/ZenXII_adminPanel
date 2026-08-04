@@ -45,3 +45,6 @@ Thumbs.db
 # Runtime cache + logs — regenerated live, must never be committed (unblocks prod FF).
 application/cache/
 application/logs/*.log
+
+# PHPUnit run cache (local test artifact)
+.phpunit.result.cache

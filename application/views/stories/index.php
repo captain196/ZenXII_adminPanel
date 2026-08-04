@@ -567,14 +567,6 @@ ST.submitUpload = function() {
         if (!audience.length) { alert('Pick at least one class, or choose “Whole school”.'); return; }
     }
 
-    var fd = new FormData();
-    fd.append(ST.CSRF.name, ST.CSRF.token);
-    fd.append('media',    file);
-    fd.append('type',     type);
-    fd.append('priority', priEl.value);
-    fd.append('caption',  capEl.value.trim());
-    fd.append('audience', JSON.stringify(audience));
-
     var btn   = document.getElementById('asSubmitBtn');
     var wrap  = document.getElementById('asProgressWrap');
     var bar   = document.getElementById('asProgressBar');
@@ -586,49 +578,115 @@ ST.submitUpload = function() {
     bar.classList.remove('as-indeterminate');
     if (label) label.textContent = 'Uploading';
 
-    // Use XMLHttpRequest for upload progress (fetch doesn't expose it)
-    var xhr = new XMLHttpRequest();
-    xhr.open('POST', ST.BASE + 'stories/upload_story', true);
-    xhr.upload.onprogress = function(e) {
-        if (e.lengthComputable) {
-            var p = Math.round((e.loaded / e.total) * 100);
-            bar.style.width = p + '%';
-            pct.textContent = p;
-            // Bytes are in the server's hands — it now uploads to Storage +
-            // writes Firestore (several seconds). Switch to an indeterminate
-            // "Publishing…" state so the user isn't staring at a frozen 100%.
-            if (p >= 100 && label) {
-                label.textContent = 'Publishing…';
-                bar.classList.add('as-indeterminate');
-            }
-        }
-    };
-    xhr.onload = function() {
+    // Upload in slices so no single request approaches the server's
+    // post_max_size. Stories allow 50 MB video against a stock 8M limit, so a
+    // single POST could never carry a real clip: PHP would drop $_POST AND
+    // $_FILES, CI's CSRF check would 403, and the user would see nothing happen.
+    // Mirrors the gallery uploader; server side is Stories::upload_story_chunk.
+    var CHUNK_SIZE = 4 * 1024 * 1024;
+
+    function randomUploadId() {
+        // 32 hex chars — server validates this shape strictly before using it
+        // in a path, so it can never escape the staging dir.
+        var b = new Uint8Array(16);
+        (window.crypto || window.msCrypto).getRandomValues(b);
+        return Array.prototype.map.call(b, function (x) {
+            return ('0' + x.toString(16)).slice(-2);
+        }).join('');
+    }
+
+    var uploadId    = randomUploadId();
+    var totalChunks = Math.max(1, Math.ceil(file.size / CHUNK_SIZE));
+
+    function fail(msg) {
         btn.disabled = false;
         $('#rxLoadbar').removeClass('on');
         bar.classList.remove('as-indeterminate');
-        var resp;
-        try { resp = JSON.parse(xhr.responseText); } catch (_) {
-            alert('Unexpected server response');
-            return;
-        }
-        // Rotate CSRF (CI refreshes on every POST)
-        if (resp && resp.csrf_hash) ST.CSRF.token = resp.csrf_hash;
-        if (resp && resp[ST.CSRF.name]) ST.CSRF.token = resp[ST.CSRF.name];
-        if (xhr.status >= 200 && xhr.status < 300 && resp.status === 'success') {
-            ST.closeUpload();
-            if (typeof ST.refresh === 'function') ST.refresh();
-            alert(resp.message || 'Story published.');
-        } else {
-            alert((resp && resp.message) || 'Upload failed.');
-        }
-    };
-    xhr.onerror = function() {
-        btn.disabled = false;
-        $('#rxLoadbar').removeClass('on');
-        alert('Network error during upload.');
-    };
-    xhr.send(fd);
+        alert(msg || 'Upload failed.');
+    }
+
+    // One slice via XHR so real byte-level progress is preserved; overall
+    // progress aggregates completed slices plus the in-flight one.
+    function sendChunk(index, sentBytes) {
+        if (index >= totalChunks) return finalize();
+
+        var start = index * CHUNK_SIZE;
+        var blob  = file.slice(start, start + CHUNK_SIZE);
+        var fd = new FormData();
+        fd.append(ST.CSRF.name, ST.CSRF.token);
+        fd.append('chunk',        blob, 'part');
+        fd.append('upload_id',    uploadId);
+        fd.append('chunk_index',  String(index));
+        fd.append('total_chunks', String(totalChunks));
+
+        var xhr = new XMLHttpRequest();
+        xhr.open('POST', ST.BASE + 'stories/upload_story_chunk', true);
+        xhr.upload.onprogress = function (e) {
+            if (!e.lengthComputable || !file.size) return;
+            var p = Math.min(100, Math.round(((sentBytes + e.loaded) / file.size) * 100));
+            bar.style.width = p + '%';
+            pct.textContent = p;
+        };
+        xhr.onload = function () {
+            var resp;
+            try { resp = JSON.parse(xhr.responseText); } catch (_) { resp = null; }
+            // A non-2xx never rejects an XHR onload — check explicitly, or a
+            // denied chunk reads as success and we finalize a truncated file.
+            if (xhr.status < 200 || xhr.status >= 300 || !resp || resp.status !== 'success') {
+                return fail((resp && resp.message) || 'Upload failed on part ' + (index + 1) + '.');
+            }
+            sendChunk(index + 1, sentBytes + blob.size);
+        };
+        xhr.onerror = function () { fail('Network error during upload.'); };
+        xhr.send(fd);
+    }
+
+    // All slices staged — ask the server to assemble and publish. Bytes are now
+    // in the server's hands (Storage upload + Firestore write take seconds), so
+    // switch to an indeterminate "Publishing…" state rather than a frozen 100%.
+    function finalize() {
+        bar.style.width = '100%';
+        pct.textContent = 100;
+        if (label) label.textContent = 'Publishing…';
+        bar.classList.add('as-indeterminate');
+
+        var fd = new FormData();
+        fd.append(ST.CSRF.name, ST.CSRF.token);
+        fd.append('chunk_upload_id', uploadId);
+        fd.append('total_chunks',    String(totalChunks));
+        fd.append('file_name',       file.name);
+        fd.append('type',            type);
+        fd.append('priority',        priEl.value);
+        fd.append('caption',         capEl.value.trim());
+        fd.append('audience',        JSON.stringify(audience));
+
+        var xhr = new XMLHttpRequest();
+        xhr.open('POST', ST.BASE + 'stories/upload_story', true);
+        xhr.onload = function () {
+            btn.disabled = false;
+            $('#rxLoadbar').removeClass('on');
+            bar.classList.remove('as-indeterminate');
+            var resp;
+            try { resp = JSON.parse(xhr.responseText); } catch (_) {
+                alert('Unexpected server response');
+                return;
+            }
+            // Rotate CSRF if the server sent a new token.
+            if (resp && resp.csrf_hash) ST.CSRF.token = resp.csrf_hash;
+            if (resp && resp[ST.CSRF.name]) ST.CSRF.token = resp[ST.CSRF.name];
+            if (xhr.status >= 200 && xhr.status < 300 && resp.status === 'success') {
+                ST.closeUpload();
+                if (typeof ST.refresh === 'function') ST.refresh();
+                alert(resp.message || 'Story published.');
+            } else {
+                alert((resp && resp.message) || 'Upload failed.');
+            }
+        };
+        xhr.onerror = function () { fail('Network error while publishing.'); };
+        xhr.send(fd);
+    }
+
+    sendChunk(0, 0);
 };
 
 // ── Helpers ─────────────────────────────────────────────────────
@@ -919,11 +977,19 @@ ST.loadStories = function() {
             var thumb = '';
             if (mediaSrc) {
                 if (s.mediaType === 'video') {
-                    // `#t=0.1` seeks to the first frame so the browser paints it
-                    // as the poster — `preload="metadata"` alone shows a BLANK box.
-                    // Plus a centered play overlay so it reads as a video.
-                    thumb = '<video src="' + ST.escAttr(mediaSrc) + '#t=0.1" muted preload="metadata" playsinline></video>'
-                          + '<span class="st-play-badge"><i class="fa fa-play"></i></span>';
+                    // Prefer the stored poster: a real <img> costs one small
+                    // request, whereas the <video> fallback below downloads
+                    // metadata for EVERY story on the page just to paint a
+                    // frame. The fallback stays for videos uploaded before
+                    // posters were generated (thumbnailUrl === '').
+                    var posterSrc = ST.safeUrl(s.thumbnailUrl);
+                    thumb = (posterSrc
+                        ? '<img loading="lazy" src="' + ST.escAttr(posterSrc) + '" alt="Story"'
+                          + ' onerror="this.parentNode.innerHTML=\'<i class=\\\'fa fa-video-camera st-media-icon\\\'></i>\'">'
+                        // `#t=0.1` seeks to the first frame so the browser paints
+                        // it — `preload="metadata"` alone shows a BLANK box.
+                        : '<video src="' + ST.escAttr(mediaSrc) + '#t=0.1" muted preload="metadata" playsinline></video>')
+                        + '<span class="st-play-badge"><i class="fa fa-play"></i></span>';
                 } else {
                     thumb = '<img loading="lazy" src="' + ST.escAttr(mediaSrc) + '" alt="Story" onerror="this.parentNode.innerHTML=\'<i class=\\\'fa fa-image st-media-icon\\\'></i>\'">';
                 }
@@ -1000,9 +1066,13 @@ ST.openDetail = function(teacherId, storyId) {
         var mediaHtml = '';
         if (mediaSrc) {
             if (s.mediaType === 'video') {
-                // `#t=0.1` paints the first frame so the player isn't a black box
-                // before play; `controls` gives the play/seek affordance.
-                mediaHtml = '<video src="' + ST.escAttr(mediaSrc) + '#t=0.1" controls preload="metadata" playsinline style="max-width:100%;max-height:360px"></video>';
+                // Use the stored poster when present — it paints instantly and
+                // avoids fetching video metadata just to show a still frame.
+                // `#t=0.1` remains the fallback for posterless legacy videos.
+                var dPoster = ST.safeUrl(s.thumbnailUrl);
+                mediaHtml = '<video src="' + ST.escAttr(mediaSrc) + (dPoster ? '' : '#t=0.1') + '"'
+                    + (dPoster ? ' poster="' + ST.escAttr(dPoster) + '"' : '')
+                    + ' controls preload="metadata" playsinline style="max-width:100%;max-height:360px"></video>';
             } else {
                 mediaHtml = '<img src="' + ST.escAttr(mediaSrc) + '" alt="Story" style="max-width:100%;max-height:360px">';
             }
