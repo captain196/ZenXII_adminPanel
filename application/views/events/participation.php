@@ -137,7 +137,10 @@ EV.ajax = function(url,data,cb,method){$.ajax({url:EV.BASE+url,type:method||'GET
     error:function(xhr){ EV.toast(EV.errMsg(xhr),'error'); }});};
 EV.btnBusy = function(el,on){ if(!el)return; if(on){el.classList.add('is-loading');el.disabled=true;} else {el.classList.remove('is-loading');el.disabled=false;} };
 EV.skel = function(tbodyId,cols,rows){ var h='',i,j; rows=rows||5; for(i=0;i<rows;i++){ h+='<tr>'; for(j=0;j<cols;j++){ h+='<td><div class="ev-skel ev-skel-row"></div></td>'; } h+='</tr>'; } var b=document.getElementById(tbodyId); if(b)b.innerHTML=h; };
-$(document).ajaxStart(function(){$('#evLoadbar').addClass('on')}).ajaxStop(function(){$('#evLoadbar').removeClass('on')});
+// NOTE: no top-level $ here — jQuery loads in footer.php, AFTER this view.
+// A parse-time $ threw and aborted this block BEFORE `var PART = {}` below,
+// leaving PART undefined so the event dropdown never populated and every row
+// button was dead. Loadbar binding moved into DOMContentLoaded at the end.
 
 var PART = {};
 PART.eventId = '';
@@ -336,6 +339,7 @@ PART.remove = function(pid, btn) {
 };
 
 document.addEventListener('DOMContentLoaded', function() {
+    $(document).ajaxStart(function(){$('#evLoadbar').addClass('on')}).ajaxStop(function(){$('#evLoadbar').removeClass('on')});
     PART.loadEvents();
     PART._bindSearch();
     document.getElementById('pEventSelect').addEventListener('change', PART.onEventChange);

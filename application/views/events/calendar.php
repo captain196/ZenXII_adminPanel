@@ -117,7 +117,14 @@ EV.BASE = '<?= base_url() ?>';
 EV.toast = function(msg,type){var t=document.getElementById('evToast');t.textContent=msg;t.className='ev-toast '+(type||'success');setTimeout(function(){t.className='ev-toast';},3000);};
 EV.esc = function(s){var d=document.createElement('span');d.textContent=s||'';return d.innerHTML;};
 EV.escJs = function(s){return String(s||'').replace(/\\/g,'\\\\').replace(/'/g,"\\'").replace(/"/g,'\\"').replace(/</g,'\\x3c').replace(/>/g,'\\x3e');};
-EV.ajax = function(url,data,cb,method){$.ajax({url:EV.BASE+url,type:method||'GET',data:data,dataType:'json',success:function(r){if(r.status==='success'){if(cb)cb(r);}else EV.toast(r.message||'Error','error');},error:function(xhr){var m='Error';try{m=JSON.parse(xhr.responseText).message||m;}catch(e){}EV.toast(m,'error');}});};
+EV.errMsg = function(xhr){ return (xhr && xhr.responseJSON && xhr.responseJSON.message) || (function(){try{return JSON.parse(xhr.responseText).message;}catch(e){return null;}})() || 'Request failed'; };
+// Fail-closed: only invoke the callback after the server confirms success.
+// The old version deref'd r.status with no null guard, so a null/non-JSON body
+// threw a TypeError, and a {status:'error'} body could still reach the callback.
+// Mirrors the hardened EV.ajax in events.php / participation.php.
+EV.ajax = function(url,data,cb,method){$.ajax({url:EV.BASE+url,type:method||'GET',data:data,dataType:'json',
+    success:function(r){ if(!r || r.status==='error' || r.success===false || r.status!=='success'){ EV.toast((r&&r.message)||'Request failed','error'); return; } if(cb)cb(r); },
+    error:function(xhr){ EV.toast(EV.errMsg(xhr),'error'); }});};
 
 var CAL = {};
 CAL.month = new Date().getMonth() + 1;
@@ -239,6 +246,11 @@ CAL.showDetail = function(id) {
 };
 CAL.closeDetail = function(){ document.getElementById('evtDetailModal').classList.remove('show'); };
 
-$(document).ajaxStart(function(){ $('#evLoadbar').addClass('on'); }).ajaxStop(function(){ $('#evLoadbar').removeClass('on'); });
-document.addEventListener('DOMContentLoaded', function(){ CAL.load(); });
+// See events/index.php — $ is not defined at parse time (jQuery loads in the
+// footer, after this view), so this must run inside DOMContentLoaded or the
+// throw kills the rest of the block and the calendar never loads.
+document.addEventListener('DOMContentLoaded', function(){
+    $(document).ajaxStart(function(){ $('#evLoadbar').addClass('on'); }).ajaxStop(function(){ $('#evLoadbar').removeClass('on'); });
+    CAL.load();
+});
 </script>

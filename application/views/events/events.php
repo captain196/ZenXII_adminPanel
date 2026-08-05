@@ -148,7 +148,11 @@ EV.ajax = function(url,data,cb,method){$.ajax({url:EV.BASE+url,type:method||'GET
 EV.btnBusy = function(el,on){ if(!el)return; if(on){el.classList.add('is-loading');el.disabled=true;} else {el.classList.remove('is-loading');el.disabled=false;} };
 // Skeleton shimmer rows while a list loads.
 EV.skel = function(tbodyId,cols,rows){ var h='',i,j; rows=rows||5; for(i=0;i<rows;i++){ h+='<tr>'; for(j=0;j<cols;j++){ h+='<td><div class="ev-skel ev-skel-row"></div></td>'; } h+='</tr>'; } var b=document.getElementById(tbodyId); if(b)b.innerHTML=h; };
-$(document).ajaxStart(function(){$('#evLoadbar').addClass('on')}).ajaxStop(function(){$('#evLoadbar').removeClass('on')});
+// NOTE: no top-level $ here. jQuery loads in footer.php, AFTER this view, so a
+// parse-time $ threw "ReferenceError: $ is not defined" — which aborted the rest
+// of this block BEFORE `var EVT = {}` below. EVT was therefore undefined, so
+// EVT.load() never ran and every onclick="EVT.*" handler threw. The loadbar
+// binding now lives in the DOMContentLoaded handler at the end of this file.
 
 var EVT = {};
 EVT.data = [];
@@ -308,5 +312,8 @@ EVT.circular = function(id) {
     window.open(EV.BASE + 'events/circular/' + encodeURIComponent(id), '_blank');
 };
 
-document.addEventListener('DOMContentLoaded', function(){ EVT.load(); });
+document.addEventListener('DOMContentLoaded', function(){
+    $(document).ajaxStart(function(){$('#evLoadbar').addClass('on')}).ajaxStop(function(){$('#evLoadbar').removeClass('on')});
+    EVT.load();
+});
 </script>

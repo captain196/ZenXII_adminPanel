@@ -100,7 +100,14 @@ EV.BASE = '<?= base_url() ?>';
 EV.toast = function(msg,type){var t=document.getElementById('evToast');t.textContent=msg;t.className='ev-toast '+(type||'success');setTimeout(function(){t.className='ev-toast';},3000);};
 EV.esc = function(s){var d=document.createElement('span');d.textContent=s||'';return d.innerHTML;};
 EV.escJs = function(s){return String(s||'').replace(/\\/g,'\\\\').replace(/'/g,"\\'").replace(/"/g,'\\"').replace(/</g,'\\x3c').replace(/>/g,'\\x3e');};
-EV.ajax = function(url,data,cb,method){$.ajax({url:EV.BASE+url,type:method||'GET',data:data,dataType:'json',success:function(r){if(r.status==='success'){if(cb)cb(r);}else EV.toast(r.message||'Error','error');},error:function(xhr){var m='Error';try{m=JSON.parse(xhr.responseText).message||m;}catch(e){}EV.toast(m,'error');}});};
+EV.errMsg = function(xhr){ return (xhr && xhr.responseJSON && xhr.responseJSON.message) || (function(){try{return JSON.parse(xhr.responseText).message;}catch(e){return null;}})() || 'Request failed'; };
+// Fail-closed: only invoke the callback after the server confirms success.
+// The old version deref'd r.status with no null guard, so a null/non-JSON body
+// threw a TypeError, and a {status:'error'} body could still reach the callback.
+// Mirrors the hardened EV.ajax in events.php / participation.php.
+EV.ajax = function(url,data,cb,method){$.ajax({url:EV.BASE+url,type:method||'GET',data:data,dataType:'json',
+    success:function(r){ if(!r || r.status==='error' || r.success===false || r.status!=='success'){ EV.toast((r&&r.message)||'Request failed','error'); return; } if(cb)cb(r); },
+    error:function(xhr){ EV.toast(EV.errMsg(xhr),'error'); }});};
 
 var DASH = {};
 DASH.catBadge = function(c){ var m={event:'ev-badge-blue',cultural:'ev-badge-purple',sports:'ev-badge-amber'}; return m[c]||'ev-badge-blue'; };
@@ -186,6 +193,14 @@ DASH.load = function() {
     });
 };
 
-$(document).ajaxStart(function(){ $('#evLoadbar').addClass('on'); }).ajaxStop(function(){ $('#evLoadbar').removeClass('on'); });
-document.addEventListener('DOMContentLoaded', function(){ DASH.load(); });
+// jQuery is loaded by footer.php, which runs AFTER this view. Calling $ at
+// parse time here threw "ReferenceError: $ is not defined", which killed the
+// rest of this script block — including the DOMContentLoaded handler below —
+// so the dashboard never loaded and the skeletons never cleared.
+// DOMContentLoaded fires after the (non-deferred) footer script, so $ is safe
+// inside the callback. Same pattern header.php uses for its $.ajaxSetup.
+document.addEventListener('DOMContentLoaded', function(){
+    $(document).ajaxStart(function(){ $('#evLoadbar').addClass('on'); }).ajaxStop(function(){ $('#evLoadbar').removeClass('on'); });
+    DASH.load();
+});
 </script>
