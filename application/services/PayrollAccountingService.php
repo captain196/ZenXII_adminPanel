@@ -729,6 +729,21 @@ final class PayrollAccountingService
 
         $counterAcct = self::TRANSPORT_PAYMENT_METHOD_TO_ACCT[$paymentMethod] ?? '1000';
 
+        // FIN-5: pre-validate the two accounts READ-ONLY before entering the
+        // engine. Operations_accounting::create_journal calls json_error()+exit
+        // on a missing/inactive/group account — an UNCATCHABLE halt that would
+        // kill the whole web request and leave the expense stuck 'pending'. By
+        // checking here (transport's own posting path) a bad account degrades to
+        // a normal null return → the seam records 'pending' and the reconciler
+        // retries, exactly like any other transient posting failure. Mirrors the
+        // engine's own active + non-group predicate.
+        foreach ([$ledgerCode, $counterAcct] as $code) {
+            if (!$this->_accountPostable((string) $code)) {
+                $this->_log("TRANSPORT_EXPENSE_REJECTED reason='account_not_postable' account={$code} source_doc={$sourceDocId}");
+                return null;
+            }
+        }
+
         $lines = [
             $this->_line(
                 $ledgerCode, $total, 0,
@@ -802,6 +817,27 @@ final class PayrollAccountingService
         $ctx = http_build_query(array_merge($logCtx, ['source' => $source, 'sourceRef' => $sourceRef]));
         $this->_log("PAYROLL_COMMITTED entryId={$entryId} {$ctx}");
         return (string) $entryId;
+    }
+
+    /**
+     * FIN-5 — read-only "is this account postable?" check used to pre-validate a
+     * transport expense's ledger + counter accounts before the engine call, so a
+     * missing/inactive/group account never reaches create_journal's uncatchable
+     * json_error()+exit. Chart of Accounts lives at chartOfAccounts/{schoolId}_{code}.
+     */
+    private function _accountPostable(string $code): bool
+    {
+        if ($code === '') { return false; }
+        try {
+            $acct = $this->firebase->firestoreGet('chartOfAccounts', "{$this->schoolFs}_{$code}");
+        } catch (\Throwable $e) {
+            // A read failure is treated as "cannot confirm postable" → pending +
+            // retry, never a halt.
+            return false;
+        }
+        return is_array($acct)
+            && (string) ($acct['status'] ?? '') === 'active'
+            && empty($acct['is_group']);
     }
 
     private function _opsAcct()
