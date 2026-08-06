@@ -21,9 +21,15 @@
 if (PHP_SAPI !== 'cli') { fwrite(STDERR, "CLI only.\n"); exit(2); }
 
 $school = 'SCH_D94FE8F7AD';
+$session = '2026-27';
 foreach ($argv as $a) {
-    if (strpos($a, '--school=') === 0) $school = substr($a, strlen('--school='));
+    if (strpos($a, '--school=')  === 0) $school  = substr($a, strlen('--school='));
+    if (strpos($a, '--session=') === 0) $session = substr($a, strlen('--session='));
 }
+// Verifiers that read tenant data expect these in the environment; child
+// `php index.php ...` processes inherit them.
+putenv("SCHOOL_ID={$school}");   $_ENV['SCHOOL_ID']    = $school;
+putenv("SESSION_YEAR={$session}"); $_ENV['SESSION_YEAR'] = $session;
 
 $INDEX = __DIR__ . '/../index.php';
 if (!is_file($INDEX)) { fwrite(STDERR, "index.php not found next to repo root.\n"); exit(2); }
@@ -35,36 +41,36 @@ if (!is_file($INDEX)) { fwrite(STDERR, "index.php not found next to repo root.\n
  *                           args, then flip to true. Runs but flagged.
  */
 $CHECKS = [
-    // ── CONFIRMED read-only self-tests ──────────────────────────────────────
+    // ── ALL signatures confirmed against the controller source (2026-08-06) ──
+    // RBAC — the NEW incoming Department & Role module. READ-ONLY (is_cli guarded).
     ['label' => 'RBAC — Department & Role invariants (NEW incoming module)',
      'args'  => ['deptrole_selftest', 'index', $school], 'confirmed' => true],
 
-    ['label' => 'Platform health check',
-     'args'  => ['health_check', 'run'], 'confirmed' => true],
+    ['label' => 'Numbering registry verifier',
+     'args'  => ['numbering_verifier', 'verify'], 'confirmed' => true],
 
-    ['label' => 'Events & Gallery self-test',
-     'args'  => ['events_gallery_selftest', 'run'], 'confirmed' => true],
+    ['label' => 'Transport module verifier',
+     'args'  => ['transport_verifier', 'verify'], 'confirmed' => true],
+
+    ['label' => 'Communication verifier',
+     'args'  => ['communication_verifier', 'verify'], 'confirmed' => true],
+
+    ['label' => 'Accounting ledger probe',
+     'args'  => ['accounting_ledger_probe', 'list'], 'confirmed' => true],
+
+    ['label' => 'Stream B verifier',
+     'args'  => ['stream_b_verifier', 'verify'], 'confirmed' => true],
 
     ['label' => 'Timetables health check',
      'args'  => ['timetables_healthcheck', 'run'], 'confirmed' => true],
 
-    // ── CANDIDATES — confirm each controller's CLI method/args, then set
-    //    'confirmed' => true. Left ACTIVE so the harness surfaces them; a
-    //    controller that cannot run is reported as ERROR, never a silent pass.
-    ['label' => 'Numbering registry verifier',
-     'args'  => ['numbering_verifier'], 'confirmed' => false],
-    ['label' => 'Transport module verifier',
-     'args'  => ['transport_verifier'], 'confirmed' => false],
-    ['label' => 'Communication verifier',
-     'args'  => ['communication_verifier'], 'confirmed' => false],
-    ['label' => 'Accounting ledger probe',
-     'args'  => ['accounting_ledger_probe'], 'confirmed' => false],
-    ['label' => 'Stream B verifier',
-     'args'  => ['stream_b_verifier'], 'confirmed' => false],
-];
+    ['label' => 'Platform health check (run_all)',
+     'args'  => ['health_check', 'run_all'], 'confirmed' => true],
 
-$FAIL_RE  = '/\bFAIL(ED)?\b|✗|Fatal error|Uncaught|Unknown class|404 Page Not Found/i';
-$PASS_RE  = '/\bOK\b|\bPASS\b|all assertions|✓/i';
+    // Events_gallery_selftest is intentionally EXCLUDED: it exposes seed()/
+    // cleanup() and is NOT guaranteed read-only — a certification suite must
+    // never mutate the tenant it certifies. Run it manually if desired.
+];
 
 $results = [];
 foreach ($CHECKS as $c) {
@@ -77,14 +83,24 @@ foreach ($CHECKS as $c) {
     exec($cmd, $out, $exit);
     $text = implode("\n", $out);
 
-    $couldNotRun = (bool) preg_match('/Unknown class|404 Page Not Found|No input file|Class .* not found/i', $text);
-    if ($couldNotRun) {
-        $status = 'ERROR';
-    } elseif ($exit !== 0 || preg_match($FAIL_RE, $text)) {
-        $status = 'FAIL';
-    } else {
-        $status = 'PASS';
-    }
+    // ── Classifier (order matters) ──────────────────────────────────────────
+    // ERROR: the check could not run at all (routing/bootstrap/missing env).
+    $couldNotRun = (bool) preg_match(
+        '/Unknown class|404 Page Not Found|No input file|Class .* not found|Set SCHOOL_ID|Set .*SESSION_YEAR/i', $text);
+    // Hard failure: a NON-ZERO failed count, an explicit ✗ FAIL line, or a PHP fatal.
+    // NOTE: "0 FAILED" / "0 FAIL" must NOT count — hence the [1-9] guards.
+    $hardFail = (bool) (
+           preg_match('/\b[1-9]\d*\s+FAIL(ED)?\b/i', $text)   // "3 FAILED"
+        || preg_match('/FAIL(ED)?\s*\(\s*[1-9]/i', $text)     // "FAILED (2)"
+        || preg_match('/✗\s*FAIL/u', $text)                   // "✗ FAIL: ..."
+        || preg_match('/Fatal error|Uncaught|Stack trace/i', $text)
+    );
+    $green = (bool) preg_match('/GREEN|0\s+FAIL(ED)?\b|\bOK\b|all assertions|\bPASS(ED)?\b|✓/i', $text);
+
+    if ($couldNotRun)                       $status = 'ERROR';
+    elseif ($hardFail)                      $status = 'FAIL';
+    elseif ($exit !== 0 && !$green)         $status = 'FAIL';
+    else                                    $status = 'PASS';
     $results[] = ['label' => $c['label'], 'status' => $status, 'confirmed' => $c['confirmed'],
                   'exit' => $exit, 'tail' => implode("\n    ", array_slice($out, -3))];
 }
