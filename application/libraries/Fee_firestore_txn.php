@@ -1491,7 +1491,14 @@ class Fee_firestore_txn
                 $d = $r['data'] ?? [];
                 if (!is_array($d)) continue;
                 if (($d['status'] ?? '') === 'reversed') continue;
-                $id = $d['id'] ?? '';
+                // FEE-ENV: the docId lives at the schoolWhere ENVELOPE level
+                // (the row id = "{schoolId}_{session}_{receiptKey}"), NOT in the
+                // data dict — allocation docs store no id field there. Reading it
+                // from the data dict was always empty → every row skipped → []
+                // returned → the R.6 stale-allocation guard never fired → a
+                // refund could reverse a superseded allocation and corrupt a
+                // newer receipt. Read the envelope id, then fall back.
+                $id = (string) ($r['id'] ?? $d['id'] ?? '');
                 if ($id === '') continue;
                 $d['_docId'] = $id;
                 $out[] = $d;

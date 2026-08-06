@@ -365,30 +365,70 @@ class Accounting_firestore_sync
     public function nextCounter(string $type): int
     {
         if (!$this->ready || $type === '') return 0;
-        $docId = "{$this->schoolCode}_{$this->session}_{$type}";
-        for ($attempt = 0; $attempt < 3; $attempt++) {
+        $ptrId = "{$this->schoolCode}_{$this->session}_{$type}";
+
+        // ATOMIC allocation via per-value claim docs (Phase 3, 2026-07-14).
+        //
+        // The former read→+1→set→verify was a non-atomic read-modify-write:
+        // two concurrent callers could read the same value, both write
+        // value+1, then both verify-read the same final value and each
+        // conclude it won → DUPLICATE voucher numbers on a fee-day burst.
+        //
+        // This mirrors the proven claim-doc CAS in
+        // Firestore_service::nextSchoolCounter: each candidate value is
+        // claimed by CREATING a unique doc `{ptr}_{n}` via firestoreCreate
+        // (atomic create-if-absent; returns false on 409), so only ONE
+        // caller can ever own a given number. The pointer doc is a
+        // fast-skip HINT (not authoritative) advanced after a successful
+        // claim. Existing pointer values are honoured — allocation starts
+        // at pointer+1 — so voucher sequences continue without a reset and
+        // without re-issuing already-used numbers. Same collection, same
+        // doc-id scheme; the only new docs are the small `_{n}` claim
+        // markers (read only by this method's create attempts).
+        $base = 0;
+        try {
+            $cur  = $this->firebase->firestoreGet(self::COL_COUNTERS, $ptrId);
+            $base = is_array($cur) ? (int) ($cur['value'] ?? 0) : 0;
+        } catch (\Exception $_) { $base = 0; }
+        if ($base < 0) $base = 0;
+
+        // Generous budget absorbs pointer lag when many writers race and the
+        // hint trails the true high-water mark.
+        $MAX_PROBE = 50;
+        for ($i = 1; $i <= $MAX_PROBE; $i++) {
+            $candidate = $base + $i;
+            $claimId   = "{$ptrId}_{$candidate}";
+
+            $won = false;
             try {
-                $cur   = $this->firebase->firestoreGet(self::COL_COUNTERS, $docId);
-                $curV  = is_array($cur) ? (int) ($cur['value'] ?? 0) : 0;
-                $next  = $curV + 1;
-                $ok = $this->firebase->firestoreSet(self::COL_COUNTERS, $docId, [
+                $won = (bool) $this->firebase->firestoreCreate(self::COL_COUNTERS, $claimId, [
                     'schoolId'  => $this->schoolCode,
                     'session'   => $this->session,
                     'type'      => $type,
-                    'value'     => $next,
+                    'kind'      => 'claim',
+                    'value'     => $candidate,
+                    'claimedAt' => date('c'),
+                ]);
+            } catch (\Exception $_) { $won = false; }
+
+            if (!$won) continue; // 409 — number already claimed; probe next
+
+            // Won $candidate. Advance the pointer hint (best-effort: the
+            // claim doc, not the pointer, is the source of truth — a failed
+            // hint advance only costs a few extra 409 probes next time).
+            try {
+                $this->firebase->firestoreSet(self::COL_COUNTERS, $ptrId, [
+                    'schoolId'  => $this->schoolCode,
+                    'session'   => $this->session,
+                    'type'      => $type,
+                    'value'     => $candidate,
                     'updatedAt' => date('c'),
                 ]);
-                if (!$ok) { usleep(50000 * ($attempt + 1)); continue; }
-                $verify = $this->firebase->firestoreGet(self::COL_COUNTERS, $docId);
-                if (is_array($verify) && (int) ($verify['value'] ?? 0) === $next) {
-                    return $next;
-                }
-                usleep(50000 * ($attempt + 1));
-            } catch (\Exception $_) {
-                usleep(50000 * ($attempt + 1));
-            }
+            } catch (\Exception $_) { /* hint advance failed — still correct */ }
+
+            return $candidate;
         }
-        return 0;
+        return 0; // exhausted — same voucher_no=0 failure signal as before
     }
 
     /**

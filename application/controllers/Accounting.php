@@ -45,6 +45,7 @@ class Accounting extends MY_Controller
     private $_ledgerCache = null;
     private $_balCache    = null;
     private $_ieCache     = null;
+    private $_bkCache     = [];   // bank-recon statement items, keyed by account code
 
     // ── Deferred audit-log queue (2026-05-11 perf hardening) ──
     // Audit writes used to happen synchronously inside each save/delete
@@ -60,6 +61,35 @@ class Accounting extends MY_Controller
     {
         parent::__construct();
         require_permission('Accounting');
+
+        // CSRF HARDENING (Phase 4, 2026-07-15): mutating endpoints are
+        // POST-only. CodeIgniter verifies the CSRF token ONLY on POST
+        // requests, so any mutation reachable via GET — especially the
+        // parameterless admin operations (carry_forward_balances rewrites
+        // every opening balance; recompute_balances; seed/migrate) — would
+        // execute on a forged cross-site GET
+        // (<img src=".../accounting/carry_forward_balances">) with NO CSRF
+        // token at all. Forcing POST makes the CSRF check run. Keyed on the
+        // ROUTED method (so tab-view remaps chart/income/ledger/... → index
+        // are unaffected) and applied ONLY to state-changing endpoints —
+        // read/report/export endpoints are never gated. Single central gate
+        // so a future mutation can't silently ship GET-reachable.
+        $routedMethod = strtolower((string) $this->router->fetch_method());
+        $mutatingMethods = [
+            'seed_default_chart', 'migrate_existing_accounts',
+            'save_account', 'delete_account',
+            'save_journal_entry', 'delete_journal_entry', 'finalize_entry',
+            'save_income_expense', 'delete_income_expense',
+            'import_bank_statement', 'match_transaction', 'unmatch_transaction',
+            'recompute_balances', 'acknowledge_alert',
+            'lock_period', 'reopen_period', 'carry_forward_balances',
+        ];
+        if (in_array($routedMethod, $mutatingMethods, true)
+            && strtolower((string) $this->input->method()) !== 'post') {
+            // json_error() sends the response and exit()s — halts before the
+            // mutation method body runs.
+            $this->json_error('This action requires a POST request.', 405);
+        }
 
         // Phase 4.1 — Firestore dual-write layer. Lazy-initialised and
         // shared with Operations_accounting so every accounting mutation
@@ -185,9 +215,20 @@ class Accounting extends MY_Controller
     {
         if ($this->_ledgerCache !== null) return $this->_ledgerCache;
         try {
-            $docs = $this->fs->schoolWhere('accounting', []);
+            // Session-scoped query: every journal writer stamps `session`
+            // (v2 engine Operations_accounting:519, controller _fs_ledger_set)
+            // — the only accounting docs without it are COA_* chart docs,
+            // which _fs_coa_all reads separately. Equality-only filters are
+            // served by Firestore's single-field-index merge (same pattern
+            // as Firestore_service::sessionWhere), so no composite index is
+            // required. Bounds every report to the active session instead
+            // of scanning all years.
+            $docs = $this->fs->schoolWhere('accounting', [
+                ['session', '==', $this->session_year],
+            ]);
             $result = [];
-            $prefix = $this->school_id . '_';
+            $prefix  = $this->school_id . '_';
+            $sessSeg = $this->session_year . '_';
             // 2026-05-11 fix — same unwrap bug as _fs_coa_all: reading
             // $rawId AFTER `$d = $d['data'] ?? $d` lost the id and made
             // the function return empty. Now reading $rawId before unwrap.
@@ -196,8 +237,20 @@ class Accounting extends MY_Controller
                 $rawId = (string) ($row['id'] ?? '');
                 $data  = is_array($row['data'] ?? null) ? $row['data'] : $row;
                 $id    = (strpos($rawId, $prefix) === 0) ? substr($rawId, strlen($prefix)) : $rawId;
-                // Skip non-ledger docs (BAL_, IDX_, etc.)
-                if (strpos($id, 'JE_') === 0 || strpos($id, 'JV') === 0) {
+                // Journal doc ids exist in two live formats:
+                //   controller/legacy: {school}_{JE_|JV|IE_}...   → stripped id starts with the type prefix
+                //   v2 engine:         {school}_{session}_{JE_...} (Operations_accounting:515)
+                //                                                  → stripped id starts with "{session}_"
+                // Strip the optional session segment ONLY for this admit
+                // test; the result stays keyed by the full stripped id so
+                // delete/finalize round-trip via docId($entryId) resolves
+                // to the exact document for both formats.
+                $body = (strpos($id, $sessSeg) === 0) ? substr($id, strlen($sessSeg)) : $id;
+                // The ONE accounting reporting rule: journal docs only —
+                // JE_* (manual/system), JV* (legacy vouchers), IE_*
+                // (income/expense). BAL_/IDX_/COA_ docs share this
+                // collection and are excluded.
+                if (strpos($body, 'JE_') === 0 || strpos($body, 'JV') === 0 || strpos($body, 'IE_') === 0) {
                     $result[$id] = $data;
                 }
             }
@@ -520,7 +573,6 @@ class Accounting extends MY_Controller
             return false;
         }
 
-        $docId   = "{$schoolFs}_{$session}_periodLock";
         $payload = [
             'schoolId'    => $schoolFs,
             'session'     => $session,
@@ -541,20 +593,45 @@ class Accounting extends MY_Controller
             ),
         ];
 
-        try {
-            $this->firebase->firestoreSet('accountingConfig', $docId, $payload, /* merge */ false);
-            log_message('info',
-                "[ACC_CANONICAL_LOCK_WRITE] doc={$docId} lockedUntil={$lockedUntil} "
-                . "lockedBy=" . $payload['lockedBy']);
-        } catch (\Throwable $e) {
-            // Dual-write failure does NOT break the request — controller
-            // doc is already authoritative for legacy paths. Log loud
-            // so reconciler / operator can detect drift between the two
-            // docs and replay the canonical write.
-            log_message('error',
-                "[ACC_CANONICAL_LOCK_WRITE_FAILED] doc={$docId} error=" . $e->getMessage());
-            return false;
+        // FY-BOUNDARY FIX (Phase 3, 2026-07-14): write the canonical lock to
+        // EVERY session whose engine could read it — the locked-date's
+        // session (audit/history) AND the ACTIVE session_year.
+        // Operations_accounting::forceValidate initialises
+        // Accounting_period_lock with the ACTIVE session, so it ONLY reads
+        // {school}_{activeSession}_periodLock. Before this fix a year-end
+        // close (active session = new FY, locking a prior-FY March date)
+        // wrote the lock under the prior-FY session doc only; the engine —
+        // running in the new FY — never saw it and would ACCEPT a back-dated
+        // journal into the closed period. Writing the active-session doc too
+        // closes that hole. Because validate() compares $entryDate <=
+        // lockedUntil, a normal current-FY post (dated after lockedUntil)
+        // still passes, so no legitimate entry is over-blocked; a back-dated
+        // post into the locked window is now rejected regardless of which
+        // session the engine runs in.
+        $targetSessions = array_values(array_unique(array_filter([
+            $session,
+            (string) $this->session_year,
+        ], 'strlen')));
+
+        $allOk = true;
+        foreach ($targetSessions as $sess) {
+            $docId      = "{$schoolFs}_{$sess}_periodLock";
+            $docPayload = array_merge($payload, ['session' => $sess]);
+            try {
+                $this->firebase->firestoreSet('accountingConfig', $docId, $docPayload, /* merge */ false);
+                log_message('info',
+                    "[ACC_CANONICAL_LOCK_WRITE] doc={$docId} lockedUntil={$lockedUntil} "
+                    . "lockedBy=" . $docPayload['lockedBy']);
+            } catch (\Throwable $e) {
+                // Dual-write failure does NOT break the request — controller
+                // doc is already authoritative for legacy paths. Log loud so
+                // reconciler / operator can detect drift and replay.
+                log_message('error',
+                    "[ACC_CANONICAL_LOCK_WRITE_FAILED] doc={$docId} error=" . $e->getMessage());
+                $allOk = false;
+            }
         }
+        if (!$allOk) return false;
 
         // APCU cache invalidation — must follow EVERY canonical write
         // per the M1A.6 docblock contract. Without this, in-flight
@@ -607,6 +684,51 @@ class Accounting extends MY_Controller
     {
         try { $this->fs->updateEntity('incomeExpense', $id, $patch); }
         catch (\Exception $e) { log_message('error', "Acct IE update {$id} failed: " . $e->getMessage()); }
+    }
+
+    // ── Bank-reconciliation statement items — `bankRecon` collection ──
+    // Phase 2 (2026-07-14): replaces the removed RTDB Accounts/Bank_recon
+    // subtree AND the interim mis-wiring through `incomeExpense`. Items are
+    // school-scoped via setEntity/getEntity (docId() prefix + schoolId/
+    // session auto-injected); the per-account RTDB subtree is replaced by
+    // an `account_code` field filtered with an equality query (schoolId==
+    // AND account_code== — served by Firestore's single-field-index merge,
+    // no composite index required). Rules: `bankRecon` has no match block
+    // in firestore.rules → catch-all deny → server-only, tenant-safe.
+
+    /** All statement items for one bank account. Memoized per request. */
+    private function _fs_bk_all(string $accountCode): array
+    {
+        if (isset($this->_bkCache[$accountCode])) return $this->_bkCache[$accountCode];
+        try {
+            $docs = $this->fs->schoolWhere('bankRecon', [['account_code', '==', $accountCode]]);
+            $result = [];
+            $prefix = $this->school_id . '_';
+            foreach ($docs as $row) {
+                if (!is_array($row)) continue;
+                $rawId = (string) ($row['id'] ?? '');
+                $data  = is_array($row['data'] ?? null) ? $row['data'] : $row;
+                $id    = (strpos($rawId, $prefix) === 0) ? substr($rawId, strlen($prefix)) : $rawId;
+                if ($id !== '') $result[$id] = $data;
+            }
+            $this->_bkCache[$accountCode] = $result;
+            return $result;
+        } catch (\Exception $e) { return []; }
+    }
+    private function _fs_bk_get(string $id): ?array
+    {
+        try { $d = $this->fs->getEntity('bankRecon', $id); return (is_array($d) && !empty($d)) ? $d : null; }
+        catch (\Exception $e) { return null; }
+    }
+    private function _fs_bk_set(string $id, array $data): void
+    {
+        try { $this->fs->setEntity('bankRecon', $id, $data); $this->_bkCache = []; }
+        catch (\Exception $e) { log_message('error', "Acct BK set {$id} failed: " . $e->getMessage()); }
+    }
+    private function _fs_bk_update(string $id, array $patch): void
+    {
+        try { $this->fs->updateEntity('bankRecon', $id, $patch); $this->_bkCache = []; }
+        catch (\Exception $e) { log_message('error', "Acct BK update {$id} failed: " . $e->getMessage()); }
     }
 
     // =========================================================================
@@ -1438,6 +1560,35 @@ class Accounting extends MY_Controller
             return $this->json_error('Cannot delete finalized entries.');
         }
 
+        // MONEY-INTEGRITY (Phase 3, 2026-07-14): a journal is deletable ONLY
+        // when it is a genuine manual adjustment (source '' or 'manual').
+        // EVERY system/module-generated journal is the accounting counterpart
+        // of a real operation in another module — fee_payment / fee_refund
+        // (a receipt), HR_Payroll (a salary run), Assets / Inventory / Library
+        // (an asset, PO, or fine), and the income/expense (IE_) entries that
+        // mirror an incomeExpense record. Deleting one decouples the books
+        // from that source-of-truth record (money collected but income
+        // unbooked, asset owned but purchase gone). Corrections must flow
+        // through the originating workflow, which posts a balanced reversal
+        // and preserves the audit chain. Inverting the guard from a per-source
+        // blocklist to allow-only-manual means a NEW module that posts
+        // journals is protected automatically — no silent leak when a new
+        // source string appears (the exact failure mode that hid IE_ entries
+        // from reports in Phase 1).
+        $entrySource = (string) ($entry['source'] ?? '');
+        if ($entrySource !== '' && $entrySource !== 'manual') {
+            if (in_array($entrySource, ['income', 'expense'], true)) {
+                $how = 'Use the Income/Expense tab to remove it (that also clears its ledger entry).';
+            } elseif ($entrySource === 'fee_payment' || $entrySource === 'fee_refund') {
+                $how = 'To reverse a collected payment, issue a Refund (which posts a balanced reversal journal).';
+            } else {
+                $how = 'Reverse it through its originating module, or post a manual reversal journal, to preserve the audit trail.';
+            }
+            return $this->json_error(
+                "This is a system-generated journal (source: {$entrySource}) and cannot be deleted directly. {$how}"
+            );
+        }
+
         // Check period lock
         $this->_check_period_lock($entry['date'] ?? '');
 
@@ -2102,9 +2253,7 @@ class Accounting extends MY_Controller
         if (!$code) return $this->json_error('Account code required.');
 
         $safeCode = $this->safe_path_segment($code, 'account_code');
-        $path = $this->_bp() . "/Accounts/Bank_recon/{$safeCode}";
-        $all = null /* RTDB path removed — use Firestore helper */;
-        if (!is_array($all)) $all = [];
+        $all = $this->_fs_bk_all($safeCode);
 
         $items = [];
         foreach ($all as $id => $item) {
@@ -2137,12 +2286,12 @@ class Accounting extends MY_Controller
         if (!$file) return $this->json_error('Cannot read file.');
 
         $header = fgetcsv($file); // Skip header row
-        $basePath = $this->_bp() . "/Accounts/Bank_recon/{$safeCode}";
         $ts = date('c');
 
-        // Load existing entries for duplicate detection
-        $existingEntries = $this->_fs_ie_all(); /* bank recon entries */
-        if (!is_array($existingEntries)) $existingEntries = [];
+        // Load THIS account's existing statement items for duplicate
+        // detection (was mis-wired to _fs_ie_all() — income/expense
+        // records — during the RTDB migration).
+        $existingEntries = $this->_fs_bk_all($safeCode);
         $existingHashes = [];
         foreach ($existingEntries as $existItem) {
             if (!is_array($existItem)) continue;
@@ -2177,6 +2326,9 @@ class Accounting extends MY_Controller
 
             $itemId = $this->_generate_entry_id('BK');
             $item = [
+                // account_code replaces the per-account RTDB subtree —
+                // it is how _fs_bk_all() scopes statements to one bank.
+                'account_code'      => $safeCode,
                 'statement_date'    => $stDate,
                 'description'       => $desc,
                 'reference'         => $ref,
@@ -2187,7 +2339,7 @@ class Accounting extends MY_Controller
                 'imported_at'       => $ts,
             ];
 
-            $this->_fs_ie_set($itemId, $item);
+            $this->_fs_bk_set($itemId, $item);
             $imported++;
         }
 
@@ -2214,9 +2366,12 @@ class Accounting extends MY_Controller
         }
 
         $safeCode = $this->safe_path_segment($code, 'account_code');
-        $reconPath = $this->_bp() . "/Accounts/Bank_recon/{$safeCode}/{$reconId}";
-        $recon = $this->_fs_ie_get($reconId ?? $id ?? 'unknown') /* bank recon via Firestore */;
-        if (!is_array($recon)) return $this->json_error('Statement entry not found.');
+        $recon = $this->_fs_bk_get($reconId);
+        // Item must belong to the addressed bank account (preserves the
+        // per-account scoping the RTDB Bank_recon/{code} subtree enforced).
+        if (!is_array($recon) || ($recon['account_code'] ?? '') !== $safeCode) {
+            return $this->json_error('Statement entry not found.');
+        }
 
         // Validate ledger entry exists and is not deleted
         $entry = $this->_fs_ledger_get($ledgerId);
@@ -2224,7 +2379,7 @@ class Accounting extends MY_Controller
             return $this->json_error('Ledger entry not found.');
         }
 
-        $this->_fs_ie_update($reconId ?? $id ?? 'unknown', [
+        $this->_fs_bk_update($reconId, [
             'matched_ledger_id' => $ledgerId,
             'status'            => 'matched',
             'matched_at'        => date('c'),
@@ -2244,12 +2399,13 @@ class Accounting extends MY_Controller
         if (!$code || !$reconId) return $this->json_error('Account code and recon ID required.');
 
         $safeCode = $this->safe_path_segment($code, 'account_code');
-        $reconPath = $this->_bp() . "/Accounts/Bank_recon/{$safeCode}/{$reconId}";
-        $recon = $this->_fs_ie_get($reconId ?? $id ?? 'unknown') /* bank recon via Firestore */;
-        if (!is_array($recon)) return $this->json_error('Statement entry not found.');
+        $recon = $this->_fs_bk_get($reconId);
+        if (!is_array($recon) || ($recon['account_code'] ?? '') !== $safeCode) {
+            return $this->json_error('Statement entry not found.');
+        }
 
         $oldLedgerId = $recon['matched_ledger_id'] ?? null;
-        $this->_fs_ie_update($reconId ?? $id ?? 'unknown', [
+        $this->_fs_bk_update($reconId, [
             'matched_ledger_id' => null,
             'status'            => 'unmatched',
             'matched_at'        => null,
@@ -2269,22 +2425,31 @@ class Accounting extends MY_Controller
         if (!$code || !$reconId) return $this->json_error('Required fields missing.');
 
         $safeCode = $this->safe_path_segment($code, 'account_code');
-        $reconPath = $this->_bp() . "/Accounts/Bank_recon/{$safeCode}/{$reconId}";
-        $recon = $this->_fs_ie_get($reconId ?? $id ?? 'unknown') /* bank recon via Firestore */;
-        if (!is_array($recon)) return $this->json_error('Statement entry not found.');
+        $recon = $this->_fs_bk_get($reconId);
+        if (!is_array($recon) || ($recon['account_code'] ?? '') !== $safeCode) {
+            return $this->json_error('Statement entry not found.');
+        }
 
         $stmtAmount = max((float)($recon['debit'] ?? 0), (float)($recon['credit'] ?? 0));
         $stmtDate   = $recon['statement_date'] ?? '';
 
-        // Get ledger entries for this account
-        $ids = [] /* index query removed — use Firestore accounting where queries */;
-        if (!is_array($ids)) return $this->json_success(['suggestions' => []]);
-
         $allLedger = $this->_fs_ledger_all();
         if (!is_array($allLedger)) $allLedger = [];
 
-        // Already matched ledger IDs
-        $allRecon = [] /* bank recon — TODO: migrate to Firestore bankRecon collection */;
+        // Candidate ledger entries = canonical dataset filtered to entries
+        // touching this bank account (replaces the removed RTDB
+        // Ledger_index/{code} query with the same in-memory selection rule
+        // cash_flow uses — one dataset, one selection idiom).
+        $ids = [];
+        foreach ($allLedger as $lid => $lentry) {
+            if (!is_array($lentry)) continue;
+            foreach ((array) ($lentry['lines'] ?? []) as $lline) {
+                if (($lline['account_code'] ?? '') === $code) { $ids[] = $lid; break; }
+            }
+        }
+
+        // Already matched ledger IDs (this account's statement items)
+        $allRecon = $this->_fs_bk_all($safeCode);
         $matchedIds = [];
         if (is_array($allRecon)) {
             foreach ($allRecon as $r) {
@@ -2354,9 +2519,8 @@ class Accounting extends MY_Controller
 
         $safeCode = $this->safe_path_segment($code, 'account_code');
 
-        // Bank statement total
-        $stmtPath = $this->_bp() . "/Accounts/Bank_recon/{$safeCode}";
-        $stmt = null /* bank statement — TODO: migrate to Firestore */;
+        // Bank statement total (canonical bankRecon collection)
+        $stmt = $this->_fs_bk_all($safeCode);
         $bankBal = 0;
         $unmatchedCount = 0;
         if (is_array($stmt)) {
@@ -2704,24 +2868,25 @@ class Accounting extends MY_Controller
         $allLedger = $this->_fs_ledger_all();
         if (!is_array($allLedger)) $allLedger = [];
 
-        // Collect all entries that touch cash/bank accounts (deduplicated)
-        $processedIds = [];
+        // Collect all entries that touch cash/bank accounts (deduplicated —
+        // each entry id appears once because we scan the ledger map, whose
+        // keys are unique). Replaces the removed RTDB Ledger_index/{code}
+        // query with an in-memory selection over the canonical dataset
+        // _fs_ledger_all() already fetched — one dataset, one rule.
         $cashEntryIds = [];
-        foreach (array_keys($cashCodes) as $cashCode) {
-            $safeCode = $this->safe_path_segment($cashCode, 'account_code');
-            $ids = [] /* index query removed — use Firestore accounting where queries */;
-            if (!is_array($ids)) continue;
-            foreach ($ids as $id) {
-                if (!isset($processedIds[$id])) {
-                    $processedIds[$id] = true;
-                    $cashEntryIds[] = $id;
+        foreach ($allLedger as $lid => $lentry) {
+            if (!is_array($lentry)) continue;
+            foreach ((array) ($lentry['lines'] ?? []) as $lline) {
+                if (isset($cashCodes[$lline['account_code'] ?? ''])) {
+                    $cashEntryIds[] = $lid;
+                    break;
                 }
             }
         }
 
         // Process entries: separate pre-period (opening) vs in-period (movements)
         //
-        // Deduplication is by ENTRY ID only (via $processedIds above).
+        // Deduplication is by ENTRY ID only (unique ledger-map keys).
         // Each Ledger entry has a unique ID — voucher_no is NOT a dedup key
         // because different modules legitimately create separate entries with
         // their own voucher sequences.
@@ -3252,7 +3417,12 @@ class Accounting extends MY_Controller
 
         try {
             $existing = $this->firebase->firestoreGet('accountingAlerts', $alertId);
-            if (!is_array($existing)) {
+            // TENANT ISOLATION: alertId arrives from the client raw (alert
+            // ids are minted by AccountingWatchdog, not via fs->docId()),
+            // so ownership MUST be asserted on the loaded doc — every alert
+            // carries schoolId (AccountingWatchdog::_writeAlert). 404 (not
+            // 403) so a foreign id is indistinguishable from a missing one.
+            if (!is_array($existing) || (string) ($existing['schoolId'] ?? '') !== $this->school_id) {
                 return $this->json_error('Alert not found.', 404);
             }
             $ok = (bool) $this->firebase->firestoreSet('accountingAlerts', $alertId, [
@@ -3268,8 +3438,11 @@ class Accounting extends MY_Controller
             log_message('error', "ACC_ALERT_MANUAL_ACK alertId={$alertId} actor={$this->admin_id}");
             $this->json_success(['message' => 'Alert acknowledged.', 'alertId' => $alertId]);
         } catch (\Throwable $e) {
+            // Log the internal detail server-side; return a GENERIC message —
+            // never leak Firestore/driver internals (paths, doc ids, stack)
+            // to the client. (Phase 4, 2026-07-15.)
             log_message('error', "Accounting::acknowledge_alert failed alertId={$alertId} err=" . $e->getMessage());
-            $this->json_error('Acknowledge failed: ' . $e->getMessage(), 500);
+            $this->json_error('Failed to acknowledge the alert. Please retry.', 500);
         }
     }
 
@@ -4185,9 +4358,17 @@ class Accounting extends MY_Controller
         if (!is_array($allLedger)) $allLedger = [];
         $processed = []; $items = []; $pre = 0;
         $totals = ['operating' => 0, 'investing' => 0, 'financing' => 0];
-        foreach (array_keys($cashCodes) as $cc) {
-            $ids = [] /* index query removed — use Firestore accounting where queries */;
-            if (!is_array($ids)) continue;
+        // Entries touching any cash/bank account — same in-memory selection
+        // rule as cash_flow() (replaces the removed RTDB index query). Ids
+        // are unique map keys, so $processed stays a harmless no-op.
+        $ids = [];
+        foreach ($allLedger as $lid => $lentry) {
+            if (!is_array($lentry)) continue;
+            foreach ((array) ($lentry['lines'] ?? []) as $lline) {
+                if (isset($cashCodes[$lline['account_code'] ?? ''])) { $ids[] = $lid; break; }
+            }
+        }
+        {
             foreach ($ids as $id) {
                 if (isset($processed[$id])) continue; $processed[$id] = true;
                 $e = $allLedger[$id] ?? null;

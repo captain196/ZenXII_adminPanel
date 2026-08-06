@@ -113,20 +113,45 @@
         </div>
     </div>
 
-    <!-- Quick Links -->
+    <!-- Quick Links — ordered by real workflow: Setup → Bill → Collect → Adjust → Follow-up -->
     <div class="fd-card">
         <div class="fd-card-title"><i class="fa fa-th-large"></i> Quick Access</div>
+
+        <!-- 1. SETUP -->
+        <div class="fd-qgroup"><span class="fd-qgroup-num">1</span> Setup <small>— define what you charge &amp; how much</small></div>
         <div class="fd-quick-links">
-            <a href="<?= base_url('fees/fees_counter') ?>" class="fd-qlink"><i class="fa fa-desktop"></i><span>Fee Counter</span></a>
+            <a href="<?= base_url('fee_management/categories') ?>" class="fd-qlink"><i class="fa fa-tags"></i><span>Fee Heads</span></a>
             <a href="<?= base_url('fees/fees_structure') ?>" class="fd-qlink"><i class="fa fa-sitemap"></i><span>Structure</span></a>
             <a href="<?= base_url('fees/fees_chart') ?>" class="fd-qlink"><i class="fa fa-table"></i><span>Fee Chart</span></a>
+        </div>
+
+        <!-- 2. CREATE BILLS -->
+        <div class="fd-qgroup"><span class="fd-qgroup-num">2</span> Create Bills <small>— turn fees into student dues</small></div>
+        <div class="fd-quick-links">
+            <a href="<?= base_url('fees/generate_demands') ?>" class="fd-qlink"><i class="fa fa-cogs"></i><span>Generate Demands</span></a>
+        </div>
+
+        <!-- 3. COLLECT -->
+        <div class="fd-qgroup"><span class="fd-qgroup-num">3</span> Collect <small>— take payment &amp; issue receipts</small></div>
+        <div class="fd-quick-links">
+            <a href="<?= base_url('fees/fees_counter') ?>" class="fd-qlink"><i class="fa fa-desktop"></i><span>Fee Counter</span></a>
+            <a href="<?= base_url('fee_management/online_payments') ?>" class="fd-qlink"><i class="fa fa-credit-card"></i><span>Online Pay</span></a>
             <a href="<?= base_url('fees/fees_records') ?>" class="fd-qlink"><i class="fa fa-list-alt"></i><span>Records</span></a>
-            <a href="<?= base_url('fee_management/categories') ?>" class="fd-qlink"><i class="fa fa-tags"></i><span>Categories</span></a>
+        </div>
+
+        <!-- 4. ADJUST -->
+        <div class="fd-qgroup"><span class="fd-qgroup-num">4</span> Adjust <small>— discounts &amp; refunds</small></div>
+        <div class="fd-quick-links">
             <a href="<?= base_url('fee_management/discounts') ?>" class="fd-qlink"><i class="fa fa-percent"></i><span>Discounts</span></a>
             <a href="<?= base_url('fee_management/scholarships') ?>" class="fd-qlink"><i class="fa fa-trophy"></i><span>Scholarships</span></a>
             <a href="<?= base_url('fee_management/refunds') ?>" class="fd-qlink"><i class="fa fa-undo"></i><span>Refunds</span></a>
+        </div>
+
+        <!-- 5. FOLLOW-UP -->
+        <div class="fd-qgroup"><span class="fd-qgroup-num">5</span> Follow-up <small>— chase pending fees</small></div>
+        <div class="fd-quick-links">
             <a href="<?= base_url('fee_management/reminders') ?>" class="fd-qlink"><i class="fa fa-bell"></i><span>Reminders</span></a>
-            <a href="<?= base_url('fee_management/online_payments') ?>" class="fd-qlink"><i class="fa fa-credit-card"></i><span>Online Pay</span></a>
+            <a href="<?= base_url('fees/defaulter_report') ?>" class="fd-qlink"><i class="fa fa-warning"></i><span>Defaulters</span></a>
         </div>
     </div>
 
@@ -494,10 +519,26 @@ document.addEventListener('DOMContentLoaded', function(){
 /* Quick Links */
 .fd-quick-links {
     display: grid; grid-template-columns: repeat(5, 1fr);
-    gap: 12px;
+    gap: 12px; margin-bottom: 18px;
 }
+.fd-quick-links:last-child { margin-bottom: 0; }
 @media (max-width: 900px) { .fd-quick-links { grid-template-columns: repeat(3, 1fr); } }
 @media (max-width: 500px) { .fd-quick-links { grid-template-columns: repeat(2, 1fr); } }
+
+/* Quick Links — workflow group labels */
+.fd-qgroup {
+    display: flex; align-items: center; gap: 8px;
+    font-size: 12px; font-weight: 700; text-transform: uppercase;
+    letter-spacing: .5px; color: var(--t2, #4a6a60);
+    margin: 0 0 10px; padding-top: 4px;
+}
+.fd-qgroup small { font-weight: 500; text-transform: none; letter-spacing: 0; color: var(--t3, #7a9a8e); }
+.fd-qgroup-num {
+    width: 20px; height: 20px; border-radius: 50%;
+    background: var(--gold, #0f766e); color: #fff;
+    display: inline-flex; align-items: center; justify-content: center;
+    font-size: 11px; font-weight: 700; flex-shrink: 0;
+}
 .fd-qlink {
     display: flex; flex-direction: column; align-items: center; gap: 8px;
     padding: 16px 10px; border-radius: 10px;

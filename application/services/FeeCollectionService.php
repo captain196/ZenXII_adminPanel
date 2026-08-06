@@ -133,6 +133,41 @@ class FeeCollectionService
             ? (float) $data['submit_amount']
             : floatval(str_replace(',', '', $controller->input->post('submitAmount') ?? '0'));
 
+        // ── Phase 1 hardening: server-side discount authorization ──────────
+        // A client-supplied discount must not exceed the student's already-
+        // approved concession. Authorized source = the EXISTING
+        // studentDiscounts.onDemandDiscount (the same field fetch_months reads
+        // to compute netDue), honoring its validUntil expiry. This reuses
+        // existing concession data only — no schema change, no new approval
+        // workflow, no new roles. An unauthorized/over-cap discount is
+        // rejected before any receipt/allocation/accounting write occurs.
+        if ($discountFees > 0.005) {
+            $approvedDiscountCap = 0.0;
+            try {
+                $__discDoc = $controller->fs->get('studentDiscounts', "{$schoolFs}_{$userId}");
+                if (is_array($__discDoc)) {
+                    $__vu = trim((string) ($__discDoc['validUntil'] ?? $__discDoc['valid_until'] ?? ''));
+                    $__expired = ($__vu !== '' && $__vu < date('Y-m-d'));
+                    if (!$__expired) {
+                        $approvedDiscountCap = (float) ($__discDoc['onDemandDiscount'] ?? 0);
+                    }
+                }
+            } catch (\Throwable $e) {
+                // Fail CLOSED: if the approved cap can't be read, treat cap as 0
+                // so an unverifiable discount is rejected rather than trusted.
+                log_message('error', 'FCS discount-authorization read failed: ' . $e->getMessage());
+            }
+            if ($discountFees > $approvedDiscountCap + 0.005) {
+                log_message('error', "FCS discount REJECTED student={$userId} requested={$discountFees} approved_cap={$approvedDiscountCap}");
+                return $_earlyError(
+                    'Discount Rs. ' . number_format($discountFees, 2)
+                    . ' exceeds the approved concession Rs. ' . number_format($approvedDiscountCap, 2)
+                    . ' for this student. Approve the concession first, then retry.',
+                    422
+                );
+            }
+        }
+
         $reference      = $data['remarks']
             ?? ($controller->input->post('reference') ?: 'Fees Submitted');
 

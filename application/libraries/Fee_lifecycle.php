@@ -699,9 +699,14 @@ class Fee_lifecycle
         $periodKey = sprintf('%04d-%02d', $year, self::ACADEMIC_START_MONTH);
 
         try {
+            // FIN-2: category is stored lowercase by createModuleFee
+            // (strtolower). Firestore equality is case-sensitive, so a caller
+            // passing 'Transport' would match ZERO rows and never cancel the
+            // old-session demands on rollover (phantom cross-session dues).
+            // Normalise the predicate to match what was written.
             $rows = (array) $this->fs->schoolWhere('feeDemands', [
                 ['studentId', '==', $studentId],
-                ['category',  '==', $moduleType],
+                ['category',  '==', strtolower((string) $moduleType)],
                 ['periodKey', '==', $periodKey],
             ]);
         } catch (\Throwable $e) {
@@ -711,11 +716,17 @@ class Fee_lifecycle
         $cancelled = 0;
         foreach ($rows as $row) {
             if (!is_array($row)) { continue; }
-            $status = (string) ($row['status'] ?? '');
+            // FIN-2: schoolWhere returns nested {id, data:{…}} rows. Read the
+            // demand fields from the data level (fallback to a flat row) so the
+            // paid/cancelled skip actually works — reading the status off the
+            // envelope level is always empty for a nested row, which would
+            // wrongly cancel a PAID demand on rollover.
+            $d = (isset($row['data']) && is_array($row['data'])) ? $row['data'] : $row;
+            $status = (string) ($d['status'] ?? '');
             if ($status === 'cancelled' || $status === 'paid') {
                 continue;   // don't cancel already-paid or already-cancelled
             }
-            $demandId = (string) ($row['demandId'] ?? $row['id'] ?? '');
+            $demandId = (string) ($d['demandId'] ?? $row['id'] ?? $d['id'] ?? '');
             if ($demandId === '') { continue; }
             try {
                 $this->fsTxn->writeDemand($demandId, [
@@ -755,7 +766,32 @@ class Fee_lifecycle
             $demandId   = $this->_demandId($studentId, $periodKey, '', $headName . '_' . $moduleType);
             $periodLbl  = "April {$year}";
 
-            $this->fsTxn->writeDemand($demandId, [
+            // FIN-1: never reset the payment state of an EXISTING demand. This
+            // generic module-fee writer (Transport + Hostel) is re-invoked on the
+            // SAME demandId (route is NOT part of the id) by route change /
+            // assignment edit / rollover / reconcile. Read the existing demand;
+            // if it already carries a payment, PRESERVE paidAmount (payment
+            // history is preserved by the merge write) and recompute
+            // balance/status against the new amount — mirroring proRateFees. A
+            // brand-new (or genuinely unpaid) demand is written unpaid.
+            $existing  = $this->firebase->firestoreGet('feeDemands', $demandId);
+            $paidSoFar = is_array($existing) ? (float) ($existing['paidAmount'] ?? $existing['paid_amount'] ?? 0) : 0.0;
+            if ($paidSoFar > 0) {
+                $balance  = max(0.0, round($amount - $paidSoFar, 2));
+                $payState = [
+                    'paidAmount' => $paidSoFar,
+                    'balance'    => $balance,
+                    'status'     => $balance <= 0.005 ? 'paid' : 'partial',
+                ];
+            } else {
+                $payState = [
+                    'paidAmount' => 0.0,
+                    'balance'    => $amount,
+                    'status'     => 'unpaid',
+                ];
+            }
+
+            $this->fsTxn->writeDemand($demandId, array_merge([
                 'studentId'   => $studentId,
                 'studentName' => (string) ($stu['name'] ?? $stu['studentName'] ?? ''),
                 'className'   => (string) ($stu['className'] ?? ''),
@@ -773,12 +809,9 @@ class Fee_lifecycle
                 'periodKey'   => $periodKey,
                 'grossAmount' => $amount,
                 'netAmount'   => $amount,
-                'paidAmount'  => 0.0,
-                'balance'     => $amount,
-                'status'      => 'unpaid',
                 'createdAt'   => date('c'),
                 'createdBy'   => $this->adminId,
-            ]);
+            ], $payState));
 
             $this->_log('module_fee_created', $studentId, [
                 'module' => $moduleType, 'head' => $headName, 'amount' => $amount,

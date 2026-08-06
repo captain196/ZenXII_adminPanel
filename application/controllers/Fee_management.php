@@ -40,18 +40,30 @@ class Fee_management extends MY_Controller
 
     public function __construct()
     {
-        $uri = $_SERVER['REQUEST_URI'] ?? '';
+        // SECURITY (2026-07): select the auth mode from the ROUTED METHOD,
+        // not a substring of the full request URI. The previous code ran
+        // strpos() over $_SERVER['REQUEST_URI'] — which includes the query
+        // string and extra path segments — so a crafted URL like
+        // /fee_management/<admin_method>?x=payment_webhook flipped the
+        // constructor into the no-session webhook/parent branch, skipping
+        // require_permission('Fees'). (Every admin method independently
+        // enforces _require_role, which denies when no admin session was
+        // established, so no bypass was actually reachable — this hardens the
+        // auth bootstrap itself.) Take only the path segment immediately
+        // after 'fee_management' and match it exactly. Unparseable URI ⇒
+        // empty method ⇒ the admin (require_permission) branch, i.e. fail-safe.
+        $uriPath  = (string) parse_url($_SERVER['REQUEST_URI'] ?? '', PHP_URL_PATH);
+        $segments = array_values(array_filter(array_map('strtolower', explode('/', $uriPath)), 'strlen'));
+        $fmIdx    = array_search('fee_management', $segments, true);
+        $method   = ($fmIdx !== false && isset($segments[$fmIdx + 1])) ? $segments[$fmIdx + 1] : '';
 
         // Webhook is a server-to-server call — no session required.
         // It authenticates via HMAC signature instead.
-        $isWebhook = (strpos($uri, 'payment_webhook') !== false);
+        $isWebhook = ($method === 'payment_webhook');
 
         // Parent-app endpoints authenticate via Firebase ID token (Bearer).
         // School context is resolved from the token claims.
-        $isParentApi = (
-            strpos($uri, 'fee_management/parent_create_order')   !== false ||
-            strpos($uri, 'fee_management/parent_verify_payment') !== false
-        );
+        $isParentApi = in_array($method, ['parent_create_order', 'parent_verify_payment'], true);
 
         if ($isWebhook) {
             // Skip MY_Controller auth — use CI_Controller directly.
@@ -1742,6 +1754,17 @@ class Fee_management extends MY_Controller
             if (!is_array($record)) {
                 $this->json_error("Receipt '{$receiptNo}' not found for this student.");
             }
+            // Financial-correctness guard: the receipt MUST belong to the
+            // student this refund is being created for. Without this a wrong
+            // receipt number (typo or otherwise) records a refund against one
+            // student using ANOTHER student's receipt as the basis — and the
+            // over-refund check below would validate against the wrong
+            // receipt's amount. Fail-open only for legacy receipts that
+            // predate the denormalised studentId field.
+            $receiptStudentId = (string) ($record['studentId'] ?? $record['student_id'] ?? '');
+            if ($receiptStudentId !== '' && $receiptStudentId !== $studentId) {
+                $this->json_error("Receipt '{$receiptNo}' belongs to a different student. Enter the receipt issued to this student.");
+            }
             $originalAmount = (float) ($record['amount'] ?? 0);
             if ($originalAmount > 0 && $amount > $originalAmount) {
                 $this->json_error("Refund amount ({$amount}) exceeds original payment amount ({$originalAmount}).");
@@ -2203,93 +2226,48 @@ class Fee_management extends MY_Controller
     public function fetch_due_students()
     {
         $this->_require_role(self::VIEW_ROLES, 'fetch_due_students');
-        // Fee_firestore_txn is used statically at line ~2204 for
-        // periodToMonth(). Bootstrap the library so the class file is
-        // loaded before the static call.
-        $this->_bootFsTxn();
-        $classSections = $this->_getAllClassSections();
-        $dueStudents   = [];
-
-        // Get current month names for reference
-        $months = [
-            'April', 'May', 'June', 'July', 'August', 'September',
-            'October', 'November', 'December', 'January', 'February', 'March'
-        ];
-
-        // Determine months up to current month
-        $currentMonth  = date('n'); // 1-12
-        $monthIndex    = ($currentMonth >= 4) ? ($currentMonth - 4) : ($currentMonth + 8);
-        $monthsToCheck = array_slice($months, 0, $monthIndex + 1);
-
-        // Load all students from Firestore
-        $studentRows = $this->firebase->firestoreQuery('students', [
-            ['schoolId', '==', $this->school_name],
-        ]);
-
-        // Load all fee demands to determine unpaid months
-        $demandRows = $this->firebase->firestoreQuery('feeDemands', [
+        // Scalability + commercial-ERP business rule (2026-07): build the
+        // reminder list from the canonical per-student feeDefaulters aggregate
+        // (one doc per student) instead of scanning every feeDemands doc
+        // school-wide. For a large school this is O(students) rather than
+        // O(students × months × heads) — the previous full-demand scan OOM'd /
+        // timed out at ~3k+ students.
+        //
+        // The list contains ONLY students with ACTUAL outstanding dues
+        // (totalDues > 0). A student with zero generated demands has no
+        // feeDefaulters dues and correctly does NOT appear here — such students
+        // are handled by the separate "No Fees Generated" operational workflow,
+        // not the financial reminder workflow. feeDefaulters is the single
+        // source of truth for defaulter status (the same aggregate the
+        // Defaulter Report reads) — no second business rule is introduced.
+        $dueStudents = [];
+        $defaulterRows = $this->firebase->firestoreQuery('feeDefaulters', [
             ['schoolId', '==', $this->school_name],
             ['session',  '==', $this->session_year],
         ]);
-
-        // Build demand lookup keyed by studentId + month-LABEL (canonical
-        // periodToMonth, NOT full period string). Aggregates per-month
-        // balance + status across all heads. Phase 15 dropped the legacy
-        // `monthFee` cache read — feeDemands is the only source of truth.
-        $demandsByStudentMonth = []; // sid -> month -> ['balance', 'allPaid']
-        foreach ((array) $demandRows as $row) {
-            $dd = $row['data'] ?? $row;
-            $sid    = (string) ($dd['studentId'] ?? '');
-            $period = (string) ($dd['period']    ?? '');
-            $month  = Fee_firestore_txn::periodToMonth($period);
-            if ($sid === '' || $month === '') continue;
-            $bal    = (float) ($dd['balance']     ?? 0);
-            $status = (string) ($dd['status']     ?? 'unpaid');
-            if (!isset($demandsByStudentMonth[$sid][$month])) {
-                $demandsByStudentMonth[$sid][$month] = ['balance' => 0.0, 'allPaid' => true, 'has' => false];
-            }
-            $demandsByStudentMonth[$sid][$month]['balance'] += $bal;
-            $demandsByStudentMonth[$sid][$month]['has']      = true;
-            if ($status !== 'paid' || $bal > 0.005) {
-                $demandsByStudentMonth[$sid][$month]['allPaid'] = false;
-            }
-        }
-
-        foreach ((array) $studentRows as $row) {
+        foreach ((array) $defaulterRows as $row) {
             $d = $row['data'] ?? $row;
             if (!is_array($d)) continue;
-            $userId = (string) ($d['studentId'] ?? $this->_stripSchoolPrefix($row['id'] ?? ''));
-            $studentName = (string) ($d['name'] ?? $d['studentName'] ?? '');
-            $cls = trim((string) ($d['className'] ?? ''));
-            $sec = trim((string) ($d['section'] ?? ''));
-            if (stripos($cls, 'Class ') !== 0) $cls = 'Class ' . $cls;
-            if (stripos($sec, 'Section ') !== 0) $sec = 'Section ' . $sec;
 
-            $studentMonthMap = $demandsByStudentMonth[$userId] ?? [];
+            $totalDue = round((float) ($d['totalDues'] ?? 0), 2);
+            if ($totalDue <= 0.005) continue; // genuinely owes nothing → not a defaulter
 
-            $unpaidMonths = [];
-            $totalDue     = 0.0;
+            $userId = (string) ($d['studentId'] ?? '');
+            if ($userId === '') continue;
 
-            foreach ($monthsToCheck as $month) {
-                $entry = $studentMonthMap[$month] ?? null;
-                // No demand for this month → treat as unpaid (legacy cache
-                // would have done the same via missing key fallback).
-                if ($entry === null || !$entry['allPaid']) {
-                    $unpaidMonths[] = $month;
-                    if ($entry !== null) $totalDue += $entry['balance'];
-                }
-            }
+            $studentName  = (string) ($d['studentName'] ?? '');
+            $unpaidMonths = is_array($d['unpaidMonths'] ?? null)
+                ? array_values(array_filter(array_map('strval', $d['unpaidMonths'])))
+                : [];
 
-            if (!empty($unpaidMonths)) {
-                $dueStudents[] = [
-                    'user_id'       => $userId,
-                    'name'          => $studentName !== '' ? $studentName : $userId,
-                    'class'         => $cls,
-                    'section'       => $sec,
-                    'unpaid_months' => $unpaidMonths,
-                    'total_due'     => round($totalDue, 2),
-                ];
-            }
+            $dueStudents[] = [
+                'user_id'       => $userId,
+                'name'          => $studentName !== '' ? $studentName : $userId,
+                'class'         => (string) ($d['className'] ?? ''),
+                'section'       => (string) ($d['section']   ?? ''),
+                'unpaid_months' => $unpaidMonths,
+                'total_due'     => $totalDue,
+            ];
         }
 
         // Enrich each student with their most recent reminder timestamp so
@@ -3738,8 +3716,15 @@ class Fee_management extends MY_Controller
             return;
         }
 
-        if (!$ipAllowed && $gwMode !== 'mock') {
-            log_message('error', "payment_webhook: IP BLOCKED ip={$ip}");
+        // Phase 1 hardening: the IP whitelist now applies in EVERY mode,
+        // including 'mock'. Previously mock skipped it — but the mock gateway
+        // signs with a public, hard-coded secret, so combined with the skip an
+        // externally-reachable mock-mode tenant was forgeable. Localhost
+        // (127.0.0.1 / ::1) remains in the default whitelist, so the local dev
+        // workflow is unchanged; any other host can still be added via
+        // webhook_allowed_ips in Gateway Config. No redesign of the flow.
+        if (!$ipAllowed) {
+            log_message('error', "payment_webhook: IP BLOCKED ip={$ip} mode={$gwMode}");
             http_response_code(403);
             echo json_encode(['status' => 'error', 'message' => 'IP not whitelisted.']);
             return;
