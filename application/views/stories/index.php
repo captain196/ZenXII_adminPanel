@@ -446,8 +446,10 @@
 <!-- Toast -->
 <div class="st-toast" id="stToast"></div>
 
-<!-- Chart.js CDN -->
-<script src="https://cdn.jsdelivr.net/npm/chart.js@4.4.4/dist/chart.umd.min.js"></script>
+<!-- Chart.js — self-hosted (v4.4.4). Avoids a third-party CDN dependency and
+     the SRI/supply-chain risk of loading executable JS from jsdelivr. Same
+     vendored file used by attendance/analytics.php. -->
+<script src="<?= base_url('assets/js/chart.umd.min.js') ?>?v=4.4.4"></script>
 
 <!-- jQuery — footer loads it too, but the inline script below runs
      at parse time (before the footer), so we need $ available here.
@@ -498,7 +500,7 @@ ST.loadAudienceOptions = function() {
         var html = '';
         ST.audienceOptions.forEach(function(o) {
             html += '<label style="display:flex;align-items:center;gap:8px;font-size:13px;color:#334155;padding:3px 0;cursor:pointer;">'
-                + '<input type="checkbox" class="as-aud-cb" value="' + ST.esc(o.key) + '"> ' + ST.esc(o.label) + '</label>';
+                + '<input type="checkbox" class="as-aud-cb" value="' + ST.escAttr(o.key) + '"> ' + ST.esc(o.label) + '</label>';
         });
         box.innerHTML = html;
     });
@@ -608,6 +610,31 @@ ST.esc = function(s) {
     return d.innerHTML;
 };
 
+// SEC-2 — ST.esc only escapes & < > (textContent→innerHTML). Values placed
+// inside a DOUBLE-quoted HTML attribute can still break out via " or '.
+// escAttr closes that hole for every quoted-attribute sink.
+ST.escAttr = function(s) {
+    return ST.esc(s).replace(/"/g, '&#34;').replace(/'/g, '&#39;');
+};
+
+// SEC-2 — URL allow-list for every src="…" sink (mediaUrl, avatars). Only
+// https URLs render; javascript:/data:/relative or attribute-breakout
+// payloads are dropped to '' (caller falls back to a safe default).
+ST.safeUrl = function(u) {
+    u = String(u || '');
+    return /^https:\/\//i.test(u) ? u : '';
+};
+
+// SEC-2 — safe interpolation of server data into a JS single-quoted string
+// that itself lives inside a double-quoted inline handler
+// (onclick="ST.x('<HERE>')"). Escapes HTML, backslash, and BOTH quote styles.
+ST.jsArg = function(s) {
+    return ST.esc(String(s == null ? '' : s))
+        .replace(/\\/g, '\\\\')
+        .replace(/'/g, "\\'")
+        .replace(/"/g, '&#34;');
+};
+
 ST.toast = function(msg, type) {
     var t = document.getElementById('stToast');
     t.textContent = msg;
@@ -673,7 +700,10 @@ ST.statusBadge = function(s) {
 // Audience chip — whole-school (empty audienceClassKeys) vs class-scoped.
 // Lets moderators see at a glance which stories reach the entire school.
 ST.isWholeSchool = function(s) {
-    return !s.audienceClassKeys || s.audienceClassKeys.length === 0;
+    var a = s.audienceClassKeys;
+    // Whole-school = empty (legacy) OR the ["*"] sentinel (new server-side
+    // audience contract). Both must read as "Whole school" in the UI.
+    return !a || a.length === 0 || (a.length === 1 && a[0] === '*');
 };
 ST.audienceChip = function(s) {
     var whole = ST.isWholeSchool(s);
@@ -748,6 +778,7 @@ ST.bulkAction = function(status) {
     }, function(r) {
         if (r.status === 'success') {
             ST.toast(r.message || 'Done.');
+            ST.allStories = null;   // invalidate shared cache (Flagged/Moderation)
             ST.selected = {};
             ST.updateBulkBar();
             ST.loadStories();
@@ -760,15 +791,44 @@ ST.bulkAction = function(status) {
 
 // ── Load Teachers ───────────────────────────────────────────────
 
-ST.loadTeachers = function() {
-    ST.ajaxGet('stories/get_teachers', {}, function(r) {
-        if (r.status !== 'success') return;
-        ST.teachers = r.teachers || [];
-        var sel = document.getElementById('filterTeacher');
-        sel.innerHTML = '<option value="">All Teachers (' + ST.teachers.length + ')</option>';
-        ST.teachers.forEach(function(t) {
-            sel.innerHTML += '<option value="' + ST.esc(t.teacherId) + '">' + ST.esc(t.name) + ' (' + t.storyCount + ')</option>';
-        });
+// M-1 — the teacher dropdown is now DERIVED client-side from the already
+// fetched unfiltered story set (ST.allStories) instead of a separate
+// `stories/get_teachers` server scan. Preserves the current selection.
+ST.populateTeacherFilter = function() {
+    var sel = document.getElementById('filterTeacher');
+    if (!sel) return;
+    var prev = sel.value;
+
+    var byId = {};
+    (ST.allStories || []).forEach(function(s) {
+        var tid = s.teacherId;
+        if (!tid) return;
+        if (!byId[tid]) byId[tid] = { teacherId: tid, name: s.teacherName || tid, storyCount: 0 };
+        byId[tid].storyCount++;
+        if ((byId[tid].name === '' || byId[tid].name === tid) && s.teacherName) byId[tid].name = s.teacherName;
+    });
+    ST.teachers = Object.keys(byId).map(function(k) { return byId[k]; });
+    ST.teachers.sort(function(a, b) { return (a.name || '').toLowerCase().localeCompare((b.name || '').toLowerCase()); });
+
+    var html = '<option value="">All Teachers (' + ST.teachers.length + ')</option>';
+    ST.teachers.forEach(function(t) {
+        html += '<option value="' + ST.escAttr(t.teacherId) + '">' + ST.esc(t.name) + ' (' + t.storyCount + ')</option>';
+    });
+    sel.innerHTML = html;
+    // Restore prior selection if it still exists.
+    if (prev) sel.value = prev;
+};
+
+// M-1 — fetch the full unfiltered story set ONCE and reuse it for the teacher
+// dropdown, the Flagged tab and the Moderation Log tab (they previously each
+// re-scanned the whole collection). Cached in ST.allStories; invalidated
+// (set to null) after any moderation so the next read is fresh.
+ST.ensureAllStories = function(cb) {
+    if (ST.allStories) { if (cb) cb(); return; }
+    ST.ajaxGet('stories/get_stories', {}, function(r) {
+        ST.allStories = (r.status === 'success') ? (r.stories || []) : [];
+        ST.populateTeacherFilter();
+        if (cb) cb();
     });
 };
 
@@ -795,6 +855,15 @@ ST.loadStories = function() {
 
         ST.stories = r.stories || [];
 
+        // M-1 — when this load carried NO server-side filters it IS the full
+        // school set, so cache it as ST.allStories (feeds teacher dropdown +
+        // Flagged + Moderation tabs, sparing them their own collection scans).
+        var noServerFilters = !params.teacher && !params.status && !params.date_from && !params.date_to && !params.search;
+        if (noServerFilters) {
+            ST.allStories = ST.stories;
+            ST.populateTeacherFilter();
+        }
+
         // Client-side media type filter
         var filtered = ST.stories;
         if (mediaFilter) {
@@ -811,36 +880,39 @@ ST.loadStories = function() {
 
         var html = '';
         filtered.forEach(function(s) {
+            // SEC-2 — src only ever gets an https URL (safeUrl); anything else
+            // renders no media. tid/sid ride in data-* attrs (escAttr) and are
+            // read back by delegated handlers, so no server value is ever
+            // interpolated into an inline JS handler.
+            var mediaSrc = ST.safeUrl(s.mediaUrl);
             var thumb = '';
-            if (s.mediaUrl) {
+            if (mediaSrc) {
                 if (s.mediaType === 'video') {
                     // `#t=0.1` seeks to the first frame so the browser paints it
                     // as the poster — `preload="metadata"` alone shows a BLANK box.
                     // Plus a centered play overlay so it reads as a video.
-                    thumb = '<video src="' + ST.esc(s.mediaUrl) + '#t=0.1" muted preload="metadata" playsinline></video>'
+                    thumb = '<video src="' + ST.escAttr(mediaSrc) + '#t=0.1" muted preload="metadata" playsinline></video>'
                           + '<span class="st-play-badge"><i class="fa fa-play"></i></span>';
                 } else {
-                    thumb = '<img loading="lazy" src="' + ST.esc(s.mediaUrl) + '" alt="Story" onerror="this.parentNode.innerHTML=\'<i class=\\\'fa fa-image st-media-icon\\\'></i>\'">';
+                    thumb = '<img loading="lazy" src="' + ST.escAttr(mediaSrc) + '" alt="Story" onerror="this.parentNode.innerHTML=\'<i class=\\\'fa fa-image st-media-icon\\\'></i>\'">';
                 }
             } else {
                 thumb = '<i class="fa fa-image st-media-icon"></i>';
             }
 
-            var avatar = s.teacherProfilePic || ST.defaultAvatar;
+            var avatar = ST.safeUrl(s.teacherProfilePic) || ST.defaultAvatar;
             var statusClass = s.effectiveStatus || 'active';
-            var tid = ST.esc(s.teacherId).replace(/'/g, "\\'");
-            var sid = ST.esc(s.storyId).replace(/'/g, "\\'");
 
-            html += '<div class="st-story-card" data-tid="' + ST.esc(s.teacherId) + '" data-sid="' + ST.esc(s.storyId) + '">'
-                + '<input type="checkbox" class="st-story-select" onchange="ST.onStorySelect(\'' + tid + '\',\'' + sid + '\',this.checked)" onclick="event.stopPropagation()">'
-                + '<div class="st-story-thumb" onclick="ST.openDetail(\'' + tid + '\',\'' + sid + '\')">'
+            html += '<div class="st-story-card" data-tid="' + ST.escAttr(s.teacherId) + '" data-sid="' + ST.escAttr(s.storyId) + '">'
+                + '<input type="checkbox" class="st-story-select">'
+                + '<div class="st-story-thumb st-open-detail">'
                 + thumb
                 + '<span class="st-media-badge"><i class="fa fa-' + (s.mediaType === 'video' ? 'video-camera' : 'image') + '"></i> ' + ST.esc(s.mediaType || 'image') + '</span>'
-                + '<span class="st-status-dot ' + statusClass + '"></span>'
+                + '<span class="st-status-dot ' + ST.escAttr(statusClass) + '"></span>'
                 + '</div>'
-                + '<div class="st-story-body" onclick="ST.openDetail(\'' + tid + '\',\'' + sid + '\')">'
+                + '<div class="st-story-body st-open-detail">'
                 + '<div class="st-story-teacher">'
-                + '<img class="st-story-avatar" src="' + ST.esc(avatar) + '" onerror="this.src=\'' + ST.defaultAvatar + '\'">'
+                + '<img class="st-story-avatar" src="' + ST.escAttr(avatar) + '" onerror="this.src=\'' + ST.defaultAvatar + '\'">'
                 + '<span class="st-story-tname">' + ST.esc(s.teacherName || 'Unknown') + '</span>'
                 + '</div>'
                 + '<div class="st-story-caption">' + ST.esc(s.caption || 'No caption') + '</div>'
@@ -855,6 +927,20 @@ ST.loadStories = function() {
         grid.innerHTML = html;
     });
 };
+
+// SEC-2 — delegated story-card handlers. tid/sid are read from the card's
+// data-* attrs (decoded back to their raw values by the browser) instead of
+// being baked into inline onclick/onchange strings, eliminating the
+// attribute-context injection surface entirely.
+$(document).on('change', '#storyGrid .st-story-select', function() {
+    var card = this.closest('.st-story-card');
+    if (card) ST.onStorySelect(card.getAttribute('data-tid'), card.getAttribute('data-sid'), this.checked);
+});
+$(document).on('click', '#storyGrid .st-story-select', function(e) { e.stopPropagation(); });
+$(document).on('click', '#storyGrid .st-open-detail', function() {
+    var card = this.closest('.st-story-card');
+    if (card) ST.openDetail(card.getAttribute('data-tid'), card.getAttribute('data-sid'));
+});
 
 ST.clearFilters = function() {
     document.getElementById('filterTeacher').value = '';
@@ -879,29 +965,30 @@ ST.openDetail = function(teacherId, storyId) {
             return;
         }
         var s = r.story;
+        var mediaSrc = ST.safeUrl(s.mediaUrl);
         var mediaHtml = '';
-        if (s.mediaUrl) {
+        if (mediaSrc) {
             if (s.mediaType === 'video') {
                 // `#t=0.1` paints the first frame so the player isn't a black box
                 // before play; `controls` gives the play/seek affordance.
-                mediaHtml = '<video src="' + ST.esc(s.mediaUrl) + '#t=0.1" controls preload="metadata" playsinline style="max-width:100%;max-height:360px"></video>';
+                mediaHtml = '<video src="' + ST.escAttr(mediaSrc) + '#t=0.1" controls preload="metadata" playsinline style="max-width:100%;max-height:360px"></video>';
             } else {
-                mediaHtml = '<img src="' + ST.esc(s.mediaUrl) + '" alt="Story" style="max-width:100%;max-height:360px">';
+                mediaHtml = '<img src="' + ST.escAttr(mediaSrc) + '" alt="Story" style="max-width:100%;max-height:360px">';
             }
         } else {
             mediaHtml = '<div style="padding:40px;color:var(--t4);font-size:24px"><i class="fa fa-image"></i> No media</div>';
         }
 
-        var avatar = s.teacherProfilePic || ST.defaultAvatar;
+        var avatar = ST.safeUrl(s.teacherProfilePic) || ST.defaultAvatar;
         var expiresAt = s.expiresAt ? s.expiresAt : 0;
         var isExpired = expiresAt > 0 && expiresAt < Date.now();
-        var tid = ST.esc(s.teacherId).replace(/'/g, "\\'");
-        var sid = ST.esc(s.storyId).replace(/'/g, "\\'");
+        var tid = ST.jsArg(s.teacherId);
+        var sid = ST.jsArg(s.storyId);
 
         var html = '<div class="st-detail-media">' + mediaHtml + '</div>'
             + '<div class="st-detail-row">'
             + '<div class="st-detail-col">'
-            + '<div class="st-detail-field"><div class="st-detail-label">Teacher</div><div class="st-detail-value" style="display:flex;align-items:center;gap:8px"><img src="' + ST.esc(avatar) + '" onerror="this.src=\'' + ST.defaultAvatar + '\'" style="width:24px;height:24px;border-radius:50%"> ' + ST.esc(s.teacherName || 'Unknown') + '</div></div>'
+            + '<div class="st-detail-field"><div class="st-detail-label">Teacher</div><div class="st-detail-value" style="display:flex;align-items:center;gap:8px"><img src="' + ST.escAttr(avatar) + '" onerror="this.src=\'' + ST.defaultAvatar + '\'" style="width:24px;height:24px;border-radius:50%"> ' + ST.esc(s.teacherName || 'Unknown') + '</div></div>'
             + '<div class="st-detail-field"><div class="st-detail-label">Caption</div><div class="st-detail-value">' + ST.esc(s.caption || 'No caption') + '</div></div>'
             + '<div class="st-detail-field"><div class="st-detail-label">Audience</div><div class="st-detail-value"><i class="fa fa-' + (ST.isWholeSchool(s) ? 'globe' : 'users') + '"></i> ' + ST.esc(s.audienceLabel || 'Whole school') + '</div></div>'
             + '<div class="st-detail-field"><div class="st-detail-label">Media Type</div><div class="st-detail-value">' + ST.esc(s.mediaType || 'image') + '</div></div>'
@@ -979,6 +1066,7 @@ ST.moderate = function(teacherId, storyId, status) {
     }, function(r) {
         if (r.status === 'success') {
             ST.toast(r.message || 'Status updated.');
+            ST.allStories = null;   // invalidate shared cache (Flagged/Moderation)
             ST.closeModal();
             ST.loadStories();
             ST._refreshAnalytics();
@@ -996,6 +1084,7 @@ ST.deleteStory = function(teacherId, storyId) {
     }, function(r) {
         if (r.status === 'success') {
             ST.toast(r.message || 'Story deleted.');
+            ST.allStories = null;   // invalidate shared cache (Flagged/Moderation)
             ST.closeModal();
             ST.loadStories();
             ST._refreshAnalytics();
@@ -1016,12 +1105,9 @@ ST.loadFlagged = function() {
     var el = document.getElementById('flaggedList');
     el.innerHTML = '<div class="st-loading"><i class="fa fa-spinner fa-spin"></i><br>Loading...</div>';
 
-    ST.ajaxGet('stories/get_stories', { status: 'flagged' }, function(r) {
-        if (r.status !== 'success') {
-            el.innerHTML = '<div class="st-empty"><i class="fa fa-exclamation-triangle"></i><p>Failed to load.</p></div>';
-            return;
-        }
-        var list = r.stories || [];
+    // M-1 — derived from the shared unfiltered cache; no separate fetch.
+    ST.ensureAllStories(function() {
+        var list = (ST.allStories || []).filter(function(s) { return s.effectiveStatus === 'flagged'; });
         document.getElementById('tabCountFlagged').textContent = list.length;
 
         if (!list.length) {
@@ -1031,11 +1117,11 @@ ST.loadFlagged = function() {
 
         var html = '<table class="st-table"><thead><tr><th></th><th>Teacher</th><th>Caption</th><th>Type</th><th>Views</th><th>Created</th><th>Actions</th></tr></thead><tbody>';
         list.forEach(function(s) {
-            var avatar = s.teacherProfilePic || ST.defaultAvatar;
-            var tid = ST.esc(s.teacherId).replace(/'/g, "\\'");
-            var sid = ST.esc(s.storyId).replace(/'/g, "\\'");
+            var avatar = ST.safeUrl(s.teacherProfilePic) || ST.defaultAvatar;
+            var tid = ST.jsArg(s.teacherId);
+            var sid = ST.jsArg(s.storyId);
             html += '<tr>'
-                + '<td><img loading="lazy" src="' + ST.esc(avatar) + '" onerror="this.src=\'' + ST.defaultAvatar + '\'" style="width:32px;height:32px;border-radius:6px;object-fit:cover;border:1px solid var(--border)"></td>'
+                + '<td><img loading="lazy" src="' + ST.escAttr(avatar) + '" onerror="this.src=\'' + ST.defaultAvatar + '\'" style="width:32px;height:32px;border-radius:6px;object-fit:cover;border:1px solid var(--border)"></td>'
                 + '<td><strong>' + ST.esc(s.teacherName || 'Unknown') + '</strong></td>'
                 + '<td style="max-width:200px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap">' + ST.esc(s.caption || '--') + '</td>'
                 + '<td><span class="st-badge st-badge-blue">' + ST.esc(s.mediaType) + '</span></td>'
@@ -1172,10 +1258,10 @@ ST.renderLeaderboard = function(list) {
     var html = '';
     list.forEach(function(t) {
         var rankClass = t.rank === 1 ? 'gold' : (t.rank === 2 ? 'silver' : (t.rank === 3 ? 'bronze' : ''));
-        var avatar = t.pic || ST.defaultAvatar;
+        var avatar = ST.safeUrl(t.pic) || ST.defaultAvatar;
         html += '<div class="st-lb-row">'
             + '<div class="st-lb-rank ' + rankClass + '">' + t.rank + '</div>'
-            + '<img class="st-lb-avatar" src="' + ST.esc(avatar) + '" onerror="this.src=\'' + ST.defaultAvatar + '\'">'
+            + '<img class="st-lb-avatar" src="' + ST.escAttr(avatar) + '" onerror="this.src=\'' + ST.defaultAvatar + '\'">'
             + '<div class="st-lb-info"><div class="st-lb-name">' + ST.esc(t.name) + '</div><div class="st-lb-sub">' + t.count + ' stories</div></div>'
             + '<div class="st-lb-stat"><strong>' + (t.views || 0).toLocaleString('en-IN') + '</strong><span>' + t.avgViews + ' avg views</span></div>'
             + '</div>';
@@ -1189,13 +1275,9 @@ ST.loadModerationLog = function() {
     var el = document.getElementById('moderationLog');
     el.innerHTML = '<div class="st-loading"><i class="fa fa-spinner fa-spin"></i><br>Loading...</div>';
 
-    ST.ajaxGet('stories/get_stories', {}, function(r) {
-        if (r.status !== 'success') {
-            el.innerHTML = '<div class="st-empty"><i class="fa fa-exclamation-triangle"></i><p>Failed to load.</p></div>';
-            return;
-        }
-
-        var moderated = (r.stories || []).filter(function(s) {
+    // M-1 — derived from the shared unfiltered cache; no separate fetch.
+    ST.ensureAllStories(function() {
+        var moderated = (ST.allStories || []).filter(function(s) {
             return s.status === 'flagged' || s.status === 'removed';
         });
 
@@ -1206,8 +1288,8 @@ ST.loadModerationLog = function() {
 
         var html = '<table class="st-table"><thead><tr><th>Teacher</th><th>Caption</th><th>Status</th><th>Type</th><th>Views</th><th>Created</th><th>Actions</th></tr></thead><tbody>';
         moderated.forEach(function(s) {
-            var tid = ST.esc(s.teacherId).replace(/'/g, "\\'");
-            var sid = ST.esc(s.storyId).replace(/'/g, "\\'");
+            var tid = ST.jsArg(s.teacherId);
+            var sid = ST.jsArg(s.storyId);
             html += '<tr>'
                 + '<td><strong>' + ST.esc(s.teacherName || 'Unknown') + '</strong></td>'
                 + '<td style="max-width:200px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap">' + ST.esc(s.caption || '--') + '</td>'
@@ -1227,16 +1309,20 @@ ST.loadModerationLog = function() {
 
 ST.refresh = function() {
     ST.analytics = null;
-    ST.loadTeachers();
+    ST.allStories = null;   // force a fresh shared fetch
+    // loadStories() (unfiltered) repopulates ST.allStories + the teacher
+    // dropdown, so no separate get_teachers scan is needed.
     ST.loadStories();
     ST.loadAnalytics();
     ST.toast('Refreshed.');
 };
 
 // ── Init ────────────────────────────────────────────────────────
+// M-1 — two server scans on load (unfiltered stories + analytics) instead of
+// three: loadStories() also seeds ST.allStories and the teacher dropdown, and
+// the Flagged/Moderation tabs reuse that cache rather than re-scanning.
 
 $(document).ready(function() {
-    ST.loadTeachers();
     ST.loadStories();
     ST.loadAnalytics();
 });

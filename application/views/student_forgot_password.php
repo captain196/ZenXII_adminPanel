@@ -6,6 +6,8 @@
 <meta name="csrf-token" content="<?= $this->security->get_csrf_hash() ?>">
 <meta name="csrf-name"  content="<?= $this->security->get_csrf_token_name() ?>">
 <title>Student Password Reset — ZenXii</title>
+<link rel="icon" type="image/png" href="<?= base_url('Designs/favicon.png?v=2') ?>">
+<link rel="apple-touch-icon" href="<?= base_url('Designs/favicon.png?v=2') ?>">
 <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.5.0/css/all.min.css">
 <link href="https://fonts.googleapis.com/css2?family=Clash+Display:wght@400;500;600;700&family=Satoshi:wght@300;400;500;600;700&family=JetBrains+Mono:wght@400;500&display=swap" rel="stylesheet">
 <style>

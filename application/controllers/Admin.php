@@ -81,6 +81,129 @@ class Admin extends MY_Controller
     }
 
     // ====================================================================
+    //  GLOBAL SEARCH — topbar "search anything" (people + entities)
+    // ====================================================================
+
+    /**
+     * Federated typeahead for the header search box. Page/module navigation is
+     * resolved client-side from the (RBAC-filtered) sidebar, so this endpoint
+     * only handles data entities: students (reuses the shared 300s Operations
+     * cache) and staff (own 300s file index). Returns a flat list the frontend
+     * groups by `type`.  GET ?q=  (min 2 chars).
+     */
+    public function global_search()
+    {
+        header('Content-Type: application/json');
+        if (function_exists('session_write_close')) @session_write_close();
+
+        $q = strtolower(trim((string) $this->input->get('q', TRUE)));
+        if (mb_strlen($q) < 2) { $this->json_success(['results' => []]); return; }
+
+        $results = [];
+
+        // ── Students — reuse Operations_accounting's shared cached index ──
+        try {
+            $this->load->library('operations_accounting');
+            $this->operations_accounting->init(
+                $this->firebase, $this->school_name, $this->session_year,
+                $this->admin_id, $this, $this->parent_db_key
+            );
+            foreach ($this->operations_accounting->search_students($q, 6) as $s) {
+                $cls = trim(($s['class'] ?? '') . ' ' . ($s['section'] ?? ''));
+                $id  = (string) ($s['id'] ?? '');
+                $results[] = [
+                    'type'   => 'student',
+                    'icon'   => 'fa-user',
+                    'title'  => ($s['name'] ?? '') !== '' ? $s['name'] : $id,
+                    'detail' => trim(($cls !== '' ? $cls : '') . ($id !== '' ? ' · ' . $id : ''), " ·"),
+                    'url'    => 'sis/profile/' . rawurlencode($id),
+                ];
+            }
+        } catch (\Throwable $e) {
+            log_message('error', 'global_search students: ' . $e->getMessage());
+        }
+
+        // ── Staff — own school-scoped 300s file index ────────────────────
+        try {
+            $CI =& get_instance();
+            $CI->load->driver('cache', ['adapter' => 'file']);
+            $sk   = 'gsearch_staff_' . md5((string) $this->school_id);
+            $sidx = $CI->cache->get($sk);
+            if ($sidx === false) {
+                $sidx = [];
+                foreach ((array) $this->fs->schoolWhere('staff', [], 'Name', 'ASC') as $doc) {
+                    $d = $doc['data'] ?? $doc;
+                    if (!is_array($d)) continue;
+                    $sidx[] = [
+                        'id'   => (string) ($d['staffId'] ?? $d['User ID'] ?? $d['userId'] ?? ''),
+                        'name' => (string) ($d['name'] ?? $d['Name'] ?? ''),
+                        'role' => (string) ($d['role'] ?? $d['Role'] ?? $d['designation'] ?? ''),
+                    ];
+                }
+                $CI->cache->save($sk, $sidx, 300);
+            }
+            $n = 0;
+            foreach ($sidx as $st) {
+                if ($n >= 6) break;
+                if (stripos($st['name'], $q) !== false || stripos($st['id'], $q) !== false) {
+                    $id = (string) $st['id'];
+                    $results[] = [
+                        'type'   => 'staff',
+                        'icon'   => 'fa-id-badge',
+                        'title'  => $st['name'] !== '' ? $st['name'] : $id,
+                        'detail' => trim(($st['role'] !== '' ? $st['role'] : 'Staff') . ($id !== '' ? ' · ' . $id : ''), " ·"),
+                        'url'    => 'staff/teacher_profile/' . rawurlencode($id),
+                    ];
+                    $n++;
+                }
+            }
+        } catch (\Throwable $e) {
+            log_message('error', 'global_search staff: ' . $e->getMessage());
+        }
+
+        // ── Events — own school-scoped 300s file index (by title/category) ─
+        try {
+            $CI =& get_instance();
+            $CI->load->driver('cache', ['adapter' => 'file']);
+            $ek   = 'gsearch_events_' . md5((string) $this->school_id);
+            $eidx = $CI->cache->get($ek);
+            if ($eidx === false) {
+                $eidx = [];
+                foreach ((array) $this->fs->schoolWhere('events', []) as $doc) {
+                    $d = $doc['data'] ?? $doc;
+                    if (!is_array($d)) continue;
+                    $eidx[] = [
+                        'id'    => (string) ($doc['id'] ?? $d['id'] ?? ''),
+                        'title' => (string) ($d['title'] ?? ''),
+                        'cat'   => (string) ($d['category'] ?? 'event'),
+                        'date'  => (string) ($d['startDate'] ?? $d['start_date'] ?? ''),
+                    ];
+                }
+                $CI->cache->save($ek, $eidx, 300);
+            }
+            $n = 0;
+            foreach ($eidx as $ev) {
+                if ($n >= 6) break;
+                if ($ev['title'] === '') continue;
+                if (stripos($ev['title'], $q) !== false || stripos($ev['cat'], $q) !== false) {
+                    $results[] = [
+                        'type'   => 'event',
+                        'icon'   => 'fa-calendar',
+                        'title'  => $ev['title'],
+                        'detail' => trim(ucfirst($ev['cat']) . ($ev['date'] !== '' ? ' · ' . $ev['date'] : ''), " ·"),
+                        'url'    => 'events/list',
+                    ];
+                    $n++;
+                }
+            }
+        } catch (\Throwable $e) {
+            log_message('error', 'global_search events: ' . $e->getMessage());
+        }
+
+        $this->json_success(['results' => $results]);
+    }
+
+    // ====================================================================
     //  DASHBOARD DATA — single AJAX endpoint (max 5 Firebase reads)
     // ====================================================================
 

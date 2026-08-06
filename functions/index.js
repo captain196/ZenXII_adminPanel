@@ -381,6 +381,20 @@ const stories = require("./storiesCleanup");
 exports.onStoryDeleted       = stories.onStoryDeleted;
 exports.sweepExpiredStories  = stories.sweepExpiredStories;
 
+// ─── Stories engagement counters (SEC-4, 2026-07-08) ───────────────
+// Server-authoritative viewCount / reactionCounts off the tenant-guarded
+// viewers/reactions subcollections — clients never write the aggregates.
+const storyCounters = require("./storyCounters");
+exports.onStoryViewerCreated   = storyCounters.onStoryViewerCreated;
+exports.onStoryReactionWritten = storyCounters.onStoryReactionWritten;
+
+// ─── Stories audience index (SEC-1, 2026-07-08) ────────────────────
+// Server-maintained per-parent entitlement doc consulted by the stories
+// read rule — replaces the bypassable client-side audience filter.
+const storyAudience = require("./storyAudience");
+exports.refreshStoryAudience = storyAudience.refreshStoryAudience;
+exports.onStudentClassChanged = storyAudience.onStudentClassChanged;
+
 // ─── PTM creation → async push fan-out (Phase D perf) ──────────────
 //
 // Watches `ptmEvents/{ptmDocId}` document creates. When a new scheduled

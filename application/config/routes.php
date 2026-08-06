@@ -149,6 +149,9 @@ $route['superadmin/login/reset_password']               = 'Superadmin_login/rese
 $route['superadmin/logout']                             = 'Superadmin_login/logout';
 $route['superadmin/csrf_token']                         = 'Superadmin_login/csrf_token';
 
+// Forced set-new-password (developer SA). GET renders the interstitial; POST processes it.
+$route['superadmin/change_my_password']                 = 'Superadmin/change_my_password';
+
 // Dashboard
 $route['superadmin/dashboard']                          = 'Superadmin/dashboard';
 $route['superadmin/dashboard/refresh_stats']            = 'Superadmin/refresh_stats';
@@ -682,6 +685,7 @@ $route['attendance/scan_qr']                 = 'Attendance/scan_qr';
 $route['attendance/teacher_notify']          = 'Attendance/teacher_notify';
 $route['attendance/process_push_requests']   = 'Attendance/process_push_requests';
 $route['attendance/health_check']            = 'Attendance/health_check';
+$route['attendance/audit']                   = 'Attendance/audit';
 $route['attendance/fetch_audit_logs']        = 'Attendance/fetch_audit_logs';
 $route['attendance/cleanup']                 = 'Attendance/cleanup';
 $route['attendance/autofill_staff_today']   = 'Attendance/autofill_staff_today';
@@ -702,6 +706,13 @@ $route['attendance/cron/auto_lock']              = 'Attendance/cron_auto_lock';
 $route['attendance/correction/submit']           = 'Attendance/correction_submit';
 $route['attendance/correction/list']             = 'Attendance/correction_list';
 $route['attendance/correction/decide']           = 'Attendance/correction_decide';
+
+// Staff GPS-attendance regularization review (admin/HR). Requests are filed by
+// the Teacher app into `attendanceRegularizations`; these endpoints let admin/HR
+// list and approve/reject them (approval stamps the day via Staff_attendance_writer).
+$route['attendance/staff_regularization']        = 'Attendance/staff_regularization';
+$route['attendance/staff_regularization/list']   = 'Attendance/staff_regularization_list';
+$route['attendance/staff_regularization/decide'] = 'Attendance/staff_regularization_decide';
 
 // Admin Control Panel UI (renders one view; no business logic)
 $route['attendance/control']                     = 'Attendance/control';
@@ -828,6 +839,7 @@ $route['org']                                              = 'Org/index';
 $route['org/get_data']                                     = 'Org/get_data';
 $route['org/save_role']                                    = 'Org/save_role';
 $route['org/delete_role']                                  = 'Org/delete_role';
+$route['org/backfill_legacy_departments']                  = 'Org/backfill_legacy_departments';
 // Recruitment — Jobs
 $route['hr/get_jobs']                                      = 'Hr/get_jobs';
 $route['hr/save_job']                                      = 'Hr/save_job';
@@ -1298,6 +1310,7 @@ $route['stories/get_stories']                        = 'Stories/get_stories';
 $route['stories/get_story_detail']                   = 'Stories/get_story_detail';
 $route['stories/get_analytics']                      = 'Stories/get_analytics';
 $route['stories/get_teachers']                       = 'Stories/get_teachers';
+$route['stories/get_audience_options']               = 'Stories/get_audience_options';
 $route['stories/moderate_story']                     = 'Stories/moderate_story';
 $route['stories/delete_story']                       = 'Stories/delete_story';
 $route['stories/bulk_moderate']                      = 'Stories/bulk_moderate';

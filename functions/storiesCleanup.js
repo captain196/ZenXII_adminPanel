@@ -63,8 +63,8 @@ async function deleteStorageMedia(storagePath) {
  * Batched in 400-doc chunks to stay under the 500 writes-per-batch
  * Firestore limit.
  */
-async function deleteViewersSubcollection(storyId) {
-  const subRef = db.collection('stories').doc(storyId).collection('viewers');
+async function deleteEngagementSubcollection(storyId, sub) {
+  const subRef = db.collection('stories').doc(storyId).collection(sub);
   let total = 0;
   while (true) {
     const snap = await subRef.limit(400).get();
@@ -92,17 +92,21 @@ exports.onStoryDeleted = onDocumentDeleted('stories/{storyId}', async (event) =>
   const mediaUrl = data.mediaUrl || '';
   const path = extractStoragePath(mediaUrl);
 
-  const [mediaDeleted, viewersDeleted] = await Promise.all([
+  const [mediaDeleted, viewersDeleted, reactionsDeleted] = await Promise.all([
     deleteStorageMedia(path),
-    deleteViewersSubcollection(storyId).catch((e) => {
+    deleteEngagementSubcollection(storyId, 'viewers').catch((e) => {
       logger.warn(`viewers cleanup failed for ${storyId}: ${e.message}`);
+      return 0;
+    }),
+    deleteEngagementSubcollection(storyId, 'reactions').catch((e) => {
+      logger.warn(`reactions cleanup failed for ${storyId}: ${e.message}`);
       return 0;
     }),
   ]);
 
   logger.info(
     `[story-cleanup] ${storyId} → storage=${mediaDeleted ? 'ok' : 'skip'}, ` +
-    `viewers=${viewersDeleted}`
+    `viewers=${viewersDeleted}, reactions=${reactionsDeleted}`
   );
 });
 

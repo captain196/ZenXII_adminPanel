@@ -7,6 +7,8 @@
 <meta name="csrf-token" content="<?= $this->security->get_csrf_hash() ?>">
 <meta name="csrf-name"  content="<?= $this->security->get_csrf_token_name() ?>">
 <title>Super Admin — ZenXii</title>
+<link rel="icon" type="image/png" href="<?= base_url('Designs/favicon.png?v=2') ?>">
+<link rel="apple-touch-icon" href="<?= base_url('Designs/favicon.png?v=2') ?>">
 <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.5.0/css/all.min.css">
 <link href="https://fonts.googleapis.com/css2?family=Playfair+Display:wght@600;700;800&family=DM+Sans:wght@300;400;500;600&family=DM+Mono:wght@400;500&display=swap" rel="stylesheet">
 <style>
@@ -642,6 +644,7 @@ html, body {
 
         btn.classList.add('loading');
         btn.disabled = true;
+        saTopBar(true);
 
         /* FormData carries CSRF token in $_POST — prevents 403 */
         var fd = new FormData();
@@ -659,11 +662,13 @@ html, body {
         })
         .then(function (data) {
             if (data.status === 'success') {
+                saTopBar(true, true);   // finish the bar, then navigate
                 window.location.href = data.redirect;
             } else {
                 showAlert(data.message || 'Login failed. Please try again.');
                 btn.classList.remove('loading');
                 btn.disabled = false;
+                saTopBar(false);
             }
         })
         .catch(function (err) {
@@ -671,8 +676,39 @@ html, body {
             console.error(err);
             btn.classList.remove('loading');
             btn.disabled = false;
+            saTopBar(false);
         });
     });
+
+    /* Top page-loading bar — visible feedback during the auth round-trip.
+       saTopBar(true) starts it, saTopBar(true,true) completes it, saTopBar(false)
+       cancels it. Colours track the SA palette (navy/gold). */
+    function saTopBar(start, done) {
+        var b = document.getElementById('saTopBar');
+        if (!b) {
+            b = document.createElement('div');
+            b.id = 'saTopBar';
+            b.style.cssText = 'position:fixed;top:0;left:0;height:3px;width:0;z-index:99999;'
+                + 'background:linear-gradient(90deg,var(--gold,#c9a227),var(--gold-2,#e6c65a));'
+                + 'box-shadow:0 0 10px var(--gold-glow,rgba(201,162,39,.6));'
+                + 'transition:width .5s ease,opacity .4s ease;opacity:1;';
+            document.body.appendChild(b);
+        }
+        if (!start) {                    // cancel
+            b.style.transition = 'opacity .3s ease';
+            b.style.opacity = '0';
+            return;
+        }
+        if (done) {                      // complete before navigating away
+            b.style.transition = 'width .3s ease';
+            b.style.width = '100%';
+            return;
+        }
+        b.style.transition = 'none';  b.style.opacity = '1';  b.style.width = '0';
+        void b.offsetWidth;
+        b.style.transition = 'width 8s cubic-bezier(.1,.7,.1,1)';
+        b.style.width = '92%';
+    }
 
 }());
 </script>

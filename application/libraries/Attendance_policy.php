@@ -230,6 +230,14 @@ class Attendance_policy
             return $this->_reject($base, 'already_marked');
         }
 
+        // Optional OPENING cutoff — cannot check in before attendance opens
+        // ('Check-in Opens At' in the Work Schedule; empty = no opening gate).
+        // Stops staff punching at odd hours (e.g. midnight).
+        $earliest = ($w['earliestCheckIn'] !== null) ? $this->_to_minutes($w['earliestCheckIn']) : null;
+        if ($earliest !== null && $nowMin < $earliest) {
+            return $this->_reject($base, 'too_early');
+        }
+
         // Optional hard latest-check-in cutoff — arriving after it means the day
         // cannot be marked present (empty in the shift = no cutoff).
         $latest = ($w['latestCheckIn'] !== null) ? $this->_to_minutes($w['latestCheckIn']) : null;
@@ -295,10 +303,13 @@ class Attendance_policy
         $shiftStart = (string) ($sched['shiftStart']    ?? $w['lateThreshold']  ?? self::DEFAULT_LATE_THRESHOLD);
         $grace      = (int)    ($sched['graceMinutes']  ?? $w['gracePeriodMin'] ?? self::DEFAULT_GRACE_MIN);
         $latestRaw  = (string) ($sched['latestCheckIn'] ?? $w['latestCheckIn']  ?? '');
+        $earliestRaw = (string) ($sched['earliestCheckIn'] ?? $w['earliestCheckIn'] ?? '');
 
         return [
             'shiftStart'      => $shiftStart,
             'gracePeriodMin'  => $grace,
+            // Optional opening cutoff; '' or the sentinel 00:00 both mean "no opening gate".
+            'earliestCheckIn' => ($earliestRaw !== '' && $earliestRaw !== '00:00') ? $earliestRaw : null,
             // Optional hard cutoff; '' or the sentinel 23:59 both mean "no cutoff".
             'latestCheckIn'   => ($latestRaw !== '' && $latestRaw !== '23:59') ? $latestRaw : null,
             // Work-schedule (hours model). hoursEnabled gates half-day/absent

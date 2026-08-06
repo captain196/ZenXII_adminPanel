@@ -542,6 +542,59 @@ class Entity_firestore_sync
     }
 
     // ══════════════════════════════════════════════════════════════════
+    //  STAFF / TEACHERS
+    // ══════════════════════════════════════════════════════════════════
+
+    /**
+     * Sync staff profile to Firestore 'staff' collection.
+     * Call after: Staff::add_staff_ajax(), Staff::edit_staff()
+     */
+    public function syncStaff(string $staffId, array $data): bool
+    {
+        if (!$this->ready) return false;
+        $docId = "{$this->schoolCode}_{$staffId}";
+        $doc = [
+            'schoolCode'  => $this->schoolId,
+            'staffId'     => $staffId,
+            'name'        => $data['Name'] ?? $data['name'] ?? '',
+            'email'       => $data['Email'] ?? $data['email'] ?? '',
+            'phone'       => $data['Phone'] ?? $data['phone'] ?? '',
+            'role'        => $data['Role'] ?? $data['role'] ?? '',
+            'designation' => $data['designation'] ?? $data['Designation'] ?? $data['Position'] ?? '',
+            'position'    => $data['Position'] ?? $data['position'] ?? '',
+            'department'  => $data['Department'] ?? $data['department'] ?? '',
+            // Carry role fields so a sync-only staff doc is still visible to
+            // teacher-detection (Academic) and payroll classification.
+            'staff_roles'  => is_array($data['staff_roles'] ?? null) ? array_values($data['staff_roles']) : [],
+            'primary_role' => $data['primary_role'] ?? '',
+            'profilePic'  => $data['Doc']['ProfilePic'] ?? $data['profile_pic'] ?? '',
+            'status'      => $data['Status'] ?? 'Active',
+            // BUG-052 fix 2026-05-25: caller-provided session precedence
+            'session'     => $data['session'] ?? $data['Session'] ?? $this->session,
+            'updatedAt'   => date('c'),
+
+            // Phase A (2026-04-08): statutory + profile fields
+            'altPhone'      => $data['altPhone']      ?? '',
+            'maritalStatus' => $data['maritalStatus']  ?? '',
+            'panNumber'     => $data['panNumber']      ?? '',
+            'aadharNumber'  => $data['aadharNumber']   ?? '',
+            'pfNumber'      => $data['pfNumber']       ?? '',
+            'esiNumber'     => $data['esiNumber']      ?? '',
+        ];
+        return $this->_write('staff', $docId, $doc);
+    }
+
+    /**
+     * Delete staff from Firestore.
+     */
+    public function deleteStaff(string $staffId): bool
+    {
+        if (!$this->ready) return false;
+        $docId = "{$this->schoolCode}_{$staffId}";
+        return $this->_delete('staff', $docId);
+    }
+
+    // ══════════════════════════════════════════════════════════════════
     //  SECTIONS
     // ══════════════════════════════════════════════════════════════════
 

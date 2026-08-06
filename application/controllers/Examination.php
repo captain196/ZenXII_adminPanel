@@ -769,24 +769,14 @@ class Examination extends MY_Controller
 
         $totalProcessed = array_sum(array_column($processed, 'count'));
 
-        // Fix H3: Notify parents/students via Communication module
-        if ($totalProcessed > 0) {
-            try {
-                $this->load->library('Communication_helper', null, 'comm');
-                $this->comm->init($this->firebase, $school, $year);
-                foreach ($processed as $p) {
-                    $this->comm->fire_event('exam_result', [
-                        'exam_id'        => $examId,
-                        'exam_name'      => $exam['Name'] ?? $examId,
-                        'class'          => $p['class'],
-                        'section'        => $p['section'],
-                        'students_count' => $p['count'],
-                    ]);
-                }
-            } catch (\Exception $e) {
-                log_message('error', "Communication fire_event failed after bulk_compute: " . $e->getMessage());
-            }
-        }
+        // HIGH-4: the former per-section fire_event('exam_result', …) here passed
+        // NO student_id, so _resolve_recipient('parent') returned empty and NOBODY
+        // was ever notified — and it fired on compute, not publish. Removed. The
+        // parent notification now fires (correctly, per-student) on the PUBLISH
+        // transition in Exam::update_status→Published. Bulk-compute of a Draft
+        // exam stages results; publishing the exam releases + notifies. A live
+        // recompute updates results in place (no re-notify), matching
+        // Result::compute_results.
 
         $this->json_success([
             'message'   => "Bulk compute complete. {$totalProcessed} student(s) across " . count($processed) . " section(s).",
@@ -946,26 +936,52 @@ class Examination extends MY_Controller
             return ['success' => false, 'count' => 0, 'reason' => 'No marks entered'];
         }
 
-        // ── C1: CANONICAL Firestore-ONLY results write. Replaces the former RTDB
-        //        Computed write + _stale delete AND the partial FS `results`
-        //        mirror (that dual-write is eliminated). One atomic commitBatch
+        // ── C1: CANONICAL Firestore-ONLY results write. One atomic commitBatch
         //        per section: complete ResultDoc (sectionKey + per-subject
         //        percentage/passFail + CC-8 null preservation) + resultsAudit +
         //        examResultMeta clear (CAS). Firestore is the sole source of truth.
+        //
+        // HIGH-3 PUBLISH GATE (parity with Result::compute_results): writes to
+        // `resultsStaging`, NOT the parent-visible `results`. If the exam is
+        // already live (Published/Completed) the freshly staged section is
+        // promoted immediately below; a Draft exam stays staged until publish.
         $examData = $this->exam_read->meta($examId, false);
         $examName = is_array($examData) ? ($examData['Name'] ?? $examId) : $examId;
+        $examStatus = is_array($examData) ? (string) ($examData['Status'] ?? 'Draft') : 'Draft';
 
         $this->load->library('exam_result_store');
         $ers = $this->exam_result_store->init($this->firebase, $this->school_id, $year);
-        $rosterNames = $this->exam_engine->get_student_names($classKey, $sectionKey);
+
+        // MED-6: thread real roster roll numbers (was hardcoded '').
+        $rosterFull  = $this->roster->for_class($classKey, $sectionKey);
+        $rosterNames = [];
+        $rosterRolls = [];
+        foreach ((array) $rosterFull as $ruid => $rf) {
+            $rosterNames[$ruid] = is_array($rf) ? (string) ($rf['Name'] ?? $ruid) : (string) $rf;
+            $rosterRolls[$ruid] = is_array($rf) ? (string) ($rf['RollNo'] ?? '') : '';
+        }
+
         $actor = ['uid' => (string) ($this->admin_id ?? ''), 'role' => (string) ($this->admin_role ?? ''), 'name' => (string) ($this->admin_id ?? '')];
         $res = $ers->commitSectionResults(
             $examId, (string) $examName, $classKey, $sectionKey,
-            $studentResults, is_array($rosterNames) ? $rosterNames : [], $actor,
-            $scale, $passingPct, (string) ($this->admin_id ?? ''), date('c')
+            $studentResults, $rosterNames, $actor,
+            $scale, $passingPct, (string) ($this->admin_id ?? ''), date('c'),
+            '', $rosterRolls   // reason='', roster roll numbers; target defaults to resultsStaging
         );
         if (empty($res['ok'])) {
             return ['success' => false, 'count' => 0, 'reason' => 'Firestore results write failed'];
+        }
+
+        // HIGH-3: promote immediately when the exam is already live so a
+        // (re)compute updates parent-visible results. Draft stays staged.
+        if (in_array($examStatus, ['Published', 'Completed'], true) && !empty($res['resultDocs'])) {
+            $prom = $ers->commitPromoteSection(
+                $examId, $classKey, $sectionKey, $res['resultDocs'], $actor,
+                $examStatus, $examStatus, date('c'), 'bulk recompute on live exam'
+            );
+            if (empty($prom['ok'])) {
+                return ['success' => false, 'count' => 0, 'reason' => 'Results staged but publish/promote failed'];
+            }
         }
 
         return ['success' => true, 'count' => count($studentResults), 'reason' => ''];

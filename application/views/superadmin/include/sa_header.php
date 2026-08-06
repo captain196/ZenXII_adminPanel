@@ -5,6 +5,8 @@
 <meta charset="utf-8">
 <meta http-equiv="X-UA-Compatible" content="IE=edge">
 <title><?= htmlspecialchars($page_title ?? 'Super Admin') ?> — ZenXii SA</title>
+<link rel="icon" type="image/png" href="<?= base_url('Designs/favicon.png?v=2') ?>">
+<link rel="apple-touch-icon" href="<?= base_url('Designs/favicon.png?v=2') ?>">
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <meta name="csrf-token" content="<?= htmlspecialchars($sa_csrf_token ?? '', ENT_QUOTES) ?>">
 <meta name="csrf-name"  content="csrf_token">
@@ -175,6 +177,27 @@ a{text-decoration:none !important;}
     font-size:13px !important;flex:1;
 }
 .g-search input::placeholder{color:var(--t3) !important;opacity:.6;}
+/* ── Global search dropdown ─────────────────────────────── */
+.g-search{position:relative;}
+.g-search-kbd{flex-shrink:0;margin-left:8px;font-family:ui-monospace,"SF Mono",monospace !important;font-size:10px;line-height:1;color:var(--t3);background:var(--bg2);border:1px solid var(--border);border-radius:6px;padding:3px 6px;}
+.g-search-panel{position:absolute;top:calc(100% + 8px);left:0;right:0;z-index:1200;display:none;max-height:min(70vh,520px);overflow-y:auto;background:var(--bg2);border:1px solid var(--border);border-radius:12px;box-shadow:0 18px 50px -20px rgba(0,0,0,.6);padding:6px;scrollbar-width:thin;}
+.g-search-panel.open{display:block;animation:gsIn .14s ease;}
+@keyframes gsIn{from{opacity:0;transform:translateY(-4px)}to{opacity:1;transform:none}}
+.gs-group + .gs-group{margin-top:2px;border-top:1px solid var(--border);padding-top:2px;}
+.gs-grouphd{font-family:ui-monospace,"SF Mono",monospace !important;font-size:9.5px;letter-spacing:.14em;text-transform:uppercase;color:var(--t3);padding:8px 10px 5px;}
+.gs-item{display:flex;align-items:center;gap:11px;padding:8px 10px;border-radius:8px;text-decoration:none !important;color:var(--t1) !important;cursor:pointer;}
+.gs-item:hover,.gs-item.active{background:var(--bg3);}
+.gs-item.active{box-shadow:inset 0 0 0 1px var(--sa-ring);}
+.gs-ic{width:28px;height:28px;flex-shrink:0;border-radius:8px;display:grid;place-items:center;background:var(--sa-dim);color:var(--sa);font-size:12px;}
+.gs-tx{min-width:0;display:flex;flex-direction:column;gap:1px;}
+.gs-t{font-size:13px;font-weight:500;color:var(--t1) !important;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;}
+.gs-t mark{background:var(--sa-glow);color:inherit;border-radius:3px;padding:0 1px;}
+.gs-d{font-size:11px;color:var(--t3);white-space:nowrap;overflow:hidden;text-overflow:ellipsis;}
+.gs-empty,.gs-note{padding:16px 12px;text-align:center;color:var(--t3);font-size:12.5px;}
+.gs-note{display:flex;align-items:center;justify-content:center;gap:7px;}
+.gs-spin{width:13px;height:13px;border:2px solid var(--border);border-top-color:var(--sa);border-radius:50%;animation:gsSpin .6s linear infinite;}
+@keyframes gsSpin{to{transform:rotate(360deg)}}
+@media (max-width:900px){.g-search-kbd{display:none;}}
 .g-actions{display:flex;align-items:center;gap:8px;margin-left:auto;}
 /* Theme toggle */
 .g-theme-pill{
@@ -619,9 +642,13 @@ var BASE_URL = '<?= base_url() ?>';
         <a class="sidebar-toggle" id="saSidebarToggle" role="button" title="Toggle sidebar"><i class="fa fa-bars"></i></a>
     </div>
     <nav class="navbar navbar-static-top">
-        <div class="g-search">
+        <div class="g-search" id="saSearchBox">
             <i class="fa fa-search"></i>
-            <input type="text" placeholder="Search schools, plans, logs...">
+            <input type="text" id="saGlobalSearch" placeholder="Search schools, plans, pages…"
+                   autocomplete="off" role="combobox" aria-autocomplete="list"
+                   aria-expanded="false" aria-controls="saSearchPanel" spellcheck="false">
+            <kbd class="g-search-kbd" id="saSearchKbd" aria-hidden="true">⌘K</kbd>
+            <div class="g-search-panel" id="saSearchPanel" role="listbox" aria-label="Search results"></div>
         </div>
         <div class="g-actions">
             <!-- Theme Toggle -->
@@ -860,6 +887,158 @@ function saOpenProfile(){ try { $('#saProfileModal').modal('show'); } catch(e) {
         </a>
     </div>
 </aside>
+
+<!-- ═══════════════════ SA GLOBAL SEARCH ═══════════════════ -->
+<script>
+(function () {
+    'use strict';
+    var box   = document.getElementById('saSearchBox');
+    var input = document.getElementById('saGlobalSearch');
+    var panel = document.getElementById('saSearchPanel');
+    var kbd   = document.getElementById('saSearchKbd');
+    if (!box || !input || !panel) return;
+
+    var isMac = /Mac|iPod|iPhone|iPad/.test(navigator.platform);
+    if (kbd) kbd.textContent = isMac ? '⌘K' : 'Ctrl K';
+
+    var csrfName = (document.querySelector('meta[name="csrf-name"]')  || {}).content || 'csrf_token';
+    var csrfTok  = function(){ var m = document.querySelector('meta[name="csrf-token"]'); return m ? m.content : ''; };
+
+    /* Page index — from the SA sidebar (matches what this SA can open). */
+    var pages = [];
+    (function () {
+        var seen = {};
+        document.querySelectorAll('.sidebar-menu a[href]').forEach(function (a) {
+            var href = a.getAttribute('href') || '';
+            if (!href || href === '#' || /^javascript:/i.test(href)) return;
+            var span  = a.querySelector('span');
+            var label = (span ? span.textContent : a.textContent).replace(/\s+/g, ' ').trim();
+            if (!label || /logout/i.test(label)) return;
+            var k = label.toLowerCase() + '|' + href;
+            if (seen[k]) return; seen[k] = 1;
+            pages.push({ title: label, url: href.replace(BASE_URL, '') });
+        });
+    })();
+
+    var GROUPS = { school:'Schools', plan:'Plans', payment:'Payments', subscription:'Subscriptions' };
+    var items = [], active = -1, lastQ = '', timer = null, ctrl = null;
+
+    function esc(s){ return (s == null ? '' : String(s)).replace(/[&<>"]/g, function(c){
+        return {'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;'}[c]; }); }
+    function hi(text, q){
+        var t = String(text || ''), i = t.toLowerCase().indexOf(q);
+        if (i < 0 || !q) return esc(t);
+        return esc(t.slice(0,i)) + '<mark>' + esc(t.slice(i,i+q.length)) + '</mark>' + esc(t.slice(i+q.length));
+    }
+    function openP(){ panel.classList.add('open'); input.setAttribute('aria-expanded','true'); }
+    function closeP(){ panel.classList.remove('open'); input.setAttribute('aria-expanded','false'); active = -1; }
+
+    function pageMatches(q){
+        var out = [];
+        for (var i=0; i<pages.length && out.length<6; i++){
+            if (pages[i].title.toLowerCase().indexOf(q) !== -1)
+                out.push({ title: pages[i].title, detail:'', url: pages[i].url, type:'page', icon:'fa-arrow-right' });
+        }
+        return out;
+    }
+
+    function render(q, groups, loading){
+        items = [];
+        var html = '';
+        groups.forEach(function (g){
+            if (!g.rows.length) return;
+            html += '<div class="gs-group"><div class="gs-grouphd">' + esc(g.label) + '</div>';
+            g.rows.forEach(function (r){
+                var idx = items.length; items.push(r);
+                html += '<a class="gs-item" data-idx="' + idx + '" data-type="' + esc(r.type) + '" '
+                     + 'href="' + esc(BASE_URL + r.url) + '" role="option">'
+                     + '<span class="gs-ic"><i class="fa ' + esc(r.icon || 'fa-angle-right') + '"></i></span>'
+                     + '<span class="gs-tx"><span class="gs-t">' + hi(r.title, q) + '</span>'
+                     + (r.detail ? '<span class="gs-d">' + esc(r.detail) + '</span>' : '')
+                     + '</span></a>';
+            });
+            html += '</div>';
+        });
+        if (loading) html += '<div class="gs-note"><span class="gs-spin"></span>Searching schools &amp; plans…</div>';
+        else if (!items.length) html = '<div class="gs-empty">No matches for “' + esc(q) + '”</div>';
+        panel.innerHTML = html;
+        active = -1;
+        openP();
+    }
+
+    function run(q){
+        var mods = pageMatches(q);
+        var wantServer = q.length >= 2;
+        render(q, [{ label:'Pages', rows: mods }], wantServer);
+        if (!wantServer) return;
+
+        if (ctrl && ctrl.abort) { try { ctrl.abort(); } catch(e){} }
+        ctrl = (window.AbortController ? new AbortController() : null);
+        var fd = new FormData();
+        fd.append('q', q);
+        fd.append(csrfName, csrfTok());
+        fetch(BASE_URL + 'superadmin/dashboard/search', {
+            method: 'POST', credentials: 'same-origin', body: fd,
+            headers: { 'X-Requested-With': 'XMLHttpRequest', 'Accept': 'application/json' },
+            signal: ctrl ? ctrl.signal : undefined
+        })
+        .then(function (r){ return r.json(); })
+        .then(function (res){
+            if (q !== lastQ) return;
+            var rows = (res && res.results) || [];
+            var order = ['school','plan','subscription','payment'];
+            var groups = [{ label:'Pages', rows: pageMatches(q) }];
+            order.forEach(function (t){
+                var g = rows.filter(function(x){ return x.type === t; });
+                if (g.length) groups.push({ label: GROUPS[t] || t, rows: g });
+            });
+            // any unexpected types
+            var known = order.concat(['page']);
+            var other = rows.filter(function(x){ return known.indexOf(x.type) === -1; });
+            if (other.length) groups.push({ label:'Results', rows: other });
+            render(q, groups, false);
+        })
+        .catch(function (e){
+            if (e && e.name === 'AbortError') return;
+            if (q !== lastQ) return;
+            render(q, [{ label:'Pages', rows: pageMatches(q) }], false);
+        });
+    }
+
+    function setActive(n){
+        var els = panel.querySelectorAll('.gs-item');
+        if (!els.length) return;
+        if (active >= 0 && els[active]) els[active].classList.remove('active');
+        active = (n + els.length) % els.length;
+        els[active].classList.add('active');
+        els[active].scrollIntoView({ block:'nearest' });
+    }
+
+    input.addEventListener('input', function (){
+        var q = input.value.trim().toLowerCase();
+        lastQ = q;
+        clearTimeout(timer);
+        if (!q){ closeP(); return; }
+        timer = setTimeout(function(){ run(q); }, 180);
+    });
+    input.addEventListener('keydown', function (e){
+        if (e.key === 'ArrowDown'){ e.preventDefault(); setActive(active + 1); }
+        else if (e.key === 'ArrowUp'){ e.preventDefault(); setActive(active - 1); }
+        else if (e.key === 'Enter'){
+            var els = panel.querySelectorAll('.gs-item');
+            var el = (active >= 0 ? els[active] : els[0]);
+            if (el){ e.preventDefault(); window.location.href = el.getAttribute('href'); }
+        }
+        else if (e.key === 'Escape'){ closeP(); input.blur(); }
+    });
+    input.addEventListener('focus', function (){ if (input.value.trim() && items.length) openP(); });
+    document.addEventListener('click', function (e){ if (!box.contains(e.target)) closeP(); });
+    document.addEventListener('keydown', function (e){
+        if ((e.metaKey || e.ctrlKey) && (e.key === 'k' || e.key === 'K')){ e.preventDefault(); input.focus(); input.select(); }
+        else if (e.key === '/' && !/^(INPUT|TEXTAREA|SELECT)$/.test((e.target.tagName||'')) && !e.target.isContentEditable){ e.preventDefault(); input.focus(); }
+    });
+})();
+</script>
 
 <!-- CONTENT WRAPPER -->
 <div class="content-wrapper">

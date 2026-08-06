@@ -131,7 +131,7 @@
     <div class="sl-page-head">
         <div>
             <h4 class="sl-page-title">
-                <i class="fa fa-calendar-check-o"></i> Student Leave Applications
+                <i class="fa fa-calendar-check-o" aria-hidden="true"></i> Student Leave Applications
             </h4>
             <p class="sl-page-sub">Review, approve, or reject student leave requests</p>
             <ol style="list-style:none;display:flex;flex-wrap:wrap;gap:6px;margin:6px 0 0;padding:0;font-size:12px;color:#8a8a8a;">
@@ -141,19 +141,19 @@
             </ol>
         </div>
         <span class="sl-count-badge" id="slCountBadge" style="display:none;">
-            <i class="fa fa-hourglass-half"></i> <span id="slCountNum">0</span> pending
+            <i class="fa fa-hourglass-half" aria-hidden="true"></i> <span id="slCountNum">0</span> pending
         </span>
     </div>
 
     <!-- Filters -->
     <div class="sl-filter-card">
-        <select id="slStatus">
+        <select id="slStatus" aria-label="Filter by leave status">
             <option value="pending">Pending</option>
             <option value="approved">Approved</option>
             <option value="rejected">Rejected</option>
             <option value="all">All Status</option>
         </select>
-        <select id="slClass">
+        <select id="slClass" aria-label="Filter by class">
             <option value="">All Classes</option>
             <?php
             $seen = [];
@@ -166,13 +166,13 @@
             }
             ?>
         </select>
-        <button class="sl-load-btn" onclick="loadLeaves()"><i class="fa fa-search"></i> Load</button>
+        <button type="button" class="sl-load-btn" id="slLoadBtn"><i class="fa fa-search" aria-hidden="true"></i> Load</button>
     </div>
 
     <!-- Content -->
-    <div id="slLoading" class="sl-loading" style="display:none;"><i class="fa fa-spinner fa-spin fa-2x"></i><br><br>Loading leave applications...</div>
+    <div id="slLoading" class="sl-loading" style="display:none;"><i class="fa fa-spinner fa-spin fa-2x" aria-hidden="true"></i><br><br>Loading leave applications...</div>
     <div id="slEmpty" class="sl-empty" style="display:none;">
-        <i class="fa fa-inbox"></i>
+        <i class="fa fa-inbox" aria-hidden="true"></i>
         <p><strong>No leave applications found</strong></p>
         <p>Try changing the filters above</p>
     </div>
@@ -182,7 +182,7 @@
 </section>
 </div>
 
-<div class="sl-toast" id="slToast"></div>
+<div class="sl-toast" id="slToast" role="status" aria-live="polite"></div>
 
 <script>
 (function() {
@@ -216,7 +216,7 @@
         return p.length >= 2 ? (p[0][0] + p[p.length-1][0]).toUpperCase() : p[0].substring(0,2).toUpperCase();
     }
 
-    window.loadLeaves = function() {
+    function loadLeaves() {
         var status = document.getElementById('slStatus').value;
         var cls = document.getElementById('slClass').value;
         document.getElementById('slLoading').style.display = 'block';
@@ -229,11 +229,17 @@
             'class': cls
         }).then(function(res) {
             document.getElementById('slLoading').style.display = 'none';
-            if (!res || res.status !== 'success' || !res.leaves || res.leaves.length === 0) {
+            // Distinguish a server error from a genuinely empty result.
+            if (!res || res.status === 'error') {
+                document.getElementById('slEmpty').style.display = 'block';
+                showToast(res && res.message ? res.message : 'Failed to load leave applications.', 'error');
+                return;
+            }
+            if (res.status !== 'success' || !res.leaves || res.leaves.length === 0) {
                 document.getElementById('slEmpty').style.display = 'block';
                 return;
             }
-            var pending = res.leaves.filter(function(l) { return l.status === 'pending'; }).length;
+            var pending = res.leaves.filter(function(l) { return (l.status || '').toLowerCase() === 'pending'; }).length;
             if (pending > 0) {
                 document.getElementById('slCountNum').textContent = pending;
                 document.getElementById('slCountBadge').style.display = 'inline-flex';
@@ -243,13 +249,21 @@
             document.getElementById('slLoading').style.display = 'none';
             showToast('Failed to load leave applications.', 'error');
         });
-    };
+    }
 
     function renderLeaves(leaves) {
         var html = '';
+        var KNOWN_STATUS = { pending:1, approved:1, rejected:1, cancelled:1 };
         leaves.forEach(function(l, idx) {
-            var badgeClass = 'sl-badge-' + l.status;
-            var isPending = l.status === 'pending';
+            // Whitelist status before it ever reaches a class attribute / display.
+            var status = (l.status || '').toLowerCase();
+            if (!KNOWN_STATUS[status]) status = 'pending';
+            var badgeClass = 'sl-badge-' + status;
+            var isPending = status === 'pending';
+            var statusIcon = status === 'approved' ? 'check'
+                           : status === 'rejected' ? 'times'
+                           : status === 'cancelled' ? 'ban' : 'clock-o';
+            var statusLabel = status.charAt(0).toUpperCase() + status.slice(1);
             var avColor = AVATAR_COLORS[idx % AVATAR_COLORS.length];
 
             html += '<div class="sl-card" data-id="' + esc(l.id) + '">';
@@ -261,7 +275,7 @@
             html += '<div><div class="sl-name">' + esc(l.studentName || l.studentId) + '</div>';
             html += '<div class="sl-class">' + esc((l.className || '')) + ' / ' + esc((l.section || '')) + '</div></div>';
             html += '</div>';
-            html += '<span class="sl-badge ' + badgeClass + '"><i class="fa fa-' + (l.status === 'approved' ? 'check' : l.status === 'rejected' ? 'times' : l.status === 'cancelled' ? 'ban' : 'clock-o') + '"></i> ' + esc(l.status.charAt(0).toUpperCase() + l.status.slice(1)) + '</span>';
+            html += '<span class="sl-badge ' + badgeClass + '"><i class="fa fa-' + statusIcon + '" aria-hidden="true"></i> ' + esc(statusLabel) + '</span>';
             html += '</div>';
 
             // Meta: type, dates, days
@@ -269,15 +283,15 @@
             html += '<div class="sl-meta-item"><strong>Type:</strong> ' + esc(l.leaveType) + '</div>';
             html += '<div class="sl-meta-item"><strong>From:</strong> ' + esc(l.startDate) + '</div>';
             html += '<div class="sl-meta-item"><strong>To:</strong> ' + esc(l.endDate) + '</div>';
-            html += '<div class="sl-meta-item"><strong>Days:</strong> ' + l.numberOfDays + '</div>';
+            html += '<div class="sl-meta-item"><strong>Days:</strong> ' + esc(String(l.numberOfDays)) + '</div>';
             html += '</div>';
 
             // Reason
-            html += '<div class="sl-reason"><i class="fa fa-quote-left" style="opacity:.3;margin-right:6px"></i>' + esc(l.reason) + '</div>';
+            html += '<div class="sl-reason"><i class="fa fa-quote-left" style="opacity:.3;margin-right:6px" aria-hidden="true"></i>' + esc(l.reason) + '</div>';
 
             // Approver info (if processed)
             if (l.approvedBy) {
-                html += '<div class="sl-approver"><i class="fa fa-user-circle"></i> Processed by <strong>' + esc(l.approvedBy) + '</strong>';
+                html += '<div class="sl-approver"><i class="fa fa-user-circle" aria-hidden="true"></i> Processed by <strong>' + esc(l.approvedBy) + '</strong>';
                 if (l.remarks) html += ' &mdash; <em>"' + esc(l.remarks) + '"</em>';
                 html += '</div>';
             }
@@ -286,8 +300,8 @@
             if (isPending) {
                 html += '<div class="sl-actions">';
                 html += '<input type="text" class="sl-remarks-input" placeholder="Add remarks (optional for approve, required for reject)" data-id="' + esc(l.id) + '">';
-                html += '<button class="sl-btn sl-btn-approve" onclick="approveLeave(\'' + esc(l.id) + '\')"><i class="fa fa-check"></i> Approve</button>';
-                html += '<button class="sl-btn sl-btn-reject" onclick="rejectLeave(\'' + esc(l.id) + '\')"><i class="fa fa-times"></i> Reject</button>';
+                html += '<button type="button" class="sl-btn sl-btn-approve" data-action="approve" data-id="' + esc(l.id) + '"><i class="fa fa-check" aria-hidden="true"></i> Approve</button>';
+                html += '<button type="button" class="sl-btn sl-btn-reject" data-action="reject" data-id="' + esc(l.id) + '"><i class="fa fa-times" aria-hidden="true"></i> Reject</button>';
                 html += '</div>';
             }
 
@@ -296,7 +310,7 @@
         document.getElementById('slList').innerHTML = html;
     }
 
-    window.approveLeave = function(leaveId) {
+    function approveLeave(leaveId) {
         var remarks = document.querySelector('.sl-remarks-input[data-id="' + leaveId + '"]');
         var remarksVal = remarks ? remarks.value.trim() : '';
         var btns = document.querySelectorAll('.sl-card[data-id="' + leaveId + '"] .sl-btn');
@@ -319,7 +333,7 @@
         });
     };
 
-    window.rejectLeave = function(leaveId) {
+    function rejectLeave(leaveId) {
         var remarks = document.querySelector('.sl-remarks-input[data-id="' + leaveId + '"]');
         var remarksVal = remarks ? remarks.value.trim() : '';
         if (!remarksVal) {
@@ -345,7 +359,20 @@
             showToast('Network error.', 'error');
             btns.forEach(function(b) { b.disabled = false; });
         });
-    };
+    }
+
+    // Wire events (replaces inline onclick — cleaner CSP posture).
+    document.getElementById('slLoadBtn').addEventListener('click', loadLeaves);
+
+    // Delegated approve/reject handling for dynamically-rendered cards.
+    document.getElementById('slList').addEventListener('click', function(e) {
+        var btn = e.target.closest('[data-action]');
+        if (!btn) return;
+        var id = btn.getAttribute('data-id');
+        if (!id) return;
+        if (btn.getAttribute('data-action') === 'approve') approveLeave(id);
+        else if (btn.getAttribute('data-action') === 'reject') rejectLeave(id);
+    });
 
     // Auto-load on page open
     loadLeaves();

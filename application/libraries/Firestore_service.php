@@ -214,16 +214,26 @@ class Firestore_service
     /**
      * Idempotent canonicalization for identifier inputs (approved normalization
      * policy): trim → collapse internal whitespace → Unicode NFC. Case PRESERVED
-     * (system is case-sensitive). NFC requires ext-intl (Normalizer); when absent
-     * it is skipped — see RISK: enable php-intl in production for full multilingual
-     * (composed/decomposed) safety. Store the SAME canonical value in the readable
+     * (system is case-sensitive). Store the SAME canonical value in the readable
      * field so point-reads recompute the identical token.
+     *
+     * RESIDUAL-5 (2026-07-08): NFC is now ALWAYS applied. The Android apps
+     * (Constants.idToken) unconditionally NFC-normalize, so a host WITHOUT ext-intl
+     * would previously skip NFC here and diverge from the apps for non-ASCII
+     * class/section/subject names → mismatched marks/results/template doc-ids. We
+     * added `symfony/polyfill-intl-normalizer` (composer.json require), which
+     * registers a global `Normalizer` class when ext-intl is absent — so
+     * class_exists('Normalizer') is TRUE on every host after `composer install`.
+     * DEPLOY NOTE: run `composer install` on deploy so the polyfill is present when
+     * the host lacks ext-intl (with ext-intl the native class is used instead).
      */
     public static function canonicalizeName(string $raw): string
     {
         $s = trim($raw);
         $s = preg_replace('/\s+/u', ' ', $s);                  // collapse internal whitespace
         if ($s === null) $s = trim($raw);                      // preg failure guard
+        // Normalizer is guaranteed present post-`composer install` (ext-intl OR the
+        // symfony/polyfill-intl-normalizer polyfill) — see RESIDUAL-5 note above.
         if (class_exists('Normalizer')) {
             $n = \Normalizer::normalize($s, \Normalizer::FORM_C);
             if ($n !== false) $s = $n;

@@ -25,7 +25,7 @@ class Assets extends MY_Controller
     public function __construct()
     {
         parent::__construct();
-        require_permission('Operations');
+        require_permission('Assets');
         $this->load->library('operations_accounting');
         $this->operations_accounting->init(
             $this->firebase, $this->school_name, $this->session_year, $this->admin_id, $this, $this->parent_db_key

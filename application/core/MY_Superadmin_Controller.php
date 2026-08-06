@@ -72,6 +72,21 @@ class MY_Superadmin_Controller extends CI_Controller
             'sa_email'      => $this->sa_email,
             'sa_csrf_token' => $sa_csrf_token,
         ]);
+
+        // ── Forced-change-password gate (mirrors MY_Controller for the SA panel) ──
+        // When a developer SA's password was reset (or the account is brand new),
+        // `sa_must_change_password` is seeded into the session at login. Confine
+        // them to the change-password screen until they pick a new one. Logout
+        // lives in Superadmin_login (not gated by this base controller), so it
+        // always stays reachable.
+        $route_key = strtolower($this->router->fetch_class()) . '/' . strtolower($this->router->fetch_method());
+        if ((bool) $this->session->userdata('sa_must_change_password')
+            && $route_key !== 'superadmin/change_my_password') {
+            if ($this->input->is_ajax_request()) {
+                $this->json_error('You must set a new password before continuing.', 403);
+            }
+            redirect('superadmin/change_my_password');
+        }
     }
 
     // ─────────────────────────────────────────────────────────────────────────
