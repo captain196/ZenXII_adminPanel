@@ -1,6 +1,6 @@
 # Production Readiness Report — Integration Phase 1
 
-**Branch:** `integration/phase1` · **Date:** 2026-08-06 · **Verdict:** ⏳ **CONDITIONAL GO**
+**Branch:** `integration/phase1` · **Date:** 2026-08-06 · **Verdict:** 🔴 **NO-GO** (release gates unexecuted — infra-blocked; code is GO-quality; 1 regression found & fixed this pass)
 **Companion:** full detail + permanent artifact in `RELEASE_CERTIFICATION.md`. No merge, no push performed.
 
 > Evidence-only policy: gates needing infrastructure absent here (staging Firebase + deploy creds, physical devices, browser) are **BLOCKED — operator execution required**, never reported as passed.
@@ -27,12 +27,15 @@
 - Rollback: `git revert --no-commit -m 1 5cb1d0f` → clean (aborted).
 - RTDB: `git diff ank-yug_b1 integration/phase1 -- application/ | grep '^+' | grep -iE 'getReference|->child\(|FirebaseDatabase'` → empty.
 
-## Remaining risks
-1. **Live gates unexecuted here** (5d deploy, 6 apps, 9c UAT) — must be run by operator per runbook. **[Medium]**
-2. `attendanceRegularizations` / `storyAudience` — **0 composite indexes**; confirm single-field or add at deploy (Firestore errors loudly). **[Low]**
-3. **Driver `user_id` claim** — Staff.php took incoming; verify a real staff-create emits the driver identity claim (Transport rules depend on it). **[Medium]**
-4. Tenant `SCH_D94FE8F7AD` has **5 Transport data artifacts** (broken FKs / orphans / stale expenses) — operational cleanup (`transport_expense_reconciler` + FK repair), not a code defect. **[Low]**
-5. Payroll denominator = **working-day** (operator decision), not calendar-day. **[Info]**
+## Findings resolved this pass
+- ✅ **Driver `user_id` claim — REGRESSION found & FIXED.** Merge dropped local F9's `user_id` from 3 staff-create claim mints → empty driver claim. Fixed: `setCanonicalClaims` auto-injects `user_id=uid`. (Existing staff: one-time `Auth_claims_backfill` re-mint.)
+- ✅ **Composite indexes — proven UNNECESSARY** by query analysis (equality-only / single array-contains).
+- ✅ **Transport verifier — proven pre-existing** (before/after IDENTICAL; verifier 0-diff); zero Phase-1 integrity delta.
+
+## Remaining risks / blockers
+1. 🔒 **Mandatory release gates unexecuted & un-runnable here:** 5d (no staging Firebase project — only prod `graderadmin`), 6 (no devices), 9c (no browser). **This is the sole reason for NO-GO.** **[Blocker]**
+2. Tenant `SCH_D94FE8F7AD` has **5 Transport data artifacts** — operational cleanup (`transport_expense_reconciler` + FK repair), not a code defect. **[Low]**
+3. Payroll denominator = **working-day** (operator decision), not calendar-day. **[Info]**
 
 ## Rollback verification — ✅
 Anchors valid, prod branch clean, merge cleanly revertible (proven). Rules → console version rollback; indexes additive.
@@ -42,5 +45,9 @@ Anchors valid, prod branch clean, merge cleanly revertible (proven). Rules → c
 - Incoming atomic `hrCounter` removes a non-atomic read-modify-write (concurrency win, fixes duplicate-ID bug #10).
 - New attendance/HR/exam queries covered by the unioned indexes (251 total); 2 collections to confirm at deploy.
 
-## Recommendation — ⏳ CONDITIONAL GO
-Code integration is **production-quality**; **every in-repo gate PASSES**. Proceed to **staging** and execute the BLOCKED gates (5d, 6, 9c) per `RELEASE_INTEGRATION_PHASE1_RUNBOOK.md`. **GO** to merge `integration/phase1 → ank-yug_b1` only after: staging deploy clean · Parent+Teacher cross-system green · payroll UAT + driver-claim confirmed · **48h canary soak with zero Critical/High**. Until then: **do not merge, do not push.**
+## Recommendation — 🔴 NO-GO
+**Not a code-quality NO-GO.** The code is production-grade — every in-repo gate passes, and the one regression found this pass (driver `user_id` claim) is **fixed**. It is **NO-GO because the mandatory release gates 5d / 6 / 9c have not been executed** and **cannot be** in this environment (no staging Firebase project, no devices, no browser). A GO would falsely certify gates that never ran.
+
+**Path to GO (operator):** create/authorise a **staging Firebase project** → I deploy indexes→rules (5d, confirm no missing-index errors) → Parent+Teacher on staging (6) → payroll/RBAC/audit UAT (9c) → `verify_integration.php` on staging → **48h canary, zero Critical/High**. Then this flips to **GO**.
+
+**Do NOT merge `integration/phase1 → ank-yug_b1`. Do NOT push.**

@@ -3,7 +3,7 @@
 **Artifact type:** Permanent release certification (also serves as the Production Readiness Report).
 **Scope:** Merge of the 6 incoming admin commits (`origin/ank-yug_b1`) with local production work (TMS Transport, Payroll Engine, Document Service, Admission, school_config).
 **Branch under certification:** `integration/phase1` (8 merge/resolution commits + 2 verification-kit commits ahead of `ank-yug_b1`).
-**Date:** 2026-08-06 · **Prepared by:** integration engineering (Claude) · **Status:** ⏳ CONDITIONAL — in-repo gates PASS; live gates require operator execution.
+**Date:** 2026-08-06 · **Prepared by:** integration engineering (Claude) · **Recommendation:** 🔴 **NO-GO** (code is GO-quality + 1 regression found & fixed; NO-GO because mandatory release gates 5d/6/9c are unexecuted — no staging project / devices / browser exist here).
 
 > **Honesty statement.** This certification contains only evidence actually produced. Gates that require infrastructure not present in the build environment (a real **staging Firebase project + deploy credentials**, **physical devices** running the Parent/Teacher apps, a **browser session**) are marked **BLOCKED — operator execution required**, with exact commands, rather than reported as passed.
 
@@ -77,10 +77,26 @@
 - **Proven:** `git revert -m 1 5cb1d0f` applies **cleanly** (dry-run executed then aborted; working tree clean).
 - **If deployed & failing:** (a) code → `git revert` the merge on `ank-yug_b1` or redeploy the backup; (b) rules → Firebase console version rollback; (c) indexes → additive, no rollback; (d) app builds unaffected (same URLs).
 
-## 10. Production Recommendation — ⏳ CONDITIONAL GO
-**The code integration is production-quality and everything verifiable in-repo PASSES** (build, 205 rules tests, additive rule delta, zero new RTDB, O(1) payroll gate, verified rollback, cross-system risks pre-cleared). 
+## 10. Post-Certification Findings (deep-verification pass)
+The demand for evidence over assumption surfaced and resolved real items:
 
-**Final GO is conditional on the operator executing the live gates** (5d staging deploy, 6 cross-system on devices, 9b/9c differential + UAT) per `RELEASE_INTEGRATION_PHASE1_RUNBOOK.md`, with **zero Critical/High** and a **48h canary soak** clean. **Do NOT merge `integration/phase1 → ank-yug_b1` until those pass.**
+1. **🔴 REGRESSION FOUND & FIXED — driver `user_id` claim.** Taking incoming's `Staff.php` wholesale dropped local F9's `'user_id' => $staffId` from **3** staff-creation `setCanonicalClaims()` calls (proven by `git diff ank-yug_b1..integration`). Newly-created drivers would get an **empty** `user_id` claim → Transport `driverIs()` rule fails. **Fixed** in `Firebase::setCanonicalClaims` (auto-injects `user_id = uid`; one place, non-regressable; only Transport rules read it). `php -l` clean. Rule side already emulator-proven (`transport_attendance_sec1`). _Operational: staff minted between the merge and this fix need a one-time `Auth_claims_backfill` re-mint._
+2. **✅ RESOLVED — composite indexes.** Query analysis proves NONE needed: `attendanceRegularizations` uses **equality-only** filters (no orderBy/range → single-field indexes); `storyAudience` uses a **single `array-contains`** (auto-indexed). Not a gap.
+3. **✅ RESOLVED — Transport verifier "FAILED (5)".** Before/after differential (`ank-yug_b1` vs `integration/phase1`) = **IDENTICAL**; `Transport_verifier.php` diff = **0 lines**. All 5 are pre-existing tenant data-quality issues (broken FKs, orphan stops, stale/probe records). **Phase 1 added zero integrity violations.**
+
+## 11. Environment blockers (cannot be executed here — NOT fabricated)
+- **NO staging Firebase project exists.** Account has `grader-ts`, **`graderadmin` (PRODUCTION — operator-confirmed)**, `graders-1c047` (disabled). "Deploy to staging only" has **no valid target**; deploying to `graderadmin` is prohibited. **Gate 5b/5d cannot run** until a staging project is created. (`grader-ts` is an unconfirmed candidate — do not deploy without operator authorization.)
+- **No physical devices / no staging backend** → **Gate 6** (Parent/Teacher on-device) cannot run here.
+- **No browser** → **Gate 9c** (UAT) cannot run here.
+
+## 12. Production Recommendation — 🔴 NO-GO (for now)
+**This is NOT a code-quality NO-GO.** The code is production-grade: build clean, 205/205 rules tests, additive rule delta, zero new RTDB, O(1) payroll gate, rollback proven, cross-system risks pre-cleared, and the one regression found in this pass is **fixed**.
+
+**It is NO-GO because the mandatory release gates have not been executed** — Gate 5d (staging deploy), Gate 6 (cross-system on devices), Gate 9c (UAT) — and **cannot be executed in this environment** (no staging project, no devices, no browser). A GO here would falsely claim gates that never ran.
+
+**To convert to GO, the operator must:** (a) create/authorise a **staging Firebase project**; then I deploy indexes→rules (Gate 5d) and confirm no missing-index errors; (b) run Parent+Teacher against staging (Gate 6); (c) run the payroll/RBAC/audit UAT (Gate 9c); (d) `php scripts/verify_integration.php` on the staging tenant; (e) **48h canary, zero Critical/High**. Only then does this document flip to **GO**.
+
+**Do NOT merge `integration/phase1 → ank-yug_b1`. Do NOT push.**
 
 ---
-*Governed by: PRODUCTION STABILITY FIRST · CROSS-MODULE IMPACT VERIFICATION · ZERO-RTDB. No merge, no push performed.*
+*Governed by: PRODUCTION STABILITY FIRST · CROSS-MODULE IMPACT VERIFICATION · ZERO-RTDB. No merge, no push performed. Evidence-only: unexecuted gates are never reported as passed.*
