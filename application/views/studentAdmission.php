@@ -1017,6 +1017,44 @@ document.addEventListener('DOMContentLoaded', function() {
                 }
             }
 
+            // ── Files uploaded on the public application: show them + carry
+            //    over on save; relax "required" where the lead already
+            //    supplied the photo/Aadhaar so the admin needn't re-scan. ──
+            (function(){
+                function _ext(s){ s=(s||'').split('?')[0]; try{s=decodeURIComponent(s);}catch(e){} var i=s.lastIndexOf('.'); return i<0?'':s.slice(i+1).toLowerCase(); }
+                function _isImg(s){ return ['jpg','jpeg','png','gif','webp'].indexOf(_ext(s))!==-1; }
+                function _esc(s){ var d=document.createElement('div'); d.textContent=s==null?'':s; return d.innerHTML; }
+                // Preset the Passport Size Photo preview from the lead (this is
+                // where the uploaded photo is shown — so we do NOT also list it
+                // in the attachments card below, to avoid a duplicate photo).
+                if (L.photo_url){
+                    var pp=document.getElementById('passportPhotoPreview'); if (pp) pp.src = L.photo_url;
+                    var sp=document.getElementById('student_photo'); if (sp) sp.removeAttribute('required');
+                    var wp=document.getElementById('wrap_student_photo'); if (wp) wp.classList.add('has-file');
+                }
+                if (L.aadhaar_url){ var ac=document.getElementById('aadharCard'); if (ac) ac.removeAttribute('required'); }
+                // Attachments card lists Aadhaar + other documents only (photo is
+                // already visible in the Passport Size Photo box above).
+                var items = [];
+                if (L.aadhaar_url) items.push({label:'Aadhaar Card', url:L.aadhaar_url});
+                if (Array.isArray(L.documents)) L.documents.forEach(function(d){ if (d && d.url) items.push({label:(d.name || 'Document'), url:d.url}); });
+                if (!items.length) return;
+                var tiles='';
+                items.forEach(function(a){
+                    var im=a.img||_isImg(a.url), lbl=_esc(a.label), url=_esc(a.url);
+                    if (im) tiles += '<a href="'+url+'" target="_blank" rel="noopener" style="display:inline-block;width:92px;text-align:center;text-decoration:none;color:#334155;"><img src="'+url+'" alt="'+lbl+'" style="width:92px;height:92px;object-fit:cover;border-radius:8px;border:1px solid #e2e8f0;display:block;"><span style="display:block;font-size:11px;margin-top:4px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;">'+lbl+'</span></a>';
+                    else tiles += '<a href="'+url+'" target="_blank" rel="noopener" style="display:inline-flex;align-items:center;gap:7px;padding:9px 13px;border:1px solid #e2e8f0;border-radius:8px;text-decoration:none;color:#0f766e;font-size:13px;font-weight:600;"><i class="fa fa-file-o"></i> '+lbl+'</a>';
+                });
+                var card=document.createElement('div');
+                card.style.cssText='background:#f0fdfa;border:1px solid #99f6e4;border-radius:10px;padding:14px 16px;margin:0 0 16px;';
+                card.innerHTML='<div style="font-size:13px;font-weight:700;color:#0f766e;margin-bottom:4px;"><i class="fa fa-paperclip"></i> Uploaded with the application</div>'
+                             + '<div style="font-size:11.5px;color:#5a716c;margin-bottom:10px;">These are attached to the student automatically on save. Upload again only to replace one.</div>'
+                             + '<div style="display:flex;flex-wrap:wrap;gap:12px;align-items:flex-start;">'+tiles+'</div>';
+                var docsSec=document.getElementById('sec-docs');
+                if (docsSec && docsSec.firstChild) docsSec.insertBefore(card, docsSec.firstChild);
+                else if (docsSec) docsSec.appendChild(card);
+            })();
+
             // Store lead_id in hidden field for save_admission
             var hid = document.createElement('input');
             hid.type = 'hidden'; hid.name = 'lead_id'; hid.value = leadId;
