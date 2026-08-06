@@ -20,6 +20,24 @@ defined('BASEPATH') OR exit('No direct script access allowed');
  */
 class Exam_read
 {
+    /**
+     * RESIDUAL-3 (2026-07-08) — true cursor pagination for the section/subject
+     * marks & results readers. The prior fixed cap (SECTION_READ_LIMIT) silently
+     * truncated any section/subject that exceeded it. _queryAll() now walks the
+     * whole result set page-by-page via the Firestore startAfter cursor, so ALL
+     * docs are returned regardless of size.
+     *
+     * PAGE_SIZE — rows fetched per cursor page. A normal class-section fits in one
+     *   page (≈40-60 students × subjects), so the common case is a single query.
+     * HARD_CEILING — defensive absolute stop; if a single logical section ever
+     *   exceeds this the loop bails and _warn_if_truncated() logs it (should be
+     *   unreachable in practice — flags a data anomaly rather than truncating
+     *   silently). SECTION_READ_LIMIT is retained as a back-compat alias.
+     */
+    const PAGE_SIZE          = 1000;
+    const HARD_CEILING       = 100000;
+    const SECTION_READ_LIMIT = 5000;  // legacy alias; no longer used as a query cap
+
     /** @var object Firebase wrapper (firestoreGet/firestoreQuery). */
     private $firebase;
     private $schoolId = '';
@@ -96,6 +114,8 @@ class Exam_read
         $rows = $this->firebase->firestoreQuery('exams',
             [['schoolId', '==', $this->schoolId], ['session', '==', $this->session]], null, 'ASC', 500);
         if (!is_array($rows)) return [];
+        // LOW-12: 500 is ample for one school-session's exam count; flag if ever full.
+        $this->_warn_if_truncated($rows, 500, 'list_exams');
         $out = [];
         foreach ($rows as $r) {
             $d = $r['data'] ?? $r;
@@ -165,12 +185,15 @@ class Exam_read
     public function marks_section(string $examId, string $classKey, string $sectionKey): array
     {
         if (!$this->ready || $examId === '' || $classKey === '' || $sectionKey === '') return [];
-        $rows = $this->firebase->firestoreQuery('marks', [
+        // RESIDUAL-3: paginate ALL docs (a section spans every subject, so this
+        // set can exceed one page). orderBy studentId is non-unique here (one doc
+        // per subject per student) — _queryAll handles the boundary ties.
+        $rows = $this->_queryAll('marks', [
             ['schoolId',  '==', $this->schoolId],
             ['examId',    '==', $examId],
             ['className',  '==', $classKey],
             ['section',   '==', $sectionKey],
-        ], null, 'ASC', 1000);
+        ], 'studentId');
         if (!is_array($rows)) return [];
 
         $out = [];
@@ -202,13 +225,15 @@ class Exam_read
     public function marks_subject(string $examId, string $classKey, string $sectionKey, string $subject): array
     {
         if (!$this->ready || $examId === '' || $classKey === '' || $sectionKey === '' || $subject === '') return [];
-        $rows = $this->firebase->firestoreQuery('marks', [
+        // RESIDUAL-3: paginate ALL docs. Scoped to one subject → studentId is
+        // unique within this query, so pagination is a clean per-student walk.
+        $rows = $this->_queryAll('marks', [
             ['schoolId',  '==', $this->schoolId],
             ['examId',    '==', $examId],
             ['className',  '==', $classKey],
             ['section',   '==', $sectionKey],
             ['subject',   '==', $subject],
-        ], null, 'ASC', 1000);
+        ], 'studentId');
         if (!is_array($rows)) return [];
 
         $out = [];
@@ -227,6 +252,95 @@ class Exam_read
     {
         if (is_array($r) && isset($r['data']) && is_array($r['data'])) return $r['data'];
         return is_array($r) ? $r : [];
+    }
+
+    /**
+     * LOW-12 / RESIDUAL-3 — defensive truncation log. The section/subject marks
+     * & results readers now paginate fully via _queryAll(), so this fires only if
+     * a single logical section exceeds the HARD_CEILING safety stop (unreachable
+     * in practice — signals a data anomaly, not routine truncation). Still used by
+     * the fixed-limit readers (list_exams etc.) whose scope genuinely can't grow.
+     */
+    private function _warn_if_truncated($rows, int $limit, string $where): void
+    {
+        if (is_array($rows) && count($rows) >= $limit) {
+            log_message('error',
+                "Exam_read::{$where} — result page filled the {$limit}-row limit; "
+                . 'possible silent truncation — section may exceed the read ceiling (pagination needed).');
+        }
+    }
+
+    /**
+     * RESIDUAL-3 — fetch EVERY doc matching $conditions via Firestore cursor
+     * pagination, so a large section/subject is never silently truncated.
+     *
+     * Walks pages of PAGE_SIZE ordered ASC by $orderBy, passing the last kept
+     * row's $orderBy value as the exclusive `startAfter` cursor for the next page,
+     * until a page comes back short (the final page).
+     *
+     * Non-unique orderBy (marks_section orders by studentId, but a student has one
+     * doc per subject): the Firestore cursor is EXCLUSIVE on the orderBy VALUE, so
+     * resuming at the last row's value would skip the remaining tied rows of the
+     * boundary group. To stay lossless we DROP the trailing rows sharing the page's
+     * last orderBy value and resume from the last strictly-smaller value — the whole
+     * boundary group is then re-fetched intact on the next page (no loss, no dup).
+     * For a unique orderBy (marks_subject / results_section) nothing is ever dropped,
+     * so it degrades to a plain per-row walk.
+     *
+     * Requires a composite index covering the equality conditions + $orderBy. If
+     * that index is absent the Firestore REST layer retries WITHOUT orderBy (client-
+     * side sort) — correct & complete for any section that fits in one page (the
+     * common case), but multi-page pagination needs the index deployed. See the
+     * RESIDUAL-3 index additions in firebase-rules/firestore.indexes.json.
+     *
+     * @return array List of {id,data} rows (same shape firestoreQuery returns).
+     */
+    private function _queryAll(string $collection, array $conditions, string $orderBy): array
+    {
+        $all        = [];
+        $startAfter = null;
+        do {
+            $page = $this->firebase->firestoreQuery(
+                $collection, $conditions, $orderBy, 'ASC', self::PAGE_SIZE, $startAfter
+            );
+            if (!is_array($page) || empty($page)) break;
+            $n = count($page);
+
+            if ($n < self::PAGE_SIZE) {                 // final (short) page — keep all
+                foreach ($page as $r) $all[] = $r;
+                break;
+            }
+
+            // Full page → more may follow. Drop the trailing boundary group so the
+            // exclusive cursor can't skip its tied rows on the next page.
+            $lastVal = (string) ($this->docData($page[$n - 1])[$orderBy] ?? '');
+            $keep = $n;
+            while ($keep > 0
+                && (string) ($this->docData($page[$keep - 1])[$orderBy] ?? '') === $lastVal) {
+                $keep--;
+            }
+
+            if ($keep === 0) {
+                // A whole page shares ONE orderBy value (>= PAGE_SIZE tied rows) —
+                // unreachable for marks/results (a student has far fewer docs). Keep
+                // the page and advance exclusively to avoid an infinite loop; log it.
+                foreach ($page as $r) $all[] = $r;
+                $startAfter = $lastVal;
+                log_message('error',
+                    "Exam_read::_queryAll — {$collection} page of " . self::PAGE_SIZE
+                    . " rows all share {$orderBy}={$lastVal}; advancing may skip ties (unexpected at this scale).");
+            } else {
+                for ($i = 0; $i < $keep; $i++) $all[] = $page[$i];
+                $startAfter = (string) ($this->docData($page[$keep - 1])[$orderBy] ?? '');
+            }
+
+            if (count($all) >= self::HARD_CEILING) {    // defensive absolute stop
+                $this->_warn_if_truncated($all, self::HARD_CEILING, "_queryAll({$collection})");
+                break;
+            }
+        } while (true);
+
+        return $all;
     }
 
     /**
@@ -267,12 +381,25 @@ class Exam_read
     public function results_section(string $examId, string $classKey, string $sectionKey): array
     {
         if (!$this->ready || $examId === '' || $classKey === '' || $sectionKey === '') return [];
-        $rows = $this->firebase->firestoreQuery('results', [
+        $cond = [
             ['schoolId',  '==', $this->schoolId],
             ['examId',    '==', $examId],
             ['className',  '==', $classKey],
             ['section',   '==', $sectionKey],
-        ], null, 'ASC', 1000);
+        ];
+        // RESIDUAL-3: paginate ALL docs. results carry one doc per student →
+        // studentId is unique within this query (clean per-student walk).
+        $rows = $this->_queryAll('results', $cond, 'studentId');
+        // HIGH-3 admin preview: `results` now holds ONLY published results. When a
+        // section has been computed but not yet published (Draft exam), or was just
+        // unpublished, its docs live in `resultsStaging`. This is an ADMIN-internal
+        // reader (parent/teacher apps query Firestore `results` directly via the SDK,
+        // which stays published-only), so fall back to staging when `results` is
+        // empty. Promote/demote move a whole section atomically, so the two never
+        // split one section — no double-read.
+        if (empty($rows) || !is_array($rows)) {
+            $rows = $this->_queryAll('resultsStaging', $cond, 'studentId');
+        }
         if (!is_array($rows)) return [];
         $out = [];
         foreach ($rows as $r) {
@@ -292,11 +419,18 @@ class Exam_read
     public function results_student(string $examId, string $studentId): array
     {
         if (!$this->ready || $examId === '' || $studentId === '') return [];
-        $rows = $this->firebase->firestoreQuery('results', [
+        $cond = [
             ['schoolId',  '==', $this->schoolId],
             ['examId',    '==', $examId],
             ['studentId', '==', $studentId],
-        ], null, 'ASC', 1);
+        ];
+        $rows = $this->firebase->firestoreQuery('results', $cond, null, 'ASC', 1);
+        // HIGH-3 admin preview: fall back to the unpublished staged result when the
+        // exam isn't published yet (see results_section for the rationale). Admin-
+        // internal reader only; parent/teacher apps read `results` directly.
+        if (!is_array($rows) || !$rows) {
+            $rows = $this->firebase->firestoreQuery('resultsStaging', $cond, null, 'ASC', 1);
+        }
         if (!is_array($rows) || !$rows) return [];
         $d = $this->docData(reset($rows));
         return $d ? $this->resultEntry($d) : [];

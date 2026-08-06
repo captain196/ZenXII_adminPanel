@@ -1317,22 +1317,24 @@ class Health_check extends MY_Controller
 
     private function _checks_hr()
     {
-        $fb      = $this->firebase;
-        $school  = $this->school_name;
-        $session = $this->session_year;
-        $hrBase  = "Schools/{$school}/HR";
+        $fb        = $this->firebase;
+        $school    = $this->school_name;
+        $session   = $this->session_year;
+        $hrBase    = "Schools/{$school}/HR";
+        $schoolFsId = $this->school_id;   // departments now live on Firestore schools/{id}.departments
 
         return [
             /* 1. Departments Exist */
             [
                 'name' => 'Departments Defined',
-                'fn'   => function() use ($fb, $hrBase) {
-                    $depts = $fb->get("{$hrBase}/Departments");
-                    if (!is_array($depts) || empty($depts))
-                        return $this->_w('No departments configured — set up departments in HR > Departments');
+                'fn'   => function() use ($fb, $schoolFsId) {
+                    $sch   = $schoolFsId !== '' ? $fb->firestoreGet('schools', $schoolFsId) : null;
+                    $depts = is_array($sch['departments'] ?? null) ? $sch['departments'] : [];
+                    if (empty($depts))
+                        return $this->_w('No departments configured — set them up in Departments & Roles (org)');
                     $active = 0;
                     foreach ($depts as $d) {
-                        if (($d['status'] ?? '') === 'Active') $active++;
+                        if (($d['status'] ?? 'Active') === 'Active') $active++;
                     }
                     return $this->_p(count($depts) . ' department(s), ' . $active . ' active');
                 },
@@ -1340,8 +1342,9 @@ class Health_check extends MY_Controller
             /* 2. Department Data Integrity */
             [
                 'name' => 'Department Data Integrity',
-                'fn'   => function() use ($fb, $hrBase) {
-                    $depts = $fb->get("{$hrBase}/Departments");
+                'fn'   => function() use ($fb, $schoolFsId) {
+                    $sch   = $schoolFsId !== '' ? $fb->firestoreGet('schools', $schoolFsId) : null;
+                    $depts = is_array($sch['departments'] ?? null) ? $sch['departments'] : null;
                     if (!is_array($depts)) return $this->_p('No departments — skipped');
                     $issues = [];
                     foreach ($depts as $id => $d) {
@@ -1499,7 +1502,7 @@ class Health_check extends MY_Controller
                     foreach ($roster as $staffId => $v) {
                         $profile = $fb->get("Users/Teachers/{$school}/{$staffId}");
                         if (!is_array($profile)) continue;
-                        if (empty($profile['Department'])) $noDept++;
+                        if (trim((string) ($profile['Department'] ?? $profile['department'] ?? '')) === '') $noDept++;
                         if ($noDept >= 5) break; // Sample to avoid timeout
                     }
                     if ($noDept > 0)

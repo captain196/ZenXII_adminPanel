@@ -30,36 +30,41 @@ class Staff extends MY_Controller
     private const MANAGE_ROLES = ['Super Admin', 'School Super Admin', 'Admin', 'Principal', 'Vice Principal', 'HR Manager'];
     private const VIEW_ROLES   = ['Super Admin', 'School Super Admin', 'Admin', 'Principal', 'Vice Principal', 'HR Manager', 'Academic Coordinator', 'Class Teacher', 'Teacher'];
 
-    // ── Default staff role definitions (seeded on first access) ────────────
-    private const DEFAULT_STAFF_ROLES = [
-        'ROLE_TEACHER'      => ['label' => 'Teacher',         'category' => 'Teaching',       'flags' => ['can_teach' => true, 'can_access_timetable' => true], 'attendance_type' => 'standard', 'is_system' => true],
-        'ROLE_ACCOUNTANT'   => ['label' => 'Accountant',      'category' => 'Administrative', 'flags' => ['can_handle_fees' => true],                          'attendance_type' => 'standard', 'is_system' => true],
-        'ROLE_LIBRARIAN'    => ['label' => 'Librarian',       'category' => 'Non-Teaching',   'flags' => ['can_manage_library' => true],                       'attendance_type' => 'standard', 'is_system' => true],
-        'ROLE_LAB_ASST'     => ['label' => 'Lab Assistant',   'category' => 'Non-Teaching',   'flags' => [],                                                  'attendance_type' => 'standard', 'is_system' => true],
-        'ROLE_CLERK'        => ['label' => 'Clerk',           'category' => 'Administrative', 'flags' => [],                                                  'attendance_type' => 'standard', 'is_system' => true],
-        'ROLE_DRIVER'       => ['label' => 'Driver',          'category' => 'Support',        'flags' => ['can_manage_transport' => true],                     'attendance_type' => 'shift',    'is_system' => true],
-        'ROLE_SECURITY'     => ['label' => 'Security',        'category' => 'Support',        'flags' => [],                                                  'attendance_type' => 'shift',    'is_system' => true],
-        'ROLE_HOUSE_WARDEN' => ['label' => 'House Warden',    'category' => 'Non-Teaching',   'flags' => ['can_manage_hostel' => true],                        'attendance_type' => 'standard', 'is_system' => false],
-        'ROLE_PEON'         => ['label' => 'Peon/Attendant',  'category' => 'Support',        'flags' => [],                                                  'attendance_type' => 'standard', 'is_system' => false],
+    // ── Unified role catalogue (single source of truth) ────────────────────
+    // ONE role entity now serves BOTH staff (HR: category/flags/attendance_type)
+    // AND admin access (RBAC: permissions[]/tier/sort_order). A role is assignable
+    // to staff and/or admins. Keyed by ROLE_*; the `label` is the admin-facing
+    // identifier carried in the Firebase claim, so labels here MUST match the
+    // legacy RBAC role names exactly (Admin, Principal, Teacher, …) or existing
+    // admins lose their permissions. Flags = LIST of capability keys.
+    //   tier/sort_order → admin-side grouping;  category → staff/payroll grouping.
+    private const ALL_MODULES = [
+        'SIS','Fees','Accounting','Attendance','Examinations','Results','LMS','Certificates',
+        'HR','Events','Communication','Operations','Academic','Reports','Configuration',
+        'Admin Users','Stories','Homework',
     ];
-
-    // ── S1b: reserved role labels ──────────────────────────────────────────
-    // A custom staff role's label becomes its canonical Firebase Auth `role`
-    // claim, so it must never impersonate a privileged or cross-principal label.
-    // Compared case-insensitively against both the spaced and underscore
-    // claim-token forms. Sourced from Staff::MANAGE_ROLES + the Firestore rules
-    // isAdmin()/isStaff()/isSuperAdmin() enums + the SA/parent/student claims.
-    private const RESERVED_ROLE_LABELS = [
-        'super admin', 'super_admin',
-        'school super admin', 'school_super_admin',
-        'admin',
-        'principal',
-        'vice principal',
-        'hr manager',
-        'academic coordinator',
-        'class teacher',
-        'parent',
-        'student',
+    private const DEFAULT_STAFF_ROLES = [
+        // ── Access-oriented roles (formerly the RBAC catalogue) ──────────────
+        'ROLE_ADMIN'                => ['label' => 'Admin',                'description' => 'Full school-level access, all modules',                 'category' => 'Administrative', 'flags' => [],                                     'attendance_type' => 'standard', 'is_system' => true, 'tier' => 1, 'sort_order' => 1,  'permissions' => self::ALL_MODULES],
+        'ROLE_PRINCIPAL'            => ['label' => 'Principal',            'description' => 'Academic oversight, approvals, reports (no accounting)', 'category' => 'Administrative', 'flags' => [],                                     'attendance_type' => 'standard', 'is_system' => true, 'tier' => 2, 'sort_order' => 2,  'permissions' => ['SIS','Attendance','Examinations','Results','LMS','Certificates','Academic','Reports','Events','Communication','Stories','Configuration']],
+        'ROLE_VICE_PRINCIPAL'       => ['label' => 'Vice Principal',       'description' => 'Academic oversight, limited approvals (no config)',       'category' => 'Administrative', 'flags' => [],                                     'attendance_type' => 'standard', 'is_system' => true, 'tier' => 2, 'sort_order' => 3,  'permissions' => ['SIS','Attendance','Examinations','Results','LMS','Certificates','Academic','Reports','Events','Communication','Stories']],
+        'ROLE_ACADEMIC_COORDINATOR' => ['label' => 'Academic Coordinator', 'description' => 'Classes, exams, results, timetable, homework',           'category' => 'Administrative', 'flags' => [],                                     'attendance_type' => 'standard', 'is_system' => true, 'tier' => 3, 'sort_order' => 4,  'permissions' => ['SIS','Attendance','Examinations','Results','LMS','Academic','Reports','Stories']],
+        'ROLE_HR_MANAGER'           => ['label' => 'HR Manager',          'description' => 'Staff, payroll, leaves, recruitment, appraisals',        'category' => 'Administrative', 'flags' => [],                                     'attendance_type' => 'standard', 'is_system' => true, 'tier' => 3, 'sort_order' => 5,  'permissions' => ['HR','Attendance','Reports']],
+        'ROLE_ACCOUNTANT'           => ['label' => 'Accountant',          'description' => 'Fees, accounting, ledgers, bank recon, reports',         'category' => 'Administrative', 'flags' => ['can_handle_fees'],                    'attendance_type' => 'standard', 'is_system' => true, 'tier' => 3, 'sort_order' => 6,  'permissions' => ['Fees','Accounting','Reports']],
+        'ROLE_FRONT_OFFICE'         => ['label' => 'Front Office',         'description' => 'Admissions CRM, visitor log, communication, certificates','category' => 'Administrative', 'flags' => [],                                     'attendance_type' => 'standard', 'is_system' => true, 'tier' => 4, 'sort_order' => 7,  'permissions' => ['SIS','Communication','Certificates','Events','Stories']],
+        'ROLE_CLASS_TEACHER'        => ['label' => 'Class Teacher',        'description' => 'Teacher + section reports, parent communication, flags',  'category' => 'Teaching',       'flags' => ['can_teach','can_access_timetable'],   'attendance_type' => 'standard', 'is_system' => true, 'tier' => 4, 'sort_order' => 8,  'permissions' => ['SIS','Attendance','Examinations','Results','LMS','Stories','Communication','Reports','Events']],
+        'ROLE_TEACHER'              => ['label' => 'Teacher',             'description' => 'Own class attendance, homework, marks, stories, messages','category' => 'Teaching',       'flags' => ['can_teach','can_access_timetable'],   'attendance_type' => 'standard', 'is_system' => true, 'tier' => 4, 'sort_order' => 9,  'permissions' => ['Attendance','Examinations','Results','LMS','Stories','Communication']],
+        'ROLE_LIBRARIAN'            => ['label' => 'Librarian',           'description' => 'Library module',                                         'category' => 'Non-Teaching',   'flags' => ['can_manage_library'],                 'attendance_type' => 'standard', 'is_system' => true, 'tier' => 5, 'sort_order' => 10, 'permissions' => ['Library']],
+        'ROLE_TRANSPORT_MANAGER'    => ['label' => 'Transport Manager',   'description' => 'Transport, routes, vehicles, GPS tracking',              'category' => 'Support',        'flags' => ['can_manage_transport'],               'attendance_type' => 'standard', 'is_system' => true, 'tier' => 5, 'sort_order' => 11, 'permissions' => ['Transport','Reports']],
+        'ROLE_HOSTEL_WARDEN'        => ['label' => 'Hostel Warden',       'description' => 'Hostel allocation, hostel attendance',                   'category' => 'Non-Teaching',   'flags' => ['can_manage_hostel'],                  'attendance_type' => 'standard', 'is_system' => true, 'tier' => 5, 'sort_order' => 12, 'permissions' => ['Hostel']],
+        'ROLE_STAFF'                => ['label' => 'Staff',               'description' => 'View-only access, no module permissions',                'category' => 'Support',        'flags' => [],                                     'attendance_type' => 'standard', 'is_system' => true, 'tier' => 6, 'sort_order' => 13, 'permissions' => []],
+        // ── Job-oriented roles (formerly staff-only; no default panel access) ─
+        'ROLE_LAB_ASST'             => ['label' => 'Lab Assistant',       'description' => 'Laboratory support',                                     'category' => 'Non-Teaching',   'flags' => [],                                     'attendance_type' => 'standard', 'is_system' => true, 'tier' => 6, 'sort_order' => 20, 'permissions' => []],
+        'ROLE_CLERK'                => ['label' => 'Clerk',               'description' => 'Office clerical work',                                    'category' => 'Administrative', 'flags' => [],                                     'attendance_type' => 'standard', 'is_system' => true, 'tier' => 6, 'sort_order' => 21, 'permissions' => []],
+        'ROLE_DRIVER'               => ['label' => 'Driver',              'description' => 'Transport driver',                                       'category' => 'Support',        'flags' => ['can_manage_transport'],               'attendance_type' => 'shift',    'is_system' => true, 'tier' => 6, 'sort_order' => 22, 'permissions' => []],
+        'ROLE_SECURITY'             => ['label' => 'Security',            'description' => 'Campus security / guard',                                 'category' => 'Support',        'flags' => [],                                     'attendance_type' => 'shift',    'is_system' => true, 'tier' => 6, 'sort_order' => 23, 'permissions' => []],
+        'ROLE_HOUSE_WARDEN'         => ['label' => 'House Warden',        'description' => 'Boarding house supervision',                             'category' => 'Non-Teaching',   'flags' => ['can_manage_hostel'],                  'attendance_type' => 'standard', 'is_system' => false,'tier' => 6, 'sort_order' => 24, 'permissions' => []],
+        'ROLE_PEON'                 => ['label' => 'Peon',                'description' => 'General attendant',                                      'category' => 'Support',        'flags' => [],                                     'attendance_type' => 'standard', 'is_system' => false,'tier' => 6, 'sort_order' => 25, 'permissions' => []],
     ];
 
     // Keyword → role_id mapping for migration from free-text Position field
@@ -105,6 +110,20 @@ class Staff extends MY_Controller
         $this->fs->set('schools', $this->school_id, ['staffRoles' => self::DEFAULT_STAFF_ROLES], true);
     }
 
+    /** Canonical default staff-role catalogue — single source so other modules
+     *  (e.g. Org "Departments & Roles") can seed from the exact same set. */
+    public static function default_staff_roles(): array
+    {
+        return self::DEFAULT_STAFF_ROLES;
+    }
+
+    /** Free-text Position → role_id keyword map (exposed for self-tests so they
+     *  validate against the real map, not a copy). */
+    public static function position_role_map(): array
+    {
+        return self::POSITION_ROLE_MAP;
+    }
+
     /**
      * Infer staff role IDs from free-text Position field (for unmigrated records).
      */
@@ -144,80 +163,6 @@ class Staff extends MY_Controller
         }
         // Fallback: humanize the role ID (ROLE_LIBRARIAN → "Librarian")
         return ucfirst(strtolower(str_replace(['ROLE_', '_'], ['', ' '], $roleId)));
-    }
-
-    // ── Canonical Auth role-claim helpers (Logical Change S1) ──────────────
-    //
-    // SECURITY: the Firebase Auth `role` claim is the authorization source for
-    // the admin panel (_require_role), the mobile apps, and Firestore rules
-    // (request.auth.token.role). It MUST be derived only from the canonical role
-    // catalog — NEVER from a free-text field (Designation/Position) or an
-    // unvalidated POST value, either of which would let a lower-privileged
-    // operator mint an escalated role (e.g. Designation="Principal").
-
-    /**
-     * STRICT canonical role label for the auth claim. Unlike _role_id_to_label
-     * (which humanizes any unknown id as a display fallback), this returns ''
-     * for any id NOT in the known catalog (system DEFAULT_STAFF_ROLES or the
-     * school's own schools.staffRoles) — so a crafted or free-text value can
-     * never become an authorization-bearing role claim. '' → apps/rules apply
-     * their least-privilege default; no escalation is possible.
-     */
-    private function _canonical_role_label(string $roleId): string
-    {
-        $roleId = trim($roleId);
-        if ($roleId === '') return '';
-        if (isset(self::DEFAULT_STAFF_ROLES[$roleId]['label'])) {
-            return (string) self::DEFAULT_STAFF_ROLES[$roleId]['label'];
-        }
-        try {
-            $schoolDoc   = $this->fs->get('schools', $this->school_id);
-            $customRoles = $schoolDoc['staffRoles'] ?? [];
-            if (is_array($customRoles) && isset($customRoles[$roleId]['label'])) {
-                return (string) $customRoles[$roleId]['label'];
-            }
-        } catch (\Exception $e) {
-            log_message('error', 'Staff::_canonical_role_label schools read failed: ' . $e->getMessage());
-        }
-        return ''; // unknown id → no role claim (never echo free text as a role)
-    }
-
-    /**
-     * The canonical Firebase Auth custom-claims payload for a staff member.
-     * Single source of truth so every writer (create / import / edit / reset /
-     * duty / migrate) emits an identical, catalog-derived claim shape.
-     */
-    private function _staff_auth_claims(string $primaryRoleId): array
-    {
-        return [
-            'role'          => $this->_canonical_role_label($primaryRoleId),
-            'school_id'     => $this->school_id,
-            'school_code'   => $this->school_code,
-            'parent_db_key' => $this->parent_db_key,
-        ];
-    }
-
-    /**
-     * Resolve a staff member's canonical primary role ID from their Firestore
-     * doc, in priority order: primary_role → roleId → first staff_roles entry →
-     * inferred from the free-text Position (which yields a canonical ROLE_* id,
-     * never the raw string). Used by writers that only have the existing doc
-     * (assign_duty, reset_password, edit fallback) so they re-assert — never
-     * rewrite from free text — the staff member's role.
-     */
-    private function _primary_role_id_from_doc(array $staffDoc): string
-    {
-        $pid = trim((string) ($staffDoc['primary_role'] ?? $staffDoc['roleId'] ?? ''));
-        if ($pid !== '') return $pid;
-        $roles = $staffDoc['staff_roles'] ?? $staffDoc['staffRoles'] ?? [];
-        if (is_array($roles)) {
-            foreach ($roles as $r) {
-                $r = trim((string) $r);
-                if ($r !== '') return $r;
-            }
-        }
-        $inferred = $this->_infer_roles_from_position((string) ($staffDoc['Position'] ?? $staffDoc['position'] ?? ''));
-        return $inferred[0] ?? 'ROLE_TEACHER';
     }
 
     // ── Salary Structure Auto-Sync ─────────────────────────────────────────
@@ -1146,9 +1091,10 @@ class Staff extends MY_Controller
 
     /**
      * Active departments + their role LABELS for the import Excel template's
-     * cascading dropdown. A department with no role_ids falls back to ALL role
-     * labels (mirrors the staff form's graceful fallback). Empty → no departments
-     * configured (caller then leaves Department/Role as free text).
+     * cascading dropdown. STRICT: a department offers ONLY its assigned role_ids;
+     * one with none emits an empty list (the sheet shows "(no roles configured)")
+     * — matching the staff add/edit forms and the Departments & Roles module.
+     * No departments configured → empty (caller leaves Department/Role free text).
      */
     private function _template_department_roles(): array
     {
@@ -1164,7 +1110,6 @@ class Staff extends MY_Controller
                 $lbl = trim((string) (((array) $r)['label'] ?? $rid));
                 if ($lbl !== '') $labelById[$rid] = $lbl;
             }
-            $allLabels = array_values(array_unique(array_values($labelById)));
 
             foreach ($depts as $d) {
                 $d = (array) $d;
@@ -1176,7 +1121,10 @@ class Staff extends MY_Controller
                 foreach ($rids as $rid) {
                     if (!empty($labelById[$rid])) $labels[] = $labelById[$rid];
                 }
-                if (empty($labels)) $labels = $allLabels; // unmapped dept → all roles
+                // Strict sync: a department offers ONLY its assigned roles. If none
+                // are assigned it emits an empty list (the sheet shows "(no roles
+                // configured)") so the template mirrors Departments & Roles exactly —
+                // no silent fall-through to every role in the school.
                 $out[] = ['name' => $name, 'role_labels' => array_values(array_unique($labels))];
             }
         } catch (\Throwable $e) {
@@ -1412,18 +1360,21 @@ class Staff extends MY_Controller
                 'uid'         => $staffId,
                 'displayName' => $name,
             ]);
-            // Reconciled (S1 anti-escalation + canonical dual-cased claim shape):
-            // friend's setCanonicalClaims builder (dual-cased tenant keys → no
-            // admin-panel lockout) fed the CANONICAL role from the resolved role
-            // IDs — never the free-text Position — so no escalation is possible.
             $this->firebase->setCanonicalClaims($staffId, [
-                'role'          => $this->_canonical_role_label($roleIds[0] ?? ''),
-                'role_fallback' => 'Staff',
-                'school_id'     => $this->school_id,
-                'school_code'   => $this->school_code,
-                'parent_db_key' => $this->parent_db_key,
-                'user_id'       => $staffId,   // F9: driver-identity for Firestore rules
+                'role'           => $positionLabel,
+                'school_id'      => $this->school_id,
+                'school_code'    => $this->school_code,
+                'parent_db_key'  => $this->parent_db_key,
+                // Force set-new-password on first login (mirrors reset_password@2506).
+                'extra'          => [
+                    'must_change_password' => true,
+                ],
             ]);
+            // Mirror the flag to the staff doc (Teacher app + web-panel gate).
+            $this->fs->set('staff', $this->fs->docId($staffId), [
+                'mustChangePassword' => true,
+                'updatedAt'          => date('c'),
+            ], true);
         } catch (Exception $e) {
             log_message('error', "Staff import Firebase Auth failed for {$staffId}: " . $e->getMessage());
         }
@@ -1645,10 +1596,15 @@ class Staff extends MY_Controller
                 $sheet->getCell("I{$r}")->setDataValidation($rv);
             }
 
-            // Make the sample row consistent with the real dropdowns.
-            $firstDept = $activeDepts[0];
-            $sheet->getCell('H2')->setValue($firstDept['name']);
-            $sheet->getCell('I2')->setValue($firstDept['role_labels'][0] ?? 'Teacher');
+            // Make the sample row consistent with the real dropdowns — prefer the
+            // first department that actually has roles so H2/I2 form a valid pair.
+            $sampleDept = null;
+            foreach ($activeDepts as $dept) {
+                if (!empty($dept['role_labels'])) { $sampleDept = $dept; break; }
+            }
+            if ($sampleDept === null) $sampleDept = $activeDepts[0];
+            $sheet->getCell('H2')->setValue($sampleDept['name']);
+            $sheet->getCell('I2')->setValue($sampleDept['role_labels'][0] ?? '');
 
             // Hide the helper sheet (kept in the file so the formulas resolve).
             $lists->setSheetState(\PhpOffice\PhpSpreadsheet\Worksheet\Worksheet::SHEETSTATE_HIDDEN);
@@ -2193,17 +2149,21 @@ class Staff extends MY_Controller
                         'uid'         => $staffId,
                         'displayName' => $staffName,
                     ]);
-                    // Reconciled: canonical dual-cased claims (no lockout) with
-                    // the CANONICAL role from the validated primary role ID —
-                    // never free-text Position — anti-escalation preserved.
                     $this->firebase->setCanonicalClaims($staffId, [
-                        'role'          => $this->_canonical_role_label($primaryRole),
-                        'role_fallback' => 'Staff',
-                        'school_id'     => $this->school_id,
-                        'school_code'   => $this->school_code,
-                        'parent_db_key' => $this->parent_db_key,
-                        'user_id'       => $staffId,   // F9: driver-identity for Firestore rules
+                        'role'           => $positionLabel,
+                        'school_id'      => $this->school_id,
+                        'school_code'    => $this->school_code,
+                        'parent_db_key'  => $this->parent_db_key,
+                        // Force set-new-password on first login (mirrors reset_password@2506).
+                        'extra'          => [
+                            'must_change_password' => true,
+                        ],
                     ]);
+                    // Mirror the flag to the staff doc (Teacher app + web-panel gate).
+                    $this->fs->set('staff', $this->fs->docId($staffId), [
+                        'mustChangePassword' => true,
+                        'updatedAt'          => date('c'),
+                    ], true);
                 } catch (Exception $e) {
                     log_message('error', 'Staff: Firebase Auth create failed for ' . $staffId . ': ' . $e->getMessage());
                     $authWarning = 'Staff record saved, but Firebase Auth account could not be created: '
@@ -2577,17 +2537,12 @@ class Staff extends MY_Controller
         }
 
         // 2. Set must-change-password claim — the app gates first login on this.
-        // Reconciled: canonical dual-cased claims (no lockout) but re-assert the
-        // CANONICAL role from the staff doc's primary role — never the doc's
-        // free-text display `role` field — so a reset can't re-mint an escalated
-        // designation-derived claim. Keeps the must-change-password extras.
         $this->firebase->setCanonicalClaims($staff_id, [
-            'role'          => $this->_canonical_role_label($this->_primary_role_id_from_doc($staffDoc)),
-            'role_fallback' => 'Staff',
+            'role'          => (string) ($staffDoc['role'] ?? 'Teacher'),
+            'role_fallback' => 'Teacher',
             'school_id'     => $this->school_id,
             'school_code'   => $this->school_code,
             'parent_db_key' => $this->parent_db_key,
-            'user_id'       => $staff_id,   // F9: driver-identity for Firestore rules
             'extra'         => [
                 'must_change_password' => true,
                 'password_reset_at'    => time(),
@@ -3070,18 +3025,14 @@ class Staff extends MY_Controller
                     // designation ("People Lead") would become the role claim and
                     // could cost the staff admin-panel access. Fall back to the
                     // existing Position only when no role is set.
-                    // Reconciled: canonical dual-cased claims (no lockout) with a
-                    // CANONICAL role — prefer the submitted primary_role, else
-                    // re-resolve from the existing doc; never free-text Position.
-                    $editPrimary = !empty($formattedData['primary_role'])
-                        ? (string) $formattedData['primary_role']
-                        : $this->_primary_role_id_from_doc($existingData);
+                    $authRole = !empty($formattedData['primary_role'])
+                        ? $this->_role_id_to_label($formattedData['primary_role'])
+                        : ($formattedData['Position'] ?? $existingData['Position'] ?? '');
                     $this->firebase->setCanonicalClaims($user_id, [
-                        'role'          => $this->_canonical_role_label($editPrimary),
-                        'role_fallback' => 'Staff',
-                        'school_id'     => $this->school_id,
-                        'school_code'   => $this->school_code,
-                        'parent_db_key' => $this->parent_db_key,
+                        'role'           => $authRole,
+                        'school_id'      => $this->school_id,
+                        'school_code'    => $this->school_code,
+                        'parent_db_key'  => $this->parent_db_key,
                     ]);
                 } catch (Exception $e) {
                     log_message('error', 'Staff: Firebase Auth sync failed on edit_staff for ' . $user_id . ': ' . $e->getMessage());
@@ -3274,18 +3225,13 @@ class Staff extends MY_Controller
         // Use the staff member's actual role, not a hard-coded 'Teacher' — a
         // duty assignment must not overwrite the RBAC role of e.g. a Principal
         // who also teaches a class.
-        // S1: a duty assignment must NOT change RBAC. Re-assert the staff
-        // member's canonical role (from their doc's primary role), never the
-        // free-text Position/role display fields.
+        $dutyRoleClaim = $staffDoc['Position'] ?? $staffDoc['role'] ?? 'Teacher';
         try {
-            // Reconciled: canonical dual-cased claims with the CANONICAL role
-            // from the staff doc's primary role (never free-text).
             $this->firebase->setCanonicalClaims($teacherID, [
-                'role'          => $this->_canonical_role_label($this->_primary_role_id_from_doc($staffDoc)),
-                'role_fallback' => 'Staff',
-                'school_id'     => $this->school_id,
-                'school_code'   => $this->school_code,
-                'parent_db_key' => $this->parent_db_key,
+                'role'           => $dutyRoleClaim,
+                'school_id'      => $this->school_id,
+                'school_code'    => $this->school_code,
+                'parent_db_key'  => $this->parent_db_key,
             ]);
         } catch (Exception $e) {
             log_message('error', 'Staff: Firebase Auth sync failed on assign_duty for ' . $teacherID . ': ' . $e->getMessage());
@@ -3413,132 +3359,29 @@ class Staff extends MY_Controller
     }
 
     /**
-     * POST /staff/save_staff_role
-     * Create or update a custom staff role definition.
+     * POST /staff/save_staff_role  — RETIRED (single-writer consolidation, 2026-07-07)
+     *
+     * Staff-role definitions are now written in exactly ONE place: the
+     * "Departments & Roles" module (Org::save_role). This former twin writer of
+     * schools.staffRoles is retired to eliminate the two-writer drift (it used a
+     * different category list, no in-use guard and no department-scrub, so it
+     * could fork the catalogue). No UI ever posted here; kept as a loud, safe
+     * stub so any stale bookmark/integration gets guidance instead of silently
+     * corrupting the catalogue. Canonical writer: Org::save_role.
      */
     public function save_staff_role()
     {
-        $this->_require_role(self::MANAGE_ROLES, 'save_staff_role');
-        $roleId   = trim($this->input->post('role_id', TRUE) ?? '');
-        $label    = trim($this->input->post('label', TRUE) ?? '');
-        $category = trim($this->input->post('category', TRUE) ?? '');
-
-        if ($roleId === '' || $label === '') {
-            return $this->json_error('Role ID and label are required.');
-        }
-        if (!preg_match('/^ROLE_[A-Z0-9_]+$/', $roleId)) {
-            return $this->json_error('Role ID must be ROLE_ followed by uppercase letters/digits/underscores.');
-        }
-
-        $validCategories = ['Teaching', 'Non-Teaching', 'Administrative', 'Support'];
-        if (!in_array($category, $validCategories, true)) {
-            return $this->json_error('Invalid category. Must be: ' . implode(', ', $validCategories));
-        }
-
-        $schoolDoc = $this->fs->get('schools', $this->school_id);
-        $allRoles = $schoolDoc['staffRoles'] ?? [];
-        $existing = $allRoles[$roleId] ?? null;
-
-        // Don't allow changing system role category or label
-        if (is_array($existing) && !empty($existing['is_system'])) {
-            $flagsRaw = $this->input->post('flags') ?? [];
-            $flags = is_array($flagsRaw) ? $flagsRaw : [];
-            $existing['flags'] = $flags;
-            $allRoles[$roleId] = $existing;
-            $this->fs->update('schools', $this->school_id, ['staffRoles' => $allRoles]);
-            return $this->json_success(['message' => "System role '{$label}' flags updated."]);
-        }
-
-        // ── S1b: reserved + duplicate label protection (custom roles only) ──
-        // The label becomes the canonical Auth claim, so it must not impersonate
-        // a privileged/cross-principal label, nor duplicate another role's label
-        // in this school (which would make the canonical role→claim mapping
-        // ambiguous). Case-insensitive. Validation only — no existing data is
-        // touched; this governs the new/updated definition about to be written.
-        $labelLc = strtolower($label);
-        if (in_array($labelLc, self::RESERVED_ROLE_LABELS, true)) {
-            return $this->json_error("The label '{$label}' is reserved for a privileged role and cannot be used for a custom staff role.");
-        }
-        foreach ($allRoles as $otherId => $otherDef) {
-            if ($otherId === $roleId) continue; // editing the same role keeps its own label
-            $otherLabel = is_array($otherDef) ? (string) ($otherDef['label'] ?? '') : '';
-            if ($otherLabel !== '' && strtolower($otherLabel) === $labelLc) {
-                return $this->json_error("The label '{$label}' is already used by another role. Please choose a unique label.");
-            }
-        }
-
-        $flagsRaw = $this->input->post('flags') ?? [];
-        $flags = is_array($flagsRaw) ? $flagsRaw : [];
-        $attendanceType = trim($this->input->post('attendance_type', TRUE) ?? 'standard');
-        if (!in_array($attendanceType, ['standard', 'shift', 'flexible'], true)) {
-            $attendanceType = 'standard';
-        }
-
-        $allRoles[$roleId] = [
-            'label'           => $label,
-            'category'        => $category,
-            'flags'           => $flags,
-            'attendance_type' => $attendanceType,
-            'is_system'       => false,
-        ];
-
-        $this->fs->update('schools', $this->school_id, ['staffRoles' => $allRoles]);
-        $this->json_success(['message' => "Staff role '{$label}' saved.", 'role_id' => $roleId]);
+        $this->json_error('Staff roles are now managed in Departments & Roles. Open that screen to add or edit a staff role.', 410);
     }
 
     /**
-     * POST /staff/delete_staff_role
-     * Delete a custom (non-system) staff role.
+     * POST /staff/delete_staff_role  — RETIRED (single-writer consolidation, 2026-07-07)
+     * Deletions now go through Org::delete_role, which also scrubs the role from
+     * every department's role_ids[] and blocks deletion while staff still hold it.
      */
     public function delete_staff_role()
     {
-        $this->_require_role(self::MANAGE_ROLES, 'delete_staff_role');
-        $roleId = trim($this->input->post('role_id', TRUE) ?? '');
-        if ($roleId === '') return $this->json_error('role_id is required.');
-
-        $schoolDoc = $this->fs->get('schools', $this->school_id);
-        $allRoles = $schoolDoc['staffRoles'] ?? [];
-        $existing = $allRoles[$roleId] ?? null;
-        if (!is_array($existing)) return $this->json_error('Role not found.');
-        if (!empty($existing['is_system'])) return $this->json_error('System roles cannot be deleted.');
-
-        // ── S1b: never orphan staff — refuse to delete a role still assigned ──
-        // Read-only usage scan across all staff in this school (any session).
-        // If the role is in use we refuse deletion and report the count so the
-        // operator can reassign first. No staff/role data is modified here.
-        $assigned = 0;
-        $sampleNames = [];
-        try {
-            $staffDocs = $this->fs->schoolWhere('staff', []);
-            foreach ($staffDocs as $doc) {
-                $s = $doc['data'] ?? $doc;
-                $roles = $s['staff_roles'] ?? $s['staffRoles'] ?? [];
-                $inUse = (is_array($roles) && in_array($roleId, $roles, true))
-                    || (($s['primary_role'] ?? '') === $roleId)
-                    || (($s['roleId'] ?? '') === $roleId);
-                if ($inUse) {
-                    $assigned++;
-                    if (count($sampleNames) < 5) {
-                        $sampleNames[] = (string) ($s['Name'] ?? $s['name'] ?? $s['staffId'] ?? $s['User ID'] ?? '?');
-                    }
-                }
-            }
-        } catch (\Exception $e) {
-            log_message('error', 'delete_staff_role usage-check failed for ' . $roleId . ': ' . $e->getMessage());
-            return $this->json_error('Could not verify whether this role is in use right now. Please try again.');
-        }
-        if ($assigned > 0) {
-            $eg = $sampleNames ? ' (e.g. ' . implode(', ', $sampleNames) . ')' : '';
-            return $this->json_error(
-                "This role is still assigned to {$assigned} staff member(s){$eg}. "
-                . 'Reassign them to a different role before deleting it.',
-                409
-            );
-        }
-
-        unset($allRoles[$roleId]);
-        $this->fs->update('schools', $this->school_id, ['staffRoles' => $allRoles]);
-        $this->json_success(['message' => 'Staff role deleted.']);
+        $this->json_error('Staff roles are now managed in Departments & Roles. Open that screen to delete a staff role.', 410);
     }
 
     /**
@@ -3593,9 +3436,10 @@ class Staff extends MY_Controller
         // Query all school staff from Firestore
         $staffDocs = $this->fs->schoolWhere('staff', []);
 
-        $migrated = 0;
-        $skipped  = 0;
-        $errors   = 0;
+        $migrated   = 0;
+        $skipped    = 0;
+        $errors     = 0;
+        $unresolved = 0;
 
         foreach ($staffDocs as $doc) {
             $s   = $doc['data'];
@@ -3609,8 +3453,14 @@ class Staff extends MY_Controller
             }
 
             $position = $s['Position'] ?? '';
-            $roleIds  = $this->_infer_roles_from_position($position);
-            $primary  = $roleIds[0] ?? 'ROLE_TEACHER';
+            // Use the NO-DEFAULT matcher: only assign a role when the Position
+            // confidently maps to one. Never silently default to Teacher — that
+            // would mis-label Principals/Receptionists/Nurses AND rewrite their
+            // Firebase auth claim to 'Teacher'. Unmatched staff are left for
+            // manual assignment (reported as "unresolved").
+            $roleIds = $this->_match_roles_no_default($position);
+            if (empty($roleIds)) { $unresolved++; continue; }
+            $primary = $roleIds[0];
 
             $ok = $this->fs->updateEntity('staff', $sid, [
                 'staff_roles'  => $roleIds,
@@ -3622,11 +3472,8 @@ class Staff extends MY_Controller
                 // Refresh the Auth role claim too, so a migrated non-teacher
                 // (Accountant, Clerk, …) stops carrying a stale 'Teacher' claim.
                 try {
-                    // Reconciled: canonical dual-cased claims with the STRICT
-                    // canonical role (never humanized free-text).
                     $this->firebase->setCanonicalClaims($sid, [
-                        'role'          => $this->_canonical_role_label($primary),
-                        'role_fallback' => 'Staff',
+                        'role'          => $this->_role_id_to_label($primary),
                         'school_id'     => $this->school_id,
                         'school_code'   => $this->school_code,
                         'parent_db_key' => $this->parent_db_key,
@@ -3639,11 +3486,13 @@ class Staff extends MY_Controller
             }
         }
 
+        $umsg = $unresolved > 0 ? ", {$unresolved} need manual role assignment" : '';
         $this->json_success([
-            'message'  => "{$migrated} staff migrated, {$skipped} already had roles, {$errors} errors.",
-            'migrated' => $migrated,
-            'skipped'  => $skipped,
-            'errors'   => $errors,
+            'message'    => "{$migrated} staff migrated, {$skipped} already had roles{$umsg}, {$errors} errors.",
+            'migrated'   => $migrated,
+            'skipped'    => $skipped,
+            'unresolved' => $unresolved,
+            'errors'     => $errors,
         ]);
     }
 

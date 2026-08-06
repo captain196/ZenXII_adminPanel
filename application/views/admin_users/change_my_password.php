@@ -4,6 +4,8 @@
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <title><?= htmlspecialchars($page_title ?? 'Set New Password') ?> · Zenxii</title>
+<link rel="icon" type="image/png" href="<?= base_url('Designs/favicon.png?v=2') ?>">
+<link rel="apple-touch-icon" href="<?= base_url('Designs/favicon.png?v=2') ?>">
 <style>
   :root {
     --bg:#0f172a; --panel:#1e293b; --txt:#e2e8f0; --muted:#94a3b8;
@@ -27,6 +29,14 @@
   .msg.error{color:var(--error)}
   .msg.ok{color:var(--ok)}
   .who{color:var(--muted);font-size:12.5px;margin-top:10px}
+  .pw-wrap{position:relative}
+  .pw-wrap input{padding-right:46px}
+  .pw-toggle{position:absolute;right:6px;top:50%;transform:translateY(-50%);width:auto;margin:0;padding:8px;background:none;border:none;border-radius:6px;color:var(--muted);cursor:pointer;display:grid;place-items:center}
+  .pw-toggle:hover{background:rgba(148,163,184,.12);color:var(--accent)}
+  .pw-toggle svg{width:20px;height:20px;display:block}
+  .pw-toggle .eye-off{display:none}
+  .pw-toggle.on .eye{display:none}
+  .pw-toggle.on .eye-off{display:block}
 </style>
 </head>
 <body>
@@ -42,11 +52,34 @@
     <?php endif; ?>
 
     <form id="cpwForm" autocomplete="off">
+      <?php if (empty($must_change)): ?>
+      <label for="current_password">Current password</label>
+      <div class="pw-wrap">
+        <input id="current_password" name="current_password" type="password" required autocomplete="current-password">
+        <button type="button" class="pw-toggle" data-target="current_password" aria-label="Show password" title="Show password">
+          <svg class="eye" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M2 12s3.5-7 10-7 10 7 10 7-3.5 7-10 7-10-7-10-7Z"/><circle cx="12" cy="12" r="3"/></svg>
+          <svg class="eye-off" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M9.9 4.24A9.12 9.12 0 0 1 12 4c6.5 0 10 7 10 7a13.16 13.16 0 0 1-1.67 2.68"/><path d="M6.61 6.61A13.526 13.526 0 0 0 2 12s3.5 7 10 7a9.74 9.74 0 0 0 5.39-1.61"/><line x1="2" y1="2" x2="22" y2="22"/></svg>
+        </button>
+      </div>
+      <?php endif; ?>
+
       <label for="new_password">New password</label>
-      <input id="new_password" name="new_password" type="password" minlength="8" maxlength="72" required autofocus autocomplete="new-password">
+      <div class="pw-wrap">
+        <input id="new_password" name="new_password" type="password" minlength="8" maxlength="72" required autofocus autocomplete="new-password">
+        <button type="button" class="pw-toggle" data-target="new_password" aria-label="Show password" title="Show password">
+          <svg class="eye" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M2 12s3.5-7 10-7 10 7 10 7-3.5 7-10 7-10-7-10-7Z"/><circle cx="12" cy="12" r="3"/></svg>
+          <svg class="eye-off" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M9.9 4.24A9.12 9.12 0 0 1 12 4c6.5 0 10 7 10 7a13.16 13.16 0 0 1-1.67 2.68"/><path d="M6.61 6.61A13.526 13.526 0 0 0 2 12s3.5 7 10 7a9.74 9.74 0 0 0 5.39-1.61"/><line x1="2" y1="2" x2="22" y2="22"/></svg>
+        </button>
+      </div>
 
       <label for="confirm_password">Confirm new password</label>
-      <input id="confirm_password" name="confirm_password" type="password" minlength="8" maxlength="72" required autocomplete="new-password">
+      <div class="pw-wrap">
+        <input id="confirm_password" name="confirm_password" type="password" minlength="8" maxlength="72" required autocomplete="new-password">
+        <button type="button" class="pw-toggle" data-target="confirm_password" aria-label="Show password" title="Show password">
+          <svg class="eye" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M2 12s3.5-7 10-7 10 7 10 7-3.5 7-10 7-10-7-10-7Z"/><circle cx="12" cy="12" r="3"/></svg>
+          <svg class="eye-off" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M9.9 4.24A9.12 9.12 0 0 1 12 4c6.5 0 10 7 10 7a13.16 13.16 0 0 1-1.67 2.68"/><path d="M6.61 6.61A13.526 13.526 0 0 0 2 12s3.5 7 10 7a9.74 9.74 0 0 0 5.39-1.61"/><line x1="2" y1="2" x2="22" y2="22"/></svg>
+        </button>
+      </div>
 
       <div class="rules">8–72 characters. Must include an uppercase letter, a lowercase letter, and a digit.</div>
 
@@ -63,6 +96,22 @@
   const confPw  = document.getElementById('confirm_password');
   const msg     = document.getElementById('msg');
   const btn     = document.getElementById('submitBtn');
+  const CSRF_NAME = <?= json_encode((string) ($csrf_name ?? 'csrf_token')) ?>;
+  const CSRF_HASH = <?= json_encode((string) ($csrf_hash ?? '')) ?>;
+
+  // Show/hide password toggles.
+  document.querySelectorAll('.pw-toggle').forEach((tog) => {
+    tog.addEventListener('click', () => {
+      const input = document.getElementById(tog.dataset.target);
+      if (!input) return;
+      const show = input.type === 'password';
+      input.type = show ? 'text' : 'password';
+      tog.classList.toggle('on', show);
+      const lbl = show ? 'Hide password' : 'Show password';
+      tog.setAttribute('aria-label', lbl);
+      tog.setAttribute('title', lbl);
+    });
+  });
 
   form.addEventListener('submit', async (e) => {
     e.preventDefault();
@@ -82,6 +131,9 @@
       const body = new URLSearchParams();
       body.set('new_password',     newPw.value);
       body.set('confirm_password', confPw.value);
+      var curPw = document.getElementById('current_password');
+      if (curPw) body.set('current_password', curPw.value);
+      body.set(CSRF_NAME,          CSRF_HASH);
 
       const res = await fetch('<?= site_url('admin_users/change_my_password') ?>', {
         method: 'POST',

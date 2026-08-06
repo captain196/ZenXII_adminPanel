@@ -784,67 +784,15 @@ class Result extends MY_Controller
 
         $savedAt  = (int) round(microtime(true) * 1000);
         $savedBy  = $this->admin_id ?? '';
-        $basePath = "Schools/{$school}/{$year}/Results/Marks/{$examId}/{$classKey}/{$sectionKey}/{$subject}";
         $count    = 0;
         $warnings = [];
 
-        foreach ($students as $stu) {
-            $userId = trim((string) ($stu['userId'] ?? ''));
-            if (!$userId) continue;
-            $userId = $this->safe_path_segment($userId, 'userId');
-
-            // R4: Log-and-keep enrollment policy.
-            //
-            // Pre-R4 this branch did `continue`, which silently dropped
-            // legitimate marks whenever the roster snapshot was stale —
-            // most commonly right after a promotion or section change
-            // where the Firestore students doc hadn't propagated yet.
-            // We now save the mark unconditionally and surface a warning
-            // so admins can investigate the off-roster student post-hoc
-            // (the alternative — losing entered marks — is worse than
-            // a misfiled record we can correct later).
-            if (!empty($roster) && !isset($roster[$userId])) {
-                $warnings[] = "Student {$userId} not in {$classKey}/{$sectionKey} roster — saved anyway (log-and-keep).";
-                log_message(
-                    'error',
-                    "Result::save_marks — {$userId} not in roster for {$classKey}/{$sectionKey} but mark was saved (R4 log-and-keep)"
-                );
-                // No `continue` — fall through to the save below.
-            }
-
-            $absent   = !empty($stu['absent']);
-            $rawMarks = is_array($stu['marks'] ?? null) ? $stu['marks'] : [];
-
-            // Sanitize component marks + enforce upper bound (Fix H1)
-            $marksClean  = [];
-            $computeTotal = 0;
-            foreach ($rawMarks as $comp => $val) {
-                $comp = strip_tags(trim((string) $comp));
-                if (!$comp) continue;
-                $markVal = $absent ? 0 : max(0, (int) $val);
-                // Clamp to component MaxMarks if template defines it
-                if (isset($compMaxMap[$comp]) && $markVal > $compMaxMap[$comp]) {
-                    $markVal = $compMaxMap[$comp];
-                }
-                $marksClean[$comp] = $markVal;
-                $computeTotal += $markVal;
-            }
-
-            $total = $absent ? 0 : $computeTotal;
-
-            $entry = array_merge($marksClean, [
-                'Total'   => $total,
-                'Absent'  => $absent,
-                'SavedAt' => $savedAt,
-                'SavedBy' => $savedBy,
-            ]);
-
-            // B1: RTDB marks write REMOVED — Firestore is the only source of truth (no dual-write).
-            $count++;
-        }
-
-        // ── B1: RTDB _stale write REMOVED — staleness is recorded in examResultMeta
-        //        (Firestore) inside the canonical atomic commit below.
+        // ── MED-5: the previous DEAD first loop (fully sanitized every
+        //    student's marks into an unused $entry, only to read back $count)
+        //    is removed. $count and the R4 log-and-keep roster warnings are
+        //    now derived inside the single real write loop below, which also
+        //    replaces its per-student N+1 firestoreGet with ONE batched
+        //    before-image query (see $beforeMap). No sanitization is duplicated.
 
         // ── B1: CANONICAL Firestore-ONLY marks write via Exam_result_store ──
         // ONE atomic commit per chunk: marks (componentMarks canonical) +
@@ -866,15 +814,48 @@ class Result extends MY_Controller
                 if (is_array($c) && !empty($c['Name'])) $orderedComps[] = (string) $c['Name'];
             }
 
+            // MED-5: batch-fetch before-images ONCE (was an N+1 firestoreGet per
+            // student). One subject-scoped query → [docId => beforeDoc], where the
+            // decoded doc carries `__updateTime` for the CAS precondition. Preserves
+            // both the audit before-image and the concurrent-edit protection.
+            $beforeMap = [];
+            try {
+                $beforeRows = $this->firebase->firestoreQuery(Firestore_helper::MARKS, [
+                    ['schoolId',  '==', $this->school_id],
+                    ['examId',    '==', $examId],
+                    ['className', '==', $classKey],
+                    ['section',   '==', $sectionKey],
+                    ['subject',   '==', $subject],
+                ], null, 'ASC', 5000);
+                foreach ((array) $beforeRows as $br) {
+                    $bid = is_array($br) ? (string) ($br['id'] ?? '') : '';
+                    $bd  = is_array($br['data'] ?? null) ? $br['data'] : [];
+                    if ($bid !== '') $beforeMap[$bid] = $bd;
+                }
+            } catch (\Exception $e) {
+                log_message('error', 'save_marks: before-image batch fetch failed (no CAS this run): ' . $e->getMessage());
+            }
+
             $ops = [];
             foreach ($students as $stu) {
                 $userId = trim((string) ($stu['userId'] ?? ''));
                 if (!$userId) continue;
                 $userId = $this->safe_path_segment($userId, 'userId');
+
+                // R4 log-and-keep enrollment policy: an off-roster student's marks
+                // are saved anyway (a stale roster snapshot must not silently drop
+                // legitimately entered marks), with a warning surfaced for post-hoc
+                // correction. Folded here from the removed dead loop (MED-5).
+                if (!empty($roster) && !isset($roster[$userId])) {
+                    $warnings[] = "Student {$userId} not in {$classKey}/{$sectionKey} roster — saved anyway (log-and-keep).";
+                    log_message('error',
+                        "Result::save_marks — {$userId} not in roster for {$classKey}/{$sectionKey} but mark was saved (R4 log-and-keep)");
+                }
+
                 $absent   = !empty($stu['absent']);
                 $rawMarks = is_array($stu['marks'] ?? null) ? $stu['marks'] : [];
 
-                // componentMarks CANONICAL — template order, clamped (same policy as RTDB loop)
+                // componentMarks CANONICAL — template order, clamped to component MaxMarks.
                 $componentMarks = [];
                 foreach ($orderedComps as $cn) {
                     $v = $absent ? 0 : max(0, (int) ($rawMarks[$cn] ?? 0));
@@ -885,8 +866,9 @@ class Result extends MY_Controller
                     (is_string($roster[$userId]) ? $roster[$userId] : ($roster[$userId]['Name'] ?? '')) : '';
 
                 $docId  = $ers->marksDocId($examId, $classKey, $sectionKey, $subject, $userId);
-                // before-image (for audit) + CAS token (concurrent-edit protection)
-                $before     = $this->firebase->firestoreGet(Firestore_helper::MARKS, $docId);
+                // before-image (for audit) + CAS token (concurrent-edit protection),
+                // both sourced from the single batched query above (no per-student get).
+                $before     = $beforeMap[$docId] ?? null;
                 $beforeComp = is_array($before) ? ($before['componentMarks'] ?? null) : null;
                 $cas        = (is_array($before) && !empty($before['__updateTime']))
                     ? $ers->casUpdateTime((string) $before['__updateTime']) : null;
@@ -899,6 +881,8 @@ class Result extends MY_Controller
                 $auditDoc = $ers->buildMarksAudit($cid, $examId, $classKey, $sectionKey, $subject, $userId,
                     $actor, (is_array($before) ? 'update' : 'create'), $beforeComp, $componentMarks, $pubState, '', $nowIso);
                 $ops[] = $ers->setOp(Firestore_helper::MARKS_AUDIT, $ers->marksAuditDocId($cid, $userId, $subject), $auditDoc, false);
+
+                $count++;   // MED-5: derived from the real write loop (was the dead loop)
             }
             // examResultMeta: stale=true + lastMarksAt + publicationDirty (once)
             $ops[] = $ers->metaStaleOp($examId, $classKey, $sectionKey, $nowIso);
@@ -1083,40 +1067,69 @@ class Result extends MY_Controller
         }
 
         // ── C1: CANONICAL Firestore-ONLY results write (no RTDB Computed, no
-        //        _stale, no dual-write). One atomic commitBatch: results
+        //        _stale, no dual-write). One atomic commitBatch: staged results
         //        (complete ResultDoc + sectionKey + CC-8 null preservation) +
         //        resultsAudit + examResultMeta clear (CAS). Firestore is the sole
         //        source of truth → a commit failure is a HARD error.
+        //
+        // HIGH-3 PUBLISH GATE: compute writes to `resultsStaging` (NOT the
+        // parent-visible `results`) so Draft results never leak to parents.
+        // If the exam is already live (Published/Completed) we immediately
+        // promote staging→results below so a recompute updates live results.
         $this->load->library('exam_result_store');
         $ers = $this->exam_result_store->init($this->firebase, $this->school_id, $year);
-        $rosterNames = $this->exam_engine->get_student_names($classKey, $sectionKey);
+
+        // MED-6: thread real roster roll numbers (was hardcoded '' in every
+        // result doc). Full roster carries both Name + RollNo.
+        $rosterFull  = $this->roster->for_class($classKey, $sectionKey);
+        $rosterNames = [];
+        $rosterRolls = [];
+        foreach ((array) $rosterFull as $ruid => $rf) {
+            $rosterNames[$ruid] = is_array($rf) ? (string) ($rf['Name'] ?? $ruid) : (string) $rf;
+            $rosterRolls[$ruid] = is_array($rf) ? (string) ($rf['RollNo'] ?? '') : '';
+        }
+
         $actor = ['uid' => (string) ($this->admin_id ?? ''), 'role' => (string) ($this->admin_role ?? ''), 'name' => (string) ($this->admin_id ?? '')];
         $res = $ers->commitSectionResults(
             $examId, (string) ($exam['Name'] ?? $examId), $classKey, $sectionKey,
-            $studentResults, is_array($rosterNames) ? $rosterNames : [], $actor,
-            $scale, $passingPct, (string) ($this->admin_id ?? ''), date('c')
+            $studentResults, $rosterNames, $actor,
+            $scale, $passingPct, (string) ($this->admin_id ?? ''), date('c'),
+            '', $rosterRolls   // reason='', roster roll numbers; target defaults to resultsStaging
         );
         if (empty($res['ok'])) {
             $this->json_error('Failed to write results to Firestore. Please retry.', 500);
         }
 
-        // ── Fix H3: Notify parents/students via Communication module ────
-        try {
-            $this->load->library('Communication_helper', null, 'comm');
-            $this->comm->init($this->firebase, $school, $year);
-            $this->comm->fire_event('exam_result', [
-                'exam_id'        => $examId,
-                'exam_name'      => $exam['Name'] ?? $examId,
-                'class'          => $classKey,
-                'section'        => $sectionKey,
-                'students_count' => count($studentResults),
-            ]);
-        } catch (\Exception $e) {
-            log_message('error', "Communication fire_event failed after compute_results: " . $e->getMessage());
+        // HIGH-3: if the exam is already LIVE, promote this section's freshly
+        // staged results to `results` right away so parents see the recompute.
+        // A Draft exam leaves results in staging only (published on transition).
+        $examStatus = (string) ($exam['Status'] ?? 'Draft');
+        $published  = 0;
+        if (in_array($examStatus, ['Published', 'Completed'], true) && !empty($res['resultDocs'])) {
+            $prom = $ers->commitPromoteSection(
+                $examId, $classKey, $sectionKey, $res['resultDocs'], $actor,
+                $examStatus, $examStatus, date('c'), 'recompute on live exam'
+            );
+            if (empty($prom['ok'])) {
+                $this->json_error('Results computed but failed to publish the update to Firestore. Please retry.', 500);
+            }
+            $published = (int) ($prom['count'] ?? 0);
         }
 
+        // NOTE (HIGH-4): the parent/student "results published" notification is
+        // NOT fired here anymore. On compute the recipient set is unknown at the
+        // publish layer; it is fired per-student on the PUBLISH transition
+        // (Exam::update_status → Published) where each result carries a
+        // student_id so _resolve_recipient('parent') actually resolves.
+
+        $msg = 'Results computed for ' . count($studentResults) . ' student(s).';
+        if ($examStatus === 'Draft') {
+            $msg .= ' Staged as Draft — publish the exam to release results to parents.';
+        } elseif ($published > 0) {
+            $msg .= ' Live results updated.';
+        }
         $this->json_success([
-            'message' => 'Results computed for ' . count($studentResults) . ' student(s).',
+            'message' => $msg,
             'count'   => count($studentResults),
         ]);
     }
@@ -1227,6 +1240,20 @@ class Result extends MY_Controller
             }
         }
 
+        // MED-7: scale + passingPct are CONSTANT across students — read the exam
+        // meta ONCE here (was a firestoreGet inside the per-student loop that
+        // broke after the first exam every iteration). First available exam wins.
+        $scale      = 'Percentage';
+        $passingPct = 33;
+        foreach ($examIds as $cfgExamId) {
+            $examMeta = $this->exam_read->meta($cfgExamId);
+            if ($examMeta && is_array($examMeta)) {
+                $scale      = $examMeta['GradingScale']  ?? 'Percentage';
+                $passingPct = (int) ($examMeta['PassingPercent'] ?? 33);
+                break;
+            }
+        }
+
         $studentCumulative = [];
         foreach (array_keys($allUids) as $uid) {
             $weightedTotal    = 0.0;   // Σ(examPct × weight) over covered exams
@@ -1268,17 +1295,7 @@ class Result extends MY_Controller
             }
             $isPartial = ($examsAppeared < $totalExams);
 
-            // Load grading scale from first available exam
-            $scale      = 'Percentage';
-            $passingPct = 33;
-            foreach ($examIds as $examId) {
-                $examMeta = $this->exam_read->meta($examId);
-                if ($examMeta && is_array($examMeta)) {
-                    $scale      = $examMeta['GradingScale']  ?? 'Percentage';
-                    $passingPct = (int) ($examMeta['PassingPercent'] ?? 33);
-                    break;
-                }
-            }
+            // ($scale / $passingPct hoisted above the loop — MED-7.)
 
             // CC-5: per-subject normalized results + final subject outcomes.
             $subjResults     = [];
@@ -1522,7 +1539,12 @@ class Result extends MY_Controller
         sort($subjects);
 
         // ── Attendance eligibility check (config-driven) ──
-        $attRules = $this->firebase->get("Schools/{$school}/Config/AttendanceRules");
+        // MED-8: source AttendanceRules from Firestore (schools/{id}.attendanceRules) —
+        // the legacy RTDB path Schools/{school}/Config/AttendanceRules is EMPTY
+        // post-migration (canonical config now lives on the school doc; see Hr.php).
+        $schoolDoc = $this->fs->get('schools', $this->school_id);
+        $attRules  = (is_array($schoolDoc) && is_array($schoolDoc['attendanceRules'] ?? null))
+            ? $schoolDoc['attendanceRules'] : [];
         $minAttPercent = 0;
         $attEnabled = false;
         if (is_array($attRules) && !empty($attRules['enabled'])) {
@@ -1576,21 +1598,13 @@ class Result extends MY_Controller
                 $row['attendance_percent'] = $attData['percent'];
                 $row['low_attendance'] = ($attData['percent'] < $minAttPercent);
 
-                // Store eligibility record for audit
-                $eligible = ($attData['percent'] >= $minAttPercent);
-                try {
-                    $this->firebase->set(
-                        "Schools/{$school}/{$year}/ExamEligibility/{$uid}/{$examId}",
-                        [
-                            'attendance_percent' => $attData['percent'],
-                            'working_days'       => $attData['working'],
-                            'holidays'           => $attData['holiday'] ?? 0,
-                            'eligible'           => $eligible,
-                            'threshold'          => $minAttPercent,
-                            'evaluated_at'       => date('c'),
-                        ]
-                    );
-                } catch (\Exception $e) { /* non-fatal */ }
+                // MED-8: eligibility is computed IN-MEMORY for the response only.
+                // The prior code did N Firestore WRITES (ExamEligibility) from a
+                // read-only GET endpoint — a side-effect that doesn't belong on a
+                // read path (and hammered Firestore on every report load). If
+                // eligibility must be PERSISTED, that belongs in the compute flow,
+                // not here.
+                $row['eligible'] = ($attData['percent'] >= $minAttPercent);
             }
 
             $rows[] = $row;

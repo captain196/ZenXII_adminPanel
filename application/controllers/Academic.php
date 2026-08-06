@@ -209,7 +209,10 @@ class Academic extends MY_Controller
                 $staffId = $data['staffId'] ?? $data['User ID'] ?? $d['id'] ?? '';
                 if ($staffId === '') continue;
 
-                // Filter to teachers only — has ROLE_TEACHER role OR teaching_subjects array
+                // Filter to teachers only — ROLE_TEACHER in staff_roles / primary_role,
+                // OR teaching_subjects, OR a legacy Position/designation that reads
+                // like a teacher (case-insensitive so 'Maths Teacher','teacher','TGT'
+                // etc. from un-migrated accounts aren't dropped from the picker).
                 $roles = $data['staff_roles'] ?? [];
                 $isTeacher = false;
                 if (is_array($roles)) {
@@ -217,13 +220,21 @@ class Academic extends MY_Controller
                         if ($r === 'ROLE_TEACHER') { $isTeacher = true; break; }
                     }
                 }
+                if (!$isTeacher && ($data['primary_role'] ?? '') === 'ROLE_TEACHER') {
+                    $isTeacher = true;
+                }
                 $teachingSubjects = $data['teaching_subjects'] ?? [];
                 if (!$isTeacher && is_array($teachingSubjects) && !empty($teachingSubjects)) {
                     $isTeacher = true;
                 }
-                // Also check Position (legacy)
-                $position = $data['Position'] ?? $data['position'] ?? '';
-                if (!$isTeacher && in_array($position, ['Teacher','Senior Teacher','Head of Department','Lab Assistant','Sports Coach'], true)) {
+                // Legacy free-text Position/designation.
+                $position = strtolower(trim((string) ($data['Position'] ?? $data['position'] ?? $data['designation'] ?? '')));
+                if (!$isTeacher && $position !== '' && (
+                        strpos($position, 'teacher') !== false ||
+                        strpos($position, 'lecturer') !== false ||
+                        strpos($position, 'faculty') !== false ||
+                        in_array($position, ['tgt','pgt','head of department','senior teacher','lab assistant','sports coach'], true)
+                    )) {
                     $isTeacher = true;
                 }
                 if (!$isTeacher) continue;

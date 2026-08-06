@@ -220,11 +220,14 @@ class Notifications extends MY_Controller
     private function _check_leaves(string $school, array &$tasks, array &$alerts): void
     {
         // Firestore-first: count pending leaves via aggregation (zero doc transfer).
+        // H1: status is now written LOWERCASE ('pending'); app-submitted requests
+        // have always been lowercase. Match case-insensitively via an `in` on both
+        // casings so the count no longer silently misses lowercase requests.
         $pending = 0;
         try {
             $pending = (int) $this->fs->count('leaveApplications', [
                 ['schoolId', '==', $this->school_id],
-                ['status',   '==', 'Pending'],
+                ['status',   'in', ['pending', 'Pending']],
             ]);
         } catch (\Exception $e) {
             log_message('error', 'Notifications::_check_leaves Firestore count failed — ' . $e->getMessage());

@@ -22,6 +22,8 @@ $monogram = strtoupper(mb_substr(trim((string)$displayName), 0, 1) ?: 'S');
     <meta name="viewport" content="width=device-width, initial-scale=1">
     <meta name="theme-color" content="#0f766e">
     <title>Admissions — <?= $esc($displayName) ?></title>
+    <link rel="icon" type="image/png" href="<?= base_url('Designs/favicon.png?v=2') ?>">
+    <link rel="apple-touch-icon" href="<?= base_url('Designs/favicon.png?v=2') ?>">
     <meta name="csrf-token" content="<?= $this->security->get_csrf_hash() ?>">
     <meta name="csrf-name"  content="<?= $this->security->get_csrf_token_name() ?>">
     <!-- External fonts/icons load NON-BLOCKING (media=print → all on load).

@@ -70,8 +70,8 @@
             if ($isTeaching) $teachingCount++;
             else $nonTeachingCount++;
 
-            $d = trim($_s['Department'] ?? '');
-            if ($d !== '') $deptSet[$d] = true;
+            $d = trim($_s['Department'] ?? $_s['department'] ?? '');
+            if ($d !== '') $deptSet[dept_key($d)] = true;
         }
     ?>
     <div class="nsa-stat-strip">
@@ -131,7 +131,13 @@
                 <select id="filterDept" class="nsa-filter-select">
                     <option value="">All Departments</option>
                     <?php
-                    $departments = array_unique(array_filter(array_column($staff, 'Department')));
+                    $departments = []; $_seenDept = [];
+                    foreach ($staff as $_s2) {
+                        $_dn = trim($_s2['Department'] ?? $_s2['department'] ?? '');
+                        if ($_dn === '') continue;
+                        $_dk = dept_key($_dn);
+                        if (!isset($_seenDept[$_dk])) { $_seenDept[$_dk] = true; $departments[] = $_dn; }
+                    }
                     sort($departments);
                     foreach ($departments as $dpt):
                     ?>
@@ -191,7 +197,7 @@
                         $uid      = htmlspecialchars($s['User ID']      ?? 'N/A');
                         $name     = htmlspecialchars($s['Name']         ?? 'N/A');
                         $position = htmlspecialchars($s['Position']     ?? '—');
-                        $dept     = htmlspecialchars($s['Department']   ?? '—');
+                        $dept     = htmlspecialchars($s['Department']   ?? $s['department'] ?? '—');
                         $phone    = htmlspecialchars($s['Phone Number'] ?? '—');
                         $email    = htmlspecialchars($s['Email']        ?? '—');
                         $userId   = $s['User ID'] ?? '';

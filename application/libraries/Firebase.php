@@ -892,6 +892,19 @@ class Firebase
      */
     public function setCanonicalClaims(string $uid, array $ctx): bool
     {
+        // F9 driver-identity claim (Release Integration Phase 1 fix). Every
+        // canonical mint MUST carry user_id so person-scoped Firestore rules
+        // resolve — e.g. Transport driverIs():
+        //     request.auth.token.user_id == <trip>.driver_staff_id
+        // The Firebase uid IS the SIS person id (STA*/STU*), so default user_id
+        // to it unless a caller explicitly overrides. This restores behaviour
+        // the Staff.php merge (which took the incoming version) had dropped on
+        // staff/driver creation, and prevents any future caller from silently
+        // omitting it. Only Transport driver rules read user_id, so a non-staff
+        // uid here is inert (it can never match a driver_staff_id).
+        if (!array_key_exists('user_id', $ctx) || (string) $ctx['user_id'] === '') {
+            $ctx['user_id'] = $uid;
+        }
         return $this->setFirebaseClaims($uid, $this->buildCanonicalClaims($ctx));
     }
 

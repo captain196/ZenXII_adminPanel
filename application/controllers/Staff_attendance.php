@@ -127,6 +127,7 @@ class Staff_attendance extends MY_Controller
         if (!preg_match('/^[A-Za-z0-9_\-]{8,64}$/', $clientPunchId)) {
             $clientPunchId = '';   // server will mint a random audit id
         }
+        $integrityToken = (string) ($body['integrityToken'] ?? '');
         $request = [
             'method'    => 'gps',
             'direction' => $direction,
@@ -146,6 +147,33 @@ class Staff_attendance extends MY_Controller
         // still valid (deactivation is Firestore-status-only). 403 + audited.
         if (!$this->_assert_staff_active($staffId, $request, $clientPunchId)) {
             return; // 403/503 already sent by the gate; rejection already audited
+        }
+
+        // ── Anti-spoof: Play Integrity attestation (config-gated; INERT by default) ──
+        // The geofence is server-authoritative but judges CLIENT-supplied coords with
+        // only the client `mock` flag as defence — defeatable by a rooted/fake-GPS
+        // device. When Play Integrity is configured (see config/play_integrity.php),
+        // a genuine-app + genuine-device attestation is verified server-side. A token
+        // that is PRESENT but fails verification is a positive spoof signal → always
+        // rejected; a MISSING token is rejected only once attestation is 'require'd
+        // (so older app builds keep working during rollout). Disabled → no-op.
+        $this->load->library('play_integrity');
+        if ($this->play_integrity->available()) {
+            $att = $this->play_integrity->verify($integrityToken, ['staffId' => $staffId]);
+            if (!$att['ok'] && ($att['reason'] === 'verdict_failed' || $this->play_integrity->isRequired())) {
+                $this->_record_punch($staffId, date('Y-m-d'), date('Y-m-d H:i:s'), $request, [
+                    'allowed'        => false,
+                    'reason'         => 'attestation_failed',
+                    'mark'           => null,
+                    'distanceMeters' => null,
+                    'direction'      => $direction,
+                    'attestation'    => $att['verdict'] ?? [],
+                ], $clientPunchId);
+                return $this->json_error(
+                    'Device verification failed. Please use the official app on a genuine device.',
+                    403
+                );
+            }
         }
 
         // ── Load config: schools/{id} → attendancePolicy (W8: memoized —
@@ -325,11 +353,61 @@ class Staff_attendance extends MY_Controller
         }
         $times = av_today_times($punchesByDate[$dateISO] ?? []);
 
+        // Approved regularizations → claimed times, keyed by date. A regularized
+        // day never has a physical punch, so its times live only on the request
+        // doc. Overlaying them here is what makes an approved correction visible
+        // (with its time) on the calendar, not just as a status letter.
+        $regByDate = [];
+        try {
+            $regs = $this->fs->schoolWhere('attendanceRegularizations', [
+                ['staffId', '==', $staffId],
+                ['status',  '==', 'approved'],
+            ]);
+            foreach ((array) $regs as $r) {
+                $p = is_array($r['data'] ?? null) ? $r['data'] : (is_array($r) ? $r : []);
+                if (($p['personType'] ?? '') !== 'staff') continue;
+                $d = (string) ($p['date'] ?? '');
+                if ($d === '' || $d < $windowStartISO) continue;
+                $regByDate[$d] = $p; // one approved reg per staff+day (doc id is staff_date)
+            }
+        } catch (\Throwable $e) {
+            log_message('error', 'Staff_attendance::me regularizations query failed: ' . $e->getMessage());
+        }
+
+        // TODAY gets the same approved-regularization override as the history
+        // days below — otherwise a regularization filed + approved for the current
+        // day would fix the calendar (history) but the "Today" card kept showing
+        // the wrong physical-punch time.
+        $todayRegularized = false;
+        $todayReg = $regByDate[$dateISO] ?? null;
+        if ($todayReg !== null) {
+            if (!empty($todayReg['claimedCheckInAt']))  $times['checkInAt']  = (string) $todayReg['claimedCheckInAt'];
+            if (!empty($todayReg['claimedCheckOutAt'])) $times['checkOutAt'] = (string) $todayReg['claimedCheckOutAt'];
+            $todayRegularized = true;
+        }
+
         // Enrich each history day with its check-in/out times (null when none).
+        // An approved regularization's claimed time overrides the physical punch
+        // (see the override note in the loop); a status-only reg keeps the punch.
         foreach ($history as &$_h) {
             $ht = av_today_times($punchesByDate[$_h['date']] ?? []);
-            $_h['checkInAt']  = $ht['checkInAt'];
-            $_h['checkOutAt'] = $ht['checkOutAt'];
+            $reg = $regByDate[$_h['date']] ?? null;
+            $_h['checkInAt']  = $ht['checkInAt']  ?? null;
+            $_h['checkOutAt'] = $ht['checkOutAt'] ?? null;
+            if ($reg !== null) {
+                // An approved regularization is a deliberate correction the admin
+                // signed off on, so its claimed times OVERRIDE the physical punch
+                // (the staff filed it precisely because the punch time was wrong
+                // or missing — "by mistake wrong time marked"). Previously the
+                // claimed time was only used when there was NO punch, so a day
+                // that WAS punched kept the wrong time and the approval looked
+                // like it "had no effect on the calendar time". Only override when
+                // a claimed time is actually present; a status-only regularization
+                // keeps the real punch time.
+                if (!empty($reg['claimedCheckInAt']))  $_h['checkInAt']  = (string) $reg['claimedCheckInAt'];
+                if (!empty($reg['claimedCheckOutAt'])) $_h['checkOutAt'] = (string) $reg['claimedCheckOutAt'];
+                $_h['regularized'] = true; // let the app badge a corrected day
+            }
         }
         unset($_h);
 
@@ -342,8 +420,9 @@ class Staff_attendance extends MY_Controller
             'today'      => [
                 'date'           => $dateISO,
                 'status'         => $todayStatus,         // P|T|M|A|L|H|O|W|V
-                'checkInAt'      => $times['checkInAt'],  // ISO-8601 | null
-                'checkOutAt'     => $times['checkOutAt'], // ISO-8601 | null
+                'checkInAt'      => $times['checkInAt'],  // ISO-8601 | null (reg-overridden)
+                'checkOutAt'     => $times['checkOutAt'], // ISO-8601 | null (reg-overridden)
+                'regularized'    => $todayRegularized,
                 'isHoliday'      => $todayIsHoliday,
                 'isWeeklyOff'    => $todayIsWeeklyOff,
                 'allowWorkOnOff' => !empty($pol['allowWorkOnOff']),
