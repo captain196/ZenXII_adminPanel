@@ -3473,48 +3473,37 @@ window.saveAllStreams = function() {
     // Clear any prior failure panel before retry
     renderBulkStreamFailures([]);
 
-    var saved = 0, total = keys.length;
-    var failed = [];
+    // 2026-07-23 — bulk save: ONE HTTP request → save_streams (one CAS check,
+    // one Firestore commitBatch, all-or-nothing). Replaces the previous N
+    // sequential save_stream calls, matching the single-request bulk-save
+    // pattern already used by Classes / Sections / Subjects. Individual Add/Edit
+    // still uses save_stream().
+    var payload = keys.map(function(k) {
+        var s = streams[k] || {};
+        return { stream_key: (s.key || k), label: (s.label || k), enabled: !!s.enabled };
+    });
+    var total = payload.length;
     var btn = document.querySelector('#streamsSaveBar button');
     if (btn) { btn.disabled = true; }
-    // One overlay for the whole sequential batch (per-call loaders suppressed below).
-    if (window.ZXLoader) ZXLoader.show('Saving streams…');
 
-    // Save each stream via the existing save_stream endpoint
-    function saveNext(i) {
-        if (i >= keys.length) {
-            if (btn) { btn.disabled = false; }
-            if (window.ZXLoader) ZXLoader.hide();
-            // Keep save bar visible when any failed so retry is one click
-            document.getElementById('streamsSaveBar').style.display = failed.length ? 'block' : 'none';
-            renderBulkStreamFailures(failed);
-            var msg = saved + ' of ' + total + ' streams saved'
-                    + (failed.length ? ' — ' + failed.length + ' failed' : '.');
-            toast(msg, failed.length === 0);
-            return;
-        }
-        var k = keys[i];
-        var s = streams[k];
-        var streamKey   = s.key   || k;
-        var streamLabel = s.label || k;
-        post('school_config/save_stream', {
-            stream_key: streamKey,
-            label: streamLabel,
-            enabled: s.enabled ? '1' : '0'
-        }, function(d) {
-            if (d && d.status === 'success') {
-                saved++;
-            } else {
-                failed.push({
-                    stream_key: streamKey,
-                    label: streamLabel,
-                    reason: (d && d.message) ? d.message : 'unknown error'
-                });
+    post('school_config/save_streams', { streams: JSON.stringify(payload) }, function(d) {
+        if (btn) { btn.disabled = false; }
+        if (d && d.status === 'success') {
+            // Adopt the server-canonical map so the UI matches exactly what persisted.
+            if (d.streams && typeof d.streams === 'object' && !Array.isArray(d.streams)) {
+                CFG.streams = d.streams;
+                renderStreams(CFG.streams);
+                populateStreamDropdown(CFG.streams);
             }
-            saveNext(i + 1);
-        }, { loader: false });
-    }
-    saveNext(0);
+            document.getElementById('streamsSaveBar').style.display = 'none';
+            toast(d.message || (total + ' stream(s) saved.'), true);
+        } else {
+            // Atomic endpoint: on failure NOTHING was written. Keep the save bar
+            // visible so retry is one click.
+            document.getElementById('streamsSaveBar').style.display = 'block';
+            toast((d && d.message) ? d.message : 'Failed to save streams.', false);
+        }
+    }, { loader: 'Saving streams…' });
 };
 
 // 2026-05-26 — partial-failure renderer for saveAllStreams (BUG-067).

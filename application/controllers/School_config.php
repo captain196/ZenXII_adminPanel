@@ -2599,6 +2599,142 @@ class School_config extends MY_Controller
     }
 
     // ─────────────────────────────────────────────────────────────────────
+    // POST  /school_config/save_streams
+    // Bulk "Save All Streams" — ONE read, ONE CAS check, ONE commitBatch write.
+    // Atomically upserts the full client-supplied stream set into
+    // schools/{id}.streams (all-or-nothing). Individual Add/Edit still uses
+    // save_stream(); this endpoint backs ONLY the "Save All Streams" button, so
+    // Streams matches the single-request bulk-save architecture already used by
+    // Classes (save_classes) / Sections (bulk_save_sections) / Subjects
+    // (save_bulk_subjects). Same data model, same 'streams' lock, same CAS
+    // discipline, same validation as save_stream — no schema/contract change.
+    // Upsert (non-destructive): deletion remains the job of delete_stream, so
+    // Save-All semantics are preserved exactly (never wipes unlisted streams).
+    // 2026-07-23.
+    // ─────────────────────────────────────────────────────────────────────
+    public function save_streams()
+    {
+        $this->_require_role(self::ADMIN_ROLES, 'school_config_save_streams');
+        $school = $this->school_name;
+
+        // Accept a JSON array [{stream_key|key, label, enabled}, ...] OR a JSON
+        // object map {key:{key,label,enabled}}. Normalise to a validated map.
+        $raw     = $this->input->post('streams', TRUE);
+        $decoded = is_string($raw) ? json_decode($raw, true) : $raw;
+        if (!is_array($decoded) || empty($decoded)) {
+            return $this->json_error('No streams provided.');
+        }
+
+        // Validate EVERY stream up-front — atomic: reject the whole batch on any
+        // invalid row, using the SAME rules as save_stream() (BUG-029 label cap).
+        $incoming = [];
+        foreach ($decoded as $k => $item) {
+            $item       = is_array($item) ? $item : (array) $item;
+            $streamKey  = trim((string) ($item['stream_key'] ?? $item['key'] ?? (is_string($k) ? $k : '')));
+            $label      = trim((string) ($item['label'] ?? ''));
+            $rawEnabled = $item['enabled'] ?? false;
+            $enabled    = ($rawEnabled === true || $rawEnabled === 1 || $rawEnabled === '1' || $rawEnabled === 'true');
+
+            if ($streamKey === '' || $label === '') {
+                return $this->json_error('Each stream requires a key and a label.', 422);
+            }
+            if (!preg_match('/^[A-Za-z0-9_]+$/', $streamKey)) {
+                return $this->json_error("Invalid stream key '{$streamKey}'. Use letters, digits, underscores only.", 422);
+            }
+            if (strlen($label) > 100) {
+                return $this->json_error("Stream label for '{$streamKey}' exceeds 100 characters.", 422);
+            }
+            // last-wins on duplicate keys (matches map semantics)
+            $incoming[$streamKey] = ['key' => $streamKey, 'label' => $label, 'enabled' => $enabled];
+        }
+        if (empty($incoming)) {
+            return $this->json_error('No valid streams provided.');
+        }
+
+        // Shared 'streams' lock — serialize against save_stream / seed_streams /
+        // delete_stream (BUG-028 Phase 1). Firestore __updateTime precondition
+        // catches cross-process races.
+        $lock = $this->_config_lock_acquire('streams');
+        if ($lock === null) {
+            log_message('error',
+                "ACC_CONCURRENT_REJECTED endpoint=save_streams schoolId={$this->school_id} "
+                . "actor={$this->admin_id} reason=lock_timeout");
+            return $this->json_error(
+                'Another stream-management operation is in progress. Please retry in a few seconds.',
+                409
+            );
+        }
+        try {
+            // ── Single read of the schools doc ──────────────────────────────
+            $schoolDocId = $this->fs->schoolId();
+            $fsSchool    = $this->firebase->firestoreGet('schools', $schoolDocId);
+            if (!is_array($fsSchool)) {
+                return $this->json_error('School profile is not yet initialised.');
+            }
+            $allStreams = [];
+            if (isset($fsSchool['streams']) && is_array($fsSchool['streams'])) {
+                foreach ($fsSchool['streams'] as $k => $v) {
+                    $allStreams[$k] = is_array($v) ? $v : (array) $v;
+                }
+            }
+            $updateTime = (string) ($fsSchool['__updateTime'] ?? '');
+
+            // Upsert incoming set into the existing map (non-destructive).
+            foreach ($incoming as $key => $data) {
+                $allStreams[$key] = $data;
+            }
+
+            // ── Single CAS commit — one write, all-or-nothing ───────────────
+            // merge=>true emits an updateMask so only `streams` + `updatedAt`
+            // are touched (2026-05-27 DOC-MERGE-FIX). precondition=updateTime is
+            // the optimistic-concurrency guard (identical to save_stream).
+            $ops = [[
+                'op'         => 'update',
+                'collection' => 'schools',
+                'docId'      => $schoolDocId,
+                'merge'      => true,
+                'data'       => [
+                    'streams'   => $allStreams,
+                    'updatedAt' => date('c'),
+                ],
+            ]];
+            if ($updateTime !== '') {
+                $ops[0]['precondition'] = ['updateTime' => $updateTime];
+            }
+            $committed = false;
+            try {
+                $committed = (bool) $this->firebase->firestoreCommitBatch($ops);
+            } catch (\Throwable $e) {
+                log_message('error',
+                    "ACC_SAVE_STREAMS_COMMIT_FAILED schoolId={$this->school_id} "
+                    . "err=" . $e->getMessage());
+            }
+            if (!$committed) {
+                log_message('error',
+                    "ACC_CONCURRENT_REJECTED endpoint=save_streams schoolId={$this->school_id} "
+                    . "actor={$this->admin_id} reason=cas_failed");
+                return $this->json_error(
+                    'Another administrator updated school configuration during your request. '
+                    . 'Please reload the page and retry.', 409);
+            }
+
+            $count = count($incoming);
+            log_audit('Configuration', 'save_streams', $school, "Bulk-saved {$count} stream(s)");
+
+            $this->json_success([
+                'message' => "{$count} stream(s) saved.",
+                'streams' => (object) $allStreams,
+                'saved'   => $count,
+            ]);
+        } catch (\Throwable $e) {
+            log_message('error', 'save_streams error: ' . $e->getMessage());
+            $this->json_error('Failed to save streams. Contact administrator.');
+        } finally {
+            $this->_config_lock_release($lock);
+        }
+    }
+
+    // ─────────────────────────────────────────────────────────────────────
     // POST  /school_config/delete_stream
     // ─────────────────────────────────────────────────────────────────────
     public function delete_stream()
