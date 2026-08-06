@@ -5547,6 +5547,38 @@ HTML;
             }
         }
 
+        // ── FINALISE-GATE (Release Integration Phase 1) ─────────────────────
+        // Payroll MUST compute on FINALISED attendance.
+        //  (a) Refuse an in-progress / future month — its days haven't happened,
+        //      so absent/LWP counts would be wrong and under/over-pay staff.
+        //  (b) For a past month, run the idempotent Staff_attendance_finaliser
+        //      (fills only PAST vacant days, stamps _finalisedAt) BEFORE reading
+        //      counts. Mirrors MY_Controller::_auto_finalise_staff_attendance().
+        // Schools with no attendancePolicy don't use staff attendance → skip.
+        try {
+            $schoolDocAtt = $this->fs->get('schools', $this->school_id);
+            $attPolicy = (is_array($schoolDocAtt) && is_array($schoolDocAtt['attendancePolicy'] ?? null))
+                ? $schoolDocAtt['attendancePolicy'] : [];
+            if (!empty($attPolicy)) {
+                $attTz = (is_string($attPolicy['timezone'] ?? null) && $attPolicy['timezone'] !== '')
+                    ? $attPolicy['timezone'] : 'Asia/Kolkata';
+                try { $attNow = new DateTime('now', new DateTimeZone($attTz)); }
+                catch (\Throwable $e) { $attNow = new DateTime('now', new DateTimeZone('Asia/Kolkata')); }
+                $payrollMk = sprintf('%04d-%02d', (int) $year, array_search($month, $validMonths) + 1);
+                if ($payrollMk >= $attNow->format('Y-m')) {
+                    return $this->json_error(
+                        "Attendance for {$month} {$year} is not finalised — the month is still in progress. "
+                        . "Run payroll after month-end so pay reflects the full month's attendance."
+                    );
+                }
+                $this->load->library('staff_attendance_finaliser');
+                $this->staff_attendance_finaliser->init($this->fs, $this->school_id, $this->session_year);
+                $this->staff_attendance_finaliser->run($attPolicy, $attNow->format('Y-m-d'), [$payrollMk]);
+            }
+        } catch (\Throwable $e) {
+            log_message('error', 'HR generate_payroll finalise-gate failed: ' . $e->getMessage());
+        }
+
         // Get attendance for the month — Firestore-first via staffAttendanceSummary
         $monthYear  = "{$month} {$year}";
         $monthNum   = array_search($month, $validMonths) + 1;
