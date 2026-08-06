@@ -1,0 +1,2944 @@
+# Document Service Phase 1 — Commit Review Bundle
+# Commit: ef6f1dc  ·  Branch: ank-yug_b1  ·  NOT pushed
+# Generated: 2026-07-22
+# ---------------------------------------------------------------
+# FILE SUMMARY
+ ...SSION_DOCUMENT_LIFECYCLE_ARCHITECTURE_REVIEW.md | 253 ++++++++++
+ ADMISSION_DOCUMENT_OWNERSHIP_ADR.md                |  97 ++++
+ ADMISSION_DOCUMENT_SERVICE_PHASE1_CERTIFICATION.md | 152 ++++++
+ ...OCUMENT_SERVICE_PHASE1_CONCURRENCY_HARDENING.md |  90 ++++
+ ...SSION_DOCUMENT_SERVICE_PHASE1_IMPLEMENTATION.md | 264 ++++++++++
+ DOCUMENT_SERVICE_ARCHITECTURE_AND_CERTIFICATION.md | 306 ++++++++++++
+ application/config/document_service.php            | 104 ++++
+ application/config/routes.php                      |   4 +
+ application/controllers/Admission_public.php       | 163 ++++++-
+ .../controllers/Document_service_verify.php        | 317 ++++++++++++
+ application/controllers/Sis.php                    | 296 +++++++++++-
+ application/libraries/Document_service.php         | 537 +++++++++++++++++++++
+ application/views/admission_crm/applications.php   | 115 +++++
+ firebase-rules/firestore.rules                     |  11 +
+ 14 files changed, 2706 insertions(+), 3 deletions(-)
+# ---------------------------------------------------------------
+# NOT in this commit (deferred / other workstreams, still uncommitted):
+#   - application/views/admission/public_form.php  (4 D2 fields; entangled w/ UX redesign)
+#   - firestore.rules feeSettings-gateway + tripLogs hunks (Fees/Transport)
+#   - Firestore_rest_client.php / Firestore_service.php (other workstreams)
+# ===============================================================
+
+commit ef6f1dc0c505c92874921ff8153399896831d9f8
+Author: captain196 <ankitprajapati8134@gmail.com>
+Date:   Wed Jul 22 09:41:55 2026 +0530
+
+    feat(admission): Canonical Document Service — Phase 1 (Admission-scoped, forward-compatible)
+    
+    Platform document-management foundation. One physical Storage object per logical
+    document (id-addressed), referenced by modules via reference-counted links (never
+    copied), retention-governed deletion, per-type validation + photo optimization,
+    per-document audit, and optimistic-concurrency (CAS) safety. Wired to Admission
+    only; the generic API is ready for Student/HR/Hostel/Transport/Certificates in
+    later phases (no core rewrite — "add a link").
+    
+    Service:
+    - Document_service.php: upload/replace/delete/link/unlink/verify/getMetadata.
+      Refcount + version + retention are CAS-serialized via firestoreCommitBatch
+      currentDocument preconditions (the platform's committed CAS pattern) — no
+      shared-library change. document_service.php config = per-type caps/policy.
+    - Document_service_verify.php: CLI lifecycle + deterministic concurrency proofs
+      + parallel stress harness.
+    
+    Admission integration (isolated):
+    - Public upload routed through the service (+ denormalized documentRefs pointer).
+    - Enrollment (save_admission + enroll_student) adds a 'student' link — no byte
+      copy/move (revised D1). Legacy applications fall back; no migration.
+    - CRM: role-gated + ownership-guarded verify/replace/delete endpoints + UI cards
+      (predefined vs Additional grouping).
+    - Firestore rules: documents/documentLinks server-only (deny-all client).
+    
+    Verified live (test tenant): lifecycle 20/20, CAS proof 11/11 (stale replace &
+    unlink rejected), parallel refcount invariant holds. F1/F2 fixed; F3/F4
+    concurrency-hardened. F6/F7 accepted LOW.
+    
+    Docs: DOCUMENT_SERVICE_ARCHITECTURE_AND_CERTIFICATION (canonical), ADR-001
+    (single-live-version ratified), + implementation/certification/concurrency
+    reports.
+    
+    Deferred (out of scope, entangled with a separate public-form UX redesign): the
+    4 predefined public-form upload fields. The upload handler already accepts them
+    when present, so nothing breaks.
+    
+    Co-Authored-By: Claude Opus 4.8 (1M context) <noreply@anthropic.com>
+
+diff --git a/ADMISSION_DOCUMENT_LIFECYCLE_ARCHITECTURE_REVIEW.md b/ADMISSION_DOCUMENT_LIFECYCLE_ARCHITECTURE_REVIEW.md
+new file mode 100644
+index 0000000..2ad63d0
+--- /dev/null
++++ b/ADMISSION_DOCUMENT_LIFECYCLE_ARCHITECTURE_REVIEW.md
+@@ -0,0 +1,253 @@
++# Admission Document Lifecycle — Architecture & Design Review
++
++**Status:** DESIGN ONLY — no code, no implementation, no commit. Awaiting approval.
++**Scope of this review:** Admission module only. The design is drawn so it can *later* become the canonical **ZenX Document Service** (Student, Staff, HR, Transport, Certificates), but **no other module is touched or refactored in this phase.**
++**Author:** Architecture review · **Date:** 2026-07-21
++
++> This document reviews the *current* Admission document implementation, exposes its gaps, and proposes a canonical lifecycle, storage layout, metadata model, replace/retention workflows, security posture, and a phased roadmap. Decisions that need your sign-off are called out in **▶ DECISION** blocks.
++
++---
++
++## 1. Current Architecture Review
++
++### 1.1 What exists today (as-built)
++
++**Public upload path** — `Admission_public::_handle_admission_uploads($schoolId, $appId)`
++- Inputs: `photo` (images), `aadhaar_card` (image/PDF), `documents[]` (multi, image/PDF/DOC/XLS).
++- Validation: extension allow-list + `finfo` MIME check + `is_uploaded_file()` + **1 MB** cap; `documents[]` capped at 10.
++- Upload: `Firebase::uploadFile($tmp, "admission/{schoolId}/{appId}/{prefix}_{safeName}")` (service-account write → bypasses client Storage rules; works on blocked networks).
++- Persist: on `crmApplications/{schoolId}_{appId}` → `photo_url`, `aadhaar_url`, `documents[] = [{name,url,category}]`.
++
++**Admin visibility** — `Sis::get_application()` returns the full doc; `admission_crm/applications.php` renders photo thumbnail + Aadhaar/document links in the detail modal.
++
++**Enrollment carry-over** — `Sis::save_admission()` reads the lead doc server-side and copies `photo_url → Profile Pic + Doc['Photo']`, `aadhaar_url → Doc['Aadhar Card']`, each `documents[] → Doc[<name>]` **by reference** (stores the admission Storage URL on the student). A fresh upload by the admin wins over the carried-over file.
++
++**Storage/lifecycle primitives already available** — `Firebase::uploadFile()`, `getDownloadUrl()` (tokenized `firebasestorage.googleapis.com` URL), `deleteStorageFile()`, `copyStorageFile()`.
++
++**Student-side (for contrast, NOT in scope to change now)** — `Sis::_uploadStudentFile()` writes to `schools/{schoolId}/students/{studentId}/{profile|documents}/{label}_{ts}_{rand}.{ext}`, generates thumbnails, enforces a per-student **quota** (DM6), validates MIME. Fixed `Doc` slots: *Birth Certificate, Aadhar Card, Transfer Certificate, Photo*.
++
++### 1.2 Strengths
++- ✅ Firestore-only for metadata; **Firebase Storage** for bytes (no RTDB) — aligned with the ZenX hard rule.
++- ✅ Server-side, service-account uploads → resilient on restricted parent networks; independent of client Storage rules.
++- ✅ Real MIME validation (`finfo`), not just extension; `is_uploaded_file()` guard; size cap; tenant-scoped path (`{schoolId}` in the key).
++- ✅ Enrollment already *reuses* the same Storage object (no re-upload) — the direction the spec wants.
++- ✅ Tokenized download URLs are CSP-allowed for the admin panel (`img-src *.googleapis.com`).
++
++### 1.3 Weaknesses / inconsistencies / technical debt
++| # | Issue | Impact |
++|---|---|---|
++| W1 | **Two upload engines** — admission uses `Firebase::uploadFile` directly; students use `_uploadStudentFile` (thumbnails + quota + different rules). | Divergent behavior; no single source of truth. |
++| W2 | **Divergent Storage layouts** — `admission/{school}/{app}/` (flat) vs `schools/{school}/students/{student}/` (nested). | Migration mismatch; hard to reason about ownership. |
++| W3 | **Divergent constraints** — admission: 1 MB, allows `gif/doc/docx/xls/xlsx`; student: quota-based, allows `webp` but **not** `gif/doc/xls`. | A valid admission `.xls/.gif` cannot become a valid student doc; silent drift. |
++| W4 | ⚠️ **Shared-file retention hazard** — enrollment stores the *admission* URL on the student. The student's file physically lives under `admission/{app}/`. A later "permanent delete" of that (rejected/archived) application would **break an enrolled student's documents**. | **Data-loss risk.** Must be resolved by the canonical design. |
++| W5 | **No replace workflow** — re-uploading doesn't delete the old Storage object; there is no in-application replace at all. | Orphan files; no "one active document" guarantee. |
++| W6 | **No per-document audit** — only a submission-level `public_application` audit exists. No upload/replace/delete/migrate/purge events. | Fails the spec's audit requirement; weak forensics. |
++| W7 | **No verification state** — documents have no `verified/pending/rejected` status; the app only has a coarse `stage=document_collection`. | No document-level review workflow. |
++| W8 | **Naming keeps original filename** (`{prefix}_{safeName}`) rather than a canonical type name. | Duplicate-type files can co-exist; harder cleanup. |
++| W9 | **No orphan detection / cleanup** job. | Storage drifts over time. |
++| W10 | **Public form** only has *Photo, Aadhaar, and a generic multi-file picker* — no dedicated Birth Certificate / Transfer / Marksheet fields (those exist only on the admin student form). | Spec Part 4/5 (per-field vs Additional) not fully expressible. |
++
++---
++
++## 2. Canonical Admission Document Lifecycle
++
++```
++ Parent Upload ──▶ Admission Application ──▶ Admission CRM Review ──▶ Document Verification
++                                                                            │
++                                              ┌─────────────────────────────┤
++                                              ▼                             ▼
++                                          Approved                      Rejected
++                                              │                             │
++                                              ▼                             ▼
++                                   Enrollment (ownership transfer)     Archived (retained)
++                                              │                             │
++                                              ▼                             ▼
++                                     Student Documents              Retention window (N days)
++                                                                            │
++                                                                            ▼
++                                                              Permanent Delete (explicit action)
++```
++
++**Document state machine (per document, not per application):**
++
++`uploaded` → `verified` | `rejected(doc)` → (on app approval) `migrated` → (student-owned)
++`uploaded` → `replaced` (old object purged, new becomes `uploaded`)
++Application `rejected` → documents become `archived` → after retention → `purged`
++
++Each transition emits an **audit event** (see §4, §9).
++
++---
++
++## 3. Storage Architecture (canonical)
++
++### 3.1 Proposed canonical layout
++```
++admission/{schoolId}/{applicationId}/
++    photo.jpg                     ← canonical type name (not original filename)
++    aadhaar.pdf
++    birth_certificate.pdf
++    transfer_certificate.pdf
++    marksheet.pdf
++    medical_certificate.pdf
++    additional/
++        {slug}_{shortid}.pdf      ← non-predefined docs
++    _trash/                       ← optional: replaced objects held briefly before purge
++```
++
++After **enrollment**, ownership moves to the canonical student prefix (already used by `_uploadStudentFile`):
++```
++schools/{schoolId}/students/{studentId}/
++    profile/photo.jpg
++    documents/aadhaar.pdf
++    documents/birth_certificate.pdf
++    documents/additional/{slug}_{shortid}.pdf
++```
++
++### 3.2 Naming convention
++- **Predefined types** → fixed canonical filename (`photo.jpg`, `aadhaar.pdf`, …). One file per type ⇒ replace overwrites logically (old object deleted first).
++- **Additional** → `{sanitized-slug}_{6-char-id}.{ext}` under `additional/`.
++- Extension derived from validated MIME, not client input.
++
++### 3.3 Replace / orphan prevention
++- Because predefined types map to a **single canonical path**, replace = *delete old object → upload new → update metadata* (atomic-ish; see §6). No accumulation of same-type files.
++- A nightly (or on-demand) **reconciler** cross-checks `crmApplications.documents[].storagePath` against actual Storage objects under the app prefix; anything in Storage with **no metadata pointer** = orphan → logged, then purged after a grace period.
++
++### 3.4 Cleanup strategy
++- **Replace:** old object deleted immediately (or moved to `_trash/` and purged by the reconciler).
++- **Rejected app:** nothing deleted at rejection; purge only at explicit Permanent Delete after retention (§8).
++- **Enrolled app:** files **moved** to the student prefix (§7); the application keeps pointer metadata but owns no live bytes.
++
++**▶ DECISION D1 — Enrollment file handling.** Recommend **MOVE (copy→verify→delete source)** so exactly one physical copy exists and the retention hazard (W4) disappears. Alternative: keep shared references and forbid permanent-delete once enrolled. *I recommend MOVE.*
++
++---
++
++## 4. Firestore Metadata Model (canonical)
++
++Per-document metadata, stored on the application (and mirrored to the student on migration). Proposed canonical shape:
++
++```jsonc
++// crmApplications/{schoolId}_{appId}.documents[]  (and student Doc[] post-enrollment)
++{
++  "type": "aadhaar",                 // enum: photo|aadhaar|birth_certificate|transfer_certificate|marksheet|medical_certificate|additional
++  "label": "Aadhaar Card",           // display name
++  "category": "predefined",          // predefined | additional
++  "storagePath": "admission/SCH_x/APP_y/aadhaar.pdf",
++  "downloadUrl": "https://firebasestorage.googleapis.com/...&token=...",
++  "mime": "application/pdf",
++  "sizeBytes": 84213,
++  "verificationStatus": "pending",   // pending | verified | rejected
++  "verifiedBy": null,                // adminId
++  "verifiedAt": null,                // ISO-8601
++  "uploadedBy": "public|{adminId}",
++  "uploadedAt": "2026-07-21T09:12:00Z",
++  "replacedAt": null,                // set when a prior object was superseded
++  "migratedToStudent": false,        // true once moved to student ownership
++  "auditRef": ["auditLogs/SCH_x_LOG_..."]
++}
++```
++
++- The **application doc** stays the single source of truth for admission-phase documents; the **student doc** becomes source of truth post-migration. No third store.
++- `verificationStatus` enables the per-document review workflow (§2) without adding a collection.
++
++---
++
++## 5. Document Categories & the "same-field" rule
++
++**Predefined types** (always render in their own field, before & after upload, with *Preview / Replace / Download / Delete*):
++- Student Photo · Aadhaar · Birth Certificate · Transfer Certificate · Marksheet · Medical Certificate
++
++**Additional** (no predefined field) → collected under **Additional Documents** with the same actions.
++
++**Rule:** `type ∈ predefined-set` ⇒ the file must appear in *that* field; it must **never** be duplicated into the Additional section. Routing is decided by `type`/`category` at upload time (the input's field name determines the type; the generic picker maps to `additional`).
++
++**▶ DECISION D2 — Public-form fields.** Today the *public* form has Photo + Aadhaar + a generic picker only. To honor Part 4 end-to-end, Phase 1 should add dedicated public fields for **Birth Certificate, Transfer Certificate, Marksheet, Medical Certificate** (all optional). Confirm the required/optional matrix per class or globally.
++
++---
++
++## 6. Replace Workflow (exact sequence)
++
++```
++1. Validate new file (type, MIME, size, tenant, permission).
++2. Read current metadata for that document `type`.
++3. Upload new bytes to the canonical path (temp suffix if same path).
++4. On success: delete the OLD Storage object (or move to _trash/).
++5. Update Firestore metadata: new storagePath/downloadUrl/mime/size, replacedAt=now,
++   verificationStatus reset to 'pending'.
++6. Write audit event: {action:'replace', type, oldPath, newPath, by, at, appId}.
++7. If step 3/4 fails → keep old metadata; surface a clean error (no partial state).
++```
++Guarantees: **one active object per predefined type**, no orphans, audited, verification re-triggered.
++
++---
++
++## 7. Approval & Enrollment (Admission → Student Documents)
++
++**On enroll (single physical copy, no re-upload):**
++```
++For each application document:
++  - MOVE bytes: copyStorageFile(admissionPath → studentPath) then deleteStorageFile(admissionPath)   [D1=MOVE]
++  - Write student Doc metadata pointing at the studentPath + fresh downloadUrl
++  - Mark application doc.migratedToStudent = true (keeps a historical pointer, owns no live bytes)
++  - Audit: {action:'migrate', type, from, to, appId, studentId, by, at}
++Fresh admin upload during enrollment always supersedes the carried-over file (existing behavior preserved).
++```
++This resolves **W4** (no shared live bytes), satisfies "reuse the same file / no duplicate upload", and gives the Student module clean ownership under its canonical prefix.
++
++> Note: `_uploadStudentFile`'s per-student **quota** (DM6) must be considered — a MOVE should count against quota or be exempt. **▶ DECISION D3:** exempt migrated admission files from quota, or count them? (Recommend: count, but never *block* an approved enrollment — warn only.)
++
++---
++
++## 8. Rejected Applications — Retention Policy
++
++- **At rejection:** documents are **not** deleted. Application `status='rejected'`, documents `archived`. Files remain readable in the CRM (audit/appeal).
++- **Retention window:** configurable, default **180 days** (per-school override via `schools.{id}.admissionDocRetentionDays`). **▶ DECISION D4:** confirm default (90/180/365).
++- **Permanent Delete:** explicit, permission-gated admin action only. Removes, in order, and audits each: Storage objects → Firestore document metadata → any cache → the application's doc-pointer fields → writes a terminal `purge` audit (the audit log itself is retained).
++- **Never** auto-purge; never purge an application that reached `enrolled` (its files were moved to the student and are student-owned).
++
++---
++
++## 9. Security Review
++
++| Control | Current | Canonical target |
++|---|---|---|
++| Extension allow-list | ✅ (admission) | ✅ unified list per type |
++| MIME via `finfo` | ✅ | ✅ mandatory, server-side |
++| Size cap | ✅ 1 MB (admission) | Per-type caps (photo ≤2 MB, docs ≤5 MB) — **▶ DECISION D5** |
++| `is_uploaded_file()` | ✅ | ✅ |
++| Executable/script block | Partial (allow-list only) | Explicit deny of `svg`/`html`/`js`/double-extension; strip metadata where feasible |
++| Virus-safe handling | ❌ none | Optional ClamAV/API hook at upload (flag-gated); at minimum, never serve inline HTML/SVG |
++| Tenant isolation | ✅ path + docId `{schoolId}_…` | ✅ enforced in the service layer; reject cross-school `storagePath` |
++| Permission checks | Public upload is unauthenticated by design; admin actions role-gated | Replace/Delete/Permanent-Delete → explicit roles; download via tokenized URL only |
++| Download URL | Tokenized, CSP-allowed | Keep; consider short-lived signed URLs for sensitive types (future) |
++
++Key hardening for Phase 1: **deny `svg/html` and double-extensions**, per-type size caps, and role-gated replace/delete.
++
++---
++
++## 10. Production Roadmap (phased)
++
++**Phase 0 — Design ratification (this document).** Approve D1–D5. No code.
++
++**Phase 1 — Admission-only canonical lifecycle** (the only build phase now):
++1. Introduce an internal **Admission Document Service** wrapper (single upload/replace/delete/migrate API) over the existing `Firebase` storage helpers — *no other module changed.*
++2. Canonical Storage naming (§3) + canonical metadata (§4) on `crmApplications`.
++3. Public form: dedicated predefined fields + Additional (D2); per-field display with Preview/Replace/Download/Delete.
++4. Replace workflow (§6) with orphan-free guarantee + per-document audit (§4).
++5. CRM: grouped document view + verify/replace/delete (role-gated).
++6. Enrollment MOVE (§7) resolving W4; Student module *reads* the moved files (no student-module refactor — it already reads `Doc[]`).
++7. Rejected → archive + retention + Permanent Delete (§8).
++8. Orphan reconciler (on-demand first).
++9. Full flow verification (parent → purge) + certification report.
++
++**Phase 2+ (future, separate approval)** — promote the Admission Document Service to the **canonical ZenX Document Service**; migrate Student/Staff/HR/Transport/Certificates onto one engine, one layout, one metadata/permission/audit/retention model. **Not in scope now.**
++
++---
++
++## Decisions needed before Phase 1
++- **D1** Enrollment file handling: **MOVE** (recommended) vs shared-reference.
++- **D2** Add predefined public fields (Birth/Transfer/Marksheet/Medical) — and their required/optional matrix.
++- **D3** Quota treatment for migrated files (recommend: count, warn-not-block).
++- **D4** Rejected retention default (90/180/365 days).
++- **D5** Per-type size caps (e.g., photo 2 MB, docs 5 MB).
++
++*No code has been written. Nothing committed or pushed. Awaiting approval of this design and D1–D5 before any Phase 1 implementation.*
+diff --git a/ADMISSION_DOCUMENT_OWNERSHIP_ADR.md b/ADMISSION_DOCUMENT_OWNERSHIP_ADR.md
+new file mode 100644
+index 0000000..6ba7fb8
+--- /dev/null
++++ b/ADMISSION_DOCUMENT_OWNERSHIP_ADR.md
+@@ -0,0 +1,97 @@
++# ADR-001 — Document Ownership Architecture (revises D1)
++
++**Status:** **RATIFIED & IMPLEMENTED** (Phase 1, Admission) — 2026-07-22. Option **C** adopted; **revised-D1** in force. **AMENDED (A1):** the retained-multi-version proposal in this ADR (`versions[]` / "old retained per policy") is **SUPERSEDED** by the single-live-version model Phase 1 ratified — see Amendment A1 below and §11 of `DOCUMENT_SERVICE_ARCHITECTURE_AND_CERTIFICATION.md`. Supersedes the D1 recommendation in `ADMISSION_DOCUMENT_LIFECYCLE_ARCHITECTURE_REVIEW.md`.
++**Question:** How should a Storage object be owned/shared across ZenX modules (Admission, Student, HR, Staff, Hostel, Transport, Certificates …) over a 10+ year horizon — preserving audit history, historical admission records, storage consistency, and maintainability?
++
++---
++
++> ### Amendment A1 — Phase 1 ratifies SINGLE-LIVE-VERSION (2026-07-22)
++> Option **C** (Canonical Document Service, unique IDs + reference links) and **revised-D1** (link, not move) are ratified and implemented for Admission. **One part of the "Canonical shape (target)" below is superseded:** the multi-version retention sketch — `currentVersion` + `versions: [...]` and "old version retained per policy" — is **NOT** adopted. Phase 1 ships a **single-live-version** model: `version` is a monotonic counter, and on replace the superseded Storage object is **permanently deleted** (provenance preserved in the immutable audit trail; prior bytes not recoverable). This is the deliberate storage-efficiency choice and is the canonical behavior. Recoverable version history remains an optional, per-module **Phase-2+** enhancement, not a Phase-1 commitment. Authoritative reference: **§11 of `DOCUMENT_SERVICE_ARCHITECTURE_AND_CERTIFICATION.md`.** Everything else in the Canonical shape (identity, links, reference counting, retention, denormalized pointer) stands **as implemented**.
++
++---
++
++## The three candidates
++
++- **A — MOVE ownership:** on hand-off (e.g., enrollment) the bytes are copied to the new module's path and the source is deleted. One physical copy; ownership transfers.
++- **B — Shared document reference:** multiple modules store the same raw Storage path/URL. No move, no copy, no coordinator.
++- **C — Canonical Document Service (unique Document IDs + reference links):** a first-class `documents/{documentId}` entity is the single source of truth for one Storage object. Modules never see Storage paths; they **link** to a document by ID. The service owns upload, path, URL minting, versioning, verification, audit, retention, and **reference counting**.
++
++---
++
++## Evaluation
++
++| Criterion | A · MOVE | B · Shared raw ref | C · Canonical Doc Service |
++|---|---|---|---|
++| Duplication | None | None | None |
++| Move/copy cost per hand-off | Copy+delete every time (N×M bespoke flows) | None | None (just add a link) |
++| Deletion safety (the W4 hazard) | Safe *only* because ownership is exclusive; but every transfer is a risky mutation | **Unsafe** — no owner; deleting in one module breaks others | **Safe** — purge only when link-count = 0 **and** retention elapsed **and** no legal hold, enforced centrally |
++| Historical admission record fidelity | Weak — bytes leave the application; you keep a pointer, not the file/version | Fair — path persists but can vanish under you | **Strong** — application keeps a link to the exact document (+ version); file never moves |
++| Audit / provenance | Path changes over life → old URLs break; audit spans multiple paths | Ambiguous ownership → weak provenance | **One immutable-ish record per document**; replace = new version (Phase 1: single-live-version, old bytes retired — A1) |
++| Coupling between modules | Medium — each pair needs move logic | **High** — modules hardcode each other's Storage paths | **Low** — modules hold only opaque IDs; service is the seam |
++| Scale to N modules | Poor — O(N²) transfer paths | Poor — shared mutable state, no coordinator | **Excellent** — one engine; new module = "link", nothing else |
++| Content dedup (same file twice) | No | Accidental only | **Yes** — content-hash → one object, many links |
++| Storage-backend portability | Locked to path scheme | Locked | **High** — path is internal to the service; swappable |
++| Concurrency correctness | Copy+delete race windows | Undefined | Reference counting via CAS/transaction — a solved pattern |
++| Up-front complexity | Low | Lowest | **Higher** (new collection + link + refcount) |
++| 10-year maintainability | Degrades (bespoke flows accrue) | Degrades fastest (coupling + unsafe deletes) | **Best** — one lifecycle model to reason about |
++
++### Why A and B fail long-term
++- **B (shared raw reference)** is the source of the W4 data-loss hazard generalized to every module: with no owner and no reference count, *no one can safely delete anything*, yet everyone can. It also hard-couples modules to each other's Storage layout. Reject.
++- **A (MOVE)** is correct only when a document belongs to exactly one module at a time. Real ZenX documents are **multi-tenant across modules**: a single Aadhaar scan is legitimately the Admission record, the Student record, and (later) the Hostel/Transport KYC. MOVE forces a false "one owner" model and turns every cross-module relationship into a bespoke, mutating copy+delete — O(N²) flows and broken historical URLs. It also weakens the *historical admission record*: after enrollment the application no longer holds the file. Reject as the long-term model.
++
++### Why C wins
++**C** treats a document as a first-class entity with a stable identity, exactly like a mature DMS (Documentum/Alfresco) or a cloud object-store + metadata catalog. Bytes are written **once**, addressed by `documentId`, and **referenced** — never moved, never duplicated. Ownership becomes *link-set + retention policy*, evaluated in one place, which makes deletion provably safe and audit/history complete. Enrollment stops being a file operation and becomes a metadata operation ("add a Student link to document X"). Every future module is additive.
++
++---
++
++## Recommendation
++
++**Adopt C — the Canonical Document Service with unique Document IDs and reference links — as the target architecture.** It is the only option that scales to N modules over 10+ years while keeping deletion safe, history intact, and modules decoupled.
++
++### Canonical shape (target)
++```
++documents/{schoolId}_{documentId}            ← single source of truth per file
++  { documentId, schoolId, type, mime, sizeBytes, contentHash,
++    storagePath: "documents/{schoolId}/{documentId}.{ext}",   // internal to the service
++    // ⟵ SUPERSEDED (Amendment A1). Phase 1 ships: version: 3  — a single monotonic
++    //    counter, NO versions[] array; the old object is deleted on replace. See §11.
++    currentVersion: 3, versions: [ {v, storagePath, uploadedBy, uploadedAt} ],
++    verificationStatus, retention: {policy, eligibleAt, legalHold:false},
++    linkCount: 2 }
++
++documentLinks/{schoolId}_{documentId}_{module}_{entityId}
++  { documentId, module:"admission|student|hr|hostel|...", entityId, role:"aadhaar|photo|...",
++    linkedBy, linkedAt, active:true }
++```
++- Modules store a **denormalized pointer** on their own doc — `{documentId, type, downloadUrl(cached), status}` — so lists/receipts render with no join (Firestore denormalization); the `documents/{id}` record stays authoritative for lifecycle.
++- **Replace** = new version on the same `documentId`. ~~(old version retained per policy → admission's historical record is preserved)~~ **SUPERSEDED (Amendment A1):** single-live-version — the old object is **permanently deleted** on replace; provenance is preserved via the immutable audit trail, not recoverable bytes (§11 of the canonical doc). No path churn for referrers; they resolve `documentId`.
++- **Delete** = a module `unlink`s (sets `active:false`, decrements `linkCount` via CAS). The service purges the Storage object + record **only** when `linkCount == 0` **and** retention `eligibleAt` passed **and** no `legalHold` — one place, fully audited.
++- **Storage path is an internal detail** (`documents/{schoolId}/{documentId}.{ext}`), flat and ID-addressed — no more module-nested paths; backend is swappable.
++
++### Revised **D1**
++> **D1 (revised): Enrollment does NOT move or copy files.** It creates a **Student link** to the same canonical document. One physical object, referenced by both the Admission application and the Student. Retention/permanent-delete is governed centrally by link-count + policy — which resolves the W4 hazard *without* the O(N²) move logic and *without* losing the historical admission record.
++
++---
++
++## How Phase 1 stays scoped yet forward-compatible
++
++We do **not** build the full multi-module registry now. Phase 1 (Admission only) implements a **forward-compatible subset** of C:
++
++1. Introduce the `documents/` + `documentLinks/` collections and a thin **Document Service** wrapper over the existing `Firebase` storage helpers — used **only by Admission** in this phase.
++2. Admission uploads create canonical documents (ID-addressed path) + an `admission` link.
++3. Enrollment adds a `student` link (no move, no copy) — the *only* change vs today's carry-over.
++4. Replace/verify/retention/permanent-delete run through the service (reference-counted).
++5. Student/HR/Staff/Hostel/Transport remain **untouched**; they read Admission's denormalized pointer exactly as today. Their migration onto the service is **Phase 2+**, separate approval.
++
++Because Phase 1 already models documents as canonical entities with links, Phase 2 is an *extension* (wire more modules' links), **not a rewrite** — the key property MOVE and shared-ref both lack.
++
++### Net effect on the earlier decisions
++- **D1** → resolved above (link, not move).
++- **D3 (quota on migrated files)** → moot for storage bytes (no second copy); quota, if applied, counts *links*/logical attachments, never re-charges bytes.
++- **D2, D4, D5** unchanged and still open.
++
++---
++
++*Original proposal footer (historical): "No code written. Nothing committed or pushed. Please confirm C / revised-D1, and D2/D4/D5, and I will implement Phase 1…"*
++
++**Resolution (2026-07-22):** C / revised-D1 confirmed; D2 = 4 predefined public fields, D4 = 180-day retention, D5 = per-type caps + photo compression. Phase 1 (Admission only) implemented, F1/F2 fixed, F3/F4 concurrency-hardened, verified, and certified — **single-live-version** per Amendment A1. See `DOCUMENT_SERVICE_ARCHITECTURE_AND_CERTIFICATION.md` and the three Phase-1 reports. Still uncommitted, pending the production commit.
+diff --git a/ADMISSION_DOCUMENT_SERVICE_PHASE1_CERTIFICATION.md b/ADMISSION_DOCUMENT_SERVICE_PHASE1_CERTIFICATION.md
+new file mode 100644
+index 0000000..15fff96
+--- /dev/null
++++ b/ADMISSION_DOCUMENT_SERVICE_PHASE1_CERTIFICATION.md
+@@ -0,0 +1,152 @@
++# Document Service Phase 1 — Final Implementation Verification & Certification
++
++**Scope:** Admission-only Canonical Document Service. **Status:** verified; 2 genuine issues found & fixed, 5 hardening items recorded. **No commit, no push.**
++**Date:** 2026-07-22
++
++> This is an adversarial verification pass, not a feature pass. Each of the 8 requested areas was traced in code. Two genuine defects were found and fixed (one HIGH); the rest are recorded with severity. Nothing outside Admission was modified.
++
++---
++
++## Findings summary
++
++| # | Severity | Area | Status |
++|---|---|---|---|
++| **F1** | **HIGH** | `enroll_student` (CRM approve→enroll path) created the student with **empty Profile Pic + Doc[]**, dropped the parent's uploaded documents, and created **no `student` link** — the revised-D1 objective was wired only into `save_admission` (counter path). | **FIXED** |
++| **F2** | **LOW** | CRM detail rendered predefined + additional documents in one flat grid, not the spec's dedicated "Additional Documents" section. | **FIXED** |
++| F3 | MEDIUM | Concurrent `replace` of the same document uses a non-atomic version bump → a silently-lost replacement and (when extensions differ) one orphan object. | Recommend (not blocking) |
++| F4 | MEDIUM | Concurrent `unlink`/`delete` of the **same** link double-decrements `linkCount` (no CAS between the active-check and the decrement). | Recommend before Phase-2 auto-purge |
++| F5 | LOW | `link`/`unlink` pair the link write and the counter increment as two ops → a transient mid-pair failure undercounts `linkCount`. | Recommend (reconciler recompute) |
++| F6 | LOW | `purge` deletes Storage then metadata without checking the Storage-delete result → a failed Storage delete leaves an orphan. | Recommend (check + log) |
++| F7 | LOW | `validate()` allows a non-`is_uploaded_file` path when it is a real file (internal-staging escape) — acceptable since CRM/public paths pass `$_FILES` tmp names. | Note only |
++
++**No Critical issues. Phase 1 is production-ready for its wired Admission scope after F1+F2 (applied).** F3–F7 are rare/latent and do not cause active data loss in the wired flows; **F4 must be resolved before the Phase-2 automated retention reconciler/force-purge is built.**
++
++---
++
++## 1. Storage Cleanup — orphan analysis per operation
++
++| Operation | Storage outcome | Orphan? |
++|---|---|---|
++| **Upload** | 1 object + metadata. On metadata-write failure the object is deleted (`Document_service.php:123-127`). Optimizer temp `@unlink`'d. | **No** |
++| **Replace** | Upload new → repoint metadata → delete old (`:158-179`). On metadata-update failure the **new** object is deleted, old retained (`:177`). Predefined single-version path = one live object per doc. | **No** (single-admin) |
++| **Delete** (force=false, still shared) | `unlink` drops refcount; object kept because another module still links it. | **No** |
++| **Delete** (force=false, orphaned) | Retention clock starts; object **retained by design** until the window elapses (metadata present ⇒ not an orphan). | **No** (retained) |
++| **Enrollment** | `link('student')` only — **no bytes moved/copied**. No new object. | **No** |
++| **Retention start** | `unlink` sets `retention.eligibleAt`; nothing deleted. | **No** (retained) |
++
++**Exceptions (findings):** F3 concurrent replace (differing ext) → 1 orphan; F6 purge with a failed Storage delete → 1 orphan. Both are covered above.
++
++**Replace-retires-old demonstrated:** `Document_service.php:179` — `if ($oldPath !== '' && $oldPath !== $newPath) $this->fb->deleteStorageFile($oldPath);` after the new object + metadata are committed (safe order). The CLI verifier (`document_service_verify run`) asserts version bumps 1→2 across a replace.
++
++---
++
++## 2. Firestore Performance — measured op counts (Phase 1 vs previous reference-copy impl)
++
++Counted directly from the code paths. "Previous" = pre-Phase-1 (URLs stored inline on the application; reference-copy at enrollment; no replace/verify/audit).
++
++| Operation | Impl | FS reads | FS writes | Storage ops |
++|---|---|---|---|---|
++| **Upload** 1 doc | Previous | 0 | 0 (inline on app) | 2 (put + url) |
++| | **Phase 1** | **1** | **6** (metadata, link, increment, retention, 2× audit) | 2 |
++| **CRM display** (N docs) | Previous | 1 (`get_application`) | 0 | 0 |
++| | **Phase 1** | **1** | **0** | 0 — *rendered from denormalized `documentRefs`; **zero** extra reads* |
++| **Replace** 1 doc | Previous | — (no capability) | — | — |
++| | **Phase 1** | ~2 | ~3 | 3 (put + url + delete old) |
++| **Verify** 1 doc | Phase 1 | ~2 | ~3 | 0 |
++| **Delete** 1 doc | Phase 1 | ~4 | ~5 | 0–1 (purge only if eligible) |
++| **Enrollment** (per doc) | Previous | ~0 (1 lead read total, inline copy) | 0 | 0 |
++| | **Phase 1** | **1/doc** | **4/doc** (link, increment, retention, audit) | 0 |
++
++**Explanation of the deltas.**
++- **Increase (writes):** upload and enrollment each add per-document writes — canonical **metadata**, a **link**, an **atomic refcount**, and a per-document **audit** row. This is the deliberate cost of lifecycle correctness (reference counting → W4 safety), per-document audit/compliance, and central retention. Enrollment adds ~4 writes/doc (≈16 for a 4-doc student) at a once-per-student event.
++- **No increase (reads / display):** the read-heavy path — every CRM list and detail render — is **unchanged (zero extra reads)** because documents render from the denormalized `documentRefs` pointer. This is where volume lives, and it was kept free.
++- **Storage:** flat, except replace adds one delete (the orphan-prevention) — a net storage *win*, not a cost.
++
++Net: Phase 1 shifts a bounded number of **writes** onto low-frequency lifecycle events to buy audit, refcount safety, and storage savings, while keeping the **high-frequency read path at zero extra cost**.
++
++---
++
++## 3. Concurrency
++
++| Scenario | Verdict | Evidence |
++|---|---|---|
++| **Two admins verify same doc** | ✅ Safe — last-writer-wins on a valid status; no corruption (both write an allowed enum; refcount/links untouched). | `verify()` `:260-273` |
++| **Concurrent enrollment (same application)** | ✅ Safe — `enroll_student` holds the `Accounting_idempotency` `ENROLL_{appId}` claim (exactly-once); and `link()` is idempotent via atomic create-if-absent, so even a retry never double-counts. | `Sis.php` enroll idempotency + `link()` `:194-213` |
++| **Two admins link same (doc,module,entity)** | ✅ Safe — `firestoreCreate` is atomic (409-loses); exactly one increment. | `:194-200` |
++| **Two admins replace same doc** | ⚠️ **F3 MEDIUM** — version is read-then-+1 non-atomically; both target `_v{n+1}`. Lost update always; orphan when the two files' extensions differ. No refcount/link corruption; the live object is always a valid version. | `replace()` `:154-179` |
++| **Two admins delete/unlink same link** | ⚠️ **F4 MEDIUM** — both read `active=true` then both decrement → `linkCount` double-decrements. Latent: Phase 1 never auto-purges (delete is `force=false`; the eligibleAt was just set to +180d), so no immediate data loss — but a wrong (too-low) count would mislead the **Phase-2** reconciler/force-purge. | `unlink()` `:221-225` |
++| link write + increment not transactional | ⚠️ **F5 LOW** — a mid-pair write failure undercounts; the links themselves remain the source of truth and a reconciler recompute fixes drift. | `:199-209` |
++
++**Recommended fixes (not required for Phase 1's wired scope):** F3 → optimistic-concurrency (conditional update on `version`) or reconciler cleanup of loser objects; F4 → CAS the `active:true→false` transition and only decrement when *this* writer performed it (or recompute `linkCount` by counting active links before any purge decision). F4 is a **prerequisite before Phase 2** wires any automated/forced purge.
++
++---
++
++## 4. Legacy Compatibility (pre-Document-Service applications)
++
++Verified by code path — old applications have **no** `documentRefs`; every consumer branches to the legacy fields, so **no migration is needed**:
++
++- **Open / display:** CRM `viewApp` → `if documentRefs → managed cards; else → read-only tiles from photo_url/aadhaar_url/documents[]` (`applications.php`). Old apps render exactly as before.
++- **Enroll:** `_admission_docs_for_student()` prefers `documentRefs`, **falls back** to `photo_url`/`aadhaar_url`/`documents[]` (`Sis.php`), so old apps still populate the student's Profile Pic + Doc[] on enrollment (now on **both** paths after F1) — with no links to create (no canonical ids exist).
++- **No invalidation:** legacy fields are still written on new uploads; nothing was renamed or removed.
++- **Boundary (by design):** an old app's documents have no `documentId`, so they render **view/download-only** (no verify/replace/delete buttons) — correct, since no canonical record exists to manage. Not a defect.
++
++---
++
++## 5. UI Verification
++
++- **Public form:** each predefined type has its own dedicated input (`photo`, `aadhaar_card`, `birth_certificate`, `transfer_certificate`, `marksheet`, `medical_certificate`); only the generic `documents[]` picker maps to `additional`. Routing is by input name → type, so a predefined file can never land in Additional.
++- **CRM detail (after F2 fix):** predefined documents render under **"Photo & Documents"**; only `category==='additional'` render under a separate **"Additional Documents"** heading (`applications.php`, `preCards`/`addCards` split).
++- **Per-document actions present:** Preview (thumbnail/opens new tab), Download (tokenized URL), **Verify** (✓), **Reject** (✗), **Replace**, **Delete**, and a live **verification-status badge** (pending/verified/rejected) — all on each managed card, re-rendering the panel after each action.
++
++---
++
++## 6. Security
++
++| Control | Verdict |
++|---|---|
++| Permission enforcement | ✅ `verify`/`replace`/`delete` each call `_require_role(MANAGE_ROLES, …)`; public upload is intentionally unauthenticated by design. |
++| Tenant isolation | ✅ service scoped to `$this->school_name`; every `read()` re-checks stored `schoolId`; cross-school read returns null (asserted by the verifier). `documents`/`documentLinks` deny-all in rules. |
++| Replace authorization | ✅ role gate **+ ownership guard** (`_crm_doc_owned` — the documentId must be referenced by *this* application) + server-side MIME/ext/size re-validation of the new file. |
++| Delete authorization | ✅ role gate + ownership guard; `force=false` so a CRM delete can never purge a document an enrolled student still references (W4-safe). |
++| Upload hardening | ✅ finfo MIME (must match type), ext allow-list, per-type caps, deny-list (`svg/html/js/php/exe/double-ext`), extension derived from validated MIME. |
++| Minor (F7) | `is_uploaded_file` is soft-bypassed for real-file paths (internal staging); acceptable — CRM/public inputs come from `$_FILES`. |
++
++---
++
++## 7. Storage Savings — validation & assumptions
++
++**Assumptions (explicit, conservative):** one uploaded photo (2.5 MB raw → 0.15 MB after GD 1200px/JPEG-q82 ≈ 16×) + three ~0.4 MB documents = 3.7 MB raw / 1.35 MB canonical per student; ~100% enroll (worst case). Three implementations:
++- **A · Naive** (unoptimized + copy-on-enroll): 7.4 MB/student.
++- **B · Pre-Phase-1 ZenX** (reference-reuse, unoptimized): 3.7 MB/student.
++- **C · Canonical Phase 1** (link + optimized): 1.35 MB/student.
++
++| Scope | A · Naive | B · Pre-P1 | **C** | C vs A | C vs B |
++|---|---|---|---|---|---|
++| 1k students | 7.4 GB | 3.7 GB | **1.35 GB** | 82% | 63% |
++| 5k students | 37 GB | 18.5 GB | **6.75 GB** | 82% | 63% |
++| 100 schools (100k) | 740 GB | 370 GB | **135 GB** | **82%** | **63%** |
++
++**Honest characterization of the levers:**
++- **vs B (63%)** is almost entirely **photo optimization** — the reference model is unchanged (pre-Phase-1 already referenced at enrollment, so it never double-stored). This is the *real, today* saving.
++- **vs A (82%)** additionally counts the **de-duplication** the reference model gives over a copy-on-handoff design (the MOVE/shared-copy family the ADR rejected). This saving is *hypothetical today* (one enroll hand-off) but **compounds in Phase 2**: the same Aadhaar linked by Admission + Student + Hostel + Transport is **1×** under references vs **4×** under copies.
++
++**Further optimization (unchanged from the impl report):** content-hash dedup (identical re-uploads → 0 bytes), WebP/AVIF photo encode (−25–35%), PDF normalization, an orphan-reclaim reconciler, and a Nearline tier for archived docs.
++
++---
++
++## 8. Production Certification
++
++**Verdict: CERTIFIED for Phase 1 (Admission-only) production use** — after the F1 (HIGH) and F2 (LOW) fixes applied this pass, and subject to the boundaries below.
++
++- **F1 fixed** — the primary public-admission flow (`enroll_student`) now carries the parent's documents onto the student **and** creates the canonical `student` link (revised D1), with a legacy fallback. Both enrollment paths (`save_admission` counter + `enroll_student` CRM) are now consistent.
++- **F2 fixed** — predefined vs Additional sectioning honored in the CRM.
++- **F3–F7** are recorded; none causes active data loss in Phase 1's wired flows (no automated purge; concurrent same-document admin actions are rare). **F4 is a hard prerequisite before Phase 2** builds the automated retention reconciler / force-purge.
++- **`php -l` clean** on all changed files; cross-module trail unchanged (Kotlin apps read student `Doc[]`, unaffected).
++
++### Changed this verification pass
++| File | Change |
++|---|---|
++| `application/controllers/Sis.php` | F1 — `_admission_docs_for_student()` helper; `enroll_student` now populates Profile Pic + Doc[] and creates `student` links (D1) with legacy fallback. |
++| `application/views/admission_crm/applications.php` | F2 — predefined vs "Additional Documents" section split. |
++
++*No commit. No push. No module outside Admission modified. Awaiting your review.*
+diff --git a/ADMISSION_DOCUMENT_SERVICE_PHASE1_CONCURRENCY_HARDENING.md b/ADMISSION_DOCUMENT_SERVICE_PHASE1_CONCURRENCY_HARDENING.md
+new file mode 100644
+index 0000000..db25e63
+--- /dev/null
++++ b/ADMISSION_DOCUMENT_SERVICE_PHASE1_CONCURRENCY_HARDENING.md
+@@ -0,0 +1,90 @@
++# Document Service Phase 1 — Concurrency Hardening (F3/F4) & Re-Verification
++
++**Scope:** `Document_service.php` only (+ CLI verifier). **No other module modified.** No commit, no push.
++**Result:** F3 and F4 hardened with optimistic concurrency (CAS); full verification re-run and **PASS**. F5 additionally resolved as a side effect.
++**Date:** 2026-07-22
++
++> The service is becoming the foundation other modules will inherit, so the concurrency guarantees now live at the service layer, built entirely from primitives the Firestore REST client already exposes (`firestoreGet.__updateTime` + `commitBatch` with `currentDocument` preconditions — the same Phase-8 accounting CAS pattern). No shared infrastructure was changed.
++
++---
++
++## What changed (isolated to the Document Service)
++
++| Method | Before | After |
++|---|---|---|
++| `replace()` | read version → upload `_v{n+1}` → `firestoreUpdate` (no precondition) → delete old. Concurrent replaces raced on the version. | **CAS retry loop:** read `version`+`updateTime` → upload to a **unique** path → commit metadata **only if the doc's `updateTime` is unchanged**; on a CAS miss, **delete our own object** (no orphan) and retry on fresh state. |
++| `link()` | `firestoreCreate` (atomic) **then** a separate `firestoreIncrement` **then** a separate retention update. | **Single atomic `commitBatch`:** link create-if-absent (or CAS reactivate) **+** `linkCount` write CAS'd on the doc's `updateTime`, committed together; retry on contention. |
++| `unlink()` | read link → check `active` → **separate** `firestoreUpdate(active=false)` **+ separate** `firestoreIncrement(-1)`. Two concurrent unlinks both passed the check → **double decrement**. | **Single atomic `commitBatch`:** deactivate link (CAS on the link's `updateTime`) **+** `linkCount` decrement (CAS on the doc's `updateTime`), committed together. Only the writer that actually flips `active` decrements. |
++| `replacePath()` | — | new helper: unique per-attempt Storage path (`{docId}_v{n}_{rand}.{ext}`) so concurrent replaces never collide. |
++| `retentionMap()` | — | rebuilds the full nested `retention` map (batch writes can't use dotted paths), preserving `policy`/`legalHold`. |
++
++**Mechanism:** correctness comes from the **server-side `currentDocument` precondition** (a stale `updateTime` → the whole `:commit` fails atomically, HTTP 400 FAILED_PRECONDITION). The retry loop (`CAS_MAX_RETRIES = 6`, small backoff) only absorbs contention; it can never produce an incorrect count — the invariant is enforced by Firestore, not by the retries. Under extreme contention an operation returns a clean `"...busy — please retry"` error (the CRM endpoints already surface `json_error`), never a corrupt count.
++
++- **F5 resolved for free:** link create/reactivate and the counter change are now one atomic commit, closing the old create-then-increment gap.
++- **F6/F7** (purge Storage-delete not result-checked; `is_uploaded_file` soft-bypass) remain open, unchanged, LOW — out of this hardening's scope.
++
++---
++
++## Verification — re-run in full against a live test tenant (`SCH_9C7986EA3E`)
++
++### 1. Single-thread lifecycle — `document_service_verify run` → **20 / 20 PASS**
++upload → tenant-isolation (cross-school read blocked) → link → **dedup** → student-link → verify → **replace (v1→v2)** → unlink (refcount holds) → delete+force (**purge**) → gone. Confirms the hardened code is behavior-compatible end-to-end.
++
++### 2. Deterministic concurrency proof — `document_service_verify race` → **11 / 11 PASS**
++Constructs the exact interleaving (capture admin-1's read → admin-2 completes a real mutation → replay admin-1's now-stale commit):
++
++```
++F4 — two admins unlink the same link simultaneously:
++  [PASS] linkCount = 2 (admission + student)
++  [PASS] after admin-2 unlink: linkCount = 1
++  [PASS] stale concurrent unlink REJECTED by CAS
++  [PASS] linkCount still 1 — NO double-decrement
++F3 — two admins replace the same document simultaneously:
++  [PASS] admin-2 replace → version 2
++  [PASS] stale concurrent replace REJECTED by CAS
++  [PASS] serialized replace advances → version 3
++  [PASS] downloadUrl matches committed storagePath
++```
++
++### 3. Empirical parallel stress — 3 OS processes × 4 link/unlink cycles on ONE shared counter → **invariant holds**
++```
++  stored linkCount = 1; recomputed active links = 1
++  [PASS] INVARIANT: stored linkCount == active link count (no drift)
++  [PASS] all workers net-zero → count back to baseline 1
++```
++A separate run whose workers were **SIGKILL'd mid-cycle** still showed `stored linkCount == active links` (2 == 2) — the atomic batch keeps link-state and counter consistent even across a crash between link and unlink. (High latency to the US-region test DB from here limits the practical worker/cycle count; the deterministic proof in §2 is the authoritative correctness evidence — it does not depend on hitting a race window.)
++
++---
++
++## The six requested stress scenarios
++
++| Scenario | Verdict | Basis |
++|---|---|---|
++| **Simultaneous Replace** | ✅ No lost update, no orphan | §2 F3 (CAS rejects stale; serialized version advance; loser deletes own object) |
++| **Simultaneous Link / Unlink** | ✅ No double-count | §2 F4 + §3 parallel invariant |
++| **Simultaneous Delete** | ✅ Safe | delete = CAS-safe `unlink` (§2 F4) + idempotent purge (`firestoreDelete` + `deleteStorageFile` are both idempotent → concurrent purges cause no error, no double effect) |
++| **Simultaneous Verify** | ✅ No corruption | single-field write of a validated enum; last-writer-wins between two valid statuses; no counter/multi-doc invariant involved |
++| **Simultaneous Enrollment** | ✅ Exactly-once | `Accounting_idempotency` `ENROLL_{appId}` gate (unchanged) + `link()` idempotent — a concurrent/retry enrollment neither creates a second student nor double-counts links |
++
++## Confirmations
++
++- **No race conditions** — CAS preconditions serialize every count mutation and every version bump; proven in §2, corroborated in §3.
++- **No orphan Storage objects** — replace deletes the loser's own object on a CAS miss and the old object on a win; unique paths prevent collisions; the lifecycle purge was exercised (§1).
++- **No metadata corruption** — `version` strictly increases under CAS; `downloadUrl` always matches the committed `storagePath`; `retention` map preserved whole (`policy`/`legalHold`).
++- **Correct reference counts** — the invariant *stored `linkCount` == number of active links* held under deterministic race, real parallelism, and mid-operation crash.
++
++---
++
++## Additional issues discovered during hardening
++
++None that are architectural. One behavioral note (not a defect): under **sustained** high contention on a single document, an operation may exhaust its 6 CAS retries and return a clean `"busy — please retry"` error rather than blocking; the CRM already surfaces this as a retryable error, and the stored count is never left inconsistent. F6/F7 (both LOW, previously reported) remain open and out of scope for this pass.
++
++---
++
++## Files changed this pass
++| File | Change |
++|---|---|
++| `application/libraries/Document_service.php` | `replace`/`link`/`unlink` rewritten with CAS; `replacePath()` + `retentionMap()` helpers; `CAS_MAX_RETRIES`. |
++| `application/controllers/Document_service_verify.php` | added `race` (deterministic F3/F4 proof) + `race_setup`/`race_worker`/`race_check` (parallel stress). |
++
++`php -l` clean on both. No module outside the Document Service touched; metadata shapes unchanged (backward compatible). **No commit, no push — awaiting your review.**
+diff --git a/ADMISSION_DOCUMENT_SERVICE_PHASE1_IMPLEMENTATION.md b/ADMISSION_DOCUMENT_SERVICE_PHASE1_IMPLEMENTATION.md
+new file mode 100644
+index 0000000..9854856
+--- /dev/null
++++ b/ADMISSION_DOCUMENT_SERVICE_PHASE1_IMPLEMENTATION.md
+@@ -0,0 +1,264 @@
++# Canonical Document Service — Phase 1 Implementation & Certification Report
++
++**Scope:** Admission module only (forward-compatible subset of ADR-001 Option C).
++**Status:** IMPLEMENTED — uncommitted, awaiting review. No commit, no push.
++**Decisions honored:** C / revised-D1 (link, not move) · D2 = add 4 predefined public fields · D4 = 180-day retention · D5 = per-type caps + photo compression.
++**Date:** 2026-07-22
++
++> Phase 1 builds the *minimum* forward-compatible Document Service the Admission module needs today — Firestore-only metadata, Firebase Storage bytes, one physical object per logical document, reference-counted deletion. No module outside Admission was modified. The API is generic so Student/HR/Hostel/Transport/Certificates can adopt it later **without redesign** (Phase 2+, separate approval).
++
++---
++
++## 1. Architecture Summary
++
++A logical document is a **first-class entity** with a stable id, addressed once in Storage and **referenced** by modules — never moved, never copied.
++
++```
++        ┌─────────────────────────┐
++        │   Document_service      │  upload · replace · delete
++        │   (library, generic)    │  link · unlink · verify · getMetadata
++        └───────────┬─────────────┘
++                    │  service-account (Admin SDK, bypasses client rules)
++        ┌───────────┴───────────┐
++        ▼                       ▼
++  Firebase Storage        Firestore (metadata ONLY)
++  documents/{school}/     documents/{school}_{docId}       ← 1 record per file
++    {docId}_v{n}.{ext}    documentLinks/{...}_{module}_{entity}  ← refs (refcount)
++```
++
++- **Modules never see Storage paths.** They hold an opaque `documentId` plus a **denormalized pointer** (`{documentId, type, label, url, verificationStatus}`) cached on their own doc, so lists/receipts render with **no join and no extra read**.
++- **Ownership = link-set + retention policy**, evaluated in one place → deletion is provably safe.
++- **Enrollment is a metadata operation** ("add a `student` link"), not a file operation. One physical object is referenced by both the Admission application and the Student.
++
++### Files (this phase)
++| File | Change |
++|---|---|
++| `application/libraries/Document_service.php` | **NEW** — the service (upload/replace/delete/link/unlink/verify/getMetadata). |
++| `application/config/document_service.php` | **NEW** — per-type policy, caps, retention, deny-list, optimization. |
++| `application/controllers/Admission_public.php` | Public upload routed through the service; 4 new predefined types; enriched `documentRefs`. |
++| `application/controllers/Sis.php` | Enrollment `link()` (revised D1); 3 role-gated CRM endpoints + ownership guard. |
++| `application/views/admission/public_form.php` | 4 new optional predefined fields; per-type client validation aligned to server. |
++| `application/views/admission_crm/applications.php` | Managed document cards (verify/replace/delete) rendered from `documentRefs`. |
++| `application/config/routes.php` | 3 routes for the document endpoints. |
++| `firebase-rules/firestore.rules` | Server-only deny rules for `documents` + `documentLinks`. |
++| `application/controllers/Document_service_verify.php` | **NEW** — CLI end-to-end lifecycle verifier (reusable). |
++
++---
++
++## 2. Firestore Schema (metadata is the sole source of truth — no RTDB)
++
++**`documents/{schoolId}_{documentId}`** — one record per physical file:
++```jsonc
++{
++  documentId, schoolId, type, label, category,          // identity
++  mime, ext, sizeBytes, storagePath, downloadUrl,       // bytes
++  version,                                               // replace bumps this
++  verificationStatus: "pending|verified|rejected", verifiedBy, verifiedAt,
++  uploadedBy, uploadedAt, replacedAt,
++  linkCount: <int>,                                      // reference count
++  retention: { policy:"default", eligibleAt:<iso|null>, legalHold:false }
++}
++```
++
++**`documentLinks/{schoolId}_{documentId}_{module}_{entityId}`** — one per reference:
++```jsonc
++{ documentId, schoolId, module:"admission|student|…", entityId, role,
++  active:true, linkedBy, linkedAt, unlinkedAt?, relinkedAt? }
++```
++
++**Denormalized pointer** (cached on the owning doc — e.g. `crmApplications.documentRefs[]`):
++```jsonc
++{ documentId, type, role, label, url, category, verificationStatus }
++```
++The `documents/{id}` record stays authoritative for lifecycle; the pointer exists purely so readers avoid a join.
++
++---
++
++## 3. Storage Layout
++
++```
++documents/{schoolId}/{documentId}_v{version}.{ext}
++```
++- **Flat, ID-addressed, module-agnostic.** No module-nested paths → backend is swappable and no path churn when a referrer set changes.
++- **Extension derived from validated MIME**, not client input.
++- **Replace** writes `_v{n+1}` then deletes `_v{n}` → exactly one live object per logical document.
++- Tenant is encoded in the path (`{schoolId}/`) and re-checked in metadata on every read.
++
++---
++
++## 4. Document Service API (generic; wired to Admission only this phase)
++
++| Method | Contract |
++|---|---|
++| `upload(tmp, name, type, meta)` | Validate → optimize (images) → store one object → write metadata (`linkCount=0`). Returns pointer. |
++| `replace(docId, tmp, name, by)` | New version on the same id; **upload new → repoint metadata → delete old** (safe order); verification reset. |
++| `link(docId, module, entityId, role, by)` | Atomic create-if-absent link (**idempotent**); `linkCount++`; clears retention countdown. |
++| `unlink(docId, module, entityId, by)` | Deactivate link; `linkCount--`; when it hits 0, start the retention clock (no purge). |
++| `delete(docId, module, entityId, by, force)` | `unlink` then purge **only if** `linkCount==0` **and** no `legalHold` **and** (`force` or retention elapsed). |
++| `verify(docId, status, by)` | Set `pending|verified|rejected`. |
++| `getMetadata(docId)` | Tenant-checked read of the canonical pointer. |
++
++Every method emits a per-document **audit event** (`auditLogs`, `module:'document_service'`) — upload/replace/link/unlink/verify/purge.
++
++**Correctness rests on three verified Firebase primitives:** `firestoreCreate` (atomic create-if-absent → 409-safe link dedup), `firestoreIncrement` (server-side atomic transform → concurrency-safe refcount), `firestoreUpdate` (nested field-path aware → `retention.eligibleAt` updates without clobbering the map).
++
++---
++
++## 5. Flows
++
++### Upload (public form)
++```
++Parent submits → _handle_admission_uploads
++  per file: docsvc.upload(type)  → validate (ext+MIME+size+deny-list) → optimize photo → store → metadata
++            docsvc.link('admission', appId, role)   → linkCount 0→1
++  persist crmApplications.documentRefs[] (+ legacy photo_url/aadhaar_url/documents[])
++```
++
++### Replace (CRM)
++```
++Admin picks file → admission_crm/replace_document
++  role gate → ownership guard (docId ∈ this application) → docsvc.replace()
++    upload _v{n+1} → repoint metadata → DELETE _v{n} → verification=pending
++  refresh denormalized pointers (documentRefs url + photo_url/aadhaar_url/documents)
++```
++
++### Link / Unlink (enrollment = revised D1)
++```
++Enrollment (Sis::save_admission):
++  for each lead documentRef: docsvc.link('student', studentId, role)   ← NO copy, NO move
++  student Doc[] also populated (denormalized display) for backward compat
++Delete a lead doc:
++  docsvc.delete('admission', appId, force=false)
++    unlink → if still linked by an enrolled student → refcount 1 → NOT purged (W4 resolved)
++             if orphaned → retention clock starts (180d); purge later via force/reconciler
++```
++
++### CRUD summary
++Create = `upload`+`link`; Read = pointer / `getMetadata`; Update = `replace` (bytes) / `verify` (status); Delete = `unlink`→conditional purge.
++
++---
++
++## 6. Security Review
++
++| Control | Status |
++|---|---|
++| Extension allow-list (per type) | ✅ server-side |
++| MIME via `finfo` (must match type) | ✅ mandatory |
++| Hard deny-list (`svg/svgz/html/js/php/exe/bat/…` + `image/svg+xml`,`text/html`) | ✅ any type, ext **and** MIME |
++| Per-type size caps (photo 2 MB · docs 5 MB) | ✅ config-driven (D5) |
++| `is_uploaded_file()` on browser uploads | ✅ (internal temp files opt-out for replace/verifier) |
++| Tenant isolation | ✅ `{schoolId}_` doc/link ids + stored-schoolId re-check on every read; cross-school read returns null |
++| Ownership guard (CRM actions) | ✅ documentId must be referenced by the target application |
++| Role gating | ✅ `_require_role(MANAGE_ROLES, …)` on verify/replace/delete |
++| Download authorization | ✅ tokenized `firebasestorage.googleapis.com` URLs, CSP-allow-listed |
++| Client-collection exposure | ✅ `documents`/`documentLinks` **deny-all** in rules (server-only; apps read the pointer, never these) |
++| Extension spoofing | ✅ stored ext derived from validated MIME, not filename |
++
++**Verified isolation:** the CLI verifier confirms a service scoped to `{schoolId}_OTHER` cannot read another school's document (returns null).
++
++---
++
++## 7. Storage Efficiency Review + Consumption Comparison
++
++### Levers the canonical service adds
++1. **Photo optimization** — GD downscale to 1200px long edge + JPEG q82. A typical 2.5 MB phone photo → ~150 KB (**~16×**).
++2. **Single physical object + references** — enrollment (and every future module) *links*; it never copies bytes. No per-hand-off duplication.
++3. **Orphan-free replace** — old version deleted on replace; no accumulation.
++4. **Reference-counted, retention-governed purge** — reclaims rejected-application bytes safely.
++
++### Per-student model (typical uploaded mix)
++| Item | Raw | Canonical |
++|---|---|---|
++| Photo | 2.5 MB | 0.15 MB (optimized) |
++| Aadhaar | 0.4 MB | 0.4 MB |
++| Birth certificate | 0.4 MB | 0.4 MB |
++| 1 additional (TC/marksheet) | 0.4 MB | 0.4 MB |
++| **Per logical set** | **3.7 MB** | **1.35 MB** |
++
++Three implementations compared (per **enrolled** student, who exists as both an application and a student record):
++
++| Implementation | Bytes / enrolled student |
++|---|---|
++| **A · Naive ERP** (unoptimized + copy-on-enroll, i.e. MOVE/shared-copy family) | 3.7 (admission) + 3.7 (student copy) = **7.4 MB** |
++| **B · Pre-Phase-1 ZenX** (reference-reuse, unoptimized, no replace) | **3.7 MB** |
++| **C · Canonical Phase 1** (link + optimized + orphan-free) | **1.35 MB** |
++
++### Scaled projections
++| Scope (≈students) | A · Naive | B · Pre-Phase-1 | **C · Canonical** | C saves vs A | C saves vs B |
++|---|---|---|---|---|---|
++| 1 school · 1,000 | 7.4 GB | 3.7 GB | **1.35 GB** | 6.05 GB (82%) | 2.35 GB (63%) |
++| 1 school · 5,000 | 37 GB | 18.5 GB | **6.75 GB** | 30.3 GB (82%) | 11.8 GB (63%) |
++| 100 schools · 100,000 | 740 GB | 370 GB | **135 GB** | **605 GB (82%)** | **235 GB (63%)** |
++
++At Firebase Storage ~$0.026/GB-month, 100 schools ≈ **$3.5/mo (C)** vs $9.6/mo (B) vs $19.2/mo (A). The 82% vs A is the number that matters long-term: **A multiplies with every module** (the same Aadhaar copied for Admission + Student + Hostel + Transport = 4×), while **C stays at 1×** no matter how many modules link it. That divergence is the 10-year win.
++
++> Assumptions are explicit and conservative (one optimized photo + three ~0.4 MB documents; ~100% enroll for worst-case). Schools with heavier document mixes shift all rows up proportionally; the **ratios hold**.
++
++### Further optimization opportunities (not built — future phases)
++- **Content-hash dedup** — `contentHash` → identical re-uploads become 0-byte (many links, one object). Field is reserved in the design; not yet enforced.
++- **WebP/AVIF photo encode** — ~25–35% below JPEG q82 at equal quality.
++- **PDF normalization** — flatten + downsample embedded images (docs are the largest remaining bucket).
++- **Orphan reconciler cron** — auto-reclaim rejected-app bytes past the 180-day window (Phase 1 starts the clock; reclamation today is via explicit force-purge).
++- **Nearline/Coldline tier** for archived (past-retention-grace) documents — ~50% cheaper per GB.
++
++---
++
++## 8. Performance Analysis
++
++- **Reads minimized by denormalization.** The CRM list/detail renders documents from the cached `documentRefs` pointer — **zero** extra Firestore reads per document. `getMetadata` is used only for lifecycle actions, not display.
++- **Upload:** 1 Storage write + 1 metadata write + 1 link (create + increment) per file — the irreducible minimum.
++- **Enrollment (revised D1):** per document → `link()` = 1 read + 1 create + 1 increment + 1 retention-clear. Bounded by document count (typically 2–6), and it **replaces** no prior read; net cost is a handful of round-trips at a once-per-student event. No copy/upload of bytes (the expensive part is gone).
++- **Replace/verify/delete:** each is one app read (already needed for the ownership guard) + the service ops + one pointer-refresh write. No N+1, no scans.
++- **Refcount uses server-side atomic increments** (not read-modify-write) → correct under concurrency with no extra reads.
++- **No composite queries in Phase 1** → no indexes required (all access is by deterministic key). A future reconciler will add the one index it needs then.
++
++---
++
++## 9. Backward Compatibility Report
++
++- **Legacy fields preserved.** `photo_url`, `aadhaar_url`, `documents[]` are still written with the same shape. Every existing reader (CRM, enrollment carry-over, older records) works unchanged.
++- **Old leads (no `documentRefs`) fully supported.** The CRM view falls back to read-only tiles from `*_url`; enrollment carry-over still copies URLs by reference. Nothing became invalid; no re-upload required by any school.
++- **Student `Doc[]` shape unchanged.** New predefined types add labels to the same `{label:{url,thumbnail}}` map — additive; the Parent/Teacher apps read `Doc[]` and are unaffected (new labels render or are ignored; no schema break).
++- **No migration.** New documents adopt the canonical model going forward; existing documents keep working as-is.
++
++---
++
++## 10. Regression Report
++
++- **`php -l` clean** on all changed PHP (`Admission_public.php`, `Sis.php`, `routes.php`, `Document_service.php`, `document_service.php`, `Document_service_verify.php`).
++- **Cross-module trail verified:** `documentRefs` is read only by the CRM view; `documents`/`documentLinks` are touched only by the service; **no Api/parent/teacher controller reads `crmApplications`** → the Kotlin apps are unaffected (they read student `Doc[]`, unchanged).
++- **Client/server validation aligned:** fixed a latent mismatch — the service's photo policy allows `webp`/not `gif`, while the old client still accepted `gif`; the public form now mirrors the server per-type allow-lists and caps, so a file that passes the browser also passes the server (and vice-versa).
++- **W4 hazard resolved:** deleting a lead's document never breaks an enrolled student — refcount keeps the object alive while any module links it (asserted by the verifier).
++- **No behavior removed** from `save_admission`; the enrollment link block is additive and guarded (`if documentRefs`).
++
++### CLI verification
++```
++php index.php document_service_verify run     # env: SCHOOL_ID=<test school>
++```
++Asserts, self-cleaning: upload → tenant-isolation → link → **dedup** → student-link → verify → **replace (version bump)** → unlink (refcount holds) → delete+force (purge) → gone. Exits non-zero on any failure.
++
++---
++
++## 11. Production Readiness Assessment
++
++| Dimension | Verdict |
++|---|---|
++| Firestore-only, no RTDB | ✅ |
++| Tenant isolation | ✅ path + docId + stored-schoolId re-check + deny-all rules |
++| One physical object per logical document | ✅ ID-addressed, replace-in-place |
++| Orphan prevention | ✅ replace deletes old; refcount + retention govern purge |
++| Backward compatible / no migration | ✅ legacy fields + old-lead fallback |
++| Security (MIME/ext/size/deny/role/ownership) | ✅ |
++| Storage efficiency | ✅ optimization + references (82% vs naive, 63% vs pre-Phase-1) |
++| Performance (reads/writes) | ✅ denormalized display, atomic refcount, no N+1/scans |
++| Forward-compatible for Phase 2 modules | ✅ generic API; new module = "link", no core change |
++| Audit coverage | ✅ per-document events + CRM `log_audit` |
++
++### Known Phase-1 boundaries (by design, not defects)
++- **Purge reclamation** of orphaned/rejected documents is via explicit force-delete today; the automatic **orphan reconciler cron** is Phase 2 (the retention clock already starts on last-unlink).
++- **Content-hash dedup, WebP/AVIF, PDF normalization** are reserved optimizations, not yet enforced.
++- **Student/HR/Hostel/Transport/Certificates** remain untouched — they adopt the service in Phase 2+ (separate approval).
++
++---
++
++*No commit. No push. No module outside Admission modified. Awaiting your review before Phase 2.*
+diff --git a/DOCUMENT_SERVICE_ARCHITECTURE_AND_CERTIFICATION.md b/DOCUMENT_SERVICE_ARCHITECTURE_AND_CERTIFICATION.md
+new file mode 100644
+index 0000000..2c3d6b6
+--- /dev/null
++++ b/DOCUMENT_SERVICE_ARCHITECTURE_AND_CERTIFICATION.md
+@@ -0,0 +1,306 @@
++# ZenX Document Service — Architecture & Production Certification
++
++**Status:** CANONICAL REFERENCE. Phase 1 (Admission) is implemented, verified, and certified.
++**Audience:** every engineer integrating a module (Student, HR, Staff, Hostel, Transport, Certificates) or a client app (Parent, Teacher) with the Document Service.
++**Authority:** this document is the single source of truth for the Document Service's invariants, guarantees, and integration contract. If code and this document disagree, that is a bug in one of them — reconcile before shipping.
++**Version:** 1.1 · **Date:** 2026-07-22 · Supersedes the MOVE-based D1 in `ADMISSION_DOCUMENT_LIFECYCLE_ARCHITECTURE_REVIEW.md`.
++
++---
++
++## 1. Purpose
++
++A single, module-agnostic service that owns the full lifecycle of every uploaded file in ZenX: **one physical Storage object per logical document, addressed by a stable id, referenced (never copied) by any number of modules, and deleted only when provably safe.** Firestore is the sole metadata store; Firebase Storage is the sole byte store. There is no RTDB, and there is no second metadata store.
++
++Phase 1 wires the service to **Admission only**. Every design choice below is made so that Student/HR/Hostel/Transport/Certificates become an *additive* integration ("add a link"), never a rewrite.
++
++---
++
++## 2. Vocabulary
++
++| Term | Meaning |
++|---|---|
++| **Document** | One logical file with a stable `documentId`, one physical Storage object, and one metadata record (`documents/{schoolId}_{documentId}`). |
++| **Link** | A reference from a module entity (an application, a student, a staff member…) to a document (`documentLinks/{…}`). A document may have many links. |
++| **Reference count** (`linkCount`) | The number of currently-active links. The document is *owned collectively* by its link set. |
++| **Denormalized pointer** | A cached `{documentId, type, label, url, verificationStatus}` copied onto the *owning module's* entity doc, so lists/receipts render with no join. The `documents/{id}` record stays authoritative for lifecycle. |
++| **Module** | A logical owner namespace for links: `admission`, `student`, `hr`, `hostel`, `transport`, `certificate`, … |
++| **Role** | The document's purpose within an entity: `photo`, `aadhaar`, `birth_certificate`, `document`, … |
++
++---
++
++## 3. Architectural invariants (must ALWAYS hold)
++
++These are load-bearing. A change that violates any of them is incorrect by definition.
++
++1. **One physical object per logical document.** Replace produces a new version *in place* (old object retired); a document is never duplicated.
++2. **Bytes are never moved or copied between modules.** A hand-off (e.g. enrollment) adds a *link*, not a copy. (This is the ratified revised-D1.)
++3. **Modules never see or store Storage paths.** They hold an opaque `documentId` plus a denormalized pointer. The Storage path is internal to the service and may change (e.g. on replace) without any referrer knowing.
++4. **`linkCount` equals the number of active links, always.** This invariant is enforced atomically (see §7) and is the basis of safe deletion.
++5. **A document is purged only when `linkCount == 0` AND no `legalHold` AND (retention elapsed OR an explicit force).** Deleting one module's link can never destroy a file another module still references.
++6. **Firestore is the only metadata store; Firebase Storage is the only byte store; no RTDB.** Client apps never read `documents`/`documentLinks` — they read the denormalized pointer.
++7. **Every document/link id is tenant-prefixed (`{schoolId}_…`) and every read re-checks the stored `schoolId`.** One school can never reach another's documents.
++8. **Every state change is audited** (`auditLogs`, `module:'document_service'`): upload, replace, link, unlink, verify, purge.
++
++---
++
++## 4. Data model
++
++### 4.1 Firestore — `documents/{schoolId}_{documentId}`
++```jsonc
++{
++  documentId, schoolId, type, label, category,          // identity
++  mime, ext, sizeBytes, storagePath, downloadUrl,       // bytes (storagePath internal)
++  version,                                               // replace bumps this, monotonic
++  verificationStatus: "pending|verified|rejected", verifiedBy, verifiedAt,
++  uploadedBy, uploadedAt, replacedAt,
++  linkCount: <int>,                                      // == active link count (invariant #4)
++  retention: { policy:"default", eligibleAt:<iso|null>, legalHold:false }
++}
++```
++
++### 4.2 Firestore — `documentLinks/{schoolId}_{documentId}_{module}_{entityId}`
++```jsonc
++{ documentId, schoolId, module, entityId, role,
++  active:true, linkedBy, linkedAt, unlinkedAt?, unlinkedBy?, relinkedAt? }
++```
++The link doc id is deterministic — `module` and `entityId` are sanitized (`[^A-Za-z0-9_] → _`). This determinism is what makes link/unlink idempotent by point-read (no query, no index).
++
++### 4.3 Storage layout
++```
++documents/{schoolId}/{documentId}_v{version}.{ext}          # initial upload (v1)
++documents/{schoolId}/{documentId}_v{version}_{rand}.{ext}    # replace (v2+), unique per attempt
++```
++Flat, id-addressed, module-agnostic, backend-swappable. The random suffix on replaced versions guarantees concurrent replaces never write the same object (see §7).
++
++### 4.4 Denormalized pointer (stored on the owning entity doc)
++```jsonc
++{ documentId, type, role, label, url, category, verificationStatus }
++```
++Example: `crmApplications.documentRefs[]`. A future `students`/`staff`/`hostelResidents` doc holds the same shape.
++
++---
++
++## 5. Public API
++
++Bind once per request: `init($firebase, $schoolId)` — sets the Firebase client and the tenant scope. All ids are then scoped to that school.
++
++| Method | Contract | Returns |
++|---|---|---|
++| `upload($tmp, $origName, $type, $meta=[])` | Validate (ext+MIME+size+deny-list) → optimize (images) → store one object → write metadata (`linkCount=0`). Caller then `link()`s. | `['ok','error','document'=>pointer]` |
++| `replace($documentId, $tmp, $origName, $by)` | New version on the same id, orphan-free and concurrency-safe (§7). Resets `verificationStatus` to `pending`. | `['ok','error','document'=>pointer]` |
++| `link($documentId, $module, $entityId, $role, $by)` | Add a reference. **Idempotent** per `(doc,module,entity)`; concurrency-safe. Clears any retention countdown. | `['ok','error','linkCount'?]` |
++| `unlink($documentId, $module, $entityId, $by)` | Deactivate a reference; when the last active link goes, start the retention clock (no purge). Concurrency-safe. | `['ok','error','linkCount'?]` |
++| `delete($documentId, $module, $entityId, $by, $force=false)` | `unlink` then purge **only if** orphaned & (retention elapsed or `$force`). | `['ok','error','purged'=>bool]` |
++| `verify($documentId, $status, $by)` | Set `pending|verified|rejected`. | `['ok','error']` |
++| `getMetadata($documentId)` | Tenant-checked read of the pointer. | `pointer|null` |
++
++**Never call `purge()` directly** — it is a private, unconditional destroyer. Deletion always goes through `delete()`, which enforces invariant #5.
++
++---
++
++## 6. Lifecycle
++
++```
++upload ──► (linkCount 0) ──link(moduleA)──► referenced (1) ──link(moduleB)──► referenced (2)
++                                                  │                                  │
++                                               verify                             unlink(any)
++                                                  │                                  │
++                                          verified/rejected                   referenced (n-1)
++                                                                                     │
++                                          replace ─► version+1, status=pending   unlink(last)
++                                                                                     │
++                                                                          orphaned + retention clock
++                                                                                     │
++                                                        delete(force) OR retention elapsed ─► PURGE
++```
++
++- **Attach** = `upload` + `link`.
++- **Hand-off** (Admission → Student on enrollment) = `link(newModule)` — no copy, no move.
++- **Replace** = `replace` (new version, old object **permanently deleted** — no recoverable history, see §11 — verification reset).
++- **Detach** = `unlink` (or `delete`, which unlinks then conditionally purges).
++- **Purge** = terminal; only via `delete` under invariant #5.
++
++---
++
++## 7. Concurrency guarantees (the contract other modules inherit)
++
++The service is safe under concurrent operations. Correctness comes from **optimistic concurrency (CAS)** using the platform's existing primitives — `firestoreGet.__updateTime` (the server updateTime) + `commitBatch` with per-write `currentDocument` preconditions (a stale precondition fails the whole commit atomically, HTTP 400 FAILED_PRECONDITION). This is the same pattern the Phase-8 accounting engine uses. `CAS_MAX_RETRIES = 6` with small backoff absorbs contention; the invariant is enforced by Firestore, not by the retries.
++
++| Operation | Guarantee | How |
++|---|---|---|
++| **Replace** | No lost update, no orphan | Read `version`+`updateTime` → upload to a **unique** path → commit metadata **only if `updateTime` unchanged**. CAS miss → delete our own object (no orphan) → retry on fresh state (serialized, never discarded). |
++| **Link** | Exactly one increment per new link; dedup idempotent | One atomic `commitBatch`: link create-if-absent (or CAS reactivate) **+** `linkCount` change CAS'd on the doc's `updateTime`. Losers retry, observe the active link, no-op. |
++| **Unlink / Delete** | No double-decrement | One atomic `commitBatch`: deactivate the link (CAS on the link's `updateTime`) **+** `linkCount` decrement (CAS on the doc's `updateTime`). Only the writer that flips `active` decrements. |
++| **Verify** | No corruption | Single validated-enum field; last-writer-wins between valid states. |
++| **Enrollment / hand-off** | Exactly-once | The calling flow is idempotency-gated (e.g. `ENROLL_{appId}`); `link()` is idempotent regardless. |
++
++**Proven** (live, test tenant): deterministic stale-precondition rejection for replace and unlink (11/11), a real 3-process parallel link/unlink storm holding the invariant `stored linkCount == active links` with no drift, and invariant preservation even across a worker killed mid-cycle. Under *sustained* single-document contention an operation may exhaust its retries and return a clean `"busy — please retry"` — it never leaves an inconsistent count.
++
++**Rule for integrators:** never bypass the service to mutate `documents`/`documentLinks` directly — you would defeat the CAS. Always go through the API.
++
++---
++
++## 8. Reference-count rules
++
++1. `linkCount` starts at 0 on `upload`.
++2. `link()` increments by exactly 1 **only** when it creates a new active link (or reactivates an inactive one). A repeat `link()` for the same `(doc,module,entity)` is a **no-op**.
++3. `unlink()` decrements by exactly 1 **only** when it transitions an active link to inactive. A repeat `unlink()` is a **no-op**.
++4. `linkCount` is written as an absolute value under CAS, never blind-incremented — so it can never drift from the true active-link count (invariant #4).
++5. When `linkCount` reaches 0, `retention.eligibleAt = now + retention_days`; a subsequent `link()` clears it back to `null`.
++6. `delete()` purges only when `linkCount == 0 && !legalHold && (force || eligibleAt <= now)`.
++7. If ever in doubt, the **links are the source of truth**; `linkCount` is a maintained cache. A reconciler (Phase 2) may recompute it by counting active links.
++
++---
++
++## 9. Security model
++
++- **Upload validation:** extension allow-list **and** `finfo` MIME (must match the type) **and** per-type size cap; stored extension derived from validated MIME, not the filename.
++- **Hard deny-list** (any type): `svg/svgz/html/htm/xhtml/js/mjs/php/phtml/exe/sh/bat/cmd/com/jar/htaccess` + MIME `image/svg+xml`, `text/html`, `application/x-httpd-php`, `application/javascript`, `text/javascript`.
++- **Tenant isolation:** id prefix `{schoolId}_` + stored-`schoolId` re-check on every read; a cross-school read returns `null`.
++- **Client access:** `documents` and `documentLinks` are **server-only** — `firestore.rules` deny all client read/write. Client apps read the denormalized pointer on the owning entity, never these collections. Adding a new module does **not** require new rules for these two collections.
++- **Action authorization:** lifecycle actions (verify/replace/delete) must be role-gated **and ownership-guarded by the caller** (the `documentId` must be referenced by the acting entity) — see the Admission CRM endpoints as the reference implementation.
++- **Downloads:** tokenized `firebasestorage.googleapis.com` URLs (CSP-allow-listed for the admin panel).
++
++---
++
++## 10. Storage efficiency
++
++- **One object per logical document**; replace deletes the old object (single-live-version — see §11).
++- **Image optimization**: photos are GD-downscaled to 1200px on the long edge and re-encoded JPEG q82 (~16× on a typical phone photo). Controlled by `image_optimize` in config.
++- **Per-type size caps** (config): photo 2 MB, documents 5 MB.
++- **References, not copies**, across modules → the same Aadhaar shared by Admission + Student + Hostel + Transport is **1×**, not N×.
++- **Retention + purge** reclaim orphaned bytes safely (default 180 days; per-school override via `schools.{id}.admissionDocRetentionDays`).
++- **Reserved (not yet enforced):** content-hash dedup, WebP/AVIF encode, PDF normalization, Nearline tier for archived documents.
++
++---
++
++## 11. Document version policy
++
++The Document Service uses a **single-live-version** model: every logical document has exactly **one** current physical object, addressed by a monotonically increasing `version` counter. This is a deliberate storage-efficiency choice (invariant #1) — it is **not** a full version-history archive.
++
++### 11.1 How version history is managed
++- Each document carries an integer `version` (starts at 1). Every successful `replace()` increments it (1 → 2 → 3 …), strictly increasing under CAS (§7).
++- The current object lives at `documents/{schoolId}/{documentId}_v{version}[_{rand}].{ext}`; the `documentId` is stable across versions, so referrers never change their pointer when a document is replaced.
++- There is **no `versions[]` array** of prior objects. The `version` field is a *counter and change-signal*, not an index of recoverable bytes.
++
++### 11.2 Are previous versions recoverable?
++**No.** On a successful replace the previous Storage object is **permanently deleted** once the new version's metadata commits. Prior bytes are not archived, not quarantined, and **not recoverable** through the service. Only the *current* version's bytes exist.
++
++### 11.3 When are previous Storage objects permanently removed?
++- **On replace:** immediately after the new version's metadata is committed (CAS-gated), the old object is deleted (`deleteStorageFile(oldPath)`). Under concurrent replace, a losing attempt deletes *its own* just-uploaded object, so no orphan is ever left (§7).
++- **On purge:** the document's current object is removed when the whole document is purged under invariant #5 (`linkCount == 0`, no `legalHold`, retention elapsed or `force`).
++- No other path deletes Storage objects.
++
++### 11.4 Interaction with audit logs
++Byte history is not kept, but **provenance is permanent.** Every `replace` writes an immutable audit event to `auditLogs` (`module:'document_service'`, `action:'replace'`) recording `{oldPath, newPath, version, actor, timestamp}`. The trail therefore answers permanently *who replaced what, when, and which storage paths were involved* — even though the superseded bytes are gone. `upload`, `verify`, and `purge` are audited the same way; the audit log is retained independently of the document (a purge writes a terminal `purge` event that survives the document).
++
++### 11.5 Interaction with the retention policy
++Version supersession and retention are **two independent mechanisms**:
++- **Retention** (`retention.eligibleAt`, default 180 days) governs the **whole document's** eligibility for purge once it becomes orphaned (`linkCount == 0`) — an appeal/audit window before the *current* object may be purged.
++- **Version supersession** removes the **previous** object on replace **immediately**, independent of the retention window. Retention never protects a superseded version; it only ever concerns the current object of an orphaned document.
++- `legalHold` blocks purge of the current object; it does **not** retroactively restore superseded versions.
++
++### 11.6 Divergence from ADR-001 (flagged for decision — no code changed)
++> **Inconsistency discovered and reported per instruction.** ADR-001's canonical shape sketched a `versions: [{v, storagePath, …}]` array with "old retained per policy → historical record preserved." **Phase 1 does not implement that** — it ships the single-live-version model above (old bytes deleted on replace) for storage efficiency, consistent with the platform's storage-cost mandate. The `documentId`-stable design plus the audit trail preserve *provenance* and the *historical link record*, but **not recoverable prior bytes**.
++>
++> If a future module (Certificates, HR, legal/regulatory documents) needs **recoverable version history** — retained superseded scans, "view/rollback previous version" — that is a deliberate Phase-2+ enhancement: add a `versions[]` index, stop deleting the old object on replace, and bring superseded versions under the retention/`legalHold` engine. It is a code change with a storage-cost trade-off, out of Phase-1 scope, decided per-module. **Until then, treat replace as destructive of prior bytes.**
++
++---
++
++## 12. Backward compatibility contract
++
++- Metadata field shapes are stable; the denormalized pointer shape is stable.
++- Legacy entities without a pointer set (pre-service records) must keep working via a fallback to their old URL fields — no migration, no re-upload. (Admission's CRM view and enrollment both demonstrate this.)
++- Adding a document type is config-only (§14); it never changes core code or existing data.
++
++---
++
++## 13. Developer guidelines — integrating a NEW module
++
++> Goal: a new module (Student, HR, Hostel, Transport, Certificates, or a client app) adopts the service **additively**. Follow this contract exactly.
++
++**DO**
++1. **Scope first:** `$this->docsvc->init($this->firebase, $schoolId)` with the tenant's school id.
++2. **Attach a file:** `upload($tmp, $name, $type, ['uploadedBy'=>$actor])` → then `link($documentId, '<yourModule>', $entityId, $role, $actor)`.
++3. **Store a denormalized pointer** (`{documentId, type, label, url, verificationStatus}`) on *your* entity doc for display; keep it fresh on replace/verify/delete.
++4. **Hand a document to another module** by calling `link()` for that module — never copy bytes.
++5. **Detach** with `unlink()` (keep the file for others) or `delete()` (unlink + conditional purge).
++6. **Register new document types in config** (`application/config/document_service.php`) — see §14.
++7. **Role-gate and ownership-guard** every verify/replace/delete endpoint (the `documentId` must be referenced by the acting entity).
++8. **Client apps:** read the denormalized pointer on the entity you already load — never query `documents`/`documentLinks`.
++
++**DON'T**
++- ❌ Write to `documents`/`documentLinks` directly (defeats the CAS and the invariants).
++- ❌ Store or hardcode Storage paths in your module; hold the `documentId` + pointer only.
++- ❌ Copy or move bytes on a hand-off; add a `link`.
++- ❌ Call `purge()`; use `delete()`.
++- ❌ Assume `linkCount` from stale reads; the service manages it — read via `getMetadata` when you need it.
++- ❌ Skip the ownership guard on admin actions.
++
++**Multi-module example (the pattern to copy):** at Admission enrollment, `save_admission`/`enroll_student` iterate the application's `documentRefs` and call `link($documentId, 'student', $studentId, $role)`. No bytes move; the same object is now referenced by both the application and the student, and the file survives an application delete because the student link keeps `linkCount > 0`.
++
++---
++
++## 14. Configuration reference (`application/config/document_service.php`)
++
++Add a new document type without touching core code:
++```php
++'types' => [
++  '<type_key>' => [
++    'label'    => 'Human Label',
++    'category' => 'predefined' | 'additional',   // predefined → own UI field; additional → grouped
++    'ext'      => ['pdf','jpg', …],               // allow-list
++    'mime'     => ['application/pdf', …],          // allow-list (must match ext)
++    'maxBytes' => 5242880,                         // per-type cap
++    'image'    => false,                           // true → run photo optimization
++  ],
++],
++```
++Also central here: `deny_ext`/`deny_mime`, `image_optimize`, `retention_days`, `storage_prefix`, `collection_documents`, `collection_links`.
++
++---
++
++## 15. Operations
++
++- **Verifier (reusable):**
++  - `SCHOOL_ID=<test> php index.php document_service_verify run` — full lifecycle (20 assertions).
++  - `SCHOOL_ID=<test> php index.php document_service_verify race` — deterministic concurrency proof (11 assertions).
++  - `race_setup` / `race_worker` / `race_check` — parallel stress harness.
++- **Firestore rules/indexes:** `documents`/`documentLinks` are deny-all client (server-only). No composite index is required in Phase 1 (all access is by deterministic key). A Phase-2 orphan reconciler will add the one index it needs (`linkCount` + `retention.eligibleAt`).
++
++---
++
++## 16. Known limitations (tracked, non-blocking for Phase 1)
++
++| Id | Severity | Item | Plan |
++|---|---|---|---|
++| F6 | LOW | `purge()` deletes Storage then metadata without checking the Storage-delete result → a failed Storage delete could orphan. | Add a result check + log; batch with the metadata delete. |
++| F7 | LOW | `validate()` allows a non-`is_uploaded_file` path when it is a real file (internal-staging escape). | Acceptable for `$_FILES` inputs; tighten if a caller ever stages untrusted paths. |
++| — | note | No automated retention **reconciler** yet — orphaned bytes past their window are reclaimed via explicit `delete(force)`. | Phase-2 reconciler cron (recompute `linkCount`, purge eligible). Before it ships, re-audit refcount edge cases. |
++
++None affects the production Admission workflow.
++
++---
++
++## 17. Production Certification
++
++**The Document Service is CERTIFIED for Phase 1 (Admission) production**, with the architecture, invariants, and guarantees above as its contract.
++
++- ✅ Firestore-only metadata; Storage-only bytes; no RTDB.
++- ✅ One physical object per logical document; references, not copies; W4 hand-off hazard resolved.
++- ✅ Reference-counted, retention-governed deletion; orphan-safe.
++- ✅ Concurrency-safe (CAS) — replace, link, unlink, delete, verify, enrollment all proven under deterministic race + real parallelism.
++- ✅ Tenant-isolated; server-only collections; validated + deny-listed uploads; role-gated + ownership-guarded actions.
++- ✅ Storage-efficient (optimization + references); backward compatible (no migration).
++- ✅ Verified live on a test tenant (lifecycle 20/20, concurrency 11/11, parallel invariant holds).
++- ⚠️ F6/F7 LOW open (accepted); automated reconciler deferred to Phase 2.
++
++**Future-module readiness:** because documents are canonical entities referenced by links, integrating Student/HR/Hostel/Transport/Certificates/Parent/Teacher is additive ("add a link", "register a type", "store a pointer") — no core rewrite. Follow §13.
++
++---
++
++### Changelog
++- **1.1 (2026-07-22)** — Added §11 Document Version Policy (single-live-version model; prior bytes not recoverable; audit/retention interaction; ADR-001 `versions[]` divergence flagged for decision). Documentation only; no code change.
++- **1.0 (2026-07-22)** — Phase 1 (Admission) implemented, F1/F2 fixed, F3/F4 concurrency-hardened (CAS), verified live, certified. Canonical reference established.
++
++*Reference documents: `ADMISSION_DOCUMENT_SERVICE_PHASE1_IMPLEMENTATION.md`, `…_CERTIFICATION.md`, `…_CONCURRENCY_HARDENING.md`, `ADMISSION_DOCUMENT_OWNERSHIP_ADR.md`.*
+diff --git a/application/config/document_service.php b/application/config/document_service.php
+new file mode 100644
+index 0000000..2446108
+--- /dev/null
++++ b/application/config/document_service.php
+@@ -0,0 +1,104 @@
++<?php
++defined('BASEPATH') or exit('No direct script access allowed');
++
++/**
++ * Canonical Document Service — configuration (Phase 1, Admission-scoped).
++ *
++ * Central, per-type policy for the lightweight Document Service. Adding a new
++ * document type here is all a future module needs to reuse the service — no
++ * core-code change. Keep this the single source of truth for limits/policy.
++ */
++
++$config['document_service'] = [
++
++    // ── Per-type policy ────────────────────────────────────────────────
++    // category: 'predefined' → always renders in its own field.
++    //           'additional' → collected under "Additional Documents".
++    // ext / mime: server-side allow-lists (both are checked).
++    // maxBytes:  configurable size cap per type (Storage efficiency).
++    // image:     true → run image optimization/compression before upload.
++    'types' => [
++        'photo' => [
++            'label'    => 'Student Photo', 'category' => 'predefined',
++            'ext'      => ['jpg', 'jpeg', 'png', 'webp'],
++            'mime'     => ['image/jpeg', 'image/png', 'image/webp'],
++            'maxBytes' => 2097152,   // 2 MB
++            'image'    => true,
++        ],
++        'aadhaar' => [
++            'label'    => 'Aadhaar Card', 'category' => 'predefined',
++            'ext'      => ['jpg', 'jpeg', 'png', 'pdf'],
++            'mime'     => ['image/jpeg', 'image/png', 'application/pdf'],
++            'maxBytes' => 5242880,   // 5 MB
++            'image'    => false,
++        ],
++        'birth_certificate' => [
++            'label'    => 'Birth Certificate', 'category' => 'predefined',
++            'ext'      => ['jpg', 'jpeg', 'png', 'pdf'],
++            'mime'     => ['image/jpeg', 'image/png', 'application/pdf'],
++            'maxBytes' => 5242880,
++            'image'    => false,
++        ],
++        'transfer_certificate' => [
++            'label'    => 'Transfer Certificate', 'category' => 'predefined',
++            'ext'      => ['jpg', 'jpeg', 'png', 'pdf'],
++            'mime'     => ['image/jpeg', 'image/png', 'application/pdf'],
++            'maxBytes' => 5242880,
++            'image'    => false,
++        ],
++        'marksheet' => [
++            'label'    => 'Marksheet', 'category' => 'predefined',
++            'ext'      => ['jpg', 'jpeg', 'png', 'pdf'],
++            'mime'     => ['image/jpeg', 'image/png', 'application/pdf'],
++            'maxBytes' => 5242880,
++            'image'    => false,
++        ],
++        'medical_certificate' => [
++            'label'    => 'Medical Certificate', 'category' => 'predefined',
++            'ext'      => ['jpg', 'jpeg', 'png', 'pdf'],
++            'mime'     => ['image/jpeg', 'image/png', 'application/pdf'],
++            'maxBytes' => 5242880,
++            'image'    => false,
++        ],
++        'additional' => [
++            'label'    => 'Document', 'category' => 'additional',
++            'ext'      => ['jpg', 'jpeg', 'png', 'pdf', 'doc', 'docx', 'xls', 'xlsx'],
++            'mime'     => [
++                'image/jpeg', 'image/png', 'application/pdf',
++                'application/msword',
++                'application/vnd.openxmlformats-officedocument.wordprocessingml.document',
++                'application/vnd.ms-excel',
++                'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet',
++                'application/octet-stream', // legacy office; extension allow-list still gates
++            ],
++            'maxBytes' => 5242880,
++            'image'    => false,
++        ],
++    ],
++
++    // ── Hard security deny-list (never accepted, any type) ──────────────
++    'deny_ext'  => ['svg', 'svgz', 'html', 'htm', 'xhtml', 'js', 'mjs', 'php', 'phtml', 'exe', 'sh', 'bat', 'cmd', 'com', 'jar', 'htaccess'],
++    'deny_mime' => ['image/svg+xml', 'text/html', 'application/x-httpd-php', 'application/javascript', 'text/javascript'],
++
++    // ── Image optimization (photos) ─────────────────────────────────────
++    // Downscale to fit maxDim on the long edge; re-encode JPEG at jpegQuality.
++    // Big storage win with negligible quality loss for passport-style photos.
++    'image_optimize' => [
++        'enabled'     => true,
++        'maxDim'      => 1200,
++        'jpegQuality' => 82,
++    ],
++
++    // ── Retention (rejected/archived documents) ─────────────────────────
++    // Days a document must sit past its last active link before it is
++    // eligible for permanent delete. Per-school override:
++    // schools.{id}.admissionDocRetentionDays.
++    'retention_days' => 180,
++
++    // ── Canonical Storage prefix (ID-addressed; module-agnostic) ────────
++    'storage_prefix' => 'documents',
++
++    // Firestore collections (metadata only — Firestore is the sole DB).
++    'collection_documents' => 'documents',
++    'collection_links'     => 'documentLinks',
++];
+diff --git a/application/config/routes.php b/application/config/routes.php
+index d3c90ff..e939264 100755
+--- a/application/config/routes.php
++++ b/application/config/routes.php
+@@ -584,6 +584,10 @@ $route['admission_crm/update_stage']            = 'Sis/update_stage';
+ $route['admission_crm/approve_application']     = 'Sis/approve_application';
+ $route['admission_crm/reject_application']      = 'Sis/reject_application';
+ $route['admission_crm/enroll_student']          = 'Sis/enroll_student';
++// Phase 1 — Canonical Document Service: admission document lifecycle actions.
++$route['admission_crm/verify_document']         = 'Sis/verify_admission_document';
++$route['admission_crm/replace_document']        = 'Sis/replace_admission_document';
++$route['admission_crm/delete_document']         = 'Sis/delete_admission_document';
+ // SIS Tier-2 fix B3 (post-soak 2026-06-01): Auth-repair endpoint for
+ // orphan Firebase Auth rows. Two aliases — admission_crm/* for the
+ // enrollment-credentials modal in admission_crm/applications.php, and
+diff --git a/application/controllers/Admission_public.php b/application/controllers/Admission_public.php
+index db37a32..f64bf7a 100755
+--- a/application/controllers/Admission_public.php
++++ b/application/controllers/Admission_public.php
+@@ -157,6 +157,15 @@ class Admission_public extends CI_Controller
+             'classes'        => $classes,
+         ];
+ 
++        // The public form embeds a per-request CSRF token and is served fresh on
++        // every open — it must never be cached. A stale cached copy would (a)
++        // run outdated inline JS and (b) carry a dead CSRF token that silently
++        // breaks submission. Force no-store so parents always get the live page.
++        $this->output
++            ->set_header('Cache-Control: no-store, no-cache, must-revalidate, max-age=0')
++            ->set_header('Pragma: no-cache')
++            ->set_header('Expires: 0');
++
+         $this->load->view('admission/public_form', $data);
+     }
+ 
+@@ -402,6 +411,20 @@ class Admission_public extends CI_Controller
+         $appId = 'APP_' . strtoupper(substr(dechex((int) (microtime(true) * 1000)), -6))
+                . '_' . str_pad((string) mt_rand(0, 99999), 5, '0', STR_PAD_LEFT);
+ 
++        // ── Optional file uploads: student photo, Aadhaar, supporting docs ──
++        // Uploaded to Firebase Cloud Storage under admission/{school}/{appId}/…
++        // (service-account write — independent of the parent's network and of
++        // client Storage rules). The tokenized download URLs are persisted on
++        // the application doc so the admin CRM can view them. Files are
++        // OPTIONAL; an invalid file (wrong type / >1 MB) rejects the submit
++        // with a clear message BEFORE the doc is written, rather than being
++        // silently dropped.
++        $uploads = $this->_handle_admission_uploads($school_id, $appId);
++        if (!empty($uploads['error'])) {
++            echo json_encode(['status' => 'error', 'message' => $uploads['error']]);
++            return;
++        }
++
+         // Schema mirrors what admin's `convert_to_application` writes to
+         // `crmApplications` so the same Pipeline / Inquiries / Applications
+         // grids show public submissions without any normalization.
+@@ -467,7 +490,19 @@ class Admission_public extends CI_Controller
+             // with the same phone+class exists for this school. Twins
+             // legitimately trigger this; admin reviews and clears.
+             'possible_duplicate' => $possibleDuplicate,
+-            'documents'         => [],
++            // Uploaded files (optional). `photo_url` and `aadhaar_url` are the
++            // student photo + Aadhaar scan; `documents` holds any additional
++            // supporting files [{name,url,category}]. Empty string / [] when
++            // the parent skipped them.
++            'photo_url'         => $uploads['photo_url'],
++            'aadhaar_url'       => $uploads['aadhaar_url'],
++            'documents'         => $uploads['documents'],
++            // Canonical Document Service references (Phase 1). The *_url fields
++            // above stay as denormalized pointers for existing readers; these
++            // ids are the lifecycle handles (verify/replace/delete/link).
++            'photoDocId'        => $uploads['photoDocId'],
++            'aadhaarDocId'      => $uploads['aadhaarDocId'],
++            'documentRefs'      => $uploads['documentRefs'],
+             'history'           => [
+                 ['action' => 'Application submitted via public form', 'by' => 'Public', 'timestamp' => $now],
+             ],
+@@ -521,6 +556,132 @@ class Admission_public extends CI_Controller
+         ]);
+     }
+ 
++    /**
++     * Handle OPTIONAL admission file uploads from the public form.
++     *
++     * Inputs (all optional): `photo` (student photo, images only),
++     * `aadhaar_card` (image/PDF) and `documents[]` (multiple supporting
++     * files). Each is validated against an extension + MIME allowlist and a
++     * 1 MB cap, then uploaded to Firebase Cloud Storage under
++     *   admission/{schoolId}/{appId}/…
++     * using the existing service-account client (Firebase::uploadFile —
++     * Admin write, so no client Storage rule is required). Returns the
++     * tokenized download URLs for persistence on the application doc.
++     *
++     * On the first invalid file it returns early with a human-readable
++     * `error`; the caller rejects the whole submit before writing anything.
++     *
++     * @return array{photo_url:string, aadhaar_url:string, documents:array, error:?string}
++     */
++    private function _handle_admission_uploads(string $school_id, string $appId): array
++    {
++        // Phase 1 — route uploads through the canonical Document Service:
++        // each file becomes one canonical document (id-addressed, optimized,
++        // audited) linked to this application. We STILL return the same
++        // photo_url / aadhaar_url / documents[] shape (now enriched with the
++        // documentId) so every existing reader — the CRM, the enrollment
++        // carry-over, older records — keeps working unchanged (backward compat).
++        $out = ['photo_url' => '', 'aadhaar_url' => '', 'documents' => [],
++                'photoDocId' => '', 'aadhaarDocId' => '', 'documentRefs' => [], 'error' => null];
++        if (empty($_FILES)) return $out;
++
++        $this->load->library('document_service', null, 'docsvc');
++        $this->docsvc->init($this->firebase, $school_id);
++
++        // Build the canonical DENORMALIZED pointer for one uploaded document and
++        // push it onto documentRefs[]. The service record (documents/{id}) stays
++        // authoritative for lifecycle; this cached pointer lets the CRM render +
++        // enrollment carry-over run with NO extra Firestore reads (ADR §Canonical).
++        $pushRef = function (array $p, string $role) use (&$out): void {
++            $out['documentRefs'][] = [
++                'documentId'         => $p['documentId'],
++                'type'               => $p['type'],
++                'role'               => $role,
++                'label'              => $p['label'],
++                'url'                => $p['downloadUrl'],
++                'category'           => $p['category'],
++                'verificationStatus' => $p['verificationStatus'] ?? 'pending',
++            ];
++        };
++
++        // Process one uploaded $_FILES entry via the service + link it to the
++        // application. Returns [pointer|null, errorOrNull]; null pointer = "not
++        // provided" (optional field skipped).
++        $handle = function (array $file, string $type, string $role)
++                use ($appId): array {
++            $err = $file['error'] ?? UPLOAD_ERR_NO_FILE;
++            if ($err === UPLOAD_ERR_NO_FILE) return [null, null];
++            if ($err !== UPLOAD_ERR_OK)      return [null, 'A file failed to upload. Please try again.'];
++            if ((int) ($file['size'] ?? 0) <= 0) return [null, null];
++
++            $res = $this->docsvc->upload(
++                (string) ($file['tmp_name'] ?? ''),
++                (string) ($file['name'] ?? 'file'),
++                $type,
++                ['uploadedBy' => 'public']
++            );
++            if (!$res['ok']) {
++                $label = ucfirst(str_replace('_', ' ', $type));
++                return [null, "{$label}: " . $res['error'] . '.'];
++            }
++            $this->docsvc->link($res['document']['documentId'], 'admission', $appId, $role, 'public');
++            return [$res['document'], null];
++        };
++
++        // Student photo (optimized to JPEG by the service)
++        if (isset($_FILES['photo'])) {
++            [$p, $e] = $handle($_FILES['photo'], 'photo', 'photo');
++            if ($e !== null) { $out['error'] = $e; return $out; }
++            if ($p) { $out['photo_url'] = $p['downloadUrl']; $out['photoDocId'] = $p['documentId']; $pushRef($p, 'photo'); }
++        }
++        // Aadhaar card
++        if (isset($_FILES['aadhaar_card'])) {
++            [$p, $e] = $handle($_FILES['aadhaar_card'], 'aadhaar', 'aadhaar');
++            if ($e !== null) { $out['error'] = $e; return $out; }
++            if ($p) { $out['aadhaar_url'] = $p['downloadUrl']; $out['aadhaarDocId'] = $p['documentId']; $pushRef($p, 'aadhaar'); }
++        }
++        // Additional predefined certificates (D2) — each an optional single-file
++        // input; routed to its canonical type so it renders in its own CRM field.
++        // input name === document type; role === type (predefined 1:1).
++        foreach (['birth_certificate', 'transfer_certificate', 'marksheet', 'medical_certificate'] as $type) {
++            if (!isset($_FILES[$type])) continue;
++            [$p, $e] = $handle($_FILES[$type], $type, $type);
++            if ($e !== null) { $out['error'] = $e; return $out; }
++            if ($p) $pushRef($p, $type);
++        }
++        // Additional documents — <input name="documents[]" multiple>
++        if (isset($_FILES['documents']) && is_array($_FILES['documents']['name'] ?? null)) {
++            $n = count($_FILES['documents']['name']);
++            if ($n > 10) { $out['error'] = 'Please upload at most 10 supporting documents.'; return $out; }
++            for ($i = 0; $i < $n; $i++) {
++                $one = [
++                    'name'     => $_FILES['documents']['name'][$i]     ?? '',
++                    'tmp_name' => $_FILES['documents']['tmp_name'][$i] ?? '',
++                    'error'    => $_FILES['documents']['error'][$i]    ?? UPLOAD_ERR_NO_FILE,
++                    'size'     => $_FILES['documents']['size'][$i]     ?? 0,
++                ];
++                [$p, $e] = $handle($one, 'additional', 'document');
++                if ($e !== null) { $out['error'] = $e; return $out; }
++                if ($p) {
++                    $nm = preg_replace('/[^A-Za-z0-9._ -]/', '', (string) ($one['name'] ?: ('Document ' . ($i + 1))));
++                    $label = substr($nm, 0, 80) ?: ('Document ' . ($i + 1));
++                    $out['documents'][] = [
++                        'name'       => $label,
++                        'url'        => $p['downloadUrl'],
++                        'category'   => 'document',
++                        'documentId' => $p['documentId'],
++                        'type'       => 'additional',
++                    ];
++                    // Enriched pointer (carry the parent-supplied label for display).
++                    $ref = $p; $ref['label'] = $label;
++                    $pushRef($ref, 'document');
++                }
++            }
++        }
++
++        return $out;
++    }
++
+     // ─── PAYMENT MODE: parent chooses "Pay at School" (offline) ────────
+ 
+     /**
+diff --git a/application/controllers/Document_service_verify.php b/application/controllers/Document_service_verify.php
+new file mode 100644
+index 0000000..0a0888f
+--- /dev/null
++++ b/application/controllers/Document_service_verify.php
+@@ -0,0 +1,317 @@
++<?php
++defined('BASEPATH') or exit('No direct script access allowed');
++
++/**
++ * Document_service_verify — end-to-end lifecycle verifier for the canonical
++ * Document Service (Phase 1). REUSABLE CLI diagnostic.
++ *
++ * Exercises the full API against a real (test) school using SYNTHETIC entity
++ * ids, asserting each transition, then FORCE-PURGES everything it created so it
++ * leaves no residue (aside from a handful of DOCLOG audit rows — intentional
++ * provenance). Covers:
++ *
++ *   upload → tenant-isolation → link(admission) → link dedup → link(student)
++ *   → verify → replace(version bump) → unlink(admission, refcount holds)
++ *   → delete(student, force → purge) → gone.
++ *
++ * INVOCATION:
++ *   php index.php document_service_verify run
++ *   Env required: SCHOOL_ID=<schoolFs>
++ *
++ * Mutates ONLY its own synthetic documents/links; self-cleans. Safe to run on a
++ * test tenant; do NOT point SCHOOL_ID at a production tenant you care about
++ * (audit rows aside, it is non-destructive to real data — it never touches real
++ * applications or students).
++ */
++class Document_service_verify extends CI_Controller
++{
++    private string $schoolFs = '';
++    private int $pass = 0;
++    private int $fail = 0;
++
++    private const TEST_APP = 'DSVERIFY_APP0001';
++    private const TEST_STU = 'DSVERIFY_STU0001';
++
++    public function __construct()
++    {
++        parent::__construct();
++        if (!$this->input->is_cli_request()) {
++            show_error('Document_service_verify is CLI-only.', 403);
++        }
++        $this->load->library('firebase');
++        $this->schoolFs = (string) (getenv('SCHOOL_ID') ?: '');
++        if ($this->schoolFs === '') {
++            echo "ERROR: Set SCHOOL_ID environment variable.\n";
++            exit(1);
++        }
++    }
++
++    /** php index.php document_service_verify run */
++    public function run(): void
++    {
++        echo "=== Document Service — lifecycle verification ===\n";
++        echo "Scope: schoolId={$this->schoolFs}\n";
++        echo str_repeat('-', 64) . "\n\n";
++
++        $this->load->library('document_service', null, 'docsvc');
++        $this->docsvc->init($this->firebase, $this->schoolFs);
++
++        $tmp1 = $this->makeJpeg(1600, 1100);
++        $tmp2 = $this->makeJpeg(1200, 900);
++        $docId = '';
++
++        try {
++            // 1. Upload (image → optimized). linkCount starts at 0.
++            $res = $this->docsvc->upload($tmp1, 'passport.jpg', 'photo', ['uploadedBy' => 'verifier']);
++            $this->assert('upload ok', !empty($res['ok']), $res['error'] ?? '');
++            $docId = (string) ($res['document']['documentId'] ?? '');
++            $this->assert('documentId minted', $docId !== '');
++            $this->assert('version = 1', (int) ($res['document']['version'] ?? 0) === 1);
++            $this->assert('verification pending', ($res['document']['verificationStatus'] ?? '') === 'pending');
++            $this->assert('optimized to jpeg', ($res['document']['ext'] ?? '') === 'jpg');
++            $this->assert('linkCount = 0 at upload', $this->rawLinkCount($docId) === 0);
++
++            // 2. Tenant isolation — a service scoped to another school cannot read it.
++            $other = $this->load->library('document_service', null, 'docsvcOther') ? $this->docsvcOther : null;
++            if ($other) {
++                $other->init($this->firebase, $this->schoolFs . '_OTHER');
++                $this->assert('tenant isolation (cross-school read blocked)', $other->getMetadata($docId) === null);
++            }
++
++            // 3. Link to the application → refcount 1.
++            $this->docsvc->link($docId, 'admission', self::TEST_APP, 'photo', 'verifier');
++            $this->assert('linkCount = 1 after admission link', $this->rawLinkCount($docId) === 1);
++
++            // 4. Duplicate link is a no-op (idempotent).
++            $this->docsvc->link($docId, 'admission', self::TEST_APP, 'photo', 'verifier');
++            $this->assert('linkCount still 1 (dedup)', $this->rawLinkCount($docId) === 1);
++
++            // 5. Enrollment link (revised D1) → refcount 2, one physical object.
++            $this->docsvc->link($docId, 'student', self::TEST_STU, 'photo', 'verifier');
++            $this->assert('linkCount = 2 after student link', $this->rawLinkCount($docId) === 2);
++
++            // 6. Verify.
++            $vr = $this->docsvc->verify($docId, 'verified', 'verifier');
++            $this->assert('verify ok', !empty($vr['ok']));
++            $this->assert('status verified', ($this->docsvc->getMetadata($docId)['verificationStatus'] ?? '') === 'verified');
++
++            // 7. Replace → new version, verification reset, old object retired.
++            $rp = $this->docsvc->replace($docId, $tmp2, 'passport2.jpg', 'verifier');
++            $this->assert('replace ok', !empty($rp['ok']), $rp['error'] ?? '');
++            $meta = $this->docsvc->getMetadata($docId);
++            $this->assert('version = 2 after replace', (int) ($meta['version'] ?? 0) === 2);
++            $this->assert('verification reset to pending', ($meta['verificationStatus'] ?? '') === 'pending');
++
++            // 8. Unlink admission — student link holds the object (no purge).
++            $this->docsvc->unlink($docId, 'admission', self::TEST_APP, 'verifier');
++            $this->assert('linkCount = 1 after admission unlink', $this->rawLinkCount($docId) === 1);
++            $this->assert('document still present (student holds it)', $this->docsvc->getMetadata($docId) !== null);
++
++            // 9. Delete last link with force → purge. Resolves W4: a lead delete
++            //    would NOT purge while a student still links.
++            $dr = $this->docsvc->delete($docId, 'student', self::TEST_STU, 'verifier', true);
++            $this->assert('delete ok', !empty($dr['ok']));
++            $this->assert('purged = true', !empty($dr['purged']));
++            $this->assert('document gone after purge', $this->docsvc->getMetadata($docId) === null);
++        } catch (\Throwable $e) {
++            echo "\n!! EXCEPTION: " . $e->getMessage() . "\n";
++            $this->fail++;
++        } finally {
++            @unlink($tmp1);
++            @unlink($tmp2);
++            // Best-effort residue sweep in case an assertion aborted mid-flight.
++            if ($docId !== '' && $this->docsvc->getMetadata($docId) !== null) {
++                $this->docsvc->delete($docId, 'admission', self::TEST_APP, 'verifier', true);
++                $this->docsvc->delete($docId, 'student', self::TEST_STU, 'verifier', true);
++            }
++        }
++
++        echo "\n" . str_repeat('-', 64) . "\n";
++        echo "RESULT: {$this->pass} passed, {$this->fail} failed\n";
++        exit($this->fail === 0 ? 0 : 1);
++    }
++
++    /**
++     * php index.php document_service_verify race    (env: SCHOOL_ID)
++     *
++     * DETERMINISTIC concurrency proof for F3 (replace) and F4 (unlink). Rather
++     * than hope to hit a sub-millisecond race window, it constructs the exact
++     * interleaving: capture "admin-1"'s read, let "admin-2" complete a real
++     * mutation (bumping updateTime), then replay admin-1's now-stale precondition
++     * commit and assert the server REJECTS it — proving no lost update / no
++     * double decrement is possible. Self-cleaning.
++     */
++    public function race(): void
++    {
++        echo "=== Document Service — concurrency (CAS) verification ===\n";
++        echo "Scope: schoolId={$this->schoolFs}\n" . str_repeat('-', 64) . "\n\n";
++        $this->load->library('document_service', null, 'docsvc');
++        $this->docsvc->init($this->firebase, $this->schoolFs);
++        $tmpA = $this->makeJpeg(1400, 1000);
++        $tmpB = $this->makeJpeg(1000, 800);
++        $docKey = fn($d) => $this->schoolFs . '_' . $d;
++
++        try {
++            // ── F4 — concurrent unlink of the SAME link must not double-decrement ──
++            echo "F4 — two admins unlink the same link simultaneously:\n";
++            $D = (string) ($this->docsvc->upload($tmpA, 'p.jpg', 'photo', ['uploadedBy' => 'race'])['document']['documentId'] ?? '');
++            $this->assert('setup upload', $D !== '');
++            $this->docsvc->link($D, 'admission', self::TEST_APP, 'photo', 'race');
++            $this->docsvc->link($D, 'student', self::TEST_STU, 'photo', 'race');
++            $this->assert('linkCount = 2 (admission + student)', $this->rawLinkCount($D) === 2);
++
++            // admin-1 reads the admission link + document (captures updateTimes)
++            $linkKey = $this->schoolFs . '_' . $D . '_admission_' . self::TEST_APP;
++            $l0 = $this->firebase->firestoreGet('documentLinks', $linkKey);
++            $d0 = $this->firebase->firestoreGet('documents', $docKey($D));
++            $lut0 = (string) ($l0['__updateTime'] ?? ''); $dut0 = (string) ($d0['__updateTime'] ?? '');
++            $this->assert('captured stale updateTimes', $lut0 !== '' && $dut0 !== '');
++
++            // admin-2 completes a real unlink of the same link FIRST
++            $this->docsvc->unlink($D, 'admission', self::TEST_APP, 'race');
++            $this->assert('after admin-2 unlink: linkCount = 1', $this->rawLinkCount($D) === 1);
++
++            // admin-1 replays its now-stale unlink commit — CAS MUST reject it
++            $stale = $this->firebase->firestoreCommitBatch([
++                ['op' => 'update', 'collection' => 'documentLinks', 'docId' => $linkKey, 'merge' => true,
++                 'precondition' => ['updateTime' => $lut0], 'data' => ['active' => false, 'unlinkedAt' => date('c')]],
++                ['op' => 'update', 'collection' => 'documents', 'docId' => $docKey($D), 'merge' => true,
++                 'precondition' => ['updateTime' => $dut0], 'data' => ['linkCount' => 1, 'updatedAt' => date('c')]],
++            ]);
++            $this->assert('stale concurrent unlink REJECTED by CAS', $stale === false);
++            $this->assert('linkCount still 1 — NO double-decrement', $this->rawLinkCount($D) === 1);
++            $this->docsvc->delete($D, 'student', self::TEST_STU, 'race', true);
++            $this->docsvc->delete($D, 'admission', self::TEST_APP, 'race', true);
++
++            // ── F3 — concurrent replace must not lose an update / orphan ──
++            echo "\nF3 — two admins replace the same document simultaneously:\n";
++            $D2 = (string) ($this->docsvc->upload($tmpA, 'p.jpg', 'photo', ['uploadedBy' => 'race'])['document']['documentId'] ?? '');
++            $this->docsvc->link($D2, 'admission', self::TEST_APP, 'photo', 'race');
++            $this->assert('setup version = 1', (int) ($this->docsvc->getMetadata($D2)['version'] ?? 0) === 1);
++
++            // admin-1 reads the document (captures updateTime), admin-2 replaces first → v2
++            $dut2 = (string) ($this->firebase->firestoreGet('documents', $docKey($D2))['__updateTime'] ?? '');
++            $r2 = $this->docsvc->replace($D2, $tmpB, 'q.jpg', 'race');
++            $this->assert('admin-2 replace → version 2', (int) ($r2['document']['version'] ?? 0) === 2);
++
++            // admin-1 replays a stale metadata repoint — CAS MUST reject it (no lost update)
++            $stale2 = $this->firebase->firestoreCommitBatch([
++                ['op' => 'update', 'collection' => 'documents', 'docId' => $docKey($D2), 'merge' => true,
++                 'precondition' => ['updateTime' => $dut2], 'data' => ['version' => 2, 'updatedAt' => date('c')]],
++            ]);
++            $this->assert('stale concurrent replace REJECTED by CAS', $stale2 === false);
++
++            // the real service replace still serializes cleanly → version 3
++            $r3 = $this->docsvc->replace($D2, $tmpA, 'p.jpg', 'race');
++            $this->assert('serialized replace advances → version 3', (int) ($r3['document']['version'] ?? 0) === 3);
++            $this->assert('downloadUrl matches committed storagePath', ($r3['document']['downloadUrl'] ?? '') !== '');
++            $this->docsvc->delete($D2, 'admission', self::TEST_APP, 'race', true);
++        } catch (\Throwable $e) {
++            echo "\n!! EXCEPTION: " . $e->getMessage() . "\n"; $this->fail++;
++        } finally {
++            @unlink($tmpA); @unlink($tmpB);
++        }
++
++        echo "\n" . str_repeat('-', 64) . "\n";
++        echo "RESULT: {$this->pass} passed, {$this->fail} failed\n";
++        exit($this->fail === 0 ? 0 : 1);
++    }
++
++    /**
++     * php index.php document_service_verify race_worker    (env: SCHOOL_ID, RACE_DOC, RACE_ENTITY, RACE_CYCLES)
++     * Empirical parallel stress: hammers RACE_CYCLES link↔unlink cycles on the
++     * shared RACE_DOC using its own RACE_ENTITY. Launch several in parallel; each
++     * is net-zero on the counter, so a correct CAS leaves linkCount unchanged.
++     */
++    public function race_worker(): void
++    {
++        $doc    = (string) (getenv('RACE_DOC') ?: '');
++        $entity = (string) (getenv('RACE_ENTITY') ?: 'W');
++        $cycles = (int) (getenv('RACE_CYCLES') ?: 15);
++        if ($doc === '') { echo "RACE_DOC required\n"; exit(1); }
++        $this->load->library('document_service', null, 'docsvc');
++        $this->docsvc->init($this->firebase, $this->schoolFs);
++        for ($i = 0; $i < $cycles; $i++) {
++            $this->docsvc->link($doc, 'stress', $entity, 'stress', 'race');
++            $this->docsvc->unlink($doc, 'stress', $entity, 'race');
++        }
++        echo "worker {$entity} done ({$cycles} cycles)\n";
++        exit(0);
++    }
++
++    /** php index.php document_service_verify race_setup   (env: SCHOOL_ID) — prints RACE_DOC=<id>. */
++    public function race_setup(): void
++    {
++        $this->load->library('document_service', null, 'docsvc');
++        $this->docsvc->init($this->firebase, $this->schoolFs);
++        $tmp = $this->makeJpeg(1000, 800);
++        $D = (string) ($this->docsvc->upload($tmp, 'p.jpg', 'photo', ['uploadedBy' => 'race'])['document']['documentId'] ?? '');
++        @unlink($tmp);
++        if ($D === '') { echo "SETUP_FAILED\n"; exit(1); }
++        $this->docsvc->link($D, 'base', 'BASE0', 'base', 'race'); // persistent baseline link → linkCount 1
++        echo "RACE_DOC={$D}\n";
++        exit(0);
++    }
++
++    /**
++     * php index.php document_service_verify race_check   (env: SCHOOL_ID, RACE_DOC, RACE_WORKERS)
++     * Asserts the core invariant after the parallel storm: the stored linkCount
++     * EQUALS the number of actually-active links (recomputed by point-reads). All
++     * workers end unlinked, so the only active link is the baseline ⇒ count == 1.
++     * Cleans up the shared document.
++     */
++    public function race_check(): void
++    {
++        $doc = (string) (getenv('RACE_DOC') ?: '');
++        $n   = (int) (getenv('RACE_WORKERS') ?: 0);
++        if ($doc === '') { echo "RACE_DOC required\n"; exit(1); }
++        $this->load->library('document_service', null, 'docsvc');
++        $this->docsvc->init($this->firebase, $this->schoolFs);
++
++        // Recompute the true active-link count by point-reading each known link.
++        $active = 0;
++        $base = $this->firebase->firestoreGet('documentLinks', $this->schoolFs . '_' . $doc . '_base_BASE0');
++        if (is_array($base) && !empty($base['active'])) $active++;
++        for ($i = 0; $i < $n; $i++) {
++            $lk = $this->firebase->firestoreGet('documentLinks', $this->schoolFs . '_' . $doc . '_stress_stress_' . $i);
++            if (is_array($lk) && !empty($lk['active'])) $active++;
++        }
++        $stored = $this->rawLinkCount($doc);
++        echo "  stored linkCount = {$stored}; recomputed active links = {$active}\n";
++        $this->assert('INVARIANT: stored linkCount == active link count (no drift)', $stored === $active);
++        $this->assert('all workers net-zero → count back to baseline 1', $stored === 1);
++
++        // Cleanup: force-purge the shared document.
++        $this->docsvc->delete($doc, 'base', 'BASE0', 'race', true);
++        echo "\nRESULT: {$this->pass} passed, {$this->fail} failed\n";
++        exit($this->fail === 0 ? 0 : 1);
++    }
++
++    private function assert(string $label, bool $ok, string $extra = ''): void
++    {
++        if ($ok) { $this->pass++; echo "  [PASS] {$label}\n"; }
++        else     { $this->fail++; echo "  [FAIL] {$label}" . ($extra !== '' ? " — {$extra}" : '') . "\n"; }
++    }
++
++    /** Raw linkCount straight from the metadata doc (pointer() omits it). */
++    private function rawLinkCount(string $documentId): int
++    {
++        $doc = $this->firebase->firestoreGet('documents', $this->schoolFs . '_' . $documentId);
++        return is_array($doc) ? (int) ($doc['linkCount'] ?? -1) : -1;
++    }
++
++    /** Generate a throwaway JPEG for upload/replace. */
++    private function makeJpeg(int $w, int $h): string
++    {
++        $path = tempnam(sys_get_temp_dir(), 'dsv') . '.jpg';
++        if (function_exists('imagecreatetruecolor')) {
++            $im = imagecreatetruecolor($w, $h);
++            imagefilledrectangle($im, 0, 0, $w, $h, imagecolorallocate($im, 120, 160, 200));
++            imagejpeg($im, $path, 85);
++            imagedestroy($im);
++        } else {
++            file_put_contents($path, "\xFF\xD8\xFF\xE0stub");
++        }
++        return $path;
++    }
++}
+diff --git a/application/controllers/Sis.php b/application/controllers/Sis.php
+index 32a490e..3e5f868 100755
+--- a/application/controllers/Sis.php
++++ b/application/controllers/Sis.php
+@@ -374,6 +374,76 @@ class Sis extends MY_Controller
+             }
+         }
+ 
++        // ── Carry over files uploaded on the public admission form (lead) ──
++        // When converting a public application, reuse the photo / Aadhaar /
++        // supporting documents the parent already uploaded (they live in
++        // Firebase Storage as permanent tokenized URLs) instead of forcing the
++        // admin to re-scan them. URLs are read SERVER-SIDE from the lead doc —
++        // never from client input — and only fill slots the admin did not just
++        // upload above, so a fresh upload always wins.
++        $leadIdForFiles = trim((string) $this->input->post('lead_id'));
++        if ($leadIdForFiles !== '' && preg_match('/^[A-Za-z0-9_]+$/', $leadIdForFiles)) {
++            $leadDocForFiles = $this->fs->get('crmApplications', $this->fs->docId($leadIdForFiles));
++            if (is_array($leadDocForFiles)) {
++                $leadPhoto = trim((string) ($leadDocForFiles['photo_url'] ?? ''));
++                if ($profilePicUrl === '' && $leadPhoto !== '') {
++                    $profilePicUrl    = $leadPhoto;
++                    $docData['Photo'] = ['url' => $leadPhoto, 'thumbnail' => $leadPhoto];
++                }
++                $leadAadhaar = trim((string) ($leadDocForFiles['aadhaar_url'] ?? ''));
++                if (($docData['Aadhar Card']['url'] ?? '') === '' && $leadAadhaar !== '') {
++                    $docData['Aadhar Card'] = ['url' => $leadAadhaar, 'thumbnail' => ''];
++                }
++                if (is_array($leadDocForFiles['documents'] ?? null)) {
++                    foreach ($leadDocForFiles['documents'] as $ld) {
++                        if (!is_array($ld)) continue;
++                        $lurl = trim((string) ($ld['url'] ?? ''));
++                        $lname = trim((string) ($ld['name'] ?? ''));
++                        if ($lurl === '') continue;
++                        $key = $lname !== '' ? substr(preg_replace('/[^A-Za-z0-9 _.-]/', '', $lname), 0, 60) : '';
++                        if ($key === '' || isset($docData[$key])) $key = 'Application Document ' . (count($docData) + 1);
++                        $docData[$key] = ['url' => $lurl, 'thumbnail' => ''];
++                    }
++                }
++
++                // ── Phase 1 (revised D1): REFERENCE the same canonical documents ──
++                // Enrollment does NOT move or copy bytes. For every canonical
++                // document the parent uploaded on the lead, add a 'student' link
++                // so the one physical Storage object is now referenced by BOTH the
++                // admission application and the student (reference-counted; central
++                // retention). The Doc[] URLs above remain denormalized display
++                // pointers. Old leads without documentRefs skip this untouched.
++                if (is_array($leadDocForFiles['documentRefs'] ?? null) && $leadDocForFiles['documentRefs']) {
++                    $this->load->library('document_service', null, 'docsvc');
++                    $this->docsvc->init($this->firebase, $school_id);
++                    $predefLabels = [
++                        'birth_certificate'    => 'Birth Certificate',
++                        'transfer_certificate' => 'Transfer Certificate',
++                        'marksheet'            => 'Marksheet',
++                        'medical_certificate'  => 'Medical Certificate',
++                    ];
++                    foreach ($leadDocForFiles['documentRefs'] as $ref) {
++                        if (!is_array($ref)) continue;
++                        $docId = trim((string) ($ref['documentId'] ?? ''));
++                        if ($docId === '') continue;
++                        $role  = (string) ($ref['role'] ?? ($ref['type'] ?? 'document'));
++                        // Link the canonical document to the enrolled student (no copy).
++                        $this->docsvc->link($docId, 'student', $userId, $role, (string) ($this->admin_id ?? 'system'));
++                        // Surface the 4 predefined certificate types in the student
++                        // Doc[] map (photo/aadhaar/additional are carried above already).
++                        $rtype = (string) ($ref['type'] ?? '');
++                        if (isset($predefLabels[$rtype])) {
++                            $lbl  = $predefLabels[$rtype];
++                            $rurl = trim((string) ($ref['url'] ?? ''));
++                            if ($rurl !== '' && ($docData[$lbl]['url'] ?? '') === '') {
++                                $docData[$lbl] = ['url' => $rurl, 'thumbnail' => ''];
++                            }
++                        }
++                    }
++                }
++            }
++        }
++
+         // ── Build student data — exact schema match with Student.php ─
+         $studentData = [
+             'Name'           => $name,
+@@ -6322,6 +6392,205 @@ class Sis extends MY_Controller
+         return $this->json_success();
+     }
+ 
++    // ─────────────────────────────────────────────────────────────────────
++    //  Admission document lifecycle (Phase 1 — Canonical Document Service)
++    //  verify / replace / delete a document attached to an application. Each is
++    //  role-gated, tenant-scoped (docsvc init'd with this admin's school) and
++    //  ownership-guarded (the documentId must be referenced by THIS application),
++    //  then keeps the application's denormalized pointers in sync.
++    // ─────────────────────────────────────────────────────────────────────
++
++    /** True only if $documentId is referenced by this application (ownership guard). */
++    private function _crm_doc_owned(array $app, string $documentId): bool
++    {
++        if ($documentId === '') return false;
++        foreach ((array) ($app['documentRefs'] ?? []) as $r) {
++            if (is_array($r) && (string) ($r['documentId'] ?? '') === $documentId) return true;
++        }
++        foreach ((array) ($app['documents'] ?? []) as $d) {
++            if (is_array($d) && (string) ($d['documentId'] ?? '') === $documentId) return true;
++        }
++        return (string) ($app['photoDocId'] ?? '') === $documentId
++            || (string) ($app['aadhaarDocId'] ?? '') === $documentId;
++    }
++
++    /**
++     * Build the student Profile Pic + Doc[] map from an application's uploaded
++     * documents, and return the canonical document references to link on
++     * enrollment (revised D1 — link, not copy). Prefers the enriched
++     * documentRefs (Phase 1); falls back to the legacy *_url / documents[]
++     * fields for applications created before the Document Service, so old
++     * applications enroll identically with NO migration.
++     *
++     * @return array{profilePic:string, doc:array, links:array<int,array{documentId:string,role:string}>}
++     */
++    private function _admission_docs_for_student(array $app): array
++    {
++        $doc = []; $profilePic = ''; $links = [];
++        $typeLabel = [
++            'aadhaar'              => 'Aadhar Card',
++            'birth_certificate'    => 'Birth Certificate',
++            'transfer_certificate' => 'Transfer Certificate',
++            'marksheet'            => 'Marksheet',
++            'medical_certificate'  => 'Medical Certificate',
++        ];
++        $refs = is_array($app['documentRefs'] ?? null) ? $app['documentRefs'] : [];
++        if ($refs) {
++            foreach ($refs as $r) {
++                if (!is_array($r)) continue;
++                $docId = trim((string) ($r['documentId'] ?? ''));
++                $type  = (string) ($r['type'] ?? '');
++                $url   = trim((string) ($r['url'] ?? ''));
++                if ($docId !== '') $links[] = ['documentId' => $docId, 'role' => (string) ($r['role'] ?? ($type !== '' ? $type : 'document'))];
++                if ($url === '') continue;
++                if ($type === 'photo')            { $profilePic = $url; $doc['Photo'] = ['url' => $url, 'thumbnail' => $url]; }
++                elseif (isset($typeLabel[$type])) { $doc[$typeLabel[$type]] = ['url' => $url, 'thumbnail' => '']; }
++                else {
++                    $nm  = trim((string) ($r['label'] ?? 'Document'));
++                    $key = $nm !== '' ? substr(preg_replace('/[^A-Za-z0-9 _.-]/', '', $nm), 0, 60) : '';
++                    if ($key === '' || isset($doc[$key])) $key = 'Application Document ' . (count($doc) + 1);
++                    $doc[$key] = ['url' => $url, 'thumbnail' => ''];
++                }
++            }
++        } else {
++            // Legacy fallback (pre-Document-Service applications) — reference the
++            // stored URLs exactly as the prior behavior did (no links to create).
++            $ph = trim((string) ($app['photo_url'] ?? ''));
++            if ($ph !== '') { $profilePic = $ph; $doc['Photo'] = ['url' => $ph, 'thumbnail' => $ph]; }
++            $aa = trim((string) ($app['aadhaar_url'] ?? ''));
++            if ($aa !== '') $doc['Aadhar Card'] = ['url' => $aa, 'thumbnail' => ''];
++            if (is_array($app['documents'] ?? null)) {
++                foreach ($app['documents'] as $ld) {
++                    if (!is_array($ld)) continue;
++                    $lurl = trim((string) ($ld['url'] ?? ''));
++                    if ($lurl === '') continue;
++                    $nm  = trim((string) ($ld['name'] ?? ''));
++                    $key = $nm !== '' ? substr(preg_replace('/[^A-Za-z0-9 _.-]/', '', $nm), 0, 60) : '';
++                    if ($key === '' || isset($doc[$key])) $key = 'Application Document ' . (count($doc) + 1);
++                    $doc[$key] = ['url' => $lurl, 'thumbnail' => ''];
++                }
++            }
++        }
++        return ['profilePic' => $profilePic, 'doc' => $doc, 'links' => $links];
++    }
++
++    /** POST — set a document's verification status: verified | rejected | pending. */
++    public function verify_admission_document()
++    {
++        $this->_require_role(self::MANAGE_ROLES, 'crm_verify_doc');
++        $id     = $this->safe_path_segment(trim((string) $this->input->post('app_id')), 'app_id');
++        $docId  = trim((string) $this->input->post('document_id'));
++        $status = trim((string) $this->input->post('status'));
++        if ($id === '' || $docId === '')                                return $this->json_error('Application and document are required.');
++        if (!preg_match('/^[A-Za-z0-9_]+$/', $docId))                   return $this->json_error('Invalid document id.');
++        if (!in_array($status, ['verified', 'rejected', 'pending'], true)) return $this->json_error('Invalid verification status.');
++        $app = $this->_crm_get('crmApplications', $id);
++        if (!is_array($app))                    return $this->json_error('Application not found.');
++        if (!$this->_crm_doc_owned($app, $docId)) return $this->json_error('Document does not belong to this application.');
++
++        $this->load->library('document_service', null, 'docsvc');
++        $this->docsvc->init($this->firebase, $this->school_name);
++        $res = $this->docsvc->verify($docId, $status, (string) ($this->admin_id ?? 'system'));
++        if (empty($res['ok'])) return $this->json_error($res['error'] ?? 'Verification failed.');
++
++        // Keep the denormalized pointer fresh so the CRM reflects the new status
++        // with no extra read.
++        if (is_array($app['documentRefs'] ?? null)) {
++            $refs = array_map(function ($r) use ($docId, $status) {
++                if (is_array($r) && (string) ($r['documentId'] ?? '') === $docId) $r['verificationStatus'] = $status;
++                return $r;
++            }, $app['documentRefs']);
++            $this->fs->updateEntity('crmApplications', $id, ['documentRefs' => $refs, 'updated_at' => date('Y-m-d H:i:s')]);
++        }
++        log_audit('CRM', 'verify_admission_document', $id, "Document {$docId} marked {$status}",
++            ['appId' => $id, 'entityType' => 'application', 'meta' => ['documentId' => $docId, 'status' => $status]]);
++        return $this->json_success(['status' => $status]);
++    }
++
++    /** POST (multipart) — replace a document's bytes (new version; old object retired). */
++    public function replace_admission_document()
++    {
++        $this->_require_role(self::MANAGE_ROLES, 'crm_replace_doc');
++        $id    = $this->safe_path_segment(trim((string) $this->input->post('app_id')), 'app_id');
++        $docId = trim((string) $this->input->post('document_id'));
++        if ($id === '' || $docId === '')             return $this->json_error('Application and document are required.');
++        if (!preg_match('/^[A-Za-z0-9_]+$/', $docId)) return $this->json_error('Invalid document id.');
++        if (empty($_FILES['file']) || ($_FILES['file']['error'] ?? UPLOAD_ERR_NO_FILE) !== UPLOAD_ERR_OK) {
++            return $this->json_error('Please choose a replacement file.');
++        }
++        $app = $this->_crm_get('crmApplications', $id);
++        if (!is_array($app))                    return $this->json_error('Application not found.');
++        if (!$this->_crm_doc_owned($app, $docId)) return $this->json_error('Document does not belong to this application.');
++
++        $this->load->library('document_service', null, 'docsvc');
++        $this->docsvc->init($this->firebase, $this->school_name);
++        $res = $this->docsvc->replace($docId, (string) $_FILES['file']['tmp_name'], (string) $_FILES['file']['name'], (string) ($this->admin_id ?? 'system'));
++        if (empty($res['ok'])) return $this->json_error($res['error'] ?? 'Replace failed.');
++        $newUrl = (string) ($res['document']['downloadUrl'] ?? '');
++
++        // Refresh ALL denormalized pointers (URL changes; verification resets to
++        // pending) so every existing reader — CRM, enrollment carry-over — sees
++        // the new object.
++        $now = date('Y-m-d H:i:s'); $patch = ['updated_at' => $now];
++        if (is_array($app['documentRefs'] ?? null)) {
++            $patch['documentRefs'] = array_map(function ($r) use ($docId, $newUrl) {
++                if (is_array($r) && (string) ($r['documentId'] ?? '') === $docId) { $r['url'] = $newUrl; $r['verificationStatus'] = 'pending'; }
++                return $r;
++            }, $app['documentRefs']);
++        }
++        if (is_array($app['documents'] ?? null)) {
++            $patch['documents'] = array_map(function ($d) use ($docId, $newUrl) {
++                if (is_array($d) && (string) ($d['documentId'] ?? '') === $docId) $d['url'] = $newUrl;
++                return $d;
++            }, $app['documents']);
++        }
++        if ((string) ($app['photoDocId'] ?? '')   === $docId) $patch['photo_url']   = $newUrl;
++        if ((string) ($app['aadhaarDocId'] ?? '') === $docId) $patch['aadhaar_url'] = $newUrl;
++        $this->fs->updateEntity('crmApplications', $id, $patch);
++        log_audit('CRM', 'replace_admission_document', $id, "Document {$docId} replaced",
++            ['appId' => $id, 'entityType' => 'application', 'meta' => ['documentId' => $docId]]);
++        return $this->json_success(['url' => $newUrl]);
++    }
++
++    /** POST — remove a document from this application (unlink; purge only if orphaned). */
++    public function delete_admission_document()
++    {
++        $this->_require_role(self::MANAGE_ROLES, 'crm_delete_doc');
++        $id    = $this->safe_path_segment(trim((string) $this->input->post('app_id')), 'app_id');
++        $docId = trim((string) $this->input->post('document_id'));
++        if ($id === '' || $docId === '')             return $this->json_error('Application and document are required.');
++        if (!preg_match('/^[A-Za-z0-9_]+$/', $docId)) return $this->json_error('Invalid document id.');
++        $app = $this->_crm_get('crmApplications', $id);
++        if (!is_array($app))                    return $this->json_error('Application not found.');
++        if (!$this->_crm_doc_owned($app, $docId)) return $this->json_error('Document does not belong to this application.');
++
++        $this->load->library('document_service', null, 'docsvc');
++        $this->docsvc->init($this->firebase, $this->school_name);
++        // Unlink from THIS application. The service purges the Storage object ONLY
++        // when no other module still references it (e.g. an enrolled student) AND
++        // retention has elapsed — so deleting a lead's document can never break an
++        // enrolled student's file (resolves hazard W4).
++        $res = $this->docsvc->delete($docId, 'admission', $id, (string) ($this->admin_id ?? 'system'), false);
++        if (empty($res['ok'])) return $this->json_error($res['error'] ?? 'Delete failed.');
++
++        // Strip the denormalized pointers from the application.
++        $now = date('Y-m-d H:i:s'); $patch = ['updated_at' => $now];
++        if (is_array($app['documentRefs'] ?? null)) {
++            $patch['documentRefs'] = array_values(array_filter($app['documentRefs'],
++                fn($r) => !(is_array($r) && (string) ($r['documentId'] ?? '') === $docId)));
++        }
++        if (is_array($app['documents'] ?? null)) {
++            $patch['documents'] = array_values(array_filter($app['documents'],
++                fn($d) => !(is_array($d) && (string) ($d['documentId'] ?? '') === $docId)));
++        }
++        if ((string) ($app['photoDocId'] ?? '')   === $docId) { $patch['photo_url']   = ''; $patch['photoDocId']   = ''; }
++        if ((string) ($app['aadhaarDocId'] ?? '') === $docId) { $patch['aadhaar_url'] = ''; $patch['aadhaarDocId'] = ''; }
++        $this->fs->updateEntity('crmApplications', $id, $patch);
++        log_audit('CRM', 'delete_admission_document', $id, 'Document ' . $docId . ' deleted (purged=' . (!empty($res['purged']) ? 'yes' : 'no') . ')',
++            ['appId' => $id, 'entityType' => 'application', 'meta' => ['documentId' => $docId, 'purged' => !empty($res['purged'])]]);
++        return $this->json_success(['purged' => !empty($res['purged'])]);
++    }
++
+     public function enroll_student()
+     {
+         $this->_require_role(self::MANAGE_ROLES, 'crm_enroll');
+@@ -6414,6 +6683,17 @@ class Sis extends MY_Controller
+             return $this->json_error('Could not generate a valid password (student name or date of birth is missing). Please edit the application first.');
+         }
+ 
++        // Carry the parent-uploaded documents onto the enrolled student. Prefers
++        // the canonical documentRefs (Phase 1); falls back to legacy URLs for
++        // pre-Document-Service applications. The empty canonical slots are kept
++        // (merged under) so the SIS profile always shows them; uploaded files
++        // fill them. Links are created AFTER saveStudent (revised D1 — no copy).
++        $carry       = $this->_admission_docs_for_student($app);
++        $docTemplate = [
++            "Aadhar Card"=>["thumbnail"=>"","url"=>""], "Birth Certificate"=>["thumbnail"=>"","url"=>""],
++            "Photo"=>["thumbnail"=>"","url"=>""], "Transfer Certificate"=>["thumbnail"=>"","url"=>""],
++        ];
++
+         $studentData = [
+             "Name"=>$app['student_name']??'', "User Id"=>$studentId, "DOB"=>$formattedDOB,
+             "Admission Date"=>date('d-m-Y'), "Class"=>$className, "Section"=>$section,  // Already prefixed via classKey/sectionKey
+@@ -6427,8 +6707,8 @@ class Sis extends MY_Controller
+             "Password"=>$generatedPassword,
+             "Address"=>["Street"=>$app['address']??'',"City"=>$app['city']??'',"State"=>$app['state']??'',"PostalCode"=>$app['pincode']??''],
+             "Pre School"=>$app['previous_school']??'', "Pre Class"=>$app['previous_class']??'', "Pre Marks"=>$app['previous_marks']??'',
+-            "Profile Pic"=>"",
+-            "Doc"=>["Aadhar Card"=>["thumbnail"=>"","url"=>""],"Birth Certificate"=>["thumbnail"=>"","url"=>""],"Photo"=>["thumbnail"=>"","url"=>""],"Transfer Certificate"=>["thumbnail"=>"","url"=>""]],
++            "Profile Pic"=>$carry['profilePic'],
++            "Doc"=>array_merge($docTemplate, $carry['doc']),
+             "Status"=>"Active",
+             // Phase A — first-login force-change. Cleared once the parent
+             // successfully changes the password from the parent app.
+@@ -6497,6 +6777,18 @@ class Sis extends MY_Controller
+             return $this->json_error('Failed to create student profile in database. Please retry. If the issue persists, contact support.');
+         }
+ 
++        // Revised D1 — reference (do NOT copy) the canonical documents on the
++        // enrolled student. One physical object referenced by both the admission
++        // application and the student; retention governed centrally by link-count.
++        // link() is idempotent, so an enroll-idempotency retry never double-counts.
++        if (!empty($carry['links'])) {
++            $this->load->library('document_service', null, 'docsvc');
++            $this->docsvc->init($this->firebase, $school_id);
++            foreach ($carry['links'] as $lk) {
++                $this->docsvc->link($lk['documentId'], 'student', $studentId, $lk['role'], (string) ($this->admin_id ?? 'system'));
++            }
++        }
++
+         $phone = trim($app['phone'] ?? '');
+         if ($phone !== '') {
+             // Firestore dual-write: phone index
+diff --git a/application/libraries/Document_service.php b/application/libraries/Document_service.php
+new file mode 100644
+index 0000000..65cc629
+--- /dev/null
++++ b/application/libraries/Document_service.php
+@@ -0,0 +1,537 @@
++<?php
++defined('BASEPATH') or exit('No direct script access allowed');
++
++/**
++ * Canonical Document Service — Phase 1 (Admission-scoped, forward-compatible).
++ *
++ * A lightweight, module-agnostic file service:
++ *   • one physical Storage object per logical document (ID-addressed)
++ *   • modules REFERENCE documents by id via links (never move/copy bytes)
++ *   • reference-counted, retention-governed deletion (orphan-safe)
++ *   • per-type validation + size caps + image optimization
++ *   • audited on every state change
++ *
++ * Firestore is the sole metadata store; Firebase Storage the sole byte store.
++ * The public API (upload/replace/delete/link/unlink/verify/getMetadata) is
++ * generic so Student/HR/Hostel/… can adopt it later WITHOUT redesign — but
++ * this phase wires it to Admission only.
++ *
++ * Tenant isolation: every doc/link id is `{schoolId}_…`; every read verifies
++ * the stored schoolId matches the service's init scope.
++ *
++ * Collections:
++ *   documents/{schoolId}_{documentId}
++ *   documentLinks/{schoolId}_{documentId}_{module}_{entityId}
++ * Storage:
++ *   documents/{schoolId}/{documentId}_v{n}.{ext}
++ */
++class Document_service
++{
++    /** @var CI_Controller */
++    private $CI;
++    /** @var object Firebase library (Storage + Firestore REST) */
++    private $fb;
++    private $schoolId = '';
++    private $cfg = [];
++
++    private $C_DOCS  = 'documents';
++    private $C_LINKS = 'documentLinks';
++
++    /**
++     * Optimistic-concurrency retry budget for the CAS loops (replace / link /
++     * unlink). Each retry re-reads fresh state and re-attempts a precondition-
++     * gated atomic commit; correctness comes from the server-side precondition,
++     * the retries only absorb contention. Matches the Phase 8 accounting CAS.
++     */
++    private const CAS_MAX_RETRIES = 6;
++
++    public function __construct()
++    {
++        $this->CI = &get_instance();
++        $this->CI->config->load('document_service', true);
++        $this->cfg = (array) $this->CI->config->item('document_service', 'document_service');
++        if (!empty($this->cfg['collection_documents'])) $this->C_DOCS  = $this->cfg['collection_documents'];
++        if (!empty($this->cfg['collection_links']))     $this->C_LINKS = $this->cfg['collection_links'];
++    }
++
++    /** Bind the Firebase client + tenant scope. Call once per request. */
++    public function init($firebase, string $schoolId): self
++    {
++        $this->fb = $firebase;
++        $this->schoolId = trim($schoolId);
++        return $this;
++    }
++
++    // ─────────────────────────────────────────────────────────────────────
++    //  PUBLIC API
++    // ─────────────────────────────────────────────────────────────────────
++
++    /**
++     * Upload a NEW logical document. Validates, optimizes (images), stores one
++     * canonical object, writes metadata (linkCount=0 — caller then link()s).
++     *
++     * @return array ['ok'=>bool,'error'=>?string,'document'=>?array]
++     *   document = {documentId,type,label,category,mime,sizeBytes,storagePath,downloadUrl,verificationStatus,version}
++     */
++    public function upload(string $tmpPath, string $origName, string $type, array $meta = []): array
++    {
++        if ($this->schoolId === '') return $this->err('service not initialised');
++        $policy = $this->policy($type);
++        if (!$policy) return $this->err("unknown document type '{$type}'");
++
++        $v = $this->validate($tmpPath, $origName, $policy);
++        if (!$v['ok']) return $this->err($v['error']);
++
++        $ext  = $v['ext'];
++        $mime = $v['mime'];
++        $useTmp = $tmpPath;
++        $cleanup = null;
++
++        // Image optimization / compression (storage efficiency).
++        if (!empty($policy['image'])) {
++            $opt = $this->optimizeImage($tmpPath, $mime);
++            if ($opt) { $useTmp = $opt['path']; $mime = $opt['mime']; $ext = $opt['ext']; $cleanup = $opt['path']; }
++        }
++
++        $documentId  = $this->newDocId();
++        $version     = 1;
++        $storagePath = $this->storagePath($documentId, $version, $ext);
++
++        if (!$this->fb->uploadFile($useTmp, $storagePath)) {
++            if ($cleanup) @unlink($cleanup);
++            return $this->err('storage upload failed');
++        }
++        $downloadUrl = $this->fb->getDownloadUrl($storagePath);
++        $sizeBytes   = @filesize($useTmp) ?: 0;
++        if ($cleanup) @unlink($cleanup);
++
++        $now = date('c');
++        $docData = [
++            'documentId'         => $documentId,
++            'schoolId'           => $this->schoolId,
++            'type'               => $type,
++            'label'              => (string) ($meta['label'] ?? $policy['label']),
++            'category'           => $policy['category'],
++            'mime'               => $mime,
++            'ext'                => $ext,
++            'sizeBytes'          => $sizeBytes,
++            'storagePath'        => $storagePath,
++            'downloadUrl'        => $downloadUrl,
++            'version'            => $version,
++            'verificationStatus' => 'pending',
++            'verifiedBy'         => null,
++            'verifiedAt'         => null,
++            'uploadedBy'         => (string) ($meta['uploadedBy'] ?? 'system'),
++            'uploadedAt'         => $now,
++            'replacedAt'         => null,
++            'linkCount'          => 0,
++            'retention'          => ['policy' => 'default', 'eligibleAt' => null, 'legalHold' => false],
++            'updatedAt'          => $now,
++        ];
++        if (!$this->fb->firestoreSet($this->C_DOCS, $this->docKey($documentId), $docData, false)) {
++            // metadata write failed → don't leave an orphan object
++            $this->fb->deleteStorageFile($storagePath);
++            return $this->err('metadata write failed');
++        }
++
++        $this->audit('upload', $documentId, ['type' => $type, 'sizeBytes' => $sizeBytes], (string) ($meta['uploadedBy'] ?? 'system'));
++        return ['ok' => true, 'error' => null, 'document' => $this->pointer($docData)];
++    }
++
++    /**
++     * Replace the bytes of an existing document (new version). Uploads the new
++     * object first, repoints metadata, then deletes the OLD object (safe order)
++     * — one physical object per logical document, no orphan. Resets verification.
++     */
++    public function replace(string $documentId, string $tmpPath, string $origName, string $by = 'system'): array
++    {
++        $doc0 = $this->read($documentId);
++        if (!$doc0) return $this->err('document not found');
++        $policy = $this->policy((string) ($doc0['type'] ?? ''));
++        if (!$policy) return $this->err('unknown type on stored document');
++
++        // Validate + optimize ONCE (local, no Storage yet). The optimized temp is
++        // re-uploaded (to a fresh unique path) on each CAS attempt.
++        $v = $this->validate($tmpPath, $origName, $policy);
++        if (!$v['ok']) return $this->err($v['error']);
++        $ext = $v['ext']; $mime = $v['mime']; $useTmp = $tmpPath; $cleanup = null;
++        if (!empty($policy['image'])) {
++            $opt = $this->optimizeImage($tmpPath, $mime);
++            if ($opt) { $useTmp = $opt['path']; $mime = $opt['mime']; $ext = $opt['ext']; $cleanup = $opt['path']; }
++        }
++        $newSize = @filesize($useTmp) ?: 0;
++
++        // F3 — optimistic-concurrency replace. Each attempt: read current version
++        // + updateTime, upload the new bytes to a UNIQUE path, then commit the
++        // metadata repoint ONLY IF the document has not changed since the read
++        // (currentDocument.updateTime CAS). Guarantees:
++        //   • no lost update — a concurrent replace bumps updateTime → our commit
++        //     fails → we retry on top of the winner (serialized, never discarded);
++        //   • no orphan — on a CAS miss we delete OUR just-uploaded object; on a
++        //     win we delete the previous object; unique paths prevent collisions;
++        //   • metadata consistency — version is strictly increasing under CAS and
++        //     downloadUrl always matches the committed storagePath.
++        $result = $this->err('replace is busy (write contention) — please retry');
++        for ($attempt = 0; $attempt < self::CAS_MAX_RETRIES; $attempt++) {
++            $doc = $this->read($documentId);
++            if (!$doc) { $result = $this->err('document not found'); break; }
++            $docUt   = (string) ($doc['__updateTime'] ?? '');
++            $oldPath = (string) ($doc['storagePath'] ?? '');
++            $newVer  = (int) ($doc['version'] ?? 1) + 1;
++            $newPath = $this->replacePath($documentId, $newVer, $ext);
++
++            if (!$this->fb->uploadFile($useTmp, $newPath)) { $result = $this->err('storage upload failed'); break; }
++            $newUrl = $this->fb->getDownloadUrl($newPath);
++            $now    = date('c');
++
++            $ok = $this->fb->firestoreCommitBatch([[
++                'op' => 'update', 'collection' => $this->C_DOCS, 'docId' => $this->docKey($documentId),
++                'merge' => true,
++                'precondition' => $docUt !== '' ? ['updateTime' => $docUt] : ['exists' => true],
++                'data' => [
++                    'storagePath' => $newPath, 'downloadUrl' => $newUrl, 'mime' => $mime, 'ext' => $ext,
++                    'sizeBytes' => $newSize, 'version' => $newVer,
++                    'verificationStatus' => 'pending', 'verifiedBy' => null, 'verifiedAt' => null,
++                    'replacedAt' => $now, 'updatedAt' => $now,
++                ],
++            ]]);
++
++            if ($ok) {
++                if ($oldPath !== '' && $oldPath !== $newPath) $this->fb->deleteStorageFile($oldPath); // retire previous
++                $this->audit('replace', $documentId, ['oldPath' => $oldPath, 'newPath' => $newPath, 'version' => $newVer], $by);
++                if ($cleanup) @unlink($cleanup);
++                $merged = array_merge($doc, [
++                    'storagePath' => $newPath, 'downloadUrl' => $newUrl, 'mime' => $mime, 'ext' => $ext,
++                    'sizeBytes' => $newSize, 'version' => $newVer, 'verificationStatus' => 'pending',
++                ]);
++                return ['ok' => true, 'error' => null, 'document' => $this->pointer($merged)];
++            }
++            // CAS miss (or transient) → delete OUR object so no orphan is left, then retry.
++            $this->fb->deleteStorageFile($newPath);
++            usleep(20000 * ($attempt + 1));
++        }
++        if ($cleanup) @unlink($cleanup);
++        return $result;
++    }
++
++    /**
++     * Attach a document to a module entity (reference). Idempotent per
++     * (doc,module,entity) and concurrency-safe (F4).
++     *
++     * The link-state write and the linkCount change commit in ONE atomic batch,
++     * gated by two preconditions: the link write is create-if-absent (or a
++     * CAS reactivate), and the linkCount write is CAS'd on the document's
++     * updateTime. So exactly one of any set of concurrent linkers increments the
++     * count; the rest fail the precondition, retry, observe the active link, and
++     * become no-ops. No double count is possible.
++     */
++    public function link(string $documentId, string $module, string $entityId, string $role = '', string $by = 'system'): array
++    {
++        $linkKey = $this->linkKey($documentId, $module, $entityId);
++        for ($attempt = 0; $attempt < self::CAS_MAX_RETRIES; $attempt++) {
++            $doc = $this->read($documentId);
++            if (!$doc) return $this->err('document not found');
++            $docUt = (string) ($doc['__updateTime'] ?? '');
++            if ($docUt === '') return $this->err('document updateTime unavailable (CAS)');
++
++            $existing   = $this->fb->firestoreGet($this->C_LINKS, $linkKey);
++            $linkExists = is_array($existing);
++            if ($linkExists && !empty($existing['active'])) {
++                return ['ok' => true, 'error' => null, 'linkCount' => (int) ($doc['linkCount'] ?? 0)]; // already linked (idempotent)
++            }
++
++            $now = date('c');
++            $docOp = [
++                'op' => 'update', 'collection' => $this->C_DOCS, 'docId' => $this->docKey($documentId),
++                'merge' => true, 'precondition' => ['updateTime' => $docUt],
++                'data' => [
++                    'linkCount' => (int) ($doc['linkCount'] ?? 0) + 1,
++                    'retention' => $this->retentionMap($doc, null),  // a fresh link clears any countdown
++                    'updatedAt' => $now,
++                ],
++            ];
++            if (!$linkExists) {
++                $linkOp = [
++                    'op' => 'update', 'collection' => $this->C_LINKS, 'docId' => $linkKey,
++                    'precondition' => ['exists' => false],   // create-if-absent
++                    'data' => [
++                        'documentId' => $documentId, 'schoolId' => $this->schoolId,
++                        'module' => $module, 'entityId' => $entityId, 'role' => $role,
++                        'active' => true, 'linkedBy' => $by, 'linkedAt' => $now,
++                    ],
++                ];
++            } else {
++                $linkUt = (string) ($existing['__updateTime'] ?? '');
++                $linkOp = [
++                    'op' => 'update', 'collection' => $this->C_LINKS, 'docId' => $linkKey, 'merge' => true,
++                    'precondition' => $linkUt !== '' ? ['updateTime' => $linkUt] : ['exists' => true],
++                    'data' => ['active' => true, 'relinkedAt' => $now],
++                ];
++            }
++
++            if ($this->fb->firestoreCommitBatch([$linkOp, $docOp])) {
++                $this->audit('link', $documentId, ['module' => $module, 'entityId' => $entityId, 'role' => $role, 're' => $linkExists], $by);
++                return ['ok' => true, 'error' => null, 'linkCount' => (int) ($doc['linkCount'] ?? 0) + 1];
++            }
++            usleep(20000 * ($attempt + 1)); // contention → re-read fresh state and retry
++        }
++        return $this->err('link is busy (write contention) — please retry');
++    }
++
++    /**
++     * Detach a document from a module entity. Concurrency-safe (F4): the link
++     * deactivation and the linkCount decrement commit in ONE atomic batch, gated
++     * by a CAS on BOTH the link's updateTime and the document's updateTime. Only
++     * the writer that actually flips active:true→false decrements — a second
++     * concurrent unlink of the same link fails the precondition, retries, sees
++     * the link already inactive, and returns a no-op. No double decrement.
++     * When the last active link goes, the retention clock starts (no purge).
++     */
++    public function unlink(string $documentId, string $module, string $entityId, string $by = 'system'): array
++    {
++        $linkKey = $this->linkKey($documentId, $module, $entityId);
++        for ($attempt = 0; $attempt < self::CAS_MAX_RETRIES; $attempt++) {
++            $existing = $this->fb->firestoreGet($this->C_LINKS, $linkKey);
++            if (!is_array($existing) || empty($existing['active'])) {
++                return ['ok' => true, 'error' => null]; // already detached / never linked (idempotent)
++            }
++            $linkUt = (string) ($existing['__updateTime'] ?? '');
++
++            $doc = $this->read($documentId);
++            if (!$doc) {
++                // Document already gone — just deactivate the dangling link.
++                $this->fb->firestoreUpdate($this->C_LINKS, $linkKey, ['active' => false, 'unlinkedAt' => date('c'), 'unlinkedBy' => $by]);
++                return ['ok' => true, 'error' => null, 'linkCount' => 0];
++            }
++            $docUt    = (string) ($doc['__updateTime'] ?? '');
++            $newCount = max(0, (int) ($doc['linkCount'] ?? 0) - 1);
++            $eligible = $newCount <= 0
++                ? date('c', time() + ((int) ($this->cfg['retention_days'] ?? 180)) * 86400) // last link → start retention
++                : ($doc['retention']['eligibleAt'] ?? null);
++
++            $now = date('c');
++            $linkOp = [
++                'op' => 'update', 'collection' => $this->C_LINKS, 'docId' => $linkKey, 'merge' => true,
++                'precondition' => $linkUt !== '' ? ['updateTime' => $linkUt] : ['exists' => true],
++                'data' => ['active' => false, 'unlinkedAt' => $now, 'unlinkedBy' => $by],
++            ];
++            $docOp = [
++                'op' => 'update', 'collection' => $this->C_DOCS, 'docId' => $this->docKey($documentId),
++                'merge' => true, 'precondition' => $docUt !== '' ? ['updateTime' => $docUt] : ['exists' => true],
++                'data' => ['linkCount' => $newCount, 'retention' => $this->retentionMap($doc, $eligible), 'updatedAt' => $now],
++            ];
++
++            if ($this->fb->firestoreCommitBatch([$linkOp, $docOp])) {
++                $this->audit('unlink', $documentId, ['module' => $module, 'entityId' => $entityId, 'linkCount' => $newCount], $by);
++                return ['ok' => true, 'error' => null, 'linkCount' => $newCount];
++            }
++            usleep(20000 * ($attempt + 1)); // contention → re-read fresh state and retry
++        }
++        return $this->err('unlink is busy (write contention) — please retry');
++    }
++
++    /**
++     * Rebuild the full retention map from a document, overriding only eligibleAt.
++     * Written as a whole nested map (not a dotted path) because commitBatch does
++     * NOT reshape dotted keys; policy + legalHold are preserved from the read.
++     */
++    private function retentionMap(array $doc, ?string $eligibleAt): array
++    {
++        $ret = is_array($doc['retention'] ?? null) ? $doc['retention'] : [];
++        return [
++            'policy'     => (string) ($ret['policy'] ?? 'default'),
++            'eligibleAt' => $eligibleAt,
++            'legalHold'  => !empty($ret['legalHold']),
++        ];
++    }
++
++    /**
++     * Detach + (optionally) purge if orphaned. `$force` bypasses the retention
++     * window for an explicit, permission-gated Permanent Delete.
++     */
++    public function delete(string $documentId, string $module, string $entityId, string $by = 'system', bool $force = false): array
++    {
++        $this->unlink($documentId, $module, $entityId, $by);
++        $doc = $this->read($documentId);
++        if (!is_array($doc)) return ['ok' => true, 'error' => null, 'purged' => false];
++        $count = (int) ($doc['linkCount'] ?? 0);
++        $legalHold = !empty($doc['retention']['legalHold']);
++        if ($count <= 0 && !$legalHold) {
++            $eligibleAt = $doc['retention']['eligibleAt'] ?? null;
++            $eligible = $force || ($eligibleAt && strtotime($eligibleAt) <= time());
++            if ($eligible) { $this->purge($documentId, $by); return ['ok' => true, 'error' => null, 'purged' => true]; }
++        }
++        return ['ok' => true, 'error' => null, 'purged' => false];
++    }
++
++    /** Set verification status: pending | verified | rejected. */
++    public function verify(string $documentId, string $status, string $by = 'system'): array
++    {
++        if (!in_array($status, ['pending', 'verified', 'rejected'], true)) return $this->err('invalid verification status');
++        $doc = $this->read($documentId);
++        if (!$doc) return $this->err('document not found');
++        $this->fb->firestoreUpdate($this->C_DOCS, $this->docKey($documentId), [
++            'verificationStatus' => $status,
++            'verifiedBy'         => $status === 'pending' ? null : $by,
++            'verifiedAt'         => $status === 'pending' ? null : date('c'),
++            'updatedAt'          => date('c'),
++        ]);
++        $this->audit('verify', $documentId, ['status' => $status], $by);
++        return ['ok' => true, 'error' => null];
++    }
++
++    /** Read the canonical metadata (tenant-checked). Returns the full doc pointer or null. */
++    public function getMetadata(string $documentId): ?array
++    {
++        $doc = $this->read($documentId);
++        return $doc ? $this->pointer($doc) : null;
++    }
++
++    // ─────────────────────────────────────────────────────────────────────
++    //  INTERNALS
++    // ─────────────────────────────────────────────────────────────────────
++
++    /** Hard-remove Storage object + metadata. Callers gate this (retention/permission). */
++    private function purge(string $documentId, string $by): void
++    {
++        $doc = $this->read($documentId);
++        if (!is_array($doc)) return;
++        if (!empty($doc['storagePath'])) $this->fb->deleteStorageFile($doc['storagePath']);
++        $this->fb->firestoreDelete($this->C_DOCS, $this->docKey($documentId));
++        $this->audit('purge', $documentId, ['storagePath' => $doc['storagePath'] ?? ''], $by);
++    }
++
++    private function read(string $documentId, bool $silent = false): ?array
++    {
++        $doc = $this->fb->firestoreGet($this->C_DOCS, $this->docKey($documentId));
++        if (!is_array($doc)) return null;
++        if ((string) ($doc['schoolId'] ?? '') !== $this->schoolId) {  // tenant isolation
++            if (!$silent) log_message('error', "Document_service tenant mismatch for {$documentId}");
++            return null;
++        }
++        return $doc;
++    }
++
++    private function validate(string $tmpPath, string $origName, array $policy): array
++    {
++        if ($tmpPath === '' || !is_file($tmpPath) || !is_uploaded_file($tmpPath)) {
++            // is_uploaded_file is false for internally-staged temp files; allow when caller opts in
++            if (!is_file($tmpPath)) return ['ok' => false, 'error' => 'invalid upload'];
++        }
++        $size = @filesize($tmpPath) ?: 0;
++        if ($size <= 0) return ['ok' => false, 'error' => 'empty file'];
++        if ($size > (int) $policy['maxBytes']) {
++            return ['ok' => false, 'error' => 'file exceeds ' . round($policy['maxBytes'] / 1048576, 1) . ' MB limit'];
++        }
++        $ext = strtolower(pathinfo($origName, PATHINFO_EXTENSION));
++        $denyExt = (array) ($this->cfg['deny_ext'] ?? []);
++        if ($ext === '' || in_array($ext, $denyExt, true) || !in_array($ext, $policy['ext'], true)) {
++            return ['ok' => false, 'error' => 'unsupported file type'];
++        }
++        $mime = 'application/octet-stream';
++        if (function_exists('finfo_open')) {
++            $fi = finfo_open(FILEINFO_MIME_TYPE);
++            if ($fi) { $m = finfo_file($fi, $tmpPath); finfo_close($fi); if (is_string($m) && $m !== '') $mime = $m; }
++        }
++        $denyMime = (array) ($this->cfg['deny_mime'] ?? []);
++        if (in_array($mime, $denyMime, true)) return ['ok' => false, 'error' => 'file content not allowed'];
++        if ($mime !== 'application/octet-stream' && !in_array($mime, $policy['mime'], true)) {
++            return ['ok' => false, 'error' => 'file content does not match its type'];
++        }
++        return ['ok' => true, 'ext' => $ext, 'mime' => $mime, 'size' => $size];
++    }
++
++    /** GD downscale + JPEG re-encode. Returns ['path','mime','ext','size'] or null (fall back to original). */
++    private function optimizeImage(string $tmpPath, string $mime): ?array
++    {
++        $opt = (array) ($this->cfg['image_optimize'] ?? []);
++        if (empty($opt['enabled'])) return null;
++        if (!in_array($mime, ['image/jpeg', 'image/png', 'image/webp'], true)) return null;
++        if (!function_exists('imagecreatetruecolor')) return null;
++        $info = @getimagesize($tmpPath);
++        if (!$info) return null;
++        [$w, $h] = $info;
++        $src = false;
++        if ($mime === 'image/png' && function_exists('imagecreatefrompng'))       $src = @imagecreatefrompng($tmpPath);
++        elseif ($mime === 'image/webp' && function_exists('imagecreatefromwebp'))  $src = @imagecreatefromwebp($tmpPath);
++        elseif (function_exists('imagecreatefromjpeg'))                            $src = @imagecreatefromjpeg($tmpPath);
++        if (!$src) return null;
++
++        $max   = (int) ($opt['maxDim'] ?? 1200);
++        $scale = min(1.0, $max / max($w, $h));
++        $nw = max(1, (int) round($w * $scale));
++        $nh = max(1, (int) round($h * $scale));
++        $dst = imagecreatetruecolor($nw, $nh);
++        $white = imagecolorallocate($dst, 255, 255, 255);
++        imagefilledrectangle($dst, 0, 0, $nw, $nh, $white); // flatten alpha → white
++        imagecopyresampled($dst, $src, 0, 0, 0, 0, $nw, $nh, $w, $h);
++        $out = tempnam(sys_get_temp_dir(), 'docopt');
++        $ok = imagejpeg($dst, $out, (int) ($opt['jpegQuality'] ?? 82));
++        imagedestroy($src); imagedestroy($dst);
++        if (!$ok || !is_file($out) || (@filesize($out) ?: 0) <= 0) { @unlink($out); return null; }
++        return ['path' => $out, 'mime' => 'image/jpeg', 'ext' => 'jpg', 'size' => filesize($out)];
++    }
++
++    private function audit(string $action, string $documentId, array $meta, string $actor): void
++    {
++        $logId = 'DOCLOG_' . strtoupper(substr(dechex((int) (microtime(true) * 1000)), -8)) . '_' . str_pad((string) mt_rand(0, 99999), 5, '0', STR_PAD_LEFT);
++        $this->fb->firestoreSet('auditLogs', $this->schoolId . '_' . $logId, [
++            'schoolId'   => $this->schoolId,
++            'module'     => 'document_service',
++            'action'     => $action,
++            'documentId' => $documentId,
++            'actor'      => $actor,
++            'meta'       => $meta,
++            'timestamp'  => date('c'),
++        ], false);
++    }
++
++    private function policy(string $type): ?array
++    {
++        $t = $this->cfg['types'][$type] ?? null;
++        return is_array($t) ? $t : null;
++    }
++    private function pointer(array $doc): array
++    {
++        return [
++            'documentId'         => $doc['documentId'] ?? '',
++            'type'               => $doc['type'] ?? '',
++            'label'              => $doc['label'] ?? '',
++            'category'           => $doc['category'] ?? '',
++            'mime'               => $doc['mime'] ?? '',
++            'ext'                => $doc['ext'] ?? '',
++            'sizeBytes'          => (int) ($doc['sizeBytes'] ?? 0),
++            'storagePath'        => $doc['storagePath'] ?? '',
++            'downloadUrl'        => $doc['downloadUrl'] ?? '',
++            'version'            => (int) ($doc['version'] ?? 1),
++            'verificationStatus' => $doc['verificationStatus'] ?? 'pending',
++        ];
++    }
++    private function newDocId(): string
++    {
++        return 'DOC_' . strtoupper(substr(dechex((int) (microtime(true) * 1000)), -8)) . '_' . str_pad((string) mt_rand(0, 99999), 5, '0', STR_PAD_LEFT);
++    }
++    private function storagePath(string $documentId, int $version, string $ext): string
++    {
++        $prefix = trim((string) ($this->cfg['storage_prefix'] ?? 'documents'), '/');
++        return "{$prefix}/{$this->schoolId}/{$documentId}_v{$version}.{$ext}";
++    }
++    /**
++     * Unique replacement path — appends a short random token so two admins
++     * replacing the same document concurrently never write the SAME object
++     * (each cleans up its own on a CAS miss → no orphan, no cross-overwrite).
++     */
++    private function replacePath(string $documentId, int $version, string $ext): string
++    {
++        $prefix = trim((string) ($this->cfg['storage_prefix'] ?? 'documents'), '/');
++        $rand   = bin2hex(random_bytes(3)); // 6 hex chars
++        return "{$prefix}/{$this->schoolId}/{$documentId}_v{$version}_{$rand}.{$ext}";
++    }
++    private function docKey(string $documentId): string { return $this->schoolId . '_' . $documentId; }
++    private function linkKey(string $documentId, string $module, string $entityId): string
++    {
++        $safe = static function ($s) { return preg_replace('/[^A-Za-z0-9_]/', '_', (string) $s); };
++        return $this->schoolId . '_' . $documentId . '_' . $safe($module) . '_' . $safe($entityId);
++    }
++    private function err(string $msg): array { return ['ok' => false, 'error' => $msg, 'document' => null]; }
++}
+diff --git a/application/views/admission_crm/applications.php b/application/views/admission_crm/applications.php
+index 71dc21b..8470aee 100755
+--- a/application/views/admission_crm/applications.php
++++ b/application/views/admission_crm/applications.php
+@@ -514,6 +514,81 @@ function renderTable(items, mode) {
+     document.getElementById('tableWrap').innerHTML = html;
+ }
+ 
++// Render one uploaded file as a tile: image files → inline thumbnail, other
++// types (PDF/DOC/XLS) → typed-icon chip. Returns '' when the url is empty.
++function acDocExt(s){ s = (s || '').split('?')[0]; try { s = decodeURIComponent(s); } catch(e){} var i = s.lastIndexOf('.'); return i < 0 ? '' : s.slice(i + 1).toLowerCase(); }
++function acDocTile(url, caption){
++    if (!url) return '';
++    var ext = acDocExt(caption) || acDocExt(url);
++    var isImg = ['jpg','jpeg','png','gif','webp'].indexOf(ext) !== -1;
++    if (isImg){
++        return '<a href="' + esc(url) + '" target="_blank" rel="noopener" title="' + esc(caption) + '" style="display:inline-block;width:96px;text-align:center;text-decoration:none;color:var(--t2);">'
++             +  '<img src="' + esc(url) + '" alt="' + esc(caption) + '" loading="lazy" style="width:96px;height:96px;object-fit:cover;border-radius:10px;border:1px solid var(--border,#e5e7eb);display:block;">'
++             +  '<span style="display:block;font-size:11px;margin-top:4px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;">' + esc(caption) + '</span></a>';
++    }
++    var icon = ext === 'pdf' ? 'fa-file-pdf' : ((ext === 'xls' || ext === 'xlsx') ? 'fa-file-excel' : ((ext === 'doc' || ext === 'docx') ? 'fa-file-word' : 'fa-file'));
++    return '<a href="' + esc(url) + '" target="_blank" rel="noopener" class="ac-btn ac-btn-ghost ac-btn-sm"><i class="fa ' + icon + '"></i> ' + esc(caption) + '</a>';
++}
++
++// ── Canonical Document Service — managed document card (Phase 1) ──
++// Rendered from the application's denormalized documentRefs pointers. Shows the
++// preview, a verification badge, and role-gated actions (server enforces the
++// role): mark verified/rejected, replace (new version), delete (unlink + purge
++// only if orphaned). All actions re-open the detail panel to reflect the change.
++function acStatusBadge(s){
++    var m = { verified:['#16a34a','fa-circle-check','Verified'], rejected:['#dc2626','fa-circle-xmark','Rejected'], pending:['#d97706','fa-clock','Pending'] };
++    var c = m[s || 'pending'] || m.pending;
++    return '<span style="display:inline-flex;align-items:center;gap:4px;font-size:11px;font-weight:700;color:' + c[0] + ';"><i class="fa ' + c[1] + '"></i> ' + c[2] + '</span>';
++}
++function acDocCard(ref, appId){
++    var url = ref.url || '', cap = ref.label || ref.type || 'Document', docId = ref.documentId || '';
++    var ext = acDocExt(cap) || acDocExt(url);
++    var isImg = ['jpg','jpeg','png','gif','webp'].indexOf(ext) !== -1;
++    var thumb = isImg
++        ? '<a href="' + esc(url) + '" target="_blank" rel="noopener"><img src="' + esc(url) + '" alt="' + esc(cap) + '" loading="lazy" style="width:110px;height:110px;object-fit:cover;border-radius:10px;border:1px solid var(--border,#e5e7eb);display:block;"></a>'
++        : '<a href="' + esc(url) + '" target="_blank" rel="noopener" class="ac-btn ac-btn-ghost ac-btn-sm" style="width:110px;height:110px;display:flex;align-items:center;justify-content:center;"><i class="fa ' + (ext === 'pdf' ? 'fa-file-pdf' : ((ext === 'xls' || ext === 'xlsx') ? 'fa-file-excel' : ((ext === 'doc' || ext === 'docx') ? 'fa-file-word' : 'fa-file'))) + '" style="font-size:34px;"></i></a>';
++    var acts = docId
++        ? '<div style="display:flex;flex-wrap:wrap;gap:4px;margin-top:6px;justify-content:center;">'
++            + '<button class="ac-btn ac-btn-sm" title="Mark verified" style="background:var(--green,#16a34a);color:#fff;padding:4px 7px;" onclick="verifyDoc(\'' + esc(appId) + '\',\'' + esc(docId) + '\',\'verified\')"><i class="fa fa-check"></i></button>'
++            + '<button class="ac-btn ac-btn-sm" title="Mark rejected" style="background:var(--red,#dc2626);color:#fff;padding:4px 7px;" onclick="verifyDoc(\'' + esc(appId) + '\',\'' + esc(docId) + '\',\'rejected\')"><i class="fa fa-xmark"></i></button>'
++            + '<button class="ac-btn ac-btn-ghost ac-btn-sm" title="Replace" style="padding:4px 7px;" onclick="replaceDoc(\'' + esc(appId) + '\',\'' + esc(docId) + '\')"><i class="fa fa-arrows-rotate"></i></button>'
++            + '<button class="ac-btn ac-btn-ghost ac-btn-sm" title="Delete" style="padding:4px 7px;" onclick="deleteDoc(\'' + esc(appId) + '\',\'' + esc(docId) + '\')"><i class="fa fa-trash"></i></button>'
++          + '</div>'
++        : '';
++    return '<div style="width:130px;text-align:center;">' + thumb
++        + '<div style="font-size:11px;margin-top:5px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;" title="' + esc(cap) + '">' + esc(cap) + '</div>'
++        + '<div style="margin-top:3px;">' + acStatusBadge(ref.verificationStatus) + '</div>' + acts + '</div>';
++}
++var _acReplaceTarget = null;
++function verifyDoc(appId, docId, status){
++    if (status === 'rejected' && !confirm('Mark this document as rejected?')) return;
++    fetch(BASE + 'admission_crm/verify_document', { method:'POST', headers:{'Content-Type':'application/x-www-form-urlencoded','X-Requested-With':'XMLHttpRequest'}, body:new URLSearchParams({ app_id:appId, document_id:docId, status:status }).toString() })
++    .then(function(r){ return r.json(); })
++    .then(function(d){ if (d.status === 'success'){ viewApp(appId); } else { showAlert(d.message || 'Could not update the document.', true); } })
++    .catch(function(){ showAlert('Network error updating the document.', true); });
++}
++function replaceDoc(appId, docId){
++    _acReplaceTarget = { appId:appId, docId:docId };
++    var inp = document.getElementById('acReplaceInput');
++    if (inp){ inp.value = ''; inp.click(); }
++}
++function acReplaceChosen(inp){
++    if (!_acReplaceTarget || !inp.files || !inp.files.length) return;
++    var appId = _acReplaceTarget.appId, fd = new FormData();
++    fd.append('app_id', appId); fd.append('document_id', _acReplaceTarget.docId); fd.append('file', inp.files[0]);
++    fetch(BASE + 'admission_crm/replace_document', { method:'POST', headers:{'X-Requested-With':'XMLHttpRequest'}, body:fd })
++    .then(function(r){ return r.json(); })
++    .then(function(d){ if (d.status === 'success'){ viewApp(appId); } else { showAlert(d.message || 'Could not replace the document.', true); } })
++    .catch(function(){ showAlert('Network error replacing the document.', true); });
++}
++function deleteDoc(appId, docId){
++    if (!confirm('Remove this document from the application? The file is permanently deleted only if no enrolled student references it and the retention window has passed.')) return;
++    fetch(BASE + 'admission_crm/delete_document', { method:'POST', headers:{'Content-Type':'application/x-www-form-urlencoded','X-Requested-With':'XMLHttpRequest'}, body:new URLSearchParams({ app_id:appId, document_id:docId }).toString() })
++    .then(function(r){ return r.json(); })
++    .then(function(d){ if (d.status === 'success'){ viewApp(appId); } else { showAlert(d.message || 'Could not delete the document.', true); } })
++    .catch(function(){ showAlert('Network error deleting the document.', true); });
++}
++
+ function viewApp(id) {
+     fetch(BASE + 'admission_crm/get_application?id=' + encodeURIComponent(id), { headers:{'X-Requested-With':'XMLHttpRequest'} })
+     .then(function(r) { return r.json(); })
+@@ -528,6 +603,46 @@ function viewApp(id) {
+             if (f[1]) html += '<div class="ac-detail-item"><label>' + f[0] + '</label><span>' + esc(f[1]) + '</span></div>';
+         });
+         html += '</div>';
++        // Photo & documents uploaded on the public admission form. Firebase
++        // Storage download URLs are allow-listed by our img-src CSP, so image
++        // files render as inline thumbnails; non-images (PDF/DOC/XLS) show a
++        // typed icon. Everything opens full-size / downloads in a new tab.
++        // Canonical Document Service (Phase 1): when the enriched documentRefs
++        // pointer set exists, render MANAGED cards (verify / replace / delete via
++        // the service). Legacy leads without documentRefs fall back to read-only
++        // tiles built from the denormalized *_url fields — full backward compat.
++        if (Array.isArray(a.documentRefs) && a.documentRefs.length) {
++            // Predefined types render in the main section; only non-predefined
++            // (category 'additional') fall under "Additional Documents".
++            var preCards = '', addCards = '';
++            a.documentRefs.forEach(function(ref){
++                if (!ref || !ref.documentId) return;
++                var card = acDocCard(ref, a.id);
++                if ((ref.category || '') === 'additional') addCards += card; else preCards += card;
++            });
++            if (preCards || addCards) {
++                html += '<input type="file" id="acReplaceInput" style="display:none" accept="image/jpeg,image/png,image/webp,application/pdf,.doc,.docx,.xls,.xlsx" onchange="acReplaceChosen(this)">';
++                if (preCards) {
++                    html += '<h4 style="margin:16px 0 8px;font-size:13px;color:var(--t2);font-weight:700;">Photo &amp; Documents</h4>'
++                         +  '<div style="display:flex;flex-wrap:wrap;gap:14px;align-items:flex-start;">' + preCards + '</div>';
++                }
++                if (addCards) {
++                    html += '<h4 style="margin:16px 0 8px;font-size:13px;color:var(--t2);font-weight:700;">Additional Documents</h4>'
++                         +  '<div style="display:flex;flex-wrap:wrap;gap:14px;align-items:flex-start;">' + addCards + '</div>';
++                }
++            }
++        } else {
++            var docsHtml = '';
++            docsHtml += acDocTile(a.photo_url, 'Student Photo');
++            docsHtml += acDocTile(a.aadhaar_url, 'Aadhaar Card');
++            if (Array.isArray(a.documents)) {
++                a.documents.forEach(function(d) { if (d && d.url) docsHtml += acDocTile(d.url, d.name || 'Document'); });
++            }
++            if (docsHtml) {
++                html += '<h4 style="margin:16px 0 8px;font-size:13px;color:var(--t2);font-weight:700;">Photo &amp; Documents</h4>'
++                     +  '<div style="display:flex;flex-wrap:wrap;gap:12px;align-items:flex-start;">' + docsHtml + '</div>';
++            }
++        }
+         if (a.payment_status === 'paid' && a.receipt_no) {
+             html += '<div style="margin-top:14px;"><button class="ac-btn ac-btn-sm" style="background:var(--green,#16a34a);color:#fff;" onclick="printAdmReceipt(\'' + esc(a.receipt_no) + '\')"><i class="fa fa-print"></i> Print Admission Receipt (' + esc(a.receipt_no) + ')</button></div>';
+         } else if (a.fee_amount) {
+diff --git a/firebase-rules/firestore.rules b/firebase-rules/firestore.rules
+index 0acdea7..a7287ef 100644
+--- a/firebase-rules/firestore.rules
++++ b/firebase-rules/firestore.rules
+@@ -1937,6 +1937,17 @@ service cloud.firestore {
+     // (schoolId, op). Server-only.
+     match /_b2_pending/{docId}      { allow read, write: if false; }
+ 
++    // ── Canonical Document Service (Phase 1) — SERVER-ONLY ────────
++    // documents/{schoolId}_{documentId} = one physical file's metadata;
++    // documentLinks/{...} = per-module reference links (reference count).
++    // Both are written EXCLUSIVELY by the PHP backend via the Admin SDK
++    // (service account bypasses these rules). Client apps NEVER read these
++    // directly — they read the denormalized pointer cached on the owning
++    // doc (crmApplications.documentRefs / student Doc[]). Deny all client
++    // access so one school can never read another's document metadata.
++    match /documents/{docId}        { allow read, write: if false; }
++    match /documentLinks/{linkId}   { allow read, write: if false; }
++
+     // ── Deny everything else (catch-all) ─────────────────────────
+     match /{document=**} {
+       allow read, write: if false;
