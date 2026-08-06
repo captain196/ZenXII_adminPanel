@@ -149,7 +149,9 @@ class Transport_ops extends MY_Controller
     {
         $this->_require_role(self::VIEW_ROLES, 'transport_view');
         $this->_require_view();
-        $cacheDocId = $this->school_name . '_VEXPCACHE';
+        // RC-3: bare entity id (getEntity adds the single {schoolId} prefix) so
+        // this reads the same canonical {schoolId}_VEXPCACHE the writer now emits.
+        $cacheDocId = 'VEXPCACHE';
         $doc = $this->fs->getEntity('vehicleExpiryDashboardCache', $cacheDocId);
         if (!is_array($doc)) {
             $doc = [
@@ -389,7 +391,9 @@ class Transport_ops extends MY_Controller
         $this->_require_role(self::VIEW_ROLES, 'transport_view');
         $this->_require_view();
         $ym = trim($this->input->get('year_month') ?? date('Y-m'));
-        $docId = $this->school_name . '_FMES__' . $ym;
+        // RC-3: bare entity id (getEntity adds the single {schoolId} prefix) so
+        // this reads the same canonical {schoolId}_FMES__{ym} the writer now emits.
+        $docId = 'FMES__' . $ym;
         $doc = $this->fs->getEntity('fleetMonthlyExpenseSummary', $docId);
         if (!is_array($doc)) {
             $doc = ['summaryId' => $docId, 'period_year_month' => $ym, 'total_amount' => 0, 'expenses_count' => 0];

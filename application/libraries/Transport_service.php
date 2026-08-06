@@ -140,6 +140,10 @@ class Transport_service
     public const COL_STUDENT_ROUTES_LEGACY          = 'studentRoutes';   // pre-v2 assignment (kept during rollover)
     public const COL_ROUTE_ASSIGNMENTS              = 'routeAssignments';
     public const COL_ROUTE_ASSIGNMENT_HISTORY       = 'routeAssignmentHistory';
+    // PERF-7/PERF-8: upper bound for admin list scans (was unbounded). A single
+    // tenant's expenses / active assignments sit well under this; the cap only
+    // guards against a pathological unbounded full-collection read.
+    public const LIST_SCAN_LIMIT                    = 2000;
     public const COL_TRIP_LOGS                      = 'tripLogs';
     public const COL_MAINTENANCE_LOGS               = 'maintenanceLogs';
     public const COL_FUEL_LOGS                      = 'fuelLogs';
@@ -1610,6 +1614,7 @@ class Transport_service
         $items    = [];  // flat list of {vehicleId, kind, label, expiry_date, days_left, window}
         foreach ($vehicles as $v) {
             if (!is_array($v)) { continue; }
+            $v = $this->_unwrapNestedRow($v, 'schoolId');   // schoolWhere returns {id,data}
             $vid    = (string) ($v['vehicleId'] ?? $v['id'] ?? '');
             $number = (string) ($v['number']    ?? '');
             if ($vid === '') { continue; }
@@ -1670,7 +1675,10 @@ class Transport_service
             'items'             => array_slice($items, 0, 100), // safety cap
             'items_truncated'   => count($items) > 100,
         ];
-        $cacheDocId = $this->schoolId . '_VEXPCACHE';
+        // RC-3: bare entity id — setEntity() adds the single {schoolId} prefix,
+        // giving canonical {schoolId}_VEXPCACHE (was double-prefixed, which the
+        // bare-id analytics readers missed — PERF-5).
+        $cacheDocId = 'VEXPCACHE';
         $this->fs->setEntity(self::COL_VEHICLE_EXPIRY_DASHBOARD_CACHE, $cacheDocId, $cache, /* merge */ false);
 
         // Notify Admin + Transport Manager on 7-day expiries. Post-F6 this
@@ -2499,8 +2507,10 @@ class Transport_service
         }
         $monthlyFee = $this->_computeAssignmentFee($route, $subscription, $direction, $feeCategory, $input);
 
-        // Capacity check (single-student assign uses just-in-time cache read)
-        $capacityCheck = $this->_checkCapacityAvailable($routeId, /* isEdit */ $isUpdate, /* prevRouteId */ (string) ($existing['route_id'] ?? ''));
+        // CON-3: atomic capacity reserve (check + increment in one CAS step) —
+        // replaces the old check-then-bump TOCTOU. On success the seat is
+        // already consumed, so no separate +1 bump follows below.
+        $capacityCheck = $this->_reserveCapacitySeat($routeId, /* isEdit */ $isUpdate, /* prevRouteId */ (string) ($existing['route_id'] ?? ''));
         if (!$capacityCheck['ok']) {
             throw new \RuntimeException('Cannot assign: ' . $capacityCheck['reason']);
         }
@@ -2567,7 +2577,8 @@ class Transport_service
             $source, $batchId,
             $isUpdate ? 'assignment updated' : 'assignment created'
         );
-        $this->_bumpCapacityCache($routeId, /* delta */ $isUpdate && ($existing['route_id'] ?? '') === $routeId ? 0 : +1);
+        // CON-3: the new-route +1 was already consumed atomically by
+        // _reserveCapacitySeat above; only release the OLD route on a move.
         if ($isUpdate && (string) ($existing['route_id'] ?? '') !== '' && (string) ($existing['route_id'] ?? '') !== $routeId) {
             $this->_bumpCapacityCache((string) $existing['route_id'], -1);
         }
@@ -2796,8 +2807,9 @@ class Transport_service
             }
         }
 
-        // Capacity check on new route
-        $capacityCheck = $this->_checkCapacityAvailable($newRouteId, /* isEdit */ true, $prevRouteId);
+        // CON-3: atomic capacity reserve on the new route (check + increment in
+        // one CAS step); the +1 bump below is dropped since the seat is consumed here.
+        $capacityCheck = $this->_reserveCapacitySeat($newRouteId, /* isEdit */ true, $prevRouteId);
         if (!$capacityCheck['ok']) {
             throw new \RuntimeException('Cannot change route: ' . $capacityCheck['reason']);
         }
@@ -2834,8 +2846,8 @@ class Transport_service
             ['route_id' => $prevRouteId, 'route_name' => (string) ($existing['route_name'] ?? ''), 'stop_id' => (string) ($existing['stop_id'] ?? '')],
             $update, 'manual', '', $reason
         );
+        // CON-3: new-route +1 already reserved atomically above; release the old route only.
         $this->_bumpCapacityCache($prevRouteId, -1);
-        $this->_bumpCapacityCache($newRouteId, +1);
 
         $this->emitAudit(
             'studentRouteAssignment', $studentId, 'route_changed',
@@ -3046,9 +3058,16 @@ class Transport_service
             );
             $todo = [];
             foreach ($chunk as $row) {
-                $sid = (string) ($row['studentId'] ?? '');
+                if (!is_array($row)) { continue; }
+                // CON-4: schoolWhere returns nested {id, data:{…}} rows. Unwrap to
+                // the data level ONCE here and carry the unwrapped row forward, so
+                // the studentId read (this skip), the archive, and the fee-field
+                // reads below all see real data. Reading studentId at the envelope
+                // level yields '' for every row → the chunk would process NOBODY.
+                $d = (isset($row['data']) && is_array($row['data'])) ? $row['data'] : $row;
+                $sid = (string) ($d['studentId'] ?? '');
                 if ($sid === '' || isset($processedSet[$sid])) { continue; }
-                $todo[] = ['sid' => $sid, 'row' => $row];
+                $todo[] = ['sid' => $sid, 'row' => $d];
             }
             if ($todo === []) {
                 $checkpoint['status'] = 'complete';
@@ -3084,11 +3103,20 @@ class Transport_service
                     ]);
                     $this->fs->setEntity(self::COL_ROUTE_ASSIGNMENTS, $archiveId, $archiveDoc, /* merge */ false);
 
-                    // Update studentRoutes to new session
+                    // Update studentRoutes to new session.
+                    // CON-4: stamp fee_demand_ref='pending' UP FRONT. The session
+                    // flip drains this student from the fromSession re-pump query,
+                    // so if the fee step below throws OR the process dies before
+                    // it runs, the student would otherwise be left in the new
+                    // session with NO new-session demand and no way to recover
+                    // (reconcilePendingFees only rescans fee_demand_ref=='pending').
+                    // Setting 'pending' here guarantees the reconciler picks it up;
+                    // a successful fee create overwrites it with the real ref below.
                     $this->fs->setEntity(self::COL_STUDENT_ROUTES_LEGACY, $sid, [
-                        'session'       => $toSession,
-                        'assigned_date' => date('Y-m-d'),
-                        'updated_at'    => date('c'),
+                        'session'        => $toSession,
+                        'assigned_date'  => date('Y-m-d'),
+                        'fee_demand_ref' => 'pending',
+                        'updated_at'     => date('c'),
                     ], /* merge */ true);
 
                     // History event
@@ -3105,13 +3133,28 @@ class Transport_service
                         if (method_exists($this->ci->feeLifecycle, 'cancelSessionDemands')) {
                             $this->ci->feeLifecycle->cancelSessionDemands($sid, $fromSession, 'Transport');
                         }
-                        $this->ci->feeLifecycle->createModuleFee($sid, 'Transport', [
+                        $rolloverRef = $this->ci->feeLifecycle->createModuleFee($sid, 'Transport', [
                             'route_id'   => (string) ($row['route_id'] ?? ''),
                             'route_name' => (string) ($row['route_name'] ?? ''),
                             'amount'     => (float) ($row['monthly_fee'] ?? 0),
                             'period'     => 'Monthly',
                             'start_date' => date('Y-m-d'),
                         ]);
+                        // CON-4: only on a confirmed create do we point
+                        // fee_demand_ref at the real demand (so the reconciler
+                        // skips it). Any failure — throw here, or createModuleFee
+                        // returning null — leaves the 'pending' marker set above
+                        // for reconcilePendingFees to retry.
+                        if (is_string($rolloverRef) && $rolloverRef !== '') {
+                            // Include session => $toSession explicitly: setEntity
+                            // auto-injects the SERVICE session when 'session' is
+                            // absent, which would silently undo the flip to
+                            // $toSession we just wrote above.
+                            $this->fs->setEntity(self::COL_STUDENT_ROUTES_LEGACY, $sid, [
+                                'fee_demand_ref' => $rolloverRef,
+                                'session'        => $toSession,
+                            ], /* merge */ true);
+                        }
                     } catch (\Throwable $e) {
                         log_message('warning', 'F3 rollover fee ops failed for ' . $sid . ': ' . $e->getMessage());
                     }
@@ -3146,6 +3189,7 @@ class Transport_service
         $rebuilt = 0;
         foreach ($routes as $r) {
             if (!is_array($r)) { continue; }
+            $r = $this->_unwrapNestedRow($r, 'schoolId');   // bulk path is schoolWhere {id,data}; single-route getEntity is already flat
             $rid = (string) ($r['routeId'] ?? $r['id'] ?? '');
             if ($rid === '') { continue; }
             $vehicleId = (string) ($r['vehicle_id'] ?? '');
@@ -3158,7 +3202,7 @@ class Transport_service
                 self::COL_STUDENT_ROUTES_LEGACY,
                 [['route_id', '==', $rid], ['session', '==', $this->sessionYear]]
             ));
-            $cacheId = "{$this->schoolId}_CAPCACHE_{$rid}";
+            $cacheId = $this->_capacityCacheId($rid);
             $this->fs->setEntity(self::COL_BUS_CAPACITY_CACHE, $cacheId, [
                 'route_id'        => $rid,
                 'session'         => $this->sessionYear,
@@ -3169,6 +3213,15 @@ class Transport_service
                 'rebuilt_at'      => date('c'),
                 'rebuilt_by'      => $this->adminId,
             ], /* merge */ false);
+            // RC-3 self-healing migration: purge the pre-normalization
+            // double-prefixed doc so no stale orphan lingers (which CH-TRN-F3-5
+            // would otherwise flag as drift). Best-effort; the canonical doc
+            // above is authoritative. removeEntity adds the outer {schoolId}
+            // prefix, so the legacy inner id "{schoolId}_CAPCACHE_{rid}" targets
+            // the old {schoolId}_{schoolId}_CAPCACHE_{rid} document.
+            try {
+                $this->fs->removeEntity(self::COL_BUS_CAPACITY_CACHE, "{$this->schoolId}_CAPCACHE_{$rid}");
+            } catch (\Throwable $_) {}
             $rebuilt++;
         }
         $this->emitAudit(
@@ -3191,14 +3244,21 @@ class Transport_service
         $stillPending = 0;
         foreach ($rows as $r) {
             if (!is_array($r)) { continue; }
-            $sid = (string) ($r['studentId'] ?? '');
+            // CON-4: schoolWhere returns nested {id, data:{…}} rows — read the
+            // studentRoutes fields from the data level. Reading studentId at the
+            // envelope level is always empty for a nested row, so every pending
+            // student would be skipped and the reconciler would retry NOTHING —
+            // defeating both the rollover recovery path and the assignStudent
+            // pending-fee recovery.
+            $d   = (isset($r['data']) && is_array($r['data'])) ? $r['data'] : $r;
+            $sid = (string) ($d['studentId'] ?? '');
             if ($sid === '') { continue; }
             try {
                 $this->ci->load->library('Fee_lifecycle', null, 'feeLifecycle');
                 $demandRef = $this->ci->feeLifecycle->createModuleFee($sid, 'Transport', [
-                    'route_id'   => (string) ($r['route_id'] ?? ''),
-                    'route_name' => (string) ($r['route_name'] ?? ''),
-                    'amount'     => (float) ($r['monthly_fee'] ?? 0),
+                    'route_id'   => (string) ($d['route_id'] ?? ''),
+                    'route_name' => (string) ($d['route_name'] ?? ''),
+                    'amount'     => (float) ($d['monthly_fee'] ?? 0),
                     'period'     => 'Monthly',
                     'start_date' => date('Y-m-d'),
                 ]);
@@ -3214,6 +3274,64 @@ class Transport_service
         return ['retried' => $retried, 'still_pending' => $stillPending];
     }
 
+    /**
+     * NF-1 (Option B, 2026-08-04) — Firestore-native student typeahead search
+     * for the assignment UI, routed through the Transport service layer instead
+     * of the Operations_accounting dependency that F3 removed from the Transport
+     * controller (the orphaned `$this->operations_accounting->search_students()`
+     * call fatally 500'd). Reads the school's students once (school-scoped → no
+     * cross-tenant leakage), caches the lightweight index for 5 minutes (file
+     * cache; per-school key), and filters name/id substring in PHP. Result shape
+     * matches the prior contract (id, name, class, section, user_id) so the
+     * controller's post-processing is unchanged.
+     *
+     * @return array<int, array{id:string,name:string,class:string,section:string,user_id:string}>
+     */
+    public function searchStudents(string $query, int $limit = 20): array
+    {
+        $this->_assertReady();
+        $q = strtolower(trim($query));
+        if (strlen($q) < 2) { return []; }
+
+        $cacheKey = 'trn_students_' . md5($this->schoolId);
+        $index = false;
+        try {
+            $this->ci->load->driver('cache', ['adapter' => 'file']);
+            $index = $this->ci->cache->get($cacheKey);
+        } catch (\Throwable $_) { $index = false; }
+
+        if (!is_array($index)) {
+            $index = [];
+            try {
+                $rows = (array) $this->fs->schoolWhere('students', []);   // school-scoped
+            } catch (\Throwable $_) { $rows = []; }
+            foreach ($rows as $r) {
+                $s = (isset($r['data']) && is_array($r['data'])) ? $r['data'] : $r;
+                if (!is_array($s)) { continue; }
+                $id = (string) ($s['studentId'] ?? $s['userId'] ?? '');
+                if ($id === '') { continue; }
+                $index[] = [
+                    'id'      => $id,
+                    'name'    => (string) ($s['name'] ?? $s['Name'] ?? ''),
+                    'class'   => (string) ($s['className'] ?? ''),
+                    'section' => (string) ($s['section'] ?? ''),
+                    'user_id' => $id,
+                ];
+            }
+            try { $this->ci->cache->save($cacheKey, $index, 300); } catch (\Throwable $_) {}
+        }
+
+        $results = [];
+        foreach ($index as $s) {
+            if (strpos(strtolower((string) $s['name']), $q) !== false
+                || strpos(strtolower((string) $s['id']), $q) !== false) {
+                $results[] = $s;
+                if (count($results) >= $limit) { break; }
+            }
+        }
+        return $results;
+    }
+
     public function listAssignments(string $session = '', array $filters = []): array
     {
         $this->_assertReady();
@@ -3227,7 +3345,11 @@ class Transport_service
                 $where[] = [$k, '==', $v];
             }
         }
-        $rows = (array) $this->fs->schoolWhere(self::COL_STUDENT_ROUTES_LEGACY, $where, 'student_name', 'ASC');
+        // PERF-8: bound the scan (was unbounded). A tenant's active assignment
+        // set is well under this cap; the fuller fix (cursor pagination +
+        // [schoolId,session,route_id,student_name] composites) is deferred to an
+        // index deployment.
+        $rows = (array) $this->fs->schoolWhere(self::COL_STUDENT_ROUTES_LEGACY, $where, 'student_name', 'ASC', self::LIST_SCAN_LIMIT);
         $out = [];
         foreach ($rows as $doc) {
             $doc = $this->_unwrapNestedRow($doc, 'schoolId');
@@ -3266,6 +3388,42 @@ class Transport_service
             $out[] = $r;
         }
         return $out;
+    }
+
+    /**
+     * Student 360 (2026-08) — thin single-student CURRENT-assignment read.
+     *
+     * Returns the student's active transport assignment (the `studentRoutes`
+     * doc, whose docId == studentId) or null when the student is unassigned.
+     * READ-ONLY: performs no mutation and no history/audit write.
+     *
+     * The studentRoutes doc is denormalised at assignStudent() time
+     * (route_name / stop_name / subscription_type / student_class / status are
+     * all stored inline), so this needs exactly ONE point read — no route,
+     * stop, or vehicle enrichment queries. Tenant isolation is enforced both
+     * by getEntity()'s schoolId-prefixed docId AND a defensive schoolId check.
+     */
+    public function getStudentAssignment(string $studentId): ?array
+    {
+        $this->_assertReady();
+        $studentId = trim($studentId);
+        if ($studentId === '') { return null; }
+
+        $doc = $this->fs->getEntity(self::COL_STUDENT_ROUTES_LEGACY, $studentId);
+        if (!is_array($doc) || empty($doc)) { return null; }
+
+        // Guard against {id, data} nested response variance (parity with
+        // getAssignmentHistory()).
+        if (isset($doc['data']) && is_array($doc['data']) && !isset($doc['studentId'])) {
+            $doc = $doc['data'];
+        }
+
+        // Defensive tenant-isolation guard: never surface another school's row.
+        $docSchool = (string) ($doc['schoolId'] ?? '');
+        if ($docSchool !== '' && $docSchool !== $this->schoolId) { return null; }
+
+        $doc['student_id'] = (string) ($doc['studentId'] ?? $studentId);
+        return $doc;
     }
 
     // ═════════════════════════════════════════════════════════════════════
@@ -3363,7 +3521,8 @@ class Transport_service
         } catch (\Throwable $e) {
             // Fall back to full staff scan + in-memory filter when index missing
             $all  = (array) $this->fs->schoolWhere('staff', []);
-            $rows = array_filter($all, static function ($s) {
+            $rows = array_filter($all, function ($s) {
+                $s = $this->_unwrapNestedRow($s, 'schoolId');   // schoolWhere returns {id,data}
                 return is_array($s) && !empty($s['flags']['can_drive_transport']);
             });
         }
@@ -4060,6 +4219,7 @@ class Transport_service
             );
             foreach ($temps as $t) {
                 if (!is_array($t)) { continue; }
+                $t = $this->_unwrapNestedRow($t, 'schoolId');   // schoolWhere returns {id,data}
                 $from = (string) ($t['effective_from'] ?? '');
                 $to   = (string) ($t['effective_to']   ?? '');
                 if ($from === '' || $to === '') { continue; }
@@ -4268,6 +4428,34 @@ class Transport_service
         $now = date('c');
         $amount = round((float) ($input['amount'] ?? 0), 2);
         $taxAmount = round((float) ($input['tax_amount'] ?? 0), 2);
+
+        // FIN-3: a POSTED expense's financial fields are immutable. Editing the
+        // amount/tax/payment-method/type/DATE would diverge the record from the
+        // ledger — the deterministic sourceRef (TRN_EXPENSE_{id}) makes the
+        // re-post a dedup no-op, so the change never reaches Accounting while
+        // the record shows the new figures. expense_date is included because it
+        // is the journal date fed to postExpense AND the FMES monthly-summary
+        // bucket key — editing it on a posted expense would move the record to a
+        // different day/accounting-period/month than its (unchanged) GL journal.
+        // To correct a posted expense, void it (which reverses the journal —
+        // FIN-4) and create a new one.
+        $existingRef = $isNew ? '' : (string) ($existing['accounting_journal_ref'] ?? '');
+        $isPosted    = ($existingRef !== '' && $existingRef !== 'pending' && $existingRef !== 'failed');
+        if (!$isNew && $isPosted) {
+            $newDate = trim((string) ($input['expense_date'] ?? date('Y-m-d')));
+            $financialChanged =
+                   $amount    !== round((float) ($existing['amount']     ?? 0), 2)
+                || $taxAmount !== round((float) ($existing['tax_amount'] ?? 0), 2)
+                || (string) ($input['payment_method'] ?? 'Cash') !== (string) ($existing['payment_method'] ?? 'Cash')
+                || (string) $input['expense_type'] !== (string) ($existing['expense_type'] ?? '')
+                || $newDate !== (string) ($existing['expense_date'] ?? '');
+            if ($financialChanged) {
+                throw new \RuntimeException(
+                    "Cannot change the amount, tax, payment method, type, or date of a posted expense "
+                    . "(journal {$existingRef}). Void this expense and create a new one instead."
+                );
+            }
+        }
         $data = [
             'expenseId'               => $id,
             'schoolId'                => $this->schoolId,
@@ -4291,8 +4479,12 @@ class Transport_service
             'payment_reference'       => trim((string) ($input['payment_reference'] ?? '')),
             'paid_by_staff_id'        => trim((string) ($input['paid_by_staff_id'] ?? $this->adminId)),
             'attachments'             => $attachments,
-            'accounting_journal_ref'  => $postingMode === 'auto' ? 'pending' : '',
-            'accounting_attempts'     => 0,
+            // FIN-3: preserve the posted journal ref on a non-financial edit so
+            // a benign save (notes/attachments/payee-name) does not reset the
+            // link and re-trigger a dedup no-op post. Only new/pending/failed
+            // records get the pending marker + attempt reset.
+            'accounting_journal_ref'  => $isPosted ? $existingRef : ($postingMode === 'auto' ? 'pending' : ''),
+            'accounting_attempts'     => $isPosted ? (int) ($existing['accounting_attempts'] ?? 0) : 0,
             'accounting_last_error'   => '',
             'notes'                   => trim((string) ($input['notes'] ?? '')),
             'status'                  => 'Active',
@@ -4312,9 +4504,11 @@ class Transport_service
             ['domain' => self::DOMAIN_EXPENSE, 'posting_mode' => $postingMode]
         );
 
-        // Auto-post to Accounting (fire-and-await; failure leaves 'pending')
-        $postResult = ['status' => $postingMode === 'auto' ? 'pending' : 'manual', 'journal_ref' => ''];
-        if ($postingMode === 'auto') {
+        // Auto-post to Accounting (fire-and-await; failure leaves 'pending').
+        // FIN-3: an already-posted expense is never re-posted (the sourceRef
+        // would dedup) — its ref is preserved above and reported as-is.
+        $postResult = ['status' => $isPosted ? 'posted' : ($postingMode === 'auto' ? 'pending' : 'manual'), 'journal_ref' => $existingRef];
+        if ($postingMode === 'auto' && !$isPosted) {
             $postResult = $this->_postToAccounting($id, $data);
         }
         return ['id' => $id, 'isNew' => $isNew, 'data' => $data, 'posting' => $postResult];
@@ -4343,6 +4537,8 @@ class Transport_service
             throw new \InvalidArgumentException('Expense is not Active.');
         }
         $now = date('c');
+        $ref = (string) ($existing['accounting_journal_ref'] ?? '');
+        $isPosted = ($ref !== '' && $ref !== 'pending' && $ref !== 'failed');
         $update = [
             'status'      => 'Voided',
             'voided_at'   => $now,
@@ -4350,6 +4546,24 @@ class Transport_service
             'void_reason' => trim($reason),
             'updated_at'  => $now,
         ];
+        // FIN-4: a void of a POSTED expense must reverse its journal so the GL
+        // nets to zero — a status-only void left Accounting overstating
+        // transport expense with no offsetting entry. Reverse FIRST, then flip
+        // the record: postReversal is idempotent (deterministic reversal
+        // sourceRef), so a retry after a rare write failure will not
+        // double-reverse. If the reversal cannot be posted we abort the void
+        // rather than leave a voided-but-unreversed (divergent) record.
+        if ($isPosted) {
+            $reversalRef = $this->_reverseExpensePost($expenseId, $ref, trim($reason));
+            if ($reversalRef === null) {
+                throw new \RuntimeException(
+                    "Could not reverse the accounting journal ({$ref}) for this expense; "
+                    . "the void was NOT applied. Retry when Accounting is available."
+                );
+            }
+            $update['accounting_reversal_ref'] = $reversalRef;
+            $update['accounting_reversed_at']  = $now;
+        }
         $this->fs->setEntity(self::COL_TRANSPORT_EXPENSES, $expenseId, $update, /* merge */ true);
         $this->emitAudit(
             'transportExpense', $expenseId, 'voided',
@@ -4367,9 +4581,14 @@ class Transport_service
         if (!empty($filters['vehicle_id']))   { $where[] = ['vehicle_id',   '==', $filters['vehicle_id']]; }
         if (!empty($filters['status']))       { $where[] = ['status',       '==', $filters['status']]; }
         try {
+            // PERF-7: bound the scan. Ordered by expense_date DESC so a bounded
+            // page is the most-recent expenses; prevents an unbounded
+            // full-collection read every call. (A pushed-down expense_date range
+            // query would be exact but needs a [schoolId,…,expense_date]
+            // composite index — deferred to an index deployment.)
             $rows = (array) $this->fs->schoolWhere(
                 self::COL_TRANSPORT_EXPENSES, $where,
-                'expense_date', 'DESC'
+                'expense_date', 'DESC', self::LIST_SCAN_LIMIT
             );
         } catch (\Throwable $_) { return []; }
         $out = [];
@@ -4542,7 +4761,11 @@ class Transport_service
         ]);
 
         $summary = [
-            'summaryId'              => "{$this->schoolId}_FMES__{$yearMonth}",
+            // RC-3: bare entity id — setEntity() adds the single {schoolId}
+            // prefix, giving canonical {schoolId}_FMES__{ym}. Was double-prefixed
+            // ("{schoolId}_FMES__" + setEntity's prefix), which the bare-id
+            // analytics readers missed (PERF-5). Matches the RFS_ convention.
+            'summaryId'              => "FMES__{$yearMonth}",
             'schoolId'               => $this->schoolId,
             'period_year_month'      => $yearMonth,
             'period_start'           => $monthStart,
@@ -4966,6 +5189,7 @@ class Transport_service
         $usable = [];
         foreach ($rows as $r) {
             if (!is_array($r)) { continue; }
+            $r = $this->_unwrapNestedRow($r, 'schoolId');   // schoolWhere returns {id,data}
             $odo = (int) ($r['odometer_km'] ?? 0);
             $lit = (float) ($r['litres']   ?? 0);
             if ($odo > 0 && $lit > 0) {
@@ -5166,7 +5390,7 @@ class Transport_service
         if ($isEdit && $prevRouteId === $routeId) {
             return ['ok' => true, 'reason' => '', 'remaining' => -1];
         }
-        $cacheId = "{$this->schoolId}_CAPCACHE_{$routeId}";
+        $cacheId = $this->_capacityCacheId($routeId);
         $cache   = $this->fs->getEntity(self::COL_BUS_CAPACITY_CACHE, $cacheId);
         if (!is_array($cache)) {
             // Cache miss — compute from source (also seeds the cache)
@@ -5212,10 +5436,21 @@ class Transport_service
         if (!in_array($source, self::HISTORY_SOURCES, true)) {
             $source = 'manual';
         }
-        $eventId = $this->numbering->next('trn_assignment_history', [
-            'claimedBy'  => $this->adminId,
-            'claimedFor' => 'F3:_appendAssignmentHistoryEvent',
-        ]);
+        // CON-5: in a BATCH/rollover context the same (student, batch, event)
+        // can be re-processed by a concurrent re-pump. A numbering-minted id +
+        // merge:false would then create a DUPLICATE history doc and double-bump
+        // the counter. Use a DETERMINISTIC id per (student, batch, event) so the
+        // re-pump overwrites the same doc idempotently (and consumes no counter).
+        // Manual single-actions keep the sequential numbering id (each is a
+        // distinct, non-replayed user action).
+        if ($batchId !== '') {
+            $eventId = 'HIST_' . preg_replace('/[^A-Za-z0-9_]/', '_', "{$studentId}_{$batchId}_{$eventType}");
+        } else {
+            $eventId = $this->numbering->next('trn_assignment_history', [
+                'claimedBy'  => $this->adminId,
+                'claimedFor' => 'F3:_appendAssignmentHistoryEvent',
+            ]);
+        }
         $now = date('c');
         $row = [
             'eventId'   => $eventId,
@@ -5260,6 +5495,20 @@ class Transport_service
     }
 
     /**
+     * RC-3 — THE canonical busCapacityCache document-id generator. Returns a
+     * BARE entity id ("CAPCACHE_{routeId}") so setEntity/getEntity/casUpdateEntity
+     * add the single {schoolId} prefix, giving canonical {schoolId}_CAPCACHE_{routeId}.
+     * SINGLE SOURCE OF TRUTH: every CAPCACHE reader/writer MUST route its id
+     * through this helper — no module may concatenate the id inline (enforced by
+     * verifier CH-TRN-RC3-2). Prior code manually built "{schoolId}_CAPCACHE_..",
+     * which setEntity then double-prefixed.
+     */
+    private function _capacityCacheId(string $routeId): string
+    {
+        return "CAPCACHE_{$routeId}";
+    }
+
+    /**
      * Bump the busCapacityCache current_count by ±1 (or larger delta for
      * bulk ops). Self-heals when cache doc is missing by triggering a
      * rebuild for the affected route.
@@ -5267,19 +5516,77 @@ class Transport_service
     private function _bumpCapacityCache(string $routeId, int $delta): void
     {
         if ($routeId === '' || $delta === 0) { return; }
-        $cacheId = "{$this->schoolId}_CAPCACHE_{$routeId}";
+        $cacheId = $this->_capacityCacheId($routeId);
         $cache   = $this->fs->getEntity(self::COL_BUS_CAPACITY_CACHE, $cacheId);
         if (!is_array($cache)) {
             // Cache missing — rebuild from source (which sets the correct count)
             try { $this->rebuildCapacityCache($routeId); } catch (\Throwable $_) {}
             return;
         }
-        $current = (int) ($cache['current_count'] ?? 0);
-        $newCount = max(0, $current + $delta);
-        $this->fs->setEntity(self::COL_BUS_CAPACITY_CACHE, $cacheId, [
-            'current_count'   => $newCount,
-            'last_updated_at' => date('c'),
-        ], /* merge */ true);
+        // CON-3: atomic increment via updateTime CAS — concurrent bumps can no
+        // longer lose each other's update (count drift). Mirror the legacy
+        // floor-at-zero. Self-heals when the cache doc is missing (below).
+        $res = $this->fs->casUpdateEntity(self::COL_BUS_CAPACITY_CACHE, $cacheId,
+            function (array $cache) use ($delta) {
+                $current = (int) ($cache['current_count'] ?? 0);
+                return [
+                    'current_count'   => max(0, $current + $delta),
+                    'last_updated_at' => date('c'),
+                ];
+            });
+        if (($res['reason'] ?? '') === 'missing') {
+            try { $this->rebuildCapacityCache($routeId); } catch (\Throwable $_) {}
+        }
+    }
+
+    /**
+     * CON-3 — atomically reserve one seat on $routeId: the capacity CHECK and
+     * the current_count INCREMENT happen as a single updateTime-CAS step, so two
+     * concurrent assigns can never both pass a 49/50 check and overfill to 51.
+     * Returns the same shape as the legacy _checkCapacityAvailable() so call
+     * sites are unchanged; on success it has ALSO consumed the seat (the caller
+     * therefore must NOT issue a separate +1 bump). A rare post-reserve failure
+     * leaves a +1 hint-drift that rebuildCapacityCache reconciles — the cache is
+     * a hint, per the finding's own reconciliation model.
+     *
+     * @return array ['ok'=>bool, 'reason'=>string, 'reserved'=>bool]
+     */
+    private function _reserveCapacitySeat(string $routeId, bool $isEdit, string $prevRouteId): array
+    {
+        // Editing and staying on the same route consumes no new seat.
+        if ($isEdit && $prevRouteId === $routeId) {
+            return ['ok' => true, 'reason' => '', 'reserved' => false];
+        }
+        $cacheId = $this->_capacityCacheId($routeId);
+        if (!is_array($this->fs->getEntity(self::COL_BUS_CAPACITY_CACHE, $cacheId))) {
+            // Cache miss — seed from source so the CAS has a doc to act on.
+            try { $this->rebuildCapacityCache($routeId); } catch (\Throwable $_) {}
+        }
+        $full = ['cur' => 0, 'max' => 0, 'hit' => false];
+        $res = $this->fs->casUpdateEntity(self::COL_BUS_CAPACITY_CACHE, $cacheId,
+            function (array $cache) use (&$full) {
+                $max = (int) ($cache['max_capacity']  ?? 0);
+                $cur = (int) ($cache['current_count'] ?? 0);
+                if ($max > 0 && $cur >= $max) {          // atomic capacity check
+                    $full = ['cur' => $cur, 'max' => $max, 'hit' => true];
+                    return null;                          // abort — no seat free
+                }
+                return [                                  // atomic reservation (+1)
+                    'current_count'   => $cur + 1,
+                    'last_updated_at' => date('c'),
+                ];
+            });
+        if ($full['hit']) {
+            return ['ok' => false, 'reason' => "route capacity {$full['cur']}/{$full['max']} reached", 'reserved' => false];
+        }
+        if (($res['reason'] ?? '') === 'missing') {
+            // No vehicle / cache unavailable → best-effort allow (legacy deferred check).
+            return ['ok' => true, 'reason' => 'cache unavailable — best-effort allow', 'reserved' => false];
+        }
+        if (empty($res['ok'])) {
+            return ['ok' => false, 'reason' => 'capacity reservation failed due to concurrent updates — please retry', 'reserved' => false];
+        }
+        return ['ok' => true, 'reason' => '', 'reserved' => true];
     }
 
     // ─── DOMAIN_EXPENSE (F5) private helpers ─────────────────────────────
@@ -5472,6 +5779,50 @@ class Transport_service
         }
     }
 
+    /**
+     * FIN-4 — reverse a previously-posted expense journal (void path). Reuses
+     * the cached PayrollAccountingService seam and its postReversal(), which
+     * posts a balancing reversing entry for the original journal and is
+     * idempotent on a deterministic reversal sourceRef. Returns the reversal
+     * entry id, or null if the reversal could not be posted (accounting
+     * disabled / original missing / engine error) so the caller can abort the
+     * void rather than leave the record and the ledger divergent.
+     */
+    private function _reverseExpensePost(string $expenseId, string $journalRef, string $reason): ?string
+    {
+        try {
+            if (!isset($this->ci->transportAccountingSvc)) {
+                if (!class_exists('PayrollAccountingService')) {
+                    require_once APPPATH . 'services/PayrollAccountingService.php';
+                }
+                $svc = new \PayrollAccountingService();
+                $firebaseHandle = isset($this->ci->firebase) ? $this->ci->firebase : null;
+                $svc->init($firebaseHandle, $this->schoolId, $this->sessionYear, $this->adminId, $this->ci);
+                $this->ci->transportAccountingSvc = $svc;
+            }
+            $svc = $this->ci->transportAccountingSvc;
+            if (!is_object($svc) || !method_exists($svc, 'postReversal')) {
+                log_message('error', "F5 _reverseExpensePost({$expenseId}): postReversal unavailable");
+                return null;
+            }
+            $rev = $svc->postReversal($journalRef, 'Transport expense void: ' . $reason);
+            if (!is_string($rev) || $rev === '') {
+                log_message('error', "F5 _reverseExpensePost({$expenseId}, {$journalRef}): reversal returned no ref");
+                return null;
+            }
+            $this->emitAudit(
+                'transportExpense', $expenseId, 'reversed_in_accounting',
+                ['accounting_journal_ref' => $journalRef],
+                ['accounting_reversal_ref' => $rev],
+                ['domain' => self::DOMAIN_EXPENSE, 'reason' => $reason]
+            );
+            return $rev;
+        } catch (\Throwable $e) {
+            log_message('error', "F5 _reverseExpensePost({$expenseId}, {$journalRef}) failed: " . $e->getMessage());
+            return null;
+        }
+    }
+
     private function _ledgerCodeFor(string $expenseType): string
     {
         return (string) (self::EXPENSE_TYPE_TO_LEDGER_CODE[$expenseType] ?? self::EXPENSE_TYPE_TO_LEDGER_CODE['Other']);
@@ -5620,6 +5971,14 @@ class Transport_service
             if ((string) ($route['status'] ?? 'Active') !== 'Active') {
                 throw new \InvalidArgumentException("Route is not Active: {$routeId}");
             }
+            // LOG-2: a suspension sets routes.active_suspension_ref but leaves
+            // status='Active' (assignment + route-change paths already gate on
+            // it). Dispatch must honour it too — otherwise a suspended route is
+            // still dispatchable and students get boarded on a route that is
+            // operationally suspended.
+            if ((string) ($route['active_suspension_ref'] ?? '') !== '') {
+                throw new \InvalidArgumentException("Route {$routeId} currently has an active suspension. Resume it before dispatching a trip.");
+            }
         }
 
         // Resolve effective driver — honours F4 temporary assignments
@@ -5627,6 +5986,13 @@ class Transport_service
         if ($driverStaffId === '') {
             throw new \InvalidArgumentException("No effective driver for vehicle {$vehicleId} on {$tripDate}.");
         }
+        // LOG-1: driver readiness was validated at ASSIGNMENT time, but it is
+        // daily-mutable (licence/medical/badge expiry, operational_status
+        // On_Leave/Suspended, HR Inactive, can_drive_transport revoked). Re-
+        // validate the EFFECTIVE driver (honours the F4 temp overlay) for the
+        // trip date before dispatch — an unfit/on-leave driver must never be put
+        // on a trip. Covers regular AND event trips (dispatchEventTrip → createTrip).
+        $this->_validateDriverReadiness($driverStaffId, $tripDate);
 
         // Snapshot checkpoints from route stops (frozen at trip creation).
         // For Event trips with no route, checkpoints[] stays empty and the
@@ -5773,29 +6139,56 @@ class Transport_service
     public function startTrip(string $tripId): array
     {
         $this->_assertReady();
-        $trip = $this->_loadTripOrFail($tripId);
-        if ($trip['status'] !== 'Ready') {
-            throw new \InvalidArgumentException("Trip {$tripId} is not in Ready state (current: {$trip['status']}).");
+        if ($tripId === '') { throw new \InvalidArgumentException('tripId required.'); }
+        // LOG-1: re-validate the frozen driver's readiness for TODAY before the
+        // trip goes live. A driver fit when the trip was created (possibly days
+        // earlier) may have become unfit since — licence/medical expiry, set to
+        // On_Leave/Suspended, or made HR-Inactive. If the trip is missing the CAS
+        // below reports it; here we only gate a present-and-driver-bearing trip.
+        $tripForDriver = $this->fs->getEntity(self::COL_TRIP_LOGS, $tripId);
+        if (is_array($tripForDriver)) {
+            $driverForStart = (string) ($tripForDriver['driver_staff_id'] ?? '');
+            if ($driverForStart !== '') {
+                $this->_validateDriverReadiness($driverForStart, date('Y-m-d'));
+            }
         }
-        $now = date('c');
-        $update = [
-            'status'          => 'InProgress',
-            'actual_start_at' => $now,
-            'startTime'       => $trip['startTime'] !== '' ? $trip['startTime'] : $now,
-            'updated_at'      => $now,
-        ];
-        $this->fs->setEntity(self::COL_TRIP_LOGS, $tripId, $update, /* merge */ true);
-        $this->emitAudit('trip', $tripId, 'started', $trip, array_merge($trip, $update),
+        $now    = date('c');
+        $before = [];
+        $abort  = '';
+        // CON-6: atomic Ready->InProgress via updateTime CAS. Two concurrent
+        // starts can no longer both commit — the loser re-reads, its mutator
+        // sees InProgress and aborts, so audit/notify fire exactly once.
+        $res = $this->fs->casUpdateEntity(self::COL_TRIP_LOGS, $tripId,
+            function (array $trip) use (&$before, &$abort, $now) {
+                if (($trip['status'] ?? '') !== 'Ready') {
+                    $abort = "Trip is not in Ready state (current: " . ($trip['status'] ?? '') . ").";
+                    return null;
+                }
+                $before = $trip;
+                return [
+                    'status'          => 'InProgress',
+                    'actual_start_at' => $now,
+                    'startTime'       => (($trip['startTime'] ?? '') !== '') ? $trip['startTime'] : $now,
+                    'updated_at'      => $now,
+                ];
+            });
+        $this->_assertTripTransition($res, $tripId, $abort);
+
+        $update = ['status' => 'InProgress', 'actual_start_at' => $now];
+        $this->emitAudit('trip', $tripId, 'started', $before, array_merge($before, $update),
             ['domain' => self::DOMAIN_TRIP]);
         $this->_notify('trip.started', [
             'trip_id'      => $tripId,
-            'route_id'     => (string) ($trip['route_id'] ?? ''),
-            'vehicle_id'   => (string) ($trip['vehicleId'] ?? ''),
-            'driver_id'    => (string) ($trip['driver_staff_id'] ?? ''),
-            'trip_date'    => (string) ($trip['trip_date'] ?? ''),
-            'direction'    => (string) ($trip['trip_direction'] ?? ''),
-            'roster_size'  => (int) ($trip['roster_size'] ?? 0),
+            'route_id'     => (string) ($before['route_id'] ?? ''),
+            'vehicle_id'   => (string) ($before['vehicleId'] ?? ''),
+            'driver_id'    => (string) ($before['driver_staff_id'] ?? ''),
+            'trip_date'    => (string) ($before['trip_date'] ?? ''),
+            'direction'    => (string) ($before['trip_direction'] ?? ''),
+            'roster_size'  => (int) ($before['roster_size'] ?? 0),
         ]);
+        // XMOD-1: denormalise the in-progress route onto the vehicle so the
+        // Teacher app has route context (DriverHome badge + driver SOS).
+        $this->_setVehicleCurrentRoute((string) ($before['vehicleId'] ?? ''), (string) ($before['route_id'] ?? ''));
         return ['tripId' => $tripId, 'status' => 'InProgress'];
     }
 
@@ -5813,29 +6206,37 @@ class Transport_service
     public function markCheckpointLeft(string $tripId, string $stopId): array
     {
         $this->_assertReady();
-        $trip = $this->_loadTripOrFail($tripId);
-        if ($trip['status'] !== 'InProgress') {
-            throw new \InvalidArgumentException("Trip {$tripId} not InProgress.");
-        }
-        $now = date('c');
-        $found = false;
-        $checkpoints = (array) ($trip['checkpoints'] ?? []);
-        foreach ($checkpoints as $i => $cp) {
-            if ((string) ($cp['stop_id'] ?? '') !== $stopId) { continue; }
-            if (($cp['checkpoint_state'] ?? 'Pending') !== 'Reached') {
-                throw new \InvalidArgumentException("Cannot mark left — checkpoint state is '{$cp['checkpoint_state']}', expected 'Reached'.");
-            }
-            $checkpoints[$i]['left_at'] = $now;
-            $found = true;
-            break;
-        }
-        if (!$found) {
-            throw new \InvalidArgumentException("Stop {$stopId} not found in trip {$tripId} checkpoints.");
-        }
-        $this->fs->setEntity(self::COL_TRIP_LOGS, $tripId, [
-            'checkpoints' => $checkpoints,
-            'updated_at'  => $now,
-        ], /* merge */ true);
+        if ($tripId === '') { throw new \InvalidArgumentException('tripId required.'); }
+        $now   = date('c');
+        $abort = '';
+        // CON-2: atomic single-element mutation of checkpoints[] via updateTime
+        // CAS — a concurrent checkpoint/tally write can no longer clobber this
+        // left_at (whole-array lost update).
+        $res = $this->fs->casUpdateEntity(self::COL_TRIP_LOGS, $tripId,
+            function (array $trip) use (&$abort, $tripId, $stopId, $now) {
+                if (($trip['status'] ?? '') !== 'InProgress') {
+                    $abort = "Trip {$tripId} not InProgress.";
+                    return null;
+                }
+                $checkpoints = (array) ($trip['checkpoints'] ?? []);
+                $found = false;
+                foreach ($checkpoints as $i => $cp) {
+                    if ((string) ($cp['stop_id'] ?? '') !== $stopId) { continue; }
+                    if (($cp['checkpoint_state'] ?? 'Pending') !== 'Reached') {
+                        $abort = "Cannot mark left — checkpoint state is '" . ($cp['checkpoint_state'] ?? 'Pending') . "', expected 'Reached'.";
+                        return null;
+                    }
+                    $checkpoints[$i]['left_at'] = $now;
+                    $found = true;
+                    break;
+                }
+                if (!$found) {
+                    $abort = "Stop {$stopId} not found in trip {$tripId} checkpoints.";
+                    return null;
+                }
+                return ['checkpoints' => $checkpoints, 'updated_at' => $now];
+            });
+        $this->_assertTripTransition($res, $tripId, $abort);
         return ['tripId' => $tripId, 'stop_id' => $stopId, 'left_at' => $now];
     }
 
@@ -5890,105 +6291,163 @@ class Transport_service
     public function completeTrip(string $tripId, array $input = []): array
     {
         $this->_assertReady();
-        $trip = $this->_loadTripOrFail($tripId);
-        if ($trip['status'] !== 'InProgress') {
-            throw new \InvalidArgumentException("Trip {$tripId} not InProgress.");
-        }
-        $checkpoints = (array) ($trip['checkpoints'] ?? []);
-        foreach ($checkpoints as $cp) {
-            $st = (string) ($cp['checkpoint_state'] ?? 'Pending');
-            if ($st === 'Pending') {
-                throw new \InvalidArgumentException(
-                    "Cannot complete — checkpoint '{$cp['stop_name']}' is still Pending. "
-                    . "Mark it Reached or Skipped first (Refinement 4)."
-                );
-            }
-        }
+        if ($tripId === '') { throw new \InvalidArgumentException('tripId required.'); }
+        $now     = date('c');
+        $before  = [];
+        $abort   = '';
+        $summary = [];
+        // CON-6: atomic InProgress->Completed via updateTime CAS. The status
+        // guard, the checkpoint Pending-guard, and every derived field are
+        // evaluated against the FRESH doc inside the mutator — so a concurrent
+        // checkpoint write (CON-2) cannot slip a Pending stop past completion,
+        // and two completes cannot both fire audit/notify.
+        $res = $this->fs->casUpdateEntity(self::COL_TRIP_LOGS, $tripId,
+            function (array $trip) use (&$before, &$abort, &$summary, $tripId, $input, $now) {
+                if (($trip['status'] ?? '') !== 'InProgress') {
+                    $abort = "Trip {$tripId} not InProgress.";
+                    return null;
+                }
+                $checkpoints = (array) ($trip['checkpoints'] ?? []);
+                foreach ($checkpoints as $cp) {
+                    if ((string) ($cp['checkpoint_state'] ?? 'Pending') === 'Pending') {
+                        $abort = "Cannot complete — checkpoint '" . ($cp['stop_name'] ?? '') . "' is still Pending. "
+                            . "Mark it Reached or Skipped first (Refinement 4).";
+                        return null;
+                    }
+                }
+                $endTime     = trim((string) ($input['end_time'] ?? $now));
+                $endOdometer = (float) ($input['end_odometer'] ?? 0);
+                $startOdo    = (float) ($trip['startOdometer'] ?? 0);
+                $distanceKm  = $endOdometer > $startOdo ? round($endOdometer - $startOdo, 2) : (float) ($input['distance_km'] ?? 0);
+                $fuelUsed    = (float) ($input['fuel_used'] ?? 0);
+                $notes       = trim((string) ($input['notes'] ?? ''));
+                $stopsCompleted = 0;
+                foreach ($checkpoints as $cp) {
+                    if (($cp['checkpoint_state'] ?? '') === 'Reached') { $stopsCompleted++; }
+                }
+                $startTs = strtotime((string) ($trip['actual_start_at'] ?? '')) ?: 0;
+                $endTs   = strtotime($endTime) ?: 0;
+                $durationMinutes = ($startTs > 0 && $endTs > $startTs) ? (int) round(($endTs - $startTs) / 60) : 0;
+                $onTime = $this->_computeOnTime($trip, $checkpoints);
+                $tally  = $this->_tallyBoardingEvents($tripId);
+                $before  = $trip;
+                $summary = [
+                    'status'             => 'Completed',
+                    'actual_end_at'      => $now,
+                    'endTime'            => $endTime,
+                    'endOdometer'        => $endOdometer,
+                    'distance'           => $distanceKm,
+                    'distance_km'        => $distanceKm,
+                    'fuelUsed'           => $fuelUsed,
+                    'stopsCompleted'     => $stopsCompleted,
+                    'duration_minutes'   => $durationMinutes,
+                    'on_time'            => $onTime,
+                    'notes'              => $notes,
+                    'route_progress_pct' => 100,
+                    'next_checkpoint_id' => '',
+                    'boarded_count'      => (int) ($tally['boarded'] ?? 0),
+                    'dropped_count'      => (int) ($tally['dropped'] ?? 0),
+                    'no_show_count'      => (int) ($tally['no_show'] ?? 0),
+                    'updated_at'         => $now,
+                ];
+                return $summary;
+            });
+        $this->_assertTripTransition($res, $tripId, $abort);
 
-        $now = date('c');
-        $endTime      = trim((string) ($input['end_time'] ?? $now));
-        $endOdometer  = (float) ($input['end_odometer'] ?? 0);
-        $startOdo     = (float) ($trip['startOdometer'] ?? 0);
-        $distanceKm   = $endOdometer > $startOdo ? round($endOdometer - $startOdo, 2) : (float) ($input['distance_km'] ?? 0);
-        $fuelUsed     = (float) ($input['fuel_used'] ?? 0);
-        $notes        = trim((string) ($input['notes'] ?? ''));
-
-        // Compute counts + duration from checkpoints/events
-        $stopsCompleted = 0;
-        foreach ($checkpoints as $cp) {
-            if (($cp['checkpoint_state'] ?? '') === 'Reached') { $stopsCompleted++; }
-        }
-        $startTs = strtotime((string) ($trip['actual_start_at'] ?? '')) ?: 0;
-        $endTs   = strtotime($endTime) ?: 0;
-        $durationMinutes = ($startTs > 0 && $endTs > $startTs) ? (int) round(($endTs - $startTs) / 60) : 0;
-
-        // On-time = last-reached checkpoint left_at <= scheduled + 15min slack
-        $onTime = $this->_computeOnTime($trip, $checkpoints);
-
-        // Boarding tallies from transportAttendance (single-query aggregate)
-        $tally = $this->_tallyBoardingEvents($tripId);
-
-        $update = [
-            'status'           => 'Completed',
-            'actual_end_at'    => $now,
-            'endTime'          => $endTime,
-            'endOdometer'      => $endOdometer,
-            'distance'         => $distanceKm,
-            'distance_km'      => $distanceKm,
-            'fuelUsed'         => $fuelUsed,
-            'stopsCompleted'   => $stopsCompleted,
-            'duration_minutes' => $durationMinutes,
-            'on_time'          => $onTime,
-            'notes'            => $notes,
-            'route_progress_pct' => 100,
-            'next_checkpoint_id' => '',
-            'boarded_count'    => (int) ($tally['boarded'] ?? 0),
-            'dropped_count'    => (int) ($tally['dropped'] ?? 0),
-            'no_show_count'    => (int) ($tally['no_show'] ?? 0),
-            'updated_at'       => $now,
-        ];
-        $this->fs->setEntity(self::COL_TRIP_LOGS, $tripId, $update, /* merge */ true);
-        $this->emitAudit('trip', $tripId, 'completed', $trip, array_merge($trip, $update),
+        $this->emitAudit('trip', $tripId, 'completed', $before, array_merge($before, $summary),
             ['domain' => self::DOMAIN_TRIP]);
         $this->_notify('trip.completed', [
             'trip_id'         => $tripId,
-            'route_id'        => (string) ($trip['route_id'] ?? ''),
-            'vehicle_id'      => (string) ($trip['vehicleId'] ?? ''),
-            'driver_id'       => (string) ($trip['driver_staff_id'] ?? ''),
-            'trip_date'       => (string) ($trip['trip_date'] ?? ''),
-            'direction'       => (string) ($trip['trip_direction'] ?? ''),
-            'duration_minutes'=> $durationMinutes,
-            'distance_km'     => $distanceKm,
-            'on_time'         => $onTime,
-            'boarded'         => (int) ($tally['boarded'] ?? 0),
-            'no_show'         => (int) ($tally['no_show'] ?? 0),
+            'route_id'        => (string) ($before['route_id'] ?? ''),
+            'vehicle_id'      => (string) ($before['vehicleId'] ?? ''),
+            'driver_id'       => (string) ($before['driver_staff_id'] ?? ''),
+            'trip_date'       => (string) ($before['trip_date'] ?? ''),
+            'direction'       => (string) ($before['trip_direction'] ?? ''),
+            'duration_minutes'=> (int) ($summary['duration_minutes'] ?? 0),
+            'distance_km'     => (float) ($summary['distance_km'] ?? 0),
+            'on_time'         => (bool) ($summary['on_time'] ?? false),
+            'boarded'         => (int) ($summary['boarded_count'] ?? 0),
+            'no_show'         => (int) ($summary['no_show_count'] ?? 0),
         ]);
-        return ['tripId' => $tripId, 'status' => 'Completed', 'summary' => $update];
+        // XMOD-1: trip over — release the vehicle's denormalised route.
+        $this->_clearVehicleCurrentRoute((string) ($before['vehicleId'] ?? ''), (string) ($before['route_id'] ?? ''));
+        return ['tripId' => $tripId, 'status' => 'Completed', 'summary' => $summary];
     }
 
     /** Cancel a Ready or InProgress trip. Terminal. */
     public function cancelTrip(string $tripId, string $reason): array
     {
         $this->_assertReady();
+        if ($tripId === '') { throw new \InvalidArgumentException('tripId required.'); }
         if (trim($reason) === '') {
             throw new \InvalidArgumentException('cancel reason is required.');
         }
-        $trip = $this->_loadTripOrFail($tripId);
-        if (!in_array($trip['status'], self::TRIP_ACTIVE_STATUSES, true)) {
-            throw new \InvalidArgumentException("Trip {$tripId} not in cancellable state (status: {$trip['status']}).");
-        }
-        $now = date('c');
-        $update = [
-            'status'         => 'Cancelled',
-            'actual_end_at'  => $now,
-            'cancel_reason'  => $reason,
-            'cancelled_by'   => $this->adminId,
-            'updated_at'     => $now,
-        ];
-        $this->fs->setEntity(self::COL_TRIP_LOGS, $tripId, $update, /* merge */ true);
-        $this->emitAudit('trip', $tripId, 'cancelled', $trip, array_merge($trip, $update),
+        $now    = date('c');
+        $before = [];
+        $abort  = '';
+        // CON-6: atomic cancel via updateTime CAS — only one terminal
+        // transition wins; a concurrent complete/cancel makes the loser abort.
+        $res = $this->fs->casUpdateEntity(self::COL_TRIP_LOGS, $tripId,
+            function (array $trip) use (&$before, &$abort, $reason, $now) {
+                if (!in_array((string) ($trip['status'] ?? ''), self::TRIP_ACTIVE_STATUSES, true)) {
+                    $abort = "Trip not in cancellable state (status: " . ($trip['status'] ?? '') . ").";
+                    return null;
+                }
+                $before = $trip;
+                return [
+                    'status'        => 'Cancelled',
+                    'actual_end_at' => $now,
+                    'cancel_reason' => $reason,
+                    'cancelled_by'  => $this->adminId,
+                    'updated_at'    => $now,
+                ];
+            });
+        $this->_assertTripTransition($res, $tripId, $abort);
+
+        $update = ['status' => 'Cancelled', 'actual_end_at' => $now, 'cancel_reason' => $reason, 'cancelled_by' => $this->adminId];
+        $this->emitAudit('trip', $tripId, 'cancelled', $before, array_merge($before, $update),
             ['domain' => self::DOMAIN_TRIP, 'cancel_reason' => $reason]);
+        // XMOD-1: cancelled — release the vehicle's denormalised route.
+        $this->_clearVehicleCurrentRoute((string) ($before['vehicleId'] ?? ''), (string) ($before['route_id'] ?? ''));
         return ['tripId' => $tripId, 'status' => 'Cancelled'];
+    }
+
+    /**
+     * XMOD-1 — denormalise the in-progress trip's route onto the vehicle as
+     * `currentRouteId` (the exact field the Teacher app's VehicleDoc reads for
+     * the DriverHome route badge and the driver SOS route context). Set on
+     * trip start; cleared on completion/cancellation. Best-effort: a failure
+     * is logged but never blocks the trip transition — the trip lifecycle is
+     * the business truth; this is a read-side convenience field.
+     */
+    private function _setVehicleCurrentRoute(string $vehicleId, string $routeId): void
+    {
+        if ($vehicleId === '') { return; }
+        try {
+            $this->fs->setEntity(self::COL_VEHICLES, $vehicleId,
+                ['currentRouteId' => $routeId, 'updated_at' => date('c')], /* merge */ true);
+        } catch (\Throwable $e) {
+            log_message('error', "XMOD-1 _setVehicleCurrentRoute({$vehicleId}, {$routeId}) failed: " . $e->getMessage());
+        }
+    }
+
+    /**
+     * XMOD-1 — clear the vehicle's denormalised route on trip end. Guarded: only
+     * clears when the vehicle still carries THIS trip's route, so a different
+     * concurrent trip's route is never wiped. No-op for route-less Event trips.
+     */
+    private function _clearVehicleCurrentRoute(string $vehicleId, string $routeId): void
+    {
+        if ($vehicleId === '' || $routeId === '') { return; }
+        try {
+            $veh = $this->fs->getEntity(self::COL_VEHICLES, $vehicleId);
+            if (is_array($veh) && (string) ($veh['currentRouteId'] ?? '') === $routeId) {
+                $this->fs->setEntity(self::COL_VEHICLES, $vehicleId,
+                    ['currentRouteId' => '', 'updated_at' => date('c')], /* merge */ true);
+            }
+        } catch (\Throwable $e) {
+            log_message('error', "XMOD-1 _clearVehicleCurrentRoute({$vehicleId}, {$routeId}) failed: " . $e->getMessage());
+        }
     }
 
     /** List trips, optionally filtered by date + status. */
@@ -6055,54 +6514,89 @@ class Transport_service
         return $trip;
     }
 
+    /**
+     * CON-6 — translate a casUpdateEntity() result for a trip-lifecycle
+     * transition into the original exception contract. $abortMsg is the
+     * fresh-state reason the mutator captured when it declined (null-return).
+     * The updateTime CAS guarantees exactly one concurrent transition commits;
+     * a loser re-reads, its mutator now sees the moved state and aborts —
+     * so audit/notify fire exactly once and no double-transition occurs.
+     */
+    private function _assertTripTransition(array $res, string $tripId, string $abortMsg): void
+    {
+        $reason = (string) ($res['reason'] ?? '');
+        if ($reason === 'missing') {
+            throw new \InvalidArgumentException("Trip not found: {$tripId}");
+        }
+        if ($reason === 'aborted') {
+            throw new \InvalidArgumentException($abortMsg !== '' ? $abortMsg
+                : "Trip {$tripId} is not in a valid state for this transition.");
+        }
+        if (empty($res['ok']) || empty($res['applied'])) {
+            throw new \RuntimeException(
+                "Trip {$tripId} could not be updated due to a concurrent modification — please retry."
+            );
+        }
+    }
+
     private function _updateCheckpointState(string $tripId, string $stopId, string $newState, string $reason = ''): array
     {
         if (!in_array($newState, self::CHECKPOINT_STATES, true)) {
             throw new \InvalidArgumentException("Invalid checkpoint state: {$newState}");
         }
-        $trip = $this->_loadTripOrFail($tripId);
-        if ($trip['status'] !== 'InProgress') {
-            throw new \InvalidArgumentException("Trip {$tripId} not InProgress (status: {$trip['status']}).");
-        }
-        $now = date('c');
-        $checkpoints = (array) ($trip['checkpoints'] ?? []);
-        $found = false;
-        foreach ($checkpoints as $i => $cp) {
-            if ((string) ($cp['stop_id'] ?? '') !== $stopId) { continue; }
-            $currentState = (string) ($cp['checkpoint_state'] ?? 'Pending');
-            if (in_array($currentState, ['Reached', 'Skipped'], true) && $currentState !== $newState) {
-                throw new \InvalidArgumentException("Checkpoint already {$currentState} — no further transition allowed.");
-            }
-            $checkpoints[$i]['checkpoint_state'] = $newState;
-            if ($newState === 'Reached') {
-                $checkpoints[$i]['reached_at'] = $now;
-            } elseif ($newState === 'Skipped') {
-                $checkpoints[$i]['skipped_at'] = $now;
-                $checkpoints[$i]['skip_reason'] = $reason;
-            }
-            $found = true;
-            break;
-        }
-        if (!$found) {
-            throw new \InvalidArgumentException("Stop {$stopId} not found in trip {$tripId}.");
-        }
-
-        // Recompute route progress + next checkpoint pointer
-        $reachedOrSkipped = 0;
-        $nextPending = '';
-        foreach ($checkpoints as $cp) {
-            $st = (string) ($cp['checkpoint_state'] ?? 'Pending');
-            if ($st === 'Reached' || $st === 'Skipped') { $reachedOrSkipped++; }
-            elseif ($nextPending === '') { $nextPending = (string) ($cp['stop_id'] ?? ''); }
-        }
-        $progressPct = count($checkpoints) > 0 ? (int) round(($reachedOrSkipped / count($checkpoints)) * 100) : 0;
-
-        $this->fs->setEntity(self::COL_TRIP_LOGS, $tripId, [
-            'checkpoints'        => $checkpoints,
-            'route_progress_pct' => $progressPct,
-            'next_checkpoint_id' => $nextPending,
-            'updated_at'         => $now,
-        ], /* merge */ true);
+        if ($tripId === '') { throw new \InvalidArgumentException('tripId required.'); }
+        $now         = date('c');
+        $abort       = '';
+        $progressPct = 0;
+        // CON-2: atomic single-element mutation of checkpoints[] via updateTime
+        // CAS. Concurrent checkpoint updates can no longer clobber each other's
+        // array element, and a tally write cannot revert a just-committed state.
+        $res = $this->fs->casUpdateEntity(self::COL_TRIP_LOGS, $tripId,
+            function (array $trip) use (&$abort, &$progressPct, $tripId, $stopId, $newState, $reason, $now) {
+                if (($trip['status'] ?? '') !== 'InProgress') {
+                    $abort = "Trip {$tripId} not InProgress (status: " . ($trip['status'] ?? '') . ").";
+                    return null;
+                }
+                $checkpoints = (array) ($trip['checkpoints'] ?? []);
+                $found = false;
+                foreach ($checkpoints as $i => $cp) {
+                    if ((string) ($cp['stop_id'] ?? '') !== $stopId) { continue; }
+                    $currentState = (string) ($cp['checkpoint_state'] ?? 'Pending');
+                    if (in_array($currentState, ['Reached', 'Skipped'], true) && $currentState !== $newState) {
+                        $abort = "Checkpoint already {$currentState} — no further transition allowed.";
+                        return null;
+                    }
+                    $checkpoints[$i]['checkpoint_state'] = $newState;
+                    if ($newState === 'Reached') {
+                        $checkpoints[$i]['reached_at'] = $now;
+                    } elseif ($newState === 'Skipped') {
+                        $checkpoints[$i]['skipped_at'] = $now;
+                        $checkpoints[$i]['skip_reason'] = $reason;
+                    }
+                    $found = true;
+                    break;
+                }
+                if (!$found) {
+                    $abort = "Stop {$stopId} not found in trip {$tripId}.";
+                    return null;
+                }
+                // Recompute route progress + next checkpoint pointer (fresh).
+                $reachedOrSkipped = 0;
+                $nextPending = '';
+                foreach ($checkpoints as $cp) {
+                    $st = (string) ($cp['checkpoint_state'] ?? 'Pending');
+                    if ($st === 'Reached' || $st === 'Skipped') { $reachedOrSkipped++; }
+                    elseif ($nextPending === '') { $nextPending = (string) ($cp['stop_id'] ?? ''); }
+                }
+                $progressPct = count($checkpoints) > 0 ? (int) round(($reachedOrSkipped / count($checkpoints)) * 100) : 0;
+                return [
+                    'checkpoints'        => $checkpoints,
+                    'route_progress_pct' => $progressPct,
+                    'next_checkpoint_id' => $nextPending,
+                    'updated_at'         => $now,
+                ];
+            });
+        $this->_assertTripTransition($res, $tripId, $abort);
         $this->emitAudit('trip_checkpoint', $tripId . ':' . $stopId, strtolower($newState),
             null, ['stop_id' => $stopId, 'new_state' => $newState, 'reason' => $reason],
             ['domain' => self::DOMAIN_TRIP]);
@@ -6125,7 +6619,11 @@ class Transport_service
         }
         // Roster gate (Refinement 3 — immutable roster)
         $roster = (array) ($trip['roster_student_ids'] ?? []);
-        if ($eventType !== 'no_show' && !in_array($studentId, $roster, true)) {
+        // LOG-5: a no_show must ALSO be a rostered student. Exempting it let
+        // markStudentNoShow(anyId) fire a safety-exempt trip.student_no_show to
+        // an unrelated parent + inflate the tally. A no_show is by definition a
+        // student who was expected (on the frozen roster) but did not board.
+        if (!in_array($studentId, $roster, true)) {
             throw new \InvalidArgumentException("Student {$studentId} is not on the frozen roster for trip {$tripId}.");
         }
         // Direction guard
@@ -6264,22 +6762,62 @@ class Transport_service
 
     private function _updateCheckpointTally(string $tripId, string $stopId, string $eventType): void
     {
-        $trip = $this->fs->getEntity(self::COL_TRIP_LOGS, $tripId);
-        if (!is_array($trip)) { return; }
-        $checkpoints = (array) ($trip['checkpoints'] ?? []);
-        foreach ($checkpoints as $i => $cp) {
-            if ((string) ($cp['stop_id'] ?? '') !== $stopId) { continue; }
-            if (in_array($eventType, ['boarded_pickup', 'dropped_home', 'alternate_pickup'], true)) {
-                $checkpoints[$i]['students_boarded_count'] = (int) ($cp['students_boarded_count'] ?? 0) + 1;
-            } elseif ($eventType === 'no_show') {
-                $checkpoints[$i]['students_no_show_count'] = (int) ($cp['students_no_show_count'] ?? 0) + 1;
+        // CON-1: DERIVE each checkpoint's counts from the deduped boarding-event
+        // set (one doc per {student,event_type,stop} deterministic id) instead of
+        // a blind +1 — a repeat driver tap maps to the SAME doc, so it can no
+        // longer inflate students_boarded_count. CON-2: the checkpoints[] write
+        // goes through the atomic CAS path. ($stopId/$eventType are retained for
+        // the call contract; the recompute covers every checkpoint from source.)
+        $byStop = $this->_tallyBoardingEventsByStop($tripId);
+        $this->fs->casUpdateEntity(self::COL_TRIP_LOGS, $tripId,
+            function (array $trip) use ($byStop) {
+                $checkpoints = (array) ($trip['checkpoints'] ?? []);
+                $changed = false;
+                foreach ($checkpoints as $i => $cp) {
+                    $sid = (string) ($cp['stop_id'] ?? '');
+                    $b = (int) ($byStop[$sid]['boarded'] ?? 0);
+                    $n = (int) ($byStop[$sid]['no_show'] ?? 0);
+                    if ((int) ($cp['students_boarded_count'] ?? 0) !== $b) {
+                        $checkpoints[$i]['students_boarded_count'] = $b; $changed = true;
+                    }
+                    if ((int) ($cp['students_no_show_count'] ?? 0) !== $n) {
+                        $checkpoints[$i]['students_no_show_count'] = $n; $changed = true;
+                    }
+                }
+                if (!$changed) { return []; }   // idempotent no-op (repeat tap)
+                return ['checkpoints' => $checkpoints, 'updated_at' => date('c')];
+            });
+    }
+
+    /**
+     * CON-1 — per-stop DEDUPED boarding tallies from transportAttendance. One
+     * doc per {student,event_type,stop} deterministic id ⇒ repeat taps are
+     * inherently deduped by the collection. Returns
+     * [stopId => ['boarded'=>N, 'no_show'=>M]]. Mirrors the event→count mapping
+     * of the trip-level _tallyBoardingEvents (boarded = boarded_pickup +
+     * dropped_home + alternate_pickup).
+     */
+    private function _tallyBoardingEventsByStop(string $tripId): array
+    {
+        $byStop = [];
+        try {
+            $rows = (array) $this->fs->schoolWhere(self::COL_TRANSPORT_ATTENDANCE,
+                [['tripId', '==', $tripId]], null, 'ASC', 1000);
+            foreach ($rows as $r) {
+                $inner = $this->_unwrapNestedRow($r, 'tripId');
+                if (!is_array($inner)) { continue; }
+                $stop = (string) ($inner['actual_stop_id'] ?? '');
+                if ($stop === '') { continue; }
+                $t = (string) ($inner['event_type'] ?? '');
+                if (!isset($byStop[$stop])) { $byStop[$stop] = ['boarded' => 0, 'no_show' => 0]; }
+                if ($t === 'boarded_pickup' || $t === 'dropped_home' || $t === 'alternate_pickup') {
+                    $byStop[$stop]['boarded']++;
+                } elseif ($t === 'no_show') {
+                    $byStop[$stop]['no_show']++;
+                }
             }
-            break;
-        }
-        $this->fs->setEntity(self::COL_TRIP_LOGS, $tripId, [
-            'checkpoints' => $checkpoints,
-            'updated_at'  => date('c'),
-        ], /* merge */ true);
+        } catch (\Throwable $_) {}
+        return $byStop;
     }
 
     private function _tallyBoardingEvents(string $tripId): array
@@ -6507,6 +7045,9 @@ class Transport_service
         // change up to dispatch)
         if (isset($input['escorts'])) {
             $update['escorts'] = $this->_normaliseEscorts((array) $input['escorts']);
+            // LOG-4: re-validate escort HR status on edit (scheduleEvent alone
+            // did not cover post-schedule escort changes).
+            $this->_assertEscortsActive($update['escorts']);
         }
         $this->fs->setEntity(self::COL_TRANSPORT_EVENTS, $eventId, $update, /* merge */ true);
         $this->emitAudit('transportEvent', $eventId, 'updated', $existing,
@@ -6629,6 +7170,30 @@ class Transport_service
      * Snapshots driver ids, freezes the roster, fires event.scheduled to
      * parents_of_students.
      */
+    /**
+     * LOG-4 — every escort staff_id must reference an HR-Active staff record.
+     * Extracted from scheduleEvent so the SAME gate runs on every escort-mutating
+     * path (updateEvent, addEventEscort) and again at dispatch — a staff member
+     * terminated AFTER scheduling must not remain a recorded safety escort.
+     */
+    private function _assertEscortsActive(array $escorts): void
+    {
+        foreach ($escorts as $esc) {
+            $sid = (string) ($esc['staff_id'] ?? '');
+            if ($sid === '') {
+                throw new \InvalidArgumentException('Escort missing staff_id.');
+            }
+            $staff = $this->fs->getEntity('staff', $sid);
+            if (!is_array($staff)) {
+                throw new \InvalidArgumentException("Escort staff not found: {$sid}");
+            }
+            $status = strtolower((string) ($staff['status'] ?? $staff['Status'] ?? 'active'));
+            if ($status !== 'active' && $status !== '') {
+                throw new \InvalidArgumentException("Escort {$sid} is not Active in HR (status='{$status}').");
+            }
+        }
+    }
+
     public function scheduleEvent(string $eventId): array
     {
         $this->_assertReady();
@@ -6659,20 +7224,7 @@ class Transport_service
         }
 
         // Escort validation — every staff_id must reference an active staff record
-        foreach ((array) ($event['escorts'] ?? []) as $esc) {
-            $sid = (string) ($esc['staff_id'] ?? '');
-            if ($sid === '') {
-                throw new \InvalidArgumentException('Escort missing staff_id.');
-            }
-            $staff = $this->fs->getEntity('staff', $sid);
-            if (!is_array($staff)) {
-                throw new \InvalidArgumentException("Escort staff not found: {$sid}");
-            }
-            $status = strtolower((string) ($staff['status'] ?? $staff['Status'] ?? 'active'));
-            if ($status !== 'active' && $status !== '') {
-                throw new \InvalidArgumentException("Escort {$sid} is not Active in HR (status='{$status}').");
-            }
-        }
+        $this->_assertEscortsActive((array) ($event['escorts'] ?? []));
 
         $now = date('c');
         $update = [
@@ -6720,6 +7272,10 @@ class Transport_service
         }
         // Route is optional per Refinement 2
         $routeId = trim((string) ($input['route_id'] ?? ''));
+
+        // LOG-4: re-validate escorts at dispatch — a staff member terminated
+        // between scheduleEvent and dispatch must not go out as a safety escort.
+        $this->_assertEscortsActive((array) ($event['escorts'] ?? []));
 
         $trip = $this->createTrip([
             'vehicle_id'         => $vehicleId,
@@ -6956,6 +7512,8 @@ class Transport_service
         }
         $escorts = $this->_normaliseEscorts((array) ($event['escorts'] ?? []));
         $escorts[] = $this->_normaliseEscort($escort);
+        // LOG-4: the newly added escort must be HR-Active.
+        $this->_assertEscortsActive($escorts);
         // Dedupe by staff_id
         $seen = []; $unique = [];
         foreach ($escorts as $e) {

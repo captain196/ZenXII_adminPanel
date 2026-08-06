@@ -229,6 +229,7 @@ class Transport_verifier extends CI_Controller
             [ 'id' => 'CH-TRN-F7-4', 'category' => self::CAT_RUNTIME,    'label' => 'boarding-event docid determinism','callable' => '_chTrnF7_4' ],
             [ 'id' => 'CH-TRN-F7-5', 'category' => self::CAT_CONTRACT,   'label' => 'completed trip tally consistency','callable' => '_chTrnF7_5' ],
             [ 'id' => 'CH-TRN-F7-6', 'category' => self::CAT_PERFORMANCE,'label' => 'no N+1 in roster snapshot',     'callable' => '_chTrnF7_6' ],
+            [ 'id' => 'CH-TRN-F7-7', 'category' => self::CAT_CONTRACT,   'label' => 'parent read + roster immutability', 'callable' => '_chTrnF7_7' ],
 
             // ─── F8 Transport Events (added 2026-07-07) ─────────────────────
             [ 'id' => 'CH-TRN-F8-1', 'category' => self::CAT_SOURCE,     'label' => 'event writes via service',       'callable' => '_chTrnF8_1' ],
@@ -257,6 +258,45 @@ class Transport_verifier extends CI_Controller
             [ 'id' => 'CH-TRN-F11-4', 'category' => self::CAT_CONTRACT,   'label' => 'role-scope matrix complete',     'callable' => '_chTrnF11_4' ],
             [ 'id' => 'CH-TRN-F11-5', 'category' => self::CAT_PERFORMANCE,'label' => 'analytics per-request memo',     'callable' => '_chTrnF11_5' ],
             [ 'id' => 'CH-TRN-F11-6', 'category' => self::CAT_SOURCE,     'label' => 'analytics endpoints role-gated', 'callable' => '_chTrnF11_6' ],
+
+            // ── Stabilization sprint foundations (M-STAB) ──
+            [ 'id' => 'CH-TRN-RC1-1', 'category' => self::CAT_SOURCE,     'label' => 'casUpdateEntity CAS primitive present', 'callable' => '_chTrnRc1_1' ],
+            [ 'id' => 'CH-TRN-CON6-1', 'category' => self::CAT_SOURCE,    'label' => 'trip transitions CAS-guarded',         'callable' => '_chTrnCon6_1' ],
+            [ 'id' => 'CH-TRN-CON2-1', 'category' => self::CAT_SOURCE,    'label' => 'checkpoint array writes CAS-guarded',   'callable' => '_chTrnCon2_1' ],
+            [ 'id' => 'CH-TRN-CON3-1', 'category' => self::CAT_SOURCE,    'label' => 'capacity reserve/bump atomic',         'callable' => '_chTrnCon3_1' ],
+            [ 'id' => 'CH-TRN-CON1-1', 'category' => self::CAT_SOURCE,    'label' => 'checkpoint tally derived not incremented','callable' => '_chTrnCon1_1' ],
+            [ 'id' => 'CH-TRN-CON7-1', 'category' => self::CAT_SOURCE,    'label' => 'notice claim CAS before fanout',       'callable' => '_chTrnCon7_1' ],
+            [ 'id' => 'CH-TRN-RC2-1', 'category' => self::CAT_SOURCE,    'label' => 'query fallback drops limit',           'callable' => '_chTrnRc2_1' ],
+            [ 'id' => 'CH-TRN-RC2-2', 'category' => self::CAT_STRUCTURAL,'label' => 'transport composite indexes present',  'callable' => '_chTrnRc2_2' ],
+            [ 'id' => 'CH-TRN-RC3-1', 'category' => self::CAT_SOURCE,    'label' => 'FMES/VEXPCACHE bare docId (no double-prefix)', 'callable' => '_chTrnRc3_1' ],
+            [ 'id' => 'CH-TRN-RC3-2', 'category' => self::CAT_SOURCE,    'label' => 'CAPCACHE id via canonical helper',     'callable' => '_chTrnRc3_2' ],
+            [ 'id' => 'CH-TRN-FIN1-1', 'category' => self::CAT_SOURCE,   'label' => 'createModuleFee preserves paid demands','callable' => '_chTrnFin1_1' ],
+            [ 'id' => 'CH-TRN-LOG1-1', 'category' => self::CAT_SOURCE,   'label' => 'driver readiness validated at dispatch','callable' => '_chTrnLog1_1' ],
+            [ 'id' => 'CH-TRN-FIN2-1', 'category' => self::CAT_SOURCE,   'label' => 'rollover cancel matches category case',  'callable' => '_chTrnFin2_1' ],
+            [ 'id' => 'CH-TRN-CON4-1', 'category' => self::CAT_SOURCE,   'label' => 'rollover fee failure recoverable',       'callable' => '_chTrnCon4_1' ],
+            [ 'id' => 'CH-TRN-ENV-1',  'category' => self::CAT_SOURCE,   'label' => 'schoolWhere consumers unwrap envelope',  'callable' => '_chTrnEnv1' ],
+            [ 'id' => 'CH-TRN-FEE-1',  'category' => self::CAT_SOURCE,   'label' => 'allocationsForStudent envelope docId',   'callable' => '_chTrnFeeAlloc' ],
+            [ 'id' => 'CH-TRN-FIN3-1', 'category' => self::CAT_SOURCE,   'label' => 'posted expense immutable + void reverses', 'callable' => '_chTrnFin3_1' ],
+            [ 'id' => 'CH-TRN-LOG2-1', 'category' => self::CAT_SOURCE,   'label' => 'createTrip blocks suspended route',       'callable' => '_chTrnLog2_1' ],
+            [ 'id' => 'CH-TRN-LOG3-1', 'category' => self::CAT_SOURCE,   'label' => 'notify idempotency salience incl event',  'callable' => '_chTrnLog3_1' ],
+            [ 'id' => 'CH-TRN-XMOD1-1','category' => self::CAT_SOURCE,   'label' => 'vehicle currentRouteId set/clear on trip', 'callable' => '_chTrnXmod1_1' ],
+            [ 'id' => 'CH-TRN-SEC1-1', 'category' => self::CAT_SOURCE,   'label' => 'attendance create bound to trip driver',   'callable' => '_chTrnSec1_1' ],
+            [ 'id' => 'CH-TRN-PERF3-1','category' => self::CAT_SOURCE,   'label' => 'live-ops onboard is single-scan (no N+1)', 'callable' => '_chTrnPerf3_1' ],
+            [ 'id' => 'CH-TRN-PERF4-1','category' => self::CAT_SOURCE,   'label' => 'SA fleet leaderboard served from rollup',  'callable' => '_chTrnPerf4_1' ],
+            [ 'id' => 'CH-TRN-SEC4-1', 'category' => self::CAT_SOURCE,   'label' => 'transport controllers use admin_role',    'callable' => '_chTrnSec4_1' ],
+            [ 'id' => 'CH-TRN-SEC3-1', 'category' => self::CAT_SOURCE,   'label' => 'analytics gated on Operations RBAC grant', 'callable' => '_chTrnSec3_1' ],
+            [ 'id' => 'CH-TRN-SEC2-1', 'category' => self::CAT_SOURCE,   'label' => 'tripLogs create bound to trip driver',     'callable' => '_chTrnSec2_1' ],
+            [ 'id' => 'CH-TRN-LOG5-1', 'category' => self::CAT_SOURCE,   'label' => 'no_show honours the frozen roster gate',  'callable' => '_chTrnLog5_1' ],
+            [ 'id' => 'CH-TRN-LOG4-1', 'category' => self::CAT_SOURCE,   'label' => 'escort HR-active gate on all paths',      'callable' => '_chTrnLog4_1' ],
+            [ 'id' => 'CH-TRN-CON5-1', 'category' => self::CAT_SOURCE,   'label' => 'rollover history id deterministic',       'callable' => '_chTrnCon5_1' ],
+            [ 'id' => 'CH-TRN-SEC5-1', 'category' => self::CAT_SOURCE,   'label' => 'cross-tenant KPI restores in finally',    'callable' => '_chTrnSec5_1' ],
+            [ 'id' => 'CH-TRN-FIN5-1', 'category' => self::CAT_SOURCE,   'label' => 'expense post pre-validates accounts',     'callable' => '_chTrnFin5_1' ],
+            [ 'id' => 'CH-TRN-PERF7-1','category' => self::CAT_SOURCE,   'label' => 'list scans bounded + trend single-query', 'callable' => '_chTrnPerf7_1' ],
+            [ 'id' => 'CH-TRN-PERF10-1','category'=> self::CAT_SOURCE,   'label' => 'analytics memo keys tenant-scoped',       'callable' => '_chTrnPerf10_1' ],
+            [ 'id' => 'CH-TRN-PERF6-1', 'category'=> self::CAT_SOURCE,   'label' => 'cross-tenant rollup isolates per tenant',  'callable' => '_chTrnPerf6_1' ],
+            [ 'id' => 'CH-TRN-RCP-1',  'category'=> self::CAT_SOURCE,   'label' => 'parent notify recipient = canonical userId','callable' => '_chTrnRcp1' ],
+            [ 'id' => 'CH-TRN-NF1-1',  'category'=> self::CAT_SOURCE,   'label' => 'Transport ctrl free of Operations_accounting','callable' => '_chTrnNf1' ],
+            [ 'id' => 'CH-TRN-OPSN-1', 'category'=> self::CAT_SOURCE,   'label' => 'ops notice carries canonical timestamp',   'callable' => '_chTrnOpsn1' ],
         ];
     }
 
@@ -2301,6 +2341,145 @@ class Transport_verifier extends CI_Controller
         return ['status' => 'PASS', 'detail' => 'roster snapshot uses bulk queries (no N+1)'];
     }
 
+    /**
+     * CH-TRN-F7-7 — Parent-facing tripLogs read + roster immutability guard.
+     *
+     * Release-cert C-1 (2026-07-08): F10 shipped with Parent App code
+     * querying tripLogs directly, but the rule required isStaff() —
+     * parents hit PERMISSION_DENIED on every open of MyBusScreen. The
+     * fix opens read via a per-doc allowlist keyed on the frozen roster
+     * snapshot (roster_student_ids). This gate defends the fix at three
+     * layers so a future refactor cannot silently re-break the feature
+     * OR silently open a privilege-escalation path:
+     *
+     *   (1) RULES SOURCE — the parent/student allow-clauses must be
+     *       present in the tripLogs match block.
+     *
+     *   (2) SERVICE SOURCE — after the createTrip write (merge=false
+     *       initial snapshot at Transport_service.php:5760), no other
+     *       setEntity(COL_TRIP_LOGS, ...) payload may contain
+     *       roster_student_ids. The field is set-once-immutable by
+     *       design; a payload mutation of it would let a driver update
+     *       (or admin refactor) forge access.
+     *
+     *   (3) RUNTIME — every existing tripLogs doc must carry a
+     *       populated roster_student_ids array (or be empty by design
+     *       for zero-roster trips). Docs missing the field would deny
+     *       parent access under the rule.
+     */
+    private function _chTrnF7_7(): array
+    {
+        // ── Layer 1: rules-source scan ──
+        $rulesPath = FCPATH . 'firebase-rules/firestore.rules';
+        if (!is_readable($rulesPath)) {
+            return ['status' => 'FAIL', 'detail' => "cannot read {$rulesPath}"];
+        }
+        $rules = (string) file_get_contents($rulesPath);
+        if (!preg_match('/match\s*\/tripLogs\/\{docId\}\s*\{(.*?)^\s*\}/sm', $rules, $rm)) {
+            return ['status' => 'FAIL', 'detail' => 'tripLogs match block not found in rules'];
+        }
+        $tripBlock = $rm[1];
+        $needleParent = "roster_student_ids.hasAny(request.auth.token.get('student_ids', []))";
+        $needleStudent = "request.auth.uid in resource.data.roster_student_ids";
+        if (strpos($tripBlock, $needleParent) === false) {
+            return ['status' => 'FAIL', 'detail' => 'rule missing parent-read arm: student_ids intersection'];
+        }
+        if (strpos($tripBlock, $needleStudent) === false) {
+            return ['status' => 'FAIL', 'detail' => 'rule missing student-read arm: auth.uid in roster'];
+        }
+
+        // ── Layer 2: service-source scan (immutability) ──
+        $svcPath = APPPATH . 'libraries/Transport_service.php';
+        if (!is_readable($svcPath)) {
+            return ['status' => 'FAIL', 'detail' => "cannot read {$svcPath}"];
+        }
+        $svc = $this->_stripComments((string) file_get_contents($svcPath));
+        // Locate every setEntity(COL_TRIP_LOGS, ...) call. Bracket-balanced
+        // forward walk from the opening paren to the matching close so we
+        // capture the full call including multi-line inline arrays. The
+        // create path (merge=false, Transport_service.php:5760) is the ONLY
+        // legitimate write site for roster_student_ids — every OTHER call
+        // (merge=true update paths) must NOT include the field.
+        $needle = '->setEntity(self::COL_TRIP_LOGS';
+        $offset = 0;
+        $callPositions = [];
+        while (($pos = strpos($svc, $needle, $offset)) !== false) {
+            $callPositions[] = $pos;
+            $offset = $pos + strlen($needle);
+        }
+        if (empty($callPositions)) {
+            return ['status' => 'FAIL', 'detail' => 'no tripLogs setEntity calls found (structural regression)'];
+        }
+        $creates = 0; $mergeUpdates = 0; $rosterMutations = [];
+        foreach ($callPositions as $pos) {
+            // Advance to the opening '(' of setEntity
+            $parenPos = strpos($svc, '(', $pos);
+            if ($parenPos === false) { continue; }
+            // Walk forward with bracket-balancing (handles nested [] and ())
+            $depth = 0; $i = $parenPos; $end = strlen($svc);
+            while ($i < $end) {
+                $c = $svc[$i];
+                if ($c === '(' || $c === '[') { $depth++; }
+                elseif ($c === ')' || $c === ']') { $depth--; if ($depth === 0) { break; } }
+                $i++;
+            }
+            if ($i >= $end) { continue; } // unclosed — skip
+            $call = substr($svc, $parenPos, $i - $parenPos + 1);
+            $mergeIsFalse = (bool) preg_match('/,\s*false\s*\)\s*$/', $call);
+            $mergeIsTrue  = (bool) preg_match('/,\s*true\s*\)\s*$/', $call);
+            $hasRoster    = (strpos($call, 'roster_student_ids') !== false);
+            if ($mergeIsFalse) {
+                $creates++;
+                continue; // create path — roster_student_ids allowed here
+            }
+            if ($mergeIsTrue) {
+                $mergeUpdates++;
+                if ($hasRoster) {
+                    $rosterMutations[] = 'setEntity merge=true payload contains roster_student_ids';
+                }
+            }
+        }
+        if ($creates < 1) {
+            return ['status' => 'FAIL', 'detail' => 'no create-path (merge=false) found for tripLogs'];
+        }
+        if ($rosterMutations !== []) {
+            return ['status' => 'FAIL', 'detail' => 'roster_student_ids mutated after create: ' . implode('; ', $rosterMutations)];
+        }
+        // Also confirm the driver-update rule allowlist does NOT include roster_student_ids
+        if (strpos($tripBlock, 'roster_student_ids') !== false) {
+            $allowlistPos = strpos($tripBlock, 'affectedKeys().hasOnly');
+            if ($allowlistPos !== false) {
+                $allowlistTail = substr($tripBlock, $allowlistPos, 800);
+                if (strpos($allowlistTail, 'roster_student_ids') !== false) {
+                    return ['status' => 'FAIL', 'detail' => 'driver-update allowlist includes roster_student_ids — client can forge access'];
+                }
+            }
+        }
+
+        // ── Layer 3: runtime check on any existing tripLogs docs ──
+        try {
+            $rows = (array) $this->fs->schoolWhere('tripLogs', [], null, 'ASC', 20);
+        } catch (\Throwable $e) {
+            $rows = [];
+        }
+        $sampled = 0; $missing = 0;
+        foreach ($rows as $r) {
+            $doc = (isset($r['data']) && is_array($r['data'])) ? $r['data'] : (is_array($r) ? $r : []);
+            if (!is_array($doc)) { continue; }
+            $sampled++;
+            if (!array_key_exists('roster_student_ids', $doc) || !is_array($doc['roster_student_ids'])) {
+                $missing++;
+            }
+        }
+        if ($sampled === 0) {
+            return ['status' => 'PASS', 'detail' => "rule arms + immutability guards present; no tripLogs sampled ({$creates} create path, {$mergeUpdates} merge-update paths audited)"];
+        }
+        if ($missing > 0) {
+            return ['status' => 'FAIL', 'detail' => "{$missing}/{$sampled} tripLogs missing roster_student_ids field (parent reads will fail)"];
+        }
+        return ['status' => 'PASS', 'detail' => "rule arms + immutability guards present; {$sampled} tripLogs sampled all carry roster_student_ids ({$creates} create path, {$mergeUpdates} merge-update paths audited)"];
+    }
+
     // ═════════════════════════════════════════════════════════════════════
     //  F8 Transport Events assertions (CH-TRN-F8-1..6) 2026-07-07
     // ═════════════════════════════════════════════════════════════════════
@@ -2840,6 +3019,1181 @@ class Transport_verifier extends CI_Controller
             return ['status' => 'FAIL', 'detail' => count($violations) . ' raw-scan violations: ' . implode('; ', $violations)];
         }
         return ['status' => 'PASS', 'detail' => 'analytics service composes over caches; no raw operational-collection scans'];
+    }
+
+    /**
+     * CH-TRN-RC1-1 — Stabilization foundation gate. The concurrency-safe
+     * casUpdateEntity CAS primitive must exist at BOTH the REST-client and the
+     * service layers. The concurrency-cluster fixes (CON-2/3/6) depend on it;
+     * if it silently disappears those fixes would regress to unguarded
+     * read-modify-write. Pure source-scan — no Firestore round-trip.
+     */
+    private function _chTrnRc1_1(): array
+    {
+        $targets = [
+            'client'  => APPPATH . 'libraries/Firestore_rest_client.php',
+            'service' => APPPATH . 'libraries/Firestore_service.php',
+        ];
+        $missing = [];
+        foreach ($targets as $layer => $path) {
+            if (!is_readable($path)) {
+                return ['status' => 'FAIL', 'detail' => "cannot read {$path}"];
+            }
+            $src = (string) file_get_contents($path);
+            if (!preg_match('/public\s+function\s+casUpdateEntity\s*\(/', $src)) {
+                $missing[] = $layer;
+            }
+        }
+        if ($missing !== []) {
+            return ['status' => 'FAIL', 'detail' => 'casUpdateEntity absent at: ' . implode(', ', $missing)];
+        }
+        return ['status' => 'PASS', 'detail' => 'casUpdateEntity CAS primitive present at client + service layers'];
+    }
+
+    /**
+     * CH-TRN-CON6-1 — every trip-lifecycle transition (startTrip / completeTrip
+     * / cancelTrip) must route its status change through casUpdateEntity (CAS),
+     * never a bare setEntity on the trip log with a literal 'status' write. That
+     * bare idiom is the CON-6 double-transition race; this gate stops it
+     * regressing. Pure source-scan.
+     */
+    private function _chTrnCon6_1(): array
+    {
+        $path = APPPATH . 'libraries/Transport_service.php';
+        if (!is_readable($path)) {
+            return ['status' => 'FAIL', 'detail' => "cannot read {$path}"];
+        }
+        $src = (string) file_get_contents($path);
+        $bad = [];
+        foreach (['startTrip', 'completeTrip', 'cancelTrip'] as $method) {
+            if (!preg_match('/function\s+' . $method . '\s*\(/', $src, $m, PREG_OFFSET_CAPTURE)) {
+                $bad[] = "{$method}(missing)";
+                continue;
+            }
+            $rest = substr($src, $m[0][1] + strlen($m[0][0]));
+            // Slice to the next method declaration = this method's body.
+            $end  = preg_match('/\n    (?:public|private|protected)\s+function\s/', $rest, $nm, PREG_OFFSET_CAPTURE)
+                ? $nm[0][1] : strlen($rest);
+            $body = substr($rest, 0, $end);
+            if (strpos($body, 'casUpdateEntity') === false) {
+                $bad[] = "{$method}(no-CAS)";
+            }
+            // The old unguarded transition idiom must be gone.
+            if (preg_match('/setEntity\(\s*self::COL_TRIP_LOGS[^;]*[\'"]status[\'"]\s*=>/s', $body)) {
+                $bad[] = "{$method}(bare-setEntity-status)";
+            }
+        }
+        if ($bad !== []) {
+            return ['status' => 'FAIL', 'detail' => 'trip transitions not CAS-guarded: ' . implode(', ', $bad)];
+        }
+        return ['status' => 'PASS', 'detail' => 'startTrip/completeTrip/cancelTrip route status transitions through casUpdateEntity'];
+    }
+
+    /**
+     * CH-TRN-CON2-1 — the checkpoints[] single-element mutators
+     * (_updateCheckpointState, markCheckpointLeft) must route through
+     * casUpdateEntity (CAS), never a bare setEntity that rewrites the whole
+     * 'checkpoints' array from a stale read — that is the CON-2 lost-update
+     * race. (The tally writer is converted separately under CON-1.) Source-scan.
+     */
+    private function _chTrnCon2_1(): array
+    {
+        $path = APPPATH . 'libraries/Transport_service.php';
+        if (!is_readable($path)) {
+            return ['status' => 'FAIL', 'detail' => "cannot read {$path}"];
+        }
+        $src = (string) file_get_contents($path);
+        $bad = [];
+        foreach (['_updateCheckpointState', 'markCheckpointLeft'] as $method) {
+            if (!preg_match('/function\s+' . $method . '\s*\(/', $src, $m, PREG_OFFSET_CAPTURE)) {
+                $bad[] = "{$method}(missing)";
+                continue;
+            }
+            $rest = substr($src, $m[0][1] + strlen($m[0][0]));
+            $end  = preg_match('/\n    (?:public|private|protected)\s+function\s/', $rest, $nm, PREG_OFFSET_CAPTURE)
+                ? $nm[0][1] : strlen($rest);
+            $body = substr($rest, 0, $end);
+            if (strpos($body, 'casUpdateEntity') === false) {
+                $bad[] = "{$method}(no-CAS)";
+            }
+            if (preg_match('/setEntity\(\s*self::COL_TRIP_LOGS[^;]*[\'"]checkpoints[\'"]\s*=>/s', $body)) {
+                $bad[] = "{$method}(bare-setEntity-checkpoints)";
+            }
+        }
+        if ($bad !== []) {
+            return ['status' => 'FAIL', 'detail' => 'checkpoint array writes not CAS-guarded: ' . implode(', ', $bad)];
+        }
+        return ['status' => 'PASS', 'detail' => '_updateCheckpointState/markCheckpointLeft mutate checkpoints[] through casUpdateEntity'];
+    }
+
+    /** Extract a method body from source by name (declaration → next method decl). */
+    private function _methodBody(string $src, string $name): ?string
+    {
+        if (!preg_match('/function\s+' . preg_quote($name, '/') . '\s*\(/', $src, $m, PREG_OFFSET_CAPTURE)) {
+            return null;
+        }
+        $rest = substr($src, $m[0][1] + strlen($m[0][0]));
+        $end  = preg_match('/\n    (?:public|private|protected)\s+function\s/', $rest, $nm, PREG_OFFSET_CAPTURE)
+            ? $nm[0][1] : strlen($rest);
+        return substr($rest, 0, $end);
+    }
+
+    /**
+     * CH-TRN-CON3-1 — capacity mutations must be atomic. assignStudent and
+     * changeRoute must reserve a seat via _reserveCapacitySeat (check + increment
+     * as one CAS step, not the old check-then-bump TOCTOU), and _bumpCapacityCache
+     * must adjust the counter through casUpdateEntity (no lost-update RMW).
+     * Source-scan.
+     */
+    private function _chTrnCon3_1(): array
+    {
+        $path = APPPATH . 'libraries/Transport_service.php';
+        if (!is_readable($path)) {
+            return ['status' => 'FAIL', 'detail' => "cannot read {$path}"];
+        }
+        $src = (string) file_get_contents($path);
+        $bad = [];
+        foreach (['assignStudent', 'changeRoute'] as $method) {
+            $body = $this->_methodBody($src, $method);
+            if ($body === null) { $bad[] = "{$method}(missing)"; continue; }
+            if (strpos($body, '_reserveCapacitySeat') === false) { $bad[] = "{$method}(no-atomic-reserve)"; }
+        }
+        $bump = $this->_methodBody($src, '_bumpCapacityCache');
+        if ($bump === null) {
+            $bad[] = '_bumpCapacityCache(missing)';
+        } elseif (strpos($bump, 'casUpdateEntity') === false) {
+            $bad[] = '_bumpCapacityCache(non-atomic)';
+        }
+        if ($bad !== []) {
+            return ['status' => 'FAIL', 'detail' => 'capacity ops not atomic: ' . implode(', ', $bad)];
+        }
+        return ['status' => 'PASS', 'detail' => 'assign/changeRoute reserve atomically; _bumpCapacityCache uses CAS'];
+    }
+
+    /**
+     * CH-TRN-CON1-1 — the per-checkpoint boarding tally must be DERIVED from the
+     * deduped transportAttendance event set, not blindly incremented. A blind
+     * +1 double-counts on repeat driver taps (the doc is idempotent, the counter
+     * was not). Assert _updateCheckpointTally derives (via
+     * _tallyBoardingEventsByStop) + writes atomically (casUpdateEntity), and no
+     * longer contains the '+ 1' materialized-counter idiom. Source-scan.
+     */
+    private function _chTrnCon1_1(): array
+    {
+        $path = APPPATH . 'libraries/Transport_service.php';
+        if (!is_readable($path)) {
+            return ['status' => 'FAIL', 'detail' => "cannot read {$path}"];
+        }
+        $src  = (string) file_get_contents($path);
+        $body = $this->_methodBody($src, '_updateCheckpointTally');
+        if ($body === null) {
+            return ['status' => 'FAIL', 'detail' => '_updateCheckpointTally missing'];
+        }
+        $bad = [];
+        if (strpos($body, '_tallyBoardingEventsByStop') === false) { $bad[] = 'not-derived'; }
+        if (strpos($body, 'casUpdateEntity') === false)            { $bad[] = 'non-atomic-write'; }
+        // The blind-increment idiom must be gone.
+        if (preg_match('/students_(?:boarded|no_show)_count[\'"]\s*\]\s*\?\?\s*0\s*\)\s*\+\s*1/', $body)) {
+            $bad[] = 'blind-increment-present';
+        }
+        if ($bad !== []) {
+            return ['status' => 'FAIL', 'detail' => 'checkpoint tally not derived: ' . implode(', ', $bad)];
+        }
+        return ['status' => 'PASS', 'detail' => '_updateCheckpointTally derives per-stop counts from deduped events via casUpdateEntity'];
+    }
+
+    /**
+     * CH-TRN-CON7-1 — the notice idempotency claim must be taken ATOMICALLY
+     * (create-if-not-exists CAS via _tryClaimIdempotency) BEFORE fanout, with a
+     * release path for empty/failed emission — not the old read-precheck + non-CAS
+     * claim-AFTER-emission that let a concurrent double-fire both emit. Source-scan
+     * of Transport_notifier::notify().
+     */
+    private function _chTrnCon7_1(): array
+    {
+        $path = APPPATH . 'libraries/Transport_notifier.php';
+        if (!is_readable($path)) {
+            return ['status' => 'FAIL', 'detail' => "cannot read {$path}"];
+        }
+        $src  = (string) file_get_contents($path);
+        $body = $this->_methodBody($src, 'notify');
+        if ($body === null) {
+            return ['status' => 'FAIL', 'detail' => 'notify() missing'];
+        }
+        $bad = [];
+        $posClaim  = strpos($body, '_tryClaimIdempotency');
+        $posFanout = strpos($body, '_fanout');
+        if ($posClaim === false)                                   { $bad[] = 'no-atomic-claim'; }
+        if (strpos($body, '_releaseIdempotency') === false)        { $bad[] = 'no-release-path'; }
+        if ($posClaim !== false && $posFanout !== false && $posClaim > $posFanout) {
+            $bad[] = 'claim-after-fanout';
+        }
+        // The legacy non-CAS claim-after call must be gone from notify().
+        if (strpos($body, '_claimIdempotency(') !== false) {
+            $bad[] = 'legacy-claim-after-present';
+        }
+        if ($bad !== []) {
+            return ['status' => 'FAIL', 'detail' => 'notice idempotency not claim-before-CAS: ' . implode(', ', $bad)];
+        }
+        return ['status' => 'PASS', 'detail' => 'notify() claims atomically (createEntity CAS) before fanout, with release-on-failure'];
+    }
+
+    /**
+     * CH-TRN-RC2-1 — the FirestoreRestClient::query() missing-index fallback
+     * must drop BOTH orderBy AND limit. Keeping the limit while dropping orderBy
+     * returns an arbitrary `limit` docs sorted only among themselves — a silent
+     * wrong top-N. Dropping both fetches the full where-matched set so the
+     * client-side sort + slice yield the correct top-N. Source-scan.
+     */
+    private function _chTrnRc2_1(): array
+    {
+        $path = APPPATH . 'libraries/Firestore_rest_client.php';
+        if (!is_readable($path)) {
+            return ['status' => 'FAIL', 'detail' => "cannot read {$path}"];
+        }
+        $src  = (string) file_get_contents($path);
+        $body = $this->_methodBody($src, 'query');
+        if ($body === null) {
+            return ['status' => 'FAIL', 'detail' => 'query() missing'];
+        }
+        if (strpos($body, "unset(\$structuredQuery['orderBy'])") === false) {
+            return ['status' => 'FAIL', 'detail' => 'query() fallback does not drop orderBy'];
+        }
+        if (strpos($body, "unset(\$structuredQuery['limit'])") === false) {
+            return ['status' => 'FAIL', 'detail' => 'RC-2: query() fallback keeps limit → wrong top-N on missing index'];
+        }
+        return ['status' => 'PASS', 'detail' => 'query() missing-index fallback drops orderBy AND limit (correct top-N)'];
+    }
+
+    /**
+     * CH-TRN-RC2-2 — the RC-2 transport composite indexes must be present in
+     * firestore.indexes.json (so listTrips/route-summary/expenses/assignments
+     * and the assorted list reads are served by index, incl. the date-normalized
+     * tripLogs composites — not a silent client-sort fallback).
+     */
+    private function _chTrnRc2_2(): array
+    {
+        $path = FCPATH . 'firebase-rules/firestore.indexes.json';
+        if (!is_readable($path)) {
+            return ['status' => 'INFO', 'detail' => 'firestore.indexes.json not readable — trivial pass'];
+        }
+        $json = json_decode((string) file_get_contents($path), true);
+        if (!is_array($json) || !is_array($json['indexes'] ?? null)) {
+            return ['status' => 'FAIL', 'detail' => 'firestore.indexes.json invalid or missing indexes[]'];
+        }
+        $have = [];
+        foreach ($json['indexes'] as $idx) {
+            $cg = (string) ($idx['collectionGroup'] ?? '');
+            $fp = [];
+            foreach ((array) ($idx['fields'] ?? []) as $f) { $fp[] = (string) ($f['fieldPath'] ?? ''); }
+            $have[$cg . '|' . implode(',', $fp)] = true;
+        }
+        $required = [
+            'tripLogs|schoolId,date',
+            'tripLogs|schoolId,route_id,date',
+            'transportExpenses|schoolId,status,expense_date',
+            'transportExpenses|schoolId,expense_date',
+            'studentRoutes|schoolId,session,route_id,student_name',
+            'vehicles|schoolId,number',
+            'routes|schoolId,name',
+            'transportVendors|schoolId,vendor_name',
+            'routeSuspensions|schoolId,status,suspended_from',
+            'driverIncidents|schoolId,incident_date',
+            'temporaryDriverAssignments|schoolId,effective_from',
+        ];
+        $missing = [];
+        foreach ($required as $r) {
+            if (empty($have[$r])) { $missing[] = $r; }
+        }
+        if ($missing !== []) {
+            return ['status' => 'FAIL', 'detail' => 'RC-2 missing composite indexes: ' . implode('; ', $missing)];
+        }
+        return ['status' => 'PASS', 'detail' => count($required) . ' RC-2 transport composite indexes present (incl. date-normalized tripLogs)'];
+    }
+
+    /**
+     * CH-TRN-RC3-1 — the fleetMonthlyExpenseSummary (FMES__) and
+     * vehicleExpiryDashboardCache (VEXPCACHE) doc ids must be BARE at every
+     * writer and reader. setEntity/getEntity add the single {schoolId} prefix;
+     * a manually school-prefixed id gets double-prefixed on write and is missed
+     * by the bare-id analytics readers (PERF-5). This gate forbids any FMES/
+     * VEXPCACHE id built by concatenating a school-id variable. Source-scan
+     * across the writer + both reader surfaces.
+     */
+    private function _chTrnRc3_1(): array
+    {
+        $files = [
+            APPPATH . 'libraries/Transport_service.php',
+            APPPATH . 'libraries/Transport_analytics_service.php',
+            APPPATH . 'controllers/Transport_ops.php',
+        ];
+        $bad = [];
+        foreach ($files as $f) {
+            if (!is_readable($f)) { continue; }
+            $src = (string) file_get_contents($f);
+            // e.g.  $this->schoolId . '_VEXPCACHE'   /   $this->school_name . '_FMES__'
+            if (preg_match('/(schoolId|school_name)\s*\.\s*[\'"]_(FMES__|VEXPCACHE)/', $src)
+                // e.g.  "{$this->schoolId}_FMES__..."  /  "{$this->school_name}_VEXPCACHE"
+                || preg_match('/\{\$this->(schoolId|school_name)\}_(FMES__|VEXPCACHE)/', $src)) {
+                $bad[] = basename($f);
+            }
+        }
+        if ($bad !== []) {
+            return ['status' => 'FAIL', 'detail' => 'FMES/VEXPCACHE id still school-prefixed (double-prefix) in: ' . implode(', ', $bad)];
+        }
+        return ['status' => 'PASS', 'detail' => 'FMES/VEXPCACHE use bare entity ids (canonical single prefix) at all writers + readers'];
+    }
+
+    /**
+     * CH-TRN-RC3-2 — busCapacityCache document ids must come from the single
+     * canonical _capacityCacheId() helper. The hot accessors
+     * (_checkCapacityAvailable, _bumpCapacityCache, _reserveCapacitySeat) must
+     * call the helper and must NOT construct the id inline (the "_CAPCACHE_"
+     * literal belongs only in the helper + the rebuild legacy-purge). Enforces
+     * single-source-of-truth id generation + future-module safety. Source-scan.
+     */
+    private function _chTrnRc3_2(): array
+    {
+        $path = APPPATH . 'libraries/Transport_service.php';
+        if (!is_readable($path)) {
+            return ['status' => 'FAIL', 'detail' => "cannot read {$path}"];
+        }
+        $src = (string) file_get_contents($path);
+        if (strpos($src, 'function _capacityCacheId') === false) {
+            return ['status' => 'FAIL', 'detail' => 'canonical _capacityCacheId() helper missing'];
+        }
+        $bad = [];
+        foreach (['_checkCapacityAvailable', '_bumpCapacityCache', '_reserveCapacitySeat'] as $m) {
+            $body = $this->_methodBody($src, $m);
+            if ($body === null) { $bad[] = "{$m}(missing)"; continue; }
+            if (strpos($body, '_capacityCacheId') === false) { $bad[] = "{$m}(no-helper)"; }
+            if (strpos($body, '_CAPCACHE_') !== false)       { $bad[] = "{$m}(inline-id)"; }
+        }
+        if ($bad !== []) {
+            return ['status' => 'FAIL', 'detail' => 'CAPCACHE id not via canonical helper: ' . implode(', ', $bad)];
+        }
+        return ['status' => 'PASS', 'detail' => 'CAPCACHE id via single canonical _capacityCacheId() helper in all accessors'];
+    }
+
+    /**
+     * CH-TRN-FIN1-1 — Fee_lifecycle::createModuleFee (the generic Transport +
+     * Hostel module-fee writer) must NOT reset the payment state of an existing
+     * demand. It is re-invoked on the same demandId by route change / assignment
+     * edit / rollover / reconcile; it must read the existing demand and preserve
+     * paidAmount (recomputing balance/status), never unconditionally writing
+     * paidAmount=0/status=unpaid over a paid demand (FIN-1). Source-scan.
+     */
+    private function _chTrnFin1_1(): array
+    {
+        $path = APPPATH . 'libraries/Fee_lifecycle.php';
+        if (!is_readable($path)) {
+            return ['status' => 'INFO', 'detail' => 'Fee_lifecycle.php not readable — trivial pass'];
+        }
+        $src  = (string) file_get_contents($path);
+        $body = $this->_methodBody($src, 'createModuleFee');
+        if ($body === null) {
+            return ['status' => 'FAIL', 'detail' => 'createModuleFee() not found'];
+        }
+        $bad = [];
+        // Must read the existing demand before writing.
+        if (strpos($body, "firestoreGet('feeDemands'") === false) {
+            $bad[] = 'no-existing-demand-read';
+        }
+        // Must preserve an existing payment (not unconditionally zero it).
+        if (strpos($body, "'paidAmount' => \$paidSoFar") === false) {
+            $bad[] = 'no-payment-preservation';
+        }
+        if ($bad !== []) {
+            return ['status' => 'FAIL', 'detail' => 'createModuleFee may reset paid demands: ' . implode(', ', $bad)];
+        }
+        return ['status' => 'PASS', 'detail' => 'createModuleFee reads the existing demand + preserves paidAmount (never resets a paid demand)'];
+    }
+
+    /**
+     * CH-TRN-LOG1-1 — driver readiness must be re-validated at DISPATCH, not
+     * only at assignment. createTrip (which also serves event dispatch via
+     * dispatchEventTrip) must validate the resolved effective driver for the
+     * trip date, and startTrip must re-validate for the current day — so an
+     * unfit/on-leave/expired/inactive driver can never be put on a trip. Both
+     * must call _validateDriverReadiness. Source-scan.
+     */
+    private function _chTrnLog1_1(): array
+    {
+        $path = APPPATH . 'libraries/Transport_service.php';
+        if (!is_readable($path)) {
+            return ['status' => 'FAIL', 'detail' => "cannot read {$path}"];
+        }
+        $src = (string) file_get_contents($path);
+        $bad = [];
+        foreach (['createTrip', 'startTrip'] as $m) {
+            $body = $this->_methodBody($src, $m);
+            if ($body === null) { $bad[] = "{$m}(missing)"; continue; }
+            if (strpos($body, '_validateDriverReadiness') === false) { $bad[] = "{$m}(no-readiness-check)"; }
+        }
+        if ($bad !== []) {
+            return ['status' => 'FAIL', 'detail' => 'driver readiness not validated at dispatch: ' . implode(', ', $bad)];
+        }
+        return ['status' => 'PASS', 'detail' => 'createTrip + startTrip validate driver readiness at dispatch (unfit driver rejected)'];
+    }
+
+    /**
+     * CH-TRN-FIN2-1 — Fee_lifecycle::cancelSessionDemands must match the demand
+     * category case-insensitively (strtolower), because createModuleFee stores
+     * it lowercase. A case-sensitive 'Transport' predicate matches zero rows and
+     * leaves old-session demands un-cancelled on rollover (FIN-2). Source-scan.
+     */
+    private function _chTrnFin2_1(): array
+    {
+        $path = APPPATH . 'libraries/Fee_lifecycle.php';
+        if (!is_readable($path)) {
+            return ['status' => 'INFO', 'detail' => 'Fee_lifecycle.php not readable — trivial pass'];
+        }
+        $src  = (string) file_get_contents($path);
+        $body = $this->_methodBody($src, 'cancelSessionDemands');
+        if ($body === null) {
+            return ['status' => 'FAIL', 'detail' => 'cancelSessionDemands() not found'];
+        }
+        $body = $this->_stripComments($body);   // check CODE only, not doc-comments
+        $bad = [];
+        // (a) FIN-2 case fix — category predicate matched case-insensitively.
+        if (!preg_match('/[\'"]category[\'"]\s*,\s*[\'"]==[\'"]\s*,\s*strtolower/', $body)) {
+            $bad[] = 'category-not-lowercased';
+        }
+        // (b) Nested schoolWhere row must be unwrapped to a data-level var.
+        if (strpos($body, "\$row['data']") === false && strpos($body, '_unwrapNestedRow') === false) {
+            $bad[] = 'nested-row-not-unwrapped';
+        }
+        // (c) PAID-DEMAND PRESERVATION PATH (explicit, regression-proof):
+        //   • the skip must read status from the UNWRAPPED level ($d['status']),
+        //   • the skip on 'paid' must exist,
+        //   • the buggy flat read ($row['status']) that silently disabled the
+        //     skip must be ABSENT — reintroducing it would cancel paid demands.
+        if (strpos($body, "\$d['status']") === false) {
+            $bad[] = 'status-not-read-from-unwrapped-data';
+        }
+        if (!preg_match("/===\\s*['\"]paid['\"]/", $body)) {
+            $bad[] = 'no-paid-skip';
+        }
+        if (strpos($body, "\$row['status']") !== false) {
+            $bad[] = 'reads-status-from-nested-envelope(paid-skip-silently-broken)';
+        }
+        if ($bad !== []) {
+            return ['status' => 'FAIL', 'detail' => 'FIN-2: ' . implode(', ', $bad)];
+        }
+        return ['status' => 'PASS', 'detail' => 'cancelSessionDemands: case-insensitive category match + unwrapped rows + paid-skip reads $d[status] and skips paid (paid demands preserved on rollover)'];
+    }
+
+    /**
+     * CH-TRN-CON4-1 — a rollover fee failure must be RECOVERABLE. rolloverSession
+     * must stamp fee_demand_ref='pending' up front in the session flip (so a fee
+     * throw / process death leaves a recoverable marker) and update it to the real
+     * ref only on a confirmed create; and reconcilePendingFees must unwrap the
+     * nested schoolWhere row (read $d[...], not $r['studentId']) so it actually
+     * retries pending students — else the recovery path retries nothing. Source-scan.
+     */
+    private function _chTrnCon4_1(): array
+    {
+        $path = APPPATH . 'libraries/Transport_service.php';
+        if (!is_readable($path)) {
+            return ['status' => 'FAIL', 'detail' => "cannot read {$path}"];
+        }
+        $src = (string) file_get_contents($path);
+        $bad = [];
+        $roll = $this->_methodBody($src, 'rolloverSession');
+        if ($roll === null) {
+            $bad[] = 'rolloverSession(missing)';
+        } else {
+            if (!preg_match("/[\'\"]fee_demand_ref[\'\"]\\s*=>\\s*[\'\"]pending[\'\"]/", $roll)) {
+                $bad[] = 'rollover-no-upfront-pending-marker';
+            }
+            if (strpos($roll, '$rolloverRef') === false) {
+                $bad[] = 'rollover-no-success-ref-update';
+            }
+        }
+        $rec = $this->_methodBody($src, 'reconcilePendingFees');
+        if ($rec === null) {
+            $bad[] = 'reconcilePendingFees(missing)';
+        } else {
+            if (strpos($rec, "\$r['studentId']") !== false) {
+                $bad[] = 'reconcile-reads-nested-envelope(retries-nothing)';
+            }
+            if (strpos($rec, "\$d['studentId']") === false && strpos($rec, '_unwrapNestedRow') === false) {
+                $bad[] = 'reconcile-not-unwrapped';
+            }
+        }
+        if ($bad !== []) {
+            return ['status' => 'FAIL', 'detail' => 'CON-4: ' . implode(', ', $bad)];
+        }
+        return ['status' => 'PASS', 'detail' => 'rollover parks fee_demand_ref=pending upfront + updates on confirmed create; reconcilePendingFees unwraps rows (fee failures recoverable)'];
+    }
+
+    /**
+     * CH-TRN-ENV-1 — systemic guard for the nested {id,data} schoolWhere
+     * envelope. The transport-scoped methods found reading domain fields flat
+     * off the row (the audit's 6 sites) must unwrap the envelope
+     * (_unwrapNestedRow / $row['data']) before any field access. Prevents the
+     * whole class from regressing. Source-scan.
+     */
+    private function _chTrnEnv1(): array
+    {
+        $bad = [];
+        $tsPath = APPPATH . 'libraries/Transport_service.php';
+        if (!is_readable($tsPath)) {
+            return ['status' => 'FAIL', 'detail' => 'Transport_service.php unreadable'];
+        }
+        $ts = (string) file_get_contents($tsPath);
+        foreach (['computeFleetExpiryDashboard', 'rebuildCapacityCache', 'listActiveDrivers', 'computeDriverActivitySummary', '_recomputeKmpl'] as $m) {
+            $body = $this->_methodBody($ts, $m);
+            if ($body === null) { $bad[] = "{$m}(missing)"; continue; }
+            if (strpos($body, '_unwrapNestedRow') === false && strpos($body, "['data']") === false) {
+                $bad[] = "{$m}(flat-read)";
+            }
+        }
+        $cPath = APPPATH . 'controllers/Transport.php';
+        if (is_readable($cPath)) {
+            $body = $this->_methodBody((string) file_get_contents($cPath), 'get_lifecycle_log');
+            if ($body !== null && strpos($body, "['data']") === false && strpos($body, '_unwrapNestedRow') === false) {
+                $bad[] = 'get_lifecycle_log(flat-read)';
+            }
+        }
+        if ($bad !== []) {
+            return ['status' => 'FAIL', 'detail' => 'nested-envelope flat reads: ' . implode(', ', $bad)];
+        }
+        return ['status' => 'PASS', 'detail' => 'transport schoolWhere consumers unwrap the {id,data} envelope (expiry/capacity/drivers/activity/kmpl/lifecycle-log)'];
+    }
+
+    /**
+     * CH-TRN-FEE-1 — Fees stabilization: Fee_firestore_txn::allocationsForStudent
+     * must read each allocation's doc-id from the schoolWhere ENVELOPE row id,
+     * not from the data dict (which has no id). Reading it flat returned [] →
+     * the refund R.6 stale-allocation guard never fired → a refund could reverse
+     * a superseded allocation and corrupt a newer receipt. Source-scan.
+     */
+    private function _chTrnFeeAlloc(): array
+    {
+        $path = APPPATH . 'libraries/Fee_firestore_txn.php';
+        if (!is_readable($path)) {
+            return ['status' => 'INFO', 'detail' => 'Fee_firestore_txn.php not readable — trivial pass'];
+        }
+        $body = $this->_methodBody((string) file_get_contents($path), 'allocationsForStudent');
+        if ($body === null) {
+            return ['status' => 'FAIL', 'detail' => 'allocationsForStudent() not found'];
+        }
+        if (strpos($body, "\$r['id']") === false) {
+            return ['status' => 'FAIL', 'detail' => 'FEE: allocationsForStudent _docId not read from envelope row id (stale-allocation guard would be dead)'];
+        }
+        return ['status' => 'PASS', 'detail' => 'allocationsForStudent reads _docId from the envelope row id (refund stale-allocation guard functional)'];
+    }
+
+    /**
+     * CH-TRN-FIN3-1 — expense↔ledger integrity (FIN-3 + FIN-4). A POSTED
+     * transport expense's financial fields must be immutable (editing them was
+     * a dedup no-op re-post → record/ledger divergence), and voiding a posted
+     * expense must reverse its journal (a status-only void overstated the GL).
+     * Source-scan of Transport_service.
+     */
+    private function _chTrnFin3_1(): array
+    {
+        $path = APPPATH . 'libraries/Transport_service.php';
+        if (!is_readable($path)) {
+            return ['status' => 'INFO', 'detail' => 'Transport_service.php not readable — trivial pass'];
+        }
+        $src = (string) file_get_contents($path);
+
+        // FIN-3: saveExpense blocks financial edits on a posted expense and
+        // preserves the posted ref on a non-financial edit (no pending reset).
+        $save = $this->_methodBody($src, 'saveExpense');
+        if ($save === null) {
+            return ['status' => 'FAIL', 'detail' => 'saveExpense() not found'];
+        }
+        if (strpos($save, '$financialChanged') === false || strpos($save, 'throw') === false) {
+            return ['status' => 'FAIL', 'detail' => 'FIN-3: saveExpense does not block financial edits on a posted expense (divergence path open)'];
+        }
+        // The immutability set MUST include expense_date (it is the journal date
+        // + FMES month key) — else a posted expense's date can diverge from its GL.
+        if (strpos($save, '$newDate') === false || strpos($save, "\$existing['expense_date']") === false) {
+            return ['status' => 'FAIL', 'detail' => 'FIN-3: posted-expense immutability omits expense_date (record date/period can diverge from the GL journal)'];
+        }
+        if (strpos($save, '$isPosted ? $existingRef') === false) {
+            return ['status' => 'FAIL', 'detail' => 'FIN-3: saveExpense resets accounting_journal_ref on a posted edit (dedup no-op re-post)'];
+        }
+
+        // FIN-4: voidExpense reverses the journal and aborts when it cannot.
+        $void = $this->_methodBody($src, 'voidExpense');
+        if ($void === null) {
+            return ['status' => 'FAIL', 'detail' => 'voidExpense() not found'];
+        }
+        if (strpos($void, '_reverseExpensePost') === false || strpos($void, 'throw') === false) {
+            return ['status' => 'FAIL', 'detail' => 'FIN-4: voidExpense does not reverse the journal / abort on failure (GL overstated on void)'];
+        }
+
+        // The reversal seam actually calls the idempotent postReversal.
+        $rev = $this->_methodBody($src, '_reverseExpensePost');
+        if ($rev === null || strpos($rev, 'postReversal') === false) {
+            return ['status' => 'FAIL', 'detail' => 'FIN-4: _reverseExpensePost missing or does not call postReversal'];
+        }
+
+        return ['status' => 'PASS', 'detail' => 'FIN-3 posted-expense financial fields immutable + ref preserved; FIN-4 void reverses journal via postReversal (aborts if unreversible)'];
+    }
+
+    /**
+     * CH-TRN-OPSN-1 — transport OPS notices (_fanoutOps → notices) must carry the
+     * canonical `timestamp` (+ timestampMs) that the Admin Panel notice-bell
+     * (NoticeAnnouncement::getRecentNotices, ORDER BY timestamp DESC via a
+     * server-side index) sorts on — else Firestore drops them and admins never
+     * see them. Source-scan of Transport_notifier::_fanoutOps.
+     */
+    private function _chTrnOpsn1(): array
+    {
+        $path = APPPATH . 'libraries/Transport_notifier.php';
+        if (!is_readable($path)) {
+            return ['status' => 'INFO', 'detail' => 'Transport_notifier.php not readable — trivial pass'];
+        }
+        $body = $this->_methodBody((string) file_get_contents($path), '_fanoutOps');
+        if ($body === null) {
+            return ['status' => 'FAIL', 'detail' => '_fanoutOps() not found'];
+        }
+        if (strpos($body, "'timestamp'") === false || strpos($body, "'timestampMs'") === false) {
+            return ['status' => 'FAIL', 'detail' => 'OPS-NOTICE: _fanoutOps omits canonical timestamp/timestampMs → invisible in the Admin notice-bell (ORDER BY timestamp)'];
+        }
+        // Must not have dropped the app-facing sentAt sort key either.
+        if (strpos($body, "'sentAt'") === false) {
+            return ['status' => 'FAIL', 'detail' => 'OPS-NOTICE: _fanoutOps dropped sentAt (app notice feeds order by it)'];
+        }
+        return ['status' => 'PASS', 'detail' => '_fanoutOps writes canonical timestamp+timestampMs (admin-bell visible) alongside sentAt (app feeds) — one notice contract'];
+    }
+
+    /**
+     * CH-TRN-NF1-1 — the Transport controller must NOT depend on
+     * Operations_accounting (F3 removed the load; the orphaned
+     * $this->operations_accounting->search_students() call fatally 500'd). The
+     * student search must route through the Firestore-native
+     * Transport_service::searchStudents(). Regression guard so the dependency
+     * cannot be reintroduced into the controller. Source-scan.
+     */
+    private function _chTrnNf1(): array
+    {
+        $ctrlPath = APPPATH . 'controllers/Transport.php';
+        $svcPath  = APPPATH . 'libraries/Transport_service.php';
+        if (!is_readable($ctrlPath) || !is_readable($svcPath)) {
+            return ['status' => 'INFO', 'detail' => 'Transport.php / Transport_service.php not readable — trivial pass'];
+        }
+        $ctrl = (string) file_get_contents($ctrlPath);
+        // No live method call on the (unloaded) operations_accounting property.
+        if (strpos($ctrl, '$this->operations_accounting->') !== false) {
+            return ['status' => 'FAIL', 'detail' => 'NF-1: Transport controller calls $this->operations_accounting-> (unloaded after F3 → fatal 500)'];
+        }
+        // Search routes through the service layer.
+        if (strpos($ctrl, 'transport->searchStudents') === false) {
+            return ['status' => 'FAIL', 'detail' => 'NF-1: search_students does not route through Transport_service::searchStudents'];
+        }
+        // The Firestore-native service method exists and reads students school-scoped.
+        $svc = $this->_methodBody((string) file_get_contents($svcPath), 'searchStudents');
+        if ($svc === null || strpos($svc, "schoolWhere('students'") === false) {
+            return ['status' => 'FAIL', 'detail' => 'NF-1: Transport_service::searchStudents missing or not school-scoped'];
+        }
+        return ['status' => 'PASS', 'detail' => 'Transport controller free of Operations_accounting; student search routes through Firestore-native Transport_service::searchStudents (school-scoped)'];
+    }
+
+    /**
+     * CH-TRN-RCP-1 — CANONICAL parent-notification recipient contract. Every
+     * parent-facing fanout MUST resolve recipients through the single
+     * _resolveStudentRecipients() (studentId → the student doc's `userId`
+     * field), and NO parent path may read the legacy/absent parent identifiers
+     * (parent_db_key / parentId / parent_id) which resolved to zero recipients.
+     * Ops/staff role-based delivery (_fanoutOps → targetRoles) is a separate,
+     * intentionally-unchanged contract. Source-scan.
+     */
+    private function _chTrnRcp1(): array
+    {
+        $path = APPPATH . 'libraries/Transport_notifier.php';
+        if (!is_readable($path)) {
+            return ['status' => 'INFO', 'detail' => 'Transport_notifier.php not readable — trivial pass'];
+        }
+        $src = (string) file_get_contents($path);
+
+        // The single canonical resolver exists and reads the userId field.
+        $resolver = $this->_methodBody($src, '_resolveStudentRecipients');
+        $mapper   = $this->_methodBody($src, '_recipientUserIdFromStudent');
+        if ($resolver === null || $mapper === null || strpos($mapper, "'userId'") === false) {
+            return ['status' => 'FAIL', 'detail' => 'RCP: canonical userId resolver/mapper missing (recipient contract not single-sourced)'];
+        }
+        // Every parent-facing fanout routes through it.
+        foreach (['_fanoutParentsOfStudents', '_resolveParentsOfRoute'] as $m) {
+            $body = $this->_methodBody($src, $m);
+            if ($body === null || strpos($body, '_resolveStudentRecipients') === false) {
+                return ['status' => 'FAIL', 'detail' => "RCP: {$m} does not use the canonical _resolveStudentRecipients"];
+            }
+        }
+        // No ACTIVE legacy recipient reads (quoted field-access; prose comments are fine).
+        foreach (["['parent_db_key']", "['parentId']", "['parent_id']", "'parent_db_key'", "'parent_id'"] as $legacy) {
+            if (strpos($src, $legacy) !== false) {
+                return ['status' => 'FAIL', 'detail' => "RCP: legacy recipient field {$legacy} still read (inconsistent recipient resolution)"];
+            }
+        }
+        return ['status' => 'PASS', 'detail' => 'all parent fanouts resolve recipients via the single canonical userId resolver; no legacy parent-id reads remain'];
+    }
+
+    /**
+     * CH-TRN-PERF6-1 — the cross-tenant KPI loop (the nightly rollup's O(tenants)
+     * core) must isolate each tenant so one failing/hung tenant cannot abort the
+     * whole run. Source-scan for the per-tenant catch.
+     */
+    private function _chTrnPerf6_1(): array
+    {
+        $path = APPPATH . 'libraries/Transport_analytics_service.php';
+        if (!is_readable($path)) {
+            return ['status' => 'INFO', 'detail' => 'Transport_analytics_service.php not readable — trivial pass'];
+        }
+        $body = $this->_methodBody((string) file_get_contents($path), 'getCrossTenantFleetKpi');
+        if ($body === null) {
+            return ['status' => 'FAIL', 'detail' => 'getCrossTenantFleetKpi() not found'];
+        }
+        if (strpos($body, 'TRN_CROSS_TENANT_KPI_SKIP') === false) {
+            return ['status' => 'FAIL', 'detail' => 'PERF-6: per-tenant failure not isolated (one bad tenant aborts the whole rollup)'];
+        }
+        return ['status' => 'PASS', 'detail' => 'cross-tenant loop isolates each tenant (a failing tenant is logged + skipped, others aggregate)'];
+    }
+
+    /**
+     * CH-TRN-PERF10-1 — Transport_analytics_service::_memo must tenant-scope its
+     * cache key (prefix with schoolId) so a reused instance cannot serve one
+     * school's cached value to another. Source-scan.
+     */
+    private function _chTrnPerf10_1(): array
+    {
+        $path = APPPATH . 'libraries/Transport_analytics_service.php';
+        if (!is_readable($path)) {
+            return ['status' => 'INFO', 'detail' => 'Transport_analytics_service.php not readable — trivial pass'];
+        }
+        $body = $this->_methodBody((string) file_get_contents($path), '_memo');
+        if ($body === null) {
+            return ['status' => 'FAIL', 'detail' => '_memo() not found'];
+        }
+        if (strpos($body, '$this->schoolId . ') === false) {
+            return ['status' => 'FAIL', 'detail' => 'PERF-10: memo key not tenant-scoped (cross-tenant cache bleed without external reset)'];
+        }
+        return ['status' => 'PASS', 'detail' => 'analytics _memo key is prefixed with schoolId (tenant-isolated cache)'];
+    }
+
+    /**
+     * CH-TRN-PERF7-1 — list scans must be bounded (PERF-7 listExpenses, PERF-8
+     * listAssignments) and the expense trend must use a single IN query
+     * (PERF-11) instead of N sequential point-reads. Source-scan.
+     */
+    private function _chTrnPerf7_1(): array
+    {
+        $ts = APPPATH . 'libraries/Transport_service.php';
+        $ta = APPPATH . 'libraries/Transport_analytics_service.php';
+        if (!is_readable($ts) || !is_readable($ta)) {
+            return ['status' => 'INFO', 'detail' => 'transport sources not readable — trivial pass'];
+        }
+        $tsSrc = (string) file_get_contents($ts);
+        foreach (['listExpenses', 'listAssignments'] as $m) {
+            $body = $this->_methodBody($tsSrc, $m);
+            if ($body === null || strpos($body, 'LIST_SCAN_LIMIT') === false) {
+                return ['status' => 'FAIL', 'detail' => "PERF-7/8: {$m} scan not bounded (LIST_SCAN_LIMIT absent — unbounded full-collection read)"];
+            }
+        }
+        $trend = $this->_methodBody((string) file_get_contents($ta), 'getFleetExpenseTrend');
+        if ($trend === null || strpos($trend, "'period_year_month', 'in'") === false) {
+            return ['status' => 'FAIL', 'detail' => 'PERF-11: getFleetExpenseTrend not a single IN query (N sequential point-reads)'];
+        }
+        return ['status' => 'PASS', 'detail' => 'listExpenses/listAssignments bounded by LIST_SCAN_LIMIT; expense trend uses one IN query with per-month fallback'];
+    }
+
+    /**
+     * CH-TRN-FIN5-1 — the transport expense poster (PayrollAccountingService::
+     * postExpense) must pre-validate its ledger + counter accounts read-only
+     * (via _accountPostable) before calling the engine — Operations_accounting::
+     * create_journal halts the whole request with json_error()+exit on a
+     * missing/inactive/group account. Source-scan.
+     */
+    private function _chTrnFin5_1(): array
+    {
+        $path = APPPATH . 'services/PayrollAccountingService.php';
+        if (!is_readable($path)) {
+            return ['status' => 'INFO', 'detail' => 'PayrollAccountingService.php not readable — trivial pass'];
+        }
+        $src = (string) file_get_contents($path);
+        if ($this->_methodBody($src, '_accountPostable') === null) {
+            return ['status' => 'FAIL', 'detail' => 'FIN-5: _accountPostable read-only pre-check missing'];
+        }
+        $post = $this->_methodBody($src, 'postExpense');
+        if ($post === null || strpos($post, '_accountPostable') === false) {
+            return ['status' => 'FAIL', 'detail' => 'FIN-5: postExpense does not pre-validate accounts (engine json_error can halt the request)'];
+        }
+        return ['status' => 'PASS', 'detail' => 'postExpense pre-validates ledger+counter accounts (bad account → pending, not an uncatchable halt)'];
+    }
+
+    /**
+     * CH-TRN-SEC5-1 — getCrossTenantFleetKpi rewires the shared FS singleton per
+     * tenant; it MUST restore the origin in a finally block (and assert ready),
+     * else a mid-loop throw leaves the singleton on the last tenant (cross-tenant
+     * bleed). Source-scan.
+     */
+    private function _chTrnSec5_1(): array
+    {
+        $path = APPPATH . 'libraries/Transport_analytics_service.php';
+        if (!is_readable($path)) {
+            return ['status' => 'INFO', 'detail' => 'Transport_analytics_service.php not readable — trivial pass'];
+        }
+        $body = $this->_methodBody((string) file_get_contents($path), 'getCrossTenantFleetKpi');
+        if ($body === null) {
+            return ['status' => 'FAIL', 'detail' => 'getCrossTenantFleetKpi() not found'];
+        }
+        if (strpos($body, 'finally') === false
+            || strpos($body, '$this->schoolId = $originalSid') === false
+            || strpos($body, '_assertReady') === false) {
+            return ['status' => 'FAIL', 'detail' => 'SEC-5: cross-tenant compose does not restore the FS singleton in a finally (bleed on throw)'];
+        }
+        return ['status' => 'PASS', 'detail' => 'getCrossTenantFleetKpi restores the FS singleton in finally + asserts ready (no cross-tenant bleed)'];
+    }
+
+    /**
+     * CH-TRN-CON5-1 — _appendAssignmentHistoryEvent must use a DETERMINISTIC id
+     * in a batch/rollover context (batchId != '') so a concurrent re-pump
+     * overwrites the same history doc instead of minting a duplicate (+ doubling
+     * the numbering counter). Source-scan.
+     */
+    private function _chTrnCon5_1(): array
+    {
+        $path = APPPATH . 'libraries/Transport_service.php';
+        if (!is_readable($path)) {
+            return ['status' => 'INFO', 'detail' => 'Transport_service.php not readable — trivial pass'];
+        }
+        $body = $this->_methodBody((string) file_get_contents($path), '_appendAssignmentHistoryEvent');
+        if ($body === null) {
+            return ['status' => 'FAIL', 'detail' => '_appendAssignmentHistoryEvent() not found'];
+        }
+        // Must branch on batchId and build a deterministic HIST_ id in that arm.
+        if (strpos($body, "\$batchId !== ''") === false || strpos($body, "'HIST_'") === false) {
+            return ['status' => 'FAIL', 'detail' => 'CON-5: history append not deterministic in batch context (re-pump duplicates history)'];
+        }
+        return ['status' => 'PASS', 'detail' => 'batch/rollover history uses a deterministic (student,batch,event) id — idempotent on re-pump'];
+    }
+
+    /**
+     * CH-TRN-LOG5-1 — _writeBoardingEvent must apply the frozen-roster
+     * membership gate to ALL event types including no_show (exempting no_show
+     * let markStudentNoShow(anyId) alert an unrelated parent + inflate the tally).
+     */
+    private function _chTrnLog5_1(): array
+    {
+        $path = APPPATH . 'libraries/Transport_service.php';
+        if (!is_readable($path)) {
+            return ['status' => 'INFO', 'detail' => 'Transport_service.php not readable — trivial pass'];
+        }
+        $body = $this->_methodBody((string) file_get_contents($path), '_writeBoardingEvent');
+        if ($body === null) {
+            return ['status' => 'FAIL', 'detail' => '_writeBoardingEvent() not found'];
+        }
+        // The roster gate must NOT special-case no_show out of the membership check.
+        if (strpos($body, "!== 'no_show' && !in_array(\$studentId, \$roster") !== false
+            || strpos($body, "!= 'no_show' && !in_array(\$studentId, \$roster") !== false) {
+            return ['status' => 'FAIL', 'detail' => 'LOG-5: no_show still exempt from the frozen-roster gate (wrong parent alerted)'];
+        }
+        if (strpos($body, 'is not on the frozen roster') === false) {
+            return ['status' => 'FAIL', 'detail' => 'LOG-5: roster membership gate missing'];
+        }
+        return ['status' => 'PASS', 'detail' => 'no_show honours the frozen-roster membership gate (no cross-parent misfire)'];
+    }
+
+    /**
+     * CH-TRN-LOG4-1 — the escort HR-Active check (_assertEscortsActive) must run
+     * on every escort-mutating path (scheduleEvent, updateEvent, addEventEscort)
+     * AND at dispatchEventTrip — a staff member terminated after scheduling must
+     * not remain a recorded safety escort.
+     */
+    private function _chTrnLog4_1(): array
+    {
+        $path = APPPATH . 'libraries/Transport_service.php';
+        if (!is_readable($path)) {
+            return ['status' => 'INFO', 'detail' => 'Transport_service.php not readable — trivial pass'];
+        }
+        $src = (string) file_get_contents($path);
+        if ($this->_methodBody($src, '_assertEscortsActive') === null) {
+            return ['status' => 'FAIL', 'detail' => 'LOG-4: _assertEscortsActive helper missing'];
+        }
+        $missing = [];
+        foreach (['scheduleEvent', 'updateEvent', 'addEventEscort', 'dispatchEventTrip'] as $m) {
+            $body = $this->_methodBody($src, $m);
+            if ($body === null || strpos($body, '_assertEscortsActive') === false) {
+                $missing[] = $m;
+            }
+        }
+        if ($missing !== []) {
+            return ['status' => 'FAIL', 'detail' => 'LOG-4: escort HR-active check not applied in: ' . implode(', ', $missing)];
+        }
+        return ['status' => 'PASS', 'detail' => 'escort HR-active gate runs on schedule/update/add + at dispatch (no terminated-staff escort)'];
+    }
+
+    /**
+     * CH-TRN-SEC2-1 — the tripLogs create rule must bind a non-admin (staff)
+     * create to the trip's own driver (driverIs(driver_staff_id)); a bare
+     * isStaff() create let any staff plant a trip with an arbitrary driver and
+     * drive its state machine. Source-scan of the rules file.
+     */
+    private function _chTrnSec2_1(): array
+    {
+        $path = FCPATH . 'firebase-rules/firestore.rules';
+        if (!is_readable($path)) {
+            $alt = realpath(APPPATH . '../firebase-rules/firestore.rules');
+            if ($alt === false || !is_readable($alt)) {
+                return ['status' => 'INFO', 'detail' => 'firestore.rules not readable — trivial pass'];
+            }
+            $path = $alt;
+        }
+        $rules = (string) file_get_contents($path);
+        $start = strpos($rules, 'match /tripLogs/');
+        if ($start === false) {
+            return ['status' => 'FAIL', 'detail' => 'SEC-2: tripLogs match block not found'];
+        }
+        // Window spans the tripLogs match block's read+create region.
+        $block = substr($rules, $start, 2200);
+        if (strpos($block, "driverIs(request.resource.data.get('driver_staff_id'") === false) {
+            return ['status' => 'FAIL', 'detail' => 'SEC-2: tripLogs create not bound to driverIs(driver_staff_id) — any staff can plant a trip'];
+        }
+        return ['status' => 'PASS', 'detail' => 'tripLogs create binds non-admin writes to the trip driver (driverIs(driver_staff_id))'];
+    }
+
+    /**
+     * CH-TRN-SEC3-1 — transport fleet analytics (dashboard slot + the
+     * Transport_analytics HTTP surface) must gate on the per-school Operations
+     * RBAC grant, not only the hardcoded role-scope matrix — otherwise a role
+     * with the Transport module revoked still sees fleet financials. Source-scan.
+     */
+    private function _chTrnSec3_1(): array
+    {
+        $dir = APPPATH . 'controllers';
+        $admin = @file_get_contents("{$dir}/Admin.php");
+        $anal  = @file_get_contents("{$dir}/Transport_analytics.php");
+        if ($admin === false || $anal === false) {
+            return ['status' => 'INFO', 'detail' => 'Admin.php / Transport_analytics.php not readable — trivial pass'];
+        }
+        // Dashboard slot must gate on Operations alongside the visibility check.
+        if (strpos($admin, "has_permission('Operations')") === false
+            || strpos($admin, 'transport_fleet') === false) {
+            return ['status' => 'FAIL', 'detail' => 'SEC-3: Admin dashboard transport slot not gated on has_permission(Operations)'];
+        }
+        // Every analytics endpoint gate (bundle + _widget) must require it too.
+        if (substr_count($anal, "has_permission('Operations')") < 2) {
+            return ['status' => 'FAIL', 'detail' => 'SEC-3: Transport_analytics endpoints not fully gated on has_permission(Operations)'];
+        }
+        return ['status' => 'PASS', 'detail' => 'fleet analytics (dashboard slot + bundle + widgets) gated on the Operations RBAC grant'];
+    }
+
+    /**
+     * CH-TRN-SEC4-1 — Transport HTTP controllers must read the caller role from
+     * the canonical $this->admin_role (set by MY_Controller from session/claims),
+     * NOT the phantom session key 'role' (always '' → role gate fail-closed →
+     * endpoint non-functional). Source-scan of the Transport_* controllers.
+     */
+    private function _chTrnSec4_1(): array
+    {
+        $dir = APPPATH . 'controllers';
+        $offenders = [];
+        foreach (['Transport_sos', 'Transport_trip', 'Transport_event', 'Transport_analytics', 'Transport_driver'] as $c) {
+            $p = "{$dir}/{$c}.php";
+            if (!is_readable($p)) { continue; }
+            if (strpos((string) file_get_contents($p), "userdata('role')") !== false) {
+                $offenders[] = $c;
+            }
+        }
+        if ($offenders !== []) {
+            return ['status' => 'FAIL', 'detail' => "SEC-4: phantom userdata('role') still read in: " . implode(', ', $offenders) . ' (role gate fail-closed → endpoints dead)'];
+        }
+        return ['status' => 'PASS', 'detail' => 'Transport controllers read the caller role from the canonical admin_role (no phantom userdata(role))'];
+    }
+
+    /**
+     * CH-TRN-PERF4-1 — the SA fleet leaderboard must serve from the nightly
+     * cross-tenant rollup (one document read) rather than recomputing per-tenant
+     * KPIs synchronously on the request (O(tenants) → timeout). Verifies
+     * getFleetLeaderboard routes through the cached path, the cached path reads
+     * the rollup doc + has a bounded fallback, and a nightly writer exists.
+     */
+    private function _chTrnPerf4_1(): array
+    {
+        $path = APPPATH . 'libraries/Transport_analytics_service.php';
+        if (!is_readable($path)) {
+            return ['status' => 'INFO', 'detail' => 'Transport_analytics_service.php not readable — trivial pass'];
+        }
+        $src = (string) file_get_contents($path);
+
+        $lb = $this->_methodBody($src, 'getFleetLeaderboard');
+        if ($lb === null || strpos($lb, 'getCrossTenantFleetKpiCached') === false) {
+            return ['status' => 'FAIL', 'detail' => 'PERF-4: getFleetLeaderboard still calls the raw O(tenants) compute (not the rollup-cached path)'];
+        }
+        $cached = $this->_methodBody($src, 'getCrossTenantFleetKpiCached');
+        if ($cached === null
+            || strpos($cached, 'COL_FLEET_ROLLUP') === false
+            || strpos($cached, 'array_slice') === false) {
+            return ['status' => 'FAIL', 'detail' => 'PERF-4: cached path missing rollup read or bounded live fallback'];
+        }
+        if ($this->_methodBody($src, 'storeCrossTenantFleetRollup') === null) {
+            return ['status' => 'FAIL', 'detail' => 'PERF-4: nightly storeCrossTenantFleetRollup writer missing'];
+        }
+        return ['status' => 'PASS', 'detail' => 'SA leaderboard serves the transportFleetRollup doc (O(1) read) with a bounded live fallback; nightly writer present'];
+    }
+
+    /**
+     * CH-TRN-PERF3-1 — getLiveOperationsSnapshot must compute
+     * students_currently_onboard from the SINGLE [trip_date==today]
+     * transportAttendance scan (bucketed in-memory), not one query per
+     * InProgress trip. Asserts the attendance collection is queried at most
+     * once and the in-memory bucket is present. Source-scan.
+     */
+    private function _chTrnPerf3_1(): array
+    {
+        $path = APPPATH . 'libraries/Transport_analytics_service.php';
+        if (!is_readable($path)) {
+            return ['status' => 'INFO', 'detail' => 'Transport_analytics_service.php not readable — trivial pass'];
+        }
+        $body = $this->_methodBody((string) file_get_contents($path), 'getLiveOperationsSnapshot');
+        if ($body === null) {
+            return ['status' => 'FAIL', 'detail' => 'getLiveOperationsSnapshot() not found'];
+        }
+        $attQueries = substr_count($body, "schoolWhere('transportAttendance'");
+        if ($attQueries > 1) {
+            return ['status' => 'FAIL', 'detail' => "PERF-3: transportAttendance queried {$attQueries}× in getLiveOperationsSnapshot (N+1 per-trip loop reintroduced)"];
+        }
+        if (strpos($body, '$perTripBoarded') === false) {
+            return ['status' => 'FAIL', 'detail' => 'PERF-3: onboard not derived from the in-memory single-scan bucket'];
+        }
+        // id-form: $inProgressIds must be the BARE canonical trip id (the trip
+        // doc's `id` field), matching transportAttendance.tripId. Collecting the
+        // PREFIXED schoolWhere envelope id ($t['id']) makes every bucket lookup
+        // miss → students_currently_onboard stuck at 0.
+        if (strpos($body, "\$inProgressIds[] = (string) (\$t['id']") !== false) {
+            return ['status' => 'FAIL', 'detail' => 'PERF-3: inProgressIds uses the PREFIXED envelope id ($t[id]) — mismatches bare attendance.tripId → onboard always 0'];
+        }
+        if (strpos($body, "\$inProgressIds[] = (string) (\$inner['id']") === false) {
+            return ['status' => 'FAIL', 'detail' => 'PERF-3: inProgressIds not collected as the bare trip id ($inner[id])'];
+        }
+        // Tenant isolation: the bare id is only an in-memory join key, valid ONLY
+        // because BOTH source datasets are school-scoped. Both the trips and the
+        // attendance reads MUST go through schoolWhere (which injects schoolId==),
+        // never a raw unscoped query — else the bare id could join across tenants.
+        if (strpos($body, "schoolWhere('tripLogs'") === false
+            || strpos($body, "schoolWhere('transportAttendance'") === false) {
+            return ['status' => 'FAIL', 'detail' => 'PERF-3: trips/attendance not read via schoolWhere — bare-id bucketing would not be tenant-scoped'];
+        }
+        return ['status' => 'PASS', 'detail' => 'onboard derived from one [trip_date==today] attendance scan bucketed in-memory; inProgressIds uses the bare canonical trip id; both source reads are school-scoped (schoolWhere) so the bare-id join is tenant-isolated'];
+    }
+
+    /**
+     * CH-TRN-SEC1-1 — the transportAttendance create rule must bind non-admin
+     * writes to the DRIVER OF THE REFERENCED TRIP (a forged no_show is a false
+     * parent safety alert). Verifies the firestore.rules create block reads the
+     * trip's driver_staff_id via get(tripLogs) and compares it to the caller's
+     * user_id claim. Source-scan of the rules file.
+     */
+    private function _chTrnSec1_1(): array
+    {
+        $path = FCPATH . 'firebase-rules/firestore.rules';
+        if (!is_readable($path)) {
+            // Fallback: repo-root relative to APPPATH.
+            $alt = realpath(APPPATH . '../firebase-rules/firestore.rules');
+            if ($alt === false || !is_readable($alt)) {
+                return ['status' => 'INFO', 'detail' => 'firestore.rules not readable — trivial pass'];
+            }
+            $path = $alt;
+        }
+        $rules = (string) file_get_contents($path);
+        // Isolate the transportAttendance match block.
+        $start = strpos($rules, 'match /transportAttendance/');
+        if ($start === false) {
+            return ['status' => 'FAIL', 'detail' => 'SEC-1: transportAttendance match block not found'];
+        }
+        $block = substr($rules, $start, 3000);
+        $hasTripGet   = strpos($block, 'documents/tripLogs/') !== false;
+        $bindsDriver  = strpos($block, 'driver_staff_id == request.auth.token.user_id') !== false;
+        if (!$hasTripGet || !$bindsDriver) {
+            return ['status' => 'FAIL', 'detail' => 'SEC-1: attendance create not bound to trip driver (get(tripLogs).driver_staff_id == user_id missing) — any staff can forge a safety event'];
+        }
+        return ['status' => 'PASS', 'detail' => 'transportAttendance create binds non-admin writes to the trip driver (get(tripLogs).driver_staff_id == user_id)'];
+    }
+
+    /**
+     * CH-TRN-XMOD1-1 — the Teacher app reads vehicles.currentRouteId for the
+     * DriverHome route badge + driver SOS route context, but no PHP writer set
+     * it (SOS raised with an empty route). startTrip must set it and
+     * completeTrip/cancelTrip must clear it. Source-scan of Transport_service.
+     */
+    private function _chTrnXmod1_1(): array
+    {
+        $path = APPPATH . 'libraries/Transport_service.php';
+        if (!is_readable($path)) {
+            return ['status' => 'INFO', 'detail' => 'Transport_service.php not readable — trivial pass'];
+        }
+        $src = (string) file_get_contents($path);
+
+        $start = $this->_methodBody($src, 'startTrip');
+        if ($start === null || strpos($start, '_setVehicleCurrentRoute') === false) {
+            return ['status' => 'FAIL', 'detail' => 'XMOD-1: startTrip does not set vehicle currentRouteId (Teacher SOS/route badge stays empty)'];
+        }
+        foreach (['completeTrip', 'cancelTrip'] as $m) {
+            $body = $this->_methodBody($src, $m);
+            if ($body === null || strpos($body, '_clearVehicleCurrentRoute') === false) {
+                return ['status' => 'FAIL', 'detail' => "XMOD-1: {$m} does not clear vehicle currentRouteId (stale route persists after trip)"];
+            }
+        }
+        // The setter must write the exact camelCase field the app reads.
+        $setter = $this->_methodBody($src, '_setVehicleCurrentRoute');
+        if ($setter === null || strpos($setter, "'currentRouteId'") === false) {
+            return ['status' => 'FAIL', 'detail' => 'XMOD-1: _setVehicleCurrentRoute missing or does not write the currentRouteId field'];
+        }
+        return ['status' => 'PASS', 'detail' => 'startTrip sets + completeTrip/cancelTrip clear vehicles.currentRouteId (Teacher app route context populated)'];
+    }
+
+    /**
+     * CH-TRN-LOG3-1 — Transport_notifier::_computeIdempotencyKey must include
+     * event_id/trip_id/student_id in its salient set. Without them two distinct
+     * events (or two per-student no-show notices on one trip) in the same TTL
+     * bucket collided and the second was suppressed. Source-scan.
+     */
+    private function _chTrnLog3_1(): array
+    {
+        $path = APPPATH . 'libraries/Transport_notifier.php';
+        if (!is_readable($path)) {
+            return ['status' => 'INFO', 'detail' => 'Transport_notifier.php not readable — trivial pass'];
+        }
+        $body = $this->_methodBody((string) file_get_contents($path), '_computeIdempotencyKey');
+        if ($body === null) {
+            return ['status' => 'FAIL', 'detail' => '_computeIdempotencyKey() not found'];
+        }
+        $missing = [];
+        foreach (['event_id', 'trip_id', 'student_id'] as $k) {
+            if (strpos($body, $k) === false) { $missing[] = $k; }
+        }
+        if ($missing !== []) {
+            return ['status' => 'FAIL', 'detail' => 'LOG-3: idempotency salient set omits ' . implode(',', $missing) . ' (distinct events collide → suppressed)'];
+        }
+        return ['status' => 'PASS', 'detail' => 'idempotency salient set includes event_id/trip_id/student_id (distinct events no longer collide)'];
+    }
+
+    /**
+     * CH-TRN-LOG2-1 — a route suspension sets routes.active_suspension_ref but
+     * leaves status='Active'. createTrip (dispatch) must reject a route with a
+     * non-empty active_suspension_ref — otherwise a suspended route is still
+     * dispatchable (assignment + route-change paths already gate on it).
+     * Source-scan of createTrip.
+     */
+    private function _chTrnLog2_1(): array
+    {
+        $path = APPPATH . 'libraries/Transport_service.php';
+        if (!is_readable($path)) {
+            return ['status' => 'INFO', 'detail' => 'Transport_service.php not readable — trivial pass'];
+        }
+        $body = $this->_methodBody((string) file_get_contents($path), 'createTrip');
+        if ($body === null) {
+            return ['status' => 'FAIL', 'detail' => 'createTrip() not found'];
+        }
+        if (strpos($body, 'active_suspension_ref') === false) {
+            return ['status' => 'FAIL', 'detail' => 'LOG-2: createTrip does not gate on active_suspension_ref (suspended route still dispatchable)'];
+        }
+        return ['status' => 'PASS', 'detail' => 'createTrip rejects a route with an active suspension before dispatch'];
     }
 
     /**

@@ -211,8 +211,12 @@ class Transport extends MY_Controller
         );
         $out = [];
         foreach ($rows as $r) {
-            $r['id'] = (string) ($r['eventId'] ?? $r['id'] ?? '');
-            $out[] = $r;
+            if (!is_array($r)) { continue; }
+            // schoolWhere returns {id, data:{…}} — ship the FLAT lifecycle fields,
+            // not the envelope (else the UI reads every field off the wrong level).
+            $d = (isset($r['data']) && is_array($r['data'])) ? $r['data'] : $r;
+            $d['id'] = (string) ($d['eventId'] ?? $r['id'] ?? $d['id'] ?? '');
+            $out[] = $d;
         }
         $this->json_success(['events' => $out]);
     }
@@ -892,6 +896,15 @@ class Transport extends MY_Controller
         $this->json_success(['history' => $this->transport->getAssignmentHistory($sid)]);
     }
 
+    /** GET /transport/get_student_assignment?student_id=STU0007 — Student 360 (read-only) */
+    public function get_student_assignment()
+    {
+        $this->_require_role(self::VIEW_ROLES, 'transport_view');
+        $this->_require_view();
+        $sid = $this->safe_path_segment(trim($this->input->get('student_id') ?? ''), 'student_id');
+        $this->json_success(['assignment' => $this->transport->getStudentAssignment($sid)]);
+    }
+
     /** POST /transport/reconcile_pending_fees — admin trigger */
     public function reconcile_pending_fees()
     {
@@ -938,7 +951,11 @@ class Transport extends MY_Controller
             $this->json_success(['students' => []]);
             return;
         }
-        $results = $this->operations_accounting->search_students($q);
+        // NF-1 (Option B): route through the Transport/Firestore service layer —
+        // the F3 refactor removed the Operations_accounting load from this
+        // controller, so the old Operations_accounting::search_students() call
+        // fatally 500'd (undefined property). Keep this decoupled.
+        $results = $this->transport->searchStudents($q);
         // Merge class+section for Transport's expected format
         foreach ($results as &$r) {
             $r['class'] = trim(($r['class'] ?? '') . ' ' . ($r['section'] ?? ''));

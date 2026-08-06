@@ -47,8 +47,11 @@ class Transport_analytics extends MY_Controller
     /** Full render-once bundle scoped by caller role. */
     public function bundle(): void
     {
-        $role = (string) $this->session->userdata('role');
-        if (!Transport_analytics_service::hasAnyVisibility($role)) {
+        $role = (string) $this->admin_role;
+        // SEC-3: per-school Operations RBAC grant gates the module; role scope
+        // filters within it. A revoked-Operations role gets the same empty
+        // bundle (no hard 403 — preserves the no-scope response contract).
+        if (!has_permission('Operations') || !Transport_analytics_service::hasAnyVisibility($role)) {
             $this->_json(['status' => 'success', 'visible_widgets' => [], 'reason' => 'no_analytics_scope_for_role']);
             return;
         }
@@ -74,8 +77,10 @@ class Transport_analytics extends MY_Controller
      */
     public function rebuild_summaries(): void
     {
-        $role = strtolower((string) $this->session->userdata('role'));
-        if (!in_array($role, ['admin','school_super_admin','school super admin','super_admin','super admin','transport manager','principal'], true)) {
+        $role = strtolower((string) $this->admin_role);
+        // SEC-3: require the Operations module grant in addition to the role allowlist.
+        if (!has_permission('Operations')
+            || !in_array($role, ['admin','school_super_admin','school super admin','super_admin','super admin','transport manager','principal'], true)) {
             $this->_json(['status' => 'error', 'message' => 'Access denied for this role.']);
             return;
         }
@@ -95,7 +100,12 @@ class Transport_analytics extends MY_Controller
     /** Enforce widget-level scope match on every widget endpoint. */
     private function _widget(string $widgetKey, callable $producer): void
     {
-        $role = (string) $this->session->userdata('role');
+        $role = (string) $this->admin_role;
+        // SEC-3: Operations module grant gates every widget endpoint too.
+        if (!has_permission('Operations')) {
+            $this->_json(['status' => 'error', 'message' => 'Widget not visible to this role.', 'code' => 403]);
+            return;
+        }
         $visible = Transport_analytics_service::visibleWidgetsForRole($role);
         if (!in_array($widgetKey, $visible, true)) {
             $this->_json(['status' => 'error', 'message' => 'Widget not visible to this role.', 'code' => 403]);

@@ -85,6 +85,11 @@ class Transport_analytics_service
     // comparisons.
     public const TREND_MONTHS = 24;
 
+    // PERF-4: cross-tenant fleet KPI is served from this nightly-computed
+    // global rollup doc (keyed by date) so the SA leaderboard never fans out
+    // O(tenants) synchronously on a live request.
+    public const COL_FLEET_ROLLUP = 'transportFleetRollup';
+
     // ── State ──────────────────────────────────────────────────────────
     /** @var object|null */ private $fs = null;
     /** @var object|null */ private $transport = null;
@@ -242,40 +247,48 @@ class Transport_analytics_service
                     $delayCat  = (string) ($inner['delay_status'] ?? '');
                     if ($status === 'InProgress') {
                         $snap['trips_in_progress']++;
-                        $inProgressIds[] = (string) ($t['id'] ?? $inner['id'] ?? '');
+                        // Onboard bucketing keys on transportAttendance.tripId, which
+                        // is the BARE canonical trip id (TRP…). The schoolWhere
+                        // envelope id ($t['id']) is the PREFIXED Firestore docId
+                        // ({schoolId}_TRP…) — using it here made every bucket lookup
+                        // miss → students_currently_onboard stuck at 0. Use the trip
+                        // doc's own `id` field (bare), set at createTrip.
+                        $inProgressIds[] = (string) ($inner['id'] ?? '');
                         if ($delayCat === 'Delayed') { $snap['trips_delayed']++; }
                     }
                     if ($status === 'Completed') { $snap['trips_completed_today']++; }
                 }
             } catch (\Throwable $_) {}
 
-            // Onboard = boarded_pickup events on InProgress trips MINUS
-            // dropped_home events. Read the per-trip attendance rows for
-            // the in-progress cohort only (bounded).
+            // PERF-3: ONE attendance scan for today serves all three metrics —
+            // students_currently_onboard, students_dropped_today, no_shows_today.
+            // The previous code issued a separate per-trip query for the onboard
+            // count (N+1 across the InProgress cohort) even though that data is
+            // already in the [trip_date==today] scan below. We bucket boarded/
+            // dropped per tripId in-memory, then sum max(0, boarded-dropped) for
+            // the InProgress cohort only (identical semantics, O(1) queries).
             try {
-                foreach ($inProgressIds as $tid) {
-                    $events = (array) $this->fs->schoolWhere('transportAttendance',
-                        [['tripId', '==', $tid]], null, 'ASC', 500);
-                    $boarded = 0; $dropped = 0;
-                    foreach ($events as $e) {
-                        $inner = (isset($e['data']) && is_array($e['data'])) ? $e['data'] : $e;
-                        $et = (string) ($inner['event_type'] ?? '');
-                        if ($et === 'boarded_pickup' || $et === 'alternate_pickup') { $boarded++; }
-                        elseif ($et === 'dropped_home') { $dropped++; }
-                    }
-                    $snap['students_currently_onboard'] += max(0, $boarded - $dropped);
-                }
-            } catch (\Throwable $_) {}
-
-            // Today's drop totals + no-shows via all trips (small)
-            try {
+                $perTripBoarded = [];   // tid => boarded_pickup + alternate_pickup
+                $perTripDropped = [];   // tid => dropped_home
                 $todayEvents = (array) $this->fs->schoolWhere('transportAttendance',
                     [['trip_date', '==', $today]], null, 'ASC', 2000);
                 foreach ($todayEvents as $e) {
                     $inner = (isset($e['data']) && is_array($e['data'])) ? $e['data'] : $e;
-                    $et = (string) ($inner['event_type'] ?? '');
-                    if ($et === 'dropped_home') { $snap['students_dropped_today']++; }
-                    elseif ($et === 'no_show')   { $snap['no_shows_today']++; }
+                    $et  = (string) ($inner['event_type'] ?? '');
+                    $tid = (string) ($inner['tripId'] ?? '');
+                    if ($et === 'boarded_pickup' || $et === 'alternate_pickup') {
+                        $perTripBoarded[$tid] = ($perTripBoarded[$tid] ?? 0) + 1;
+                    } elseif ($et === 'dropped_home') {
+                        $perTripDropped[$tid] = ($perTripDropped[$tid] ?? 0) + 1;
+                        $snap['students_dropped_today']++;
+                    } elseif ($et === 'no_show') {
+                        $snap['no_shows_today']++;
+                    }
+                }
+                // Onboard = boarded MINUS dropped, per InProgress trip, floored at 0.
+                foreach ($inProgressIds as $tid) {
+                    $snap['students_currently_onboard'] += max(0,
+                        ($perTripBoarded[$tid] ?? 0) - ($perTripDropped[$tid] ?? 0));
                 }
             } catch (\Throwable $_) {}
 
@@ -411,23 +424,62 @@ class Transport_analytics_service
     {
         $this->_assertReady();
         return $this->_memo("trend_expense_{$months}", function () use ($months) {
-            $out = [];
+            // Build the ordered month list.
+            $yms = [];
             for ($i = $months - 1; $i >= 0; $i--) {
-                $ym = date('Y-m', strtotime("-{$i} months"));
+                $yms[] = date('Y-m', strtotime("-{$i} months"));
+            }
+            // PERF-11: ONE query over period_year_month IN [months] instead of
+            // N sequential point-reads (Firestore IN caps at 30; TREND_MONTHS=24).
+            // Falls back to per-month reads if the IN query fails (e.g. missing
+            // composite index) so behaviour is preserved either way.
+            $byYm = [];
+            $chunks = array_chunk($yms, 30);
+            $queried = true;
+            foreach ($chunks as $chunk) {
                 try {
-                    $doc = $this->fs->getEntity('fleetMonthlyExpenseSummary', "FMES__{$ym}");
-                    $out[] = [
-                        'period_year_month' => $ym,
-                        'total_amount'      => is_array($doc) ? (float) ($doc['total_amount'] ?? 0) : 0.0,
-                        'expenses_count'    => is_array($doc) ? (int) ($doc['expenses_count'] ?? 0) : 0,
-                    ];
-                } catch (\Throwable $_) {
-                    $out[] = [
-                        'period_year_month' => $ym,
-                        'total_amount'      => 0.0,
-                        'expenses_count'    => 0,
-                    ];
+                    $rows = (array) $this->fs->schoolWhere('fleetMonthlyExpenseSummary',
+                        [['period_year_month', 'in', $chunk]], null, 'ASC', 60);
+                    foreach ($rows as $r) {
+                        $docId = (string) ($r['id'] ?? '');
+                        $inner = (isset($r['data']) && is_array($r['data'])) ? $r['data'] : $r;
+                        $ym = (string) ($inner['period_year_month'] ?? '');
+                        // PERF-11: accept ONLY the canonical FMES doc — the same
+                        // id the point-read uses (fs->docId adds the single
+                        // {schoolId} prefix) — so any legacy double-prefixed
+                        // duplicate carrying period_year_month is ignored
+                        // (identical result to the original point-read).
+                        if ($ym === '' || $docId !== $this->fs->docId("FMES__{$ym}")) { continue; }
+                        $byYm[$ym] = [
+                            'total_amount'   => (float) ($inner['total_amount'] ?? 0),
+                            'expenses_count' => (int) ($inner['expenses_count'] ?? 0),
+                        ];
+                    }
+                } catch (\Throwable $_) { $queried = false; break; }
+            }
+            if (!$queried) {
+                // Fallback — per-month point reads (original behaviour).
+                $byYm = [];
+                foreach ($yms as $ym) {
+                    try {
+                        $doc = $this->fs->getEntity('fleetMonthlyExpenseSummary', "FMES__{$ym}");
+                        if (is_array($doc)) {
+                            $byYm[$ym] = [
+                                'total_amount'   => (float) ($doc['total_amount'] ?? 0),
+                                'expenses_count' => (int) ($doc['expenses_count'] ?? 0),
+                            ];
+                        }
+                    } catch (\Throwable $_) {}
                 }
+            }
+            // Emit every month in order, zero-filling gaps.
+            $out = [];
+            foreach ($yms as $ym) {
+                $out[] = [
+                    'period_year_month' => $ym,
+                    'total_amount'      => (float) ($byYm[$ym]['total_amount'] ?? 0),
+                    'expenses_count'    => (int) ($byYm[$ym]['expenses_count'] ?? 0),
+                ];
             }
             return $out;
         });
@@ -514,6 +566,7 @@ class Transport_analytics_service
      */
     public function getCrossTenantFleetKpi(array $tenantIds): array
     {
+        $this->_assertReady();
         if ($tenantIds === []) { return ['per_tenant' => [], 'totals' => []]; }
         $totals = [
             'total_vehicles' => 0, 'total_trips_today' => 0,
@@ -522,39 +575,107 @@ class Transport_analytics_service
         ];
         $perTenant = [];
         $originalSid = $this->schoolId;
-        foreach ($tenantIds as $tid) {
-            $tid = (string) $tid;
-            if ($tid === '') { continue; }
-            // Rewire the state to this tenant, then compose tiles
-            $this->schoolId = $tid;
-            $this->fs->init($tid, $this->sessionYear);
-            $this->cache = [];   // per-tenant memoisation reset
-            $tiles = $this->getFleetKpiTiles();
-            $perTenant[$tid] = $tiles;
-            $totals['total_vehicles']           += (int) $tiles['active_vehicles'];
-            $totals['total_trips_today']        += (int) $tiles['trips_today'];
-            $totals['total_fuel_spend_this_month'] += (float) $tiles['fuel_spend_this_month'];
-            $totals['total_docs_expiring_7d']   += (int) $tiles['docs_expiring_7d'];
-            $totals['total_active_sos']         += (int) $tiles['sos_active_count'];
+        try {
+            foreach ($tenantIds as $tid) {
+                $tid = (string) $tid;
+                if ($tid === '') { continue; }
+                // PERF-6: isolate each tenant. A single tenant whose compose
+                // throws (bad data / transient read error) must NOT abort the
+                // whole nightly rollup or SA leaderboard — record an error marker
+                // for it and press on so the other tenants still aggregate.
+                try {
+                    // Rewire the state to this tenant, then compose tiles
+                    $this->schoolId = $tid;
+                    $this->fs->init($tid, $this->sessionYear);
+                    $this->cache = [];   // per-tenant memoisation reset
+                    $tiles = $this->getFleetKpiTiles();
+                    $perTenant[$tid] = $tiles;
+                    $totals['total_vehicles']           += (int) $tiles['active_vehicles'];
+                    $totals['total_trips_today']        += (int) $tiles['trips_today'];
+                    $totals['total_fuel_spend_this_month'] += (float) $tiles['fuel_spend_this_month'];
+                    $totals['total_docs_expiring_7d']   += (int) $tiles['docs_expiring_7d'];
+                    $totals['total_active_sos']         += (int) $tiles['sos_active_count'];
+                } catch (\Throwable $e) {
+                    $perTenant[$tid] = ['error' => substr((string) $e->getMessage(), 0, 200)];
+                    log_message('error', "TRN_CROSS_TENANT_KPI_SKIP tenant={$tid} err=" . $e->getMessage());
+                }
+            }
+        } finally {
+            // SEC-5: ALWAYS restore the shared FS singleton + service state,
+            // even if a tenant's compose throws mid-loop — otherwise the
+            // singleton is left pointing at the last tenant and a subsequent
+            // operation in the same request reads/writes the WRONG school
+            // (cross-tenant bleed). (SA-role gating is enforced at the controller
+            // layer when the cached path is wired to an HTTP surface.)
+            $this->schoolId = $originalSid;
+            if ($originalSid !== '') { $this->fs->init($originalSid, $this->sessionYear); }
+            $this->cache = [];
         }
-        // Restore state to the original
-        $this->schoolId = $originalSid;
-        if ($originalSid !== '') { $this->fs->init($originalSid, $this->sessionYear); }
-        $this->cache = [];
         $totals['total_fuel_spend_this_month'] = round($totals['total_fuel_spend_this_month'], 2);
         return ['totals' => $totals, 'per_tenant' => $perTenant];
+    }
+
+    /**
+     * PERF-4 — request-time cross-tenant KPI. Serves the nightly rollup doc
+     * (one document read, O(1)) when present; otherwise degrades to a BOUNDED
+     * live compute (at most $maxLiveFallback tenants) so an SA request can never
+     * synchronously fan out across every tenant. The nightly job
+     * storeCrossTenantFleetRollup() is the intended O(1)-serving path.
+     */
+    public function getCrossTenantFleetKpiCached(array $tenantIds, int $maxLiveFallback = 25): array
+    {
+        $this->_assertReady();
+        $today = date('Y-m-d');
+        try {
+            $rollup = $this->fs->get(self::COL_FLEET_ROLLUP, $today);
+            if (is_array($rollup) && isset($rollup['totals']) && is_array($rollup['totals'])) {
+                $rollup['source'] = 'rollup';
+                return $rollup;
+            }
+        } catch (\Throwable $_) {}
+        // No fresh rollup — capped live degradation (never the full O(tenants) loop).
+        $capped = array_slice(array_values($tenantIds), 0, max(0, $maxLiveFallback));
+        $out = $this->getCrossTenantFleetKpi($capped);
+        $out['source']           = 'live_partial';
+        $out['partial']          = (count($tenantIds) > count($capped));
+        $out['tenantsRequested'] = count($tenantIds);
+        $out['tenantsComputed']  = count($capped);
+        return $out;
+    }
+
+    /**
+     * PERF-4 — NIGHTLY writer. Runs the (unbounded) per-tenant compute in a cron
+     * context and persists the aggregate to transportFleetRollup/{date} so the
+     * request-time path (getCrossTenantFleetKpiCached / getFleetLeaderboard)
+     * serves it with a single document read. Invoked by Transport_fleet_rollup_job.
+     */
+    public function storeCrossTenantFleetRollup(array $tenantIds): array
+    {
+        $this->_assertReady();
+        $today  = date('Y-m-d');
+        $kpi    = $this->getCrossTenantFleetKpi($tenantIds);
+        $rollup = [
+            'date'        => $today,
+            'computedAt'  => date('c'),
+            'tenantCount' => count($kpi['per_tenant'] ?? []),
+            'totals'      => (array) ($kpi['totals'] ?? []),
+            'per_tenant'  => (array) ($kpi['per_tenant'] ?? []),
+        ];
+        $this->fs->set(self::COL_FLEET_ROLLUP, $today, $rollup, /* merge */ false);
+        return $rollup;
     }
 
     /**
      * Fleet leaderboard — order per-tenant KPIs by a chosen metric.
      * Supported metrics: 'trips_today', 'fuel_spend_this_month',
      * 'active_vehicles', 'docs_expiring_7d', 'sos_active_count'.
+     * PERF-4: serves from the cross-tenant rollup (O(1)) via the cached path.
      */
     public function getFleetLeaderboard(array $tenantIds, string $metric, int $limit = 10): array
     {
         $allowed = ['trips_today','fuel_spend_this_month','active_vehicles','docs_expiring_7d','sos_active_count'];
         if (!in_array($metric, $allowed, true)) { return []; }
-        $kpi = $this->getCrossTenantFleetKpi($tenantIds);
+        $kpi = $this->getCrossTenantFleetKpiCached($tenantIds);
         $rows = [];
         foreach (($kpi['per_tenant'] ?? []) as $tid => $tiles) {
             $rows[] = ['tenant_id' => $tid, 'value' => (float) $tiles[$metric]];
@@ -570,6 +691,11 @@ class Transport_analytics_service
     /** Per-request memoisation. F11-5 verifier gate. */
     private function _memo(string $key, \Closure $producer)
     {
+        // PERF-10: tenant-scope the memo key so a service instance reused across
+        // tenants (e.g. the cross-tenant KPI loop) can never return school A's
+        // cached value for school B — correctness no longer depends on an
+        // external `cache=[]` reset between tenants.
+        $key = $this->schoolId . '|' . $key;
         if (array_key_exists($key, $this->cache)) { return $this->cache[$key]; }
         $v = $producer();
         $this->cache[$key] = $v;

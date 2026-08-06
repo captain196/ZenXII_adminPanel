@@ -37,7 +37,7 @@ class Transport_sos extends MY_Controller
             $this->_json(['status' => 'error', 'message' => 'Session missing school/session context.']);
             exit;
         }
-        $role = (string) ($this->session->userdata('role') ?? '');
+        $role = (string) ($this->admin_role ?? '');
         if (!in_array($role, self::REQUIRED_ROLES, true)) {
             $this->_json(['status' => 'error', 'message' => 'Access denied.']);
             exit;
@@ -53,7 +53,7 @@ class Transport_sos extends MY_Controller
         try {
             $r = $this->transportNotifier->raiseSos([
                 'triggered_by'      => (string) $this->session->userdata('user_id'),
-                'triggered_by_role' => (string) $this->session->userdata('role'),
+                'triggered_by_role' => (string) $this->admin_role,
                 'vehicle_id'        => (string) $this->input->post('vehicle_id'),
                 'route_id'          => (string) $this->input->post('route_id'),
                 'lat'               => (float)  $this->input->post('lat'),

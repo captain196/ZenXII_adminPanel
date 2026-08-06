@@ -402,50 +402,69 @@ class Transport_notifier
         $firedBy  = (string) ($overrides['firedBy']     ?? $this->adminId);
         $firedRol = (string) ($overrides['firedByRole'] ?? 'system');
 
-        // Idempotency pre-check (unless category is never-deduped, e.g. SOS raised).
-        $ttl = (int) (self::DEDUP_TTL[$category] ?? 0);
+        $mergedContext = array_merge($ctx, (array) ($overrides['context'] ?? []));
+
+        // CON-7: for deduped categories, CLAIM ATOMICALLY BEFORE fanout via a
+        // create-if-not-exists CAS (createEntity → false/409 when a valid claim
+        // already exists). The first of two concurrent identical fires wins the
+        // claim and emits; the loser sees the claim and dedupes — a concurrent
+        // double-fire can no longer BOTH emit. Safety categories (ttl=0) are
+        // never claimed and never deduped. The claim is RELEASED if the fanout
+        // emits nothing or throws, preserving the retry property the old
+        // claim-after ordering provided.
+        $ttl     = (int) (self::DEDUP_TTL[$category] ?? 0);
         $idemKey = $this->_computeIdempotencyKey($category, $ctx, $ttl);
-        if ($ttl > 0 && $this->_isIdempotencyClaimed($idemKey)) {
-            return [
-                'emitted'        => false,
-                'notice_id'      => '',
-                'per_user_count' => 0,
-                'dedupe_skipped' => true,
-                'category'       => $category,
-                'priority'       => $priority,
-                'audience_scope' => $scope,
-            ];
+        $claimed = false;
+        if ($ttl > 0) {
+            if (!$this->_tryClaimIdempotency($idemKey, $category, $mergedContext)) {
+                return [
+                    'emitted'        => false,
+                    'notice_id'      => '',
+                    'per_user_count' => 0,
+                    'dedupe_skipped' => true,
+                    'category'       => $category,
+                    'priority'       => $priority,
+                    'audience_scope' => $scope,
+                ];
+            }
+            $claimed = true;
         }
 
-        // Render title + body (per-category defaults; overridable).
+        // Render title + body AFTER the claim (a dedupe short-circuits above
+        // without rendering). Per-category defaults; overridable.
         [$title, $body] = $this->_renderTitleBody($category, $ctx);
         if (isset($overrides['title']) && $overrides['title'] !== '') { $title = (string) $overrides['title']; }
         if (isset($overrides['body'])  && $overrides['body']  !== '') { $body  = (string) $overrides['body']; }
-        $mergedContext = array_merge($ctx, (array) ($overrides['context'] ?? []));
 
-        // Dispatch by scope.
-        switch ($scope) {
-            case self::SCOPE_OPS:
-            case self::SCOPE_STAFF_ADMIN_ONLY:
-                $result = $this->_fanoutOps($category, $priority, $title, $body, $mergedContext, $firedBy, $firedRol);
-                break;
-            case self::SCOPE_PARENTS_OF_ROUTE:
-                $result = $this->_fanoutParentsOfRoute($category, $priority, $title, $body, $mergedContext, $firedBy, $firedRol);
-                break;
-            case self::SCOPE_PARENTS_OF_VEHICLE:
-                $result = $this->_fanoutParentsOfVehicle($category, $priority, $title, $body, $mergedContext, $firedBy, $firedRol);
-                break;
-            case self::SCOPE_PARENTS_OF_STUDENTS:
-                $result = $this->_fanoutParentsOfStudents($category, $priority, $title, $body, $mergedContext, $firedBy, $firedRol);
-                break;
-            default:
-                throw new \LogicException("Transport_notifier: unknown scope '{$scope}'.");
+        // Dispatch by scope. On ANY failure, release the claim so a legitimate
+        // retry is not blocked by our own not-yet-emitted claim.
+        try {
+            switch ($scope) {
+                case self::SCOPE_OPS:
+                case self::SCOPE_STAFF_ADMIN_ONLY:
+                    $result = $this->_fanoutOps($category, $priority, $title, $body, $mergedContext, $firedBy, $firedRol);
+                    break;
+                case self::SCOPE_PARENTS_OF_ROUTE:
+                    $result = $this->_fanoutParentsOfRoute($category, $priority, $title, $body, $mergedContext, $firedBy, $firedRol);
+                    break;
+                case self::SCOPE_PARENTS_OF_VEHICLE:
+                    $result = $this->_fanoutParentsOfVehicle($category, $priority, $title, $body, $mergedContext, $firedBy, $firedRol);
+                    break;
+                case self::SCOPE_PARENTS_OF_STUDENTS:
+                    $result = $this->_fanoutParentsOfStudents($category, $priority, $title, $body, $mergedContext, $firedBy, $firedRol);
+                    break;
+                default:
+                    throw new \LogicException("Transport_notifier: unknown scope '{$scope}'.");
+            }
+        } catch (\Throwable $e) {
+            if ($claimed) { $this->_releaseIdempotency($idemKey); }
+            throw $e;
         }
 
-        // Claim idempotency AFTER successful emission (so a failed fanout can
-        // be retried by the caller without being blocked by a stale claim).
-        if ($ttl > 0 && $result['emitted']) {
-            $this->_claimIdempotency($idemKey, $category, $mergedContext);
+        // A claim that produced no emission must not block a legitimate retry —
+        // release it (mirrors the old "claim only if emitted" semantics).
+        if ($claimed && empty($result['emitted'])) {
+            $this->_releaseIdempotency($idemKey);
         }
 
         // Audit — every fanout emits ONE audit row (per F6-5 assertion).
@@ -721,6 +740,16 @@ class Transport_notifier
             'status'        => 'sent',
             'sentAt'        => $now,
             'createdAt'     => $now,
+            // Canonical Communication notice timestamp (matches
+            // NoticeAnnouncement::create_notice's shape). The Admin Panel notice
+            // bell (NoticeAnnouncement::getRecentNotices) orders `notices` by
+            // `timestamp` DESC via a server-side composite index — Firestore
+            // excludes any doc lacking that field, so without it Transport ops
+            // notices never surfaced in the admin bell. Emitting timestamp +
+            // timestampMs converges Transport onto the one canonical notice
+            // contract; sentAt (the app feeds' sort key) is unchanged.
+            'timestamp'     => $now,
+            'timestampMs'   => (int) round(microtime(true) * 1000),
             // F6 extension fields (additive; ignored by existing readers):
             'module'        => 'Transport',
             'trnCategory'   => $category,
@@ -818,16 +847,10 @@ class Transport_notifier
         if ($studentIds === []) {
             return ['emitted' => false, 'notice_id' => '', 'per_user_count' => 0, 'dedupe_skipped' => false, 'notified_user_ids' => []];
         }
-        $userIds = [];
-        foreach ($studentIds as $sid) {
-            try {
-                $stu = $this->fs->getEntity('students', $sid);
-                if (!is_array($stu)) { continue; }
-                $pid = (string) ($stu['parent_db_key'] ?? $stu['parentId'] ?? $stu['parent_id'] ?? '');
-                if ($pid !== '') { $userIds[$pid] = true; }
-            } catch (\Throwable $_) {}
-        }
-        return $this->_fanoutNotifications($category, $priority, $title, $body, $ctx, array_keys($userIds), $firedBy, $firedByRole);
+        // CANONICAL recipient resolution (was reading absent parent_* fields
+        // → zero recipients). Single-sourced through _resolveStudentRecipients.
+        $userIds = $this->_resolveStudentRecipients($studentIds);
+        return $this->_fanoutNotifications($category, $priority, $title, $body, $ctx, $userIds, $firedBy, $firedByRole);
     }
 
     /**
@@ -956,17 +979,85 @@ class Transport_notifier
 
         if ($studentIds === []) { return []; }
 
-        // Resolve parent user IDs via student docs.
-        $userIds = [];
-        foreach (array_keys($studentIds) as $sid) {
+        // CANONICAL: resolve student ids → recipient userIds via the single
+        // shared resolver (below). Was reading absent fields (parent_db_key /
+        // parentId / parent_id) → zero recipients.
+        return $this->_resolveStudentRecipients(array_keys($studentIds));
+    }
+
+    // ═════════════════════════════════════════════════════════════════════
+    //  CANONICAL recipient contract (2026-07-23)
+    // ═════════════════════════════════════════════════════════════════════
+    //
+    //  A transport PARENT notification's recipient is the student document's
+    //  `userId` field — the SAME identity the Parent App authenticates as and
+    //  queries its inbox by (notifications.userId == tokenManager.userId ==
+    //  the student login id; prefs doc = {schoolId}_{userId}). This is the ONE
+    //  place the student→recipient mapping lives; every parent-facing fanout
+    //  (parents_of_students, parents_of_route, parents_of_vehicle) MUST route
+    //  through _resolveStudentRecipients() so the contract can never diverge.
+    //
+    //  (Operations/Staff notifications are a SEPARATE, unchanged contract:
+    //  role-based delivery to notices/noticeRecipients via targetRoles — see
+    //  _fanoutOps. They do not use this per-user userId resolution.)
+
+    /**
+     * The canonical student → recipient-userId mapping. Reads the `userId`
+     * FIELD (NOT the studentId doc-key — they are equal today but that is not a
+     * guaranteed-permanent ERP invariant). Falls back to the studentId only
+     * when the field is absent (legacy docs), logging so it is visible.
+     */
+    private function _recipientUserIdFromStudent(array $stu, string $studentId): string
+    {
+        $uid = trim((string) ($stu['userId'] ?? ''));
+        if ($uid !== '') { return $uid; }
+        log_message('warning', "Transport_notifier: student {$studentId} has no userId field; falling back to studentId as recipient.");
+        return $studentId;
+    }
+
+    /**
+     * Resolve a list of student ids to canonical recipient userIds. ONE resolver
+     * for every parent-facing fanout so the recipient contract is single-sourced.
+     * Batches the student reads (chunked `studentId IN` query, PERF-9) with a
+     * per-student getEntity fallback when the composite index is absent, so
+     * behaviour is correct either way. All reads are school-scoped (getEntity/
+     * schoolWhere prefix schoolId) → no cross-tenant recipient leakage. Deduped.
+     */
+    private function _resolveStudentRecipients(array $studentIds): array
+    {
+        $studentIds = array_values(array_unique(array_filter(array_map('strval', $studentIds))));
+        if ($studentIds === []) { return []; }
+
+        $byId = [];      // studentId => student doc
+        $missing = [];
+        foreach (array_chunk($studentIds, 10) as $chunk) {
+            try {
+                $rows = (array) $this->fs->schoolWhere('students', [['studentId', 'in', $chunk]], null, 'ASC', 10);
+                $found = [];
+                foreach ($rows as $r) {
+                    $inner = (isset($r['data']) && is_array($r['data'])) ? $r['data'] : $r;
+                    $sid = (string) ($inner['studentId'] ?? '');
+                    if ($sid !== '') { $byId[$sid] = $inner; $found[$sid] = true; }
+                }
+                foreach ($chunk as $sid) { if (empty($found[$sid])) { $missing[] = $sid; } }
+            } catch (\Throwable $_) {
+                // Missing composite index / query error → point-read fallback.
+                foreach ($chunk as $sid) { $missing[] = $sid; }
+            }
+        }
+        foreach (array_values(array_unique($missing)) as $sid) {
+            if (isset($byId[$sid])) { continue; }
             try {
                 $stu = $this->fs->getEntity('students', $sid);
-                if (!is_array($stu)) { continue; }
-                // parent_db_key is the historical parent auth id; parentId
-                // is the newer field. Accept either.
-                $pid = (string) ($stu['parent_db_key'] ?? $stu['parentId'] ?? $stu['parent_id'] ?? '');
-                if ($pid !== '') { $userIds[$pid] = true; }
+                if (is_array($stu)) { $byId[$sid] = $stu; }
             } catch (\Throwable $_) {}
+        }
+
+        $userIds = [];
+        foreach ($studentIds as $sid) {
+            if (!isset($byId[$sid])) { continue; }
+            $uid = $this->_recipientUserIdFromStudent($byId[$sid], $sid);
+            if ($uid !== '') { $userIds[$uid] = true; }   // dedupe on userId
         }
         return array_keys($userIds);
     }
@@ -994,6 +1085,14 @@ class Transport_notifier
             'incident' => (string) ($ctx['incident_id']    ?? ''),
             'sos'      => (string) ($ctx['sos_id']         ?? ''),
             'batch'    => (string) ($ctx['batch_id']       ?? ''),
+            // LOG-3: event/trip/student identify the event so two distinct
+            // events in the same TTL bucket do not collide. event.scheduled
+            // carries no route/vehicle (so two events shared one key → the 2nd
+            // was suppressed), and multiple trip.student_no_show notices on one
+            // trip differ only by student_id — both must be in the salient set.
+            'event'    => (string) ($ctx['event_id']       ?? ''),
+            'trip'     => (string) ($ctx['trip_id']        ?? ''),
+            'student'  => (string) ($ctx['student_id']     ?? ''),
             'bucket'   => $bucketStart,
         ];
         return substr(sha1($this->schoolId . '|' . json_encode($salient)), 0, 40);
@@ -1025,6 +1124,53 @@ class Transport_notifier
             $this->fs->setEntity(self::COL_IDEMPOTENCY, "{$this->schoolId}_{$key}", $doc, /* merge */ false);
         } catch (\Throwable $e) {
             log_message('warning', "Transport_notifier idempotency claim failed: " . $e->getMessage());
+        }
+    }
+
+    /**
+     * CON-7 — atomically claim the idempotency key BEFORE fanout via a
+     * create-if-not-exists CAS. Returns true when THIS call won the claim (the
+     * caller may emit), false when a still-valid claim already exists (dedupe).
+     * An EXPIRED claim (past its TTL) is taken over — deleted and re-created —
+     * so time-separated repeats still emit, preserving the original TTL
+     * semantics. Reuses Firestore_service::createEntity (client createDocument
+     * 409-CAS), the same primitive as the numbering claim docs.
+     */
+    private function _tryClaimIdempotency(string $key, string $category, array $ctx): bool
+    {
+        $entityId = "{$this->schoolId}_{$key}";
+        $now = time();
+        $doc = [
+            'category'    => $category,
+            'claimedAt'   => date('c', $now),
+            'expiresAt'   => date('c', $now + self::IDEMPOTENCY_RETENTION_SECS),
+            'contextHash' => substr(sha1(json_encode($ctx)), 0, 16),
+        ];
+        // First concurrent caller wins the create.
+        if ($this->fs->createEntity(self::COL_IDEMPOTENCY, $entityId, $doc)) {
+            return true;
+        }
+        // A doc already exists — dedupe only if it is still valid.
+        if ($this->_isIdempotencyClaimed($key)) {
+            return false;
+        }
+        // Expired claim → take it over so a legitimate repeat still fires.
+        try { $this->fs->removeEntity(self::COL_IDEMPOTENCY, $entityId); } catch (\Throwable $_) {}
+        // Re-attempt the atomic create; a concurrent reclaimer may beat us.
+        return (bool) $this->fs->createEntity(self::COL_IDEMPOTENCY, $entityId, $doc);
+    }
+
+    /**
+     * CON-7 — release an idempotency claim (delete the claim doc) so a fanout
+     * that emitted nothing / threw does not permanently block a retry until TTL
+     * expiry. Best-effort; a failed release simply falls back to TTL expiry.
+     */
+    private function _releaseIdempotency(string $key): void
+    {
+        try {
+            $this->fs->removeEntity(self::COL_IDEMPOTENCY, "{$this->schoolId}_{$key}");
+        } catch (\Throwable $e) {
+            log_message('warning', "Transport_notifier idempotency release failed: " . $e->getMessage());
         }
     }
 
