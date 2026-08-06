@@ -756,7 +756,16 @@ service cloud.firestore {
     // ── Fee settings (gateway, blocking policy, reminders) ───────
     // Parent reads gateway provider/api_key for the Razorpay SDK.
     match /feeSettings/{docId} {
-      allow read: if isSameSchool();
+      // SECURITY (2026-07): the gateway config doc
+      // ({schoolId}_{session}_gateway, type='gateway') holds the payment
+      // gateway's api_secret + webhook_secret in PLAINTEXT. No client reads it:
+      // the parent app receives the PUBLIC api_key + provider + mode in the
+      // parent_create_order server response, and the admin panel reads a
+      // MASKED copy via the PHP service account (which bypasses these rules).
+      // So exclude any gateway-type doc from ALL client reads; other
+      // (non-secret) fee settings remain readable within the tenant.
+      allow read: if isSameSchool()
+                  && resource.data.get('type', '') != 'gateway';
       allow write: if isAdmin();
     }
 
@@ -1401,9 +1410,35 @@ service cloud.firestore {
     match /tripLogs/{docId} {
       // Drivers write their own trip logs via Teacher App; admin
       // writes via the PHP panel (bypass). Reads visible to same-school
-      // staff/admin only (parents don't see fleet ops).
-      allow read: if isSameSchool() && isStaff();
-      allow create: if isSameSchoolWrite() && (isAdmin() || isStaff());
+      // staff/admin PLUS parents/students whose identity is in the
+      // trip's frozen roster snapshot (release-cert C-1 fix 2026-07-08).
+      //
+      // roster_student_ids is authoritative + immutable — set once at
+      // createTrip (Transport_service.php:5760 merge=false) and never
+      // touched by any subsequent write. Verified audit of all 7 tripLogs
+      // write sites (start/checkpoint/complete/cancel/tally paths). The
+      // driver-update allowlist below explicitly EXCLUDES roster_student_ids
+      // so the field cannot be forged client-side for privilege escalation.
+      //
+      // Precedent: studentFlags rule at 1746-1757 uses the same three-arm
+      // ownership pattern (student_ids array claim / student_id single
+      // claim / auth.uid fallback).
+      allow read: if isSameSchool() && (
+        isStaff() ||
+        resource.data.roster_student_ids.hasAny(request.auth.token.get('student_ids', [])) ||
+        request.auth.uid in resource.data.roster_student_ids
+      );
+      // SEC-2 (2026-07-22) — a bare isStaff() create let any same-school staff
+      // plant a trip with an arbitrary driver_staff_id, then drive its state
+      // machine (forged safety events). No client creates tripLogs today (admin
+      // PHP creates via service account, which bypasses rules; the Teacher app
+      // only UPDATEs), so binding the staff arm to the trip's own driver is
+      // safe and future-proofs a driver-created-trip flow: a driver may only
+      // create a trip whose driver_staff_id equals their own user_id claim.
+      allow create: if isSameSchoolWrite() && (
+        isAdmin() ||
+        driverIs(request.resource.data.get('driver_staff_id', ''))
+      );
       // F9 (2026-07-07) — driver may update ONLY their own trip and
       // ONLY the fields that belong to the trip-execution surface:
       // actual_start_at, actual_end_at, endTime, endOdometer, distance,
@@ -1448,12 +1483,34 @@ service cloud.firestore {
     // update path would signal a schema-drift bug.
     match /transportAttendance/{docId} {
       allow read: if isSameSchool() && isStaff();
+      // SEC-1 (2026-07-22) — a boarding event is a parent-facing safety signal
+      // (a forged `no_show` fires a false alert). The prior rule let ANY
+      // same-school staff create one for ANY trip (distinct doc-id → create
+      // allowed). Bind non-admin creates to the DRIVER OF THE REFERENCED TRIP:
+      // the caller's user_id claim must equal tripLogs.driver_staff_id. Mirrors
+      // the fuelLogs driver-of-vehicle binding; admin (PHP panel / admin app)
+      // retains unrestricted create. The trip doc path is
+      // {schoolId}_{tripId} (tripId is stored bare; schoolId denormalised on
+      // the event) — same convention the tripLogs driver-update rule relies on.
+      // isSameSchoolWrite() already establishes tenantActive() + same-school,
+      // so the role arms below use lightweight claim checks (no repeat
+      // tenantActive() get()s) — keeping the total document-access calls low
+      // (tenantActive ×1 + the tripLogs get()) and mirroring isAdmin()/isStaff()
+      // role semantics inline.
       allow create: if isSameSchoolWrite()
-        && (isAdmin() || isStaff())
         && hasClientMetadata()
         && request.resource.data.get('tripId', '') is string
         && request.resource.data.get('tripId', '') != ''
-        && request.resource.data.get('marked_by_role', '') in ['admin', 'driver'];
+        && request.resource.data.get('marked_by_role', '') in ['admin', 'driver']
+        && (
+          request.auth.token.role in ['Admin', 'admin', 'School Super Admin', 'school_super_admin', 'Super Admin', 'super_admin', 'Principal']
+          ||
+          (!(request.auth.token.role in ['Student', 'student', 'Parent', 'parent', 'Guardian', 'guardian'])
+            && request.auth.token.user_id is string
+            && request.auth.token.user_id != ''
+            && get(/databases/$(database)/documents/tripLogs/$(request.resource.data.schoolId + '_' + request.resource.data.tripId)).data.driver_staff_id == request.auth.token.user_id
+          )
+        );
       allow update, delete: if false;
     }
 

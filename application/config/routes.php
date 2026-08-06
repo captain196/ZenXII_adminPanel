@@ -342,6 +342,7 @@ $route['school_config/delete_subject']                  = 'School_config/delete_
 $route['school_config/get_default_subjects']            = 'School_config/get_default_subjects';
 $route['school_config/save_bulk_subjects']              = 'School_config/save_bulk_subjects';
 $route['school_config/save_stream']                     = 'School_config/save_stream';
+$route['school_config/save_streams']                    = 'School_config/save_streams';
 $route['school_config/delete_stream']                   = 'School_config/delete_stream';
 $route['school_config/add_session']                     = 'School_config/add_session';
 $route['school_config/set_active_session']              = 'School_config/set_active_session';
@@ -1031,6 +1032,7 @@ $route['transport/get_assignments']         = 'Transport/get_assignments';
 $route['transport/save_assignment']         = 'Transport/save_assignment';
 $route['transport/delete_assignment']       = 'Transport/delete_assignment';
 $route['transport/search_students']         = 'Transport/search_students';
+$route['transport/get_student_assignment']  = 'Transport/get_student_assignment';
 
 // Hostel
 $route['hostel']                            = 'Hostel/index';

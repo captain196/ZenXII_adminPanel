@@ -241,7 +241,10 @@ class Admin extends MY_Controller
                 $this->transport->init($this->fs, $this->numbering, $this->school_id, $this->session_year, (string) $this->admin_id);
             }
             $this->trnAnalytics->init($this->fs, $this->transport, $this->school_id, $this->session_year);
-            if (Transport_analytics_service::hasAnyVisibility((string) $role)) {
+            // SEC-3: gate on the per-school Operations RBAC grant, not only the
+            // hardcoded role-scope matrix — a role with the Transport module
+            // revoked must not see fleet financials on the dashboard slot.
+            if (has_permission('Operations') && Transport_analytics_service::hasAnyVisibility((string) $role)) {
                 $payload['transport_fleet'] = $this->trnAnalytics->bundleForRole((string) $role);
             }
         } catch (\Throwable $e) {

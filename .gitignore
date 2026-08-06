@@ -49,3 +49,9 @@ Thumbs.db
 # dependency dirs (never commit)
 node_modules/
 demo_build/node_modules/
+
+# Secrets / runtime / generated — never commit (Release Integration Phase 1)
+.env
+application/cache/
+application/logs/
+.autopilot/

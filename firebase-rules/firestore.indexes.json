@@ -1013,6 +1013,20 @@
           "order": "ASCENDING"
         },
         {
+          "fieldPath": "studentId",
+          "order": "ASCENDING"
+        }
+      ]
+    },
+    {
+      "collectionGroup": "students",
+      "queryScope": "COLLECTION",
+      "fields": [
+        {
+          "fieldPath": "schoolId",
+          "order": "ASCENDING"
+        },
+        {
           "fieldPath": "className",
           "order": "ASCENDING"
         },
@@ -3304,6 +3318,17 @@
       ]
     },
     {
+      "_comment": "Release-cert C-1 (2026-07-08) — Parent App getMyStudentTripsToday: schoolId==, route_id==, roster_student_ids array-contains, date==, date DESC. Enables per-student trip visibility that the rule at firestore.rules:1401-1420 authorizes.",
+      "collectionGroup": "tripLogs",
+      "queryScope": "COLLECTION",
+      "fields": [
+        { "fieldPath": "schoolId", "order": "ASCENDING" },
+        { "fieldPath": "route_id", "order": "ASCENDING" },
+        { "fieldPath": "roster_student_ids", "arrayConfig": "CONTAINS" },
+        { "fieldPath": "date", "order": "DESCENDING" }
+      ]
+    },
+    {
       "collectionGroup": "tripLogs",
       "queryScope": "COLLECTION",
       "fields": [
@@ -3627,6 +3652,99 @@
       "fields": [
         { "fieldPath": "schoolId", "order": "ASCENDING" },
         { "fieldPath": "fee_demand_ref", "order": "ASCENDING" }
+      ]
+    },
+    {
+      "collectionGroup": "tripLogs",
+      "queryScope": "COLLECTION",
+      "fields": [
+        { "fieldPath": "schoolId", "order": "ASCENDING" },
+        { "fieldPath": "date", "order": "DESCENDING" }
+      ]
+    },
+    {
+      "collectionGroup": "tripLogs",
+      "queryScope": "COLLECTION",
+      "fields": [
+        { "fieldPath": "schoolId", "order": "ASCENDING" },
+        { "fieldPath": "route_id", "order": "ASCENDING" },
+        { "fieldPath": "date", "order": "DESCENDING" }
+      ]
+    },
+    {
+      "collectionGroup": "transportExpenses",
+      "queryScope": "COLLECTION",
+      "fields": [
+        { "fieldPath": "schoolId", "order": "ASCENDING" },
+        { "fieldPath": "status", "order": "ASCENDING" },
+        { "fieldPath": "expense_date", "order": "DESCENDING" }
+      ]
+    },
+    {
+      "collectionGroup": "transportExpenses",
+      "queryScope": "COLLECTION",
+      "fields": [
+        { "fieldPath": "schoolId", "order": "ASCENDING" },
+        { "fieldPath": "expense_date", "order": "DESCENDING" }
+      ]
+    },
+    {
+      "collectionGroup": "studentRoutes",
+      "queryScope": "COLLECTION",
+      "fields": [
+        { "fieldPath": "schoolId", "order": "ASCENDING" },
+        { "fieldPath": "session", "order": "ASCENDING" },
+        { "fieldPath": "route_id", "order": "ASCENDING" },
+        { "fieldPath": "student_name", "order": "ASCENDING" }
+      ]
+    },
+    {
+      "collectionGroup": "vehicles",
+      "queryScope": "COLLECTION",
+      "fields": [
+        { "fieldPath": "schoolId", "order": "ASCENDING" },
+        { "fieldPath": "number", "order": "ASCENDING" }
+      ]
+    },
+    {
+      "collectionGroup": "routes",
+      "queryScope": "COLLECTION",
+      "fields": [
+        { "fieldPath": "schoolId", "order": "ASCENDING" },
+        { "fieldPath": "name", "order": "ASCENDING" }
+      ]
+    },
+    {
+      "collectionGroup": "transportVendors",
+      "queryScope": "COLLECTION",
+      "fields": [
+        { "fieldPath": "schoolId", "order": "ASCENDING" },
+        { "fieldPath": "vendor_name", "order": "ASCENDING" }
+      ]
+    },
+    {
+      "collectionGroup": "routeSuspensions",
+      "queryScope": "COLLECTION",
+      "fields": [
+        { "fieldPath": "schoolId", "order": "ASCENDING" },
+        { "fieldPath": "status", "order": "ASCENDING" },
+        { "fieldPath": "suspended_from", "order": "DESCENDING" }
+      ]
+    },
+    {
+      "collectionGroup": "driverIncidents",
+      "queryScope": "COLLECTION",
+      "fields": [
+        { "fieldPath": "schoolId", "order": "ASCENDING" },
+        { "fieldPath": "incident_date", "order": "DESCENDING" }
+      ]
+    },
+    {
+      "collectionGroup": "temporaryDriverAssignments",
+      "queryScope": "COLLECTION",
+      "fields": [
+        { "fieldPath": "schoolId", "order": "ASCENDING" },
+        { "fieldPath": "effective_from", "order": "DESCENDING" }
       ]
     }
   ],

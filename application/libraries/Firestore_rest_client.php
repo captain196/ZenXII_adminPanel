@@ -1129,6 +1129,97 @@ class FirestoreRestClient
     }
 
     /**
+     * Concurrency-safe read-modify-write of a SINGLE document using optimistic
+     * concurrency (currentDocument.updateTime CAS) — the general-purpose sibling
+     * of casAppendBounded(). Concurrent writers cannot silently lose each
+     * other's mutation: whoever commits second against a moved updateTime is
+     * rejected and re-runs against fresh state.
+     *
+     * REUSES the canonical atomic-write primitive (commitBatch with a CAS
+     * precondition — the Phase 8 accounting pattern) + _getDocumentUncached
+     * (memo-bypassing fresh read). NO new concurrency framework.
+     *
+     * $mutator receives the freshly-read document (assoc array, incl.
+     * '__updateTime') and returns:
+     *   • an array of fields to MERGE-write — only the returned keys are
+     *     patched (updateMask), other fields are untouched; OR
+     *   • [] to no-op (idempotent success, no write); OR
+     *   • null / false to ABORT with no write — used to enforce a business
+     *     precondition against fresh state (e.g. "status must be 'InProgress'").
+     *     An abort is reported distinctly from a contention failure.
+     *
+     * On each CAS conflict the loop re-reads fresh and re-runs $mutator, so the
+     * mutation is always computed from current state. Unlike casAppendBounded
+     * there is NO non-CAS fallback on exhaustion: a generic merge without a
+     * precondition could clobber a concurrent update, so this primitive
+     * FAILS CLOSED (ok=false) and NEVER performs an unguarded write — the
+     * caller decides how to recover.
+     *
+     * @return array [
+     *   'ok'      => bool,   // true when the mutation CAS-committed OR was a clean no-op
+     *   'applied' => bool,   // true only when a write actually landed
+     *   'reason'  => string, // 'applied' | 'noop' | 'missing' | 'aborted' | 'contention' | 'error'
+     *   'retries' => int,    // CAS attempts consumed
+     * ]
+     */
+    public function casUpdateEntity(string $collection, string $docId, callable $mutator, int $maxRetries = 5): array
+    {
+        for ($attempt = 0; $attempt <= $maxRetries; $attempt++) {
+            $doc = $this->_getDocumentUncached($collection, $docId);
+            if (!is_array($doc)) {
+                return ['ok' => false, 'applied' => false, 'reason' => 'missing', 'retries' => $attempt];
+            }
+            $updateTime = (string) ($doc['__updateTime'] ?? '');
+
+            try {
+                $fields = $mutator($doc);
+            } catch (\Throwable $e) {
+                if (function_exists('log_message')) {
+                    log_message('error', "casUpdateEntity mutator threw {$collection}/{$docId}: " . $e->getMessage());
+                }
+                return ['ok' => false, 'applied' => false, 'reason' => 'error', 'retries' => $attempt];
+            }
+
+            // Mutator declined to write (business precondition not met) — clean abort.
+            if ($fields === null || $fields === false) {
+                return ['ok' => false, 'applied' => false, 'reason' => 'aborted', 'retries' => $attempt];
+            }
+            // Nothing to write ⇒ idempotent no-op success.
+            if (!is_array($fields) || $fields === []) {
+                return ['ok' => true, 'applied' => false, 'reason' => 'noop', 'retries' => $attempt];
+            }
+
+            // An existing doc ALWAYS carries a server updateTime (decodeDocument
+            // surfaces it). A missing one means we cannot guarantee the CAS, so
+            // fail closed rather than write unguarded.
+            if ($updateTime === '') {
+                if (function_exists('log_message')) {
+                    log_message('error', "casUpdateEntity {$collection}/{$docId} — no __updateTime; failing closed (no unguarded write).");
+                }
+                return ['ok' => false, 'applied' => false, 'reason' => 'error', 'retries' => $attempt];
+            }
+
+            $op = [
+                'op'           => 'update',
+                'collection'   => $collection,
+                'docId'        => $docId,
+                'data'         => $fields,
+                'merge'        => true,
+                'precondition' => ['updateTime' => $updateTime],
+            ];
+            if ($this->commitBatch([$op])) {
+                return ['ok' => true, 'applied' => true, 'reason' => 'applied', 'retries' => $attempt];
+            }
+            // CAS conflict / transient error — loop re-reads fresh and recomputes.
+        }
+
+        if (function_exists('log_message')) {
+            log_message('error', "casUpdateEntity CAS exhausted {$collection}/{$docId} after " . ($maxRetries + 1) . " attempts — no write performed (fail-closed).");
+        }
+        return ['ok' => false, 'applied' => false, 'reason' => 'contention', 'retries' => $maxRetries + 1];
+    }
+
+    /**
      * NON-ATOMIC batch write via Firestore's `:batchWrite` REST endpoint.
      *
      * Unlike commitBatch() (`:commit`, all-or-nothing), each write here
@@ -1451,9 +1542,22 @@ class FirestoreRestClient
         $url = $this->baseUrl() . ':runQuery';
         $r = $this->request('POST', $url, ['structuredQuery' => $structuredQuery]);
 
-        // If query fails with index error and we have orderBy, retry without orderBy (client-side sort)
+        // If the query fails (typically a missing composite index →
+        // FAILED_PRECONDITION) and we have an orderBy, retry WITHOUT the orderBy
+        // and let the client sort below. RC-2 fallback hardening: also DROP the
+        // limit on this fallback. Keeping it would return an arbitrary `limit`
+        // docs (the first N by __name__) that we then sort only among
+        // themselves — i.e. NOT the true top-N (silent wrong data). Dropping the
+        // limit fetches the full where-matched set so the client-side sort +
+        // array_slice below produce the CORRECT top-N. The healthy path (index
+        // present) never reaches here, so indexed queries are unchanged. Logged
+        // loudly so the missing composite index gets added and deployed.
         if ($r['code'] !== 200 && $orderBy !== null) {
             unset($structuredQuery['orderBy']);
+            unset($structuredQuery['limit']);
+            if (function_exists('log_message')) {
+                log_message('error', "FirestoreREST::query {$collection} — composite index MISSING for orderBy '{$orderBy}'; fell back to unindexed fetch + client-sort (correct but unbounded). ADD THE INDEX.");
+            }
             $r = $this->request('POST', $url, ['structuredQuery' => $structuredQuery]);
         }
 
