@@ -327,6 +327,13 @@ class Transport_probe_f7 extends CI_Controller
             'route_id' => $routeId, 'created_at' => $now, 'updated_at' => $now,
         ], /* merge */ false);
         $this->createdFixtures[] = ['vehicles', $vehicleId];
+        // LOG-1: createTrip now validates driver readiness — seed a FIT driver.
+        $this->fs->setEntity('staff', 'PROBE_F7_STAFF', [
+            'id' => 'PROBE_F7_STAFF', 'schoolId' => $sid, 'name' => 'F7 Probe Driver', 'status' => 'Active',
+            'flags' => ['can_drive_transport' => true],
+            'driver_meta' => ['operational_status' => 'Available', 'licence_expires' => '2099-12-31', 'medical_expires' => '2099-12-31'],
+        ], /* merge */ false);
+        $this->createdFixtures[] = ['staff', 'PROBE_F7_STAFF'];
         // Route
         $this->fs->setEntity('routes', $routeId, [
             'id' => $routeId, 'schoolId' => $sid,
