@@ -1137,7 +1137,8 @@ class Sis extends MY_Controller
             ];
         }
 
-        // Single atomic RTDB multi-path update for ALL students
+        // Firestore-only bulk promotion (RTDB retired) — per-student syncStudent
+        // with inline retry + async retry-queue; returns moved[]/failed[].
         $moveResult = $this->dw->batchMoveStudents(
             $batchMap, $oldClassKey, $session,
             $newClassKey, $newSectionKey, $toSession

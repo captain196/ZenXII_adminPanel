@@ -2,22 +2,27 @@
 defined('BASEPATH') or exit('No direct script access allowed');
 
 /**
- * Dual_write — Production-hardened dual-write engine (RTDB + Firestore + Auth).
+ * Dual_write — Firestore + Auth write helper (RTDB FULLY RETIRED 2026-08-07).
  *
- * ARCHITECTURE:
- *   RTDB      = primary source of truth (must succeed)
- *   Firestore = query layer for apps (eventually consistent)
- *   Auth      = identity layer (retried on failure)
+ * HISTORY: this was a dual-write engine (RTDB primary + Firestore query layer).
+ * Per the ZERO-RTDB policy every line of RTDB code has been removed — writes now
+ * target ONLY Firestore (via Entity_firestore_sync, with inline retry + async
+ * retry-queue fallback) and Firebase Auth. The class name is retained solely to
+ * avoid touching the MY_Controller loader and the Sis.php call sites; it is
+ * functionally a Firestore/Auth writer now, no longer "dual".
  *
- * PRODUCTION FEATURES:
- *   1. Batch multi-path RTDB updates (atomic per Firebase guarantee)
- *   2. batchMoveStudents() for bulk promotion (single atomic RTDB write)
- *   3. RTDB-based persistent retry queue (survives server restarts)
- *   4. syncVersion on every write (monotonic counter for stale-read prevention)
- *   5. Unified idempotencyKey across RTDB, Firestore, and Auth operations
- *   6. Retried REMOVE operations (prevents duplicate roster ghost entries)
- *   7. Dead-letter monitoring via admin endpoint
- *   8. Soft-delete with recovery support
+ * REMOVED (had NO live callers — verified): writeToRTDB, multiPathUpdate,
+ * _retriedRemove, write(), writeSection/Attendance/Exam/ExamSchedule/
+ * Notification/Route/Vehicle/Leave, rtdbOnly. Roster methods (addToRoster/
+ * removeFromRoster) remain as no-ops — rosters derive from the Firestore
+ * students collection (see Roster_helper).
+ *
+ * FEATURES (Firestore/Auth only):
+ *   1. batchMoveStudents() for bulk promotion (per-student Firestore sync)
+ *   2. Inline retry + idempotent async retry-queue (survives restarts)
+ *   3. syncVersion monotonic counter (in-memory; stale-read cache-buster)
+ *   4. Unified idempotencyKey across Firestore + Auth operations
+ *   5. Soft-delete with recovery support
  */
 class Dual_write
 {
@@ -38,11 +43,9 @@ class Dual_write
     private $processedKeys = [];
 
     private $stats = [
-        'rtdb_writes'    => 0, 'rtdb_failures'  => 0,
         'fs_writes'      => 0, 'fs_failures'    => 0,
         'fs_retries'     => 0, 'fs_queued'      => 0,
         'auth_writes'    => 0, 'auth_failures'  => 0,
-        'batch_paths'    => 0,
     ];
 
     // ══════════════════════════════════════════════════════════════════
@@ -145,70 +148,6 @@ class Dual_write
             throw new \InvalidArgumentException("Invalid section: '{$val}'");
         }
         return $v;
-    }
-
-    // ══════════════════════════════════════════════════════════════════
-    //  RTDB ENGINE
-    // ══════════════════════════════════════════════════════════════════
-
-    private function writeToRTDB(string $path, $data, string $method = 'set'): bool
-    {
-        try {
-            switch ($method) {
-                case 'update': $this->firebase->update($path, $data); break;
-                case 'push':   $this->firebase->push($path, $data);   break;
-                case 'delete':
-                    $key = is_string($data) ? $data : '';
-                    $this->firebase->delete($path, $key);
-                    break;
-                default:       $this->firebase->set($path, $data);    break;
-            }
-            $this->stats['rtdb_writes']++;
-            return true;
-        } catch (\Exception $e) {
-            $this->stats['rtdb_failures']++;
-            $this->_log('error', "RTDB {$method} FAILED: {$path} — " . $e->getMessage());
-            return false;
-        }
-    }
-
-    /**
-     * ATOMIC multi-path RTDB update.
-     * Firebase guarantees ALL paths succeed or NONE do.
-     */
-    public function multiPathUpdate(array $updates): bool
-    {
-        if (!$this->ready || empty($updates)) return false;
-        try {
-            $this->firebase->getDatabase()->getReference('/')->update($updates);
-            $pathCount = count($updates);
-            $this->stats['rtdb_writes'] += $pathCount;
-            $this->stats['batch_paths'] += $pathCount;
-            $this->_log('debug', "RTDB multi-path OK: {$pathCount} paths");
-            return true;
-        } catch (\Exception $e) {
-            $this->stats['rtdb_failures']++;
-            $this->_log('error', 'RTDB multi-path FAILED (' . count($updates) . ' paths): ' . $e->getMessage());
-            return false;
-        }
-    }
-
-    /**
-     * Retried REMOVE: deletes with verification.
-     * If first attempt fails, retries once. Logs but does not block caller.
-     */
-    private function _retriedRemove(string $path, string $childKey): bool
-    {
-        $ok = $this->writeToRTDB($path, $childKey, 'delete');
-        if ($ok) return true;
-
-        // Retry once after 100ms
-        usleep(100000);
-        $ok = $this->writeToRTDB($path, $childKey, 'delete');
-        if (!$ok) {
-            $this->_log('error', "REMOVE retry FAILED: {$path}/{$childKey} — may cause ghost roster entry");
-        }
-        return $ok;
     }
 
     // ══════════════════════════════════════════════════════════════════
@@ -321,18 +260,6 @@ class Dual_write
             $this->_log('error', "Auth create failed {$uid}: " . $e->getMessage());
             return false;
         }
-    }
-
-    // ══════════════════════════════════════════════════════════════════
-    //  GENERIC DUAL-WRITE
-    // ══════════════════════════════════════════════════════════════════
-
-    public function write(string $rtdbPath, $rtdbData, string $rtdbMethod, string $fsSyncMethod, array $fsSyncArgs, ?string $idempotencyKey = null): bool
-    {
-        $rtdbOk = $this->writeToRTDB($rtdbPath, $rtdbData, $rtdbMethod);
-        if (!$rtdbOk) return false;
-        $this->writeToFirestore($fsSyncMethod, $fsSyncArgs, $idempotencyKey);
-        return true;
     }
 
     // ══════════════════════════════════════════════════════════════════
@@ -565,75 +492,6 @@ class Dual_write
     }
 
     // ══════════════════════════════════════════════════════════════════
-    //  SECTION / SCHOOL / ATTENDANCE / EXAM / NOTIFICATION
-    // ══════════════════════════════════════════════════════════════════
-
-    public function writeSection(string $cls, string $sec, array $data = []): bool
-    {
-        if (!$this->ready) return false;
-        $ck = self::validateClass($cls); $sk = self::validateSection($sec);
-        if (!$this->writeToRTDB("Schools/{$this->schoolId}/{$this->session}/{$ck}/{$sk}", $data, 'update')) return false;
-        $this->writeToFirestore('syncSection', [$cls, $sec, $data]);
-        return true;
-    }
-
-    public function writeAttendance(string $stuId, string $date, array $data, string $rtdbPath): bool
-    {
-        if (!$this->ready) return false;
-        if (!$this->writeToRTDB($rtdbPath, $data, 'set')) return false;
-        $this->writeToFirestore('syncAttendanceRecord', [$stuId, $date, $data], "att_{$stuId}_{$date}");
-        return true;
-    }
-
-    public function writeExam(string $examId, array $data, string $rtdbPath): bool
-    {
-        if (!$this->ready) return false;
-        if (!$this->writeToRTDB($rtdbPath, $data, 'set')) return false;
-        $this->writeToFirestore('syncExam', [$examId, $data]);
-        return true;
-    }
-
-    public function writeExamSchedule(string $examId, string $cls, string $sec, array $data, string $rtdbPath): bool
-    {
-        if (!$this->ready) return false;
-        if (!$this->writeToRTDB($rtdbPath, $data, 'set')) return false;
-        $this->writeToFirestore('syncExamSchedule', [$examId, $cls, $sec, $data]);
-        return true;
-    }
-
-    public function writeNotification(string $id, array $data, string $rtdbPath): bool
-    {
-        if (!$this->ready) return false;
-        if (!$this->writeToRTDB($rtdbPath, $data, 'set')) return false;
-        $this->writeToFirestore('syncNotification', [$id, $data]);
-        return true;
-    }
-
-    public function writeRoute(string $id, array $data, string $path): bool
-    {
-        if (!$this->ready) return false;
-        if (!$this->writeToRTDB($path, $data, 'set')) return false;
-        $this->writeToFirestore('syncRoute', [$id, $data]);
-        return true;
-    }
-
-    public function writeVehicle(string $id, array $data, string $path): bool
-    {
-        if (!$this->ready) return false;
-        if (!$this->writeToRTDB($path, $data, 'set')) return false;
-        $this->writeToFirestore('syncVehicle', [$id, $data]);
-        return true;
-    }
-
-    public function writeLeave(string $id, array $data, string $path): bool
-    {
-        if (!$this->ready) return false;
-        if (!$this->writeToRTDB($path, $data, 'set')) return false;
-        $this->writeToFirestore('syncLeaveApplication', [$id, $data]);
-        return true;
-    }
-
-    // ══════════════════════════════════════════════════════════════════
     //  ROSTER HELPERS (with session support)
     // ══════════════════════════════════════════════════════════════════
 
@@ -659,15 +517,6 @@ class Dual_write
     public function removeFromRoster(string $cls, string $sec, string $stuId, ?string $sess = null): bool
     {
         return $this->ready;
-    }
-
-    // ══════════════════════════════════════════════════════════════════
-    //  PASSTHROUGH
-    // ══════════════════════════════════════════════════════════════════
-
-    public function rtdbOnly(string $path, $data, string $method = 'set'): bool
-    {
-        return $this->writeToRTDB($path, $data, $method);
     }
 
     // ══════════════════════════════════════════════════════════════════
