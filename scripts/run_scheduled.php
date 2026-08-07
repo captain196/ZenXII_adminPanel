@@ -11,12 +11,10 @@
  * Supported jobs:
  *   reconcile        — reconcile_fees.php         (daily)
  *   integrity        — fee_integrity_check.php    (weekly)
- *   reap             — generate_fees.php --reap-dead-workers (hourly)
  *
  * Usage:
  *   php scripts/run_scheduled.php --job=reconcile --schoolId=SCH_… --session=YYYY-YY
  *   php scripts/run_scheduled.php --job=integrity --schoolId=SCH_… --session=YYYY-YY
- *   php scripts/run_scheduled.php --job=reap      --jobId=JOB_… [--thresholdSec=60]
  *
  * Exit codes: 0 on success, non-zero mirrors the child's exit so cron
  * MTA can still distinguish failures in mail output.
@@ -32,7 +30,7 @@ foreach (array_slice($argv, 1) as $a) {
     $opts[$eq === false ? $a : substr($a, 0, $eq)] = $eq === false ? true : substr($a, $eq + 1);
 }
 $job = (string) ($opts['job'] ?? '');
-if ($job === '') { fwrite(STDERR, "Usage: --job={reconcile|integrity|reap} …\n"); exit(2); }
+if ($job === '') { fwrite(STDERR, "Usage: --job={reconcile|integrity} …\n"); exit(2); }
 
 $root = realpath(__DIR__ . '/..');
 $credPath = $root . '/application/config/graderadmin-firebase-adminsdk-a1sml-2b5f1862a7.json';
@@ -71,14 +69,6 @@ switch ($job) {
             'php', escapeshellarg("{$root}/scripts/fee_integrity_check.php"),
             '--schoolId=' . escapeshellarg((string) ($opts['schoolId'] ?? '')),
             '--session='  . escapeshellarg((string) ($opts['session']  ?? '')),
-        ];
-        break;
-    case 'reap':
-        $childCmd = [
-            'php', escapeshellarg("{$root}/scripts/generate_fees.php"),
-            '--reap-dead-workers',
-            '--jobId=' . escapeshellarg((string) ($opts['jobId'] ?? '')),
-            '--thresholdSec=' . (int) ($opts['thresholdSec'] ?? 60),
         ];
         break;
     default:

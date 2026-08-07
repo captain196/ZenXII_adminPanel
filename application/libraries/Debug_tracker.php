@@ -74,10 +74,6 @@ class Debug_tracker
         if ($path === 'System/BackupSchedule') {
             return [['enabled','frequency','retention','cron_key'], 'System/BackupSchedule'];
         }
-        // Users/Admin/{code}/{adminId}
-        if (count($parts) === 4 && $parts[0] === 'Users' && $parts[1] === 'Admin') {
-            return [['name','email','Role','password'], 'Users/Admin/{code}/{id}'];
-        }
         return null;
     }
 

@@ -1027,25 +1027,6 @@ class Entity_firestore_sync
         return $count;
     }
 
-    /**
-     * Sync all staff for the current school from RTDB to Firestore.
-     *
-     * @return int Number of staff synced
-     */
-    public function bulkSyncStaff(string $schoolCode): int
-    {
-        if (!$this->ready) return 0;
-        $admins = $this->firebase->get("Users/Admin/{$schoolCode}");
-        if (!is_array($admins)) return 0;
-
-        $count = 0;
-        foreach ($admins as $id => $data) {
-            if (!is_array($data) || $id === '_Counter') continue;
-            if ($this->syncStaff((string) $id, $data)) $count++;
-        }
-        return $count;
-    }
-
     // ══════════════════════════════════════════════════════════════════
     //  PRIVATE HELPERS
     // ══════════════════════════════════════════════════════════════════

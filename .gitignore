@@ -24,6 +24,10 @@ application/cache/dashboard/
 # Log files
 application/logs/*.php
 application/logs/.debug_enabled
+# Stream B Step III.0 — MVT telemetry (NDJSON; pilot-attributable; never commit)
+application/logs/stream_b_phase2_telemetry.log
+application/logs/stream_b_phase2_aggregated.json
+application/logs/stream_b_phase2_pilot/
 
 # Vendor (if using composer install on deploy)
 # vendor/
@@ -41,6 +45,14 @@ application/logs/.debug_enabled
 # OS
 .DS_Store
 Thumbs.db
+
+# dependency dirs (never commit)
+node_modules/
+demo_build/node_modules/
+
+# Secrets / runtime / generated — never commit
+.env
+.autopilot/
 
 # Runtime cache + logs — regenerated live, must never be committed (unblocks prod FF).
 application/cache/

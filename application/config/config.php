@@ -32,10 +32,25 @@ $_is_https = (
 // SEC-13 FIX: Validate HTTP_HOST against allowlist to prevent host-header injection
 $_allowed_hosts = ['localhost', '127.0.0.1', 'localhost:8080', 'localhost:8000'];
 if (getenv('APP_HOST')) $_allowed_hosts[] = getenv('APP_HOST');
+
+// Canonical public (parent-facing) base URL — see the block below. Resolve it
+// FIRST so its host can also be trusted for base_url detection: whatever host
+// the app is publicly served on (LAN IP for phone testing / ngrok / the prod
+// domain) is by definition a legitimate host, so the admission form submits back
+// to the SAME host the parent reached it on instead of falling back to localhost.
+$_public_base_url = getenv('PUBLIC_BASE_URL')
+    ?: (isset($_ENV['PUBLIC_BASE_URL']) ? $_ENV['PUBLIC_BASE_URL'] : 'https://www.zenxii.com/');
+$_pub_host = parse_url($_public_base_url, PHP_URL_HOST);
+if ($_pub_host) {
+    $_pub_port = parse_url($_public_base_url, PHP_URL_PORT);
+    $_allowed_hosts[] = $_pub_host;
+    if ($_pub_port) $_allowed_hosts[] = $_pub_host . ':' . $_pub_port;
+}
+
 $_host = (isset($_SERVER['HTTP_HOST']) && in_array($_SERVER['HTTP_HOST'], $_allowed_hosts, true))
     ? $_SERVER['HTTP_HOST']
     : 'localhost';
-// Detect subdirectory from SCRIPT_NAME (e.g., /Grader/school/index.php → /Grader/school/)
+// Detect subdirectory from SCRIPT_NAME (e.g., /ZenX/school/index.php → /ZenX/school/)
 $_subdir = '';
 if (isset($_SERVER['SCRIPT_NAME'])) {
     $_subdir = rtrim(dirname($_SERVER['SCRIPT_NAME']), '/\\') . '/';
@@ -44,6 +59,19 @@ $config['base_url'] =
     ($_is_https ? 'https' : 'http')
     . '://' . $_host
     . $_subdir;
+
+// ─────────────────────────────────────────────────────────────────────────────
+//  PUBLIC BASE URL  — the canonical, parent-facing origin.
+//  `base_url` above reflects whatever host the current request came in on
+//  (localhost / LAN IP / ngrok during dev). That is WRONG for anything a
+//  parent sees or that gets PRINTED (QR posters, the shareable admission link):
+//  those must always resolve to the public host regardless of where the admin
+//  happens to be browsing from. Production default mirrors the parent app's
+//  BASE_URL (`https://www.zenxii.com/`, served at domain root behind Cloudflare);
+//  override per-deployment via the PUBLIC_BASE_URL env var (see .env) — e.g. a
+//  LAN IP or ngrok URL for local phone testing.
+// ─────────────────────────────────────────────────────────────────────────────
+$config['public_base_url'] = $_public_base_url;
 
 $config['index_page'] = '';
 $config['uri_protocol'] = 'REQUEST_URI';
@@ -109,14 +137,6 @@ $config['encryption_key'] = $_encKey ?: 'CHANGE_ME_IN_ENV';
 $config['concessions_enabled'] = (string) (getenv('CONCESSIONS_ENABLED') ?: '') === '1';
 
 // ─────────────────────────────────────────────────────────────────────────────
-//  Phase: Payroll Foundation Architecture (Stage 2, 2026-05-10)
-//  Feature flag for the canonical PayrollAccountingService. When false the
-//  service refuses every posting method with a logged event — no ledger
-//  writes occur. Operator opts in once the payroll module is ready to
-//  route through the new service (Stage 3+ HR-module wiring).
-// ─────────────────────────────────────────────────────────────────────────────
-$config['payroll_engine_integration'] = (string) (getenv('PAYROLL_ENGINE_INTEGRATION') ?: '') === '1';
-
 // ─────────────────────────────────────────────────────────────────────────────
 //  SESSION SETTINGS
 //  FIX: secure cookies, strict SameSite, HttpOnly, longer expiry
@@ -199,8 +219,12 @@ $config['csrf_exclude_uris'] = [
     'fee_management/payment_webhook',
     'fee_management/parent_create_order',
     'fee_management/parent_verify_payment',
-    // Admission public Razorpay webhook (server-to-server; HMAC-verified).
-    'admission/payment_webhook',
+    // Admission payment gateway server-to-server webhook (HMAC-authenticated,
+    // no admin session/CSRF — mirrors fee_management/payment_webhook).
+    // Regex form REQUIRED: the route is admission/payment_webhook/(:any)
+    // (school_id param), and CI3 matches csrf_exclude_uris as ^…$ — an exact
+    // string would not exempt admission/payment_webhook/SCH_XXX → CSRF 403.
+    'admission/payment_webhook(.*)',
     // Mobile API endpoints (Firebase ID-token authenticated, not CSRF-protected)
     'auth/(.*)',
     'staff_attendance/(.*)',

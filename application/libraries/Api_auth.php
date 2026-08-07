@@ -246,32 +246,48 @@ class Api_auth
     }
 
     /**
-     * Log a security event to Firebase (best-effort).
+     * Log a security event via the canonical Firestore Security_telemetry
+     * library (collection `security_events`), from the Teacher/Parent app
+     * Bearer-token API surface.
+     *
+     * Phase 1 (RTDB elimination, 2026-07-03): the legacy best-effort write to
+     * RTDB `System/Logs/Security/{month}` was removed. emit() is best-effort —
+     * it always writes a structured '[STAFF_SECURITY]' log line before the
+     * Firestore write and never throws — so the always-on audit line and
+     * fail-safe posture are preserved. The tenant (`school_id`) and actor
+     * (`uid`/`role`) come from the verified token claims; `school_id` is echoed
+     * into detail for the per-tenant security_events(detail.schoolId, ts) index.
      */
     private function _log_security(string $event, ?array $claims, array $extra = []): void
     {
         try {
             $CI =& get_instance();
-            $ip = $CI->input->ip_address();
-            $uri = $CI->uri->uri_string();
+            $schoolId = (string) ($claims['school_id'] ?? '');
+            if ($schoolId === '') $schoolId = 'UNKNOWN';
 
-            $entry = array_merge([
-                'event'     => $event,
-                'uid'       => $claims['uid'] ?? 'unknown',
-                'role'      => $claims['role'] ?? 'unknown',
-                'school_id' => $claims['school_id'] ?? 'unknown',
-                'ip'        => $ip,
-                'uri'       => $uri,
-                'timestamp' => date('c'),
+            $CI->load->library('security_telemetry', null, 'sec_telem');
+            $CI->sec_telem->init($this->firebase, $schoolId, [
+                'uid'          => (string) ($claims['uid']  ?? 'unknown'),
+                'role'         => (string) ($claims['role'] ?? 'unknown'),
+                'school_claim' => (string) ($claims['school_id'] ?? $schoolId),
+            ]);
+
+            $detail = array_merge([
+                'schoolId' => $schoolId,
+                'surface'  => 'mobile_api',
+                'uri'      => $CI->uri->uri_string(),
             ], $extra);
 
-            $monthKey = date('Y-m');
-            $this->firebase->push("System/Logs/Security/{$monthKey}", $entry);
+            // CROSS_SCHOOL is a cross-tenant breach attempt → 'critical';
+            // ROLE_DENIED → 'error'. Both map to CI log level 'error' (always
+            // logged, even at production threshold=1) — preserving the legacy
+            // log_message('error') guarantee.
+            $severity = ($event === 'CROSS_SCHOOL') ? 'critical' : 'error';
 
-            log_message('error', "API_AUTH [{$event}] uid={$entry['uid']} ip={$ip} uri={$uri} "
-                . json_encode($extra));
-        } catch (\Exception $e) {
-            // Non-critical — don't break the request
+            $CI->sec_telem->emit($event, $severity, $detail);
+        } catch (\Throwable $e) {
+            // Non-critical — telemetry must never break the API request.
+            log_message('error', "API_AUTH [{$event}] telemetry_failed " . $e->getMessage());
         }
     }
 }

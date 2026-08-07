@@ -397,6 +397,28 @@ class Admin extends MY_Controller
             'calendar_events'   => [],
         ];
 
+        // F11 (2026-07-08) — Transport analytics slot on the main
+        // dashboard. Composes over Transport_analytics_service's
+        // role-filtered bundle; empty for roles without transport
+        // visibility. Additive to the existing payload — every legacy
+        // consumer keeps reading its slice unchanged.
+        try {
+            $this->load->library('transport_service', null, 'transport');
+            $this->load->library('transport_analytics_service', null, 'trnAnalytics');
+            if (!$this->transport->isEnabled()) {
+                $this->transport->init($this->fs, $this->numbering, $this->school_id, $this->session_year, (string) $this->admin_id);
+            }
+            $this->trnAnalytics->init($this->fs, $this->transport, $this->school_id, $this->session_year);
+            // SEC-3: gate on the per-school Operations RBAC grant, not only the
+            // hardcoded role-scope matrix — a role with the Transport module
+            // revoked must not see fleet financials on the dashboard slot.
+            if (has_permission('Operations') && Transport_analytics_service::hasAnyVisibility((string) $role)) {
+                $payload['transport_fleet'] = $this->trnAnalytics->bundleForRole((string) $role);
+            }
+        } catch (\Throwable $e) {
+            log_message('warning', 'F11 dashboard transport slot failed: ' . $e->getMessage());
+        }
+
         // SC-Step4: session-keyed cache write. Short TTL (120s) is just a
         // backstop — write paths bust this key on data change (invalidate-on-write).
         $this->dashboard_cache->set($this->school_name, $cacheKey, $payload, 120, $this->session_year);
@@ -1175,6 +1197,19 @@ class Admin extends MY_Controller
                 }
                 if (strlen($newPass) > 72) {
                     $this->json_error('Password must not exceed 72 characters.'); return;
+                }
+
+                // ── Verify the CURRENT password before changing it ──────────
+                // Re-authenticate against Firebase Auth (the single auth source)
+                // so a logged-in/hijacked session cannot silently reset the
+                // password without knowing the current one.
+                $userRecord = $this->firebase->getFirebaseUser($admin_id);
+                $authEmail  = is_object($userRecord) ? (string) ($userRecord->email ?? '') : '';
+                if ($authEmail === '') {
+                    $this->json_error('Unable to verify your account. Please re-login and try again.'); return;
+                }
+                if ($this->firebase->signInWithEmail($authEmail, $current) === null) {
+                    $this->json_error('Current password is incorrect.'); return;
                 }
 
                 // Password change via Firebase Auth (primary auth source)

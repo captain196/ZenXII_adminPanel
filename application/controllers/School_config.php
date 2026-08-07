@@ -443,11 +443,23 @@ class School_config extends MY_Controller
             $this->session->set_userdata('school_display_name', $data['display_name']);
         }
 
+        // Ensure this school has a readable public admission slug so the QR /
+        // shareable link parents see is `…/admission/form/st-marys-school`
+        // instead of the raw SCH_ id. Centralized + self-healing (see
+        // ensure_admission_slug in public_url_helper). Non-fatal: a slug
+        // failure must never block a profile save (raw-id URL always works).
+        $admissionSlug = '';
+        if (!empty($data['display_name'])) {
+            $this->load->helper('public_url');
+            $admissionSlug = ensure_admission_slug($this->firebase, $school_id, $data['display_name']);
+        }
+
         log_audit('Configuration', 'save_profile', $school, 'Updated school profile');
 
         $this->json_success([
-            'message'      => 'Profile saved successfully.',
-            'display_name' => $data['display_name'] ?? null, // let the page update the header live
+            'message'          => 'Profile saved successfully.',
+            'display_name'     => $data['display_name'] ?? null, // let the page update the header live
+            'admission_slug'   => $admissionSlug !== '' ? $admissionSlug : null,
         ]);
     }
 
@@ -586,6 +598,17 @@ class School_config extends MY_Controller
         // guard ensures we never delete the file we just uploaded.
         if ($prevPath !== '' && $prevPath !== $remotePath) {
             $this->firebase->deleteStorageFile($prevPath);
+        }
+
+        // M4: evict the PREVIOUS logo's render-cache entry immediately. The new
+        // URL already maps to a new cache key (auto-miss → re-fetch), so this is
+        // a best-effort cleanup, not a correctness requirement. Disposable cache.
+        if ($prevUrl !== '') {
+            try {
+                $this->load->helper('public_url');
+                $this->load->driver('cache', ['adapter' => 'file']);
+                $this->cache->delete(school_logo_cache_key($school_id, $prevUrl));
+            } catch (\Throwable $_) { /* non-fatal */ }
         }
 
         log_audit('Configuration', 'upload_logo', $school, 'Uploaded school logo');
@@ -2570,6 +2593,142 @@ class School_config extends MY_Controller
         } catch (\Throwable $e) {
             log_message('error', 'save_stream error: ' . $e->getMessage());
             $this->json_error('Failed to save stream. Contact administrator.');
+        } finally {
+            $this->_config_lock_release($lock);
+        }
+    }
+
+    // ─────────────────────────────────────────────────────────────────────
+    // POST  /school_config/save_streams
+    // Bulk "Save All Streams" — ONE read, ONE CAS check, ONE commitBatch write.
+    // Atomically upserts the full client-supplied stream set into
+    // schools/{id}.streams (all-or-nothing). Individual Add/Edit still uses
+    // save_stream(); this endpoint backs ONLY the "Save All Streams" button, so
+    // Streams matches the single-request bulk-save architecture already used by
+    // Classes (save_classes) / Sections (bulk_save_sections) / Subjects
+    // (save_bulk_subjects). Same data model, same 'streams' lock, same CAS
+    // discipline, same validation as save_stream — no schema/contract change.
+    // Upsert (non-destructive): deletion remains the job of delete_stream, so
+    // Save-All semantics are preserved exactly (never wipes unlisted streams).
+    // 2026-07-23.
+    // ─────────────────────────────────────────────────────────────────────
+    public function save_streams()
+    {
+        $this->_require_role(self::ADMIN_ROLES, 'school_config_save_streams');
+        $school = $this->school_name;
+
+        // Accept a JSON array [{stream_key|key, label, enabled}, ...] OR a JSON
+        // object map {key:{key,label,enabled}}. Normalise to a validated map.
+        $raw     = $this->input->post('streams', TRUE);
+        $decoded = is_string($raw) ? json_decode($raw, true) : $raw;
+        if (!is_array($decoded) || empty($decoded)) {
+            return $this->json_error('No streams provided.');
+        }
+
+        // Validate EVERY stream up-front — atomic: reject the whole batch on any
+        // invalid row, using the SAME rules as save_stream() (BUG-029 label cap).
+        $incoming = [];
+        foreach ($decoded as $k => $item) {
+            $item       = is_array($item) ? $item : (array) $item;
+            $streamKey  = trim((string) ($item['stream_key'] ?? $item['key'] ?? (is_string($k) ? $k : '')));
+            $label      = trim((string) ($item['label'] ?? ''));
+            $rawEnabled = $item['enabled'] ?? false;
+            $enabled    = ($rawEnabled === true || $rawEnabled === 1 || $rawEnabled === '1' || $rawEnabled === 'true');
+
+            if ($streamKey === '' || $label === '') {
+                return $this->json_error('Each stream requires a key and a label.', 422);
+            }
+            if (!preg_match('/^[A-Za-z0-9_]+$/', $streamKey)) {
+                return $this->json_error("Invalid stream key '{$streamKey}'. Use letters, digits, underscores only.", 422);
+            }
+            if (strlen($label) > 100) {
+                return $this->json_error("Stream label for '{$streamKey}' exceeds 100 characters.", 422);
+            }
+            // last-wins on duplicate keys (matches map semantics)
+            $incoming[$streamKey] = ['key' => $streamKey, 'label' => $label, 'enabled' => $enabled];
+        }
+        if (empty($incoming)) {
+            return $this->json_error('No valid streams provided.');
+        }
+
+        // Shared 'streams' lock — serialize against save_stream / seed_streams /
+        // delete_stream (BUG-028 Phase 1). Firestore __updateTime precondition
+        // catches cross-process races.
+        $lock = $this->_config_lock_acquire('streams');
+        if ($lock === null) {
+            log_message('error',
+                "ACC_CONCURRENT_REJECTED endpoint=save_streams schoolId={$this->school_id} "
+                . "actor={$this->admin_id} reason=lock_timeout");
+            return $this->json_error(
+                'Another stream-management operation is in progress. Please retry in a few seconds.',
+                409
+            );
+        }
+        try {
+            // ── Single read of the schools doc ──────────────────────────────
+            $schoolDocId = $this->fs->schoolId();
+            $fsSchool    = $this->firebase->firestoreGet('schools', $schoolDocId);
+            if (!is_array($fsSchool)) {
+                return $this->json_error('School profile is not yet initialised.');
+            }
+            $allStreams = [];
+            if (isset($fsSchool['streams']) && is_array($fsSchool['streams'])) {
+                foreach ($fsSchool['streams'] as $k => $v) {
+                    $allStreams[$k] = is_array($v) ? $v : (array) $v;
+                }
+            }
+            $updateTime = (string) ($fsSchool['__updateTime'] ?? '');
+
+            // Upsert incoming set into the existing map (non-destructive).
+            foreach ($incoming as $key => $data) {
+                $allStreams[$key] = $data;
+            }
+
+            // ── Single CAS commit — one write, all-or-nothing ───────────────
+            // merge=>true emits an updateMask so only `streams` + `updatedAt`
+            // are touched (2026-05-27 DOC-MERGE-FIX). precondition=updateTime is
+            // the optimistic-concurrency guard (identical to save_stream).
+            $ops = [[
+                'op'         => 'update',
+                'collection' => 'schools',
+                'docId'      => $schoolDocId,
+                'merge'      => true,
+                'data'       => [
+                    'streams'   => $allStreams,
+                    'updatedAt' => date('c'),
+                ],
+            ]];
+            if ($updateTime !== '') {
+                $ops[0]['precondition'] = ['updateTime' => $updateTime];
+            }
+            $committed = false;
+            try {
+                $committed = (bool) $this->firebase->firestoreCommitBatch($ops);
+            } catch (\Throwable $e) {
+                log_message('error',
+                    "ACC_SAVE_STREAMS_COMMIT_FAILED schoolId={$this->school_id} "
+                    . "err=" . $e->getMessage());
+            }
+            if (!$committed) {
+                log_message('error',
+                    "ACC_CONCURRENT_REJECTED endpoint=save_streams schoolId={$this->school_id} "
+                    . "actor={$this->admin_id} reason=cas_failed");
+                return $this->json_error(
+                    'Another administrator updated school configuration during your request. '
+                    . 'Please reload the page and retry.', 409);
+            }
+
+            $count = count($incoming);
+            log_audit('Configuration', 'save_streams', $school, "Bulk-saved {$count} stream(s)");
+
+            $this->json_success([
+                'message' => "{$count} stream(s) saved.",
+                'streams' => (object) $allStreams,
+                'saved'   => $count,
+            ]);
+        } catch (\Throwable $e) {
+            log_message('error', 'save_streams error: ' . $e->getMessage());
+            $this->json_error('Failed to save streams. Contact administrator.');
         } finally {
             $this->_config_lock_release($lock);
         }
@@ -4605,12 +4764,44 @@ class School_config extends MY_Controller
         $fsSchool = $this->fs->get('schools', $this->fs->schoolId());
         $config = (is_array($fsSchool['admissionFee'] ?? null)) ? $fsSchool['admissionFee'] : [];
 
+        // Parent-facing link → canonical PRODUCTION origin (www.zenxii.com), never
+        // the admin's current request host. A QR/link a school prints & shares must
+        // resolve publicly even though the admin may be on localhost/LAN/ngrok.
+        // Prefer the readable slug (…/admission/form/st-marys-school) over the raw
+        // SCH_ id; both resolve, the slug is just professional-looking.
+        $this->load->helper('public_url');
+        $admissionRef = trim((string) ($fsSchool['admissionSlug'] ?? ''));
+        if ($admissionRef === '') {
+            // Self-heal: school has a name but no slug yet (name may have been set
+            // via the School Profile page or SA onboarding — not this Config tab).
+            // Mint it now so the link/QR is professional regardless of save path.
+            $nm = trim((string) ($fsSchool['name'] ?? ''));
+            if ($nm !== '' && $nm !== $school) {
+                $admissionRef = ensure_admission_slug($this->firebase, $school, $nm);
+            }
+            if ($admissionRef === '') $admissionRef = $school;
+        }
+        $public_form_url = public_admission_form_url($admissionRef);
+
+        // Render the QR locally as a data: URI (NOT an external QR API — those are
+        // blocked by our CSP img-src and fail offline). Reuses the same canonical
+        // local renderer as the SIS ID-card / attendance QR flow.
+        $this->load->helper('qr_token');
+        $admission_qr_svg = qr_svg_data_uri($public_form_url);
+
+        // Is the branding (name/logo/address) filled in? Drives an inline nudge
+        // next to the QR so the school knows a blank poster/form == blank profile.
+        $profileName = trim((string) ($fsSchool['name'] ?? ''));
+        $profileNameConfigured = ($profileName !== '' && $profileName !== $school);
+
         $data = [
-            'config'       => $config,
-            'school_name'  => $school,
-            'school_id'    => $this->school_id,
-            'session_year' => $this->session_year,
-            'public_form_url' => base_url('admission/form/' . urlencode($school)),
+            'config'           => $config,
+            'school_name'      => $school,
+            'school_id'        => $this->school_id,
+            'session_year'     => $this->session_year,
+            'public_form_url'  => $public_form_url,
+            'admission_qr_svg' => $admission_qr_svg,
+            'name_configured'  => $profileNameConfigured,
         ];
 
         $this->load->view('include/header');

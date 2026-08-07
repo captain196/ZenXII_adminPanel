@@ -145,31 +145,14 @@ var STAGE_COL = { document_collection:'#4E82E0', under_review:'#DD9433', intervi
     approved:'#2FA875', rejected:'#DB5A48', waitlisted:'#8E72C8', enrolled:'#2AA79C' };
 var AV = ['#4E82E0','#DD9433','#9576DA','#2FA875','#C05A3B','#3BB0C9','#E06A9B','#6E8AA8','#5FA85C','#B77BD8','#D0596B','#3F9AA8'];
 
-function stageColor(k){ return STAGE_COL[k] || '#C05A3B'; }
-function hashCode(s){ s=String(s); var h=0; for(var i=0;i<s.length;i++){ h=(h*31+s.charCodeAt(i))|0; } return Math.abs(h); }
-function classColor(c){ return AV[hashCode(c||'x') % AV.length]; }
-/* Avatar colour is keyed by NAME with the SAME palette+hash as the Table view
-   (applications.php avColor), so a given applicant shows one identity colour
-   across Table and Board. (The class chip stays coloured by class.) */
-function avColorName(s){ var P=['#4E82E0','#DD9433','#9576DA','#2FA875','#C05A3B','#3BB0C9','#E06A9B','#6E8AA8'];
-    s=String(s||''); var h=0; for(var i=0;i<s.length;i++){ h=(h*31+s.charCodeAt(i))&0x7fffffff; } return P[h%P.length]; }
-function tint(hex,a){ var h=(hex||'#888').replace('#',''); if(h.length===3) h=h[0]+h[0]+h[1]+h[1]+h[2]+h[2];
-    var n=parseInt(h,16); return 'rgba('+((n>>16)&255)+','+((n>>8)&255)+','+(n&255)+','+a+')'; }
-function initials(n){ n=String(n||'').trim(); if(!n) return '?'; var p=n.split(/\s+/);
-    return ((p[0].charAt(0)||'') + (p.length>1 ? p[p.length-1].charAt(0) : '')).toUpperCase(); }
-function daysSince(d){ if(!d) return null; var t=Date.parse(String(d).replace(' ','T')); if(isNaN(t)) return null;
-    return Math.max(0, Math.floor((Date.now()-t)/86400000)); }
-function srcMap(s){ s=String(s||'').toLowerCase();
-    if(s.indexOf('public')>-1 || s.indexOf('online')>-1) return '🌐 Online';
-    if(s.indexOf('walk')>-1 || s.indexOf('admin')>-1) return '🚶 Walk-in';
-    if(s.indexOf('refer')>-1) return '👥 Referral';
-    return s ? ('• ' + s.replace(/_/g,' ')) : ''; }
-
-document.addEventListener('DOMContentLoaded', function(){ loadPipeline(); });
-
-function loadPipeline(){
+function loadPipeline() {
+    // C7 — class filter is applied SERVER-SIDE (index #9) so bounded columns stay
+    // correct; the board is no longer a full-scan grouped in the browser.
+    var cf = document.getElementById('filterClass').value || '';
     fetch(BASE + 'admission_crm/fetch_pipeline', {
-        method:'POST', headers:{ 'Content-Type':'application/x-www-form-urlencoded', 'X-Requested-With':'XMLHttpRequest' }, body:''
+        method: 'POST',
+        headers: { 'Content-Type': 'application/x-www-form-urlencoded', 'X-Requested-With': 'XMLHttpRequest' },
+        body: new URLSearchParams({ 'class': cf }).toString()
     })
     .then(function(r){ return r.json(); })
     .then(function(data){
@@ -179,23 +162,35 @@ function loadPipeline(){
               '<div style="text-align:center;padding:80px 0;color:var(--t3);width:100%;font-size:13px;"><i class="fa fa-exclamation-triangle" style="font-size:2rem;display:block;margin-bottom:8px;"></i>' + String(data.message || 'Could not load board').replace(/</g,'&lt;') + '</div>';
         }
     })
-    .catch(function(){
-        document.getElementById('pipelineBoard').innerHTML =
-          '<div style="text-align:center;padding:80px 0;color:var(--t3);width:100%;font-size:13px;"><i class="fa fa-exclamation-triangle" style="font-size:2rem;display:block;margin-bottom:8px;"></i>Failed to load board</div>';
+    .catch(function() {
+        document.getElementById('pipelineBoard').innerHTML = '<div style="text-align:center;padding:80px 0;color:var(--t3);width:100%;font-size:13px;"><i class="fa fa-exclamation-triangle" style="font-size:2rem;display:block;margin-bottom:8px;"></i>Failed to load pipeline <button class="ac-btn ac-btn-ghost ac-btn-sm" style="margin-left:10px;" onclick="loadPipeline()"><i class="fa fa-refresh"></i> Retry</button></div>';
     });
 }
 
-function passesFilter(item){
-    if (bState.q && String(item.student_name||'').toLowerCase().indexOf(bState.q) === -1
-        && String(item.application_id||item.id||'').toLowerCase().indexOf(bState.q) === -1) return false;
-    var age = daysSince(item.updated_at || item.created_at);
-    if (bState.flag === 'attention' && !(age !== null && age > 7)) return false;
-    if (bState.flag === 'unpaid') { var ps=String(item.payment_status||'').toLowerCase(); if (ps === '' || ps === 'paid') return false; }
-    return true;
+// Load one more bounded page for a single column (per-column pagination).
+function loadMoreColumn(sk) {
+    var stage = pipelineData[sk];
+    if (!stage || !stage.hasMore || !stage.nextCursor) return;
+    var cf = document.getElementById('filterClass').value || '';
+    var btn = document.getElementById('lmcol_' + sk);
+    if (btn) { btn.disabled = true; btn.innerHTML = '<i class="fa fa-spinner fa-spin"></i> Loading…'; }
+    fetch(BASE + 'admission_crm/fetch_pipeline_column', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/x-www-form-urlencoded', 'X-Requested-With': 'XMLHttpRequest' },
+        body: new URLSearchParams({ stage: sk, 'class': cf, cursor_created_at: stage.nextCursor.created_at || '', cursor_id: stage.nextCursor.id || '' }).toString()
+    })
+    .then(function(r) { return r.json(); })
+    .then(function(d) {
+        if (d.status !== 'success') { if (btn) { btn.disabled = false; btn.innerHTML = 'Load More'; } return; }
+        stage.items = (stage.items || []).concat(d.items || []);
+        stage.hasMore = !!d.hasMore;
+        stage.nextCursor = d.nextCursor || null;
+        renderPipeline();
+    })
+    .catch(function() { if (btn) { btn.disabled = false; btn.innerHTML = 'Load More'; } });
 }
 
-function renderPipeline(){
-    var cf = document.getElementById('filterClass').value;
+function renderPipeline() {
     var board = document.getElementById('pipelineBoard');
     var stageKeys = Object.keys(pipelineData);
 
@@ -215,10 +210,14 @@ function renderPipeline(){
     var html = '';
     stageKeys.forEach(function(sk){
         var stage = pipelineData[sk];
-        var color = stageColor(sk);
-        var items = (stage.items || []).filter(function(i){ return (!cf || i.class === cf) && passesFilter(i); });
-        items.sort(function(a,b){ return (daysSince(b.updated_at||b.created_at)||0) - (daysSince(a.updated_at||a.created_at)||0); });
-        var aging = items.filter(function(i){ var d=daysSince(i.updated_at||i.created_at); return d!==null && d>7; }).length;
+        var items = stage.items || []; // server already applied the class filter
+        var color = colors[sk] || 'var(--gold)';
+
+        html += '<div class="ac-col">';
+        html += '<div class="ac-col-hdr" style="border-top:3px solid ' + color + ';border-top-left-radius:10px;border-top-right-radius:10px;">';
+        html += '<span class="ac-col-title">' + esc(stage.label) + '</span>';
+        html += '<span class="ac-col-count">' + items.length + (stage.hasMore ? '+' : '') + '</span>';
+        html += '</div><div class="ac-col-body">';
 
         html += '<div class="np-col" data-stage="' + esc(sk) + '">';
         html += '<div class="np-col-h"><span class="np-dot" style="background:' + color + '"></span>';
@@ -231,6 +230,12 @@ function renderPipeline(){
         } else {
             items.forEach(function(item){ html += cardHtml(item, sk); });
         }
+
+        // Per-column "Load More" — the column is bounded server-side (index #8/#9).
+        if (stage.hasMore) {
+            html += '<button class="ac-pipe-btn" id="lmcol_' + esc(sk) + '" onclick="loadMoreColumn(\'' + esc(sk) + '\')" style="width:100%;margin-top:8px;justify-content:center;"><i class="fa fa-angle-double-down"></i> Load More</button>';
+        }
+
         html += '</div></div>';
     });
     board.innerHTML = html;
@@ -319,39 +324,8 @@ function moveStage(id, newStage){
     })
     .catch(function(){ showAlert('Could not save the move — reverting.', 'error'); loadPipeline(); });
 }
-
-// Move a card between columns in the in-memory model, mirroring the backend's
-// stage↔status lockstep (update_stage): approved/rejected set status too,
-// moving out of a terminal stage returns to pending.
-function applyLocalMove(id, newStage){
-    var item = null;
-    Object.keys(pipelineData).forEach(function(k){
-        var arr = pipelineData[k].items || [];
-        for (var i = 0; i < arr.length; i++){ if (arr[i].id === id){ item = arr[i]; arr.splice(i,1); break; } }
-    });
-    if (!item) return false;
-    item.stage = newStage;
-    if (newStage === 'approved') item.status = 'approved';
-    else if (newStage === 'rejected') item.status = 'rejected';
-    else if (item.status === 'approved' || item.status === 'rejected') item.status = 'pending';
-    var d = new Date();
-    item.updated_at = d.getFullYear()+'-'+('0'+(d.getMonth()+1)).slice(-2)+'-'+('0'+d.getDate()).slice(-2)+' '+('0'+d.getHours()).slice(-2)+':'+('0'+d.getMinutes()).slice(-2)+':00';
-    if (pipelineData[newStage]) pipelineData[newStage].items.push(item);
-    else { var fk = Object.keys(pipelineData)[0]; if (fk) pipelineData[fk].items.push(item); }
-    return true;
-}
-
-/* ── Toolbar handlers ── */
-function onBoardSearch(v){ bState.q = String(v||'').trim().toLowerCase(); renderPipeline(); }
-function setFlag(f, btn){ bState.flag = f;
-    document.querySelectorAll('.np-chip').forEach(function(c){ c.classList.remove('on'); }); btn.classList.add('on'); renderPipeline(); }
-function setDensity(d, btn){ bState.density = d;
-    btn.parentNode.querySelectorAll('button').forEach(function(b){ b.classList.remove('on'); }); btn.classList.add('on'); renderPipeline(); }
-
-function showAlert(msg, type){
-    var el = document.getElementById('pageAlert');
-    el.className = 'ac-alert ac-alert-' + type; el.textContent = msg; el.style.display = 'block';
-    setTimeout(function(){ el.style.display = 'none'; }, 3000);
-}
-function esc(s){ var d = document.createElement('div'); d.textContent = (s === null || s === undefined) ? '' : s; return d.innerHTML; }
+// Quote-safe HTML escaper (attribute AND text context). Reuses the project's
+// proven implementation (admin_forgot_password.php) — escapes & < > " ' and is
+// null-safe. Module-consistent with the rest of Admission CRM (C6).
+function esc(s){return String(s==null?'':s).replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;').replace(/"/g,'&quot;').replace(/'/g,'&#39;');}
 </script>

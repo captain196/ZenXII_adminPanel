@@ -792,7 +792,7 @@ a.ac-tab.active { color: var(--ac-primary); }
                 if (!r.ok) return { status: 'error', message: 'Server error (' + r.status + ')' };
                 return r.json();
             })
-            .then(function(j){ if (j && j.csrf_hash) CSRF_HASH = j.csrf_hash; return j; })
+            .then(function(j){ if (j && j.csrf_token) CSRF_HASH = j.csrf_token; return j; })
             .catch(function(e){ toast('Network error: ' + e.message, 'error'); return { status: 'error', message: e.message }; });
     }
 
@@ -803,7 +803,7 @@ a.ac-tab.active { color: var(--ac-primary); }
                 if (!r.ok) return { status: 'error', message: 'Server error (' + r.status + ')' };
                 return r.json();
             })
-            .then(function(j){ if (j && j.csrf_hash) CSRF_HASH = j.csrf_hash; return j; })
+            .then(function(j){ if (j && j.csrf_token) CSRF_HASH = j.csrf_token; return j; })
             .catch(function(e){ toast('Network error: ' + e.message, 'error'); return { status: 'error', message: e.message }; });
     }
 
@@ -1603,7 +1603,7 @@ a.ac-tab.active { color: var(--ac-primary); }
             fetch(BASE + 'accounting/import_bank_statement', { method: 'POST', body: fd })
                 .then(function(r){ return r.json(); })
                 .then(function(r){
-                    if (r && r.csrf_hash) CSRF_HASH = r.csrf_hash;
+                    if (r && r.csrf_token) CSRF_HASH = r.csrf_token;
                     if (r.status !== 'success') return toast(r.message, 'error');
                     toast(r.message); loadBankRecon();
                 });

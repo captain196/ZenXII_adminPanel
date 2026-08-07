@@ -215,13 +215,12 @@ function renderTable() {
         + '</tr></thead><tbody>';
 
     filtered.forEach(function(i) {
-        var col = avColor(i.student_name);
-        var pc = PILL[i.status] || '#6E8AA8';
-        html += '<tr data-name="' + escAttr((i.student_name || '').toLowerCase()) + '" data-phone="' + escAttr(i.phone || '') + '">';
-        html += '<td><div class="cellname"><div class="ac-av" style="background:' + col + '">' + esc(initials(i.student_name)) + '</div>'
-             +  '<div><div style="font-weight:600">' + esc(i.student_name) + '</div><div style="font-size:11px;color:var(--t3)">' + esc(i.inquiry_id || i.id) + '</div></div></div></td>';
-        html += '<td>' + esc(i.parent_name || '-') + '</td>';
-        html += '<td>' + esc(i.phone || '-') + '</td>';
+        var bc = badgeMap[i.status] || 'ac-badge-new';
+        html += '<tr data-name="' + esc((i.student_name || '').toLowerCase()) + '" data-phone="' + esc(i.phone || '') + '">';
+        html += '<td style="font-family:var(--font-m);font-size:11px;">' + esc(i.inquiry_id || i.id) + '</td>';
+        html += '<td style="font-weight:600;">' + esc(i.student_name) + '</td>';
+        html += '<td>' + esc(i.parent_name) + '</td>';
+        html += '<td>' + esc(i.phone) + '</td>';
         html += '<td>' + esc(i.class || '-') + '</td>';
         html += '<td>' + esc(i.source || '-') + '</td>';
         html += '<td><span class="pill" style="background:' + tint(pc,.14) + ';color:' + pc + '">' + esc((i.status || 'new').replace(/_/g,' ')) + '</span></td>';
@@ -239,8 +238,12 @@ function renderTable() {
 }
 
 function filterTable() {
-    var q = document.getElementById('filterSearch').value.toLowerCase();
-    document.querySelectorAll('.ac-tbl tbody tr').forEach(function(row) {
+    // Escape the query the SAME way data-name/data-phone are now escaped, so
+    // search still matches (no-op for plain alphanumerics; keeps special-char
+    // names/phones searchable). Preserves user-visible behaviour.
+    var q = esc(document.getElementById('filterSearch').value.toLowerCase());
+    var rows = document.querySelectorAll('.ac-table tbody tr');
+    rows.forEach(function(row) {
         var name = row.getAttribute('data-name') || '';
         var phone = row.getAttribute('data-phone') || '';
         row.style.display = (name.indexOf(q) !== -1 || phone.indexOf(q) !== -1) ? '' : 'none';
@@ -339,6 +342,9 @@ function showAlert(msg, type) {
     el.className = 'ac-alert ac-alert-' + type; el.textContent = msg; el.style.display = 'block';
     setTimeout(function() { el.style.display = 'none'; }, 4000);
 }
-function esc(s) { var d = document.createElement('div'); d.textContent = (s===null||s===undefined)?'':s; return d.innerHTML; }
-function escAttr(s){return (s==null?'':String(s)).replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;').replace(/"/g,'&quot;').replace(/'/g,'&#39;');}
+
+// Quote-safe HTML escaper (attribute AND text context). Reuses the project's
+// proven implementation (admin_forgot_password.php) — escapes & < > " ' and is
+// null-safe. Replaces the prior textContent-based esc (unsafe in attributes, C6).
+function esc(s){return String(s==null?'':s).replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;').replace(/"/g,'&quot;').replace(/'/g,'&#39;');}
 </script>

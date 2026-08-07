@@ -179,17 +179,8 @@ html { font-size:16px !important; }
             <div class="ac-head-title">Applications</div>
             <div class="ac-head-sub">Manage admission applications, approvals &amp; enrollment</div>
         </div>
-        <!-- New applications are created via the public admission form (see the
-             Admission Payment page). The CRM only processes/edits them. -->
-    </div>
-
-    <!-- View switcher (IA reorg 2026-07): Applications hosts three views —
-         Table (this page), Board (former Pipeline) and Funnel (former Leads),
-         now reachable here instead of as separate sidebar items. -->
-    <div class="ac-viewsw" style="display:inline-flex;gap:4px;background:var(--bg3,#f1f0ed);border:1px solid var(--border,#e6e2dc);border-radius:10px;padding:4px;margin-bottom:16px;flex-wrap:wrap;">
-        <span style="display:inline-flex;align-items:center;gap:7px;padding:7px 15px;border-radius:7px;font-size:13px;font-weight:600;background:var(--card,#fff);color:var(--gold,#BC5A3C);box-shadow:0 1px 2px rgba(0,0,0,.07);"><i class="fa fa-table"></i> Table</span>
-        <a href="<?= base_url('sis/pipeline') ?>" style="display:inline-flex;align-items:center;gap:7px;padding:7px 15px;border-radius:7px;font-size:13px;font-weight:600;color:var(--t2,#5b524b);text-decoration:none;"><i class="fa fa-columns"></i> Board</a>
-        <a href="<?= base_url('sis/admission_leads') ?>" style="display:inline-flex;align-items:center;gap:7px;padding:7px 15px;border-radius:7px;font-size:13px;font-weight:600;color:var(--t2,#5b524b);text-decoration:none;"><i class="fa fa-filter"></i> Funnel</a>
+        <button class="ac-btn ac-btn-primary" onclick="openAppModal()"><i class="fa fa-plus"></i> New Application</button>
+        <button class="ac-btn ac-btn-ghost" onclick="openPoster()" title="Printable admission QR poster"><i class="fa fa-qrcode"></i> QR Poster</button>
     </div>
 
     <div id="pageAlert" class="ac-alert"></div>
@@ -197,14 +188,31 @@ html { font-size:16px !important; }
     <!-- Detail Panel -->
     <div class="ac-detail" id="detailPanel"></div>
 
-    <!-- Status tabs + class + search (IA redesign 2026-07) -->
-    <div class="ac-sub">
-        <div class="ac-tabs" id="statusTabs">
-            <button class="ac-tab on" data-st="all" onclick="setAppStatus('all',this)">All <span class="ct" id="ct-all">0</span></button>
-            <button class="ac-tab" data-st="pending" onclick="setAppStatus('pending',this)">Pending <span class="ct" id="ct-pending">0</span></button>
-            <button class="ac-tab" data-st="approved" onclick="setAppStatus('approved',this)">Approved <span class="ct" id="ct-approved">0</span></button>
-            <button class="ac-tab" data-st="enrolled" onclick="setAppStatus('enrolled',this)">Enrolled <span class="ct" id="ct-enrolled">0</span></button>
-            <button class="ac-tab" data-st="rejected" onclick="setAppStatus('rejected',this)">Rejected <span class="ct" id="ct-rejected">0</span></button>
+    <!-- Filters -->
+    <div class="ac-filters">
+        <div class="ac-fg">
+            <label>Status</label>
+            <select id="filterStatus" onchange="loadApplications()">
+                <option value="">All Statuses</option>
+                <option value="pending">Pending</option>
+                <option value="approved">Approved</option>
+                <option value="rejected">Rejected</option>
+                <option value="enrolled">Enrolled</option>
+                <option value="waitlisted">Waitlisted</option>
+            </select>
+        </div>
+        <div class="ac-fg">
+            <label>Class</label>
+            <select id="filterClass" onchange="loadApplications()">
+                <option value="">All Classes</option>
+                <?php foreach ($classes as $c): ?>
+                <option value="<?= htmlspecialchars(str_replace('Class ', '', $c['class_name'])) ?>"><?= htmlspecialchars($c['class_name']) ?></option>
+                <?php endforeach; ?>
+            </select>
+        </div>
+        <div class="ac-fg">
+            <label>Search</label>
+            <input type="text" id="filterSearch" placeholder="Name, App ID or phone..." oninput="onSearchInput()" style="min-width:180px;">
         </div>
         <select id="filterClass" class="ac-select" onchange="renderTable(allApps)">
             <option value="">All Classes</option>
@@ -298,6 +306,37 @@ html { font-size:16px !important; }
         </div>
     </div>
 
+    <!-- Collect Admission Fee modal (offline counter) -->
+    <div class="ac-overlay" id="collectModal">
+        <div class="ac-modal" style="max-width:460px;">
+            <h2><i class="fa fa-inr" style="color:var(--gold);margin-right:6px;"></i> Collect Admission Fee</h2>
+            <input type="hidden" id="collAppId">
+            <p style="font-size:13px;color:var(--t2);margin-bottom:6px;">Applicant: <strong id="collStudent"></strong></p>
+            <div style="background:var(--bg3,#e6f4f1);border:1px solid var(--border);border-radius:8px;padding:10px 14px;margin-bottom:14px;">
+                <span style="font-size:12px;color:var(--t3);">Amount (server-resolved, non-editable)</span>
+                <div style="font-size:1.3rem;font-weight:800;color:var(--gold);">&#8377; <span id="collAmount">0</span></div>
+            </div>
+            <div class="ac-fg">
+                <label>Payment Mode</label>
+                <select id="collMode" onchange="collectModeChanged()">
+                    <option>Cash</option><option>UPI</option><option>Cheque</option>
+                    <option>DD</option><option>Bank Transfer</option><option>POS/Card</option>
+                </select>
+            </div>
+            <div class="ac-fg" id="collBankRow" style="display:none;">
+                <label>Bank Ledger</label>
+                <select id="collBank"><option value="">-- Select Bank Ledger --</option></select>
+            </div>
+            <div class="ac-fg"><label>Reference No (cheque / UPI / txn — optional)</label><input type="text" id="collBankRef" maxlength="60"></div>
+            <div class="ac-fg"><label>Remarks (optional)</label><textarea id="collRemarks" rows="2"></textarea></div>
+            <p style="font-size:11.5px;color:#9a3412;background:#fff7ed;border:1px solid #fed7aa;border-radius:6px;padding:8px 10px;margin-bottom:12px;">Admission fee is non-refundable. A receipt will be posted to Accounting on collection.</p>
+            <div class="ac-modal-foot">
+                <button class="ac-btn ac-btn-ghost" onclick="closeCollectModal()">Cancel</button>
+                <button class="ac-btn ac-btn-primary" onclick="submitCollect()" id="collectBtn"><i class="fa fa-check"></i> Collect Fee</button>
+            </div>
+        </div>
+    </div>
+
     <!-- Section picker modal — used during enrollment so the admin sees
          each section's strength + capacity at a glance and can pick the
          right one (suggested = least-full non-full section). -->
@@ -324,7 +363,14 @@ html { font-size:16px !important; }
 <script src="<?= base_url('assets/js/india_geo.js') ?>"></script>
 <script>
 var BASE = '<?= base_url() ?>';
+// `allApps` holds the CURRENTLY-LOADED page(s) so editApp()/openCollect() can
+// still resolve a row by id. With C7 server-side pagination it is no longer the
+// full dataset — it grows as "Load More" appends pages.
 var allApps = [];
+// C7 pagination/search state. reqSeq guards against out-of-order responses
+// (a fast typist can outrun the network); only the latest request renders.
+var acState = { cursor: null, hasMore: false, loading: false, reqSeq: 0, items: [], mode: 'browse' };
+var acSearchTimer = null;
 
 // Global busy overlay — displayed during any admin action that talks
 // to the server (approve / reject / enroll / fetch sections). Single
@@ -358,50 +404,78 @@ document.addEventListener('DOMContentLoaded', function() {
     });
 });
 
+// Debounced search — the server decides appID vs phone vs name mode, so we just
+// forward the raw box text and reset to page 1.
+function onSearchInput() {
+    if (acSearchTimer) clearTimeout(acSearchTimer);
+    acSearchTimer = setTimeout(loadApplications, 300);
+}
+
+function acBuildBody(cursor) {
+    var p = new URLSearchParams();
+    p.set('status', document.getElementById('filterStatus').value || '');
+    p.set('class',  document.getElementById('filterClass').value || '');
+    p.set('search', (document.getElementById('filterSearch').value || '').trim());
+    p.set('limit', '25');
+    if (cursor && cursor.id) { p.set('cursor_created_at', cursor.created_at || ''); p.set('cursor_id', cursor.id); }
+    return p.toString();
+}
+
+// Reset to page 1 (called on initial load and any filter/search change).
 function loadApplications() {
+    acState.cursor = null; acState.items = []; acState.hasMore = false;
+    acFetchPage(false);
+}
+
+function acFetchPage(append) {
+    if (acState.loading) return;
+    acState.loading = true;
+    var seq = ++acState.reqSeq;
+    var tw = document.getElementById('tableWrap');
+    if (!append) tw.innerHTML = '<div class="ac-empty"><i class="fa fa-spinner fa-spin"></i> Loading applications...</div>';
+    else { var lb = document.getElementById('acLoadMoreBtn'); if (lb) { lb.disabled = true; lb.innerHTML = '<i class="fa fa-spinner fa-spin"></i> Loading...'; } }
+
     fetch(BASE + 'admission_crm/fetch_applications', {
         method: 'POST',
         headers: { 'Content-Type': 'application/x-www-form-urlencoded', 'X-Requested-With': 'XMLHttpRequest' },
-        body: ''
+        body: acBuildBody(acState.cursor)
     })
     .then(function(r) { return r.json(); })
     .then(function(data) {
-        if (data.status === 'success') { allApps = data.applications || []; renderTable(allApps); }
-        else { document.getElementById('tableWrap').innerHTML = '<div class="ac-empty"><i class="fa fa-exclamation-triangle"></i> ' + String(data.message || 'Could not load applications').replace(/</g,'&lt;') + '</div>'; }
+        if (seq !== acState.reqSeq) return;            // stale response — superseded
+        acState.loading = false;
+        if (data.status !== 'success') { acRenderError('Failed to load applications.'); return; }
+        if (data.error === 'unsupported_filter') { acRenderError('That filter combination is not supported. Try one filter at a time.'); return; }
+        if (data.error) { acRenderError('Search is temporarily unavailable. Please retry.'); return; }
+        var pageItems = data.applications || [];
+        acState.items   = append ? acState.items.concat(pageItems) : pageItems;
+        acState.cursor  = data.nextCursor || null;
+        acState.hasMore = !!data.hasMore;
+        acState.mode    = data.mode || 'browse';
+        renderTable(acState.items, acState.mode);
     })
-    .catch(function() { document.getElementById('tableWrap').innerHTML = '<div class="ac-empty"><i class="fa fa-exclamation-triangle"></i> Failed to load</div>'; });
+    .catch(function() { if (seq !== acState.reqSeq) return; acState.loading = false; acRenderError('Failed to load applications.'); });
 }
 
-var curStatus = 'all';
-function avColor(s){var p=['#4E82E0','#DD9433','#9576DA','#2FA875','#C05A3B','#3BB0C9','#E06A9B','#6E8AA8'];s=String(s||'');var h=0;for(var i=0;i<s.length;i++){h=(h*31+s.charCodeAt(i))&0x7fffffff;}return p[h%p.length];}
-function initials(n){n=String(n||'').trim();if(!n)return '?';var p=n.split(/\s+/);return ((p[0].charAt(0)||'')+(p.length>1?p[p.length-1].charAt(0):'')).toUpperCase();}
-function tint(hex,a){var h=(hex||'#888').replace('#','');if(h.length===3)h=h[0]+h[0]+h[1]+h[1]+h[2]+h[2];var n=parseInt(h,16);return 'rgba('+((n>>16)&255)+','+((n>>8)&255)+','+(n&255)+','+a+')';}
-function srcMap(s){s=String(s||'').toLowerCase();if(s.indexOf('public')>-1||s.indexOf('online')>-1)return 'Online';if(s.indexOf('walk')>-1||s.indexOf('admin')>-1)return 'Walk-in';if(s.indexOf('refer')>-1)return 'Referral';return s?s.replace(/_/g,' '):'-';}
-function daysOf(d){if(!d)return null;var t=Date.parse(String(d).replace(' ','T'));if(isNaN(t))return null;return Math.max(0,Math.floor((Date.now()-t)/86400000));}
+function acLoadMore() { if (acState.hasMore && acState.cursor && !acState.loading) acFetchPage(true); }
 
-function setAppStatus(st, btn){
-    curStatus = st;
-    document.querySelectorAll('#statusTabs .ac-tab').forEach(function(t){ t.classList.remove('on'); });
-    btn.classList.add('on');
-    renderTable(allApps);
+function acRenderError(msg) {
+    document.getElementById('tableWrap').innerHTML =
+        '<div class="ac-empty"><i class="fa fa-exclamation-triangle"></i> ' + esc(msg || 'Something went wrong') +
+        '<div style="margin-top:12px;"><button class="ac-btn ac-btn-ghost ac-btn-sm" onclick="loadApplications()"><i class="fa fa-refresh"></i> Retry</button></div></div>';
 }
 
-function renderTable(items) {
-    items = items || allApps || [];
-    var cf = document.getElementById('filterClass').value;
+function renderTable(items, mode) {
+    // Server already applied filters/search; render as-is. Keep allApps pointing
+    // at the loaded rows so editApp()/openCollect() can resolve by id.
+    allApps = items;
+    var searching = (mode && mode !== 'browse');
 
-    // Live tab counts (class-scoped, whole set).
-    var counts = { all:0, pending:0, approved:0, enrolled:0, rejected:0 };
-    items.forEach(function(a){ if (cf && a.class !== cf) return; counts.all++; if (counts[a.status] !== undefined) counts[a.status]++; });
-    ['all','pending','approved','enrolled','rejected'].forEach(function(k){ var e=document.getElementById('ct-'+k); if(e) e.textContent=counts[k]; });
-
-    var filtered = items.filter(function(a) {
-        if (curStatus !== 'all' && a.status !== curStatus) return false;
-        if (cf && a.class !== cf) return false;
-        return true;
-    });
-
-    if (filtered.length === 0) { document.getElementById('tableWrap').innerHTML = '<div class="ac-empty"><i class="fa fa-inbox"></i> No applications here</div>'; return; }
+    if (items.length === 0) {
+        var emptyMsg = searching ? 'No matches for your search' : 'No applications found';
+        document.getElementById('tableWrap').innerHTML = '<div class="ac-empty"><i class="fa fa-inbox"></i> ' + emptyMsg + '</div>';
+        return;
+    }
 
     var bm = { pending:'ac-badge-pending', approved:'ac-badge-approved', rejected:'ac-badge-rejected', enrolled:'ac-badge-enrolled', waitlisted:'ac-badge-waitlisted' };
     function feePill(ps) {
@@ -415,10 +489,13 @@ function renderTable(items) {
         + '<th>Applicant</th><th>Class</th><th>Source</th><th>Status</th><th>Fee</th><th>Age</th><th></th>'
         + '</tr></thead><tbody>';
 
-    filtered.forEach(function(a) {
+    items.forEach(function(a) {
         var bc = bm[a.status] || 'ac-badge-pending';
-        var col = avColor(a.student_name);
-        var age = daysOf(a.created_at);
+        html += '<tr data-name="' + esc((a.student_name || '').toLowerCase()) + '" data-id="' + esc((a.application_id || '').toLowerCase()) + '">';
+        html += '<td style="font-family:var(--font-m);font-size:11px;">' + esc(a.application_id || a.id) + '</td>';
+        // Possible-duplicate badge — non-blocking. Set when another
+        // application from the same phone+class exists. Twins legitimately
+        // trigger this; admin reviews and dismisses.
         var dupBadge = (a.possible_duplicate === true)
             ? ' <span title="Another application from the same phone applied for the same class." style="display:inline-block;background:'+tint('#DD9433',.16)+';color:#B5741F;padding:1px 7px;border-radius:8px;font-size:9px;font-weight:700;text-transform:uppercase;letter-spacing:0.3px;margin-left:6px;">Dup?</span>'
             : '';
@@ -438,20 +515,102 @@ function renderTable(items) {
             html += '<button class="ac-act ac-act-red" onclick="openAction(\'' + esc(a.id) + '\',\'reject\')" title="Reject"><i class="fa fa-times"></i></button>';
             html += '<button class="ac-act" onclick="addWaitlist(\'' + esc(a.id) + '\')" title="Waitlist"><i class="fa fa-clock-o"></i></button>';
         }
-        if (a.status === 'approved') html += '<button class="ac-act ac-act-blue" onclick="enrollStudent(\'' + esc(a.id) + '\')" title="Enroll"><i class="fa fa-user-plus"></i></button>';
-        html += '<button class="ac-act ac-act-red" onclick="deleteApp(\'' + esc(a.id) + '\')" title="Delete"><i class="fa fa-trash"></i></button>';
-        html += '</div></td></tr>';
+        if (a.status === 'approved') html += '<button class="ac-act ac-act-blue" onclick="enrollStudent(\'' + a.id + '\')" title="Enroll"><i class="fa fa-user-plus"></i></button> ';
+        if (a.payment_status === 'paid' && a.receipt_no) {
+            html += '<button class="ac-act ac-act-green" onclick="printAdmReceipt(\'' + esc(a.receipt_no) + '\')" title="Print Receipt"><i class="fa fa-print"></i></button> ';
+        } else {
+            html += '<button class="ac-act ac-act-green" onclick="openCollect(\'' + a.id + '\')" title="Collect Admission Fee"><i class="fa fa-inr"></i></button> ';
+        }
+        html += '<button class="ac-act ac-act-red" onclick="deleteApp(\'' + a.id + '\')"><i class="fa fa-trash"></i></button>';
+        html += '</td></tr>';
     });
     html += '</tbody></table></div>';
+
+    // Footer — result count + Load More (browse/name pagination) or a search hint.
+    html += '<div style="display:flex;justify-content:space-between;align-items:center;gap:12px;flex-wrap:wrap;margin-top:12px;">';
+    html += '<span style="font-size:12px;color:var(--t3);">Showing ' + items.length + (acState.hasMore ? '+' : '') + ' application' + (items.length === 1 ? '' : 's')
+          + (searching ? ' · search results' : '') + '</span>';
+    if (acState.hasMore) {
+        html += '<button class="ac-btn ac-btn-ghost ac-btn-sm" id="acLoadMoreBtn" onclick="acLoadMore()"><i class="fa fa-angle-double-down"></i> Load More</button>';
+    }
+    html += '</div>';
     document.getElementById('tableWrap').innerHTML = html;
     filterTable();
 }
 
-function filterTable() {
-    var q = document.getElementById('filterSearch').value.toLowerCase();
-    document.querySelectorAll('.ac-table tbody tr').forEach(function(r) {
-        r.style.display = ((r.getAttribute('data-name')||'').indexOf(q) !== -1 || (r.getAttribute('data-id')||'').indexOf(q) !== -1) ? '' : 'none';
-    });
+// Render one uploaded file as a tile: image files → inline thumbnail, other
+// types (PDF/DOC/XLS) → typed-icon chip. Returns '' when the url is empty.
+function acDocExt(s){ s = (s || '').split('?')[0]; try { s = decodeURIComponent(s); } catch(e){} var i = s.lastIndexOf('.'); return i < 0 ? '' : s.slice(i + 1).toLowerCase(); }
+function acDocTile(url, caption){
+    if (!url) return '';
+    var ext = acDocExt(caption) || acDocExt(url);
+    var isImg = ['jpg','jpeg','png','gif','webp'].indexOf(ext) !== -1;
+    if (isImg){
+        return '<a href="' + esc(url) + '" target="_blank" rel="noopener" title="' + esc(caption) + '" style="display:inline-block;width:96px;text-align:center;text-decoration:none;color:var(--t2);">'
+             +  '<img src="' + esc(url) + '" alt="' + esc(caption) + '" loading="lazy" style="width:96px;height:96px;object-fit:cover;border-radius:10px;border:1px solid var(--border,#e5e7eb);display:block;">'
+             +  '<span style="display:block;font-size:11px;margin-top:4px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;">' + esc(caption) + '</span></a>';
+    }
+    var icon = ext === 'pdf' ? 'fa-file-pdf' : ((ext === 'xls' || ext === 'xlsx') ? 'fa-file-excel' : ((ext === 'doc' || ext === 'docx') ? 'fa-file-word' : 'fa-file'));
+    return '<a href="' + esc(url) + '" target="_blank" rel="noopener" class="ac-btn ac-btn-ghost ac-btn-sm"><i class="fa ' + icon + '"></i> ' + esc(caption) + '</a>';
+}
+
+// ── Canonical Document Service — managed document card (Phase 1) ──
+// Rendered from the application's denormalized documentRefs pointers. Shows the
+// preview, a verification badge, and role-gated actions (server enforces the
+// role): mark verified/rejected, replace (new version), delete (unlink + purge
+// only if orphaned). All actions re-open the detail panel to reflect the change.
+function acStatusBadge(s){
+    var m = { verified:['#16a34a','fa-circle-check','Verified'], rejected:['#dc2626','fa-circle-xmark','Rejected'], pending:['#d97706','fa-clock','Pending'] };
+    var c = m[s || 'pending'] || m.pending;
+    return '<span style="display:inline-flex;align-items:center;gap:4px;font-size:11px;font-weight:700;color:' + c[0] + ';"><i class="fa ' + c[1] + '"></i> ' + c[2] + '</span>';
+}
+function acDocCard(ref, appId){
+    var url = ref.url || '', cap = ref.label || ref.type || 'Document', docId = ref.documentId || '';
+    var ext = acDocExt(cap) || acDocExt(url);
+    var isImg = ['jpg','jpeg','png','gif','webp'].indexOf(ext) !== -1;
+    var thumb = isImg
+        ? '<a href="' + esc(url) + '" target="_blank" rel="noopener"><img src="' + esc(url) + '" alt="' + esc(cap) + '" loading="lazy" style="width:110px;height:110px;object-fit:cover;border-radius:10px;border:1px solid var(--border,#e5e7eb);display:block;"></a>'
+        : '<a href="' + esc(url) + '" target="_blank" rel="noopener" class="ac-btn ac-btn-ghost ac-btn-sm" style="width:110px;height:110px;display:flex;align-items:center;justify-content:center;"><i class="fa ' + (ext === 'pdf' ? 'fa-file-pdf' : ((ext === 'xls' || ext === 'xlsx') ? 'fa-file-excel' : ((ext === 'doc' || ext === 'docx') ? 'fa-file-word' : 'fa-file'))) + '" style="font-size:34px;"></i></a>';
+    var acts = docId
+        ? '<div style="display:flex;flex-wrap:wrap;gap:4px;margin-top:6px;justify-content:center;">'
+            + '<button class="ac-btn ac-btn-sm" title="Mark verified" style="background:var(--green,#16a34a);color:#fff;padding:4px 7px;" onclick="verifyDoc(\'' + esc(appId) + '\',\'' + esc(docId) + '\',\'verified\')"><i class="fa fa-check"></i></button>'
+            + '<button class="ac-btn ac-btn-sm" title="Mark rejected" style="background:var(--red,#dc2626);color:#fff;padding:4px 7px;" onclick="verifyDoc(\'' + esc(appId) + '\',\'' + esc(docId) + '\',\'rejected\')"><i class="fa fa-xmark"></i></button>'
+            + '<button class="ac-btn ac-btn-ghost ac-btn-sm" title="Replace" style="padding:4px 7px;" onclick="replaceDoc(\'' + esc(appId) + '\',\'' + esc(docId) + '\')"><i class="fa fa-arrows-rotate"></i></button>'
+            + '<button class="ac-btn ac-btn-ghost ac-btn-sm" title="Delete" style="padding:4px 7px;" onclick="deleteDoc(\'' + esc(appId) + '\',\'' + esc(docId) + '\')"><i class="fa fa-trash"></i></button>'
+          + '</div>'
+        : '';
+    return '<div style="width:130px;text-align:center;">' + thumb
+        + '<div style="font-size:11px;margin-top:5px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;" title="' + esc(cap) + '">' + esc(cap) + '</div>'
+        + '<div style="margin-top:3px;">' + acStatusBadge(ref.verificationStatus) + '</div>' + acts + '</div>';
+}
+var _acReplaceTarget = null;
+function verifyDoc(appId, docId, status){
+    if (status === 'rejected' && !confirm('Mark this document as rejected?')) return;
+    fetch(BASE + 'admission_crm/verify_document', { method:'POST', headers:{'Content-Type':'application/x-www-form-urlencoded','X-Requested-With':'XMLHttpRequest'}, body:new URLSearchParams({ app_id:appId, document_id:docId, status:status }).toString() })
+    .then(function(r){ return r.json(); })
+    .then(function(d){ if (d.status === 'success'){ viewApp(appId); } else { showAlert(d.message || 'Could not update the document.', true); } })
+    .catch(function(){ showAlert('Network error updating the document.', true); });
+}
+function replaceDoc(appId, docId){
+    _acReplaceTarget = { appId:appId, docId:docId };
+    var inp = document.getElementById('acReplaceInput');
+    if (inp){ inp.value = ''; inp.click(); }
+}
+function acReplaceChosen(inp){
+    if (!_acReplaceTarget || !inp.files || !inp.files.length) return;
+    var appId = _acReplaceTarget.appId, fd = new FormData();
+    fd.append('app_id', appId); fd.append('document_id', _acReplaceTarget.docId); fd.append('file', inp.files[0]);
+    fetch(BASE + 'admission_crm/replace_document', { method:'POST', headers:{'X-Requested-With':'XMLHttpRequest'}, body:fd })
+    .then(function(r){ return r.json(); })
+    .then(function(d){ if (d.status === 'success'){ viewApp(appId); } else { showAlert(d.message || 'Could not replace the document.', true); } })
+    .catch(function(){ showAlert('Network error replacing the document.', true); });
+}
+function deleteDoc(appId, docId){
+    if (!confirm('Remove this document from the application? The file is permanently deleted only if no enrolled student references it and the retention window has passed.')) return;
+    fetch(BASE + 'admission_crm/delete_document', { method:'POST', headers:{'Content-Type':'application/x-www-form-urlencoded','X-Requested-With':'XMLHttpRequest'}, body:new URLSearchParams({ app_id:appId, document_id:docId }).toString() })
+    .then(function(r){ return r.json(); })
+    .then(function(d){ if (d.status === 'success'){ viewApp(appId); } else { showAlert(d.message || 'Could not delete the document.', true); } })
+    .catch(function(){ showAlert('Network error deleting the document.', true); });
 }
 
 function viewApp(id) {
@@ -468,13 +627,88 @@ function viewApp(id) {
             if (f[1]) html += '<div class="ac-detail-item"><label>' + f[0] + '</label><span>' + esc(f[1]) + '</span></div>';
         });
         html += '</div>';
+        // Photo & documents uploaded on the public admission form. Firebase
+        // Storage download URLs are allow-listed by our img-src CSP, so image
+        // files render as inline thumbnails; non-images (PDF/DOC/XLS) show a
+        // typed icon. Everything opens full-size / downloads in a new tab.
+        // Canonical Document Service (Phase 1): when the enriched documentRefs
+        // pointer set exists, render MANAGED cards (verify / replace / delete via
+        // the service). Legacy leads without documentRefs fall back to read-only
+        // tiles built from the denormalized *_url fields — full backward compat.
+        if (Array.isArray(a.documentRefs) && a.documentRefs.length) {
+            // Predefined types render in the main section; only non-predefined
+            // (category 'additional') fall under "Additional Documents".
+            var preCards = '', addCards = '';
+            a.documentRefs.forEach(function(ref){
+                if (!ref || !ref.documentId) return;
+                var card = acDocCard(ref, a.id);
+                if ((ref.category || '') === 'additional') addCards += card; else preCards += card;
+            });
+            if (preCards || addCards) {
+                html += '<input type="file" id="acReplaceInput" style="display:none" accept="image/jpeg,image/png,image/webp,application/pdf,.doc,.docx,.xls,.xlsx" onchange="acReplaceChosen(this)">';
+                if (preCards) {
+                    html += '<h4 style="margin:16px 0 8px;font-size:13px;color:var(--t2);font-weight:700;">Photo &amp; Documents</h4>'
+                         +  '<div style="display:flex;flex-wrap:wrap;gap:14px;align-items:flex-start;">' + preCards + '</div>';
+                }
+                if (addCards) {
+                    html += '<h4 style="margin:16px 0 8px;font-size:13px;color:var(--t2);font-weight:700;">Additional Documents</h4>'
+                         +  '<div style="display:flex;flex-wrap:wrap;gap:14px;align-items:flex-start;">' + addCards + '</div>';
+                }
+            }
+        } else {
+            var docsHtml = '';
+            docsHtml += acDocTile(a.photo_url, 'Student Photo');
+            docsHtml += acDocTile(a.aadhaar_url, 'Aadhaar Card');
+            if (Array.isArray(a.documents)) {
+                a.documents.forEach(function(d) { if (d && d.url) docsHtml += acDocTile(d.url, d.name || 'Document'); });
+            }
+            if (docsHtml) {
+                html += '<h4 style="margin:16px 0 8px;font-size:13px;color:var(--t2);font-weight:700;">Photo &amp; Documents</h4>'
+                     +  '<div style="display:flex;flex-wrap:wrap;gap:12px;align-items:flex-start;">' + docsHtml + '</div>';
+            }
+        }
+        if (a.payment_status === 'paid' && a.receipt_no) {
+            html += '<div style="margin-top:14px;"><button class="ac-btn ac-btn-sm" style="background:var(--green,#16a34a);color:#fff;" onclick="printAdmReceipt(\'' + esc(a.receipt_no) + '\')"><i class="fa fa-print"></i> Print Admission Receipt (' + esc(a.receipt_no) + ')</button></div>';
+        } else if (a.fee_amount) {
+            html += '<div style="margin-top:14px;"><button class="ac-btn ac-btn-sm" style="background:var(--green,#16a34a);color:#fff;" onclick="openCollect(\'' + a.id + '\')"><i class="fa fa-inr"></i> Collect Admission Fee</button></div>';
+        }
+        if (a.timeline && a.timeline.length) {
+            html += '<h4 style="margin:16px 0 8px;font-size:13px;color:var(--t2);font-weight:700;">Admission Activity Timeline</h4><div class="ac-history">';
+            a.timeline.slice().reverse().forEach(function(t) { html += '<div class="ac-history-item"><strong>' + esc((t.event||'').replace(/_/g,' ')) + '</strong> — ' + esc(t.detail||'') + ' <span class="ts">· ' + esc(t.actor||'') + ' · ' + esc(t.timestamp||'') + '</span></div>'; });
+            html += '</div>';
+        }
         if (a.history && a.history.length) {
-            html += '<h4 style="margin:16px 0 8px;font-size:13px;color:var(--t2);font-weight:700;">History</h4><div class="ac-history">';
+            html += '<h4 style="margin:16px 0 8px;font-size:13px;color:var(--t2);font-weight:700;">History <span style="font-weight:400;color:var(--t3);font-size:11px;">(recent)</span></h4><div class="ac-history">';
             a.history.forEach(function(h) { html += '<div class="ac-history-item">' + esc(h.action) + ' <span class="ts">— ' + esc(h.by) + ' · ' + esc(h.timestamp) + '</span></div>'; });
             html += '</div>';
         }
+        // M7-B — the timeline/history above are bounded recent caches; the full
+        // permanent trail lives in auditLogs (loaded on demand, reuse-first).
+        html += '<div style="margin-top:12px;"><button class="ac-btn ac-btn-ghost ac-btn-sm" onclick="loadFullAudit(\'' + esc(a.id) + '\')"><i class="fa fa-history"></i> View Full Audit History</button><div id="fullAuditBox" style="margin-top:10px;"></div></div>';
         p.innerHTML = html; p.style.display = 'block'; p.scrollIntoView({behavior:'smooth'});
     });
+}
+
+// M7-B — load the COMPLETE permanent audit trail (auditLogs + auditArchive) for
+// an application, reusing the canonical M7-A reader endpoint. The inline arrays
+// are only a bounded recent view.
+function loadFullAudit(appId) {
+    var box = document.getElementById('fullAuditBox');
+    if (!box) return;
+    box.innerHTML = '<div class="ac-empty" style="padding:10px;"><i class="fa fa-spinner fa-spin"></i> Loading full audit history…</div>';
+    fetch(BASE + 'sis/admission_audit_trail?app_id=' + encodeURIComponent(appId), { headers:{'X-Requested-With':'XMLHttpRequest'} })
+    .then(function(r){ return r.json(); })
+    .then(function(d){
+        if (d.status !== 'success' || !Array.isArray(d.trail)) { box.innerHTML = '<div class="ac-empty" style="padding:10px;">Could not load audit history.</div>'; return; }
+        if (d.trail.length === 0) { box.innerHTML = '<div class="ac-empty" style="padding:10px;">No permanent audit entries found.</div>'; return; }
+        var html = '<h4 style="margin:6px 0 8px;font-size:13px;color:var(--t2);font-weight:700;">Full Audit History <span style="font-weight:400;color:var(--t3);font-size:11px;">(' + d.trail.length + ' events · permanent)</span></h4><div class="ac-history" style="max-height:320px;">';
+        d.trail.forEach(function(e){
+            html += '<div class="ac-history-item"><strong>' + esc((e.action||'').replace(/_/g,' ')) + '</strong> — ' + esc(e.description||'') + ' <span class="ts">· ' + esc(e.userName||e.userId||'') + ' · ' + esc(e.timestamp||'') + '</span></div>';
+        });
+        html += '</div>';
+        box.innerHTML = html;
+    })
+    .catch(function(){ box.innerHTML = '<div class="ac-empty" style="padding:10px;">Could not load audit history.</div>'; });
 }
 
 function openAppModal(app) {
@@ -515,6 +749,62 @@ function openAction(id,type) {
     document.getElementById('actionModal').classList.add('active');
 }
 function closeActionModal(){document.getElementById('actionModal').classList.remove('active');}
+
+// ── Admission fee collection (offline counter) ────────────────────────
+function printAdmReceipt(rk){ window.open(BASE + 'admission_crm/admission_receipt?receipt=' + encodeURIComponent(rk), '_blank'); }
+function openPoster(){ window.open(BASE + 'admission_crm/poster', '_blank'); }
+
+function collectModeChanged(){
+    var mode = document.getElementById('collMode').value;
+    var isCash = (mode === 'Cash');
+    document.getElementById('collBankRow').style.display = isCash ? 'none' : 'block';
+}
+function openCollect(id){
+    var a = allApps.find(function(x){return x.id===id;});
+    if(!a){ showAlert('Application not found','error'); return; }
+    if(!a.fee_amount || parseFloat(a.fee_amount) <= 0){
+        showAlert('Admission fee is not set for this application. Set the fee (Edit) before collecting.','error'); return;
+    }
+    document.getElementById('collAppId').value = id;
+    document.getElementById('collStudent').textContent = a.student_name || id;
+    document.getElementById('collAmount').textContent = parseFloat(a.fee_amount).toLocaleString('en-IN');
+    document.getElementById('collMode').value = 'Cash';
+    document.getElementById('collBank').innerHTML = '<option value="">-- Select Bank Ledger --</option>';
+    document.getElementById('collBankRef').value = '';
+    document.getElementById('collRemarks').value = '';
+    collectModeChanged();
+    // Load active bank ledgers (reuses accounting/get_bank_accounts).
+    fetch(BASE + 'accounting/get_bank_accounts', { headers:{'X-Requested-With':'XMLHttpRequest'} })
+      .then(function(r){return r.json();}).then(function(d){
+        var list = (d && (d.accounts || d.data || d.bank_accounts)) || [];
+        var sel = document.getElementById('collBank');
+        list.forEach(function(b){ var o=document.createElement('option'); o.value=b.code||b.account_code||''; o.textContent=(b.name||b.account_name||'')+' ('+(b.code||b.account_code||'')+')'; sel.appendChild(o); });
+      }).catch(function(){});
+    document.getElementById('collectModal').classList.add('active');
+}
+function closeCollectModal(){document.getElementById('collectModal').classList.remove('active');}
+function submitCollect(){
+    var btn = document.getElementById('collectBtn');
+    var mode = document.getElementById('collMode').value;
+    var bank = document.getElementById('collBank').value;
+    if(mode !== 'Cash' && !bank){ showAlert('Select a bank ledger for '+mode,'error'); return; }
+    btn.disabled = true; btn.innerHTML = '<i class="fa fa-spinner fa-spin"></i> Collecting...';
+    var body = new URLSearchParams();
+    body.append('app_id', document.getElementById('collAppId').value);
+    body.append('payment_mode', mode);
+    body.append('bank_ledger_code', bank);
+    body.append('bank_reference', document.getElementById('collBankRef').value);
+    body.append('remarks', document.getElementById('collRemarks').value);
+    fetch(BASE + 'admission_crm/collect_admission_fee', { method:'POST', headers:{'Content-Type':'application/x-www-form-urlencoded','X-Requested-With':'XMLHttpRequest'}, body:body.toString() })
+    .then(function(r){return r.json();}).then(function(d){
+        btn.disabled=false; btn.innerHTML='<i class="fa fa-check"></i> Collect Fee';
+        showAlert(d.message, d.status==='success'?'success':'error');
+        if(d.status==='success'){ closeCollectModal(); loadApplications();
+            if(d.receipt_no && confirm('Admission fee collected. Print receipt '+d.receipt_no+'?')) printAdmReceipt(d.receipt_no);
+        }
+    })
+    .catch(function(){ btn.disabled=false; btn.innerHTML='<i class="fa fa-check"></i> Collect Fee'; showAlert('Collection failed','error'); });
+}
 
 function submitAction() {
     var id=document.getElementById('actionAppId').value, type=document.getElementById('actionType').value, remarks=document.getElementById('actionRemarks').value;
@@ -783,10 +1073,9 @@ function deleteApp(id) {
 }
 
 function showAlert(msg,type){var el=document.getElementById('pageAlert');el.className='ac-alert ac-alert-'+type;el.textContent=msg;el.style.display='block';setTimeout(function(){el.style.display='none';},4000);}
-function esc(s){var d=document.createElement('div');d.textContent=s||'';return d.innerHTML;}
-// Attribute-safe escaper (F2): esc() above escapes <>& but NOT quotes, so it
-// is unsafe inside an HTML attribute (data-name/data-id). escAttr also escapes
-// " and ' so applicant-controlled values can't break out of the attribute and
-// inject an event handler that would run in this privileged admin panel.
-function escAttr(s){return (s==null?'':String(s)).replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;').replace(/"/g,'&quot;').replace(/'/g,'&#39;');}
+// Quote-safe HTML escaper (attribute AND text context). Reuses the project's
+// proven implementation (admin_forgot_password.php) — escapes & < > " ' and is
+// null-safe. Replaces the prior textContent-based esc, which did NOT escape
+// quotes and so was unsafe in attribute context (C6). Do NOT revert.
+function esc(s){return String(s==null?'':s).replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;').replace(/"/g,'&quot;').replace(/'/g,'&#39;');}
 </script>

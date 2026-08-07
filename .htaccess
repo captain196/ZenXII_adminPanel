@@ -1,6 +1,6 @@
 <IfModule mod_rewrite.c>
     RewriteEngine On
-    RewriteBase /Zennxii_adminPanel/
+    RewriteBase /ZenX/school/
 
     # Serve the landing page at the project root.
     # Apache picks index.html before index.php for "/".

@@ -24,25 +24,8 @@
     <div style="text-align: right; font-size: 12px;">
       <div><strong>School:</strong> <?= htmlspecialchars($school_name) ?></div>
       <div><strong>Session:</strong> <?= htmlspecialchars($session_year) ?></div>
-      <div>
-        <strong>Engine flag:</strong>
-        <?php if ($flag_enabled): ?>
-          <span style="color: #16a34a;">ENABLED</span>
-        <?php else: ?>
-          <span style="color: #dc2626;">DISABLED</span>
-          <small style="display:block;">Set PAYROLL_ENGINE_INTEGRATION=1</small>
-        <?php endif; ?>
-      </div>
     </div>
   </div>
-
-  <?php if (!$flag_enabled): ?>
-  <div style="background: #fef2f2; border: 1px solid #fecaca; padding: 12px 16px; border-radius: 8px; margin-bottom: 16px; color: #991b1b;">
-    <strong>Payroll engine integration is disabled.</strong>
-    Set <code>PAYROLL_ENGINE_INTEGRATION=1</code> in the environment before invoking the post endpoints.
-    Preview endpoints work without the flag (read-only computations).
-  </div>
-  <?php endif; ?>
 
   <!-- Tabs -->
   <div class="payroll-tabs" style="display: flex; gap: 0; margin-bottom: 0; border-bottom: 2px solid #e5e7eb;">
@@ -98,7 +81,7 @@
 
       <div style="margin-top: 16px; display: flex; gap: 8px;">
         <button type="button" class="btn btn-default" onclick="prPreview('accrual')">Preview Journal</button>
-        <button type="button" class="btn btn-primary" onclick="prPost('accrual')" <?= $flag_enabled ? '' : 'disabled' ?>>Confirm &amp; Post</button>
+        <button type="button" class="btn btn-primary" onclick="prPost('accrual')">Confirm &amp; Post</button>
       </div>
     </form>
     <div id="pr-result-accrual" style="margin-top: 16px;"></div>
@@ -132,7 +115,7 @@
       </div>
       <div style="margin-top: 16px; display: flex; gap: 8px;">
         <button type="button" class="btn btn-default" onclick="prPreview('payout')">Preview Journal</button>
-        <button type="button" class="btn btn-primary" onclick="prPost('payout')" <?= $flag_enabled ? '' : 'disabled' ?>>Confirm &amp; Post</button>
+        <button type="button" class="btn btn-primary" onclick="prPost('payout')">Confirm &amp; Post</button>
       </div>
     </form>
     <div id="pr-result-payout" style="margin-top: 16px;"></div>
@@ -174,7 +157,7 @@
       </div>
       <div style="margin-top: 16px; display: flex; gap: 8px;">
         <button type="button" class="btn btn-default" onclick="prPreview('statutory')">Preview Journal</button>
-        <button type="button" class="btn btn-primary" onclick="prPost('statutory')" <?= $flag_enabled ? '' : 'disabled' ?>>Confirm &amp; Post</button>
+        <button type="button" class="btn btn-primary" onclick="prPost('statutory')">Confirm &amp; Post</button>
       </div>
     </form>
     <div id="pr-result-statutory" style="margin-top: 16px;"></div>
@@ -193,7 +176,7 @@
         <div class="col-md-12"><label>Reason * (audit trail)</label><textarea name="reason" class="form-control" rows="2" required></textarea></div>
       </div>
       <div style="margin-top: 16px; display: flex; gap: 8px;">
-        <button type="button" class="btn btn-warning" onclick="prPostReversal()" <?= $flag_enabled ? '' : 'disabled' ?>>Confirm &amp; Post Reversal</button>
+        <button type="button" class="btn btn-warning" onclick="prPostReversal()">Confirm &amp; Post Reversal</button>
       </div>
     </form>
     <div id="pr-result-reversal" style="margin-top: 16px;"></div>

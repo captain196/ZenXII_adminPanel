@@ -481,6 +481,34 @@ class Firestore_service
         return $this->where($collection, $conditions, $orderBy, $direction, $limit);
     }
 
+    /**
+     * DETERMINISTIC cursor pagination scoped to the current school + session (C7).
+     * Mandatory schoolId + session isolation; extra equality / array-contains
+     * filters and the page cursor pass through to
+     * FirestoreRestClient::queryCursor (order created_at DESC, __name__ DESC;
+     * fail-loud on missing index). Does NOT use the legacy where()/query() path.
+     *
+     * @param array      $extraConditions [[field,op,value],…] — status/class/stage/source == or searchTokens array-contains
+     * @param int        $limit           page size
+     * @param array|null $cursor          ['created_at'=>string,'id'=>docId] or null (page 1)
+     * @return array ['items'=>[{id,data}…], 'nextCursor'=>…|null, 'hasMore'=>bool]
+     * @throws \RuntimeException on missing index / query failure
+     */
+    public function cursorQuery(string $collection, array $extraConditions, int $limit, ?array $cursor = null): array
+    {
+        if ($this->client === null) {
+            throw new \RuntimeException('CRM_QUERY_FAILED:CLIENT_UNAVAILABLE');
+        }
+        $conditions = array_merge(
+            [
+                ['schoolId', '==', $this->schoolId],
+                ['session',  '==', $this->session],
+            ],
+            $extraConditions
+        );
+        return $this->client->queryCursor($collection, $conditions, $limit, $cursor);
+    }
+
     // ══════════════════════════════════════════════════════════════════
     //  CONVENIENCE: Flatten query results
     // ══════════════════════════════════════════════════════════════════
@@ -718,6 +746,29 @@ class Firestore_service
     }
 
     /**
+     * Create a school-scoped document ONLY if it does not already exist
+     * (create-if-not-exists CAS). Returns true when THIS call created the doc,
+     * false when it already existed (HTTP 409) or on error. Reuses the client's
+     * createDocument primitive — the same 409-CAS proven in nextSchoolCounter and
+     * the Fee_firestore_txn claim docs. Additive; existing callers unaffected.
+     */
+    public function createEntity(string $collection, string $entityId, array $data): bool
+    {
+        if ($this->client === null || !method_exists($this->client, 'createDocument')) {
+            return false;
+        }
+        $data['schoolId'] = $this->schoolId;
+        if (!empty($this->session) && !isset($data['session'])) {
+            $data['session'] = $this->session;
+        }
+        $t  = microtime(true);
+        $ok = (bool) $this->client->createDocument($collection, $this->docId($entityId), $data);
+        // A 409 (already exists) is a normal CAS outcome for the caller, not an error.
+        $this->_track(microtime(true) - $t, false);
+        return $ok;
+    }
+
+    /**
      * Update specific fields on a school-scoped document.
      */
     public function updateEntity(string $collection, string $entityId, array $data): bool
@@ -756,6 +807,66 @@ class Firestore_service
             log_message('error', "Firestore_service::createIfAbsent {$collection}/{$docId}: " . $e->getMessage());
             return false;
         }
+    }
+
+    /**
+     * M7-B — Concurrency-safe append to a BOUNDED recent-cache array on a
+     * school-scoped document, writing $businessFields in the SAME atomic commit.
+     * Delegates to the CAS primitive (currentDocument.updateTime) on the client.
+     * The array is a recent display cache; the permanent trail is in auditLogs.
+     *
+     * @return array ['ok'=>bool,'deduped'=>bool,'retries'=>int,'fellback'=>bool]
+     */
+    public function casAppendBounded(string $collection, string $entityId, string $arrayField, array $newEntry, int $cap, array $businessFields = [], string $dedupeKey = ''): array
+    {
+        if ($this->client === null || !method_exists($this->client, 'casAppendBounded')) {
+            return ['ok' => false, 'deduped' => false, 'retries' => 0, 'fellback' => false];
+        }
+        // Mirror the *Entity writers: stamp updatedAt so the doc tracks the write.
+        $businessFields['updatedAt'] = date('c');
+        $t = microtime(true);
+        $res = $this->client->casAppendBounded($collection, $this->docId($entityId), $arrayField, $newEntry, $cap, $businessFields, $dedupeKey);
+        $this->_track(microtime(true) - $t, empty($res['ok']));
+        return $res;
+    }
+
+    /**
+     * M-STAB RC-1 — Concurrency-safe read-modify-write of a school-scoped
+     * document (collection/{schoolId}_{entityId}) via optimistic updateTime
+     * CAS. The general-purpose sibling of casAppendBounded(): use it for the
+     * read-check-mutate hotspots (trip-state transitions, per-checkpoint
+     * tallies, capacity-cache adjust) that must not silently lose concurrent
+     * updates.
+     *
+     * $mutator receives the fresh document (assoc array, incl. '__updateTime')
+     * and returns the fields to MERGE-write, [] for an idempotent no-op, or
+     * null/false to ABORT on a business precondition (distinct from a
+     * contention failure in the result). 'updatedAt' is stamped automatically
+     * on any write — mirroring the *Entity writers. Delegates to the client CAS
+     * primitive; reuses the existing commitBatch+precondition mechanism, NO new
+     * framework. Fails closed on contention (never an unguarded write).
+     * See Firestore_rest_client::casUpdateEntity for the full contract.
+     *
+     * @return array ['ok'=>bool,'applied'=>bool,'reason'=>string,'retries'=>int]
+     */
+    public function casUpdateEntity(string $collection, string $entityId, callable $mutator, int $maxRetries = 5): array
+    {
+        if ($this->client === null || !method_exists($this->client, 'casUpdateEntity')) {
+            return ['ok' => false, 'applied' => false, 'reason' => 'unavailable', 'retries' => 0];
+        }
+        // Wrap the caller's mutator to stamp updatedAt fresh on each attempt,
+        // preserving its abort (null/false) and no-op ([]) signals verbatim.
+        $wrapped = function (array $doc) use ($mutator) {
+            $out = $mutator($doc);
+            if (is_array($out) && $out !== []) {
+                $out['updatedAt'] = date('c');
+            }
+            return $out;
+        };
+        $t = microtime(true);
+        $res = $this->client->casUpdateEntity($collection, $this->docId($entityId), $wrapped, $maxRetries);
+        $this->_track(microtime(true) - $t, empty($res['ok']));
+        return $res;
     }
 
     // ══════════════════════════════════════════════════════════════════

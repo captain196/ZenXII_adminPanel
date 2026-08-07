@@ -766,19 +766,24 @@
                 <ul class="treeview-menu">
                     <li><a href="<?= base_url('fees/dashboard') ?>"><i class="fa fa-circle-o"></i>Dashboard</a></li>
 
-                    <li class="g-sub-sec">Setup</li>
+                    <li class="g-sub-sec">1 &middot; Setup</li>
                     <li><a href="<?= base_url('fee_management/categories') ?>"><i class="fa fa-circle-o"></i>Titles &amp; Categories</a></li>
                     <li><a href="<?= base_url('fees/fees_chart') ?>"><i class="fa fa-circle-o"></i>Fee Chart</a></li>
 
-                    <li class="g-sub-sec">Billing</li>
+                    <li class="g-sub-sec">2 &middot; Create Bills</li>
                     <li><a href="<?= base_url('fees/generate_demands') ?>"><i class="fa fa-circle-o"></i>Generate Demands</a></li>
+
+                    <li class="g-sub-sec">3 &middot; Collect</li>
                     <li><a href="<?= base_url('fees/fees_counter') ?>"><i class="fa fa-circle-o"></i>Fee Counter</a></li>
                     <li><a href="<?= base_url('fees/fees_records') ?>"><i class="fa fa-circle-o"></i>Records</a></li>
                     <li><a href="<?= base_url('fees/student_ledger') ?>"><i class="fa fa-circle-o"></i>Student Ledger</a></li>
 
-                    <li class="g-sub-sec">Follow-up</li>
-                    <li><a href="<?= base_url('fees/defaulter_report') ?>"><i class="fa fa-circle-o"></i>Defaulters</a></li>
-                    <li><a href="<?= base_url('fee_management/reminders') ?>"><i class="fa fa-circle-o"></i>Reminders</a></li>
+                    <li class="g-sub-sec">Online Payments</li>
+                    <li><a href="<?= base_url('fee_management/gateway') ?>"><i class="fa fa-circle-o"></i>Payment Gateway</a></li>
+                    <li><a href="<?= base_url('fee_management/online_payments') ?>"><i class="fa fa-circle-o"></i>Online Payments</a></li>
+                    <li><a href="<?= base_url('fee_management/payment_reconciliation') ?>"><i class="fa fa-circle-o"></i>Reconciliation</a></li>
+
+                    <li class="g-sub-sec">4 &middot; Adjust</li>
                     <li><a href="<?= base_url('fee_management/discounts') ?>"><i class="fa fa-circle-o"></i>Discounts &amp; Scholarships</a></li>
                     <?php $this->config->load('fees_exemption_v2_flags', true); ?>
                     <?php if ($this->config->item('CONCESSION_UI_ENABLED', 'fees_exemption_v2_flags') || $this->config->item('SERVICE_ENROLLMENT_UI_ENABLED', 'fees_exemption_v2_flags')): ?>
@@ -786,10 +791,9 @@
                     <?php endif; ?>
                     <li><a href="<?= base_url('fee_management/refunds') ?>"><i class="fa fa-circle-o"></i>Refunds</a></li>
 
-                    <li class="g-sub-sec">Online Payments</li>
-                    <li><a href="<?= base_url('fee_management/gateway') ?>"><i class="fa fa-circle-o"></i>Payment Gateway</a></li>
-                    <li><a href="<?= base_url('fee_management/online_payments') ?>"><i class="fa fa-circle-o"></i>Online Payments</a></li>
-                    <li><a href="<?= base_url('fee_management/payment_reconciliation') ?>"><i class="fa fa-circle-o"></i>Reconciliation</a></li>
+                    <li class="g-sub-sec">5 &middot; Follow-up</li>
+                    <li><a href="<?= base_url('fees/defaulter_report') ?>"><i class="fa fa-circle-o"></i>Defaulters</a></li>
+                    <li><a href="<?= base_url('fee_management/reminders') ?>"><i class="fa fa-circle-o"></i>Reminders</a></li>
 
                     <li class="g-sub-sec">Debug</li>
                     <li><a href="<?= base_url('fees/transaction_audit') ?>"><i class="fa fa-circle-o"></i>Transaction Audit</a></li>
@@ -802,13 +806,21 @@
                 <a href="#"><i class="fa fa-calculator"></i><span>Accounting</span><span class="pull-right-container"><i class="fa fa-angle-left pull-right"></i></span></a>
                 <ul class="treeview-menu">
                     <li><a href="<?= base_url('accounting') ?>"><i class="fa fa-circle-o"></i>Dashboard</a></li>
+
+                    <li class="g-sub-sec">1 &middot; Setup</li>
                     <li><a href="<?= base_url('accounting/chart') ?>"><i class="fa fa-circle-o"></i>Chart of Accounts</a></li>
+                    <li><a href="<?= base_url('accounting/settings') ?>"><i class="fa fa-circle-o"></i>Settings</a></li>
+
+                    <li class="g-sub-sec">2 &middot; Record</li>
                     <li><a href="<?= base_url('accounting/ledger') ?>"><i class="fa fa-circle-o"></i>Journal Entries</a></li>
                     <li><a href="<?= base_url('accounting/income-expense') ?>"><i class="fa fa-circle-o"></i>Income &amp; Expense</a></li>
+
+                    <li class="g-sub-sec">3 &middot; Reconcile</li>
                     <li><a href="<?= base_url('accounting/cash-book') ?>"><i class="fa fa-circle-o"></i>Cash Book</a></li>
                     <li><a href="<?= base_url('accounting/bank-recon') ?>"><i class="fa fa-circle-o"></i>Bank Reconciliation</a></li>
+
+                    <li class="g-sub-sec">4 &middot; Reports</li>
                     <li><a href="<?= base_url('accounting/reports') ?>"><i class="fa fa-circle-o"></i>Financial Reports</a></li>
-                    <li><a href="<?= base_url('accounting/settings') ?>"><i class="fa fa-circle-o"></i>Settings</a></li>
                 </ul>
             </li>
             <?php endif; ?>

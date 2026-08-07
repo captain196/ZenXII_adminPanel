@@ -144,5 +144,8 @@ function removeEntry(id) {
 }
 
 function showAlert(msg,type){var el=document.getElementById('pageAlert');el.className='ac-alert ac-alert-'+type;el.textContent=msg;el.style.display='block';setTimeout(function(){el.style.display='none';},4000);}
-function esc(s){var d=document.createElement('div');d.textContent=(s===null||s===undefined)?'':s;return d.innerHTML;}
+// Quote-safe HTML escaper (attribute AND text context). Reuses the project's
+// proven implementation (admin_forgot_password.php) — escapes & < > " ' and is
+// null-safe. Module-consistent with the rest of Admission CRM (C6).
+function esc(s){return String(s==null?'':s).replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;').replace(/"/g,'&quot;').replace(/'/g,'&#39;');}
 </script>

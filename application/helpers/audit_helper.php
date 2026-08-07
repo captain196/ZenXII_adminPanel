@@ -32,7 +32,7 @@ defined('BASEPATH') OR exit('No direct script access allowed');
  * @param string $description Human-readable description
  * @return void
  */
-function log_audit(string $module, string $action, string $entityId = '', string $description = ''): void
+function log_audit(string $module, string $action, string $entityId = '', string $description = '', array $context = []): void
 {
     try {
         $CI =& get_instance();
@@ -72,9 +72,60 @@ function log_audit(string $module, string $action, string $entityId = '', string
             'timestampMs' => $nowMs,
         ];
 
+        // M7-A — optional, additive correlation/context. Backward compatible:
+        // legacy 4-arg callers pass no $context, so the schema is unchanged for
+        // them. `appId` is the canonical Admission-application correlation key
+        // (queryable via the auditLogs (schoolId, appId, timestampMs) index);
+        // `entityType` names the affected entity; `meta` carries bounded old/new
+        // state. No parallel audit store is introduced — this is the same
+        // canonical `auditLogs` collection.
+        if (!empty($context['appId']))      $entry['appId']      = (string) $context['appId'];
+        if (!empty($context['entityType'])) $entry['entityType'] = (string) $context['entityType'];
+        if (isset($context['meta']) && is_array($context['meta']) && $context['meta'] !== []) {
+            $entry['meta'] = $context['meta'];
+        }
+
         $CI->fs->set('auditLogs', $CI->fs->docId($logId), $entry);
     } catch (\Exception $e) {
         log_message('error', 'audit_helper::log_audit failed: ' . $e->getMessage());
+    }
+}
+
+/**
+ * Reconstruct the COMPLETE permanent audit trail for one Admission application,
+ * unioning the active `auditLogs` and the `auditArchive` collections (archival
+ * moves oldest entries out of auditLogs, so a single-collection read is NOT a
+ * complete trail). Correlates on the additive `appId` field. Newest-first.
+ *
+ * Tenant-safe: every query is schoolId-scoped. Read-only.
+ *
+ * @return array merged rows [{...entry, id}], deduped by doc id, newest-first
+ */
+function audit_trail_for_app(string $appId, int $limit = 500): array
+{
+    try {
+        $CI =& get_instance();
+        if (!isset($CI->fs) || !method_exists($CI->fs, 'isReady') || !method_exists($CI->fs, 'schoolId') || !$CI->fs->isReady()) return [];
+        $schoolId = $CI->fs->schoolId();
+        if ($schoolId === '' || $appId === '') return [];
+
+        $merged = [];
+        foreach (['auditLogs', 'auditArchive'] as $col) {
+            $rows = $CI->fs->where($col, [['schoolId', '==', $schoolId], ['appId', '==', $appId]], 'timestampMs', 'DESC', $limit);
+            foreach ((array) $rows as $row) {
+                if (!is_array($row)) continue;
+                $data = $row['data'] ?? null;
+                if (!is_array($data)) continue;
+                $id = (string) ($row['id'] ?? ($data['logId'] ?? ''));
+                if ($id !== '') $merged[$id] = $data; // dedupe by stable doc id (archival preserves ids)
+            }
+        }
+        $out = array_values($merged);
+        usort($out, fn($a, $b) => ((int) ($b['timestampMs'] ?? 0)) <=> ((int) ($a['timestampMs'] ?? 0)));
+        return array_slice($out, 0, $limit);
+    } catch (\Exception $e) {
+        log_message('error', 'audit_trail_for_app failed: ' . $e->getMessage());
+        return [];
     }
 }
 

@@ -225,7 +225,10 @@ $esc = function($v) { return htmlspecialchars($v ?? '', ENT_QUOTES, 'UTF-8'); };
 <script>
 var csrfName  = document.querySelector('meta[name="csrf-name"]').content;
 var csrfToken = document.querySelector('meta[name="csrf-token"]').content;
+// C7 — `allLeads` now holds only the CURRENTLY-LOADED page(s), not the full set.
 var allLeads  = [];
+var ldState = { cursor: null, hasMore: false, loading: false, reqSeq: 0, items: [], mode: 'browse' };
+var ldSearchTimer = null;
 
 /* Normalize legacy / inconsistent status strings to a canonical bucket
    for COUNTING and FILTERING (not for display). `pending` is legacy
@@ -240,41 +243,82 @@ function normalizeStatus(s) {
     return s;
 }
 
+function ldSearchInput() {
+    if (ldSearchTimer) clearTimeout(ldSearchTimer);
+    ldSearchTimer = setTimeout(loadLeads, 300);
+}
+
+function ldBuildBody(cursor) {
+    var p = new URLSearchParams();
+    p.set('status', document.getElementById('filterStatus').value || '');
+    p.set('source', document.getElementById('filterSource').value || '');
+    p.set('search', (document.getElementById('searchLeads').value || '').trim());
+    p.set('limit', '25');
+    if (cursor && cursor.id) { p.set('cursor_created_at', cursor.created_at || ''); p.set('cursor_id', cursor.id); }
+    return p.toString();
+}
+
+// Reset to page 1 (initial load + any filter/search change).
 function loadLeads() {
+    ldState.cursor = null; ldState.items = []; ldState.hasMore = false;
+    ldFetchPage(false);
+    renderStats(); // funnel is independent of the paginated list
+}
+
+function ldFetchPage(append) {
+    if (ldState.loading) return;
+    ldState.loading = true;
+    var seq = ++ldState.reqSeq;
+    if (!append) document.getElementById('leadsBody').innerHTML = '<tr><td colspan="7" class="leads-empty"><i class="fa fa-spinner fa-spin"></i>Loading leads…</td></tr>';
+    else { var lb = document.getElementById('ldLoadMoreBtn'); if (lb) { lb.disabled = true; lb.innerHTML = '<i class="fa fa-spinner fa-spin"></i> Loading…'; } }
+
     fetch('<?= base_url("sis/fetch_leads") ?>', {
-        headers: { 'X-Requested-With': 'XMLHttpRequest' }
+        method: 'POST',
+        headers: { 'Content-Type': 'application/x-www-form-urlencoded', 'X-Requested-With': 'XMLHttpRequest' },
+        body: ldBuildBody(ldState.cursor)
     })
     .then(function(r) { return r.json(); })
     .then(function(data) {
-        if (data.status === 'success') {
-            allLeads = data.leads || [];
-            renderStats();
-            renderTable();
-        }
-        else { document.getElementById('leadsBody').innerHTML = '<tr><td colspan="7" class="leads-empty"><i class="fa fa-exclamation-triangle"></i> ' + String(data.message || 'Could not load leads.').replace(/</g,'&lt;') + '</td></tr>'; }
+        if (seq !== ldState.reqSeq) return; // stale response
+        ldState.loading = false;
+        if (data.status !== 'success') { ldRenderError('Failed to load leads.'); return; }
+        if (data.error === 'unsupported_filter') { ldRenderError('That filter combination is not supported. Try one filter at a time.'); return; }
+        if (data.error) { ldRenderError('Search is temporarily unavailable. Please retry.'); return; }
+        var pageItems = data.leads || [];
+        ldState.items   = append ? ldState.items.concat(pageItems) : pageItems;
+        ldState.cursor  = data.nextCursor || null;
+        ldState.hasMore = !!data.hasMore;
+        ldState.mode    = data.mode || 'browse';
+        allLeads = ldState.items;
+        renderTable();
     })
-    .catch(function() {
-        document.getElementById('leadsBody').innerHTML = '<tr><td colspan="7" class="leads-empty"><i class="fa fa-exclamation-triangle"></i> Failed to load leads.</td></tr>';
-    });
+    .catch(function() { if (seq !== ldState.reqSeq) return; ldState.loading = false; ldRenderError('Failed to load leads.'); });
+}
+
+function ldLoadMore() { if (ldState.hasMore && ldState.cursor && !ldState.loading) ldFetchPage(true); }
+
+function ldRenderError(msg) {
+    document.getElementById('leadsBody').innerHTML =
+        '<tr><td colspan="7" class="leads-empty"><i class="fa fa-exclamation-triangle"></i> ' + esc(msg || 'Something went wrong') +
+        ' <button class="btn-sm btn-view" style="margin-left:10px;" onclick="loadLeads()"><i class="fa fa-refresh"></i> Retry</button></td></tr>';
 }
 
 function renderStats() {
-    /* Six-card funnel covers every status the controller can write.
-       `interested` folds into `contacted` and `admitted` folds into
-       `enrolled` so the same outcome never gets split across two cards. */
-    var c = { total:0, 'new':0, contacted:0, approved:0, enrolled:0, rejected:0 };
-    allLeads.forEach(function(l) {
-        c.total++;
-        var s = normalizeStatus(l.status);
-        if (c[s] !== undefined) c[s]++;
-    });
-    var cards = [
-        ['total','Total','is-total'], ['new','New',''], ['contacted','Contacted',''],
-        ['approved','Approved',''], ['enrolled','Enrolled',''], ['rejected','Rejected','']
-    ];
-    document.getElementById('leadStats').innerHTML = cards.map(function(card) {
-        return '<div class="leads-stat ' + card[2] + '"><div class="num">' + c[card[0]] + '</div><div class="lbl">' + card[1] + '</div></div>';
-    }).join('');
+    /* Six-card funnel via server-side COUNT aggregation (no full scan). Legacy
+       spellings are folded server-side to the same buckets. */
+    fetch('<?= base_url("sis/fetch_leads_stats") ?>', { headers: { 'X-Requested-With': 'XMLHttpRequest' } })
+    .then(function(r) { return r.json(); })
+    .then(function(data) {
+        var c = (data.status === 'success' && data.stats) ? data.stats : { total:0, 'new':0, contacted:0, approved:0, enrolled:0, rejected:0 };
+        var cards = [
+            ['total','Total','is-total'], ['new','New',''], ['contacted','Contacted',''],
+            ['approved','Approved',''], ['enrolled','Enrolled',''], ['rejected','Rejected','']
+        ];
+        document.getElementById('leadStats').innerHTML = cards.map(function(card) {
+            return '<div class="leads-stat ' + card[2] + '"><div class="num">' + (c[card[0]] || 0) + '</div><div class="lbl">' + card[1] + '</div></div>';
+        }).join('');
+    })
+    .catch(function() { /* funnel is best-effort; the grid is the source of truth */ });
 }
 
 function esc(s) { var d = document.createElement('div'); d.textContent = s || ''; return d.innerHTML; }
@@ -287,28 +331,18 @@ function badgeClass(status) {
 }
 
 function renderTable() {
-    var search = (document.getElementById('searchLeads').value || '').toLowerCase();
-    var fStatus = document.getElementById('filterStatus').value;
-    var fSource = document.getElementById('filterSource').value;
+    // Server already applied status/source filters and search; render as-is.
+    var items = ldState.items;
+    var searching = (ldState.mode && ldState.mode !== 'browse');
 
-    var filtered = allLeads.filter(function(l) {
-        if (search && (l.student_name || '').toLowerCase().indexOf(search) < 0 &&
-            (l.phone || '').indexOf(search) < 0 &&
-            (l.parent_name || '').toLowerCase().indexOf(search) < 0 &&
-            (l.id || '').toLowerCase().indexOf(search) < 0) return false;
-        // Filter uses normalized status so picking "New" also surfaces legacy "pending" rows.
-        if (fStatus && normalizeStatus(l.status) !== fStatus) return false;
-        if (fSource && (l.source || 'manual') !== fSource) return false;
-        return true;
-    });
-
-    if (filtered.length === 0) {
-        document.getElementById('leadsBody').innerHTML = '<tr><td colspan="7" class="leads-empty"><i class="fa fa-inbox"></i>No leads match your filters.</td></tr>';
+    if (items.length === 0) {
+        var emptyMsg = searching ? 'No leads match your search.' : 'No leads match your filters.';
+        document.getElementById('leadsBody').innerHTML = '<tr><td colspan="7" class="leads-empty"><i class="fa fa-inbox"></i>' + emptyMsg + '</td></tr>';
         return;
     }
 
     var html = '';
-    filtered.forEach(function(l) {
+    items.forEach(function(l) {
         var rawStatus = (l.status || 'new').toString().toLowerCase().trim();
         var normalized = normalizeStatus(l.status);
         var isClosed = normalized === 'enrolled' || normalized === 'rejected';
@@ -326,6 +360,13 @@ function renderTable() {
                 convertBtn +
             '</td></tr>';
     });
+    // Footer row — count + per-page Load More.
+    html += '<tr><td colspan="7" style="padding:12px;background:#fafafa;">'
+          + '<div style="display:flex;justify-content:space-between;align-items:center;gap:12px;flex-wrap:wrap;">'
+          + '<span style="font-size:12px;color:var(--t3);">Showing ' + items.length + (ldState.hasMore ? '+' : '') + ' lead' + (items.length === 1 ? '' : 's')
+          + (searching ? ' · search results' : '') + '</span>'
+          + (ldState.hasMore ? '<button class="btn-sm btn-view" id="ldLoadMoreBtn" onclick="ldLoadMore()"><i class="fa fa-angle-double-down"></i> Load More</button>' : '')
+          + '</div></td></tr>';
     document.getElementById('leadsBody').innerHTML = html;
 }
 
@@ -419,9 +460,9 @@ function updateLeadStatus(leadId) {
     });
 }
 
-document.getElementById('searchLeads').addEventListener('input', renderTable);
-document.getElementById('filterStatus').addEventListener('change', renderTable);
-document.getElementById('filterSource').addEventListener('change', renderTable);
+document.getElementById('searchLeads').addEventListener('input', ldSearchInput);
+document.getElementById('filterStatus').addEventListener('change', loadLeads);
+document.getElementById('filterSource').addEventListener('change', loadLeads);
 
 loadLeads();
 </script>

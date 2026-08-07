@@ -565,36 +565,6 @@ class Dual_write
     }
 
     // ══════════════════════════════════════════════════════════════════
-    //  STAFF
-    // ══════════════════════════════════════════════════════════════════
-
-    public function writeStaff(string $id, array $data): bool
-    {
-        if (!$this->ready) return false;
-        $data = array_merge($data, $this->_syncMeta());
-        if (!$this->writeToRTDB("Users/Admin/{$this->parentDbKey}/{$id}", $data, 'update')) return false;
-        $this->writeToFirestore('syncStaff', [$id, $data], "staff_{$id}");
-        return true;
-    }
-
-    public function setStaff(string $id, array $data): bool
-    {
-        if (!$this->ready) return false;
-        $data = array_merge($data, $this->_syncMeta());
-        if (!$this->writeToRTDB("Users/Admin/{$this->parentDbKey}/{$id}", $data, 'set')) return false;
-        $this->writeToFirestore('syncStaff', [$id, $data], "staff_{$id}");
-        return true;
-    }
-
-    public function deleteStaff(string $id): bool
-    {
-        if (!$this->ready) return false;
-        if (!$this->writeToRTDB("Users/Admin/{$this->parentDbKey}", $id, 'delete')) return false;
-        $this->writeToFirestore('deleteStaff', [$id], "delStaff_{$id}");
-        return true;
-    }
-
-    // ══════════════════════════════════════════════════════════════════
     //  SECTION / SCHOOL / ATTENDANCE / EXAM / NOTIFICATION
     // ══════════════════════════════════════════════════════════════════
 

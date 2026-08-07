@@ -146,6 +146,28 @@ $sym_map = ['INR'=>'&#8377;','USD'=>'$','GBP'=>'&pound;','EUR'=>'&euro;'];
                         <i class="fa fa-external-link"></i> Open Form
                     </a>
                 </div>
+
+                <!-- Admission QR — rendered locally (data: URI, no external service, CSP-safe, works offline).
+                     Print & display at gate / reception / notice board / banners / ads. -->
+                <?php if (!empty($admission_qr_svg)): ?>
+                <div style="margin-top:18px;text-align:center;border-top:1px solid #e5e7eb;padding-top:16px;">
+                    <p class="ap-info-text" style="margin-bottom:10px;">Print this QR and display it at your school gate, reception, notice board, banners, or advertisements. Parents scan it to open the admission form.</p>
+                    <?php if (empty($name_configured)): ?>
+                    <p class="ap-info-text" style="margin-bottom:10px;color:#92400e;background:#fef3c7;border:1px solid #fcd34d;border-radius:8px;padding:8px 10px;">
+                        <i class="fa fa-info-circle"></i> Your school name, logo &amp; address aren't set. Add them in the <b>School Profile</b> tab so the poster and admission form are fully branded.
+                    </p>
+                    <?php endif; ?>
+                    <img src="<?= $esc($admission_qr_svg) ?>" alt="Admission QR Code" style="width:170px;height:170px;border:1px solid #e5e7eb;border-radius:10px;padding:8px;background:#fff;">
+                    <div class="ap-link-actions" style="justify-content:center;margin-top:12px;display:flex;gap:8px;flex-wrap:wrap;">
+                        <a href="<?= $esc(base_url('admission_crm/poster')) ?>" target="_blank" class="ap-btn ap-btn-outline ap-btn-sm">
+                            <i class="fa fa-qrcode"></i> Print QR Poster
+                        </a>
+                        <a href="<?= $esc(base_url('admission_crm/poster?pdf=1')) ?>" target="_blank" class="ap-btn ap-btn-outline ap-btn-sm">
+                            <i class="fa fa-file-pdf-o"></i> Download Poster (PDF)
+                        </a>
+                    </div>
+                </div>
+                <?php endif; ?>
             </div>
         </div>
 

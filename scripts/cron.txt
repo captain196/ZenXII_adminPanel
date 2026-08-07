@@ -17,11 +17,6 @@
 # ── WEEKLY Sunday 03:00 — cross-system integrity audit ─────────────
 0 3 * * 0 /usr/bin/php /var/www/Grader/school/scripts/run_scheduled.php --job=integrity --schoolId=SCH_D94FE8F7AD --session=2026-27 >> /var/log/schoolsync/integrity.log 2>&1
 
-# ── HOURLY — reap stuck fee-generation workers (per active job) ────
-# Replace JOB_… with the current running job id, or wrap this in a
-# script that scans `fee_generation_jobs where status==running`.
-# 5 * * * * /usr/bin/php /var/www/Grader/school/scripts/run_scheduled.php --job=reap --jobId=JOB_LATEST --thresholdSec=60 >> /var/log/schoolsync/reap.log 2>&1
-
 # ─────────────────────────────────────────────────────────────────────
 # Windows Task Scheduler equivalents (XAMPP dev box):
 #

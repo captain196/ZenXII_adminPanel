@@ -194,6 +194,20 @@ $accounts          = $accounts          ?? [];
                         <span class="fc-head-hint" id="monthsHint">Find a student first to see months</span>
                     </div>
                     <div class="fc-card-body">
+                        <!-- Shown only when the selected student has NO fee demands
+                             (totalGross == 0) — i.e. their bills were never generated
+                             (e.g. admitted before the class Fee Structure existed).
+                             Without this the 13 tiles all read "Unpaid ₹0" and the
+                             cashier can't tell why a payment is rejected. -->
+                        <div id="fcNoBillsNotice" style="display:none;align-items:flex-start;gap:10px;padding:12px 14px;margin-bottom:14px;border:1px solid #f59e0b;background:#fef3c7;border-radius:8px;color:#92400e;font-size:13px;line-height:1.5;">
+                            <i class="fa fa-exclamation-triangle" style="margin-top:2px;font-size:16px;"></i>
+                            <div>
+                                <strong>No fees generated for this student.</strong>
+                                Their bills don&rsquo;t exist yet, so no payment can be collected here.
+                                Open <a href="<?= base_url('fees/generate_demands') ?>" style="color:#b45309;font-weight:700;text-decoration:underline;">Generate Demands</a>
+                                (or re-save this class&rsquo;s Fee Structure) to create them, then reload this student.
+                            </div>
+                        </div>
                         <div class="fc-month-grid" id="monthGrid">
                             <div class="fc-months-placeholder" id="monthsPlaceholder">
                                 <i class="fa fa-hand-o-up"></i>
@@ -1369,6 +1383,10 @@ $accounts          = $accounts          ?? [];
     /* ── Fetch Months ── */
     function fetchMonths(userId) {
         if (!userId) return;
+        // Reset the "no bills generated" notice on every (re)load; it is
+        // re-shown below only when this student's total gross is zero.
+        var nbNotice = document.getElementById('fcNoBillsNotice');
+        if (nbNotice) nbNotice.style.display = 'none';
         postForm(SITE_URL + '/fees/fetch_months', {
                 user_id: userId
             })
@@ -1382,6 +1400,7 @@ $accounts          = $accounts          ?? [];
                 // stat strip + summary panel BEFORE the cashier picks any
                 // month. Old shape (months as keys) is kept; _summary is
                 // a sibling key that buildMonthTiles ignores.
+                var noBills = false;
                 var summary = data._summary;
                 if (summary) {
                     FC.grandGross         = parseFloat(summary.totalGross)  || 0;
@@ -1394,10 +1413,34 @@ $accounts          = $accounts          ?? [];
                     // discount.
                     FC.grandTotal         = parseFloat(summary.remaining)   || 0;
                     if (typeof recalc === 'function') recalc();
+
+                    // Visibility fix: totalGross == 0 means this student has
+                    // NO fee demands at all (bills never generated — e.g.
+                    // admitted before the class Fee Structure existed). A
+                    // fully-paid student still has totalGross > 0, so this
+                    // only fires on the genuine "no bills" case.
+                    noBills = FC.grandGross <= 0;
+
                     delete data._summary; // keep buildMonthTiles oblivious
                 }
 
-                buildMonthTiles(data);
+                if (noBills) {
+                    // Suppress the 13 misleading "Unpaid ₹0" tiles AND the
+                    // payment path: with no demands there is nothing to select
+                    // or collect, and selecting a zero-due month would trigger
+                    // the confusing "Overpayment not allowed" 409. Show only
+                    // the actionable banner + an inline empty state.
+                    if (nbNotice) nbNotice.style.display = 'flex';
+                    var _grid = document.getElementById('monthGrid');
+                    var _acts = document.getElementById('monthActions');
+                    var _hint = document.getElementById('monthsHint');
+                    if (_grid) _grid.innerHTML = '';
+                    if (_acts) _acts.style.display = 'none';
+                    if (_hint) _hint.textContent = 'No fee demands for this student';
+                    FC.selectedMonths = [];
+                } else {
+                    buildMonthTiles(data);
+                }
                 showToast('Months loaded', 'info');
             })
             .catch(function(e) {

@@ -962,8 +962,7 @@ final class AccountingSimulator extends CI_Controller
     }
 
     // ─────────────────────────────────────────────────────────────────
-    //  E-Series — Payroll Foundation scenarios (Stage 2)
-    //  Require: PAYROLL_ENGINE_INTEGRATION=1 in env.
+    //  E-Series — Payroll Foundation scenarios
     // ─────────────────────────────────────────────────────────────────
 
     private function _initPayAcct(): void
@@ -986,7 +985,7 @@ final class AccountingSimulator extends CI_Controller
         echo "=== E1: Single-employee accrual (canonical engine routing) ===\n";
         $this->_initPayAcct();
         if (!$this->payAcct->isEnabled()) {
-            echo "[ACTION] FAIL — payroll_engine_integration flag is OFF; set PAYROLL_ENGINE_INTEGRATION=1\n";
+            echo "[ACTION] FAIL — PayrollAccountingService not ready (check firebase/school/session init)\n";
             return false;
         }
 
@@ -1059,7 +1058,7 @@ final class AccountingSimulator extends CI_Controller
         echo "=== E2: Single-employee payout (extinguishes salary payable) ===\n";
         $this->_initPayAcct();
         if (!$this->payAcct->isEnabled()) {
-            echo "[ACTION] FAIL — payroll_engine_integration flag is OFF\n";
+            echo "[ACTION] FAIL — PayrollAccountingService not ready\n";
             return false;
         }
 
@@ -1294,7 +1293,6 @@ final class AccountingSimulator extends CI_Controller
 
     // ─────────────────────────────────────────────────────────────────
     //  F-Series — Stage 4 operational metadata persistence scenarios
-    //  Require: PAYROLL_ENGINE_INTEGRATION=1 in env.
     // ─────────────────────────────────────────────────────────────────
 
     private function _initPayOpsRepo()
@@ -1529,10 +1527,6 @@ final class AccountingSimulator extends CI_Controller
     public function scenario_payroll_ops(): void
     {
         $this->_requireConfirm();
-        if ((string) getenv('PAYROLL_ENGINE_INTEGRATION') !== '1') {
-            echo "WARNING: PAYROLL_ENGINE_INTEGRATION env not set to 1.\n";
-            return;
-        }
         $this->_initOpsAcct();
         $scenarios = ['F1', 'F2', 'F3', 'F4', 'F5'];
         $results = [];
@@ -1560,11 +1554,6 @@ final class AccountingSimulator extends CI_Controller
     public function scenario_payroll(): void
     {
         $this->_requireConfirm();
-        if ((string) getenv('PAYROLL_ENGINE_INTEGRATION') !== '1') {
-            echo "WARNING: PAYROLL_ENGINE_INTEGRATION env not set to 1.\n";
-            echo "Service will refuse all posts. Re-run with PAYROLL_ENGINE_INTEGRATION=1\n";
-            return;
-        }
         $this->_initOpsAcct();
         $scenarios = ['E1', 'E2', 'E3', 'E4', 'E5'];
         $results = [];

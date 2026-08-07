@@ -33,8 +33,6 @@ defined('BASEPATH') or exit('No direct script access allowed');
  *      payload and return the resulting entryId.
  *    • Build reversal payloads from existing ledger docs (read-only) and
  *      route those reversals through the engine identically.
- *    • Honor the `payroll_engine_integration` feature flag — when off,
- *      every method short-circuits with a logged refusal.
  *
  * ──────────────────────────────────────────────────────────────────────
  *  NON-RESPONSIBILITIES (out of scope, by design)
@@ -116,7 +114,6 @@ defined('BASEPATH') or exit('No direct script access allowed');
  */
 final class PayrollAccountingService
 {
-    private const FLAG = 'payroll_engine_integration';
 
     // Default account routing — operator can override via feeAccountMap
     // (Stage 3+) or by passing explicit codes in the payload (Stage 4+).
@@ -155,14 +152,50 @@ final class PayrollAccountingService
     }
 
     /**
-     * Reports whether the engine-integration feature flag is enabled.
-     * When false, every public posting method refuses with a logged event;
-     * no ledger writes happen.
+     * Reports whether the service is initialised and ready to post. Callers
+     * (reconciler, verification tools) use this as a readiness guard; the
+     * posting methods enforce readiness internally via _assertReady().
      */
     public function isEnabled(): bool
     {
-        if (!$this->ready) return false;
-        return (bool) $this->CI->config->item(self::FLAG);
+        return $this->ready;
+    }
+
+    /**
+     * R1 — THE canonical payroll payment journal-id algorithm. There is
+     * exactly one, and it is here. It MUST equal what the canonical engine
+     * derives for (source='HR_Payroll', sourceRef="<runId>_<seq>"):
+     *
+     *     Operations_accounting::_create_journal_v2 computes
+     *       idempKey = "JE_" . regexClean(strtoupper('HR_Payroll')) . "_" . sourceRef
+     *                = "JE_HR_PAYROLL_" . "<runId>_<seq>"
+     *     and stores it verbatim as the ledger entryId. The sourceRef — and
+     *     therefore the runId — is used RAW (never upper-cased or normalized).
+     *
+     * Any code path that needs the journal id BEFORE the engine returns it
+     * (e.g. Hr's CAS-first run write, which records journal_id in the payment
+     * record prior to posting) MUST call this method, so no path transforms
+     * the runId differently. This closes R1: the run's recorded journal_id is
+     * always identical to the actual ledger entryId.
+     */
+    public static function journalIdFor(string $runId, int $seq): string
+    {
+        return 'JE_HR_PAYROLL_' . $runId . '_' . $seq;
+    }
+
+    /**
+     * THE canonical payroll ACCRUAL journal-id algorithm — one accrual journal
+     * per run. Equals what the engine derives for (source='HR_Payroll',
+     * sourceRef=runId): idempKey = "JE_HR_PAYROLL_" . runId.
+     *
+     * Callers that need the id BEFORE the engine returns it — Hr's Phase-1
+     * accrual-outbox write, and the reconciler's recovery sweep — MUST use this
+     * so no path derives a different id. Distinct from journalIdFor() (which
+     * appends _<seq> for payments), so accrual and payment ids never collide.
+     */
+    public static function accrualJournalIdFor(string $runId): string
+    {
+        return 'JE_HR_PAYROLL_' . $runId;
     }
 
     // ═════════════════════════════════════════════════════════════════
@@ -467,6 +500,280 @@ final class PayrollAccountingService
     }
 
     // ═════════════════════════════════════════════════════════════════
+    //  CONSOLIDATED PER-RUN POSTING
+    // ═════════════════════════════════════════════════════════════════
+    //
+    //  ONE consolidated journal per run through the canonical engine —
+    //  Dr salary expense, Cr net payable + statutory liabilities (accrual);
+    //  Dr salary payable, Cr cash/bank (payment) — with idempotent
+    //  deterministic entryId, Dr=Cr validation, account + period-lock guards,
+    //  and an atomic CAS balance batch. source_ref = runId (accrual) /
+    //  runId_seq (payment) keeps exactly one voucher per event.
+    // ═════════════════════════════════════════════════════════════════
+
+    /**
+     * Consolidated payroll ACCRUAL journal for one run.
+     * Mirrors Hr::generate_payroll's journal (Dr salary expense, Cr net
+     * payable + statutory liabilities). Idempotent on run_id.
+     *
+     * @param array $run {
+     *   run_id, month, year,
+     *   total_teaching_exp, total_non_teaching_exp, total_net,
+     *   total_pf, total_esi, total_tds, total_prof_tax, total_other_ded,
+     *   journal_date (optional; defaults to today — matches legacy)
+     * }
+     * @return string|null  entryId, or null (flag off / validation / engine).
+     */
+    public function postRunAccrual(array $run): ?string
+    {
+        if (!$this->_assertReady('postRunAccrual')) return null;
+
+        $runId = (string) ($run['run_id'] ?? '');
+        $month = (string) ($run['month'] ?? '');
+        $year  = (string) ($run['year']  ?? '');
+        if ($runId === '' || $month === '' || $year === '') {
+            $this->_log("PAYROLL_RUN_ACCRUAL_REJECTED reason='missing run_id/month/year'");
+            return null;
+        }
+
+        $teaching    = round((float) ($run['total_teaching_exp']     ?? 0), 2);
+        $nonTeaching = round((float) ($run['total_non_teaching_exp'] ?? 0), 2);
+        $net         = round((float) ($run['total_net']              ?? 0), 2);
+        $pf          = round((float) ($run['total_pf']               ?? 0), 2);
+        $esi         = round((float) ($run['total_esi']              ?? 0), 2);
+        $tds         = round((float) ($run['total_tds']              ?? 0), 2);
+        $profTax     = round((float) ($run['total_prof_tax']         ?? 0), 2);
+        $otherDed    = round((float) ($run['total_other_ded']        ?? 0), 2);
+
+        // Lines — byte-for-byte the legacy structure (Hr.php 5095-5118).
+        $lines = [];
+        if ($teaching    > 0) $lines[] = ['account_code' => '5010', 'dr' => $teaching,    'cr' => 0];
+        if ($nonTeaching > 0) $lines[] = ['account_code' => '5020', 'dr' => $nonTeaching, 'cr' => 0];
+        $lines[] = ['account_code' => '2020', 'dr' => 0, 'cr' => $net];   // always, as legacy
+        if ($pf       > 0) $lines[] = ['account_code' => '2030', 'dr' => 0, 'cr' => $pf];
+        if ($esi      > 0) $lines[] = ['account_code' => '2031', 'dr' => 0, 'cr' => $esi];
+        if ($tds      > 0) $lines[] = ['account_code' => '2032', 'dr' => 0, 'cr' => $tds];
+        if ($profTax  > 0) $lines[] = ['account_code' => '2033', 'dr' => 0, 'cr' => $profTax];
+        if ($otherDed > 0) $lines[] = ['account_code' => '2034', 'dr' => 0, 'cr' => $otherDed];
+
+        $narration   = "Salary accrual - {$month} {$year}";
+        $journalDate = (string) ($run['journal_date'] ?? date('Y-m-d'));
+
+        return $this->_commit('HR_Payroll', $runId, $narration, $lines, $journalDate, [
+            'run_id' => $runId,
+            'kind'   => 'accrual',
+        ]);
+    }
+
+    /**
+     * Consolidated payroll PAYMENT journal for one run (full or partial).
+     * Mirrors Hr::mark_payroll_paid (Dr Salary Payable, Cr Cash/Bank).
+     * Idempotent on (run_id, payment_seq) so a double-submit of the same
+     * installment cannot double-post.
+     *
+     * @param array $pay {
+     *   run_id, month, year, amount, payment_mode ('Cash'|other),
+     *   payment_reference (optional), payment_seq, is_full_payment (bool),
+     *   journal_date (optional; defaults to today — matches legacy)
+     * }
+     * @return string|null  entryId, or null.
+     */
+    public function postRunPayment(array $pay): ?string
+    {
+        if (!$this->_assertReady('postRunPayment')) return null;
+
+        $runId       = (string) ($pay['run_id'] ?? '');
+        $month       = (string) ($pay['month'] ?? '');
+        $year        = (string) ($pay['year']  ?? '');
+        $amount      = round((float) ($pay['amount'] ?? 0), 2);
+        $paymentMode = (string) ($pay['payment_mode'] ?? '');
+        $paymentRef  = (string) ($pay['payment_reference'] ?? '');
+        $paymentSeq  = (int) ($pay['payment_seq'] ?? 0);
+        $isFull      = (bool) ($pay['is_full_payment'] ?? false);
+
+        if ($runId === '' || $amount <= 0 || $paymentMode === '') {
+            $this->_log("PAYROLL_RUN_PAYMENT_REJECTED reason='missing run_id/amount/payment_mode' run={$runId}");
+            return null;
+        }
+
+        // Cash → 1010, everything else → 1020 (legacy Hr.php:5739).
+        $payAccount = ($paymentMode === 'Cash') ? '1010' : '1020';
+
+        $lines = [
+            ['account_code' => '2020',      'dr' => $amount, 'cr' => 0],
+            ['account_code' => $payAccount, 'dr' => 0,       'cr' => $amount],
+        ];
+
+        // Narration — identical to Hr::mark_payroll_paid (5743-5745).
+        $narration = "Salary payment" . ($isFull ? '' : " (Part {$paymentSeq})")
+            . " - {$month} {$year} via {$paymentMode}";
+        if ($paymentRef !== '') $narration .= " (Ref: {$paymentRef})";
+
+        $journalDate = (string) ($pay['journal_date'] ?? date('Y-m-d'));
+
+        // Legacy used source_ref = runId for every payment (entryIds were
+        // random, so partials never collided). The engine derives a
+        // deterministic entryId from source_ref, so partial payments must
+        // carry the installment seq to stay distinct AND idempotent.
+        // source_ref is not read by any report/filter (reports key on
+        // voucher_type + source), so reporting visibility is unchanged.
+        $sourceRef = $paymentSeq > 0 ? "{$runId}_{$paymentSeq}" : $runId;
+
+        return $this->_commit('HR_Payroll', $sourceRef, $narration, $lines, $journalDate, [
+            'run_id' => $runId,
+            'kind'   => 'payment',
+            'seq'    => $paymentSeq,
+        ]);
+    }
+
+    /**
+     * Consolidated payroll ADJUSTMENT journal for one run — posts a DELTA
+     * (not a reversal) when a slip is regenerated. Mirrors the legacy
+     * Hr::regenerate_staff_payroll adjustment (Dr/Cr = the changed expense +
+     * liability deltas), but routes the post through the canonical engine so
+     * accountingClosingBalances stays authoritative.
+     *
+     * Idempotent on the caller-supplied DETERMINISTIC $source_ref
+     * (e.g. "<runId>_<staffId>_ADJ<regenCount>"), which MUST be unique per
+     * regeneration: distinct regenerations post distinct journals, while a
+     * retry of the SAME regeneration dedups to exactly one. The engine
+     * validates Dr=Cr; the caller guarantees the delta lines balance.
+     *
+     * @param array $adj { run_id, source_ref, lines[], narration,
+     *                     journal_date (optional; defaults to today) }
+     * @return string|null entryId, or null (flag off / validation / engine).
+     */
+    public function postRunAdjustment(array $adj): ?string
+    {
+        if (!$this->_assertReady('postRunAdjustment')) return null;
+
+        $runId       = (string) ($adj['run_id'] ?? '');
+        $sourceRef   = (string) ($adj['source_ref'] ?? '');
+        $lines       = is_array($adj['lines'] ?? null) ? $adj['lines'] : [];
+        $narration   = (string) ($adj['narration'] ?? '');
+        $journalDate = (string) ($adj['journal_date'] ?? date('Y-m-d'));
+
+        if ($runId === '' || $sourceRef === '' || count($lines) < 2 || $narration === '') {
+            $this->_log("PAYROLL_RUN_ADJ_REJECTED reason='missing run_id/source_ref/lines/narration' run={$runId}");
+            return null;
+        }
+
+        return $this->_commit('HR_Payroll', $sourceRef, $narration, $lines, $journalDate, [
+            'run_id' => $runId,
+            'kind'   => 'adjustment',
+        ]);
+    }
+
+    // ═════════════════════════════════════════════════════════════════
+    //  TRANSPORT EXPENSE (F5, 2026-07-07)
+    // ═════════════════════════════════════════════════════════════════
+
+    /** Counter-account resolution for the payment method side of a
+     *  Transport expense post. Payment_method maps to a cash/bank/PP
+     *  ledger code. Vendor payables aren't used here — Transport expenses
+     *  post at payment time, not at receipt of a vendor invoice. */
+    private const TRANSPORT_PAYMENT_METHOD_TO_ACCT = [
+        'Cash'          => '1000',
+        'Bank_Transfer' => '1010',
+        'Cheque'        => '1010',
+        'UPI'           => '1010',
+        'Card'          => '1010',
+        'Petty_Cash'    => '1005',
+    ];
+
+    /**
+     * Post a Transport expense to the ledger. Called by Transport_service
+     * DOMAIN_EXPENSE (F5). Two-line journal:
+     *   Dr <ledger_code>       (expense account, e.g. 6210 for maintenance)
+     *   Cr <counter-account>   (cash/bank/petty per payment_method)
+     *
+     * Returns the ledger entryId (JE_...) on success; null on validation
+     * or engine rejection.
+     *
+     * @param array $payload {
+     *   source_module       : "Transport",
+     *   source_doc_id       : "TEXP000042",
+     *   ledger_code         : "6210",
+     *   amount              : 5000.00,
+     *   tax_amount          : 0.00 (informational; single-line for now),
+     *   total_amount        : 5000.00,
+     *   expense_date        : "2026-07-05",
+     *   payee_type          : "External" | "Vendor" | "Staff" | "Driver",
+     *   payee_id            : "" | "VND0001" | ...,
+     *   payee_name          : "Sharma Garage",
+     *   expense_type        : "Vehicle_Maintenance",
+     *   payment_method      : "Bank_Transfer" | ...,
+     *   payment_reference   : "TXN12345",
+     *   notes               : "Annual service",
+     *   schoolId            : "SCH_...",
+     *   created_by          : "STA_..._id",
+     * }
+     */
+    public function postExpense(array $payload): ?string
+    {
+        if (!$this->_assertReady('postExpense')) return null;
+
+        $sourceDocId = trim((string) ($payload['source_doc_id'] ?? ''));
+        $ledgerCode  = trim((string) ($payload['ledger_code']   ?? ''));
+        $total       = round((float)  ($payload['total_amount'] ?? $payload['amount'] ?? 0), 2);
+        $expenseDate = (string) ($payload['expense_date'] ?? date('Y-m-d'));
+        $paymentMethod = (string) ($payload['payment_method'] ?? 'Cash');
+        $expenseType = (string) ($payload['expense_type'] ?? '');
+        $payeeName   = (string) ($payload['payee_name']   ?? '');
+        $payRef      = (string) ($payload['payment_reference'] ?? '');
+
+        if ($sourceDocId === '' || $ledgerCode === '' || $total <= 0) {
+            $this->_log("TRANSPORT_EXPENSE_REJECTED reason='missing_required_fields' source_doc={$sourceDocId} ledger_code={$ledgerCode} total={$total}");
+            return null;
+        }
+
+        $counterAcct = self::TRANSPORT_PAYMENT_METHOD_TO_ACCT[$paymentMethod] ?? '1000';
+
+        // FIN-5: pre-validate the two accounts READ-ONLY before entering the
+        // engine. Operations_accounting::create_journal calls json_error()+exit
+        // on a missing/inactive/group account — an UNCATCHABLE halt that would
+        // kill the whole web request and leave the expense stuck 'pending'. By
+        // checking here (transport's own posting path) a bad account degrades to
+        // a normal null return → the seam records 'pending' and the reconciler
+        // retries, exactly like any other transient posting failure. Mirrors the
+        // engine's own active + non-group predicate.
+        foreach ([$ledgerCode, $counterAcct] as $code) {
+            if (!$this->_accountPostable((string) $code)) {
+                $this->_log("TRANSPORT_EXPENSE_REJECTED reason='account_not_postable' account={$code} source_doc={$sourceDocId}");
+                return null;
+            }
+        }
+
+        $lines = [
+            $this->_line(
+                $ledgerCode, $total, 0,
+                "Transport {$expenseType} — {$payeeName} ({$sourceDocId})"
+            ),
+            $this->_line(
+                $counterAcct, 0, $total,
+                "Payment via {$paymentMethod}" . ($payRef !== '' ? " ref {$payRef}" : '')
+            ),
+        ];
+
+        // Deterministic source_ref = TRN_EXPENSE_{expenseId} — idempotent
+        // across retries. Transport's pending-then-retry pattern relies
+        // on this; a re-post of the same expense hits the engine's
+        // idempotency claim and returns the existing entryId.
+        $sourceRef = 'TRN_EXPENSE_' . preg_replace('/[^A-Za-z0-9_]/', '_', $sourceDocId);
+        $narration = "Transport expense {$sourceDocId} — {$expenseType} — {$payeeName}";
+
+        return $this->_commit(
+            'Transport', $sourceRef, $narration, $lines, $expenseDate,
+            [
+                'source_module' => 'Transport',
+                'source_doc_id' => $sourceDocId,
+                'expense_type'  => $expenseType,
+                'schoolId'      => (string) ($payload['schoolId'] ?? ''),
+            ]
+        );
+    }
+
+    // ═════════════════════════════════════════════════════════════════
     //  INTERNALS
     // ═════════════════════════════════════════════════════════════════
 
@@ -510,6 +817,27 @@ final class PayrollAccountingService
         $ctx = http_build_query(array_merge($logCtx, ['source' => $source, 'sourceRef' => $sourceRef]));
         $this->_log("PAYROLL_COMMITTED entryId={$entryId} {$ctx}");
         return (string) $entryId;
+    }
+
+    /**
+     * FIN-5 — read-only "is this account postable?" check used to pre-validate a
+     * transport expense's ledger + counter accounts before the engine call, so a
+     * missing/inactive/group account never reaches create_journal's uncatchable
+     * json_error()+exit. Chart of Accounts lives at chartOfAccounts/{schoolId}_{code}.
+     */
+    private function _accountPostable(string $code): bool
+    {
+        if ($code === '') { return false; }
+        try {
+            $acct = $this->firebase->firestoreGet('chartOfAccounts', "{$this->schoolFs}_{$code}");
+        } catch (\Throwable $e) {
+            // A read failure is treated as "cannot confirm postable" → pending +
+            // retry, never a halt.
+            return false;
+        }
+        return is_array($acct)
+            && (string) ($acct['status'] ?? '') === 'active'
+            && empty($acct['is_group']);
     }
 
     private function _opsAcct()
@@ -586,10 +914,6 @@ final class PayrollAccountingService
     {
         if (!$this->ready) {
             $this->_log("PAYROLL_NOT_READY method={$method}");
-            return false;
-        }
-        if (!$this->isEnabled()) {
-            $this->_log("PAYROLL_FLAG_DISABLED method={$method} flag=" . self::FLAG);
             return false;
         }
         return true;

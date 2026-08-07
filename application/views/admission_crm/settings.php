@@ -305,5 +305,8 @@ function showAlert(msg, type) {
     el.className = 'ac-alert ac-alert-' + type; el.textContent = msg; el.style.display = 'block';
     setTimeout(function() { el.style.display = 'none'; }, 4000);
 }
-function esc(s) { var d = document.createElement('div'); d.textContent = s || ''; return d.innerHTML; }
+// Quote-safe HTML escaper (attribute AND text context). Reuses the project's
+// proven implementation (admin_forgot_password.php) — escapes & < > " ' and is
+// null-safe. Fixes the value="..."/data-key="..." stage-editor sinks (C6).
+function esc(s){return String(s==null?'':s).replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;').replace(/"/g,'&quot;').replace(/'/g,'&#39;');}
 </script>

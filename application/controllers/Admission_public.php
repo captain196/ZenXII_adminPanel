@@ -41,10 +41,61 @@ class Admission_public extends CI_Controller
         $this->load->helper('school_guard');
     }
 
+    /**
+     * Resolve the URL segment to a canonical school id.
+     *
+     *  - Raw school id ("SCH_…" / legacy code): only `[A-Za-z0-9_]`, so it
+     *    passes through untouched (and the guard existence-checks it). This
+     *    keeps every pre-slug link and printed QR working forever.
+     *  - Readable slug ("st-marys-school", has hyphens): looked up in the
+     *    global `admissionSlugs/{slug}` map via the raw Firebase client
+     *    (server-side, admin-credentialed). The map is 1 slug → 1 schoolId,
+     *    so there is no cross-tenant ambiguity. Unknown/malformed → 404.
+     */
+    private function _resolve_admission_ref(string $ref): string
+    {
+        $ref = trim($ref);
+
+        // Raw id shape (no hyphen) — hand to the existing guard unchanged.
+        if ($ref !== '' && preg_match('/^[A-Za-z0-9_]+$/', $ref)) {
+            return $ref;
+        }
+
+        // Slug shape: lowercase alphanumeric + internal hyphens, ≤100 chars.
+        $slug = strtolower($ref);
+        if (!preg_match('/^[a-z0-9][a-z0-9-]{0,98}[a-z0-9]$/', $slug)) {
+            log_message('error', "ADMISSION_SLUG: invalid slug format — input=[{$ref}]");
+            show_404();
+            exit;
+        }
+
+        try {
+            $map = $this->firebase->firestoreGet('admissionSlugs', $slug);
+        } catch (\Throwable $e) {
+            log_message('error', 'ADMISSION_SLUG: lookup failed for [' . $slug . '] — ' . $e->getMessage());
+            show_404();
+            exit;
+        }
+
+        $sid = is_array($map) ? trim((string) ($map['schoolId'] ?? '')) : '';
+        if ($sid === '') {
+            log_message('error', "ADMISSION_SLUG: no school for slug=[{$slug}]");
+            show_404();
+            exit;
+        }
+        return $sid;
+    }
+
     // ─── PUBLIC: Render admission form ─────────────────────────────────
 
     public function form($school_id = '')
     {
+        // Resolve a readable slug (…/admission/form/st-marys-school) to the
+        // canonical school id BEFORE the guard — the guard's format check
+        // rejects hyphens. Raw SCH_ ids pass straight through (old links/QRs
+        // keep working). See _resolve_admission_ref().
+        $school_id = $this->_resolve_admission_ref($school_id);
+
         // SCHOOL GUARD — validate format + existence (shows 404 if invalid).
         // The guard now reads Firestore `schools/{id}`; no RTDB fallback.
         $school_id = validate_public_school_id($school_id);
@@ -105,6 +156,15 @@ class Admission_public extends CI_Controller
             'session_year'   => $activeSession,
             'classes'        => $classes,
         ];
+
+        // The public form embeds a per-request CSRF token and is served fresh on
+        // every open — it must never be cached. A stale cached copy would (a)
+        // run outdated inline JS and (b) carry a dead CSRF token that silently
+        // breaks submission. Force no-store so parents always get the live page.
+        $this->output
+            ->set_header('Cache-Control: no-store, no-cache, must-revalidate, max-age=0')
+            ->set_header('Pragma: no-cache')
+            ->set_header('Expires: 0');
 
         $this->load->view('admission/public_form', $data);
     }
@@ -340,6 +400,20 @@ class Admission_public extends CI_Controller
         $appId = 'APP_' . strtoupper(substr(dechex((int) (microtime(true) * 1000)), -6))
                . '_' . str_pad((string) mt_rand(0, 99999), 5, '0', STR_PAD_LEFT);
 
+        // ── Optional file uploads: student photo, Aadhaar, supporting docs ──
+        // Uploaded to Firebase Cloud Storage under admission/{school}/{appId}/…
+        // (service-account write — independent of the parent's network and of
+        // client Storage rules). The tokenized download URLs are persisted on
+        // the application doc so the admin CRM can view them. Files are
+        // OPTIONAL; an invalid file (wrong type / >1 MB) rejects the submit
+        // with a clear message BEFORE the doc is written, rather than being
+        // silently dropped.
+        $uploads = $this->_handle_admission_uploads($school_id, $appId);
+        if (!empty($uploads['error'])) {
+            echo json_encode(['status' => 'error', 'message' => $uploads['error']]);
+            return;
+        }
+
         // Schema mirrors what admin's `convert_to_application` writes to
         // `crmApplications` so the same Pipeline / Inquiries / Applications
         // grids show public submissions without any normalization.
@@ -405,11 +479,28 @@ class Admission_public extends CI_Controller
             // with the same phone+class exists for this school. Twins
             // legitimately trigger this; admin reviews and clears.
             'possible_duplicate' => $possibleDuplicate,
-            'documents'         => [],
+            // Uploaded files (optional). `photo_url` and `aadhaar_url` are the
+            // student photo + Aadhaar scan; `documents` holds any additional
+            // supporting files [{name,url,category}]. Empty string / [] when
+            // the parent skipped them.
+            'photo_url'         => $uploads['photo_url'],
+            'aadhaar_url'       => $uploads['aadhaar_url'],
+            'documents'         => $uploads['documents'],
+            // Canonical Document Service references (Phase 1). The *_url fields
+            // above stay as denormalized pointers for existing readers; these
+            // ids are the lifecycle handles (verify/replace/delete/link).
+            'photoDocId'        => $uploads['photoDocId'],
+            'aadhaarDocId'      => $uploads['aadhaarDocId'],
+            'documentRefs'      => $uploads['documentRefs'],
             'history'           => [
                 ['action' => 'Application submitted via public form', 'by' => 'Public', 'timestamp' => $now],
             ],
         ];
+
+        // C7 — searchTokens for the CRM name-search (array-contains). Canonical
+        // student-name tokenizer; the single source used at every write site.
+        $this->load->helper('admission_search');
+        $applicationData['searchTokens'] = admission_search_tokens($applicationData['student_name'] ?? '');
 
         // Canonical write — `setEntity` injects `schoolId` + `updatedAt` and
         // uses `{schoolId}_{appId}` as the doc id (matching admin convention).
@@ -435,7 +526,7 @@ class Admission_public extends CI_Controller
 
         // AUDIT — log public application submission
         $this->_public_audit($school_id, 'Admission', 'public_application', $appId,
-            "Public admission submitted: {$data['student_name']} for class {$data['class']}");
+            "Public admission submitted: {$data['student_name']} for class {$data['class']}", $appId);
 
         // Hybrid admission-fee lookup: feeStructures (class-specific) first,
         // then schools.admissionFee (global). See _resolve_admission_fee().
@@ -456,6 +547,225 @@ class Admission_public extends CI_Controller
             'payment_label'    => $feeInfo['label'],
             'payment_source'   => $feeInfo['source'], // "feeStructures" | "schools.admissionFee" | "none"
             'csrf_token'       => $this->security->get_csrf_hash(),
+        ]);
+    }
+
+    /**
+     * Handle OPTIONAL admission file uploads from the public form.
+     *
+     * Inputs (all optional): `photo` (student photo, images only),
+     * `aadhaar_card` (image/PDF) and `documents[]` (multiple supporting
+     * files). Each is validated against an extension + MIME allowlist and a
+     * 1 MB cap, then uploaded to Firebase Cloud Storage under
+     *   admission/{schoolId}/{appId}/…
+     * using the existing service-account client (Firebase::uploadFile —
+     * Admin write, so no client Storage rule is required). Returns the
+     * tokenized download URLs for persistence on the application doc.
+     *
+     * On the first invalid file it returns early with a human-readable
+     * `error`; the caller rejects the whole submit before writing anything.
+     *
+     * @return array{photo_url:string, aadhaar_url:string, documents:array, error:?string}
+     */
+    private function _handle_admission_uploads(string $school_id, string $appId): array
+    {
+        // Phase 1 — route uploads through the canonical Document Service:
+        // each file becomes one canonical document (id-addressed, optimized,
+        // audited) linked to this application. We STILL return the same
+        // photo_url / aadhaar_url / documents[] shape (now enriched with the
+        // documentId) so every existing reader — the CRM, the enrollment
+        // carry-over, older records — keeps working unchanged (backward compat).
+        $out = ['photo_url' => '', 'aadhaar_url' => '', 'documents' => [],
+                'photoDocId' => '', 'aadhaarDocId' => '', 'documentRefs' => [], 'error' => null];
+        if (empty($_FILES)) return $out;
+
+        $this->load->library('document_service', null, 'docsvc');
+        $this->docsvc->init($this->firebase, $school_id);
+
+        // Build the canonical DENORMALIZED pointer for one uploaded document and
+        // push it onto documentRefs[]. The service record (documents/{id}) stays
+        // authoritative for lifecycle; this cached pointer lets the CRM render +
+        // enrollment carry-over run with NO extra Firestore reads (ADR §Canonical).
+        $pushRef = function (array $p, string $role) use (&$out): void {
+            $out['documentRefs'][] = [
+                'documentId'         => $p['documentId'],
+                'type'               => $p['type'],
+                'role'               => $role,
+                'label'              => $p['label'],
+                'url'                => $p['downloadUrl'],
+                'category'           => $p['category'],
+                'verificationStatus' => $p['verificationStatus'] ?? 'pending',
+            ];
+        };
+
+        // Process one uploaded $_FILES entry via the service + link it to the
+        // application. Returns [pointer|null, errorOrNull]; null pointer = "not
+        // provided" (optional field skipped).
+        $handle = function (array $file, string $type, string $role)
+                use ($appId): array {
+            $err = $file['error'] ?? UPLOAD_ERR_NO_FILE;
+            if ($err === UPLOAD_ERR_NO_FILE) return [null, null];
+            if ($err !== UPLOAD_ERR_OK)      return [null, 'A file failed to upload. Please try again.'];
+            if ((int) ($file['size'] ?? 0) <= 0) return [null, null];
+
+            $res = $this->docsvc->upload(
+                (string) ($file['tmp_name'] ?? ''),
+                (string) ($file['name'] ?? 'file'),
+                $type,
+                ['uploadedBy' => 'public']
+            );
+            if (!$res['ok']) {
+                $label = ucfirst(str_replace('_', ' ', $type));
+                return [null, "{$label}: " . $res['error'] . '.'];
+            }
+            $this->docsvc->link($res['document']['documentId'], 'admission', $appId, $role, 'public');
+            return [$res['document'], null];
+        };
+
+        // Student photo (optimized to JPEG by the service)
+        if (isset($_FILES['photo'])) {
+            [$p, $e] = $handle($_FILES['photo'], 'photo', 'photo');
+            if ($e !== null) { $out['error'] = $e; return $out; }
+            if ($p) { $out['photo_url'] = $p['downloadUrl']; $out['photoDocId'] = $p['documentId']; $pushRef($p, 'photo'); }
+        }
+        // Aadhaar card
+        if (isset($_FILES['aadhaar_card'])) {
+            [$p, $e] = $handle($_FILES['aadhaar_card'], 'aadhaar', 'aadhaar');
+            if ($e !== null) { $out['error'] = $e; return $out; }
+            if ($p) { $out['aadhaar_url'] = $p['downloadUrl']; $out['aadhaarDocId'] = $p['documentId']; $pushRef($p, 'aadhaar'); }
+        }
+        // Additional predefined certificates (D2) — each an optional single-file
+        // input; routed to its canonical type so it renders in its own CRM field.
+        // input name === document type; role === type (predefined 1:1).
+        foreach (['birth_certificate', 'transfer_certificate', 'marksheet', 'medical_certificate'] as $type) {
+            if (!isset($_FILES[$type])) continue;
+            [$p, $e] = $handle($_FILES[$type], $type, $type);
+            if ($e !== null) { $out['error'] = $e; return $out; }
+            if ($p) $pushRef($p, $type);
+        }
+        // Additional documents — <input name="documents[]" multiple>
+        if (isset($_FILES['documents']) && is_array($_FILES['documents']['name'] ?? null)) {
+            $n = count($_FILES['documents']['name']);
+            if ($n > 10) { $out['error'] = 'Please upload at most 10 supporting documents.'; return $out; }
+            for ($i = 0; $i < $n; $i++) {
+                $one = [
+                    'name'     => $_FILES['documents']['name'][$i]     ?? '',
+                    'tmp_name' => $_FILES['documents']['tmp_name'][$i] ?? '',
+                    'error'    => $_FILES['documents']['error'][$i]    ?? UPLOAD_ERR_NO_FILE,
+                    'size'     => $_FILES['documents']['size'][$i]     ?? 0,
+                ];
+                [$p, $e] = $handle($one, 'additional', 'document');
+                if ($e !== null) { $out['error'] = $e; return $out; }
+                if ($p) {
+                    $nm = preg_replace('/[^A-Za-z0-9._ -]/', '', (string) ($one['name'] ?: ('Document ' . ($i + 1))));
+                    $label = substr($nm, 0, 80) ?: ('Document ' . ($i + 1));
+                    $out['documents'][] = [
+                        'name'       => $label,
+                        'url'        => $p['downloadUrl'],
+                        'category'   => 'document',
+                        'documentId' => $p['documentId'],
+                        'type'       => 'additional',
+                    ];
+                    // Enriched pointer (carry the parent-supplied label for display).
+                    $ref = $p; $ref['label'] = $label;
+                    $pushRef($ref, 'document');
+                }
+            }
+        }
+
+        return $out;
+    }
+
+    // ─── PAYMENT MODE: parent chooses "Pay at School" (offline) ────────
+
+    /**
+     * POST — Parent selected "Pay at School". Marks the application
+     * 'awaiting_offline', server-resolves the (non-editable) fee, records a
+     * reference, and tells the parent to pay at the office. The admin later
+     * records the collection from Admission Leads (Sis::collect_admission_fee),
+     * which is the ONLY place the receipt + accounting are posted.
+     *
+     * No money moves here — this only sets the intent + reference.
+     */
+    public function choose_offline($school_id = '')
+    {
+        header('Content-Type: application/json');
+        if ($this->input->method() !== 'post') {
+            http_response_code(405);
+            echo json_encode(['status' => 'error', 'message' => 'POST required.']);
+            return;
+        }
+
+        $school_id = validate_public_school_id($school_id);
+        $this->fs->init($school_id);
+
+        $appId = trim($this->input->post('app_id') ?? '');
+        if ($appId === '' || !preg_match('/^[A-Za-z0-9_]+$/', $appId)) {
+            echo json_encode(['status' => 'error', 'message' => 'Invalid application ID.']);
+            return;
+        }
+
+        $app = $this->fs->get('crmApplications', $this->fs->docId($appId));
+        if (!is_array($app)) {
+            echo json_encode(['status' => 'error', 'message' => 'Application not found.']);
+            return;
+        }
+        if (($app['payment_status'] ?? '') === 'paid') {
+            echo json_encode(['status' => 'error', 'message' => 'Payment already completed for this application.']);
+            return;
+        }
+
+        // Server-resolve the fee (never trust the client for the amount).
+        $schoolDoc = $this->fs->get('schools', $school_id) ?? [];
+        $session   = $this->_resolve_active_session($school_id, $schoolDoc);
+        if ($session === '') {
+            echo json_encode(['status' => 'error', 'message' => 'Admissions are not currently open for this school.']);
+            return;
+        }
+        $feeInfo = $this->_resolve_admission_fee($school_id, $schoolDoc, $session, (string) ($app['class'] ?? ''));
+        if (!$feeInfo['enabled'] || $feeInfo['amount'] <= 0) {
+            echo json_encode(['status' => 'error', 'message' => 'Admission fee is not configured for this class/school.']);
+            return;
+        }
+
+        $now       = date('Y-m-d H:i:s');
+        $reference = 'ADMREF-' . strtoupper($appId);
+
+        $this->fs->updateEntity('crmApplications', $appId, [
+            'payment_status'  => 'awaiting_offline',
+            'payment_mode'    => 'offline',
+            'admission_ref'   => $reference,
+            'fee_amount'      => (float) $feeInfo['amount'],
+            'fee_head'        => (string) ($feeInfo['fee_head'] ?? 'Admission Fee'),
+            'fee_label'       => (string) ($feeInfo['label'] ?? 'Admission Fee'),
+            'updated_at'      => $now,
+        ]);
+
+        // Timeline (reused shared component).
+        $this->load->library('Admission_collection', null, 'admissionCol');
+        $this->admissionCol->init($this->firebase, $this->fs, $school_id, $session);
+        $this->admissionCol->append_timeline($appId, 'offline_selected',
+            "Parent chose Pay at School — ₹{$feeInfo['amount']} due, ref {$reference}", 'Parent');
+
+        // Notify parent.
+        $this->load->helper('notification');
+        $schoolDisplayName = $schoolDoc['name'] ?? $schoolDoc['displayName'] ?? $schoolDoc['display_name'] ?? $school_id;
+        notify_sms(
+            $app['phone'] ?? '',
+            "Your admission application for {$schoolDisplayName} is received. Please pay the admission fee of INR {$feeInfo['amount']} at the school office. Reference: {$reference}.",
+            ['type' => 'admission_offline', 'app_id' => $appId]
+        );
+
+        $this->_public_audit($school_id, 'Admission', 'offline_selected', $appId,
+            "Parent chose Pay at School — ref {$reference}, amount {$feeInfo['amount']}", $appId);
+
+        echo json_encode([
+            'status'         => 'success',
+            'message'        => 'Your seat request is recorded. Please pay the admission fee at the school office.',
+            'reference'      => $reference,
+            'amount'         => (float) $feeInfo['amount'],
+            'fee_label'      => (string) ($feeInfo['label'] ?? 'Admission Fee'),
+            'csrf_token'     => $this->security->get_csrf_hash(),
         ]);
     }
 
@@ -625,6 +935,12 @@ class Admission_public extends CI_Controller
             'phone'        => $app['phone'] ?? '',
             'amount'       => $amount,
             'currency'     => $currency,
+            // Fee head + label captured at initiate time so the confirmation
+            // path (receipt + accounting) credits the CONFIGURED income account
+            // (Admission/Registration/Prospectus) and stamps the right receipt
+            // type — without re-resolving the fee later.
+            'fee_head'     => (string) ($feeInfo['fee_head'] ?? 'Admission Fee'),
+            'fee_label'    => (string) ($feeInfo['label']    ?? 'Admission Fee'),
             'status'       => 'created',
             'gateway'      => $gw['name'],
             'created_at'   => $now,
@@ -667,6 +983,61 @@ class Admission_public extends CI_Controller
     }
 
     // ─── PAYMENT: Verify and confirm payment ───────────────────────────
+
+    /**
+     * CANONICAL captured-amount verification — the SINGLE payment-validation
+     * policy shared by BOTH the client callback and the server webhook (C3 + M1).
+     * Mirrors the certified Fees BUG-050/PS-3 policy exactly:
+     *
+     *   • gateway = mock              → ACCEPT (no real captured amount to check)
+     *   • fetch_payment unavailable   → ACCEPT (fail-open + telemetry — never brick
+     *                                   a transport-authenticated payment on a
+     *                                   Razorpay API outage / missing capability)
+     *   • not captured                → REJECT (kills payment.failed/authorized → C3)
+     *   • order_id mismatch           → REJECT (binding)
+     *   • |expected − captured| >₹0.50 → REJECT (amount tampering → M1)
+     *   • else                        → ACCEPT
+     *
+     * Both entry points call THIS and honour its verdict identically, so there is
+     * no scenario where one accepts a payment the other would reject.
+     *
+     * @param array  $gw              loaded gateway {name, adapter}
+     * @param string $gatewayPid      Razorpay payment id to fetch
+     * @param string $expectedOrderId order id the local payment record is bound to
+     * @param float  $expectedAmount  locally-stored order amount (rupees)
+     * @return array {ok:bool, reason:string, gateway_amount:?float}
+     */
+    private function _assert_captured_amount(array $gw, string $gatewayPid, string $expectedOrderId, float $expectedAmount): array
+    {
+        if (($gw['name'] ?? '') === 'mock') {
+            return ['ok' => true, 'reason' => 'mock', 'gateway_amount' => null];
+        }
+        $adapter = $gw['adapter'] ?? null;
+        if (!is_object($adapter) || !method_exists($adapter, 'fetch_payment')) {
+            log_message('error', "ADM_CAPTURE_UNVERIFIED no_fetch_capability payment={$gatewayPid}");
+            return ['ok' => true, 'reason' => 'no_fetch_capability', 'gateway_amount' => null];
+        }
+        try {
+            $fp = $adapter->fetch_payment($gatewayPid);
+        } catch (\Throwable $e) {
+            log_message('error', "ADM_CAPTURE_UNVERIFIED fetch_error payment={$gatewayPid}: " . $e->getMessage());
+            return ['ok' => true, 'reason' => 'fetch_error', 'gateway_amount' => null];
+        }
+
+        $gwAmount = round((float) ($fp['amount'] ?? 0), 2);
+        $gwOrder  = (string) ($fp['order_id'] ?? '');
+
+        if (empty($fp['captured'])) {
+            return ['ok' => false, 'reason' => 'not_captured', 'gateway_amount' => $gwAmount];
+        }
+        if ($expectedOrderId !== '' && $gwOrder !== '' && $gwOrder !== $expectedOrderId) {
+            return ['ok' => false, 'reason' => 'order_mismatch', 'gateway_amount' => $gwAmount];
+        }
+        if (abs($expectedAmount - $gwAmount) > 0.50) {
+            return ['ok' => false, 'reason' => 'amount_mismatch', 'gateway_amount' => $gwAmount];
+        }
+        return ['ok' => true, 'reason' => 'verified', 'gateway_amount' => $gwAmount];
+    }
 
     public function payment_callback($school_id = '')
     {
@@ -774,24 +1145,51 @@ class Admission_public extends CI_Controller
         $appId = $payment['app_id'] ?? '';
 
         if ($verified) {
-            // Idempotent finalize via the SHARED helper (checked paid-write +
-            // application mirror + parent SMS + audit) — the exact same path
-            // the server-to-server webhook uses, so browser-callback and
-            // webhook confirmation can never diverge. (#4/C4)
-            $fin = $this->_finalize_admission_payment($school_id, $schoolDoc, $paymentId, $payment, $gatewayPid, $signature);
-            if ($fin['result'] === 'already') {
-                echo json_encode(['status' => 'success', 'message' => 'Payment already confirmed.', 'already_paid' => true, 'csrf_token' => $this->security->get_csrf_hash()]);
+            // ── C3 + M1: canonical captured-amount verification (SHARED w/ webhook) ──
+            // Signature proves the client didn't forge the binding; this proves the
+            // gateway actually CAPTURED the expected amount for this order. Same
+            // helper + verdict the webhook applies — see _assert_captured_amount().
+            $cap = $this->_assert_captured_amount($gw, $gatewayPid, $orderId, (float) ($payment['amount'] ?? 0));
+            if (empty($cap['ok'])) {
+                $this->fs->updateEntity('admissionPayments', $paymentId, [
+                    'status'             => $cap['reason'] === 'amount_mismatch' ? 'amount_mismatch' : 'capture_failed',
+                    'gateway_payment_id' => $gatewayPid,
+                    'gateway_amount'     => $cap['gateway_amount'],
+                    'failure_reason'     => 'capture verification failed: ' . $cap['reason'],
+                    'failed_at'          => $now,
+                ]);
+                $this->_public_audit($school_id, 'Payment', 'payment_capture_rejected', $paymentId,
+                    "Capture REJECTED (callback) app={$appId} reason={$cap['reason']} gwAmount=" . ($cap['gateway_amount'] ?? 'n/a'), $appId);
+                log_message('error', "ADM_CAPTURE_REJECTED source=callback reason={$cap['reason']} order={$orderId} payment={$paymentId}");
+                echo json_encode([
+                    'status'     => 'error',
+                    'message'    => 'We could not verify this payment with the gateway. If any amount was debited it will be reversed automatically — please do not pay again; contact the school if unsure.',
+                    'csrf_token' => $this->security->get_csrf_hash(),
+                ]);
                 return;
             }
-            if ($fin['result'] === 'write_failed') {
-                http_response_code(500);
-                echo json_encode(['status' => 'error', 'message' => 'Your payment was received but could not be recorded automatically. Please contact the school office with this reference: ' . $gatewayPid, 'csrf_token' => $this->security->get_csrf_hash()]);
-                return;
-            }
+
+            // Reconcile through the SHARED path so the client callback and the
+            // server-to-server webhook mark 'paid' identically (no duplicate
+            // business logic). Idempotent: a replay returns already_paid.
+            $result = $this->_apply_admission_payment_paid(
+                $school_id, $schoolDoc, $payment, $gatewayPid, $signature, 'callback'
+            );
+
+            // Surface the FEE receipt (ADM…) so the parent can download it right
+            // after paying. Token-secured public route (no auth) — same pattern
+            // as the application-acknowledgement receipt.
+            $feeReceiptNo  = (string) ($result['receipt_no'] ?? '');
+            $feeReceiptUrl = $feeReceiptNo !== '' ? $this->_fee_receipt_url($school_id, $feeReceiptNo) : '';
+
             echo json_encode([
-                'status'     => 'success',
-                'message'    => 'Payment verified successfully. Awaiting school review.',
-                'csrf_token' => $this->security->get_csrf_hash(),
+                'status'          => 'success',
+                'message'         => ($result['already_paid'] ?? false)
+                                ? 'Payment already confirmed.'
+                                : 'Payment verified successfully. Awaiting school review.',
+                'receipt_no'      => $feeReceiptNo,
+                'fee_receipt_url' => $feeReceiptUrl,
+                'csrf_token'      => $this->security->get_csrf_hash(),
             ]);
         } else {
             // Payment verification failed — Firestore write only.
@@ -803,7 +1201,7 @@ class Admission_public extends CI_Controller
             ]);
 
             $this->_public_audit($school_id, 'Payment', 'payment_failed', $paymentId,
-                "Payment verification failed for app {$appId}");
+                "Payment verification failed for app {$appId}", $appId);
 
             echo json_encode(['status' => 'error', 'message' => 'Payment verification failed.', 'csrf_token' => $this->security->get_csrf_hash()]);
         }
@@ -836,252 +1234,399 @@ class Admission_public extends CI_Controller
         ]);
     }
 
-    // ─── PAYMENT: Server-to-server webhook (reconciliation, C4) ────────
-    //
-    // Razorpay POSTs payment.captured / order.paid here directly, so a payment
-    // still confirms even if the parent closes the tab before the browser
-    // callback fires (money captured but the application left 'initiated' — the
-    // reliability gap the audit flagged). Verified by HMAC-SHA256(raw body,
-    // webhook_secret) with a constant-time compare, then finalized through the
-    // SAME idempotent helper the browser callback uses.
-    //
-    // OPERATIONAL SETUP REQUIRED to activate: (1) store `webhook_secret` in the
-    // gateway config (Fees gateway UI already supports it), and (2) register
-    // this URL — admission/payment_webhook/{schoolId} — in the Razorpay
-    // dashboard with that same secret. CSRF-exempt (server-to-server); see the
-    // route + csrf_exclude_uris entry.
+    // ─── Shared reconciliation (client callback + server webhook) ──────
+
+    /**
+     * Mark an admission payment as PAID and reconcile the application.
+     *
+     * The SINGLE place that flips admissionPayments → 'paid' + crmApplications
+     * → payment_status 'paid'. Called by BOTH payment_callback (browser, after
+     * signature verify) and payment_webhook (server-to-server, after webhook
+     * HMAC verify), so there is exactly one reconciliation implementation —
+     * mirroring how Fee_management reuses _verify_and_process for both paths.
+     *
+     * Idempotent: if the payment is already 'paid' it no-ops (no double SMS /
+     * double audit / double receipt), so a replayed webhook or a
+     * callback-then-webhook race both converge to one confirmation.
+     *
+     * On first confirmation it ALSO generates the official admission receipt
+     * (ADM-series) and posts the accounting journal through the canonical fee
+     * engine (Cr configurable Admission income account, Dr cash/bank) — via the
+     * shared _post_admission_receipt_and_accounting() so the online (here) and
+     * offline (admin counter) paths reuse one receipt + accounting path.
+     *
+     * @return array { ok: bool, already_paid: bool, receipt_no?: string }
+     */
+    private function _apply_admission_payment_paid(
+        string $school_id, array $schoolDoc, array $payment,
+        string $gatewayPid, string $signature, string $source
+    ): array {
+        $paymentId = (string) ($payment['payment_id'] ?? '');
+        $now       = date('Y-m-d H:i:s');
+
+        // Idempotency guard — already confirmed → no-op.
+        if (($payment['status'] ?? '') === 'paid') {
+            return ['ok' => true, 'already_paid' => true, 'receipt_no' => (string) ($payment['receipt_no'] ?? '')];
+        }
+
+        // Mark payment as paid in Firestore.
+        $this->fs->updateEntity('admissionPayments', $paymentId, [
+            'status'             => 'paid',
+            'gateway_payment_id' => $gatewayPid,
+            'signature'          => $signature,
+            'verified_at'        => $now,
+            'confirmed_via'      => $source, // 'callback' | 'webhook'
+        ]);
+
+        // Receipt + accounting (ONLINE): the money settled to the gateway's
+        // bank, so post as an 'online' collection. 'online' is in the engine's
+        // debit-mode list (Operations_accounting line 867), so with an empty
+        // bank_code the engine auto-resolves the school's active BANK ledger for
+        // the debit (falls back to Cash 1010 only if no bank ledger exists) —
+        // never miscategorised as cash. Reuses the canonical fee engine.
+        $appId   = (string) ($payment['app_id'] ?? '');
+        $session = $this->_resolve_active_session($school_id, $schoolDoc);
+        $this->load->library('Admission_collection', null, 'admissionCol');
+        $this->admissionCol->init($this->firebase, $this->fs, $school_id, $session);
+        $rc = $this->admissionCol->record_payment([
+            'app_id'             => $appId,
+            'amount'             => (float) ($payment['amount'] ?? 0),
+            'currency'           => (string) ($payment['currency'] ?? 'INR'),
+            'student_name'       => (string) ($payment['student_name'] ?? ''),
+            'fee_head'           => (string) ($payment['fee_head'] ?? 'Admission Fee'),
+            'fee_label'          => (string) ($payment['fee_label'] ?? 'Admission Fee'),
+            'payment_mode'       => 'online',   // engine → Dr Bank (auto-resolve)
+            'mode_label'         => 'Online',
+            'bank_code'          => '',
+            'collected_by'       => 'Payment Gateway',
+            'source'             => $source,    // 'callback' | 'webhook'
+            'admission_ref'      => $appId,
+            'payment_id'         => $paymentId,
+            'gateway_payment_id' => $gatewayPid,
+        ]);
+        $receiptNo = is_array($rc) ? (string) ($rc['receipt_no'] ?? '') : '';
+
+        // Stamp the receipt no onto the payment (idempotency anchor: a re-entry
+        // is short-circuited by the already-paid guard above, so the receipt is
+        // minted exactly once).
+        if ($receiptNo !== '') {
+            $this->fs->updateEntity('admissionPayments', $paymentId, [
+                'receipt_no'   => $receiptNo,
+                'receipted_at' => $now,
+            ]);
+        }
+
+        // Update application — payment_status + history. Status/stage NOT
+        // auto-advanced; admin still reviews and approves manually. (The
+        // library already appended the shared 'payment_collected' timeline.)
+        if ($appId !== '') {
+            $appUpdate = [
+                'payment_status' => 'paid',
+                'updated_at'     => $now,
+            ];
+            // Only stamp receipt_no when THIS call actually minted it. A concurrent
+            // reconcile that lost the idempotency claim returns '' (in_progress) —
+            // it must NOT clobber the winner's receipt_no (admin "Print Receipt"
+            // keys off this field). The winner sets it; the loser leaves it intact.
+            if ($receiptNo !== '') {
+                $appUpdate['receipt_no'] = $receiptNo;
+            }
+            // M7-B: single CAS-atomic write (payment fields + bounded history),
+            // concurrency-safe. dedupeKey on the gateway payment id makes the
+            // callback/webhook race idempotent — one "fee paid" history entry.
+            // Financial truth is in the payment record + receipt + journal; this
+            // recent-cache maintenance never gates payment success.
+            $this->load->helper('admission_crm');
+            $this->fs->casAppendBounded('crmApplications', $appId, 'history',
+                [
+                    'action'    => "Admission fee paid ({$gatewayPid})" . ($receiptNo !== '' ? " — Receipt {$receiptNo}" : ''),
+                    'by'        => $source === 'webhook' ? 'Payment Gateway (webhook)' : 'Payment Gateway',
+                    'timestamp' => $now,
+                ],
+                crm_history_cap(),
+                $appUpdate,
+                'paid_' . $gatewayPid);
+        }
+
+        // Notify parent. Currency falls back to INR.
+        $this->load->helper('notification');
+        $schoolDisplayName = $schoolDoc['name']
+            ?? $schoolDoc['displayName']
+            ?? $schoolDoc['display_name']
+            ?? $school_id;
+        $payCurrency = $payment['currency'] ?? 'INR';
+        $rcptMsg = $receiptNo !== '' ? " Receipt: {$receiptNo}." : '';
+        notify_sms(
+            $payment['phone'] ?? '',
+            "Payment of {$payCurrency} {$payment['amount']} received for {$schoolDisplayName} admission (Ref: {$paymentId}).{$rcptMsg} Your application is awaiting school review.",
+            ['type' => 'payment_success', 'payment_id' => $paymentId]
+        );
+
+        // AUDIT — log successful payment.
+        $this->_public_audit($school_id, 'Payment', 'payment_success', $paymentId,
+            "Admission fee paid: {$payCurrency} {$payment['amount']} for app {$appId} (via {$source})"
+            . ($receiptNo !== '' ? " — Receipt {$receiptNo}" : ''), $appId);
+
+        return ['ok' => true, 'already_paid' => false, 'receipt_no' => $receiptNo];
+    }
+
+    /**
+     * Engine failure routing for the REUSED accounting engine.
+     *
+     * Operations_accounting::create_fee_journal calls $CI->json_error() to halt
+     * a fee-counter WEB request on period-lock / missing-account / unbalanced
+     * failures. In the admission (public) context the payment has ALREADY
+     * succeeded, so halting/fatal would be wrong. We THROW instead, so the
+     * caller's try/catch treats a journal failure as SOFT (logged; the receipt
+     * and paid-status stand and can be reconciled) — never fatal, never a
+     * half-finished confirmation. Mirrors PayrollReconciler::json_error.
+     * Public because the engine invokes it on $this (the injected CI).
+     */
+    public function json_error(string $message, int $http_code = 400): void
+    {
+        throw new \RuntimeException($message);
+    }
+
+    // ─── PAYMENT: Server-to-server webhook reconciliation ──────────────
+
+    /**
+     * POST — Razorpay server-to-server webhook for admission payments.
+     *
+     * The authoritative recovery path: when the parent's browser drops after
+     * Razorpay captures the money but before payment_callback fires, this
+     * server-to-server call reconciles the payment so it is NEVER stranded.
+     * Mirrors Fee_management::payment_webhook (IP whitelist, config-drift
+     * refusal, timestamp replay protection, webhook-secret HMAC with live-mode
+     * enforcement, event-id dedup) and reuses the SAME shared reconciliation
+     * as the client callback (_apply_admission_payment_paid).
+     *
+     * Tenant scope comes from the URL ({schoolId}) — each school configures
+     * its own Razorpay webhook to .../admission/payment_webhook/{schoolId}.
+     * No admin session (gateway calls this directly); CSRF-excluded in config.
+     */
     public function payment_webhook($school_id = '')
     {
         header('Content-Type: application/json');
+
         if ($this->input->method() !== 'post') {
             http_response_code(405);
             echo json_encode(['status' => 'error', 'message' => 'POST required.']);
             return;
         }
 
+        // SCHOOL GUARD — tenant scope from the URL (Firestore-only).
         $school_id = validate_public_school_id($school_id);
         $this->fs->init($school_id);
 
-        $raw       = file_get_contents('php://input');
-        $sigHeader = (string) ($_SERVER['HTTP_X_RAZORPAY_SIGNATURE'] ?? '');
         $schoolDoc = $this->fs->get('schools', $school_id) ?? [];
+        $session   = $this->_resolve_active_session($school_id, $schoolDoc);
 
-        // Webhook secret from the gateway config.
-        $secret = $this->_gateway_webhook_secret($school_id, $schoolDoc);
-        if ($secret === '') {
-            log_message('error', "Admission_public::payment_webhook no webhook_secret configured school=[{$school_id}]");
-            http_response_code(400);
-            echo json_encode(['status' => 'error', 'message' => 'Webhook not configured.']);
-            return;
-        }
-
-        // Verify signature — HMAC-SHA256 of the raw body, constant-time.
-        $expectedSig = hash_hmac('sha256', (string) $raw, $secret);
-        if ($sigHeader === '' || !hash_equals($expectedSig, $sigHeader)) {
-            log_message('error', "Admission_public::payment_webhook signature mismatch school=[{$school_id}]");
-            http_response_code(400);
-            echo json_encode(['status' => 'error', 'message' => 'Invalid signature.']);
-            return;
-        }
-
-        $event = json_decode((string) $raw, true);
-        $type  = is_array($event) ? (string) ($event['event'] ?? '') : '';
-        if (!in_array($type, ['payment.captured', 'order.paid'], true)) {
-            // Acknowledge non-actionable events so the gateway stops retrying.
-            echo json_encode(['status' => 'ignored', 'event' => $type]);
-            return;
-        }
-
-        // Extract order_id / payment_id / amount from the payload.
-        $entity     = $event['payload']['payment']['entity']
-                    ?? ($event['payload']['order']['entity'] ?? []);
-        $gatewayPid = (string) ($entity['id'] ?? '');
-        $orderId    = (string) ($entity['order_id'] ?? '');
-        if ($type === 'order.paid') { $orderId = (string) ($entity['id'] ?? $orderId); $gatewayPid = ''; }
-        $amtPaise   = (int) ($entity['amount'] ?? 0);
-        if ($orderId === '') {
-            echo json_encode(['status' => 'error', 'message' => 'No order_id in payload.']);
-            return;
-        }
-
-        // Locate the admissionPayments record by order_id (schoolId== injected;
-        // two equality filters → no composite index needed).
-        $rows    = $this->fs->schoolList('admissionPayments', [['order_id', '==', $orderId]]);
-        $payment = (is_array($rows) && !empty($rows)) ? $rows[0] : null;
-        if (!is_array($payment)) {
-            log_message('error', "Admission_public::payment_webhook no payment for order=[{$orderId}] school=[{$school_id}]");
-            echo json_encode(['status' => 'error', 'message' => 'Payment record not found.']);
-            return;
-        }
-        $paymentId = (string) ($payment['payment_id'] ?? '');
-
-        // Amount sanity — captured amount must match the recorded order amount.
-        $expectedPaise = (int) round(((float) ($payment['amount'] ?? 0)) * 100);
-        if ($amtPaise > 0 && abs($amtPaise - $expectedPaise) > 1) {
-            log_message('error', "Admission_public::payment_webhook amount mismatch order=[{$orderId}] got={$amtPaise} expected={$expectedPaise}");
-            http_response_code(400);
-            echo json_encode(['status' => 'error', 'message' => 'Amount mismatch.']);
-            return;
-        }
-
-        // Idempotent finalize — SAME shared path as the browser callback.
-        $ref = $gatewayPid !== '' ? $gatewayPid : (string) ($payment['gateway_payment_id'] ?? '');
-        $fin = $this->_finalize_admission_payment($school_id, $schoolDoc, $paymentId, $payment, $ref, '');
-        if ($fin['result'] === 'write_failed') {
-            http_response_code(500);
-            echo json_encode(['status' => 'error', 'result' => 'write_failed']);
-            return;
-        }
-        echo json_encode(['status' => 'success', 'result' => $fin['result']]);
-    }
-
-    /**
-     * Resolve the gateway `webhook_secret` from the shared feeSettings gateway
-     * config (same doc _load_payment_gateway reads). Returns '' if absent.
-     */
-    private function _gateway_webhook_secret(string $school_id, array $schoolDoc): string
-    {
-        $session = $this->_resolve_active_session($school_id, $schoolDoc);
-        if ($session === '') return '';
+        // Gateway config — the SAME feeSettings/{...}_gateway doc the fees
+        // module and initiate_payment use (mode / webhook_secret / IP list).
+        $gwConfig   = null;
         $schoolName = (string) ($schoolDoc['name'] ?? $schoolDoc['schoolName'] ?? $schoolDoc['displayName'] ?? $school_id);
-        $cfg = null;
-        try {
-            if ($schoolName !== '') $cfg = $this->fs->get('feeSettings', "{$schoolName}_{$session}_gateway");
-            if (!is_array($cfg))    $cfg = $this->fs->get('feeSettings', "{$school_id}_{$session}_gateway");
-            if (!is_array($cfg)) {
-                $rows = $this->fs->schoolList('feeSettings', [['type', '==', 'gateway']]);
-                foreach ($rows as $r) {
-                    $rs = (string) ($r['session'] ?? '');
-                    if ($rs === '' || $rs === $session) { $cfg = $r; break; }
+        if ($session !== '') {
+            try {
+                $gwConfig = $this->fs->get('feeSettings', "{$schoolName}_{$session}_gateway");
+                if (!is_array($gwConfig)) {
+                    $gwConfig = $this->fs->get('feeSettings', "{$school_id}_{$session}_gateway");
                 }
+                if (!is_array($gwConfig)) {
+                    foreach ((array) $this->fs->schoolList('feeSettings', [['type', '==', 'gateway']]) as $r) {
+                        $rowSession = (string) ($r['session'] ?? '');
+                        if ($rowSession === '' || $rowSession === $session) { $gwConfig = $r; break; }
+                    }
+                }
+            } catch (\Exception $e) {
+                log_message('error', 'Admission_public::payment_webhook gateway config read failed: ' . $e->getMessage());
+            }
+        }
+
+        $ip     = $this->input->ip_address();
+        $gwMode = is_array($gwConfig) ? (string) ($gwConfig['mode'] ?? '') : '';
+        $apiKey = is_array($gwConfig) ? (string) ($gwConfig['api_key'] ?? '') : '';
+
+        // ── IP whitelist (Razorpay + localhost + configured) ──
+        $defaultIPs = ['52.66.166.11', '52.66.171.94', '3.7.116.0/24', '127.0.0.1', '::1'];
+        $extraIPs   = is_array($gwConfig) && is_array($gwConfig['webhook_allowed_ips'] ?? null) ? $gwConfig['webhook_allowed_ips'] : [];
+        $ipAllowed  = false;
+        foreach (array_merge($defaultIPs, $extraIPs) as $allowed) {
+            if ($allowed === $ip) { $ipAllowed = true; break; }
+            if (strpos($allowed, '/') !== false && $this->_ip_in_cidr($ip, $allowed)) { $ipAllowed = true; break; }
+        }
+        if (!$ipAllowed) {
+            log_message('error', "Admission_public::payment_webhook IP BLOCKED ip={$ip} school={$school_id}");
+            http_response_code(403);
+            echo json_encode(['status' => 'error', 'message' => 'IP not whitelisted.']);
+            return;
+        }
+
+        // ── Config-drift refusal (live key vs mode) ──
+        $isLiveKey = strpos($apiKey, 'rzp_live_') === 0;
+        $isTestKey = strpos($apiKey, 'rzp_test_') === 0;
+        if (($isLiveKey && $gwMode !== 'live') || ($isTestKey && $gwMode === 'live')) {
+            log_message('error', "Admission_public::payment_webhook CONFIG DRIFT key/mode mismatch school={$school_id}");
+            http_response_code(500);
+            echo json_encode(['status' => 'error', 'message' => 'Gateway configuration mismatch. Contact admin.']);
+            return;
+        }
+
+        // ── Raw body ──
+        $rawBody = (string) file_get_contents('php://input');
+        $payload = json_decode($rawBody, true);
+        if (!is_array($payload)) $payload = $this->input->post() ?: [];
+
+        // ── Timestamp replay protection (5-min window) ──
+        $ts = $_SERVER['HTTP_X_RAZORPAY_TIMESTAMP'] ?? ($payload['timestamp'] ?? '');
+        if ($ts !== '' && abs(time() - (int) $ts) > 300) {
+            log_message('error', "Admission_public::payment_webhook REPLAY REJECTED school={$school_id} ip={$ip}");
+            http_response_code(401);
+            echo json_encode(['status' => 'error', 'message' => 'Webhook expired (replay protection).']);
+            return;
+        }
+
+        // ── Webhook HMAC (webhook_secret; live-mode enforced) ──
+        $webhookSecret = is_array($gwConfig) ? (string) ($gwConfig['webhook_secret'] ?? '') : '';
+        $webhookSig    = $_SERVER['HTTP_X_RAZORPAY_SIGNATURE'] ?? $_SERVER['HTTP_X_WEBHOOK_SIGNATURE'] ?? ($payload['webhook_signature'] ?? '');
+        if ($gwMode === 'live' && $webhookSecret === '') {
+            log_message('error', "Admission_public::payment_webhook LIVE but webhook_secret missing school={$school_id}");
+            http_response_code(500);
+            echo json_encode(['status' => 'error', 'message' => 'Webhook secret not configured for this school.']);
+            return;
+        }
+        if ($gwMode === 'live' && $webhookSig === '') {
+            log_message('error', "Admission_public::payment_webhook LIVE but no signature ip={$ip}");
+            http_response_code(401);
+            echo json_encode(['status' => 'error', 'message' => 'Missing webhook signature.']);
+            return;
+        }
+        if ($webhookSecret !== '' && $webhookSig !== '') {
+            $expected = hash_hmac('sha256', $rawBody, $webhookSecret);
+            if (!hash_equals($expected, $webhookSig)) {
+                log_message('error', "Admission_public::payment_webhook HMAC FAILED school={$school_id} ip={$ip}");
+                http_response_code(401);
+                echo json_encode(['status' => 'error', 'message' => 'Invalid webhook signature.']);
+                return;
+            }
+        } elseif ($webhookSecret === '') {
+            log_message('warning', "Admission_public::payment_webhook webhook_secret empty — HMAC skipped (mode={$gwMode}, school={$school_id})");
+        }
+
+        // ── Extract order_id / payment_id (nested Razorpay entity or flat) ──
+        $entity      = (array) ($payload['payload']['payment']['entity'] ?? []);
+        $gwOrderId   = (string) ($payload['razorpay_order_id']   ?? $payload['order_id']   ?? ($entity['order_id'] ?? ''));
+        $gwPaymentId = (string) ($payload['razorpay_payment_id'] ?? $payload['payment_id'] ?? ($entity['id']       ?? ''));
+        if ($gwOrderId === '') {
+            http_response_code(400);
+            echo json_encode(['status' => 'error', 'message' => 'Missing order_id.']);
+            return;
+        }
+
+        // ── Event-id dedup (idempotent replays) — tenant-scoped doc ──
+        $eventId = $_SERVER['HTTP_X_RAZORPAY_EVENT_ID'] ?? ($payload['event_id'] ?? '');
+        $hash    = $eventId !== '' ? md5($eventId) : md5($rawBody);
+        $dedupId = "{$school_id}_{$hash}";
+        $seen    = $this->fs->get('admissionPaymentIdempotency', $dedupId);
+        if (is_array($seen) && !empty($seen['processed_at'])) {
+            http_response_code(200);
+            echo json_encode(['status' => 'success', 'message' => 'Already processed (duplicate webhook).']);
+            return;
+        }
+
+        // ── Resolve the admissionPayments doc by order_id (tenant-scoped) ──
+        $payment = null;
+        try {
+            foreach ((array) $this->fs->schoolList('admissionPayments', [['order_id', '==', $gwOrderId]]) as $r) {
+                $payment = $r; break;
             }
         } catch (\Exception $e) {
-            log_message('error', 'Admission_public::_gateway_webhook_secret lookup failed: ' . $e->getMessage());
+            log_message('error', 'Admission_public::payment_webhook admissionPayments lookup failed: ' . $e->getMessage());
         }
-        return is_array($cfg) ? (string) ($cfg['webhook_secret'] ?? '') : '';
-    }
-
-    /**
-     * Idempotently finalize an admission payment as PAID: checked paid-write +
-     * application mirror + parent SMS + audit. SHARED by payment_callback
-     * (browser) and payment_webhook (server-to-server) so the two confirmation
-     * paths can never diverge. The caller MUST have already verified the
-     * payment (signature + amount/capture). Returns:
-     *   ['result' => 'already'|'ok'|'write_failed', 'ref' => $gatewayPid]
-     */
-    private function _finalize_admission_payment(string $school_id, array $schoolDoc, string $paymentId, array $payment, string $gatewayPid, string $signature = ''): array
-    {
-        $now = date('Y-m-d H:i:s');
-
-        // Idempotency: re-read right before the one-time side-effects in case a
-        // concurrent callback/webhook already confirmed this payment.
-        $fresh = $this->fs->get('admissionPayments', $this->fs->docId($paymentId));
-        if (is_array($fresh) && ($fresh['status'] ?? '') === 'paid') {
-            return ['result' => 'already', 'ref' => $gatewayPid];
-        }
-
-        // Checked paid-write (C4): a captured-but-unrecorded payment is money
-        // taken with no record — surface the failure instead of losing it.
-        $paidOk = $this->fs->updateEntity('admissionPayments', $paymentId, [
-            'status'             => 'paid',
-            'gateway_payment_id' => $gatewayPid,
-            'signature'          => $signature,
-            'verified_at'        => $now,
-        ]);
-        if (!$paidOk) {
-            log_message('error', "Admission_public::_finalize CRITICAL paid-write FAILED pid=[{$paymentId}] gpid=[{$gatewayPid}] — captured but NOT recorded, needs reconciliation");
-            return ['result' => 'write_failed', 'ref' => $gatewayPid];
-        }
-
-        // Mirror onto the application (payment_status only; approval stays manual).
-        $appId = (string) ($payment['app_id'] ?? '');
-        if ($appId !== '') {
-            $app     = $this->fs->get('crmApplications', $this->fs->docId($appId));
-            $history = is_array($app) ? ($app['history'] ?? []) : [];
-            $history[] = ['action' => "Admission fee paid ({$gatewayPid})", 'by' => 'Payment Gateway', 'timestamp' => $now];
-            $appOk = $this->fs->updateEntity('crmApplications', $appId, [
-                'payment_status' => 'paid',
-                'updated_at'     => $now,
-                'history'        => $history,
+        if (!is_array($payment)) {
+            // Order not ours (e.g. a fees order on a shared Razorpay account).
+            // Record dedup + 200 so Razorpay stops retrying a payment we don't own.
+            $this->fs->setEntity('admissionPaymentIdempotency', $dedupId, [
+                'schoolId'     => $school_id,
+                'order_id'     => $gwOrderId,
+                'processed_at' => date('c'),
+                'result'       => 'unknown_order',
             ]);
-            if (!$appOk) {
-                log_message('error', "Admission_public::_finalize app mirror FAILED app=[{$appId}] pid=[{$paymentId}] — payment recorded, app flag not; reconcile");
-            }
+            http_response_code(200);
+            echo json_encode(['status' => 'success', 'message' => 'No matching admission payment for this order.']);
+            return;
         }
 
-        // Notify parent + audit.
-        $this->load->helper('notification');
-        $schoolDisplayName = $schoolDoc['name'] ?? $schoolDoc['displayName'] ?? $schoolDoc['display_name'] ?? $school_id;
-        $payCurrency = $payment['currency'] ?? 'INR';
-        notify_sms(
-            $payment['phone'] ?? '',
-            "Payment of {$payCurrency} {$payment['amount']} received for {$schoolDisplayName} admission (Ref: {$paymentId}). Your application is awaiting school review.",
-            ['type' => 'payment_success', 'payment_id' => $paymentId]
-        );
-        $this->_public_audit($school_id, 'Payment', 'payment_success', $paymentId,
-            "Admission fee paid: {$payCurrency} {$payment['amount']} for app {$appId}");
+        // ── C3 + M1: canonical captured-amount verification (SHARED w/ callback) ──
+        // The webhook body is HMAC-authenticated, but that only proves Razorpay
+        // sent it — NOT that the payment was captured for the right amount. Load
+        // the adapter and run the SAME helper + verdict the callback runs, so a
+        // signed payment.failed / authorized / amount-mismatch event cannot book.
+        try {
+            $gwForCap = $this->_load_payment_gateway($school_id, $schoolDoc);
+        } catch (\Exception $e) {
+            // PARITY with the callback (which cannot verify a payment without the
+            // gateway loaded — it errors): do NOT book on a gateway-load failure.
+            // 500 ⇒ Razorpay retries when the config is readable again. This keeps
+            // "gateway unavailable" a non-booking outcome on BOTH entry points.
+            log_message('error', 'Admission_public::payment_webhook gateway load failed (capture check): ' . $e->getMessage());
+            http_response_code(500);
+            echo json_encode(['status' => 'error', 'message' => 'Gateway temporarily unavailable; will retry.']);
+            return;
+        }
+        $cap = $this->_assert_captured_amount($gwForCap, $gwPaymentId, (string) ($payment['order_id'] ?? $gwOrderId), (float) ($payment['amount'] ?? 0));
+        if (empty($cap['ok'])) {
+            $this->fs->updateEntity('admissionPayments', (string) ($payment['payment_id'] ?? ''), [
+                'status'         => $cap['reason'] === 'amount_mismatch' ? 'amount_mismatch' : 'capture_failed',
+                'gateway_amount' => $cap['gateway_amount'],
+                'failure_reason' => 'capture verification failed (webhook): ' . $cap['reason'],
+                'failed_at'      => date('Y-m-d H:i:s'),
+            ]);
+            // Record dedup so Razorpay stops retrying a genuinely non-captured event.
+            $this->fs->setEntity('admissionPaymentIdempotency', $dedupId, [
+                'schoolId'     => $school_id,
+                'order_id'     => $gwOrderId,
+                'payment_id'   => $gwPaymentId,
+                'processed_at' => date('c'),
+                'result'       => 'capture_rejected:' . $cap['reason'],
+            ]);
+            log_message('error', "ADM_CAPTURE_REJECTED source=webhook reason={$cap['reason']} order={$gwOrderId} payment={$gwPaymentId}");
+            http_response_code(200);
+            echo json_encode(['status' => 'success', 'message' => 'Event acknowledged; payment not captured/verified — not reconciled.']);
+            return;
+        }
 
-        return ['result' => 'ok', 'ref' => $gatewayPid];
+        // ── Reconcile via the SAME shared path as the client callback ──
+        $result = $this->_apply_admission_payment_paid(
+            $school_id, $schoolDoc, $payment, $gwPaymentId,
+            ($webhookSig !== '' ? $webhookSig : 'webhook'), 'webhook'
+        );
+
+        // ── Mark dedup processed ──
+        $this->fs->setEntity('admissionPaymentIdempotency', $dedupId, [
+            'schoolId'     => $school_id,
+            'order_id'     => $gwOrderId,
+            'payment_id'   => $gwPaymentId,
+            'processed_at' => date('c'),
+            'result'       => ($result['already_paid'] ?? false) ? 'already_paid' : 'success',
+        ]);
+
+        http_response_code(200);
+        echo json_encode(['status' => 'success', 'message' => 'Webhook processed.']);
     }
 
     /**
-     * Sliding-window per-IP rate limiter backed by `crmRateLimits`.
-     *
-     * One doc per {school}_{ipKey}[_bucket]; the doc carries an `attempts`
-     * array of unix timestamps trimmed to the active window on every call so
-     * it never grows unbounded. Returns TRUE when the caller is OVER the
-     * limit (should be blocked).
-     *
-     * Fails OPEN on a Firestore infra error (a read blip must not lock out
-     * every applicant) but still enforces the quota whenever the read
-     * succeeds.
-     *
-     * @param string $bucket '' = submit budget (legacy doc id preserved so
-     *                       existing counters keep counting); a non-empty
-     *                       bucket (e.g. 'pay') gets its own doc + budget so
-     *                       the payment endpoints never exhaust the submit
-     *                       budget and vice-versa.
+     * IPv4 CIDR membership test (webhook IP whitelist). Non-CIDR input is an
+     * exact-match. IPv6 / malformed input returns false (never whitelists).
      */
-    private function _rate_limited(string $school_id, string $clientIp, int $max, int $windowSecs, string $bucket = ''): bool
+    private function _ip_in_cidr(string $ip, string $cidr): bool
     {
-        $ipKey       = preg_replace('/[^a-zA-Z0-9]/', '_', $clientIp);
-        $rateDocId   = $bucket === '' ? "{$school_id}_{$ipKey}" : "{$school_id}_{$ipKey}_{$bucket}";
-        $windowStart = time() - $windowSecs;
-
-        $attempts = [];
-        try {
-            $rateDoc = $this->fs->get('crmRateLimits', $rateDocId);
-            if (is_array($rateDoc) && is_array($rateDoc['attempts'] ?? null)) {
-                foreach ($rateDoc['attempts'] as $ts) {
-                    if ((int) $ts >= $windowStart) $attempts[] = (int) $ts;
-                }
-            }
-        } catch (\Exception $e) {
-            // Infra error — fail OPEN so a Firestore blip can't block every
-            // legitimate applicant. Quota is still enforced on healthy reads.
-            log_message('error', 'Admission_public::_rate_limited read failed: ' . $e->getMessage());
-            return false;
-        }
-
-        if (count($attempts) >= $max) {
-            return true;
-        }
-
-        // Record this attempt (best-effort; never blocks a legitimate call).
-        try {
-            $attempts[] = time();
-            $this->fs->set('crmRateLimits', $rateDocId, [
-                'schoolId'  => $school_id,
-                'ip'        => $clientIp,
-                'ipKey'     => $ipKey,
-                'bucket'    => $bucket,
-                'attempts'  => $attempts,
-                'updatedAt' => date('c'),
-            ], false);
-        } catch (\Exception $e) {
-            log_message('error', 'Admission_public::_rate_limited write failed: ' . $e->getMessage());
-        }
-        return false;
+        if (strpos($cidr, '/') === false) return $ip === $cidr;
+        [$subnet, $bits] = array_pad(explode('/', $cidr, 2), 2, '32');
+        $ipLong  = ip2long($ip);
+        $subLong = ip2long($subnet);
+        if ($ipLong === false || $subLong === false) return false; // IPv4 only
+        $mask = -1 << (32 - (int) $bits);
+        return ($ipLong & $mask) === ($subLong & $mask);
     }
 
     // ─── Gateway loader (Razorpay or mock) ─────────────────────────────
@@ -1178,7 +1723,20 @@ class Admission_public extends CI_Controller
             ];
         }
 
-        // Default: mock adapter for dev / when no provider configured.
+        // PRODUCTION FAIL-CLOSED: the mock gateway fakes a successful payment
+        // (simulate_payment) and would mark an application 'paid' with no money
+        // collected. It must NEVER run on a live tenant. If Razorpay is not
+        // configured in production, refuse rather than silently mock-succeed.
+        // Both callers (initiate_payment / payment_callback) catch this and
+        // surface "Payment gateway is not configured — contact the school
+        // office." Mirrors Fees::_reject_in_production's ENVIRONMENT guard.
+        if (defined('ENVIRONMENT') && ENVIRONMENT === 'production') {
+            log_message('error', "Admission_public::_load_payment_gateway refused mock gateway in production for school={$school_id} (Razorpay not configured)");
+            throw new \RuntimeException('Payment gateway (Razorpay) is not configured for this school; mock gateway is disabled in production (fail-closed).');
+        }
+
+        // Non-production only (development / testing): mock adapter for local
+        // dev + QA, so the admission flow is exercisable without real credentials.
         $this->load->library('Payment_gateway_mock');
         return [
             'adapter'    => $this->payment_gateway_mock,
@@ -1193,7 +1751,7 @@ class Admission_public extends CI_Controller
      * Write audit entry from public controller (no session/admin context).
      * Uses 'Public' as the user identifier. Non-blocking.
      */
-    private function _public_audit(string $schoolId, string $module, string $action, string $entityId, string $description): void
+    private function _public_audit(string $schoolId, string $module, string $action, string $entityId, string $description, string $appId = ''): void
     {
         try {
             $logId = 'AL_' . date('Ymd_His') . '_' . substr(uniqid('', true), -6);
@@ -1203,7 +1761,8 @@ class Admission_public extends CI_Controller
             if (method_exists($this->fs, 'isReady') && !$this->fs->isReady()) {
                 $this->fs->init($schoolId);
             }
-            $this->fs->setEntity('auditLogs', $logId, [
+            $nowMs = (int) round(microtime(true) * 1000);
+            $entry = [
                 'userId'      => 'public',
                 'userName'    => 'Public Form',
                 'userRole'    => 'Public',
@@ -1212,8 +1771,15 @@ class Admission_public extends CI_Controller
                 'entityId'    => $entityId,
                 'description' => $description,
                 'ipAddress'   => $this->input->ip_address(),
-                'timestamp'   => gmdate('Y-m-d\TH:i:s\Z'),
-            ]);
+                'timestamp'   => gmdate('Y-m-d\TH:i:s\Z', (int) ($nowMs / 1000)),
+                'timestampMs' => $nowMs,
+            ];
+            // M7-A — additive application correlation key. Payment/receipt events
+            // keep their native entityId (paymentId) for accounting consumers;
+            // `appId` links them to the originating application without changing
+            // any existing identifier.
+            if ($appId !== '') $entry['appId'] = $appId;
+            $this->fs->setEntity('auditLogs', $logId, $entry);
         } catch (\Exception $e) {
             log_message('error', 'Admission_public::_public_audit failed: ' . $e->getMessage());
         }
@@ -1238,70 +1804,13 @@ class Admission_public extends CI_Controller
      */
     private function _resolve_admission_fee(string $school_id, array $schoolDoc, string $session, string $cls): array
     {
-        // Default fallback shape (unconfigured).
-        $result = [
-            'enabled'  => false,
-            'amount'   => 0.0,
-            'currency' => 'INR',
-            'source'   => 'none',
-            'fee_head' => 'Admission Fee',
-            'label'    => 'Admission Fee',
-        ];
-
-        // Pass 1 — class-specific lookup in feeStructures.
-        if ($cls !== '' && $session !== '') {
-            try {
-                // The fee-structure doc id is built with "Class X" + "Section Y"
-                // prefixes, and the className field is stored with the prefix.
-                $normCls = (stripos($cls, 'Class ') === 0) ? $cls : ('Class ' . $cls);
-                $rows = $this->fs->schoolList('feeStructures', [
-                    ['session',   '==', $session],
-                    ['className', '==', $normCls],
-                ]);
-                foreach ($rows as $r) {
-                    $heads = is_array($r['feeHeads'] ?? null) ? $r['feeHeads'] : [];
-                    foreach ($heads as $h) {
-                        if (!is_array($h)) continue;
-                        $nameLower = strtolower(trim((string) ($h['name'] ?? '')));
-                        if ($nameLower === '') continue;
-                        // Match "Admission Fee", "admission", or any head
-                        // containing the word "admission" (case-insensitive)
-                        // — generous on naming so admin's existing labels
-                        // work without a forced rename.
-                        if (strpos($nameLower, 'admission') === false) continue;
-                        $amt = (float) ($h['amount'] ?? 0);
-                        if ($amt <= 0) continue;
-                        return [
-                            'enabled'  => true,
-                            'amount'   => $amt,
-                            'currency' => 'INR',
-                            'source'   => 'feeStructures',
-                            'fee_head' => (string) ($h['name'] ?? 'Admission Fee'),
-                            'label'    => (string) ($h['name'] ?? 'Admission Fee'),
-                        ];
-                    }
-                }
-            } catch (\Exception $e) {
-                log_message('error', "Admission_public::_resolve_admission_fee feeStructures lookup failed: " . $e->getMessage());
-            }
-        }
-
-        // Pass 2 — global default on the schools doc.
-        $admissionFee = is_array($schoolDoc['admissionFee'] ?? null) ? $schoolDoc['admissionFee'] : [];
-        $globalEnabled = !empty($admissionFee['enabled']);
-        $globalAmount  = isset($admissionFee['amount']) ? (float) $admissionFee['amount'] : 0.0;
-        if ($globalEnabled && $globalAmount > 0) {
-            return [
-                'enabled'  => true,
-                'amount'   => $globalAmount,
-                'currency' => (string) ($admissionFee['currency'] ?? 'INR'),
-                'source'   => 'schools.admissionFee',
-                'fee_head' => (string) ($admissionFee['label'] ?? 'Admission Fee'),
-                'label'    => (string) ($admissionFee['label'] ?? 'Admission Fee'),
-            ];
-        }
-
-        return $result;
+        // Fix D — delegate to the SINGLE canonical resolver shared with the offline
+        // admin-collect path (Sis::collect_admission_fee), so both charge the exact
+        // same class-specific admission fee. Behaviour is byte-identical to the
+        // previous inline implementation (class-specific feeStructures → global
+        // schools.admissionFee). $school_id retained for signature/BC (logging).
+        $this->load->helper('admission_crm');
+        return admission_resolve_fee($this->fs, $schoolDoc, $session, $cls);
     }
 
     /**
@@ -1371,6 +1880,67 @@ class Admission_public extends CI_Controller
             . "/" . rawurlencode($appId) . "/" . $token);
     }
 
+    /**
+     * Token for the FEE receipt (ADM…). Distinct namespace ('fee') from the
+     * application-acknowledgement token so the two URLs are not interchangeable.
+     */
+    private function _fee_receipt_token(string $schoolId, string $receiptNo): string
+    {
+        $secret = (string) config_item('encryption_key');
+        if ($secret === '') $secret = 'grader-admission-receipt-fallback';
+        return substr(hash_hmac('sha256', "{$schoolId}|fee|{$receiptNo}", $secret), 0, 16);
+    }
+
+    /** Absolute, token-secured public URL for a paid admission FEE receipt. */
+    private function _fee_receipt_url(string $schoolId, string $receiptNo): string
+    {
+        return base_url("admission/fee_receipt/" . rawurlencode($schoolId)
+            . "/" . rawurlencode($receiptNo) . "/" . $this->_fee_receipt_token($schoolId, $receiptNo));
+    }
+
+    /**
+     * PUBLIC: download the paid admission FEE receipt (ADM…) as a PDF. Parents
+     * reach this from the payment-success screen and the SMS. Token-secured +
+     * tenant-checked so the sequential ADM numbers can't be enumerated. Renders
+     * the SAME commercial receipt view the admin panel uses (single source).
+     */
+    public function fee_receipt($school_id = '', $receipt_no = '', $token = '')
+    {
+        $school_id  = validate_public_school_id($school_id);
+        $receipt_no = strtoupper(trim((string) $receipt_no));
+        $token      = trim((string) $token);
+
+        if (!preg_match('/^ADM[0-9]{4,10}$/', $receipt_no)) show_404();
+        if (!hash_equals($this->_fee_receipt_token($school_id, $receipt_no), $token)) show_404();
+
+        $this->fs->init($school_id);
+        $receipt = $this->fs->get('admissionReceipts', "{$school_id}_{$receipt_no}");
+        if (!is_array($receipt) || empty($receipt) || (string) ($receipt['schoolId'] ?? '') !== $school_id) {
+            show_404();
+        }
+
+        $schoolDoc = $this->fs->get('schools', $school_id) ?? [];
+        // Embed the logo as a data: URI (dompdf can't fetch Firebase Storage
+        // URLs reliably). CACHED + SSRF-hardened resolver (M4) — Firebase Storage
+        // stays the source of truth; this is a disposable CI-file-cache optimization.
+        $this->load->helper('public_url');
+        $logoRaw = (string) ($schoolDoc['logo'] ?? $schoolDoc['logoUrl'] ?? $schoolDoc['logo_url'] ?? '');
+        $logoEmbed = $logoRaw !== '' ? cached_school_logo_data_uri($school_id, $logoRaw) : '';
+
+        $profile = array_merge($schoolDoc, [
+            'display_name' => $schoolDoc['name'] ?? $schoolDoc['displayName'] ?? $schoolDoc['display_name'] ?? $school_id,
+            'school_name'  => $schoolDoc['name'] ?? '',
+            'logo_url'     => $logoEmbed, // '' → view hides it (no broken box)
+            'address'      => $schoolDoc['address'] ?? '',
+            'phone'        => $schoolDoc['phone']   ?? $schoolDoc['contact'] ?? '',
+            'email'        => $schoolDoc['email']   ?? '',
+        ]);
+
+        $this->load->library('pdf_generator');
+        $html = $this->load->view('admission/fee_receipt', ['receipt' => $receipt, 'school_profile' => $profile], true);
+        $this->pdf_generator->inline($html, 'admission_fee_receipt_' . $receipt_no . '.pdf');
+    }
+
     public function receipt($school_id = '', $app_id = '', $token = '')
     {
         $school_id = validate_public_school_id($school_id);
@@ -1411,12 +1981,12 @@ class Admission_public extends CI_Controller
             'email'        => $schoolDoc['email']   ?? '',
         ]);
 
-        // QR encodes the receipt URL itself — scanning re-opens this
-        // PDF. External API call; if it fails the PDF still renders
-        // (the IMG silently 404s and Dompdf moves on).
+        // QR encodes the receipt URL itself — scanning re-opens this PDF.
+        // Rendered locally as a data: URI (chillerlan) — no external QR API,
+        // so it never silently 404s and works offline / behind ad-blockers.
         $receiptUrl = $this->_receipt_url($school_id, $app_id);
-        $qrUrl = 'https://api.qrserver.com/v1/create-qr-code/?size=160x160&margin=2&data='
-               . rawurlencode($receiptUrl);
+        $this->load->helper('qr_token');
+        $qrUrl = qr_svg_data_uri($receiptUrl);
 
         $data = [
             'school_id'      => $school_id,
@@ -1432,5 +2002,65 @@ class Admission_public extends CI_Controller
 
         $filename = 'admission_receipt_' . preg_replace('/[^A-Za-z0-9_-]/', '', $app_id) . '.pdf';
         $this->pdf_generator->inline($html, $filename);
+    }
+
+    /**
+     * Sliding-window per-IP rate limiter backed by `crmRateLimits`.
+     *
+     * One doc per {school}_{ipKey}[_bucket]; the doc carries an `attempts`
+     * array of unix timestamps trimmed to the active window on every call so
+     * it never grows unbounded. Returns TRUE when the caller is OVER the
+     * limit (should be blocked).
+     *
+     * Fails OPEN on a Firestore infra error (a read blip must not lock out
+     * every applicant) but still enforces the quota whenever the read
+     * succeeds.
+     *
+     * @param string $bucket '' = submit budget (legacy doc id preserved so
+     *                       existing counters keep counting); a non-empty
+     *                       bucket (e.g. 'pay') gets its own doc + budget so
+     *                       the payment endpoints never exhaust the submit
+     *                       budget and vice-versa.
+     */
+    private function _rate_limited(string $school_id, string $clientIp, int $max, int $windowSecs, string $bucket = ''): bool
+    {
+        $ipKey       = preg_replace('/[^a-zA-Z0-9]/', '_', $clientIp);
+        $rateDocId   = $bucket === '' ? "{$school_id}_{$ipKey}" : "{$school_id}_{$ipKey}_{$bucket}";
+        $windowStart = time() - $windowSecs;
+
+        $attempts = [];
+        try {
+            $rateDoc = $this->fs->get('crmRateLimits', $rateDocId);
+            if (is_array($rateDoc) && is_array($rateDoc['attempts'] ?? null)) {
+                foreach ($rateDoc['attempts'] as $ts) {
+                    if ((int) $ts >= $windowStart) $attempts[] = (int) $ts;
+                }
+            }
+        } catch (\Exception $e) {
+            // Infra error — fail OPEN so a Firestore blip can't block every
+            // legitimate applicant. Quota is still enforced on healthy reads.
+            log_message('error', 'Admission_public::_rate_limited read failed: ' . $e->getMessage());
+            return false;
+        }
+
+        if (count($attempts) >= $max) {
+            return true;
+        }
+
+        // Record this attempt (best-effort; never blocks a legitimate call).
+        try {
+            $attempts[] = time();
+            $this->fs->set('crmRateLimits', $rateDocId, [
+                'schoolId'  => $school_id,
+                'ip'        => $clientIp,
+                'ipKey'     => $ipKey,
+                'bucket'    => $bucket,
+                'attempts'  => $attempts,
+                'updatedAt' => date('c'),
+            ], false);
+        } catch (\Exception $e) {
+            log_message('error', 'Admission_public::_rate_limited write failed: ' . $e->getMessage());
+        }
+        return false;
     }
 }

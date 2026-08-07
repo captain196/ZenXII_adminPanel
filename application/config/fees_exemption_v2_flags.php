@@ -13,8 +13,8 @@ defined('BASEPATH') or exit('No direct script access allowed');
  * with $this->config->item('USE_UNIFIED_FEE_GEN', 'fees_exemption_v2_flags').
  */
 
-$config['USE_UNIFIED_FEE_GEN']         = false; // Phase 2 cutover: true
-$config['CONCESSION_UI_ENABLED']        = false; // Phase 2 cutover: true (in lockstep with USE_UNIFIED_FEE_GEN)
+$config['USE_UNIFIED_FEE_GEN']         = true; // Phase 2 ACTIVATED (lockstep) — operator authorization
+$config['CONCESSION_UI_ENABLED']        = true; // Phase 2 ACTIVATED (lockstep with USE_UNIFIED_FEE_GEN) — operator authorization
 $config['SERVICE_ENROLLMENT_UI_ENABLED'] = false; // Phase 3 cutover: true
 
 // PHASE_3_CONVERGED: drives the communication-layer badges + warning banners

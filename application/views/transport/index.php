@@ -1,14 +1,23 @@
 <?php
 $at = isset($active_tab) ? $active_tab : 'vehicles';
+// Tab order — workflow-based setup order (2026-07-08 pm, release-cert
+// manual-test request). Group 1: infrastructure setup (Vehicles, Vendors,
+// Drivers, Routes & Stops, Assignments). Group 2: daily operations (Trips,
+// Expenses, Events, SOS Monitor, Expiry Dashboard). Slugs unchanged so
+// existing URLs + routes.php entries continue to work.
 $tab_map = [
     'vehicles'    => ['panel'=>'panelVehicles',    'icon'=>'fa-bus',           'label'=>'Vehicles'],
+    'vendors'     => ['panel'=>'panelVendors',     'icon'=>'fa-handshake-o',   'label'=>'Vendors'],
+    'drivers'     => ['panel'=>'panelDrivers',     'icon'=>'fa-id-card-o',     'label'=>'Drivers'],
     'routes'      => ['panel'=>'panelRoutes',      'icon'=>'fa-road',          'label'=>'Routes & Stops'],
     'assignments' => ['panel'=>'panelAssignments',  'icon'=>'fa-users',         'label'=>'Assignments'],
+    'trips'       => ['panel'=>'panelTrips',       'icon'=>'fa-map-signs',     'label'=>'Trips'],
+    'expenses'    => ['panel'=>'panelExpenses',    'icon'=>'fa-money',         'label'=>'Expenses'],
+    'events'      => ['panel'=>'panelEvents',      'icon'=>'fa-calendar-o',    'label'=>'Events'],
+    'sos'         => ['panel'=>'panelSos',         'icon'=>'fa-bell',          'label'=>'SOS Monitor'],
+    'expiry'      => ['panel'=>'panelExpiry',      'icon'=>'fa-exclamation-triangle', 'label'=>'Expiry Dashboard'],
 ];
-$can_edit   = function_exists('has_permission') ? has_permission('Transport','edit')   : true;
-$can_manage = function_exists('has_permission') ? has_permission('Transport','manage') : true;
 ?>
-<link rel="stylesheet" href="<?= base_url('assets/css/rbac_ui_kit.css') ?>">
 <style>
 .trn-wrap{padding:20px;max-width:1400px;margin:0 auto}
 .trn-header{display:flex;align-items:center;justify-content:space-between;margin-bottom:24px;flex-wrap:wrap;gap:12px}
@@ -52,9 +61,7 @@ $can_manage = function_exists('has_permission') ? has_permission('Transport','ma
 .trn-search-item:hover{background:var(--gold-dim)}
 </style>
 
-<div class="content-wrapper">
-<div class="rx-loadbar" id="rxLoadbar"></div>
-<section class="content"><div class="trn-wrap">
+<div class="content-wrapper"><section class="content"><div class="trn-wrap">
   <div class="trn-header"><div>
     <div class="trn-header-icon"><i class="fa fa-bus"></i> Transport Management</div>
     <ol class="trn-breadcrumb"><li><a href="<?= base_url('admin') ?>">Dashboard</a></li><li><a href="<?= base_url('operations') ?>">Operations</a></li><li>Transport</li></ol>
@@ -66,28 +73,194 @@ $can_manage = function_exists('has_permission') ? has_permission('Transport','ma
     <?php endforeach; ?>
   </nav>
 
-  <?php if(!$can_edit): ?>
-  <div class="rx-ro-banner"><span class="rx-ro-ic">🔒</span> View-only access — you can browse Transport records but cannot add, edit, or delete.</div>
-  <?php elseif(!$can_manage): ?>
-  <div class="rx-ro-banner"><span class="rx-ro-ic">🔒</span> Limited access — you can add and edit, but deleting is restricted.</div>
-  <?php endif; ?>
-
   <!-- VEHICLES -->
   <div class="trn-panel<?= $at === 'vehicles' ? ' active' : '' ?>" id="panelVehicles">
     <div class="trn-card">
-      <div class="trn-card-title"><span>Vehicles</span><button class="trn-btn trn-btn-primary" onclick="TRN.openVehModal()" <?= $can_edit?'':'disabled' ?>><i class="fa fa-plus"></i> Add Vehicle</button></div>
-      <table class="trn-table"><thead><tr><th>ID</th><th>Number</th><th>Type</th><th>Capacity</th><th>Driver</th><th>Phone</th><th>Status</th><th>Actions</th></tr></thead><tbody id="vehTbody"></tbody></table>
+      <div class="trn-card-title"><span>Vehicles</span><button class="trn-btn trn-btn-primary" onclick="TRN.openVehModal()"><i class="fa fa-plus"></i> Add Vehicle</button></div>
+      <table class="trn-table"><thead><tr><th>ID</th><th>Number</th><th>Type</th><th>Capacity</th><th>Driver</th><th>Ownership</th><th>Lifecycle</th><th>Actions</th></tr></thead><tbody id="vehTbody"></tbody></table>
+    </div>
+  </div>
+
+  <!-- VENDORS (F1) -->
+  <div class="trn-panel<?= $at === 'vendors' ? ' active' : '' ?>" id="panelVendors">
+    <div class="trn-card">
+      <div class="trn-card-title"><span>Transport Vendors</span><button class="trn-btn trn-btn-primary" onclick="TRN.openVendorModal()"><i class="fa fa-plus"></i> Add Vendor</button></div>
+      <table class="trn-table"><thead><tr><th>ID</th><th>Name</th><th>Contact</th><th>Phone</th><th>GSTIN</th><th>Status</th><th>Actions</th></tr></thead><tbody id="vendorsTbody"></tbody></table>
+    </div>
+  </div>
+
+  <!-- DRIVERS (F4) -->
+  <div class="trn-panel<?= $at === 'drivers' ? ' active' : '' ?>" id="panelDrivers">
+    <div class="trn-card">
+      <div class="trn-card-title">
+        <span>Drivers</span>
+        <div style="display:flex;gap:6px">
+          <button class="trn-btn trn-btn-primary trn-btn-sm" onclick="TRN.dmRebuildActivityAll()" title="Rebuild all activity summaries for current month"><i class="fa fa-refresh"></i> Rebuild Activity</button>
+        </div>
+      </div>
+      <div style="background:rgba(59,130,246,.08);border-left:3px solid #3b82f6;padding:10px 12px;border-radius:4px;font-size:12px;color:var(--t1);font-family:var(--font-b);margin-bottom:14px">
+        Drivers are managed in HR. This surface exposes Transport-specific meta (licence, medical, badge, availability), incidents, reviews and temp-cover assignments. Comprehensive readiness validation applies to every driver-vehicle assignment.
+      </div>
+      <table class="trn-table"><thead><tr><th>Staff ID</th><th>Name</th><th>Phone</th><th>Licence Expires</th><th>Medical Expires</th><th>Op. Status</th><th>Actions</th></tr></thead><tbody id="driversTbody"></tbody></table>
+    </div>
+  </div>
+
+  <!-- EXPENSES (F5) -->
+  <div class="trn-panel<?= $at === 'expenses' ? ' active' : '' ?>" id="panelExpenses">
+    <div class="trn-card">
+      <div class="trn-card-title">
+        <span>Transport Expenses</span>
+        <div style="display:flex;gap:6px">
+          <button class="trn-btn trn-btn-primary trn-btn-sm" onclick="TRN.reconcilePendingPosts()" title="Retry pending Accounting posts"><i class="fa fa-wrench"></i> Reconcile Pending</button>
+          <button class="trn-btn trn-btn-primary trn-btn-sm" onclick="TRN.rebuildExpenseSummary()" title="Rebuild monthly summary"><i class="fa fa-refresh"></i> Rebuild Summary</button>
+          <button class="trn-btn trn-btn-primary" onclick="TRN.openExpense()"><i class="fa fa-plus"></i> Record Expense</button>
+        </div>
+      </div>
+      <div style="background:rgba(59,130,246,.08);border-left:3px solid #3b82f6;padding:10px 12px;border-radius:4px;font-size:12px;color:var(--t1);font-family:var(--font-b);margin-bottom:14px">
+        Posting to Accounting follows the school's <code>schoolControl.transport.expense_posting_mode</code> (default 'manual'). Auto mode posts immediately; manual mode leaves the expense unpostpated until admin clicks "Post Now" or ticks "Force Post" on save.
+      </div>
+      <div id="expensesSummaryBar" style="margin-bottom:14px"></div>
+      <table class="trn-table"><thead><tr><th>ID</th><th>Date</th><th>Type</th><th>Vehicle</th><th>Amount</th><th>Payee</th><th>Accounting</th><th>Status</th><th>Actions</th></tr></thead><tbody id="expensesTbody"></tbody></table>
+    </div>
+  </div>
+
+  <!-- TRIPS (F7) -->
+  <div class="trn-panel<?= $at === 'trips' ? ' active' : '' ?>" id="panelTrips">
+    <div class="trn-card">
+      <div class="trn-card-title">
+        <span>Trip Monitor</span>
+        <div style="display:flex;gap:6px">
+          <input type="date" id="tripDateFilter" onchange="TRN.loadTrips()" class="trn-btn trn-btn-sm" style="background:var(--bg);border:1px solid var(--border);color:var(--t1);cursor:pointer">
+          <select id="tripStatusFilter" onchange="TRN.loadTrips()" class="trn-btn trn-btn-sm" style="background:var(--bg);border:1px solid var(--border);color:var(--t1);cursor:pointer">
+            <option value="">All statuses</option>
+            <option value="Ready">Ready</option>
+            <option value="InProgress">In Progress</option>
+            <option value="Completed">Completed</option>
+            <option value="Cancelled">Cancelled</option>
+          </select>
+          <button class="trn-btn trn-btn-primary" onclick="TRN.openCreateTrip()"><i class="fa fa-plus"></i> Create Trip</button>
+        </div>
+      </div>
+      <div style="background:rgba(34,197,94,.06);border-left:3px solid #22c55e;padding:10px 12px;border-radius:4px;font-size:12px;color:var(--t1);font-family:var(--font-b);margin-bottom:14px">
+        F7 Trip Logs + Transport Attendance. Lifecycle: <b>Ready → InProgress → Completed | Cancelled</b>. Roster is snapshot at create time (immutable). Completion requires every checkpoint to be Reached or Skipped. GPS-native schema is ready for the dedicated GPS phase (all live-position fields written NULL today).
+      </div>
+      <table class="trn-table">
+        <thead><tr><th>ID</th><th>Date</th><th>Direction</th><th>Vehicle</th><th>Route</th><th>Driver</th><th>Progress</th><th>Boarded</th><th>Status</th><th>Actions</th></tr></thead>
+        <tbody id="tripsTbody"></tbody>
+      </table>
+    </div>
+  </div>
+
+  <!-- EVENTS (F8) -->
+  <div class="trn-panel<?= $at === 'events' ? ' active' : '' ?>" id="panelEvents">
+    <div class="trn-card">
+      <div class="trn-card-title">
+        <span>Transport Events</span>
+        <div style="display:flex;gap:6px">
+          <select id="eventStatusFilter" onchange="TRN.loadEvents()" class="trn-btn trn-btn-sm" style="background:var(--bg);border:1px solid var(--border);color:var(--t1);cursor:pointer">
+            <option value="">All statuses</option>
+            <option value="Planned">Planned</option>
+            <option value="Scheduled">Scheduled</option>
+            <option value="InProgress">In Progress</option>
+            <option value="Completed">Completed</option>
+            <option value="Cancelled">Cancelled</option>
+          </select>
+          <select id="eventTypeFilter" onchange="TRN.loadEvents()" class="trn-btn trn-btn-sm" style="background:var(--bg);border:1px solid var(--border);color:var(--t1);cursor:pointer">
+            <option value="">All types</option>
+            <option value="Educational_Tour">Educational Tour</option>
+            <option value="Sports">Sports</option>
+            <option value="Annual_Function">Annual Function</option>
+            <option value="Competition">Competition</option>
+            <option value="Excursion">Excursion</option>
+            <option value="Examination">Examination</option>
+            <option value="Field_Trip">Field Trip</option>
+            <option value="Cultural_Event">Cultural Event</option>
+            <option value="Other">Other</option>
+          </select>
+          <button class="trn-btn trn-btn-primary" onclick="TRN.openCreateEvent()"><i class="fa fa-plus"></i> Create Event</button>
+        </div>
+      </div>
+      <div style="background:rgba(139,92,246,.06);border-left:3px solid #8b5cf6;padding:10px 12px;border-radius:4px;font-size:12px;color:var(--t1);font-family:var(--font-b);margin-bottom:14px">
+        F8 Transport Events (LC-23). Lifecycle: <b>Planned → Scheduled → InProgress → Completed | Cancelled</b>. Reuses F1 fleet, F4 driver overlay, F7 trip logs (trip_kind=Event), F5 expense cost attribution (related_event_id), F6 comms (event.* categories). Route optional per event trip. Budget informational — over-budget warns, never blocks.
+      </div>
+      <table class="trn-table">
+        <thead><tr><th>ID</th><th>Type</th><th>Title</th><th>Date</th><th>Vehicles</th><th>Roster</th><th>Trips</th><th>Cost (Act/Bud)</th><th>Status</th><th>Actions</th></tr></thead>
+        <tbody id="eventsTbody"></tbody>
+      </table>
+    </div>
+  </div>
+
+  <!-- SOS MONITOR (F6) -->
+  <div class="trn-panel<?= $at === 'sos' ? ' active' : '' ?>" id="panelSos">
+    <div class="trn-card">
+      <div class="trn-card-title">
+        <span>SOS Alerts</span>
+        <div style="display:flex;gap:6px">
+          <select id="sosStatusFilter" onchange="TRN.loadSos()" class="trn-btn trn-btn-sm" style="background:var(--bg);border:1px solid var(--border);color:var(--t1);cursor:pointer">
+            <option value="">All statuses</option>
+            <option value="active" selected>Active only</option>
+            <option value="responded">Responded</option>
+            <option value="resolved">Resolved</option>
+          </select>
+          <button class="trn-btn trn-btn-danger" onclick="TRN.openRaiseSos()"><i class="fa fa-exclamation-triangle"></i> Raise SOS</button>
+        </div>
+      </div>
+      <div style="background:rgba(220,38,38,.06);border-left:3px solid #dc2626;padding:10px 12px;border-radius:4px;font-size:12px;color:var(--t1);font-family:var(--font-b);margin-bottom:14px">
+        F6 admin-fired SOS MVP. Teacher-app SOS trigger path lands in F9. Escalation is manual only — architecture stays open for future auto-escalation without redesign.
+      </div>
+      <table class="trn-table">
+        <thead><tr><th>ID</th><th>Raised</th><th>Type</th><th>Vehicle</th><th>Route</th><th>Message</th><th>Status</th><th>Responder</th><th>Actions</th></tr></thead>
+        <tbody id="sosTbody"></tbody>
+      </table>
+    </div>
+  </div>
+
+  <!-- EXPIRY DASHBOARD (F1) -->
+  <div class="trn-panel<?= $at === 'expiry' ? ' active' : '' ?>" id="panelExpiry">
+    <div class="trn-card">
+      <div class="trn-card-title">
+        <span>Fleet Expiry Dashboard</span>
+        <button class="trn-btn trn-btn-primary trn-btn-sm" onclick="TRN.recomputeExpiry()"><i class="fa fa-refresh"></i> Recompute Now</button>
+      </div>
+      <div style="display:grid;grid-template-columns:repeat(3,1fr);gap:16px;margin-bottom:16px">
+        <div class="trn-card" style="text-align:center;margin:0;border-left:4px solid var(--rose)">
+          <div style="font-size:11px;color:var(--t3);text-transform:uppercase;letter-spacing:.3px">Expiring in 7 days</div>
+          <div style="font-size:2.4rem;font-weight:700;font-family:var(--font-b);color:var(--rose)" id="exp7">—</div>
+        </div>
+        <div class="trn-card" style="text-align:center;margin:0;border-left:4px solid #f59e0b">
+          <div style="font-size:11px;color:var(--t3);text-transform:uppercase;letter-spacing:.3px">Expiring in 15 days</div>
+          <div style="font-size:2.4rem;font-weight:700;font-family:var(--font-b);color:#f59e0b" id="exp15">—</div>
+        </div>
+        <div class="trn-card" style="text-align:center;margin:0;border-left:4px solid #3b82f6">
+          <div style="font-size:11px;color:var(--t3);text-transform:uppercase;letter-spacing:.3px">Expiring in 30 days</div>
+          <div style="font-size:2.4rem;font-weight:700;font-family:var(--font-b);color:#3b82f6" id="exp30">—</div>
+        </div>
+      </div>
+      <div id="expLastRun" style="font-size:12px;color:var(--t3);margin-bottom:10px;font-family:var(--font-b)"></div>
+      <table class="trn-table"><thead><tr><th>Vehicle</th><th>Item</th><th>Expiry</th><th>Days Left</th><th>Window</th></tr></thead>
+      <tbody id="expTbody"></tbody></table>
     </div>
   </div>
 
   <!-- ROUTES & STOPS -->
   <div class="trn-panel<?= $at === 'routes' ? ' active' : '' ?>" id="panelRoutes">
+    <!-- F2 (2026-07-07): active suspensions banner (rendered above routes) -->
+    <?php $this->load->view('transport/partials/route_suspension_list'); ?>
+
     <div class="trn-card">
-      <div class="trn-card-title"><span>Routes</span><button class="trn-btn trn-btn-primary" onclick="TRN.openRouteModal()" <?= $can_edit?'':'disabled' ?>><i class="fa fa-plus"></i> Add Route</button></div>
-      <table class="trn-table"><thead><tr><th>ID</th><th>Name</th><th>Vehicle</th><th>Distance</th><th>Monthly Fee</th><th>Actions</th></tr></thead><tbody id="routesTbody"></tbody></table>
+      <div class="trn-card-title">
+        <span>Routes</span>
+        <div style="display:flex;gap:6px;align-items:center">
+          <label style="font-size:12px;color:var(--t3);font-family:var(--font-b);cursor:pointer">
+            <input type="checkbox" id="routeShowArchived" onchange="loadRoutes()"> Show Archived
+          </label>
+          <button class="trn-btn trn-btn-primary" onclick="TRN.openRouteModal()"><i class="fa fa-plus"></i> Add Route</button>
+        </div>
+      </div>
+      <table class="trn-table"><thead><tr><th>ID</th><th>Name</th><th>Vehicle</th><th>Distance</th><th>Monthly Fee</th><th>Status</th><th>Actions</th></tr></thead><tbody id="routesTbody"></tbody></table>
     </div>
     <div class="trn-card">
-      <div class="trn-card-title"><span>Stops</span><button class="trn-btn trn-btn-primary" onclick="TRN.openStopModal()" <?= $can_edit?'':'disabled' ?>><i class="fa fa-plus"></i> Add Stop</button></div>
+      <div class="trn-card-title"><span>Stops</span><button class="trn-btn trn-btn-primary" onclick="TRN.openStopModal()"><i class="fa fa-plus"></i> Add Stop</button></div>
       <div class="trn-form-group" style="max-width:300px;margin-bottom:14px">
         <label>Filter by Route</label><select id="stopRouteFilter"><option value="">All Routes</option></select>
       </div>
@@ -95,26 +268,109 @@ $can_manage = function_exists('has_permission') ? has_permission('Transport','ma
     </div>
   </div>
 
-  <!-- ASSIGNMENTS -->
+  <!-- ASSIGNMENTS (F3 extended) -->
   <div class="trn-panel<?= $at === 'assignments' ? ' active' : '' ?>" id="panelAssignments">
     <div class="trn-card">
-      <div class="trn-card-title"><span>Student Transport Assignments</span><button class="trn-btn trn-btn-primary" onclick="TRN.openAsnModal()" <?= $can_edit?'':'disabled' ?>><i class="fa fa-plus"></i> Assign Student</button></div>
-      <table class="trn-table"><thead><tr><th>Student</th><th>Class</th><th>Route</th><th>Stop</th><th>Type</th><th>Fee/Month</th><th>Assigned</th><th>Actions</th></tr></thead><tbody id="asnTbody"></tbody></table>
+      <div class="trn-card-title">
+        <span>Student Transport Assignments</span>
+        <div style="display:flex;gap:6px">
+          <button class="trn-btn trn-btn-primary trn-btn-sm" onclick="TRN.openBulkAssign()"><i class="fa fa-list"></i> Bulk Assign</button>
+          <button class="trn-btn trn-btn-primary trn-btn-sm" onclick="TRN.openRollover()"><i class="fa fa-refresh"></i> Session Rollover</button>
+          <button class="trn-btn trn-btn-primary trn-btn-sm" onclick="TRN.reconcilePendingFees()" title="Retry any pending fee demands"><i class="fa fa-wrench"></i> Reconcile Fees</button>
+          <button class="trn-btn trn-btn-primary trn-btn-sm" onclick="TRN.rebuildCapacityCache()" title="Rebuild capacity cache from source"><i class="fa fa-database"></i> Rebuild Cache</button>
+          <button class="trn-btn trn-btn-primary" onclick="TRN.openAsnModal()"><i class="fa fa-plus"></i> Assign Student</button>
+        </div>
+      </div>
+      <table class="trn-table"><thead><tr>
+        <th>Student</th><th>Class</th><th>Route</th><th>Stop</th><th>Subscription</th><th>Fee/Month</th><th>Status</th><th>Actions</th>
+      </tr></thead><tbody id="asnTbody"></tbody></table>
     </div>
   </div>
 </div></section></div>
 
-<!-- VEHICLE MODAL -->
-<div class="trn-modal-bg" id="vehModal"><div class="trn-modal">
+<!-- VEHICLE MODAL (F1 extended fields) -->
+<div class="trn-modal-bg" id="vehModal"><div class="trn-modal" style="width:720px">
   <div class="trn-modal-title"><span id="vehModalTitle">Add Vehicle</span><button class="trn-modal-close" onclick="TRN.closeVehModal()">&times;</button></div>
   <input type="hidden" id="vhId">
   <div class="trn-form-row"><div class="trn-form-group"><label>Vehicle Number *</label><input type="text" id="vhNumber"></div><div class="trn-form-group"><label>Type</label><select id="vhType"><option>Bus</option><option>Van</option><option>Auto</option><option>Car</option></select></div></div>
-  <div class="trn-form-row"><div class="trn-form-group"><label>Capacity</label><input type="number" id="vhCapacity" value="40" min="1"></div><div class="trn-form-group"><label>Driver Name</label><input type="text" id="vhDriverName"></div></div>
-  <div class="trn-form-row"><div class="trn-form-group"><label>Driver Phone</label><input type="text" id="vhDriverPhone"></div><div class="trn-form-group"><label>GPS Enabled</label><select id="vhGps"><option value="0">No</option><option value="1">Yes</option></select></div></div>
+  <div class="trn-form-row"><div class="trn-form-group"><label>Capacity</label><input type="number" id="vhCapacity" value="40" min="1"></div><div class="trn-form-group"><label>Fuel Type</label><select id="vhFuelType"><option>Diesel</option><option>Petrol</option><option>CNG</option><option>Electric</option><option>Hybrid</option></select></div></div>
+
+  <!-- HR-linked driver: staff_id is the canonical FK; driver_name/phone are
+       historical snapshots taken at save time. -->
+  <div class="trn-form-row"><div class="trn-form-group"><label>Driver Staff ID (HR link)</label><input type="text" id="vhStaffId" placeholder="STA0001 (optional)"></div><div class="trn-form-group"><label>Conductor Staff ID</label><input type="text" id="vhConductorStaffId" placeholder="STA0002 (optional)"></div></div>
+  <div class="trn-form-row"><div class="trn-form-group"><label>Driver Name (fallback if no staff)</label><input type="text" id="vhDriverName"></div><div class="trn-form-group"><label>Driver Phone (fallback if no staff)</label><input type="text" id="vhDriverPhone"></div></div>
+
+  <!-- Ownership + vendor (Contract requires vendor_id) -->
+  <div class="trn-form-row"><div class="trn-form-group"><label>Ownership</label><select id="vhOwnership" onchange="TRN.vhToggleContract()"><option value="School">School</option><option value="Contract">Contract</option></select></div><div class="trn-form-group"><label>Vendor (if Contract)</label><select id="vhVendorId"><option value="">-- None --</option></select></div></div>
+  <div class="trn-form-row" id="vhContractRow" style="display:none">
+    <div class="trn-form-group"><label>Monthly Hire (Rs)</label><input type="number" id="vhHire" min="0" step="0.01" value="0"></div>
+    <div class="trn-form-group"><label>Contract Start</label><input type="date" id="vhContractStart"></div>
+  </div>
+  <div class="trn-form-row" id="vhContractRow2" style="display:none">
+    <div class="trn-form-group"><label>Contract End</label><input type="date" id="vhContractEnd"></div>
+    <div class="trn-form-group"></div>
+  </div>
+
+  <!-- Statutory documents (top-level, quick fields) -->
   <div class="trn-form-row"><div class="trn-form-group"><label>Insurance No.</label><input type="text" id="vhInsNo"></div><div class="trn-form-group"><label>Insurance Expiry</label><input type="date" id="vhInsExp"></div></div>
-  <div class="trn-form-row"><div class="trn-form-group"><label>Fitness Expiry</label><input type="date" id="vhFitExp"></div><div class="trn-form-group"><label>Status</label><select id="vhStatus"><option value="Active">Active</option><option value="Inactive">Inactive</option><option value="Maintenance">Maintenance</option></select></div></div>
-  <button class="trn-btn trn-btn-primary" onclick="TRN.saveVehicle()" style="width:100%;margin-top:8px" <?= $can_edit?'':'disabled' ?>>Save Vehicle</button>
+  <div class="trn-form-row"><div class="trn-form-group"><label>Permit No.</label><input type="text" id="vhPermitNo"></div><div class="trn-form-group"><label>Permit Expiry</label><input type="date" id="vhPermitExp"></div></div>
+  <div class="trn-form-row"><div class="trn-form-group"><label>Fitness Expiry</label><input type="date" id="vhFitExp"></div><div class="trn-form-group"><label>Pollution (PUC) Expiry</label><input type="date" id="vhPollutionExp"></div></div>
+  <div class="trn-form-row"><div class="trn-form-group"><label>Road Tax Expiry</label><input type="date" id="vhRoadTaxExp"></div><div class="trn-form-group"><label>Service KM Interval</label><input type="number" id="vhSvcKmInt" min="0" value="10000"></div></div>
+
+  <!-- GPS (F1 fields only; Phase 5 owns live position writes) -->
+  <div class="trn-form-row"><div class="trn-form-group"><label>GPS Enabled</label><select id="vhGps"><option value="0">No</option><option value="1">Yes</option></select></div><div class="trn-form-group"><label>GPS Device ID</label><input type="text" id="vhGpsDeviceId" placeholder="(Phase 5 will populate live fields)"></div></div>
+
+  <button class="trn-btn trn-btn-primary" onclick="TRN.saveVehicle()" style="width:100%;margin-top:8px">Save Vehicle</button>
 </div></div>
+
+<!-- VENDOR MODAL (F1) -->
+<div class="trn-modal-bg" id="vendorModal"><div class="trn-modal" style="width:560px">
+  <div class="trn-modal-title"><span id="vendorModalTitle">Add Vendor</span><button class="trn-modal-close" onclick="TRN.closeVendorModal()">&times;</button></div>
+  <input type="hidden" id="vndId">
+  <div class="trn-form-group"><label>Vendor Name *</label><input type="text" id="vndName"></div>
+  <div class="trn-form-row"><div class="trn-form-group"><label>Contact Person</label><input type="text" id="vndContact"></div><div class="trn-form-group"><label>Phone</label><input type="text" id="vndPhone"></div></div>
+  <div class="trn-form-row"><div class="trn-form-group"><label>Email</label><input type="email" id="vndEmail"></div><div class="trn-form-group"><label>GSTIN</label><input type="text" id="vndGstin"></div></div>
+  <div class="trn-form-group"><label>Address</label><input type="text" id="vndAddress"></div>
+  <div class="trn-form-group"><label>Notes</label><input type="text" id="vndNotes"></div>
+  <button class="trn-btn trn-btn-primary" onclick="TRN.saveVendor()" style="width:100%;margin-top:8px">Save Vendor</button>
+</div></div>
+
+<!-- VENDOR TERMINATE MODAL (F1) -->
+<div class="trn-modal-bg" id="vendorTerminateModal"><div class="trn-modal" style="width:440px">
+  <div class="trn-modal-title"><span>Terminate Vendor</span><button class="trn-modal-close" onclick="TRN.closeVendorTerminate()">&times;</button></div>
+  <input type="hidden" id="vndTermId">
+  <div class="trn-form-group"><label>Reason *</label><input type="text" id="vndTermReason" placeholder="e.g. Contract not renewed"></div>
+  <button class="trn-btn trn-btn-danger" onclick="TRN.confirmTerminateVendor()" style="width:100%">Terminate</button>
+</div></div>
+
+<!-- Vehicle Manage modal (partial) -->
+<?php $this->load->view('transport/partials/vehicle_manage_modal'); ?>
+
+<!-- F2 Suspension + Archive modals (partial) -->
+<?php $this->load->view('transport/partials/route_suspension_modal'); ?>
+
+<!-- F3 Bulk assign + history + change + suspend modals -->
+<?php $this->load->view('transport/partials/bulk_assign_modal'); ?>
+
+<!-- F3 Session rollover modal -->
+<?php $this->load->view('transport/partials/rollover_modal'); ?>
+
+<!-- F4 Driver management + incident modals -->
+<?php $this->load->view('transport/partials/driver_manage_modal'); ?>
+<?php $this->load->view('transport/partials/incident_modal'); ?>
+
+<!-- F5 Expense modal -->
+<?php $this->load->view('transport/partials/expense_modal'); ?>
+
+<!-- F6 SOS modal (admin-fired MVP) -->
+<?php $this->load->view('transport/partials/sos_modal'); ?>
+
+<!-- F7 Trip modals (create + manage + complete + cancel + skip) -->
+<?php $this->load->view('transport/partials/trip_modal'); ?>
+
+<!-- F8 Event modals (create + manage + dispatch + escorts + complete + cancel) -->
+<?php $this->load->view('transport/partials/event_modal'); ?>
+
 
 <!-- ROUTE MODAL -->
 <div class="trn-modal-bg" id="routeModal"><div class="trn-modal" style="width:480px">
@@ -124,7 +380,7 @@ $can_manage = function_exists('has_permission') ? has_permission('Transport','ma
   <div class="trn-form-row"><div class="trn-form-group"><label>Vehicle</label><select id="rtVehicleId"><option value="">-- None --</option></select></div><div class="trn-form-group"><label>Monthly Fee (Rs)</label><input type="number" id="rtFee" value="0" min="0"></div></div>
   <div class="trn-form-row"><div class="trn-form-group"><label>Start Point</label><input type="text" id="rtStart"></div><div class="trn-form-group"><label>End Point</label><input type="text" id="rtEnd"></div></div>
   <div class="trn-form-group"><label>Distance (km)</label><input type="number" id="rtDistance" value="0" min="0" step="0.1"></div>
-  <button class="trn-btn trn-btn-primary" onclick="TRN.saveRoute()" style="width:100%;margin-top:8px" <?= $can_edit?'':'disabled' ?>>Save Route</button>
+  <button class="trn-btn trn-btn-primary" onclick="TRN.saveRoute()" style="width:100%;margin-top:8px">Save Route</button>
 </div></div>
 
 <!-- STOP MODAL -->
@@ -135,7 +391,7 @@ $can_manage = function_exists('has_permission') ? has_permission('Transport','ma
   <div class="trn-form-group"><label>Stop Name *</label><input type="text" id="stName"></div>
   <div class="trn-form-row"><div class="trn-form-group"><label>Pickup Time</label><input type="time" id="stPickup"></div><div class="trn-form-group"><label>Drop Time</label><input type="time" id="stDrop"></div></div>
   <div class="trn-form-group"><label>Order</label><input type="number" id="stOrder" value="0" min="0"></div>
-  <button class="trn-btn trn-btn-primary" onclick="TRN.saveStop()" style="width:100%;margin-top:8px" <?= $can_edit?'':'disabled' ?>>Save Stop</button>
+  <button class="trn-btn trn-btn-primary" onclick="TRN.saveStop()" style="width:100%;margin-top:8px">Save Stop</button>
 </div></div>
 
 <!-- ASSIGNMENT MODAL -->
@@ -144,84 +400,539 @@ $can_manage = function_exists('has_permission') ? has_permission('Transport','ma
   <div class="trn-form-group trn-search-box"><label>Student</label><input type="text" id="asnStudentSearch" placeholder="Search by name or ID..." autocomplete="off"><input type="hidden" id="asnStudentId"><div class="trn-search-results" id="asnStudentResults"></div></div>
   <div class="trn-form-group"><label>Route *</label><select id="asnRouteId"></select></div>
   <div class="trn-form-row"><div class="trn-form-group"><label>Stop</label><select id="asnStopId"><option value="">-- Select --</option></select></div><div class="trn-form-group"><label>Type</label><select id="asnType"><option value="both">Both (Pickup & Drop)</option><option value="pickup">Pickup Only</option><option value="drop">Drop Only</option></select></div></div>
-  <button class="trn-btn trn-btn-primary" onclick="TRN.saveAssignment()" style="width:100%;margin-top:8px" <?= $can_edit?'':'disabled' ?>>Assign</button>
+  <button class="trn-btn trn-btn-primary" onclick="TRN.saveAssignment()" style="width:100%;margin-top:8px">Assign</button>
 </div></div>
 
 <script>
-var _TRN_CFG={BASE:'<?= base_url() ?>',CSRF_NAME:'<?= $this->security->get_csrf_token_name() ?>',CSRF_HASH:'<?= $this->security->get_csrf_hash() ?>',activeTab:'<?= $at ?>',CAN_EDIT:<?= $can_edit?'true':'false' ?>,CAN_MANAGE:<?= $can_manage?'true':'false' ?>};
+var _TRN_CFG={BASE:'<?= base_url() ?>',CSRF_NAME:'<?= $this->security->get_csrf_token_name() ?>',CSRF_HASH:'<?= $this->security->get_csrf_hash() ?>',activeTab:'<?= $at ?>'};
 document.addEventListener('DOMContentLoaded', function(){
 (function(){
   'use strict';
   var BASE=_TRN_CFG.BASE,CSRF_NAME=_TRN_CFG.CSRF_NAME,CSRF_HASH=_TRN_CFG.CSRF_HASH;
   var vehicles=[],routes=[],stops=[];
-  var CAN_EDIT=_TRN_CFG.CAN_EDIT, CAN_MANAGE=_TRN_CFG.CAN_MANAGE;
-  var EDIT_ATTR=CAN_EDIT?'':' disabled title="No edit permission"';
-  var DEL_ATTR=CAN_MANAGE?'':' disabled title="No delete permission"';
+  function getJSON(u){return $.getJSON(BASE+u)}
+  // post(u, d) — CSRF-stamped POST. Release-cert 2026-07-08 pm: applies a
+  // TRUE MUTEX to the last primary/danger modal button clicked (see
+  // TRN.__lastBtn tracker below), not just cosmetic disabled state. The
+  // .data('trn-busy') marker is a synchronous JS-side lock that Chrome's
+  // queued-click dispatch cannot bypass — even when rapid clicks slip past
+  // the browser's disabled-attribute click-block, the second/third post()
+  // call sees the marker and returns a rejected promise WITHOUT firing the
+  // POST. Root cause of the 3-duplicate-routes regression: a prior version
+  // fell through to `return $.post(...)` when the button was already
+  // disabled, still firing every duplicate as a real POST.
+  function post(u,d){
+    d[CSRF_NAME]=CSRF_HASH;
+    var $b=(window.TRN&&TRN.__lastBtn)?TRN.__lastBtn:null;
+    if($b&&$b.length){
+      if($b.data('trn-busy')){
+        var dq=$.Deferred();
+        setTimeout(function(){dq.reject('duplicate submission blocked')},0);
+        return dq.promise();
+      }
+      $b.data('trn-busy',true);
+      var oh=$b.html(),label=(window.TRN&&TRN.__busyLabel)||'Working…';
+      $b.prop('disabled',true).html('<i class="fa fa-spinner fa-spin"></i> '+label);
+      if(window.TRN) TRN.__busyLabel=null;
+      var jqXHR=$.post(BASE+u,d);
+      jqXHR.always(function(){$b.removeData('trn-busy').prop('disabled',false).html(oh)});
+      // Default fail handler — every save site binds .done() only, so HTTP
+      // 4xx/5xx responses (json_error → http_response_code) were previously
+      // silent. Surface the server's error message (or a sensible HTTP-code
+      // fallback) as a toast so users know their save failed and why
+      // (release-cert manual-test finding 2026-07-08 pm).
+      jqXHR.fail(function(xhr){
+        var msg='Request failed. Please try again.';
+        try{
+          var body=xhr.responseJSON||(xhr.responseText?JSON.parse(xhr.responseText):null);
+          if(body&&body.message) msg=body.message;
+        }catch(e){}
+        if(msg==='Request failed. Please try again.'&&xhr.status){
+          if(xhr.status===401) msg='Session expired. Please log in again.';
+          else if(xhr.status===403) msg='Access denied.';
+          else if(xhr.status===404) msg='Endpoint not found (server misconfigured).';
+          else if(xhr.status===500||xhr.status===502||xhr.status===503) msg='Server error ('+xhr.status+'). Please retry.';
+          else if(xhr.status===0) msg='Network error — check your connection.';
+          else msg='Error '+xhr.status;
+        }
+        toast(msg,false);
+      });
+      return jqXHR;
+    }
+    return $.post(BASE+u,d);
+  }
   function toast(m,ok){var t=$('<div style="position:fixed;top:20px;right:20px;z-index:99999;padding:12px 20px;border-radius:8px;font-size:.85rem;color:#fff;background:'+(ok?'var(--green)':'var(--rose)')+'">'+m+'</div>');$('body').append(t);setTimeout(function(){t.fadeOut(300,function(){t.remove()})},3000)}
   function escH(s){return $('<span>').text(s||'').html()}
-  function errMsg(xhr,def){var m=def||'Request failed';try{var j=xhr.responseJSON;if(!j&&xhr.responseText)j=JSON.parse(xhr.responseText);if(j&&j.message)m=j.message;else if(xhr.status)m=(def||'Request failed')+' ('+xhr.status+')';}catch(e){if(xhr.status)m=(def||'Request failed')+' ('+xhr.status+')';}return m}
-  function getJSON(u){return $.getJSON(BASE+u).fail(function(xhr){toast(errMsg(xhr,'Failed to load data'),false)})}
-  function post(u,d){d[CSRF_NAME]=CSRF_HASH;return $.post(BASE+u,d).fail(function(xhr){toast(errMsg(xhr,'Action failed'),false)})}
-  function skel(id,cols,n){var h='';n=n||4;for(var i=0;i<n;i++){h+='<tr>';for(var c=0;c<cols;c++)h+='<td><div class="rx-skel rx-skel-row"></div></td>';h+='</tr>'}$('#'+id).html(h)}
-  function btnOn(sel){var el=$(sel)[0];if(el)el.classList.add('rx-btnload');return el}
-  function btnOff(el){if(el)el.classList.remove('rx-btnload')}
-  $(document).ajaxStart(function(){$('#rxLoadbar').addClass('on')}).ajaxStop(function(){$('#rxLoadbar').removeClass('on')});
   function vehName(id){for(var i=0;i<vehicles.length;i++) if(vehicles[i].id===id) return vehicles[i].number; return id||'—'}
   function routeName(id){for(var i=0;i<routes.length;i++) if(routes[i].id===id) return routes[i].name; return id||'—'}
 
   window.TRN={};
 
-  // ── Vehicles ──
+  // ── UI helper: busy-button (release cert 2026-07-08) ──────────────────────
+  // TRN.__lastBtn — the last primary/danger button clicked inside any Transport
+  // modal. Captured on mousedown (fires BEFORE the click handler that dispatches
+  // the save). post() reads this to auto-apply spinner + disabled state during
+  // the network round-trip, restoring on completion (success OR failure).
+  // Prevents duplicate submits and satisfies the ZenX house-style convention
+  // (matches Session Rollover's roStartBtn pattern and Fees/HR modules).
+  //
+  // Optional per-action label: set TRN.__busyLabel = 'Raising SOS…' immediately
+  // before calling post(). post() consumes and clears it. Default label is
+  // 'Working…' — universally appropriate.
+  TRN.__lastBtn=null;
+  TRN.__busyLabel=null;
+  $(document).on('mousedown','.trn-modal-bg .trn-btn-primary, .trn-modal-bg .trn-btn-danger',function(){TRN.__lastBtn=$(this)});
+
+  // ── Vehicles (F1 extended) ──
+  var vendors=[];   // populated by loadVendors()
   function loadVehicles(){
-    skel('vehTbody',8);
     getJSON('transport/get_vehicles').done(function(r){
-      if(r.status!=='success'){$('#vehTbody').html('<tr><td colspan="8" style="text-align:center;color:var(--rose)">'+escH(r.message||'Failed to load')+'</td></tr>');return} vehicles=r.vehicles||[];
+      if(r.status!=='success') return; vehicles=r.vehicles||[];
       var html=''; vehicles.forEach(function(v){
-        var stCls=v.status==='Active'?'trn-badge-green':v.status==='Maintenance'?'trn-badge-amber':'trn-badge-red';
-        html+='<tr><td>'+escH(v.id)+'</td><td>'+escH(v.number)+'</td><td>'+escH(v.type)+'</td><td>'+v.capacity+'</td><td>'+escH(v.driver_name)+'</td><td>'+escH(v.driver_phone)+'</td><td><span class="trn-badge '+stCls+'">'+v.status+'</span></td>';
-        html+='<td><button class="trn-btn trn-btn-sm trn-btn-primary" onclick="TRN.editVeh(\''+v.id+'\')"'+EDIT_ATTR+'><i class="fa fa-pencil"></i></button> <button class="trn-btn trn-btn-sm trn-btn-danger" onclick="TRN.delVeh(\''+v.id+'\')"'+DEL_ATTR+'><i class="fa fa-trash"></i></button></td></tr>';
+        var lc = v.lifecycle_status || 'Active';
+        var lcCls = lc==='Active'?'trn-badge-green':lc==='Maintenance'?'trn-badge-amber':(lc==='Retired'||lc==='Disposed')?'trn-badge-red':'trn-badge-blue';
+        var own = v.ownership_type || 'School';
+        html+='<tr><td>'+escH(v.id)+'</td><td>'+escH(v.number)+'</td><td>'+escH(v.type)+'</td><td>'+v.capacity+'</td><td>'+escH(v.driver_name||'—')+(v.staff_id?' <small style="opacity:.6">('+escH(v.staff_id)+')</small>':'')+'</td>';
+        html+='<td>'+escH(own)+(v.vendor_id?' <small style="opacity:.6">'+escH(v.vendor_id)+'</small>':'')+'</td>';
+        html+='<td><span class="trn-badge '+lcCls+'">'+lc+'</span></td>';
+        html+='<td>'+
+          '<button class="trn-btn trn-btn-sm trn-btn-primary" onclick="TRN.editVeh(\''+v.id+'\')"><i class="fa fa-pencil"></i></button> '+
+          '<button class="trn-btn trn-btn-sm trn-btn-primary" onclick="TRN.openVehManage(\''+v.id+'\')"><i class="fa fa-cog"></i> Manage</button> '+
+          '<button class="trn-btn trn-btn-sm trn-btn-danger" onclick="TRN.delVeh(\''+v.id+'\')"><i class="fa fa-trash"></i></button>'+
+          '</td></tr>';
       });
       $('#vehTbody').html(html||'<tr><td colspan="8" style="text-align:center;color:var(--t3)">No vehicles</td></tr>');
-      var opts='<option value="">-- None --</option>'; vehicles.forEach(function(v){opts+='<option value="'+v.id+'">'+escH(v.number)+'</option>'});
+      // Vehicle picker for the Route + Vehicle-Replace dropdowns. When the
+      // tenant has zero vehicles the placeholder text guides the operator to
+      // add vehicles first (release-cert manual-test finding 2026-07-08).
+      var emptyLabel = vehicles.length === 0
+        ? '-- No vehicles yet · add via Vehicles tab first --'
+        : '-- None --';
+      var opts='<option value="">'+emptyLabel+'</option>';
+      vehicles.forEach(function(v){opts+='<option value="'+v.id+'">'+escH(v.number)+'</option>'});
       $('#rtVehicleId').html(opts);
+      $('#vmReplVeh').html(opts);
     });
   }
-  TRN.openVehModal=function(){$('#vhId,#vhNumber,#vhDriverName,#vhDriverPhone,#vhInsNo,#vhInsExp,#vhFitExp').val('');$('#vhCapacity').val(40);$('#vhType').val('Bus');$('#vhGps').val('0');$('#vhStatus').val('Active');$('#vehModalTitle').text('Add Vehicle');$('#vehModal').addClass('show')};
+  TRN.openVehModal=function(){
+    $('#vhId,#vhNumber,#vhDriverName,#vhDriverPhone,#vhInsNo,#vhInsExp,#vhFitExp,#vhStaffId,#vhConductorStaffId,#vhPermitNo,#vhPermitExp,#vhPollutionExp,#vhRoadTaxExp,#vhGpsDeviceId,#vhContractStart,#vhContractEnd').val('');
+    $('#vhCapacity').val(40);$('#vhType').val('Bus');$('#vhFuelType').val('Diesel');$('#vhGps').val('0');
+    $('#vhOwnership').val('School');$('#vhVendorId').val('');$('#vhHire').val(0);$('#vhSvcKmInt').val(10000);
+    TRN.vhToggleContract();
+    $('#vehModalTitle').text('Add Vehicle');$('#vehModal').addClass('show');
+  };
   TRN.closeVehModal=function(){$('#vehModal').removeClass('show')};
-  TRN.editVeh=function(id){if(!CAN_EDIT)return;var v=vehicles.find(function(x){return x.id===id});if(!v)return;$('#vhId').val(v.id);$('#vhNumber').val(v.number);$('#vhType').val(v.type);$('#vhCapacity').val(v.capacity);$('#vhDriverName').val(v.driver_name);$('#vhDriverPhone').val(v.driver_phone);$('#vhGps').val(v.gps_enabled?'1':'0');$('#vhInsNo').val(v.insurance_no);$('#vhInsExp').val(v.insurance_expiry);$('#vhFitExp').val(v.fitness_expiry);$('#vhStatus').val(v.status||'Active');$('#vehModalTitle').text('Edit Vehicle');$('#vehModal').addClass('show')};
-  TRN.saveVehicle=function(){if(!CAN_EDIT){toast('You do not have edit permission',false);return}var b=btnOn('#vehModal .trn-btn-primary');post('transport/save_vehicle',{id:$('#vhId').val(),number:$('#vhNumber').val(),type:$('#vhType').val(),capacity:$('#vhCapacity').val(),driver_name:$('#vhDriverName').val(),driver_phone:$('#vhDriverPhone').val(),gps_enabled:$('#vhGps').val(),insurance_no:$('#vhInsNo').val(),insurance_expiry:$('#vhInsExp').val(),fitness_expiry:$('#vhFitExp').val(),status:$('#vhStatus').val()}).done(function(r){r=typeof r==='string'?JSON.parse(r):r;if(r.status==='success'){toast(r.message,true);TRN.closeVehModal();loadVehicles()}else toast(r.message,false)}).always(function(){btnOff(b)})};
-  TRN.delVeh=function(id){if(!CAN_MANAGE){toast('You do not have delete permission',false);return}if(!confirm('Delete vehicle?'))return;post('transport/delete_vehicle',{id:id}).done(function(r){r=typeof r==='string'?JSON.parse(r):r;if(r.status==='success'){toast(r.message,true);loadVehicles()}else toast(r.message,false)})};
+  TRN.editVeh=function(id){
+    var v=vehicles.find(function(x){return x.id===id});if(!v)return;
+    $('#vhId').val(v.id);$('#vhNumber').val(v.number);$('#vhType').val(v.type);$('#vhCapacity').val(v.capacity);
+    $('#vhStaffId').val(v.staff_id||'');$('#vhConductorStaffId').val(v.conductor_staff_id||'');
+    $('#vhDriverName').val(v.driver_name||'');$('#vhDriverPhone').val(v.driver_phone||'');
+    $('#vhFuelType').val(v.fuel_type||'Diesel');
+    $('#vhGps').val(v.gps_enabled?'1':'0');$('#vhGpsDeviceId').val(v.gps_device_id||'');
+    $('#vhInsNo').val(v.insurance_no||'');$('#vhInsExp').val(v.insurance_expiry||'');
+    $('#vhPermitNo').val(v.permit_no||'');$('#vhPermitExp').val(v.permit_expiry||'');
+    $('#vhFitExp').val(v.fitness_expiry||'');$('#vhPollutionExp').val(v.pollution_expiry||'');
+    $('#vhRoadTaxExp').val(v.road_tax_expiry||'');$('#vhSvcKmInt').val(v.service_km_interval||10000);
+    $('#vhOwnership').val(v.ownership_type||'School');$('#vhVendorId').val(v.vendor_id||'');
+    $('#vhHire').val(v.monthly_hire_amount||0);$('#vhContractStart').val(v.contract_start_date||'');$('#vhContractEnd').val(v.contract_end_date||'');
+    TRN.vhToggleContract();
+    $('#vehModalTitle').text('Edit Vehicle');$('#vehModal').addClass('show');
+  };
+  TRN.vhToggleContract=function(){var isC=$('#vhOwnership').val()==='Contract';$('#vhContractRow,#vhContractRow2').toggle(isC);};
+  TRN.saveVehicle=function(){
+    post('transport/save_vehicle',{
+      id:$('#vhId').val(),number:$('#vhNumber').val(),type:$('#vhType').val(),capacity:$('#vhCapacity').val(),
+      staff_id:$('#vhStaffId').val(),conductor_staff_id:$('#vhConductorStaffId').val(),
+      driver_name:$('#vhDriverName').val(),driver_phone:$('#vhDriverPhone').val(),
+      fuel_type:$('#vhFuelType').val(),
+      gps_enabled:$('#vhGps').val(),gps_device_id:$('#vhGpsDeviceId').val(),
+      insurance_no:$('#vhInsNo').val(),insurance_expiry:$('#vhInsExp').val(),
+      permit_no:$('#vhPermitNo').val(),permit_expiry:$('#vhPermitExp').val(),
+      fitness_expiry:$('#vhFitExp').val(),pollution_expiry:$('#vhPollutionExp').val(),
+      road_tax_expiry:$('#vhRoadTaxExp').val(),service_km_interval:$('#vhSvcKmInt').val(),
+      ownership_type:$('#vhOwnership').val(),vendor_id:$('#vhVendorId').val(),
+      monthly_hire_amount:$('#vhHire').val(),contract_start_date:$('#vhContractStart').val(),contract_end_date:$('#vhContractEnd').val()
+    }).done(function(r){r=typeof r==='string'?JSON.parse(r):r;if(r.status==='success'){toast(r.message,true);TRN.closeVehModal();loadVehicles()}else toast(r.message,false)})
+  };
+  TRN.delVeh=function(id){if(!confirm('Delete vehicle?'))return;post('transport/delete_vehicle',{id:id}).done(function(r){r=typeof r==='string'?JSON.parse(r):r;if(r.status==='success'){toast(r.message,true);loadVehicles()}else toast(r.message,false)})};
 
-  // ── Routes ──
-  function loadRoutes(){
-    skel('routesTbody',6);
-    getJSON('transport/get_routes').done(function(r){
-      if(r.status!=='success'){$('#routesTbody').html('<tr><td colspan="6" style="text-align:center;color:var(--rose)">'+escH(r.message||'Failed to load')+'</td></tr>');return} routes=r.routes||[];
-      var html=''; routes.forEach(function(rt){
-        html+='<tr><td>'+escH(rt.id)+'</td><td>'+escH(rt.name)+'</td><td>'+escH(vehName(rt.vehicle_id))+'</td><td>'+rt.distance_km+' km</td><td>Rs '+rt.monthly_fee+'</td>';
-        html+='<td><button class="trn-btn trn-btn-sm trn-btn-primary" onclick="TRN.editRoute(\''+rt.id+'\')"'+EDIT_ATTR+'><i class="fa fa-pencil"></i></button> <button class="trn-btn trn-btn-sm trn-btn-danger" onclick="TRN.delRoute(\''+rt.id+'\')"'+DEL_ATTR+'><i class="fa fa-trash"></i></button></td></tr>';
+  // ═════════════════════════════════════════════════════════════════════
+  //  Vendors (F1) — CRUD + terminate
+  // ═════════════════════════════════════════════════════════════════════
+  function loadVendors(){
+    getJSON('transport_vendors/get_vendors').done(function(r){
+      if(r.status!=='success') return; vendors=r.vendors||[];
+      var html='';
+      vendors.forEach(function(v){
+        var cls = (v.status==='Active')?'trn-badge-green':'trn-badge-red';
+        html+='<tr><td>'+escH(v.id)+'</td><td>'+escH(v.vendor_name)+'</td><td>'+escH(v.contact_person||'—')+'</td><td>'+escH(v.phone||'—')+'</td><td>'+escH(v.gstin||'—')+'</td>';
+        html+='<td><span class="trn-badge '+cls+'">'+escH(v.status)+'</span></td>';
+        html+='<td><button class="trn-btn trn-btn-sm trn-btn-primary" onclick="TRN.editVendor(\''+v.id+'\')"><i class="fa fa-pencil"></i></button>';
+        if(v.status==='Active') html+=' <button class="trn-btn trn-btn-sm trn-btn-danger" onclick="TRN.openVendorTerminate(\''+v.id+'\')"><i class="fa fa-ban"></i> Terminate</button>';
+        html+='</td></tr>';
       });
-      $('#routesTbody').html(html||'<tr><td colspan="6" style="text-align:center;color:var(--t3)">No routes</td></tr>');
-      var opts='<option value="">All Routes</option>',selOpts='';
-      routes.forEach(function(rt){opts+='<option value="'+rt.id+'">'+escH(rt.name)+'</option>';selOpts+='<option value="'+rt.id+'">'+escH(rt.name)+'</option>'});
-      $('#stopRouteFilter').html(opts);$('#stRouteId').html(selOpts);$('#asnRouteId').html(selOpts);
+      $('#vendorsTbody').html(html||'<tr><td colspan="7" style="text-align:center;color:var(--t3)">No vendors</td></tr>');
+      // Also refresh the vendor picker inside the vehicle modal
+      var opts='<option value="">-- None --</option>';
+      vendors.filter(function(v){return v.status==='Active'}).forEach(function(v){opts+='<option value="'+v.id+'">'+escH(v.vendor_name)+' ('+v.id+')</option>'});
+      $('#vhVendorId').html(opts);
     });
   }
-  TRN.openRouteModal=function(){$('#rtId,#rtName,#rtStart,#rtEnd').val('');$('#rtFee,#rtDistance').val(0);$('#rtVehicleId').val('');$('#routeModalTitle').text('Add Route');$('#routeModal').addClass('show')};
+  TRN.openVendorModal=function(){$('#vndId,#vndName,#vndContact,#vndPhone,#vndEmail,#vndGstin,#vndAddress,#vndNotes').val('');$('#vendorModalTitle').text('Add Vendor');$('#vendorModal').addClass('show')};
+  TRN.closeVendorModal=function(){$('#vendorModal').removeClass('show')};
+  TRN.editVendor=function(id){var v=vendors.find(function(x){return x.id===id});if(!v)return;$('#vndId').val(v.id);$('#vndName').val(v.vendor_name);$('#vndContact').val(v.contact_person||'');$('#vndPhone').val(v.phone||'');$('#vndEmail').val(v.email||'');$('#vndGstin').val(v.gstin||'');$('#vndAddress').val(v.address||'');$('#vndNotes').val(v.notes||'');$('#vendorModalTitle').text('Edit Vendor');$('#vendorModal').addClass('show')};
+  TRN.saveVendor=function(){post('transport_vendors/save_vendor',{id:$('#vndId').val(),vendor_name:$('#vndName').val(),contact_person:$('#vndContact').val(),phone:$('#vndPhone').val(),email:$('#vndEmail').val(),gstin:$('#vndGstin').val(),address:$('#vndAddress').val(),notes:$('#vndNotes').val()}).done(function(r){r=typeof r==='string'?JSON.parse(r):r;if(r.status==='success'){toast(r.message,true);TRN.closeVendorModal();loadVendors()}else toast(r.message,false)})};
+  TRN.openVendorTerminate=function(id){$('#vndTermId').val(id);$('#vndTermReason').val('');$('#vendorTerminateModal').addClass('show')};
+  TRN.closeVendorTerminate=function(){$('#vendorTerminateModal').removeClass('show')};
+  TRN.confirmTerminateVendor=function(){var id=$('#vndTermId').val();var reason=$('#vndTermReason').val();if(!reason){toast('Reason is required.',false);return}post('transport_vendors/terminate_vendor',{id:id,reason:reason}).done(function(r){r=typeof r==='string'?JSON.parse(r):r;if(r.status==='success'){toast(r.message,true);TRN.closeVendorTerminate();loadVendors()}else toast(r.message,false)})};
+
+  // ═════════════════════════════════════════════════════════════════════
+  //  Vehicle Manage modal (F1) — Lifecycle, Docs, Maintenance, Fuel,
+  //  Replacement, Transfer.
+  // ═════════════════════════════════════════════════════════════════════
+  var vmCurrentVid = '';
+  var LC_STATES = ['Purchased','Onboarding','Active','Maintenance','Retired','Disposed'];
+  var LC_MATRIX = {
+    Purchased:['Onboarding'],Onboarding:['Active','Retired'],
+    Active:['Maintenance','Retired'],Maintenance:['Active','Retired'],
+    Retired:['Disposed','Active'],Disposed:[]
+  };
+  TRN.openVehManage=function(vid){
+    vmCurrentVid = vid;
+    var v = vehicles.find(function(x){return x.id===vid});if(!v)return;
+    $('#vmVehLabel').text(v.number+' ('+vid+')');
+    $('#vmLifecycleNow').text(v.lifecycle_status||'Active');
+    // Populate the "Transition To" dropdown from legal states
+    var opts = '<option value="">-- Select --</option>';
+    (LC_MATRIX[v.lifecycle_status||'Active']||[]).forEach(function(s){opts+='<option value="'+s+'">'+s+'</option>'});
+    $('#vmToState').html(opts);
+    // Populate route dropdowns for Transfer
+    var rOpts = '<option value="">-- Select --</option>';
+    (routes||[]).forEach(function(r){rOpts+='<option value="'+r.id+'">'+escH(r.name)+'</option>'});
+    $('#vmXferFrom').html(rOpts);$('#vmXferTo').html(rOpts);
+    // Reset input fields
+    $('#vmReason,#vmDocType,#vmDocNumber,#vmDocIssue,#vmDocExpiry,#vmDocNotes,#vmMaintWorkshop,#vmMaintParts,#vmMaintNotes,#vmMaintNextDate,#vmFuelStation,#vmFuelNotes,#vmReplReason,#vmReplNotes,#vmXferReason').val('');
+    $('#vmMaintKm,#vmMaintCost,#vmFuelOdo,#vmFuelLitres,#vmFuelPpl,#vmFuelTotal').val('');
+    $('#vmMaintType').val('Routine');$('#vmReplType').val('Temporary');
+    var today = new Date().toISOString().slice(0,10);
+    $('#vmMaintDate,#vmFuelDate,#vmReplFrom').val(today);
+    $('#vmFuelKmpl').text('');
+    // Default to lifecycle tab
+    TRN.vmSwitch('lifecycle');
+    // Load lifecycle + docs + maint + fuel
+    TRN.vmLoadLifecycle();
+    TRN.vmLoadDocs();
+    TRN.vmLoadMaint();
+    TRN.vmLoadFuel();
+    $('#vehManageModal').addClass('show');
+  };
+  TRN.closeVehManage=function(){$('#vehManageModal').removeClass('show'); vmCurrentVid=''; loadVehicles();};
+  TRN.vmSwitch=function(t){
+    $('[data-vmtab]').removeClass('active');
+    $('[data-vmtab="'+t+'"]').addClass('active');
+    $('[data-vmpanel]').hide();
+    $('[data-vmpanel="'+t+'"]').show();
+  };
+  TRN.vmLoadLifecycle=function(){
+    if(!vmCurrentVid) return;
+    getJSON('transport/get_lifecycle_log?vehicle_id='+encodeURIComponent(vmCurrentVid)).done(function(r){
+      if(r.status!=='success') return;
+      var html='';
+      (r.events||[]).forEach(function(e){
+        html+='<tr><td>'+escH((e.event_at||'').slice(0,16).replace('T',' '))+'</td><td>'+escH(e.event_type)+'</td><td>'+escH(e.prev_state)+' → '+escH(e.new_state)+'</td><td>'+escH(e.reason||'')+'</td><td>'+escH(e.event_by||'')+'</td></tr>';
+      });
+      $('#vmLifecycleTbody').html(html||'<tr><td colspan="5" style="text-align:center;color:var(--t3)">No events yet</td></tr>');
+    });
+  };
+  TRN.vmTransition=function(){
+    var to=$('#vmToState').val();var reason=$('#vmReason').val();
+    if(!to){toast('Select a target state.',false);return}
+    if(!reason){toast('Reason is required.',false);return}
+    post('transport/transition_vehicle_lifecycle',{id:vmCurrentVid,to_state:to,reason:reason}).done(function(r){
+      r=typeof r==='string'?JSON.parse(r):r;
+      if(r.status==='success'){toast(r.message,true);TRN.vmLoadLifecycle();loadVehicles();$('#vmLifecycleNow').text(to);}
+      else toast(r.message,false);
+    });
+  };
+  TRN.vmLoadDocs=function(){
+    if(!vmCurrentVid) return;
+    getJSON('transport/get_vehicle_documents?vehicle_id='+encodeURIComponent(vmCurrentVid)).done(function(r){
+      if(r.status!=='success') return;
+      var html='';
+      (r.documents||[]).forEach(function(d){
+        var link=d.file_path?'<a href="'+escH(d.file_path)+'" target="_blank">Open</a>':'—';
+        html+='<tr><td>'+escH(d.doc_type)+'</td><td>'+escH(d.doc_number||'')+'</td><td>'+escH(d.issue_date||'')+'</td><td>'+escH(d.expiry_date||'')+'</td><td>'+link+'</td>';
+        html+='<td><button class="trn-btn trn-btn-sm trn-btn-danger" onclick="TRN.vmDeleteDoc(\''+d.id+'\')"><i class="fa fa-trash"></i></button></td></tr>';
+      });
+      $('#vmDocsTbody').html(html||'<tr><td colspan="6" style="text-align:center;color:var(--t3)">No documents</td></tr>');
+    });
+  };
+  TRN.vmUploadDoc=function(){
+    var type=$('#vmDocType').val();var file=$('#vmDocFile')[0].files[0];
+    if(!type){toast('Type is required.',false);return}
+    if(!file){toast('Select a file.',false);return}
+    var fd = new FormData();
+    fd.append('vehicle_id',vmCurrentVid);
+    fd.append('doc_type',type);
+    fd.append('doc_number',$('#vmDocNumber').val());
+    fd.append('issue_date',$('#vmDocIssue').val());
+    fd.append('expiry_date',$('#vmDocExpiry').val());
+    fd.append('notes',$('#vmDocNotes').val());
+    fd.append('file',file);
+    fd.append(CSRF_NAME,CSRF_HASH);
+    $.ajax({url:BASE+'transport/upload_vehicle_document',method:'POST',data:fd,processData:false,contentType:false}).done(function(r){
+      r=typeof r==='string'?JSON.parse(r):r;
+      if(r.status==='success'){toast(r.message,true);$('#vmDocType,#vmDocNumber,#vmDocIssue,#vmDocExpiry,#vmDocNotes').val('');$('#vmDocFile').val('');TRN.vmLoadDocs();}
+      else toast(r.message,false);
+    });
+  };
+  TRN.vmDeleteDoc=function(id){if(!confirm('Delete document?'))return;post('transport/delete_vehicle_document',{id:id}).done(function(r){r=typeof r==='string'?JSON.parse(r):r;if(r.status==='success'){toast(r.message,true);TRN.vmLoadDocs();}else toast(r.message,false)})};
+  TRN.vmLoadMaint=function(){
+    if(!vmCurrentVid) return;
+    getJSON('transport_ops/get_maintenance_logs?vehicle_id='+encodeURIComponent(vmCurrentVid)).done(function(r){
+      if(r.status!=='success') return;
+      var html='';
+      (r.logs||[]).forEach(function(l){
+        html+='<tr><td>'+escH(l.service_date)+'</td><td>'+escH(l.service_type)+'</td><td>'+l.service_km+'</td><td>Rs '+l.cost+'</td><td>'+escH(l.workshop||'')+'</td><td>'+escH(l.notes||'')+'</td></tr>';
+      });
+      $('#vmMaintTbody').html(html||'<tr><td colspan="6" style="text-align:center;color:var(--t3)">No maintenance yet</td></tr>');
+    });
+  };
+  TRN.vmSaveMaint=function(){
+    post('transport_ops/save_maintenance_log',{
+      vehicle_id:vmCurrentVid,service_type:$('#vmMaintType').val(),service_date:$('#vmMaintDate').val(),
+      service_km:$('#vmMaintKm').val(),cost:$('#vmMaintCost').val(),workshop:$('#vmMaintWorkshop').val(),
+      parts_replaced:$('#vmMaintParts').val(),next_service_date_projected:$('#vmMaintNextDate').val(),
+      notes:$('#vmMaintNotes').val()
+    }).done(function(r){r=typeof r==='string'?JSON.parse(r):r;if(r.status==='success'){toast(r.message,true);TRN.vmLoadMaint();}else toast(r.message,false)});
+  };
+  TRN.vmLoadFuel=function(){
+    if(!vmCurrentVid) return;
+    getJSON('transport_ops/get_fuel_logs?vehicle_id='+encodeURIComponent(vmCurrentVid)).done(function(r){
+      if(r.status!=='success') return;
+      var html='';
+      (r.logs||[]).forEach(function(l){
+        html+='<tr><td>'+escH(l.fuel_date)+'</td><td>'+l.litres+'</td><td>Rs '+l.price_per_litre+'</td><td>Rs '+l.total_amount+'</td><td>'+l.odometer_km+'</td><td>'+(l.computed_kmpl||'—')+'</td></tr>';
+      });
+      $('#vmFuelTbody').html(html||'<tr><td colspan="6" style="text-align:center;color:var(--t3)">No fuel entries yet</td></tr>');
+    });
+  };
+  TRN.vmSaveFuel=function(){
+    post('transport_ops/save_fuel_log',{
+      vehicle_id:vmCurrentVid,fuel_date:$('#vmFuelDate').val(),
+      litres:$('#vmFuelLitres').val(),price_per_litre:$('#vmFuelPpl').val(),total_amount:$('#vmFuelTotal').val(),
+      station:$('#vmFuelStation').val(),odometer_km:$('#vmFuelOdo').val(),notes:$('#vmFuelNotes').val()
+    }).done(function(r){r=typeof r==='string'?JSON.parse(r):r;
+      if(r.status==='success'){
+        toast(r.message,true);
+        if(r.computed_kmpl>0) $('#vmFuelKmpl').text('Rolling kmpl (last 5 entries): '+r.computed_kmpl);
+        TRN.vmLoadFuel();
+      }else toast(r.message,false);
+    });
+  };
+  TRN.vmRecordReplacement=function(){
+    var repl=$('#vmReplVeh').val();var type=$('#vmReplType').val();var from=$('#vmReplFrom').val();var to=$('#vmReplTo').val();var reason=$('#vmReplReason').val();
+    if(!repl){toast('Select a replacement vehicle.',false);return}
+    if(!reason){toast('Reason is required.',false);return}
+    post('transport/record_replacement',{
+      original_vehicle_id:vmCurrentVid,replacement_vehicle_id:repl,replacement_type:type,
+      effective_from:from,effective_to:to,reason:reason,notes:$('#vmReplNotes').val()
+    }).done(function(r){r=typeof r==='string'?JSON.parse(r):r;if(r.status==='success'){toast(r.message,true);loadVehicles();TRN.vmLoadLifecycle();}else toast(r.message,false)});
+  };
+  TRN.vmTransfer=function(){
+    var f=$('#vmXferFrom').val();var t=$('#vmXferTo').val();var reason=$('#vmXferReason').val();
+    if(!f||!t){toast('Select both from and to routes.',false);return}
+    if(!reason){toast('Reason is required.',false);return}
+    post('transport/transfer_vehicle_between_routes',{vehicle_id:vmCurrentVid,from_route_id:f,to_route_id:t,reason:reason}).done(function(r){r=typeof r==='string'?JSON.parse(r):r;if(r.status==='success'){toast(r.message,true);loadRoutes();}else toast(r.message,false)});
+  };
+
+  // ═════════════════════════════════════════════════════════════════════
+  //  Expiry Dashboard (F1)
+  // ═════════════════════════════════════════════════════════════════════
+  function loadExpiry(){
+    getJSON('transport_ops/get_expiry_dashboard').done(function(r){
+      if(r.status!=='success') return;
+      var d = r.dashboard || {};
+      $('#exp7').text(d.count_7_days||0);$('#exp15').text(d.count_15_days||0);$('#exp30').text(d.count_30_days||0);
+      $('#expLastRun').text(d.computed_at?('Last computed: '+d.computed_at):'Not yet computed — click "Recompute Now"');
+      var html='';
+      (d.items||[]).forEach(function(i){
+        var wCls = i.window===7?'trn-badge-red':i.window===15?'trn-badge-amber':'trn-badge-blue';
+        html+='<tr><td>'+escH(i.number||i.vehicleId)+'</td><td>'+escH(i.label)+'</td><td>'+escH(i.expiry_date)+'</td><td>'+i.days_left+'</td><td><span class="trn-badge '+wCls+'">'+i.window+'d</span></td></tr>';
+      });
+      $('#expTbody').html(html||'<tr><td colspan="5" style="text-align:center;color:var(--t3)">No expirations in the next 30 days</td></tr>');
+    });
+  }
+  TRN.recomputeExpiry=function(){post('transport_ops/recompute_expiry_dashboard',{}).done(function(r){r=typeof r==='string'?JSON.parse(r):r;if(r.status==='success'){toast(r.message,true);loadExpiry();}else toast(r.message,false)})};
+
+  // ── Routes (F2 extended) ──
+  function loadRoutes(){
+    var includeArchived = $('#routeShowArchived').is(':checked') ? '1' : '0';
+    getJSON('transport/get_routes?include_archived='+includeArchived).done(function(r){
+      if(r.status!=='success') return; routes=r.routes||[];
+      var html=''; routes.forEach(function(rt){
+        var st = rt.status || 'Active';
+        var isArchived = st === 'Archived';
+        var isSuspended = (rt.active_suspension_ref || '') !== '';
+        var badge;
+        if (isArchived) badge = '<span class="trn-badge trn-badge-red">Archived</span>';
+        else if (isSuspended) badge = '<span class="trn-badge trn-badge-amber">Suspended</span>';
+        else if (st === 'Inactive') badge = '<span class="trn-badge trn-badge-red">Inactive</span>';
+        else badge = '<span class="trn-badge trn-badge-green">Active</span>';
+        html+='<tr><td>'+escH(rt.id)+'</td><td>'+escH(rt.name)+'</td><td>'+escH(vehName(rt.vehicle_id))+'</td><td>'+rt.distance_km+' km</td><td>Rs '+rt.monthly_fee+'</td><td>'+badge+'</td>';
+        html+='<td>';
+        html+='<button class="trn-btn trn-btn-sm trn-btn-primary" onclick="TRN.editRoute(\''+rt.id+'\')" title="Edit"><i class="fa fa-pencil"></i></button> ';
+        if (isArchived) {
+          html+='<button class="trn-btn trn-btn-sm trn-btn-primary" onclick="TRN.unarchiveRoute(\''+rt.id+'\')" title="Unarchive"><i class="fa fa-undo"></i></button>';
+        } else if (isSuspended) {
+          html+='<button class="trn-btn trn-btn-sm trn-btn-primary" onclick="TRN.openResumeModal(\''+rt.active_suspension_ref+'\',\''+escH(rt.name)+'\')" title="Resume"><i class="fa fa-play"></i></button>';
+        } else {
+          html+='<button class="trn-btn trn-btn-sm trn-btn-primary" onclick="TRN.openSuspendModal(\''+rt.id+'\',\''+escH(rt.name)+'\')" title="Suspend"><i class="fa fa-ban"></i></button> ';
+          html+='<button class="trn-btn trn-btn-sm trn-btn-danger" onclick="TRN.openArchiveModal(\''+rt.id+'\')" title="Archive / Delete"><i class="fa fa-archive"></i></button>';
+        }
+        html+='</td></tr>';
+      });
+      $('#routesTbody').html(html||'<tr><td colspan="7" style="text-align:center;color:var(--t3)">No routes</td></tr>');
+      // Route pickers — for the Stop + Assignment modals show the empty-state
+      // hint so operators aren't left with a silent blank dropdown (release-
+      // cert manual-test finding 2026-07-08).
+      var activeRoutes = routes.filter(function(rt){return rt.status !== 'Archived'});
+      var emptyRouteLabel = activeRoutes.length === 0
+        ? '-- No routes yet · add via Routes & Stops tab first --'
+        : '-- Select --';
+      var opts='<option value="">All Routes</option>',selOpts='<option value="">'+emptyRouteLabel+'</option>';
+      activeRoutes.forEach(function(rt){
+        opts+='<option value="'+rt.id+'">'+escH(rt.name)+'</option>';
+        selOpts+='<option value="'+rt.id+'">'+escH(rt.name)+'</option>';
+      });
+      $('#stopRouteFilter').html(opts);$('#stRouteId').html(selOpts);$('#asnRouteId').html(selOpts);
+      // Refresh active suspensions banner after routes reload
+      TRN.loadActiveSuspensions();
+    });
+  }
+  TRN.openRouteModal=function(){loadVehicles();$('#rtId,#rtName,#rtStart,#rtEnd').val('');$('#rtFee,#rtDistance').val(0);$('#rtVehicleId').val('');$('#routeModalTitle').text('Add Route');$('#routeModal').addClass('show')};
   TRN.closeRouteModal=function(){$('#routeModal').removeClass('show')};
-  TRN.editRoute=function(id){if(!CAN_EDIT)return;var r=routes.find(function(x){return x.id===id});if(!r)return;$('#rtId').val(r.id);$('#rtName').val(r.name);$('#rtVehicleId').val(r.vehicle_id);$('#rtFee').val(r.monthly_fee);$('#rtStart').val(r.start_point);$('#rtEnd').val(r.end_point);$('#rtDistance').val(r.distance_km);$('#routeModalTitle').text('Edit Route');$('#routeModal').addClass('show')};
-  TRN.saveRoute=function(){if(!CAN_EDIT){toast('You do not have edit permission',false);return}var b=btnOn('#routeModal .trn-btn-primary');post('transport/save_route',{id:$('#rtId').val(),name:$('#rtName').val(),vehicle_id:$('#rtVehicleId').val(),monthly_fee:$('#rtFee').val(),start_point:$('#rtStart').val(),end_point:$('#rtEnd').val(),distance_km:$('#rtDistance').val()}).done(function(r){r=typeof r==='string'?JSON.parse(r):r;if(r.status==='success'){toast(r.message,true);TRN.closeRouteModal();loadRoutes()}else toast(r.message,false)}).always(function(){btnOff(b)})};
-  TRN.delRoute=function(id){if(!CAN_MANAGE){toast('You do not have delete permission',false);return}if(!confirm('Delete route and its stops?'))return;post('transport/delete_route',{id:id}).done(function(r){r=typeof r==='string'?JSON.parse(r):r;if(r.status==='success'){toast(r.message,true);loadRoutes();loadStops()}else toast(r.message,false)})};
+  TRN.editRoute=function(id){var r=routes.find(function(x){return x.id===id});if(!r)return;$('#rtId').val(r.id);$('#rtName').val(r.name);$('#rtVehicleId').val(r.vehicle_id);$('#rtFee').val(r.monthly_fee);$('#rtStart').val(r.start_point);$('#rtEnd').val(r.end_point);$('#rtDistance').val(r.distance_km);$('#routeModalTitle').text('Edit Route');$('#routeModal').addClass('show')};
+  TRN.saveRoute=function(){post('transport/save_route',{id:$('#rtId').val(),name:$('#rtName').val(),vehicle_id:$('#rtVehicleId').val(),monthly_fee:$('#rtFee').val(),start_point:$('#rtStart').val(),end_point:$('#rtEnd').val(),distance_km:$('#rtDistance').val()}).done(function(r){r=typeof r==='string'?JSON.parse(r):r;if(r.status==='success'){toast(r.message,true);TRN.closeRouteModal();loadRoutes()}else toast(r.message,false)})};
+  // F2: soft-delete by default via delete_route (archives); hard delete only from Archive modal
+  TRN.delRoute=function(id){
+    // Legacy binding — now routes to Archive modal for safety.
+    TRN.openArchiveModal(id);
+  };
+
+  // ═════════════════════════════════════════════════════════════════════
+  //  F2 — Route suspension + archive/unarchive
+  // ═════════════════════════════════════════════════════════════════════
+  TRN.openSuspendModal=function(routeId,routeName){
+    $('#rsRouteId').val(routeId);
+    $('#rsModalRoute').text(routeName?'('+routeName+')':'');
+    $('#rsCategory,#rsNotifyParents,#rsFrom,#rsTo,#rsReason').val('');
+    $('#rsFrom').val(new Date().toISOString().slice(0,10));
+    $('#rsNotifyHint').text('');
+    $('#suspendModal').addClass('show');
+  };
+  TRN.closeSuspendModal=function(){$('#suspendModal').removeClass('show')};
+  TRN.suspendCategoryChanged=function(){
+    var cat=$('#rsCategory').val();
+    if(!cat){$('#rsNotifyHint').text('');return}
+    getJSON('transport/preview_suspension_notify?reason_category='+encodeURIComponent(cat)).done(function(r){
+      if(r.status!=='success')return;
+      var def=r.notify_parents_default?'Yes':'No';
+      $('#rsNotifyHint').text('Category default for parent notification: '+def);
+    });
+  };
+  TRN.doSuspendRoute=function(){
+    var routeId=$('#rsRouteId').val();
+    var cat=$('#rsCategory').val();
+    var reason=$('#rsReason').val();
+    var from=$('#rsFrom').val();
+    var to=$('#rsTo').val();
+    var np=$('#rsNotifyParents').val(); // '', '0', or '1'
+    if(!cat){toast('Select a reason category.',false);return}
+    if(!reason){toast('Reason is required.',false);return}
+    if(!from){toast('Suspended-from date is required.',false);return}
+    var payload={route_id:routeId,reason_category:cat,reason:reason,suspended_from:from,suspended_to:to};
+    if(np==='0'||np==='1')payload.notify_parents=np;
+    post('transport/suspend_route',payload).done(function(r){
+      r=typeof r==='string'?JSON.parse(r):r;
+      if(r.status==='success'){toast(r.message,true);TRN.closeSuspendModal();loadRoutes();}
+      else toast(r.message,false);
+    });
+  };
+  TRN.openResumeModal=function(suspensionId,routeName){
+    $('#rrSuspensionId').val(suspensionId);
+    $('#rrModalRoute').text(routeName?'('+routeName+')':'');
+    $('#rrNotes').val('');
+    $('#resumeModal').addClass('show');
+  };
+  TRN.closeResumeModal=function(){$('#resumeModal').removeClass('show')};
+  TRN.doResumeRoute=function(){
+    var sid=$('#rrSuspensionId').val();var notes=$('#rrNotes').val();
+    post('transport/resume_route',{suspension_id:sid,notes:notes}).done(function(r){
+      r=typeof r==='string'?JSON.parse(r):r;
+      if(r.status==='success'){toast(r.message,true);TRN.closeResumeModal();loadRoutes();}
+      else toast(r.message,false);
+    });
+  };
+  TRN.openArchiveModal=function(routeId){
+    $('#arRouteId').val(routeId);$('#arReason').val('');
+    $('#archiveModal').addClass('show');
+  };
+  TRN.closeArchiveModal=function(){$('#archiveModal').removeClass('show')};
+  TRN.doArchiveRoute=function(){
+    var id=$('#arRouteId').val();var reason=$('#arReason').val()||'Archived';
+    post('transport/delete_route',{id:id,reason:reason}).done(function(r){
+      r=typeof r==='string'?JSON.parse(r):r;
+      if(r.status==='success'){toast(r.message,true);TRN.closeArchiveModal();loadRoutes();loadStops();}
+      else toast(r.message,false);
+    });
+  };
+  TRN.doPermanentlyDeleteRoute=function(){
+    if(!confirm('PERMANENT delete: this action cannot be undone. Only proceed for routes never referenced by any assignment. Continue?'))return;
+    var id=$('#arRouteId').val();
+    post('transport/delete_route',{id:id,hard:'1'}).done(function(r){
+      r=typeof r==='string'?JSON.parse(r):r;
+      if(r.status==='success'){toast(r.message,true);TRN.closeArchiveModal();loadRoutes();loadStops();}
+      else toast(r.message,false);
+    });
+  };
+  TRN.unarchiveRoute=function(id){
+    if(!confirm('Restore this route to Active?'))return;
+    post('transport/unarchive_route',{id:id,to_status:'Active'}).done(function(r){
+      r=typeof r==='string'?JSON.parse(r):r;
+      if(r.status==='success'){toast(r.message,true);loadRoutes();}
+      else toast(r.message,false);
+    });
+  };
+
+  // Active suspensions banner (top of Routes tab)
+  TRN.loadActiveSuspensions=function(){
+    getJSON('transport/get_active_suspensions').done(function(r){
+      if(r.status!=='success')return;
+      var list=r.suspensions||[];
+      if(list.length===0){$('#activeSuspensionsCard').hide();return}
+      $('#activeSuspensionsCard').show();
+      $('#activeSuspCount').text('('+list.length+')');
+      var html='';
+      list.forEach(function(s){
+        var routeName='';
+        for(var i=0;i<routes.length;i++)if(routes[i].id===s.route_id){routeName=routes[i].name;break}
+        var np=s.notify_parents?'<span class="trn-badge trn-badge-blue">Notified</span>':'<span class="trn-badge trn-badge-amber">Ops only</span>';
+        html+='<tr><td>'+escH(s.id)+'</td><td>'+escH(routeName||s.route_id)+'</td><td>'+escH((s.reason_category||'').replace(/_/g,' '))+'</td><td>'+escH(s.suspended_from||'')+'</td><td>'+escH(s.reason||'')+'</td><td>'+np+'</td>';
+        html+='<td><button class="trn-btn trn-btn-sm trn-btn-primary" onclick="TRN.openResumeModal(\''+s.id+'\',\''+escH(routeName||'')+'\')" title="Resume"><i class="fa fa-play"></i> Resume</button></td></tr>';
+      });
+      $('#activeSuspTbody').html(html);
+    });
+  };
 
   // ── Stops ──
   function loadStops(){
     var routeId=$('#stopRouteFilter').val()||'';
-    skel('stopsTbody',7);
     getJSON('transport/get_stops?route_id='+routeId).done(function(r){
-      if(r.status!=='success'){$('#stopsTbody').html('<tr><td colspan="7" style="text-align:center;color:var(--rose)">'+escH(r.message||'Failed to load')+'</td></tr>');return} stops=r.stops||[];
+      if(r.status!=='success') return; stops=r.stops||[];
       var html=''; stops.forEach(function(s){
         html+='<tr><td>'+escH(s.id)+'</td><td>'+escH(routeName(s.route_id))+'</td><td>'+escH(s.name)+'</td><td>'+escH(s.pickup_time)+'</td><td>'+escH(s.drop_time)+'</td><td>'+s.order+'</td>';
-        html+='<td><button class="trn-btn trn-btn-sm trn-btn-primary" onclick="TRN.editStop(\''+s.id+'\')"'+EDIT_ATTR+'><i class="fa fa-pencil"></i></button> <button class="trn-btn trn-btn-sm trn-btn-danger" onclick="TRN.delStop(\''+s.id+'\')"'+DEL_ATTR+'><i class="fa fa-trash"></i></button></td></tr>';
+        html+='<td><button class="trn-btn trn-btn-sm trn-btn-primary" onclick="TRN.editStop(\''+s.id+'\')"><i class="fa fa-pencil"></i></button> <button class="trn-btn trn-btn-sm trn-btn-danger" onclick="TRN.delStop(\''+s.id+'\')"><i class="fa fa-trash"></i></button></td></tr>';
       });
       $('#stopsTbody').html(html||'<tr><td colspan="7" style="text-align:center;color:var(--t3)">No stops</td></tr>');
       // populate assignment stop select
@@ -229,27 +940,47 @@ document.addEventListener('DOMContentLoaded', function(){
     });
   }
   $('#stopRouteFilter').on('change', loadStops);
-  TRN.openStopModal=function(){$('#stId,#stName,#stPickup,#stDrop').val('');$('#stOrder').val(0);$('#stopModalTitle').text('Add Stop');$('#stopModal').addClass('show')};
+  TRN.openStopModal=function(){loadRoutes();$('#stId,#stName,#stPickup,#stDrop').val('');$('#stOrder').val(0);$('#stopModalTitle').text('Add Stop');$('#stopModal').addClass('show')};
   TRN.closeStopModal=function(){$('#stopModal').removeClass('show')};
-  TRN.editStop=function(id){if(!CAN_EDIT)return;var s=stops.find(function(x){return x.id===id});if(!s)return;$('#stId').val(s.id);$('#stRouteId').val(s.route_id);$('#stName').val(s.name);$('#stPickup').val(s.pickup_time);$('#stDrop').val(s.drop_time);$('#stOrder').val(s.order);$('#stopModalTitle').text('Edit Stop');$('#stopModal').addClass('show')};
-  TRN.saveStop=function(){if(!CAN_EDIT){toast('You do not have edit permission',false);return}var b=btnOn('#stopModal .trn-btn-primary');post('transport/save_stop',{id:$('#stId').val(),route_id:$('#stRouteId').val(),name:$('#stName').val(),pickup_time:$('#stPickup').val(),drop_time:$('#stDrop').val(),order:$('#stOrder').val()}).done(function(r){r=typeof r==='string'?JSON.parse(r):r;if(r.status==='success'){toast(r.message,true);TRN.closeStopModal();loadStops()}else toast(r.message,false)}).always(function(){btnOff(b)})};
-  TRN.delStop=function(id){if(!CAN_MANAGE){toast('You do not have delete permission',false);return}if(!confirm('Delete stop?'))return;post('transport/delete_stop',{id:id}).done(function(r){r=typeof r==='string'?JSON.parse(r):r;if(r.status==='success'){toast(r.message,true);loadStops()}else toast(r.message,false)})};
+  TRN.editStop=function(id){var s=stops.find(function(x){return x.id===id});if(!s)return;$('#stId').val(s.id);$('#stRouteId').val(s.route_id);$('#stName').val(s.name);$('#stPickup').val(s.pickup_time);$('#stDrop').val(s.drop_time);$('#stOrder').val(s.order);$('#stopModalTitle').text('Edit Stop');$('#stopModal').addClass('show')};
+  TRN.saveStop=function(){post('transport/save_stop',{id:$('#stId').val(),route_id:$('#stRouteId').val(),name:$('#stName').val(),pickup_time:$('#stPickup').val(),drop_time:$('#stDrop').val(),order:$('#stOrder').val()}).done(function(r){r=typeof r==='string'?JSON.parse(r):r;if(r.status==='success'){toast(r.message,true);TRN.closeStopModal();loadStops()}else toast(r.message,false)})};
+  TRN.delStop=function(id){if(!confirm('Delete stop?'))return;post('transport/delete_stop',{id:id}).done(function(r){r=typeof r==='string'?JSON.parse(r):r;if(r.status==='success'){toast(r.message,true);loadStops()}else toast(r.message,false)})};
 
-  // ── Assignments ──
+  // ── Assignments (F3 extended) ──
   var assignments=[];
   function loadAssignments(){
-    skel('asnTbody',8);
     getJSON('transport/get_assignments').done(function(r){
-      if(r.status!=='success'){$('#asnTbody').html('<tr><td colspan="8" style="text-align:center;color:var(--rose)">'+escH(r.message||'Failed to load')+'</td></tr>');return} assignments=r.assignments||[];
+      if(r.status!=='success') return; assignments=r.assignments||[];
       var html=''; assignments.forEach(function(a){
-        var typeBadge=a.type==='both'?'Pickup & Drop':a.type==='pickup'?'Pickup Only':'Drop Only';
-        html+='<tr><td>'+escH(a.student_name)+'</td><td>'+escH(a.student_class)+'</td><td>'+escH(a.route_name)+'</td><td>'+escH(a.stop_name||'—')+'</td><td><span class="trn-badge trn-badge-blue">'+typeBadge+'</span></td><td>Rs '+a.monthly_fee+'</td><td>'+escH(a.assigned_date)+'</td>';
-        html+='<td><button class="trn-btn trn-btn-sm trn-btn-primary" onclick="TRN.editAsn(\''+a.student_id+'\')"'+EDIT_ATTR+'><i class="fa fa-pencil"></i></button> <button class="trn-btn trn-btn-sm trn-btn-danger" onclick="TRN.delAsn(\''+a.student_id+'\')"'+DEL_ATTR+'><i class="fa fa-times"></i></button></td></tr>';
+        var subs = a.subscription_type || 'Permanent';
+        var subCls = subs==='Permanent'?'trn-badge-green':subs==='Temporary'?'trn-badge-amber':subs==='Seasonal'?'trn-badge-blue':'trn-badge-blue';
+        var isSuspended = (a.suspended_from||'')!=='';
+        var status = isSuspended?'Suspended':(a.status||'Active');
+        var stCls = isSuspended?'trn-badge-amber':status==='Active'?'trn-badge-green':'trn-badge-red';
+        var feeIsPending = a.fee_demand_ref==='pending';
+        var feeSuffix = feeIsPending?' <small style="color:var(--rose)">(pending)</small>':'';
+        html+='<tr><td>'+escH(a.student_name)+'</td><td>'+escH(a.student_class)+'</td><td>'+escH(a.route_name)+'</td><td>'+escH(a.stop_name||'—')+'</td>';
+        html+='<td><span class="trn-badge '+subCls+'">'+escH(subs)+'</span></td>';
+        html+='<td>Rs '+a.monthly_fee+feeSuffix+'</td>';
+        html+='<td><span class="trn-badge '+stCls+'">'+status+'</span></td>';
+        html+='<td>';
+        html+='<button class="trn-btn trn-btn-sm trn-btn-primary" onclick="TRN.editAsn(\''+a.student_id+'\')" title="Edit"><i class="fa fa-pencil"></i></button> ';
+        html+='<button class="trn-btn trn-btn-sm trn-btn-primary" onclick="TRN.openHistory(\''+a.student_id+'\',\''+escH(a.student_name)+'\')" title="History"><i class="fa fa-history"></i></button> ';
+        if (isSuspended) {
+          html+='<button class="trn-btn trn-btn-sm trn-btn-primary" onclick="TRN.resumeAsn(\''+a.student_id+'\')" title="Resume"><i class="fa fa-play"></i></button> ';
+        } else {
+          html+='<button class="trn-btn trn-btn-sm trn-btn-primary" onclick="TRN.openChange(\''+a.student_id+'\',\'route\')" title="Change Route"><i class="fa fa-exchange"></i></button> ';
+          html+='<button class="trn-btn trn-btn-sm trn-btn-primary" onclick="TRN.openChange(\''+a.student_id+'\',\'stop\')" title="Change Stop"><i class="fa fa-map-marker"></i></button> ';
+          html+='<button class="trn-btn trn-btn-sm trn-btn-primary" onclick="TRN.openSuspendAsn(\''+a.student_id+'\')" title="Suspend"><i class="fa fa-pause"></i></button> ';
+        }
+        html+='<button class="trn-btn trn-btn-sm trn-btn-danger" onclick="TRN.delAsn(\''+a.student_id+'\')" title="Unassign"><i class="fa fa-times"></i></button>';
+        html+='</td></tr>';
       });
       $('#asnTbody').html(html||'<tr><td colspan="8" style="text-align:center;color:var(--t3)">No assignments</td></tr>');
     });
   }
   TRN.openAsnModal=function(editData){
+    loadRoutes();
     $('#asnStudentSearch,#asnStudentId').val('');$('#asnType').val('both');$('#asnStopId').html('<option value="">-- Select --</option>');
     if(editData){
       // Edit mode: pre-fill fields
@@ -265,7 +996,7 @@ document.addEventListener('DOMContentLoaded', function(){
     }
     $('#asnModal').addClass('show');
   };
-  TRN.editAsn=function(sid){if(!CAN_EDIT)return;var a=assignments.find(function(x){return x.student_id===sid});if(!a)return;TRN.openAsnModal(a)};
+  TRN.editAsn=function(sid){var a=assignments.find(function(x){return x.student_id===sid});if(!a)return;TRN.openAsnModal(a)};
   TRN.closeAsnModal=function(){$('#asnStudentSearch').prop('disabled',false);$('#asnModal').removeClass('show')};
 
   // Load stops for a route and optionally pre-select a stop
@@ -288,16 +1019,1133 @@ document.addEventListener('DOMContentLoaded', function(){
   // Route change → load stops for assignment
   $('#asnRouteId').on('change',function(){loadStopsForAssignment($(this).val())});
   TRN.saveAssignment=function(){
-    if(!CAN_EDIT){toast('You do not have edit permission',false);return}
     var sid=$('#asnStudentId').val();if(!sid){toast('Please select a student.',false);return}
     var rid=$('#asnRouteId').val();if(!rid){toast('Please select a route.',false);return}
-    var b=btnOn('#asnModal .trn-btn-primary');
-    post('transport/save_assignment',{student_id:sid,route_id:rid,stop_id:$('#asnStopId').val(),type:$('#asnType').val()}).done(function(r){r=typeof r==='string'?JSON.parse(r):r;if(r.status==='success'){toast(r.message,true);TRN.closeAsnModal();loadAssignments()}else toast(r.message,false)}).always(function(){btnOff(b)})};
-  TRN.delAsn=function(sid){if(!CAN_MANAGE){toast('You do not have delete permission',false);return}if(!confirm('Remove transport assignment?'))return;post('transport/delete_assignment',{student_id:sid}).done(function(r){r=typeof r==='string'?JSON.parse(r):r;if(r.status==='success'){toast(r.message,true);loadAssignments()}else toast(r.message,false)})};
+    post('transport/save_assignment',{student_id:sid,route_id:rid,stop_id:$('#asnStopId').val(),type:$('#asnType').val()}).done(function(r){r=typeof r==='string'?JSON.parse(r):r;if(r.status==='success'){toast(r.message,true);TRN.closeAsnModal();loadAssignments()}else toast(r.message,false)})};
+  TRN.delAsn=function(sid){
+    if(!confirm('Remove transport assignment?'))return;
+    var reason = prompt('Reason (optional):','unassigned via admin');
+    post('transport/delete_assignment',{student_id:sid,reason:reason||''}).done(function(r){r=typeof r==='string'?JSON.parse(r):r;if(r.status==='success'){toast(r.message,true);loadAssignments()}else toast(r.message,false)});
+  };
+
+  // ═════════════════════════════════════════════════════════════════════
+  //  F3 Assignment lifecycle
+  // ═════════════════════════════════════════════════════════════════════
+  TRN.openBulkAssign=function(){$('#baRowsJson,#baResult').val('');$('#baResult').html('');$('#bulkAssignModal').addClass('show')};
+  TRN.closeBulkAssign=function(){$('#bulkAssignModal').removeClass('show')};
+  TRN.doBulkAssign=function(){
+    var raw=$('#baRowsJson').val().trim();
+    if(!raw){toast('Paste a JSON rows array.',false);return}
+    try { JSON.parse(raw); } catch(e){toast('Invalid JSON: '+e.message,false);return}
+    $('#baResult').html('<div style="color:var(--t3)">Processing...</div>');
+    post('transport/bulk_assign',{rows_json:raw}).done(function(r){
+      r=typeof r==='string'?JSON.parse(r):r;
+      if(r.status==='success'){
+        var html='<div style="font-family:var(--font-b);font-size:13px">';
+        html+='<b>Batch:</b> '+escH(r.batch_id)+'<br>';
+        html+='<b>Assigned:</b> '+r.assigned_count+'<br>';
+        if(r.skipped_capacity.length) html+='<b style="color:var(--rose)">Capacity-skipped:</b> '+r.skipped_capacity.length+'<br>';
+        if(r.skipped_conflict.length) html+='<b style="color:var(--rose)">Conflict-skipped:</b> '+r.skipped_conflict.length+'<br>';
+        if(r.errors.length) html+='<b style="color:var(--rose)">Errors:</b> '+r.errors.length+'<br>';
+        html+='</div>';
+        $('#baResult').html(html);
+        loadAssignments();
+      } else toast(r.message,false);
+    });
+  };
+
+  TRN.openHistory=function(sid,name){
+    $('#ahStudent').text('— '+name);
+    $('#ahTbody').html('<tr><td colspan="6" style="text-align:center;color:var(--t3)">Loading...</td></tr>');
+    getJSON('transport/get_assignment_history?student_id='+encodeURIComponent(sid)).done(function(r){
+      if(r.status!=='success')return;
+      var html='';
+      (r.history||[]).forEach(function(e){
+        html+='<tr><td>'+escH(e.event_type)+'</td><td>'+escH((e.event_at||'').slice(0,16).replace('T',' '))+'</td><td>'+escH(e.event_by||'')+'</td><td>'+escH(e.source||'')+'</td><td>'+escH(e.batch_id||'')+'</td><td>'+escH(e.reason||'')+'</td></tr>';
+      });
+      $('#ahTbody').html(html||'<tr><td colspan="6" style="text-align:center;color:var(--t3)">No history</td></tr>');
+    });
+    $('#asnHistoryModal').addClass('show');
+  };
+  TRN.closeHistory=function(){$('#asnHistoryModal').removeClass('show')};
+
+  TRN.openChange=function(sid,mode){
+    $('#acStudentId').val(sid);$('#acMode').val(mode);
+    $('#acTitle').text(mode==='route'?'Change Route':'Change Stop');
+    $('#acRouteField').toggle(mode==='route');
+    var a=assignments.find(function(x){return x.student_id===sid});
+    if(!a){toast('Assignment not found.',false);return}
+    if(mode==='route'){
+      var opts='<option value="">-- Select --</option>';
+      routes.forEach(function(rt){if(rt.status!=='Archived'&&rt.id!==a.route_id)opts+='<option value="'+rt.id+'">'+escH(rt.name)+'</option>'});
+      $('#acRouteId').html(opts);
+      $('#acStopId').html('<option value="">-- Select route first --</option>');
+    } else {
+      // Populate stops for current route
+      getJSON('transport/get_stops?route_id='+encodeURIComponent(a.route_id)).done(function(r){
+        var opts='<option value="">-- Select --</option>';
+        (r.stops||[]).forEach(function(s){if(s.id!==a.stop_id)opts+='<option value="'+s.id+'">'+escH(s.name)+'</option>'});
+        $('#acStopId').html(opts);
+      });
+    }
+    $('#acReason').val('');
+    $('#asnChangeModal').addClass('show');
+  };
+  TRN.acRouteChanged=function(){
+    var rid=$('#acRouteId').val();
+    if(!rid){$('#acStopId').html('<option value="">-- Select route first --</option>');return}
+    getJSON('transport/get_stops?route_id='+encodeURIComponent(rid)).done(function(r){
+      var opts='<option value="">-- Select --</option>';
+      (r.stops||[]).forEach(function(s){opts+='<option value="'+s.id+'">'+escH(s.name)+'</option>'});
+      $('#acStopId').html(opts);
+    });
+  };
+  TRN.closeChange=function(){$('#asnChangeModal').removeClass('show')};
+  TRN.doChange=function(){
+    var sid=$('#acStudentId').val();var mode=$('#acMode').val();var reason=$('#acReason').val();
+    if(!reason){toast('Reason required.',false);return}
+    if(mode==='route'){
+      var rid=$('#acRouteId').val();var stopId=$('#acStopId').val();
+      if(!rid){toast('Select new route.',false);return}
+      post('transport/change_route',{student_id:sid,new_route_id:rid,new_stop_id:stopId,reason:reason}).done(function(r){
+        r=typeof r==='string'?JSON.parse(r):r;
+        if(r.status==='success'){toast(r.message,true);TRN.closeChange();loadAssignments();}else toast(r.message,false);
+      });
+    } else {
+      var stopId=$('#acStopId').val();
+      if(!stopId){toast('Select new stop.',false);return}
+      post('transport/change_stop',{student_id:sid,new_stop_id:stopId,reason:reason}).done(function(r){
+        r=typeof r==='string'?JSON.parse(r):r;
+        if(r.status==='success'){toast(r.message,true);TRN.closeChange();loadAssignments();}else toast(r.message,false);
+      });
+    }
+  };
+
+  TRN.openSuspendAsn=function(sid){
+    $('#sasStudentId').val(sid);
+    $('#sasFrom').val(new Date().toISOString().slice(0,10));
+    $('#sasUntil,#sasReason').val('');
+    $('#asnSuspendModal').addClass('show');
+  };
+  TRN.closeSuspendAsn=function(){$('#asnSuspendModal').removeClass('show')};
+  TRN.doSuspendAsn=function(){
+    var sid=$('#sasStudentId').val();var from=$('#sasFrom').val();var until=$('#sasUntil').val();var reason=$('#sasReason').val();
+    if(!from||!reason){toast('From date and reason required.',false);return}
+    post('transport/suspend_assignment',{student_id:sid,from:from,until:until,reason:reason}).done(function(r){
+      r=typeof r==='string'?JSON.parse(r):r;
+      if(r.status==='success'){toast(r.message,true);TRN.closeSuspendAsn();loadAssignments();}else toast(r.message,false);
+    });
+  };
+  TRN.resumeAsn=function(sid){
+    var reason=prompt('Resume reason (optional):','resumed');
+    post('transport/resume_assignment',{student_id:sid,reason:reason||''}).done(function(r){
+      r=typeof r==='string'?JSON.parse(r):r;
+      if(r.status==='success'){toast(r.message,true);loadAssignments();}else toast(r.message,false);
+    });
+  };
+
+  TRN.reconcilePendingFees=function(){
+    if(!confirm('Retry any pending fee demands for assignments?'))return;
+    post('transport/reconcile_pending_fees',{}).done(function(r){
+      r=typeof r==='string'?JSON.parse(r):r;
+      if(r.status==='success'){toast(r.message,true);loadAssignments();}else toast(r.message,false);
+    });
+  };
+
+  TRN.rebuildCapacityCache=function(){
+    if(!confirm('Rebuild capacity cache from source data? (This iterates all routes and counts current assignments.)'))return;
+    post('transport/rebuild_capacity_cache',{route_id:''}).done(function(r){
+      r=typeof r==='string'?JSON.parse(r):r;
+      if(r.status==='success'){toast(r.message,true);loadAssignments();}else toast(r.message,false);
+    });
+  };
+
+  // ═════════════════════════════════════════════════════════════════════
+  //  F3 Session rollover (auto-continuing)
+  // ═════════════════════════════════════════════════════════════════════
+  TRN.openRollover=function(){
+    $('#roFrom,#roTo').val('');
+    $('#roStatus').hide().text('');
+    $('#roStartBtn').text('Start Rollover').prop('disabled',false);
+    $('#rolloverModal').addClass('show');
+  };
+  TRN.closeRollover=function(){$('#rolloverModal').removeClass('show')};
+  TRN.startRollover=function(){
+    var from=$('#roFrom').val().trim();var to=$('#roTo').val().trim();
+    if(!from||!to){toast('Both from and to sessions are required.',false);return}
+    if(from===to){toast('From and to sessions must differ.',false);return}
+    if(!confirm('Roll over ALL transport assignments from '+from+' to '+to+'? This cannot be easily undone.'))return;
+    $('#roStartBtn').text('Processing...').prop('disabled',true);
+    TRN.rolloverPump(from,to);
+  };
+  TRN.rolloverPump=function(from,to){
+    // Auto-continuing pump — invokes /start (idempotent, resumes via checkpoint)
+    // in a loop until status='complete' or an error.
+    post('transport_rollover/start',{from_session:from,to_session:to}).done(function(r){
+      r=typeof r==='string'?JSON.parse(r):r;
+      if(r.status!=='success'){
+        $('#roStartBtn').text('Retry').prop('disabled',false);
+        $('#roStatus').show().html('<span style="color:var(--rose)">'+escH(r.message||'Failed')+'</span>');
+        return;
+      }
+      var st=r.status||'';
+      $('#roStatus').show().html('<b>Status:</b> '+escH(st)+' — <b>Processed:</b> '+r.processed+' — <b>Batch:</b> '+escH(r.batch_id||''));
+      if(st==='complete'){
+        $('#roStartBtn').text('Done').prop('disabled',true);
+        toast(r.message,true);
+        loadAssignments();
+        return;
+      }
+      if(st==='in_progress'){
+        // Auto-continue (Refinement #1) — no admin interaction required
+        setTimeout(function(){TRN.rolloverPump(from,to)},500);
+        return;
+      }
+      // 'error' or unknown
+      $('#roStartBtn').text('Retry').prop('disabled',false);
+    }).fail(function(){
+      $('#roStartBtn').text('Retry').prop('disabled',false);
+      $('#roStatus').show().html('<span style="color:var(--rose)">Network error — click Retry.</span>');
+    });
+  };
+
+  // ═════════════════════════════════════════════════════════════════════
+  //  F4 Driver Management
+  // ═════════════════════════════════════════════════════════════════════
+  var drivers=[];
+  function loadDrivers(){
+    getJSON('transport_driver/list').done(function(r){
+      if(r.status!=='success')return;
+      drivers=r.drivers||[];
+      var today=new Date().toISOString().slice(0,10);
+      var html='';
+      drivers.forEach(function(d){
+        var m=d.driver_meta||{};
+        var licExp=m.licence_expires||'—';
+        var medExp=m.medical_expires||'—';
+        var licCls=m.licence_expires&&m.licence_expires<today?'trn-badge-red':'trn-badge-green';
+        var medCls=m.medical_expires&&m.medical_expires<today?'trn-badge-red':'trn-badge-green';
+        var op=(m.operational_status||'Available');
+        var opCls=op==='Available'?'trn-badge-green':op==='On_Leave'?'trn-badge-amber':'trn-badge-red';
+        html+='<tr><td>'+escH(d.staff_id||d.id||'')+'</td>';
+        html+='<td>'+escH(d.name||d.Name||'')+'</td>';
+        html+='<td>'+escH(d.phone||'')+'</td>';
+        html+='<td><span class="trn-badge '+licCls+'">'+escH(licExp)+'</span></td>';
+        html+='<td><span class="trn-badge '+medCls+'">'+escH(medExp)+'</span></td>';
+        html+='<td><span class="trn-badge '+opCls+'">'+escH(op)+'</span></td>';
+        html+='<td><button class="trn-btn trn-btn-sm trn-btn-primary" onclick="TRN.openDrvManage(\''+(d.staff_id||d.id)+'\')" title="Manage"><i class="fa fa-cog"></i> Manage</button></td>';
+        html+='</tr>';
+      });
+      $('#driversTbody').html(html||'<tr><td colspan="7" style="text-align:center;color:var(--t3)">No drivers — enable a staff\'s flags.can_drive_transport in HR</td></tr>');
+    });
+  }
+  var dmCurrentStaff='';
+  TRN.openDrvManage=function(sid){
+    dmCurrentStaff=sid;
+    var d=drivers.find(function(x){return (x.staff_id||x.id)===sid});
+    if(!d){toast('Driver not found.',false);return}
+    $('#dmStaffId').val(sid);
+    $('#dmName').text('— '+(d.name||d.Name||sid));
+    $('#dmHrName').text(d.name||d.Name||'—');
+    $('#dmHrPhone').text(d.phone||'—');
+    $('#dmHrRole').text(d.role||d.Role||'—');
+    var m=d.driver_meta||{};
+    $('#dmLicNo').val(m.licence_no||'');
+    $('#dmLicClass').val(m.licence_class||'');
+    $('#dmLicIssued').val(m.licence_issued||'');
+    $('#dmLicExpires').val(m.licence_expires||'');
+    $('#dmLicAuth').val(m.licence_authority||'');
+    $('#dmYearsExp').val(m.years_experience||0);
+    $('#dmMedLast').val(m.medical_check_last||'');
+    $('#dmMedExpires').val(m.medical_expires||'');
+    $('#dmBadgeNo').val(m.badge_no||'');
+    $('#dmBadgeExpires').val(m.badge_expires||'');
+    $('#dmCanDrive').val((m.can_drive_types||[]).join(','));
+    $('#dmOpStatus').val(m.operational_status||'Available');
+    $('#dmEmerName').val(m.emergency_contact_name||'');
+    $('#dmEmerPhone').val(m.emergency_contact_phone||'');
+    $('#dmReplAvail').val(m.replacement_availability?'1':'0');
+    TRN.dmSwitch('profile');
+    TRN.dmLoadIncidents();
+    TRN.dmLoadReviews();
+    TRN.dmLoadTemp();
+    TRN.dmLoadActivity();
+    $('#drvManageModal').addClass('show');
+  };
+  TRN.closeDrvManage=function(){$('#drvManageModal').removeClass('show');dmCurrentStaff='';loadDrivers();};
+  TRN.dmSwitch=function(t){
+    $('[data-dmtab]').removeClass('active');
+    $('[data-dmtab="'+t+'"]').addClass('active');
+    $('[data-dmpanel]').hide();
+    $('[data-dmpanel="'+t+'"]').show();
+  };
+  TRN.dmSaveMeta=function(){
+    post('transport_driver/save_meta',{
+      staff_id:dmCurrentStaff,
+      licence_no:$('#dmLicNo').val(),licence_class:$('#dmLicClass').val(),
+      licence_issued:$('#dmLicIssued').val(),licence_expires:$('#dmLicExpires').val(),
+      licence_authority:$('#dmLicAuth').val(),years_experience:$('#dmYearsExp').val(),
+      medical_check_last:$('#dmMedLast').val(),medical_expires:$('#dmMedExpires').val(),
+      badge_no:$('#dmBadgeNo').val(),badge_expires:$('#dmBadgeExpires').val(),
+      can_drive_types:$('#dmCanDrive').val(),operational_status:$('#dmOpStatus').val(),
+      emergency_contact_name:$('#dmEmerName').val(),emergency_contact_phone:$('#dmEmerPhone').val(),
+      replacement_availability:$('#dmReplAvail').val()
+    }).done(function(r){r=typeof r==='string'?JSON.parse(r):r;if(r.status==='success'){toast(r.message,true);}else toast(r.message,false)});
+  };
+  TRN.dmLoadIncidents=function(){
+    if(!dmCurrentStaff)return;
+    getJSON('transport_driver/list_incidents?staff_id='+encodeURIComponent(dmCurrentStaff)).done(function(r){
+      if(r.status!=='success')return;
+      var html='';
+      (r.incidents||[]).forEach(function(i){
+        var sevCls=i.severity==='Critical'?'trn-badge-red':i.severity==='Major'?'trn-badge-amber':i.severity==='Minor'?'trn-badge-blue':'trn-badge-green';
+        var resolved=i.resolved_at?'<span class="trn-badge trn-badge-green">Yes</span>':'<span class="trn-badge trn-badge-red">No</span>';
+        html+='<tr><td>'+escH(i.incident_date||'')+'</td><td>'+escH((i.incident_type||'').replace(/_/g,' '))+'</td>';
+        html+='<td><span class="trn-badge '+sevCls+'">'+escH(i.severity||'')+'</span></td>';
+        html+='<td>'+escH((i.description||'').substring(0,80))+'</td><td>'+resolved+'</td>';
+        html+='<td>'+(!i.resolved_at?'<button class="trn-btn trn-btn-sm trn-btn-primary" onclick="TRN.openResolveIncident(\''+i.id+'\')"><i class="fa fa-check"></i></button>':'')+'</td></tr>';
+      });
+      $('#dmIncidentsTbody').html(html||'<tr><td colspan="6" style="text-align:center;color:var(--t3)">No incidents</td></tr>');
+    });
+  };
+  TRN.openIncident=function(){
+    $('#incStaffId').val(dmCurrentStaff);
+    var d=drivers.find(function(x){return(x.staff_id||x.id)===dmCurrentStaff});
+    $('#incStaffLabel').text(d?'('+d.name+')':'');
+    $('#incType').val('Complaint');$('#incSeverity').val('Minor');
+    $('#incDate').val(new Date().toISOString().slice(0,10));$('#incTime,#incTripId,#incLocation,#incDesc').val('');
+    // Populate vehicle picker
+    var vopts='<option value="">-- None --</option>';(vehicles||[]).forEach(function(v){vopts+='<option value="'+v.id+'">'+escH(v.number)+'</option>'});
+    $('#incVehicle').html(vopts);
+    $('#incidentModal').addClass('show');
+  };
+  TRN.closeIncident=function(){$('#incidentModal').removeClass('show')};
+  TRN.doRecordIncident=function(){
+    var desc=$('#incDesc').val().trim();
+    if(!desc){toast('Description required.',false);return}
+    if($('#incSeverity').val()==='Critical'){TRN.__busyLabel='Recording critical incident & notifying…';}else{TRN.__busyLabel='Recording incident…';}
+    post('transport_driver/record_incident',{
+      staff_id:$('#incStaffId').val(),incident_type:$('#incType').val(),severity:$('#incSeverity').val(),
+      incident_date:$('#incDate').val(),incident_time:$('#incTime').val(),
+      related_vehicle_id:$('#incVehicle').val(),related_trip_id:$('#incTripId').val(),
+      location:$('#incLocation').val(),description:desc
+    }).done(function(r){r=typeof r==='string'?JSON.parse(r):r;if(r.status==='success'){toast(r.message,true);TRN.closeIncident();TRN.dmLoadIncidents();}else toast(r.message,false)});
+  };
+  TRN.openResolveIncident=function(id){$('#incResId').val(id);$('#incResText,#incResAction').val('');$('#incResolveModal').addClass('show')};
+  TRN.closeResolveIncident=function(){$('#incResolveModal').removeClass('show')};
+  TRN.doResolveIncident=function(){
+    var res=$('#incResText').val();if(!res){toast('Resolution required.',false);return}
+    post('transport_driver/resolve_incident',{incident_id:$('#incResId').val(),resolution:res,action_taken:$('#incResAction').val()}).done(function(r){r=typeof r==='string'?JSON.parse(r):r;if(r.status==='success'){toast(r.message,true);TRN.closeResolveIncident();TRN.dmLoadIncidents();}else toast(r.message,false)});
+  };
+  TRN.dmLoadReviews=function(){
+    if(!dmCurrentStaff)return;
+    getJSON('transport_driver/list_reviews?staff_id='+encodeURIComponent(dmCurrentStaff)).done(function(r){
+      if(r.status!=='success')return;
+      var html='';
+      (r.reviews||[]).forEach(function(v){
+        html+='<tr><td>'+escH(v.review_period_start||'')+' → '+escH(v.review_period_end||'')+'</td>';
+        html+='<td>'+v.total_trips+'</td><td>'+v.total_km+'</td><td>'+v.incidents_count+'</td>';
+        html+='<td>'+'⭐'.repeat(v.rating||0)+'</td><td>'+escH(v.reviewer_staff_id||'')+'</td></tr>';
+      });
+      $('#dmReviewsTbody').html(html||'<tr><td colspan="6" style="text-align:center;color:var(--t3)">No reviews</td></tr>');
+    });
+  };
+  TRN.dmOpenReviewForm=function(){
+    var today=new Date();var first=new Date(today.getFullYear(),today.getMonth(),1);
+    $('#dmRvStart').val(first.toISOString().slice(0,10));
+    $('#dmRvEnd').val(today.toISOString().slice(0,10));
+    $('#dmRvRating').val(3);$('#dmRvNext,#dmRvNotes,#dmRvActions').val('');
+    $('#dmReviewForm').show();
+  };
+  TRN.dmSaveReview=function(){
+    post('transport_driver/save_review',{
+      staff_id:dmCurrentStaff,review_period_start:$('#dmRvStart').val(),review_period_end:$('#dmRvEnd').val(),
+      rating:$('#dmRvRating').val(),notes:$('#dmRvNotes').val(),
+      action_items:$('#dmRvActions').val(),next_review_due:$('#dmRvNext').val()
+    }).done(function(r){r=typeof r==='string'?JSON.parse(r):r;if(r.status==='success'){toast(r.message,true);$('#dmReviewForm').hide();TRN.dmLoadReviews();}else toast(r.message,false)});
+  };
+  TRN.dmLoadTemp=function(){
+    if(!dmCurrentStaff)return;
+    getJSON('transport_driver/list_temp?vehicle_id=&active_only=0').done(function(r){
+      if(r.status!=='success')return;
+      var mine=(r.assignments||[]).filter(function(t){return t.covering_staff_id===dmCurrentStaff});
+      var html='';
+      mine.forEach(function(t){
+        var st=t.status||'Active';
+        var stCls=st==='Active'?'trn-badge-green':st==='Resolved'?'trn-badge-blue':'trn-badge-red';
+        html+='<tr><td>'+escH(t.vehicle_id||'')+'</td><td>'+escH(t.effective_from||'')+'</td><td>'+escH(t.effective_to||'')+'</td>';
+        html+='<td>'+escH(t.reason||'')+'</td><td><span class="trn-badge '+stCls+'">'+st+'</span></td>';
+        html+='<td>'+(st==='Active'?'<button class="trn-btn trn-btn-sm trn-btn-primary" onclick="TRN.dmResolveTemp(\''+t.id+'\')"><i class="fa fa-check"></i> Resolve</button>':'')+'</td></tr>';
+      });
+      $('#dmTempTbody').html(html||'<tr><td colspan="6" style="text-align:center;color:var(--t3)">No temporary assignments</td></tr>');
+    });
+  };
+  TRN.dmOpenTempAssign=function(){
+    var vopts='<option value="">-- Select --</option>';(vehicles||[]).forEach(function(v){vopts+='<option value="'+v.id+'">'+escH(v.number)+'</option>'});
+    $('#dmTaVehicle').html(vopts);
+    $('#dmTaFrom').val(new Date().toISOString().slice(0,10));$('#dmTaTo,#dmTaReason,#dmTaNotes').val('');
+    $('#dmTempForm').show();
+  };
+  TRN.dmSaveTemp=function(){
+    var reason=$('#dmTaReason').val();var vid=$('#dmTaVehicle').val();var to=$('#dmTaTo').val();
+    if(!vid||!to||!reason){toast('Vehicle, effective-to and reason required.',false);return}
+    post('transport_driver/assign_temp',{
+      vehicle_id:vid,covering_staff_id:dmCurrentStaff,
+      effective_from:$('#dmTaFrom').val(),effective_to:to,
+      reason:reason,notes:$('#dmTaNotes').val()
+    }).done(function(r){r=typeof r==='string'?JSON.parse(r):r;if(r.status==='success'){toast(r.message,true);$('#dmTempForm').hide();TRN.dmLoadTemp();}else toast(r.message,false)});
+  };
+  TRN.dmResolveTemp=function(id){
+    post('transport_driver/resolve_temp',{assignment_id:id,reason:'manual'}).done(function(r){r=typeof r==='string'?JSON.parse(r):r;if(r.status==='success'){toast(r.message,true);TRN.dmLoadTemp();}else toast(r.message,false)});
+  };
+  TRN.dmLoadActivity=function(){
+    if(!dmCurrentStaff){return}
+    var today=new Date();var first=new Date(today.getFullYear(),today.getMonth(),1);
+    getJSON('transport_driver/activity_snapshot?staff_id='+encodeURIComponent(dmCurrentStaff)+'&from='+first.toISOString().slice(0,10)+'&to='+today.toISOString().slice(0,10)).done(function(r){
+      if(r.status!=='success')return;
+      var s=r.snapshot||{};
+      var html='<div style="display:grid;grid-template-columns:repeat(3,1fr);gap:12px">';
+      html+='<div><b>Trips:</b> '+s.trips_count+'</div>';
+      html+='<div><b>Total KM:</b> '+s.total_km+'</div>';
+      html+='<div><b>On-Time %:</b> '+s.on_time_pct+'</div>';
+      html+='<div><b>Incidents:</b> '+s.incidents_count+'</div>';
+      html+='<div><b>Critical:</b> <span style="color:var(--rose)">'+s.critical_incidents+'</span></div>';
+      html+='<div><b>Complaints:</b> '+s.complaints_count+'</div>';
+      html+='<div><b>Positive Recognition:</b> <span style="color:var(--green)">'+s.positive_recognitions+'</span></div>';
+      html+='</div>';
+      html+='<div style="margin-top:12px;font-size:11px;color:var(--t3);font-style:italic">Trip data is populated once the Trip Logs feature (F7) ships. Incident data live from F4.</div>';
+      $('#dmActivityBody').html(html);
+    });
+  };
+  TRN.dmRebuildActivity=function(){
+    post('transport_driver/rebuild_activity',{staff_id:dmCurrentStaff,year_month:''}).done(function(r){r=typeof r==='string'?JSON.parse(r):r;if(r.status==='success'){toast(r.message,true);TRN.dmLoadActivity();}else toast(r.message,false)});
+  };
+  TRN.dmRebuildActivityAll=function(){
+    if(!confirm('Rebuild activity summaries for ALL drivers for the current month?'))return;
+    post('transport_driver/rebuild_activity',{staff_id:'',year_month:''}).done(function(r){r=typeof r==='string'?JSON.parse(r):r;if(r.status==='success'){toast(r.message,true);}else toast(r.message,false)});
+  };
+
+  // ═════════════════════════════════════════════════════════════════════
+  //  F5 Expenses (2026-07-07)
+  // ═════════════════════════════════════════════════════════════════════
+  var expenseCategories={types:[],payee_types:[],payment_methods:[],attachment_types:[]};
+  var expenses=[];
+  function loadExpenseCategories(){
+    getJSON('transport_ops/get_expense_categories').done(function(r){
+      if(r.status!=='success')return;
+      expenseCategories={
+        types:r.types||[],payee_types:r.payee_types||[],
+        payment_methods:r.payment_methods||[],attachment_types:r.attachment_types||[]
+      };
+    });
+  }
+  function loadExpenses(){
+    getJSON('transport_ops/get_expenses').done(function(r){
+      if(r.status!=='success')return; expenses=r.expenses||[];
+      var html=''; var totalActive=0;
+      expenses.forEach(function(e){
+        var acctRef=e.accounting_journal_ref||'';
+        var acctCls=acctRef===''?'trn-badge-amber':acctRef==='pending'?'trn-badge-amber':acctRef==='failed'?'trn-badge-red':'trn-badge-green';
+        var acctLabel=acctRef===''?'Not posted':acctRef==='pending'?'Pending':acctRef==='failed'?'Failed':'Posted';
+        var stCls=e.status==='Voided'?'trn-badge-red':'trn-badge-green';
+        if(e.status==='Active') totalActive+=(e.total_amount||e.amount||0);
+        html+='<tr><td>'+escH(e.expenseId||e.id||'')+'</td>';
+        html+='<td>'+escH(e.expense_date||'')+'</td>';
+        html+='<td>'+escH((e.expense_type||'').replace(/_/g,' '))+'</td>';
+        html+='<td>'+escH(e.vehicle_id||'—')+'</td>';
+        html+='<td>INR '+(e.total_amount||e.amount||0).toFixed(2)+'</td>';
+        html+='<td>'+escH(e.payee_name||e.payee_id||e.payee_type||'')+'</td>';
+        html+='<td><span class="trn-badge '+acctCls+'">'+acctLabel+'</span>';
+        if(acctRef && acctRef!=='pending' && acctRef!=='failed') html+=' <small style="opacity:.6">'+escH(acctRef.substring(0,12))+'</small>';
+        html+='</td>';
+        html+='<td><span class="trn-badge '+stCls+'">'+escH(e.status||'Active')+'</span></td>';
+        html+='<td>';
+        if(e.status==='Active'){
+          if(acctRef===''){html+='<button class="trn-btn trn-btn-sm trn-btn-primary" onclick="TRN.postExpenseNow(\''+e.expenseId+'\')" title="Post to Accounting"><i class="fa fa-upload"></i></button> ';}
+          if(acctRef==='pending'||acctRef==='failed'){html+='<button class="trn-btn trn-btn-sm trn-btn-primary" onclick="TRN.retryExpensePost(\''+e.expenseId+'\')" title="Retry post"><i class="fa fa-repeat"></i></button> ';}
+          html+='<button class="trn-btn trn-btn-sm trn-btn-danger" onclick="TRN.openVoidExpense(\''+e.expenseId+'\')" title="Void"><i class="fa fa-times"></i></button>';
+        }
+        html+='</td></tr>';
+      });
+      $('#expensesTbody').html(html||'<tr><td colspan="9" style="text-align:center;color:var(--t3)">No expenses recorded</td></tr>');
+      $('#expensesSummaryBar').html('<b>Active month-to-date:</b> INR '+totalActive.toFixed(2)+' across '+expenses.filter(function(e){return e.status==='Active'}).length+' expense(s)');
+    });
+  }
+  TRN.openExpense=function(){
+    $('#expId,#expAmount,#expTaxAmt,#expTaxRate,#expCustomType,#expPayeeId,#expPayeeName,#expPayRef,#expRelMnt,#expRelFuel,#expNotes,#expVehicle').val('');
+    $('#expTaxAmt,#expTaxRate').val(0);
+    $('#expDate').val(new Date().toISOString().slice(0,10));
+    $('#expForcePost').prop('checked',false);
+    // Populate type dropdown
+    var to='';(expenseCategories.types||[]).forEach(function(t){to+='<option value="'+t+'">'+escH(t.replace(/_/g,' '))+'</option>'});$('#expType').html(to);
+    // Payment method
+    var pmo='';(expenseCategories.payment_methods||[]).forEach(function(t){pmo+='<option value="'+t+'">'+escH(t.replace(/_/g,' '))+'</option>'});$('#expPayMethod').html(pmo);
+    // Payee type
+    var pto='';(expenseCategories.payee_types||[]).forEach(function(t){pto+='<option value="'+t+'">'+escH(t)+'</option>'});$('#expPayeeType').html(pto).val('External');
+    // Vehicle picker
+    var vopts='<option value="">-- None --</option>';(vehicles||[]).forEach(function(v){vopts+='<option value="'+v.id+'">'+escH(v.number)+'</option>'});$('#expVehicle').html(vopts);
+    // Reset attachments container
+    $('#expAttachments').html('');
+    TRN.expTypeChanged();
+    $('#expenseModal').addClass('show');
+  };
+  TRN.closeExpense=function(){$('#expenseModal').removeClass('show')};
+  TRN.expTypeChanged=function(){
+    $('#expCustomTypeRow').toggle($('#expType').val()==='Other');
+  };
+  TRN.expPayeeTypeChanged=function(){
+    var t=$('#expPayeeType').val();
+    if(t==='External'){$('#expPayeeId').prop('placeholder','(optional for external)');}
+    else if(t==='Vendor'){$('#expPayeeId').prop('placeholder','VND0001 (required)');}
+    else{$('#expPayeeId').prop('placeholder','STA0001 (required)');}
+  };
+  TRN.expAddAttachment=function(){
+    var opts='';(expenseCategories.attachment_types||[]).forEach(function(t){opts+='<option value="'+t+'">'+escH(t.replace(/_/g,' '))+'</option>'});
+    var idx=$('#expAttachments .trn-att-row').length;
+    var html='<div class="trn-att-row" style="display:grid;grid-template-columns:150px 1fr 1fr 30px;gap:8px;margin-bottom:6px" data-idx="'+idx+'">';
+    html+='<select class="trn-att-type">'+opts+'</select>';
+    html+='<input type="text" class="trn-att-path" placeholder="storage path or URL">';
+    html+='<input type="text" class="trn-att-notes" placeholder="notes">';
+    html+='<button class="trn-btn trn-btn-sm trn-btn-danger" onclick="$(this).parent().remove()"><i class="fa fa-times"></i></button>';
+    html+='</div>';
+    $('#expAttachments').append(html);
+  };
+  TRN.saveExpense=function(){
+    var attachments=[];
+    $('#expAttachments .trn-att-row').each(function(){
+      var p=$(this).find('.trn-att-path').val().trim();
+      if(!p)return;
+      attachments.push({type:$(this).find('.trn-att-type').val(),path:p,notes:$(this).find('.trn-att-notes').val()});
+    });
+    post('transport_ops/save_expense',{
+      id:$('#expId').val(),
+      expense_type:$('#expType').val(),expense_type_custom:$('#expCustomType').val(),
+      expense_date:$('#expDate').val(),
+      amount:$('#expAmount').val(),tax_amount:$('#expTaxAmt').val(),tax_rate:$('#expTaxRate').val(),
+      payee_type:$('#expPayeeType').val(),payee_id:$('#expPayeeId').val(),payee_name:$('#expPayeeName').val(),
+      vehicle_id:$('#expVehicle').val(),
+      payment_method:$('#expPayMethod').val(),payment_reference:$('#expPayRef').val(),
+      related_maintenance_id:$('#expRelMnt').val(),related_fuel_id:$('#expRelFuel').val(),
+      attachments_json:JSON.stringify(attachments),
+      notes:$('#expNotes').val(),
+      force_post:$('#expForcePost').is(':checked')?'1':'0'
+    }).done(function(r){r=typeof r==='string'?JSON.parse(r):r;if(r.status==='success'){toast(r.message,true);TRN.closeExpense();loadExpenses();}else toast(r.message,false)});
+  };
+  TRN.postExpenseNow=function(id){
+    if(!confirm('Post this expense to Accounting now?'))return;
+    post('transport_ops/post_expense_now',{id:id}).done(function(r){r=typeof r==='string'?JSON.parse(r):r;if(r.status==='success'){toast(r.message,true);loadExpenses();}else toast(r.message,false)});
+  };
+  TRN.retryExpensePost=function(id){
+    post('transport_ops/retry_expense_post',{id:id}).done(function(r){r=typeof r==='string'?JSON.parse(r):r;if(r.status==='success'){toast(r.message,true);loadExpenses();}else toast(r.message,false)});
+  };
+  TRN.openVoidExpense=function(id){$('#expVoidId').val(id);$('#expVoidReason').val('');$('#expVoidModal').addClass('show')};
+  TRN.closeExpVoid=function(){$('#expVoidModal').removeClass('show')};
+  TRN.confirmVoidExpense=function(){
+    var reason=$('#expVoidReason').val();if(!reason){toast('Reason required.',false);return}
+    post('transport_ops/void_expense',{id:$('#expVoidId').val(),reason:reason}).done(function(r){r=typeof r==='string'?JSON.parse(r):r;if(r.status==='success'){toast(r.message,true);TRN.closeExpVoid();loadExpenses();}else toast(r.message,false)});
+  };
+  TRN.reconcilePendingPosts=function(){
+    if(!confirm('Retry all pending Accounting posts?'))return;
+    post('transport_ops/reconcile_pending_posts',{}).done(function(r){r=typeof r==='string'?JSON.parse(r):r;if(r.status==='success'){toast(r.message,true);loadExpenses();}else toast(r.message,false)});
+  };
+  TRN.rebuildExpenseSummary=function(){
+    post('transport_ops/rebuild_expense_summary',{year_month:''}).done(function(r){r=typeof r==='string'?JSON.parse(r):r;if(r.status==='success'){toast(r.message,true);}else toast(r.message,false)});
+  };
+
+  // ═════════════════════════════════════════════════════════════════════
+  //  F8 Transport Events (LC-23, 2026-07-07)
+  // ═════════════════════════════════════════════════════════════════════
+  var events = [], eventCurrent = null;
+
+  TRN.loadEvents = function(){
+    var st = $('#eventStatusFilter').val() || '';
+    var ty = $('#eventTypeFilter').val() || '';
+    getJSON('transport_event/list_all?status=' + encodeURIComponent(st) + '&event_type=' + encodeURIComponent(ty)).done(function(r){
+      r = typeof r === 'string' ? JSON.parse(r) : r;
+      if(r.status !== 'success'){ $('#eventsTbody').html('<tr><td colspan="10" style="text-align:center;color:var(--rose)">'+(r.message||'load failed')+'</td></tr>'); return; }
+      events = r.events || [];
+      if(events.length === 0){ $('#eventsTbody').html('<tr><td colspan="10" style="text-align:center;color:var(--t3)">No events</td></tr>'); return; }
+      var html = '';
+      events.forEach(function(e){
+        var st = String(e.status||'');
+        var cls = st === 'Planned' ? 'trn-badge-blue' : (st === 'Scheduled' ? 'trn-badge-amber' : (st === 'InProgress' ? 'trn-badge-amber' : (st === 'Completed' ? 'trn-badge-green' : 'trn-badge-red')));
+        var actual = (e.actual_amount||0).toFixed(0), budget = (e.budgeted_amount||0).toFixed(0);
+        var costStr = 'INR ' + actual + ' / ' + budget + (e.over_budget ? ' ⚠️' : '');
+        html += '<tr>';
+        html += '<td>' + escH(e.eventId||e.id||'') + '</td>';
+        html += '<td>' + escH((e.event_type||'').replace(/_/g,' ')) + '</td>';
+        html += '<td>' + escH(e.title||'') + '</td>';
+        html += '<td>' + escH(e.event_date||'') + (e.event_end_date && e.event_end_date !== e.event_date ? ' → ' + escH(e.event_end_date) : '') + '</td>';
+        html += '<td>' + ((e.assigned_vehicle_ids||[]).length) + '</td>';
+        html += '<td>' + (e.roster_size||0) + '</td>';
+        html += '<td>' + ((e.dispatched_trip_ids||[]).length) + '</td>';
+        html += '<td>' + costStr + '</td>';
+        html += '<td><span class="trn-badge ' + cls + '">' + escH(st) + '</span></td>';
+        html += '<td><button class="trn-btn trn-btn-sm trn-btn-primary" onclick="TRN.openEventManage(\''+(e.eventId||e.id)+'\')" title="Manage"><i class="fa fa-cog"></i></button></td>';
+        html += '</tr>';
+      });
+      $('#eventsTbody').html(html);
+    });
+  };
+
+  TRN.openCreateEvent = function(){
+    $('#ecTitle,#ecDesc,#ecDestination,#ecPickup,#ecDrop,#ecVehicles,#ecNotes').val('');
+    $('#ecExpectedCount,#ecBudget').val(0);
+    $('#ecDate').val(new Date().toISOString().slice(0,10));
+    $('#ecEndDate').val(new Date().toISOString().slice(0,10));
+    $('#ecType').val('Educational_Tour'); $('#ecCharter').val('Own_Fleet');
+    $('#eventCreateModal').addClass('show');
+  };
+  TRN.closeEventCreate = function(){ $('#eventCreateModal').removeClass('show'); };
+  TRN.confirmCreateEvent = function(){
+    var vehicleList = ($('#ecVehicles').val()||'').split(',').map(function(s){return s.trim();}).filter(Boolean);
+    if(!$('#ecTitle').val().trim()){ toast('Title required.', false); return; }
+    if(vehicleList.length === 0){ toast('At least one vehicle id required.', false); return; }
+    post('transport_event/create', {
+      title:                    $('#ecTitle').val(),
+      event_type:               $('#ecType').val(),
+      description:              $('#ecDesc').val(),
+      event_date:               $('#ecDate').val(),
+      event_end_date:           $('#ecEndDate').val() || $('#ecDate').val(),
+      destination:              $('#ecDestination').val(),
+      pickup_location:          $('#ecPickup').val(),
+      drop_location:            $('#ecDrop').val(),
+      transport_charter_type:   $('#ecCharter').val(),
+      assigned_vehicle_ids_json:JSON.stringify(vehicleList),
+      expected_students_count:  $('#ecExpectedCount').val() || 0,
+      budgeted_amount:          $('#ecBudget').val() || 0,
+      notes:                    $('#ecNotes').val(),
+    }).done(function(r){
+      r = typeof r === 'string' ? JSON.parse(r) : r;
+      if(r.status === 'success'){ toast(r.message, true); TRN.closeEventCreate(); TRN.loadEvents(); }
+      else toast(r.message, false);
+    });
+  };
+
+  TRN.openEventManage = function(id){
+    eventCurrent = id;
+    getJSON('transport_event/get?id=' + encodeURIComponent(id)).done(function(r){
+      r = typeof r === 'string' ? JSON.parse(r) : r;
+      if(r.status !== 'success' || !r.event){ toast(r.message||'load failed', false); return; }
+      var e = r.event;
+      $('#emTitle').text('Event ' + (e.eventId||e.id) + ' — ' + (e.title||'') + ' (' + e.status + ')');
+      $('#emMeta').text('Type: ' + (e.event_type||'') + ' | Date: ' + (e.event_date||'') + (e.event_end_date && e.event_end_date !== e.event_date ? ' → ' + e.event_end_date : '') + ' | Destination: ' + (e.destination||'-') + ' | Charter: ' + (e.transport_charter_type||''));
+      // Cost bar
+      getJSON('transport_event/cost_summary?id=' + encodeURIComponent(id)).done(function(cr){
+        cr = typeof cr === 'string' ? JSON.parse(cr) : cr;
+        if(cr.status === 'success'){
+          var budget = (e.budgeted_amount||0).toFixed(2), actual = (cr.summary.actual_amount||0).toFixed(2);
+          var over = e.budgeted_amount > 0 && cr.summary.actual_amount > e.budgeted_amount;
+          $('#emCostBar').html('<b>Cost:</b> INR ' + actual + ' actual (' + cr.summary.expense_count + ' expenses) / INR ' + budget + ' budgeted' + (over ? ' <span class="trn-badge trn-badge-red">OVER BUDGET</span>' : ''));
+        }
+      });
+      // Roster
+      getJSON('transport_event/roster?id=' + encodeURIComponent(id)).done(function(rr){
+        rr = typeof rr === 'string' ? JSON.parse(rr) : rr;
+        var roster = (rr && rr.status === 'success') ? rr.roster : [];
+        $('#emRosterSize').text(roster.length);
+        var rHtml = '';
+        var editable = (e.status === 'Planned' || e.status === 'Scheduled');
+        roster.forEach(function(a){
+          var cs = a.consent_status || 'Pending';
+          var cls = cs === 'Approved' ? 'trn-badge-green' : (cs === 'Rejected' ? 'trn-badge-red' : 'trn-badge-amber');
+          rHtml += '<tr>';
+          rHtml += '<td>' + escH(a.studentId||'') + '</td>';
+          rHtml += '<td>' + escH(a.assigned_vehicle_id||'—') + '</td>';
+          rHtml += '<td><span class="trn-badge ' + cls + '">' + escH(cs) + '</span></td>';
+          rHtml += '<td>';
+          if(editable){
+            rHtml += '<button class="trn-btn trn-btn-sm trn-btn-primary" onclick="TRN.updateConsent(\''+a.assignmentId+'\',\'Approved\')" title="Approve"><i class="fa fa-check"></i></button> ';
+            rHtml += '<button class="trn-btn trn-btn-sm" style="background:var(--bg);border:1px solid var(--border);color:var(--t1)" onclick="TRN.updateConsent(\''+a.assignmentId+'\',\'Rejected\')" title="Reject"><i class="fa fa-ban"></i></button> ';
+            rHtml += '<button class="trn-btn trn-btn-sm trn-btn-danger" onclick="TRN.unassignStudent(\''+id+'\',\''+a.studentId+'\')" title="Remove"><i class="fa fa-times"></i></button>';
+          }
+          rHtml += '</td></tr>';
+        });
+        $('#emRoster').html(rHtml || '<tr><td colspan="4" style="text-align:center;color:var(--t3)">Empty roster</td></tr>');
+        $('#emAssignForm').toggle(editable);
+      });
+      // Escorts
+      var eHtml = '';
+      var escortEditable = (e.status === 'Planned' || e.status === 'Scheduled' || e.status === 'InProgress');
+      (e.escorts||[]).forEach(function(x){
+        eHtml += '<tr><td>' + escH(x.staff_id||'') + '</td><td>' + escH((x.role||'').replace(/_/g,' ')) + '</td>';
+        eHtml += '<td>';
+        if(escortEditable){ eHtml += '<button class="trn-btn trn-btn-sm trn-btn-danger" onclick="TRN.removeEscort(\''+id+'\',\''+x.staff_id+'\')" title="Remove"><i class="fa fa-times"></i></button>'; }
+        eHtml += '</td></tr>';
+      });
+      $('#emEscorts').html(eHtml || '<tr><td colspan="3" style="text-align:center;color:var(--t3)">No escorts</td></tr>');
+      // Trips
+      getJSON('transport_event/trips?id=' + encodeURIComponent(id)).done(function(tr){
+        tr = typeof tr === 'string' ? JSON.parse(tr) : tr;
+        var trips = (tr && tr.status === 'success') ? tr.trips : [];
+        var tHtml = '';
+        trips.forEach(function(t){
+          var cls = t.status === 'Completed' ? 'trn-badge-green' : (t.status === 'Cancelled' ? 'trn-badge-red' : 'trn-badge-amber');
+          tHtml += '<tr><td>' + escH(t.id||'') + '</td><td>' + escH(t.vehicleId||'') + '</td><td>' + escH(t.trip_direction||'') + '</td><td><span class="trn-badge ' + cls + '">' + escH(t.status||'') + '</span></td></tr>';
+        });
+        $('#emTrips').html(tHtml || '<tr><td colspan="4" style="text-align:center;color:var(--t3)">No trips dispatched yet</td></tr>');
+      });
+      // Schedule button visibility
+      $('#emScheduleBtn').toggle(e.status === 'Planned');
+      $('#eventManageModal').addClass('show');
+    });
+  };
+  TRN.closeEventManage = function(){ $('#eventManageModal').removeClass('show'); eventCurrent = null; };
+
+  TRN.assignStudentToEvent = function(){
+    var sid = $('#emStudentIdInput').val().trim();
+    if(!sid){ toast('student_id required.', false); return; }
+    post('transport_event/assign_student', {
+      event_id: eventCurrent, student_id: sid,
+      assigned_vehicle_id: $('#emVehicleAssignInput').val(),
+    }).done(function(r){
+      r = typeof r === 'string' ? JSON.parse(r) : r;
+      if(r.status === 'success'){ toast(r.message, true); $('#emStudentIdInput,#emVehicleAssignInput').val(''); TRN.openEventManage(eventCurrent); }
+      else toast(r.message, false);
+    });
+  };
+  TRN.unassignStudent = function(eid, sid){
+    if(!confirm('Remove student '+sid+' from event roster?')) return;
+    post('transport_event/unassign_student', {event_id: eid, student_id: sid}).done(function(r){
+      r = typeof r === 'string' ? JSON.parse(r) : r;
+      if(r.status === 'success'){ toast(r.message, true); TRN.openEventManage(eid); }
+      else toast(r.message, false);
+    });
+  };
+  TRN.updateConsent = function(aid, status){
+    post('transport_event/update_consent', {assignment_id: aid, consent_status: status, notes: ''}).done(function(r){
+      r = typeof r === 'string' ? JSON.parse(r) : r;
+      if(r.status === 'success'){ toast('Consent → '+status, true); TRN.openEventManage(eventCurrent); }
+      else toast(r.message, false);
+    });
+  };
+
+  TRN.openAddEscort = function(){
+    if(!eventCurrent){ toast('No event selected.', false); return; }
+    $('#eaeEventId').val(eventCurrent); $('#eaeStaffId,#eaeNotes').val(''); $('#eaeRole').val('Chaperone');
+    $('#eventAddEscortModal').addClass('show');
+  };
+  TRN.closeAddEscort = function(){ $('#eventAddEscortModal').removeClass('show'); };
+  TRN.confirmAddEscort = function(){
+    var sid = $('#eaeStaffId').val().trim();
+    if(!sid){ toast('staff_id required.', false); return; }
+    post('transport_event/add_escort', {
+      event_id: $('#eaeEventId').val(), staff_id: sid,
+      role: $('#eaeRole').val(), notes: $('#eaeNotes').val(),
+    }).done(function(r){
+      r = typeof r === 'string' ? JSON.parse(r) : r;
+      if(r.status === 'success'){ toast(r.message, true); TRN.closeAddEscort(); TRN.openEventManage(eventCurrent); }
+      else toast(r.message, false);
+    });
+  };
+  TRN.removeEscort = function(eid, sid){
+    if(!confirm('Remove escort '+sid+'?')) return;
+    post('transport_event/remove_escort', {event_id: eid, staff_id: sid}).done(function(r){
+      r = typeof r === 'string' ? JSON.parse(r) : r;
+      if(r.status === 'success'){ toast(r.message, true); TRN.openEventManage(eid); }
+      else toast(r.message, false);
+    });
+  };
+
+  TRN.scheduleEvent = function(){
+    if(!eventCurrent){ return; }
+    if(!confirm('Schedule this event? Roster will freeze and parents will receive an Important notification.')) return;
+    post('transport_event/schedule', {id: eventCurrent}).done(function(r){
+      r = typeof r === 'string' ? JSON.parse(r) : r;
+      if(r.status === 'success'){ toast(r.message, true); TRN.openEventManage(eventCurrent); TRN.loadEvents(); }
+      else toast(r.message, false);
+    });
+  };
+
+  TRN.openDispatchTrip = function(){
+    if(!eventCurrent){ toast('No event selected.', false); return; }
+    var ev = events.find(function(x){ return (x.eventId||x.id) === eventCurrent; });
+    if(!ev){ toast('Event not loaded.', false); return; }
+    $('#edtEventId').val(eventCurrent);
+    var vopts = '';
+    (ev.assigned_vehicle_ids||[]).forEach(function(vid){ vopts += '<option value="'+vid+'">'+escH(vid)+'</option>'; });
+    $('#edtVehicle').html(vopts || '<option value="">-- no vehicles assigned --</option>');
+    var ropts = '<option value="">-- Free-form (no route) --</option>';
+    (routes||[]).forEach(function(r){ ropts += '<option value="'+r.id+'">'+escH(r.name||r.id)+'</option>'; });
+    $('#edtRoute').html(ropts);
+    $('#edtDirection').val('Pickup'); $('#edtSchedStart').val('');
+    $('#eventDispatchModal').addClass('show');
+  };
+  TRN.closeDispatchTrip = function(){ $('#eventDispatchModal').removeClass('show'); };
+  TRN.confirmDispatchTrip = function(){
+    post('transport_event/dispatch_trip', {
+      event_id: $('#edtEventId').val(),
+      vehicle_id: $('#edtVehicle').val(),
+      route_id: $('#edtRoute').val(),
+      trip_direction: $('#edtDirection').val(),
+      scheduled_start_at: $('#edtSchedStart').val(),
+    }).done(function(r){
+      r = typeof r === 'string' ? JSON.parse(r) : r;
+      if(r.status === 'success'){ toast(r.message, true); TRN.closeDispatchTrip(); TRN.openEventManage(eventCurrent); TRN.loadEvents(); }
+      else toast(r.message, false);
+    });
+  };
+
+  TRN.openCompleteEvent = function(){
+    if(!eventCurrent){ return; }
+    $('#ecplEventId').val(eventCurrent); $('#ecplNotes').val('');
+    $('#eventCompleteModal').addClass('show');
+  };
+  TRN.closeCompleteEvent = function(){ $('#eventCompleteModal').removeClass('show'); };
+  TRN.confirmCompleteEvent = function(){
+    post('transport_event/complete', {id: $('#ecplEventId').val(), notes: $('#ecplNotes').val()}).done(function(r){
+      r = typeof r === 'string' ? JSON.parse(r) : r;
+      if(r.status === 'success'){ toast(r.message, true); TRN.closeCompleteEvent(); TRN.closeEventManage(); TRN.loadEvents(); }
+      else toast(r.message, false);
+    });
+  };
+
+  TRN.openCancelEvent = function(){
+    if(!eventCurrent){ return; }
+    $('#ecclEventId').val(eventCurrent); $('#ecclReason').val('');
+    $('#eventCancelModal').addClass('show');
+  };
+  TRN.closeCancelEvent = function(){ $('#eventCancelModal').removeClass('show'); };
+  TRN.confirmCancelEvent = function(){
+    var reason = $('#ecclReason').val().trim();
+    if(!reason){ toast('Reason required.', false); return; }
+    TRN.__busyLabel='Cancelling event & notifying parents…';
+    post('transport_event/cancel', {id: $('#ecclEventId').val(), reason: reason}).done(function(r){
+      r = typeof r === 'string' ? JSON.parse(r) : r;
+      if(r.status === 'success'){ toast(r.message, true); TRN.closeCancelEvent(); TRN.closeEventManage(); TRN.loadEvents(); }
+      else toast(r.message, false);
+    });
+  };
+
+  // ═════════════════════════════════════════════════════════════════════
+  //  F7 Trip Monitor (LC-17, LC-18, 2026-07-07)
+  // ═════════════════════════════════════════════════════════════════════
+  var trips = [], tripCurrent = null;
+  TRN.loadTrips = function(){
+    var d = $('#tripDateFilter').val() || '';
+    var s = $('#tripStatusFilter').val() || '';
+    getJSON('transport_trip/list_all?date=' + encodeURIComponent(d) + '&status=' + encodeURIComponent(s)).done(function(r){
+      r = typeof r === 'string' ? JSON.parse(r) : r;
+      if(r.status !== 'success'){ $('#tripsTbody').html('<tr><td colspan="10" style="text-align:center;color:var(--rose)">'+(r.message||'load failed')+'</td></tr>'); return; }
+      trips = r.trips || [];
+      if(trips.length === 0){ $('#tripsTbody').html('<tr><td colspan="10" style="text-align:center;color:var(--t3)">No trips</td></tr>'); return; }
+      var html = '';
+      trips.forEach(function(t){
+        var st = String(t.status||'');
+        var cls = st === 'Ready' ? 'trn-badge-blue' : (st === 'InProgress' ? 'trn-badge-amber' : (st === 'Completed' ? 'trn-badge-green' : 'trn-badge-red'));
+        var progress = (t.route_progress_pct||0) + '%';
+        var boarded = (t.boarded_count||0) + '/' + (t.roster_size||0);
+        html += '<tr>';
+        html += '<td>' + escH(t.id||'') + '</td>';
+        html += '<td>' + escH(t.date||'') + '</td>';
+        html += '<td>' + escH(t.trip_direction||t.tripType||'') + '</td>';
+        html += '<td>' + escH(t.vehicleId||'') + '</td>';
+        html += '<td>' + escH((t.route_snapshot && t.route_snapshot.name)||t.route_id||'') + '</td>';
+        html += '<td>' + escH(t.driver_staff_id||'') + '</td>';
+        html += '<td>' + progress + '</td>';
+        html += '<td>' + boarded + '</td>';
+        html += '<td><span class="trn-badge ' + cls + '">' + escH(st) + '</span></td>';
+        html += '<td>';
+        if(st === 'Ready'){
+          html += '<button class="trn-btn trn-btn-sm trn-btn-primary" onclick="TRN.startTrip(\''+t.id+'\')" title="Start Trip"><i class="fa fa-play"></i></button> ';
+        }
+        if(st === 'InProgress' || st === 'Ready'){
+          html += '<button class="trn-btn trn-btn-sm trn-btn-primary" onclick="TRN.openTripManage(\''+t.id+'\')" title="Manage"><i class="fa fa-cog"></i></button>';
+        }
+        if(st === 'Completed' || st === 'Cancelled'){
+          html += '<button class="trn-btn trn-btn-sm" onclick="TRN.openTripManage(\''+t.id+'\')" style="background:var(--bg);border:1px solid var(--border);color:var(--t1)" title="View"><i class="fa fa-eye"></i></button>';
+        }
+        html += '</td></tr>';
+      });
+      $('#tripsTbody').html(html);
+    });
+  };
+
+  TRN.openCreateTrip = function(){
+    // Populate vehicle + route pickers
+    var vopts = '';
+    (vehicles||[]).forEach(function(v){ vopts += '<option value="'+v.id+'">'+escH(v.number)+'</option>'; });
+    $('#tcVehicle').html(vopts);
+    var ropts = '';
+    (routes||[]).forEach(function(r){ ropts += '<option value="'+r.id+'">'+escH(r.name||r.id)+'</option>'; });
+    $('#tcRoute').html(ropts);
+    $('#tcDate').val(new Date().toISOString().slice(0,10));
+    $('#tcDirection').val('Pickup');
+    $('#tcSchedStart,#tcNotes').val('');
+    $('#tripCreateModal').addClass('show');
+  };
+  TRN.closeTripCreate = function(){ $('#tripCreateModal').removeClass('show'); };
+  TRN.confirmCreateTrip = function(){
+    post('transport_trip/create', {
+      vehicle_id:         $('#tcVehicle').val(),
+      route_id:           $('#tcRoute').val(),
+      trip_date:          $('#tcDate').val(),
+      trip_direction:     $('#tcDirection').val(),
+      scheduled_start_at: $('#tcSchedStart').val(),
+      notes:              $('#tcNotes').val(),
+    }).done(function(r){
+      r = typeof r === 'string' ? JSON.parse(r) : r;
+      if(r.status === 'success'){ toast(r.message, true); TRN.closeTripCreate(); TRN.loadTrips(); }
+      else toast(r.message, false);
+    });
+  };
+
+  TRN.startTrip = function(id){
+    if(!confirm('Start this trip? Fires trip.started notification to Admin + Transport Manager.')) return;
+    post('transport_trip/start', {id: id}).done(function(r){
+      r = typeof r === 'string' ? JSON.parse(r) : r;
+      if(r.status === 'success'){ toast(r.message, true); TRN.loadTrips(); }
+      else toast(r.message, false);
+    });
+  };
+
+  TRN.openTripManage = function(id){
+    // Fetch trip + events, render checkpoints and roster grid
+    tripCurrent = id;
+    getJSON('transport_trip/get?id=' + encodeURIComponent(id)).done(function(r){
+      r = typeof r === 'string' ? JSON.parse(r) : r;
+      if(r.status !== 'success' || !r.trip){ toast(r.message||'load failed', false); return; }
+      var t = r.trip;
+      $('#tmTitle').text('Trip ' + t.id + ' — ' + (t.trip_direction||t.tripType) + ' (' + t.status + ')');
+      $('#tmMeta').text('Route: ' + ((t.route_snapshot && t.route_snapshot.name) || t.route_id) + ' | Vehicle: ' + t.vehicleId + ' | Driver: ' + t.driver_staff_id + ' | Date: ' + t.date + ' | Progress: ' + (t.route_progress_pct||0) + '%');
+      // Checkpoints
+      var cpHtml = '';
+      (t.checkpoints||[]).forEach(function(cp, i){
+        var st = cp.checkpoint_state || 'Pending';
+        var stCls = st === 'Reached' ? 'trn-badge-green' : (st === 'Skipped' ? 'trn-badge-amber' : 'trn-badge-blue');
+        cpHtml += '<tr>';
+        cpHtml += '<td>' + (cp.order||i+1) + '</td>';
+        cpHtml += '<td>' + escH(cp.stop_name||cp.stop_id||'') + '</td>';
+        cpHtml += '<td><span class="trn-badge ' + stCls + '">' + escH(st) + '</span></td>';
+        cpHtml += '<td>' + escH(cp.reached_at ? String(cp.reached_at).substring(11,19) : '—') + '</td>';
+        cpHtml += '<td>';
+        if(t.status === 'InProgress' && st === 'Pending'){
+          cpHtml += '<button class="trn-btn trn-btn-sm trn-btn-primary" onclick="TRN.reachCheckpoint(\''+t.id+'\',\''+cp.stop_id+'\')" title="Reached"><i class="fa fa-check"></i></button> ';
+          cpHtml += '<button class="trn-btn trn-btn-sm" onclick="TRN.openSkipCheckpoint(\''+t.id+'\',\''+cp.stop_id+'\')" style="background:var(--bg);border:1px solid var(--border);color:var(--t1)" title="Skip"><i class="fa fa-forward"></i></button>';
+        } else if(t.status === 'InProgress' && st === 'Reached' && !cp.left_at){
+          cpHtml += '<button class="trn-btn trn-btn-sm" onclick="TRN.leftCheckpoint(\''+t.id+'\',\''+cp.stop_id+'\')" style="background:var(--bg);border:1px solid var(--border);color:var(--t1)" title="Departed"><i class="fa fa-arrow-right"></i></button>';
+        }
+        cpHtml += '</td></tr>';
+      });
+      $('#tmCheckpoints').html(cpHtml || '<tr><td colspan="5" style="text-align:center;color:var(--t3)">No checkpoints</td></tr>');
+
+      // Roster + boarding events
+      $('#tmRosterSize').text((t.roster_student_ids||[]).length);
+      getJSON('transport_trip/events?id=' + encodeURIComponent(t.id)).done(function(er){
+        er = typeof er === 'string' ? JSON.parse(er) : er;
+        var events = (er && er.status === 'success') ? (er.events || []) : [];
+        var lastByStudent = {};
+        events.forEach(function(e){ lastByStudent[e.studentId] = e.event_type; });
+        var rHtml = '';
+        (t.roster_student_ids||[]).forEach(function(sid){
+          var currentEvent = lastByStudent[sid] || '';
+          var st = currentEvent === 'boarded_pickup' ? 'Boarded' : (currentEvent === 'dropped_home' ? 'Dropped' : (currentEvent === 'no_show' ? 'No-show' : 'Pending'));
+          var stCls = st === 'Pending' ? 'trn-badge-blue' : (st === 'No-show' ? 'trn-badge-red' : 'trn-badge-green');
+          rHtml += '<tr>';
+          rHtml += '<td>' + escH(sid) + '</td>';
+          rHtml += '<td><span class="trn-badge ' + stCls + '">' + st + '</span></td>';
+          rHtml += '<td>';
+          if(t.status === 'InProgress' && st === 'Pending'){
+            var actionEndpoint = t.trip_direction === 'Pickup' ? 'board_student' : 'drop_student';
+            var actionLabel = t.trip_direction === 'Pickup' ? 'Board' : 'Drop';
+            rHtml += '<button class="trn-btn trn-btn-sm trn-btn-primary" onclick="TRN.boardOrDrop(\''+t.id+'\',\''+sid+'\',\''+actionEndpoint+'\')" title="'+actionLabel+'"><i class="fa fa-check"></i></button> ';
+            rHtml += '<button class="trn-btn trn-btn-sm trn-btn-danger" onclick="TRN.noShow(\''+t.id+'\',\''+sid+'\')" title="No-show"><i class="fa fa-times"></i></button>';
+          }
+          rHtml += '</td></tr>';
+        });
+        $('#tmRoster').html(rHtml || '<tr><td colspan="3" style="text-align:center;color:var(--t3)">Empty roster</td></tr>');
+      });
+      $('#tripManageModal').addClass('show');
+    });
+  };
+  TRN.closeTripManage = function(){ $('#tripManageModal').removeClass('show'); tripCurrent = null; };
+
+  TRN.reachCheckpoint = function(tid, sid){
+    post('transport_trip/checkpoint_reached', {trip_id: tid, stop_id: sid}).done(function(r){
+      r = typeof r === 'string' ? JSON.parse(r) : r;
+      if(r.status === 'success'){ toast(r.message, true); TRN.openTripManage(tid); TRN.loadTrips(); }
+      else toast(r.message, false);
+    });
+  };
+  TRN.leftCheckpoint = function(tid, sid){
+    post('transport_trip/checkpoint_left', {trip_id: tid, stop_id: sid}).done(function(r){
+      r = typeof r === 'string' ? JSON.parse(r) : r;
+      if(r.status === 'success'){ toast(r.message, true); TRN.openTripManage(tid); }
+      else toast(r.message, false);
+    });
+  };
+  TRN.openSkipCheckpoint = function(tid, sid){
+    $('#cskTripId').val(tid); $('#cskStopId').val(sid); $('#cskReason').val('');
+    $('#checkpointSkipModal').addClass('show');
+  };
+  TRN.closeCheckpointSkip = function(){ $('#checkpointSkipModal').removeClass('show'); };
+  TRN.confirmCheckpointSkip = function(){
+    var reason = $('#cskReason').val().trim();
+    if(!reason){ toast('Reason required.', false); return; }
+    var tid = $('#cskTripId').val(), sid = $('#cskStopId').val();
+    post('transport_trip/checkpoint_skipped', {trip_id: tid, stop_id: sid, reason: reason}).done(function(r){
+      r = typeof r === 'string' ? JSON.parse(r) : r;
+      if(r.status === 'success'){ toast(r.message, true); TRN.closeCheckpointSkip(); TRN.openTripManage(tid); TRN.loadTrips(); }
+      else toast(r.message, false);
+    });
+  };
+
+  TRN.boardOrDrop = function(tid, sid, endpoint){
+    post('transport_trip/' + endpoint, {trip_id: tid, student_id: sid, actual_stop_id: '', notes: ''}).done(function(r){
+      r = typeof r === 'string' ? JSON.parse(r) : r;
+      if(r.status === 'success'){ toast(r.message, true); TRN.openTripManage(tid); TRN.loadTrips(); }
+      else toast(r.message, false);
+    });
+  };
+  TRN.noShow = function(tid, sid){
+    if(!confirm('Mark student '+sid+' as NO-SHOW? Parent will receive an Important notification.')) return;
+    post('transport_trip/no_show_student', {trip_id: tid, student_id: sid, notes: 'marked from admin panel'}).done(function(r){
+      r = typeof r === 'string' ? JSON.parse(r) : r;
+      if(r.status === 'success'){ toast(r.message, true); TRN.openTripManage(tid); TRN.loadTrips(); }
+      else toast(r.message, false);
+    });
+  };
+
+  TRN.openCompleteTrip = function(){
+    if(!tripCurrent){ toast('No trip selected.', false); return; }
+    $('#tcplId').val(tripCurrent);
+    $('#tcplEndTime').val(new Date().toISOString());
+    $('#tcplEndOdo,#tcplDistance,#tcplFuel,#tcplNotes').val('');
+    $('#tripCompleteModal').addClass('show');
+  };
+  TRN.closeTripComplete = function(){ $('#tripCompleteModal').removeClass('show'); };
+  TRN.confirmCompleteTrip = function(){
+    post('transport_trip/complete', {
+      id:           $('#tcplId').val(),
+      end_time:     $('#tcplEndTime').val(),
+      end_odometer: $('#tcplEndOdo').val() || 0,
+      distance_km:  $('#tcplDistance').val() || 0,
+      fuel_used:    $('#tcplFuel').val() || 0,
+      notes:        $('#tcplNotes').val(),
+    }).done(function(r){
+      r = typeof r === 'string' ? JSON.parse(r) : r;
+      if(r.status === 'success'){ toast(r.message, true); TRN.closeTripComplete(); TRN.closeTripManage(); TRN.loadTrips(); }
+      else toast(r.message, false);
+    });
+  };
+
+  TRN.openCancelTrip = function(){
+    if(!tripCurrent){ toast('No trip selected.', false); return; }
+    $('#tccId').val(tripCurrent); $('#tccReason').val('');
+    $('#tripCancelModal').addClass('show');
+  };
+  TRN.closeTripCancel = function(){ $('#tripCancelModal').removeClass('show'); };
+  TRN.confirmCancelTrip = function(){
+    var reason = $('#tccReason').val().trim();
+    if(!reason){ toast('Reason required.', false); return; }
+    post('transport_trip/cancel', {id: $('#tccId').val(), reason: reason}).done(function(r){
+      r = typeof r === 'string' ? JSON.parse(r) : r;
+      if(r.status === 'success'){ toast(r.message, true); TRN.closeTripCancel(); TRN.closeTripManage(); TRN.loadTrips(); }
+      else toast(r.message, false);
+    });
+  };
+
+  // ═════════════════════════════════════════════════════════════════════
+  //  F6 SOS Monitor (LC-13, 2026-07-07)
+  // ═════════════════════════════════════════════════════════════════════
+  TRN.loadSos = function(){
+    var st = $('#sosStatusFilter').val() || '';
+    getJSON('transport_sos/list_all?status=' + encodeURIComponent(st) + '&limit=100').done(function(r){
+      r = typeof r === 'string' ? JSON.parse(r) : r;
+      if(r.status !== 'success'){ $('#sosTbody').html('<tr><td colspan="9" style="text-align:center;color:var(--rose)">'+(r.message||'load failed')+'</td></tr>'); return; }
+      var rows = r.alerts || [];
+      if(rows.length === 0){ $('#sosTbody').html('<tr><td colspan="9" style="text-align:center;color:var(--t3)">No SOS alerts</td></tr>'); return; }
+      var html = '';
+      rows.forEach(function(a){
+        var st = String(a.status||'');
+        var cls = st === 'active' ? 'trn-badge-red' : (st === 'responded' ? 'trn-badge-amber' : 'trn-badge-green');
+        html += '<tr>';
+        html += '<td>' + escH(a.id||'') + '</td>';
+        html += '<td>' + escH((a.createdAt||'').substring(0,19).replace('T',' ')) + '</td>';
+        html += '<td>' + escH(a.alertType||'') + '</td>';
+        html += '<td>' + escH(a.vehicleId||'—') + '</td>';
+        html += '<td>' + escH(a.routeId||'—') + '</td>';
+        html += '<td style="max-width:250px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap" title="'+escH(a.message||'')+'">' + escH((a.message||'').substring(0,50)) + '</td>';
+        html += '<td><span class="trn-badge ' + cls + '">' + escH(st) + '</span></td>';
+        html += '<td>' + escH(a.respondedBy||'—') + '</td>';
+        html += '<td>';
+        if(st === 'active'){
+          html += '<button class="trn-btn trn-btn-sm trn-btn-primary" onclick="TRN.openSosAction(\''+a.id+'\',\'respond\')"><i class="fa fa-check"></i></button> ';
+        }
+        if(st === 'active' || st === 'responded'){
+          html += '<button class="trn-btn trn-btn-sm trn-btn-primary" onclick="TRN.openSosAction(\''+a.id+'\',\'resolve\')"><i class="fa fa-flag-checkered"></i></button>';
+        }
+        html += '</td></tr>';
+      });
+      $('#sosTbody').html(html);
+    });
+  };
+  TRN.openRaiseSos = function(){
+    // Populate vehicle + route pickers
+    var vopts = '<option value="">-- None --</option>';
+    (vehicles||[]).forEach(function(v){ vopts += '<option value="'+v.id+'">'+escH(v.number)+'</option>'; });
+    $('#sosVehicle').html(vopts);
+    var ropts = '<option value="">-- None --</option>';
+    (routes||[]).forEach(function(r){ ropts += '<option value="'+r.id+'">'+escH(r.name||r.id)+'</option>'; });
+    $('#sosRoute').html(ropts);
+    $('#sosMessage,#sosLat,#sosLng').val('');
+    $('#sosAlertType').val('emergency');
+    $('#sosRaiseModal').addClass('show');
+  };
+  TRN.closeSosRaise = function(){ $('#sosRaiseModal').removeClass('show'); };
+  TRN.confirmRaiseSos = function(){
+    var msg = $('#sosMessage').val().trim();
+    if(!msg){ toast('Message is required.', false); return; }
+    if(!confirm('This will fire an URGENT alert to Admin, Transport Manager, Principal AND all parents on the affected route. Continue?')) return;
+    TRN.__busyLabel='Raising SOS…';
+    post('transport_sos/raise', {
+      vehicle_id: $('#sosVehicle').val(),
+      route_id:   $('#sosRoute').val(),
+      lat:        $('#sosLat').val() || 0,
+      lng:        $('#sosLng').val() || 0,
+      alert_type: $('#sosAlertType').val(),
+      message:    msg,
+    }).done(function(r){
+      r = typeof r === 'string' ? JSON.parse(r) : r;
+      if(r.status === 'success'){ toast(r.message, true); TRN.closeSosRaise(); TRN.loadSos(); }
+      else toast(r.message, false);
+    });
+  };
+  TRN.openSosAction = function(id, kind){
+    $('#sosActionId').val(id); $('#sosActionKind').val(kind);
+    $('#sosActionTitle').text(kind === 'respond' ? 'Respond to SOS' : 'Resolve SOS');
+    $('#sosActionNotes').val('');
+    $('#sosActionModal').addClass('show');
+  };
+  TRN.closeSosAction = function(){ $('#sosActionModal').removeClass('show'); };
+  TRN.confirmSosAction = function(){
+    var notes = $('#sosActionNotes').val().trim();
+    if(!notes){ toast('Notes required.', false); return; }
+    var kind = $('#sosActionKind').val();
+    post('transport_sos/' + kind, {
+      sos_id: $('#sosActionId').val(),
+      notes:  notes,
+    }).done(function(r){
+      r = typeof r === 'string' ? JSON.parse(r) : r;
+      if(r.status === 'success'){ toast(r.message, true); TRN.closeSosAction(); TRN.loadSos(); }
+      else toast(r.message, false);
+    });
+  };
 
   // Init
-  loadVehicles();loadRoutes();
-  setTimeout(function(){loadStops();loadAssignments()},500);
+  // F1 (2026-07-07): load vendors FIRST so the vendor picker inside the
+  // vehicle modal is populated before the first Add-Vehicle click.
+  loadVendors();
+  loadVehicles();
+  loadRoutes();
+  loadDrivers();
+  loadExpenseCategories();
+  loadExpenses();
+  TRN.loadSos();
+  $('#tripDateFilter').val(new Date().toISOString().slice(0,10));
+  TRN.loadTrips();
+  TRN.loadEvents();
+  setTimeout(function(){loadStops();loadAssignments();loadExpiry();},500);
 })();
 });
 </script>

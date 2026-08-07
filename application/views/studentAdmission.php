@@ -574,7 +574,6 @@
 
 
 
-<script src="<?= base_url('assets/js/india_geo.js') ?>"></script>
 <script>
 /* ================================================================
    studentAdmission.php — all original IDs and logic preserved
@@ -893,7 +892,41 @@ document.addEventListener('DOMContentLoaded', function() {
         }
     });
 
-    /* State → district cascade handled by shared IndiaGeo (assets/js/india_geo.js) */
+    /* State → district */
+    var stateDistricts = {
+        "Uttar Pradesh": ["Agra","Aligarh","Allahabad","Ambedkar Nagar","Amethi","Amroha","Auraiya","Azamgarh","Baghpat","Bahraich","Ballia","Balrampur","Banda","Barabanki","Bareilly","Basti","Bhadohi","Bijnor","Budaun","Bulandshahr","Chandauli","Chitrakoot","Deoria","Etah","Etawah","Faizabad","Farrukhabad","Fatehpur","Firozabad","Gautam Buddha Nagar","Ghaziabad","Ghazipur","Gonda","Gorakhpur","Hamirpur","Hapur","Hardoi","Hathras","Jalaun","Jaunpur","Jhansi","Kannauj","Kanpur Dehat","Kanpur Nagar","Kasganj","Kaushambi","Kushinagar","Lakhimpur Kheri","Lalitpur","Lucknow","Maharajganj","Mahoba","Mainpuri","Mathura","Mau","Meerut","Mirzapur","Moradabad","Muzaffarnagar","Pilibhit","Pratapgarh","Raebareli","Rampur","Saharanpur","Sambhal","Sant Kabir Nagar","Shahjahanpur","Shamli","Shravasti","Siddharthnagar","Sitapur","Sonbhadra","Sultanpur","Unnao","Varanasi"],
+        "Uttarakhand": ["Almora","Bageshwar","Chamoli","Champawat","Dehradun","Haridwar","Nainital","Pauri Garhwal","Pithoragarh","Rudraprayag","Tehri Garhwal","Udham Singh Nagar","Uttarkashi"],
+        "Delhi": ["Central Delhi","East Delhi","New Delhi","North Delhi","North East Delhi","North West Delhi","South Delhi","South East Delhi","South West Delhi","West Delhi"],
+        "Maharashtra": ["Mumbai","Pune","Nagpur","Nashik","Thane","Aurangabad","Solapur","Kolhapur","Amravati","Nanded","Sangli","Jalgaon","Latur"],
+        "Rajasthan": ["Ajmer","Alwar","Banswara","Baran","Barmer","Bharatpur","Bhilwara","Bikaner","Bundi","Chittorgarh","Churu","Dausa","Dholpur","Dungarpur","Hanumangarh","Jaipur","Jaisalmer","Jalore","Jhalawar","Jhunjhunu","Jodhpur","Karauli","Kota","Nagaur","Pali","Pratapgarh","Rajsamand","Sawai Madhopur","Sikar","Sirohi","Sri Ganganagar","Tonk","Udaipur"],
+        "Gujarat": ["Ahmedabad","Amreli","Anand","Aravalli","Banaskantha","Bharuch","Bhavnagar","Botad","Chhota Udaipur","Dahod","Dang","Devbhoomi Dwarka","Gandhinagar","Gir Somnath","Jamnagar","Junagadh","Kheda","Kutch","Mahisagar","Mehsana","Morbi","Narmada","Navsari","Panchmahal","Patan","Porbandar","Rajkot","Sabarkantha","Surat","Surendranagar","Tapi","Vadodara","Valsad"],
+        "Karnataka": ["Bagalkot","Ballari","Belagavi","Bengaluru Rural","Bengaluru Urban","Bidar","Chamarajanagara","Chikballapur","Chikkamagaluru","Chitradurga","Dakshina Kannada","Davanagere","Dharwad","Gadag","Hassan","Haveri","Kalaburagi","Kodagu","Kolar","Koppal","Mandya","Mysuru","Raichur","Ramanagara","Shivamogga","Tumakuru","Udupi","Uttara Kannada","Vijayanagara","Vijayapura","Yadgir"],
+        "Tamil Nadu": ["Ariyalur","Chengalpattu","Chennai","Coimbatore","Cuddalore","Dharmapuri","Dindigul","Erode","Kallakurichi","Kancheepuram","Kanyakumari","Karur","Krishnagiri","Madurai","Mayiladuthurai","Nagapattinam","Namakkal","Nilgiris","Perambalur","Pudukkottai","Ramanathapuram","Ranipet","Salem","Sivaganga","Tenkasi","Thanjavur","Theni","Thoothukudi","Tiruchirappalli","Tirunelveli","Tirupathur","Tiruppur","Tiruvallur","Tiruvannamalai","Tiruvarur","Vellore","Villupuram","Virudhunagar"],
+        "Kerala": ["Alappuzha","Ernakulam","Idukki","Kannur","Kasaragod","Kollam","Kottayam","Kozhikode","Malappuram","Palakkad","Pathanamthitta","Thiruvananthapuram","Thrissur","Wayanad"],
+        "West Bengal": ["Alipurduar","Bankura","Birbhum","Cooch Behar","Dakshin Dinajpur","Darjeeling","Hooghly","Howrah","Jalpaiguri","Jhargram","Kalimpong","Kolkata","Malda","Murshidabad","Nadia","North 24 Parganas","Paschim Bardhaman","Paschim Medinipur","Purba Bardhaman","Purba Medinipur","Purulia","South 24 Parganas","Uttar Dinajpur"],
+        "Bihar": ["Araria","Arwal","Aurangabad","Banka","Begusarai","Bhagalpur","Bhojpur","Buxar","Darbhanga","East Champaran","Gaya","Gopalganj","Jamui","Jehanabad","Kaimur","Katihar","Khagaria","Kishanganj","Lakhisarai","Madhepura","Madhubani","Munger","Muzaffarpur","Nalanda","Nawada","Patna","Purnia","Rohtas","Saharsa","Samastipur","Saran","Sheikhpura","Sheohar","Sitamarhi","Siwan","Supaul","Vaishali","West Champaran"],
+        "Punjab": ["Amritsar","Barnala","Bathinda","Faridkot","Fatehgarh Sahib","Fazilka","Ferozepur","Gurdaspur","Hoshiarpur","Jalandhar","Kapurthala","Ludhiana","Mansa","Moga","Mohali","Muktsar","Nawanshahr","Pathankot","Patiala","Roopnagar","Sangrur","Tarn Taran"],
+        "Haryana": ["Ambala","Bhiwani","Charkhi Dadri","Faridabad","Fatehabad","Gurugram","Hisar","Jhajjar","Jind","Kaithal","Karnal","Kurukshetra","Mahendragarh","Nuh","Palwal","Panchkula","Panipat","Rewari","Rohtak","Sirsa","Sonipat","Yamunanagar"]
+    };
+
+    var stateEl = document.getElementById('state');
+    if (stateEl) {
+        stateEl.addEventListener('change', function() {
+            var distSel = document.getElementById('city');
+            if (!distSel) return;
+            distSel.innerHTML = '<option value="">Select District</option>';
+            var list = stateDistricts[this.value];
+            if (list) {
+                list.forEach(function(d) {
+                    var o = document.createElement('option');
+                    o.value = o.textContent = d;
+                    distSel.appendChild(o);
+                });
+            } else {
+                distSel.innerHTML = '<option value="">No districts listed</option>';
+            }
+        });
+    }
 
     /* Sidebar active highlight on scroll */
     var sections = document.querySelectorAll('.sa-section');
@@ -941,14 +974,12 @@ document.addEventListener('DOMContentLoaded', function() {
                 }}
             }
             if (L.address) document.getElementById('street') && (document.getElementById('street').value = L.address);
+            if (L.city) document.getElementById('city') && (document.getElementById('city').value = L.city);
             if (L.state) {
                 var stEl = document.getElementById('state');
-                if (stEl) {
-                    stEl.value = L.state;
-                    if (window.IndiaGeo) IndiaGeo.fillDistricts(stEl, document.getElementById('city'), L.city || '');
-                }
-            } else if (L.city) {
-                document.getElementById('city') && (document.getElementById('city').value = L.city);
+                if (stEl) { for (var j = 0; j < stEl.options.length; j++) {
+                    if (stEl.options[j].value === L.state) { stEl.selectedIndex = j; stEl.dispatchEvent(new Event('change')); break; }
+                }}
             }
             if (L.pincode) document.getElementById('postal_code') && (document.getElementById('postal_code').value = L.pincode);
             if (L.religion) {
@@ -986,6 +1017,44 @@ document.addEventListener('DOMContentLoaded', function() {
                 }
             }
 
+            // ── Files uploaded on the public application: show them + carry
+            //    over on save; relax "required" where the lead already
+            //    supplied the photo/Aadhaar so the admin needn't re-scan. ──
+            (function(){
+                function _ext(s){ s=(s||'').split('?')[0]; try{s=decodeURIComponent(s);}catch(e){} var i=s.lastIndexOf('.'); return i<0?'':s.slice(i+1).toLowerCase(); }
+                function _isImg(s){ return ['jpg','jpeg','png','gif','webp'].indexOf(_ext(s))!==-1; }
+                function _esc(s){ var d=document.createElement('div'); d.textContent=s==null?'':s; return d.innerHTML; }
+                // Preset the Passport Size Photo preview from the lead (this is
+                // where the uploaded photo is shown — so we do NOT also list it
+                // in the attachments card below, to avoid a duplicate photo).
+                if (L.photo_url){
+                    var pp=document.getElementById('passportPhotoPreview'); if (pp) pp.src = L.photo_url;
+                    var sp=document.getElementById('student_photo'); if (sp) sp.removeAttribute('required');
+                    var wp=document.getElementById('wrap_student_photo'); if (wp) wp.classList.add('has-file');
+                }
+                if (L.aadhaar_url){ var ac=document.getElementById('aadharCard'); if (ac) ac.removeAttribute('required'); }
+                // Attachments card lists Aadhaar + other documents only (photo is
+                // already visible in the Passport Size Photo box above).
+                var items = [];
+                if (L.aadhaar_url) items.push({label:'Aadhaar Card', url:L.aadhaar_url});
+                if (Array.isArray(L.documents)) L.documents.forEach(function(d){ if (d && d.url) items.push({label:(d.name || 'Document'), url:d.url}); });
+                if (!items.length) return;
+                var tiles='';
+                items.forEach(function(a){
+                    var im=a.img||_isImg(a.url), lbl=_esc(a.label), url=_esc(a.url);
+                    if (im) tiles += '<a href="'+url+'" target="_blank" rel="noopener" style="display:inline-block;width:92px;text-align:center;text-decoration:none;color:#334155;"><img src="'+url+'" alt="'+lbl+'" style="width:92px;height:92px;object-fit:cover;border-radius:8px;border:1px solid #e2e8f0;display:block;"><span style="display:block;font-size:11px;margin-top:4px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;">'+lbl+'</span></a>';
+                    else tiles += '<a href="'+url+'" target="_blank" rel="noopener" style="display:inline-flex;align-items:center;gap:7px;padding:9px 13px;border:1px solid #e2e8f0;border-radius:8px;text-decoration:none;color:#0f766e;font-size:13px;font-weight:600;"><i class="fa fa-file-o"></i> '+lbl+'</a>';
+                });
+                var card=document.createElement('div');
+                card.style.cssText='background:#f0fdfa;border:1px solid #99f6e4;border-radius:10px;padding:14px 16px;margin:0 0 16px;';
+                card.innerHTML='<div style="font-size:13px;font-weight:700;color:#0f766e;margin-bottom:4px;"><i class="fa fa-paperclip"></i> Uploaded with the application</div>'
+                             + '<div style="font-size:11.5px;color:#5a716c;margin-bottom:10px;">These are attached to the student automatically on save. Upload again only to replace one.</div>'
+                             + '<div style="display:flex;flex-wrap:wrap;gap:12px;align-items:flex-start;">'+tiles+'</div>';
+                var docsSec=document.getElementById('sec-docs');
+                if (docsSec && docsSec.firstChild) docsSec.insertBefore(card, docsSec.firstChild);
+                else if (docsSec) docsSec.appendChild(card);
+            })();
+
             // Store lead_id in hidden field for save_admission
             var hid = document.createElement('input');
             hid.type = 'hidden'; hid.name = 'lead_id'; hid.value = leadId;
@@ -1004,21 +1073,24 @@ document.addEventListener('DOMContentLoaded', function() {
 });
 </script>
 
+<!-- India state→district autocomplete for the City field (preserved from live). -->
+<script src="<?= base_url('assets/js/india_geo.js') ?>"></script>
+
 
 
 <style>
 @import url('https://fonts.googleapis.com/css2?family=Instrument+Sans:wght@400;500;600;700&family=Lora:wght@500;600;700&display=swap');
 
 :root {
-    --sa-navy:   #2A1C12;
-    --sa-blue:   #BC5A3C;
-    --sa-sky:    #F7ECE7;
-    --sa-green:  #2FA875;
+    --sa-navy:   #0c1e38;
+    --sa-blue:   #0f766e;
+    --sa-sky:    #e6f4f1;
+    --sa-green:  #15803d;
     --sa-red:    #dc2626;
     --sa-amber:  #d97706;
-    --sa-text:   #22160F;
+    --sa-text:   #1a2535;
     --sa-muted:  #64748b;
-    --sa-border: #E7DED6;
+    --sa-border: #e2e8f0;
     --sa-white:  #ffffff;
     --sa-bg:     #f1f5fb;
     --sa-shadow: 0 1px 12px rgba(12,30,56,.07);
@@ -1196,7 +1268,7 @@ document.addEventListener('DOMContentLoaded', function() {
 }
 .sa-input:focus, .sa-select:focus {
     border-color: var(--sa-blue);
-    box-shadow: 0 0 0 3px rgba(188,90,60,.1);
+    box-shadow: 0 0 0 3px rgba(15,118,110,.1);
     background: #fff;
 }
 .sa-input[readonly] {
@@ -1323,7 +1395,7 @@ document.addEventListener('DOMContentLoaded', function() {
 }
 .sa-btn:hover { opacity: .86; transform: translateY(-1px); }
 .sa-btn:disabled { opacity: .5; cursor: not-allowed; transform: none; }
-.sa-btn-primary { background: var(--sa-blue); color: #fff; box-shadow: 0 2px 10px rgba(188,90,60,.25); }
+.sa-btn-primary { background: var(--sa-blue); color: #fff; box-shadow: 0 2px 10px rgba(15,118,110,.25); }
 .sa-btn-ghost   { background: var(--sa-white); color: var(--sa-text); border: 1.5px solid var(--sa-border); }
 .sa-btn-ghost:hover { border-color: var(--sa-blue); color: var(--sa-blue); }
 .sa-btn-success { background: var(--sa-green); color: #fff; }
@@ -1392,7 +1464,7 @@ document.addEventListener('DOMContentLoaded', function() {
 .sa-prev-badge {
     padding: 3px 11px; border-radius: 20px;
     font-size: 12px; font-weight: 600;
-    background: rgba(188,90,60,.1); color: var(--sa-blue);
+    background: rgba(15,118,110,.1); color: var(--sa-blue);
     border: 1px solid rgba(24,71,194,.2);
 }
 

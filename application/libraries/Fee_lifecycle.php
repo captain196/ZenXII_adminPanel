@@ -364,7 +364,14 @@ class Fee_lifecycle
             $built = $this->_routedBuildAdmissionSpecs($studentId, $class, $section);
 
             if (!$built['chartFound']) {
-                log_message('info', "Fee_lifecycle::assignInitialFees — no Firestore feeStructure for [{$class}/{$section}] student [{$studentId}]");
+                // Visibility fix: a missing fee structure at admission time
+                // means this student silently gets ZERO demands (bills) and
+                // is unpayable at the counter until someone re-saves the
+                // class Fee Structure or runs Generate Demands. Raise to
+                // 'warning' (was 'info') so it's monitorable, and make the
+                // remedy explicit. Admission still succeeds — this is a
+                // best-effort, non-fatal signal.
+                log_message('warning', "Fee_lifecycle::assignInitialFees — NO fee structure for [{$class}/{$section}]; student [{$studentId}] admitted with ZERO fee demands. Set up fees for this class then run Generate Demands (or re-save the Fee Structure) to bill this student.");
                 return [];
             }
 
@@ -667,6 +674,82 @@ class Fee_lifecycle
      * The demand is categorised so clearance checks + reports can group
      * it correctly.
      */
+    /**
+     * TMS F3 (2026-07-07) — cancel all outstanding demands for a specific
+     * student in a specific session for the given module.
+     *
+     * Used by Transport session rollover to clean up the old session's
+     * transport demands before creating new session's demands. Preserves
+     * historical demand records (never deletes) — flips status to 'cancelled'
+     * and records the cancellation actor + reason.
+     *
+     * The session parameter is the Indian academic session (e.g. "2026-27");
+     * internally maps to the periodKey format createModuleFee wrote.
+     *
+     * @return int Number of demands cancelled.
+     */
+    public function cancelSessionDemands(string $studentId, string $session, string $moduleType = 'Transport', string $reason = 'session_rollover'): int
+    {
+        if ($studentId === '' || $session === '' || $moduleType === '') {
+            return 0;
+        }
+        // Session periodKey — Transport demands created via createModuleFee
+        // use format YYYY-04 (Indian FY start month).
+        $year = (int) substr($session, 0, 4);
+        $periodKey = sprintf('%04d-%02d', $year, self::ACADEMIC_START_MONTH);
+
+        try {
+            // FIN-2: category is stored lowercase by createModuleFee
+            // (strtolower). Firestore equality is case-sensitive, so a caller
+            // passing 'Transport' would match ZERO rows and never cancel the
+            // old-session demands on rollover (phantom cross-session dues).
+            // Normalise the predicate to match what was written.
+            $rows = (array) $this->fs->schoolWhere('feeDemands', [
+                ['studentId', '==', $studentId],
+                ['category',  '==', strtolower((string) $moduleType)],
+                ['periodKey', '==', $periodKey],
+            ]);
+        } catch (\Throwable $e) {
+            log_message('error', 'Fee_lifecycle::cancelSessionDemands query failed: ' . $e->getMessage());
+            return 0;
+        }
+        $cancelled = 0;
+        foreach ($rows as $row) {
+            if (!is_array($row)) { continue; }
+            // FIN-2: schoolWhere returns nested {id, data:{…}} rows. Read the
+            // demand fields from the data level (fallback to a flat row) so the
+            // paid/cancelled skip actually works — reading the status off the
+            // envelope level is always empty for a nested row, which would
+            // wrongly cancel a PAID demand on rollover.
+            $d = (isset($row['data']) && is_array($row['data'])) ? $row['data'] : $row;
+            $status = (string) ($d['status'] ?? '');
+            if ($status === 'cancelled' || $status === 'paid') {
+                continue;   // don't cancel already-paid or already-cancelled
+            }
+            $demandId = (string) ($d['demandId'] ?? $row['id'] ?? $d['id'] ?? '');
+            if ($demandId === '') { continue; }
+            try {
+                $this->fsTxn->writeDemand($demandId, [
+                    'status'        => 'cancelled',
+                    'cancelledAt'   => date('c'),
+                    'cancelledBy'   => $this->adminId,
+                    'cancelReason'  => $reason,
+                    'updatedAt'     => date('c'),
+                ]);
+                $cancelled++;
+            } catch (\Throwable $e) {
+                log_message('warning', 'Fee_lifecycle::cancelSessionDemands writeDemand failed for ' . $demandId . ': ' . $e->getMessage());
+            }
+        }
+        $this->_log('session_demands_cancelled', $studentId, [
+            'module'    => $moduleType,
+            'session'   => $session,
+            'cancelled' => $cancelled,
+            'reason'    => $reason,
+        ]);
+        return $cancelled;
+    }
+
     public function createModuleFee(string $studentId, string $moduleType, array $feeData): ?string
     {
         try {
@@ -683,24 +766,52 @@ class Fee_lifecycle
             $demandId   = $this->_demandId($studentId, $periodKey, '', $headName . '_' . $moduleType);
             $periodLbl  = "April {$year}";
 
-            $this->fsTxn->writeDemand($demandId, [
+            // FIN-1: never reset the payment state of an EXISTING demand. This
+            // generic module-fee writer (Transport + Hostel) is re-invoked on the
+            // SAME demandId (route is NOT part of the id) by route change /
+            // assignment edit / rollover / reconcile. Read the existing demand;
+            // if it already carries a payment, PRESERVE paidAmount (payment
+            // history is preserved by the merge write) and recompute
+            // balance/status against the new amount — mirroring proRateFees. A
+            // brand-new (or genuinely unpaid) demand is written unpaid.
+            $existing  = $this->firebase->firestoreGet('feeDemands', $demandId);
+            $paidSoFar = is_array($existing) ? (float) ($existing['paidAmount'] ?? $existing['paid_amount'] ?? 0) : 0.0;
+            if ($paidSoFar > 0) {
+                $balance  = max(0.0, round($amount - $paidSoFar, 2));
+                $payState = [
+                    'paidAmount' => $paidSoFar,
+                    'balance'    => $balance,
+                    'status'     => $balance <= 0.005 ? 'paid' : 'partial',
+                ];
+            } else {
+                $payState = [
+                    'paidAmount' => 0.0,
+                    'balance'    => $amount,
+                    'status'     => 'unpaid',
+                ];
+            }
+
+            $this->fsTxn->writeDemand($demandId, array_merge([
                 'studentId'   => $studentId,
                 'studentName' => (string) ($stu['name'] ?? $stu['studentName'] ?? ''),
                 'className'   => (string) ($stu['className'] ?? ''),
                 'section'     => (string) ($stu['section']   ?? ''),
                 'feeHead'     => $headName,
-                'category'    => $moduleType,
+                // F10 (2026-07-07) — normalise category to lowercase per
+                // Refinement 4. Historical demands may carry mixed-case
+                // ('Transport') — Parent app filter is case-insensitive
+                // for read-time compat + falls back to name.contains for
+                // pre-F10 records without the category field. NO data
+                // migration required.
+                'category'    => strtolower((string) $moduleType),
                 'frequency'   => $frequency,
                 'period'      => $periodLbl,
                 'periodKey'   => $periodKey,
                 'grossAmount' => $amount,
                 'netAmount'   => $amount,
-                'paidAmount'  => 0.0,
-                'balance'     => $amount,
-                'status'      => 'unpaid',
                 'createdAt'   => date('c'),
                 'createdBy'   => $this->adminId,
-            ]);
+            ], $payState));
 
             $this->_log('module_fee_created', $studentId, [
                 'module' => $moduleType, 'head' => $headName, 'amount' => $amount,

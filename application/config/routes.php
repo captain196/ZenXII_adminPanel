@@ -345,6 +345,7 @@ $route['school_config/delete_subject']                  = 'School_config/delete_
 $route['school_config/get_default_subjects']            = 'School_config/get_default_subjects';
 $route['school_config/save_bulk_subjects']              = 'School_config/save_bulk_subjects';
 $route['school_config/save_stream']                     = 'School_config/save_stream';
+$route['school_config/save_streams']                    = 'School_config/save_streams';
 $route['school_config/delete_stream']                   = 'School_config/delete_stream';
 $route['school_config/add_session']                     = 'School_config/add_session';
 $route['school_config/set_active_session']              = 'School_config/set_active_session';
@@ -485,6 +486,12 @@ $route['sis/reset_password']                    = 'Sis/reset_password';
 $route['sis/documents/(:any)']                  = 'Sis/documents/$1';
 $route['sis/upload_document']                   = 'Sis/upload_document';
 $route['sis/delete_document']                   = 'Sis/delete_document';
+// Phase 2 — Student Documents via the Canonical Document Service (Document Service unchanged).
+$route['sis/student_upload_document']           = 'Sis/student_upload_document';
+$route['sis/verify_student_document']           = 'Sis/verify_student_document';
+$route['sis/replace_student_document']          = 'Sis/replace_student_document';
+$route['sis/delete_student_document']           = 'Sis/delete_student_document';
+$route['sis/student_document_audit']            = 'Sis/student_document_audit';
 $route['sis/history/(:any)']                    = 'Sis/history/$1';
 $route['sis/id_card']                           = 'Sis/id_card';
 $route['sis/search_student']                    = 'Sis/search_student';
@@ -577,6 +584,9 @@ $route['admission_crm/applications']            = 'Sis/applications';
 $route['admission_crm/fetch_applications']      = 'Sis/fetch_applications';
 $route['admission_crm/save_application']        = 'Sis/save_application';
 $route['admission_crm/get_application']         = 'Sis/get_application';
+$route['admission_crm/collect_admission_fee']   = 'Sis/collect_admission_fee';
+$route['admission_crm/admission_receipt']       = 'Sis/admission_receipt';
+$route['admission_crm/poster']                  = 'Sis/admission_poster';
 $route['admission_crm/delete_application']      = 'Sis/delete_application';
 $route['admission_crm/pipeline']                = 'Sis/pipeline';
 $route['admission_crm/fetch_pipeline']          = 'Sis/fetch_pipeline';
@@ -584,6 +594,10 @@ $route['admission_crm/update_stage']            = 'Sis/update_stage';
 $route['admission_crm/approve_application']     = 'Sis/approve_application';
 $route['admission_crm/reject_application']      = 'Sis/reject_application';
 $route['admission_crm/enroll_student']          = 'Sis/enroll_student';
+// Phase 1 — Canonical Document Service: admission document lifecycle actions.
+$route['admission_crm/verify_document']         = 'Sis/verify_admission_document';
+$route['admission_crm/replace_document']        = 'Sis/replace_admission_document';
+$route['admission_crm/delete_document']         = 'Sis/delete_admission_document';
 // SIS Tier-2 fix B3 (post-soak 2026-06-01): Auth-repair endpoint for
 // orphan Firebase Auth rows. Two aliases — admission_crm/* for the
 // enrollment-credentials modal in admission_crm/applications.php, and
@@ -607,13 +621,17 @@ $route['admission_crm/fetch_analytics']         = 'Sis/fetch_analytics';
 $route['admission/form/(:any)']                 = 'Admission_public/form/$1';
 $route['admission/submit/(:any)']               = 'Admission_public/submit/$1';
 $route['admission/pay/(:any)']                  = 'Admission_public/initiate_payment/$1';
+$route['admission/choose_offline/(:any)']       = 'Admission_public/choose_offline/$1';
 $route['admission/payment_callback/(:any)']     = 'Admission_public/payment_callback/$1';
+$route['admission/payment_webhook/(:any)']      = 'Admission_public/payment_webhook/$1';
 $route['admission/payment_status/(:any)']       = 'Admission_public/payment_status/$1';
 // Server-to-server Razorpay webhook (reconciliation, C4). CSRF-exempt — see
 // config.php csrf_exclude_uris. Verified by HMAC(webhook_secret).
 $route['admission/payment_webhook/(:any)']      = 'Admission_public/payment_webhook/$1';
 // Receipt — `admission/receipt/{schoolId}/{appId}/{token}` (Tier-A QW #1).
 $route['admission/receipt/(:any)/(:any)/(:any)'] = 'Admission_public/receipt/$1/$2/$3';
+// FEE receipt (paid, ADM…) — `admission/fee_receipt/{schoolId}/{receiptNo}/{token}`.
+$route['admission/fee_receipt/(:any)/(:any)/(:any)'] = 'Admission_public/fee_receipt/$1/$2/$3';
 
 // ─── Attendance Management ───
 $route['attendance']                         = 'Attendance/index';
@@ -769,9 +787,9 @@ $route['accounting/suggest_matches']                    = 'Accounting/suggest_ma
 $route['accounting/carry_forward_balances']             = 'Accounting/carry_forward_balances';
 $route['accounting/get_audit_log']                      = 'Accounting/get_audit_log';
 
-// ─── Payroll Stage 3 — UI integration around PayrollAccountingService ──────
+// ─── Payroll — UI integration around PayrollAccountingService ──────────────
 //   All POST endpoints route through PayrollAccountingService → Operations_accounting.
-//   No bypass paths; feature-flag gated via payroll_engine_integration.
+//   No bypass paths.
 $route['payroll']                                       = 'Payroll/index';
 $route['payroll/preview_accrual']                       = 'Payroll/preview_accrual';
 $route['payroll/preview_payout']                        = 'Payroll/preview_payout';
@@ -1007,6 +1025,17 @@ $route['transport']                         = 'Transport/index';
 $route['transport/vehicles']                = 'Transport/index';
 $route['transport/routes']                  = 'Transport/index';
 $route['transport/assignments']             = 'Transport/index';
+// F1-F8 tab routes — every tab slug in transport/index.php's tab_map
+// must be explicitly routed to Transport/index, otherwise CI3 falls
+// through to method-dispatch (looks for Transport::vendors etc.) and
+// 404s. Caught during release certification 2026-07-08.
+$route['transport/vendors']                 = 'Transport/index';   // F1
+$route['transport/drivers']                 = 'Transport/index';   // F4
+$route['transport/expenses']                = 'Transport/index';   // F5
+$route['transport/sos']                     = 'Transport/index';   // F6
+$route['transport/trips']                   = 'Transport/index';   // F7
+$route['transport/events']                  = 'Transport/index';   // F8
+$route['transport/expiry']                  = 'Transport/index';   // F1
 $route['transport/get_vehicles']            = 'Transport/get_vehicles';
 $route['transport/save_vehicle']            = 'Transport/save_vehicle';
 $route['transport/delete_vehicle']          = 'Transport/delete_vehicle';
@@ -1020,6 +1049,7 @@ $route['transport/get_assignments']         = 'Transport/get_assignments';
 $route['transport/save_assignment']         = 'Transport/save_assignment';
 $route['transport/delete_assignment']       = 'Transport/delete_assignment';
 $route['transport/search_students']         = 'Transport/search_students';
+$route['transport/get_student_assignment']  = 'Transport/get_student_assignment';
 
 // Hostel
 $route['hostel']                            = 'Hostel/index';

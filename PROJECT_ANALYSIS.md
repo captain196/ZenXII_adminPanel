@@ -307,7 +307,7 @@ The `Sis.php` controller (Admin) is the consolidated student lifecycle entry poi
 | Refund processing | W | — | — |
 | Fee simulation (sandbox) | W | — | — |
 
-Fee architecture is documented in detail in [Section 7.1](#71-fee-payment-flow). The PHP side has 15+ specialised libraries (`Fee_cache`, `Fee_audit`, `Fee_lifecycle`, `Fee_defaulter_check`, `Fee_generation_engine`, `Fee_firestore_sync`, etc.).
+Fee architecture is documented in detail in [Section 7.1](#71-fee-payment-flow). The PHP side has 15+ specialised libraries (`Fee_cache`, `Fee_audit`, `Fee_lifecycle`, `Fee_defaulter_check`, `Fee_firestore_sync`, etc.).
 
 ## 6.3 Accounting & Payroll
 
