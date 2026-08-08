@@ -311,6 +311,21 @@ service cloud.firestore {
                     && request.resource.data.diff(resource.data)
                           .affectedKeys()
                           .hasOnly(['mustChangePassword', 'updatedAt']);
+      // Language preference — self-service, mirrored from the Parent app so
+      // push can be composed in the parent's language and a reinstall or
+      // account switch can restore it. The app renders from a device-local
+      // preference, so this write is best-effort; it is the SERVER's copy.
+      //
+      // A SEPARATE clause on purpose: widening the mustChangePassword
+      // allowlist above would let a student send both fields in one write,
+      // and that allowlist needs to stay byte-narrow.
+      allow update: if isSameSchool()
+                    && request.auth.uid == resource.data.studentId
+                    && request.resource.data.diff(resource.data)
+                          .affectedKeys()
+                          .hasOnly(['prefLang', 'updatedAt'])
+                    && request.resource.data.prefLang is string
+                    && request.resource.data.prefLang.size() <= 8;
     }
 
     // ── Staff ────────────────────────────────────────────────────
@@ -1362,8 +1377,19 @@ service cloud.firestore {
     // that predate the schoolId field become unreadable — acceptable, they
     // belong to stories that expire within 24h and are swept.
     match /{path=**}/viewers/{uid} {
+      // `resource == null` is REQUIRED, not defensive. Both apps write this
+      // marker inside a transaction whose first step is get(viewers/{uid}) on
+      // a doc that does not exist yet. For a missing document `resource` is
+      // null, so `resource.data...` fails and the READ is denied — killing the
+      // transaction before the write is ever attempted. That is why, between
+      // the C2 read-side hardening (2026-07-08) and 2026-08-08, NOT ONE story
+      // view or reaction was ever recorded: every story sat at viewCount=0
+      // with zero viewer docs and reactionCounts={}. Allowing the get of a
+      // missing doc leaks nothing (there is no data to read) and restores the
+      // read-then-write path. Covered by tests/story_engagement.test.js.
       allow read: if isAuth()
-        && resource.data.get('schoolId', '') == request.auth.token.school_id;
+        && (resource == null
+            || resource.data.get('schoolId', '') == request.auth.token.school_id);
       allow create, update: if isAuth()
         && request.resource.data.userId == uid
         && request.resource.data.schoolId == request.auth.token.school_id;
@@ -1372,8 +1398,19 @@ service cloud.firestore {
             || resource.data.schoolId == request.auth.token.school_id);
     }
     match /{path=**}/reactions/{uid} {
+      // `resource == null` is REQUIRED, not defensive. Both apps write this
+      // marker inside a transaction whose first step is get(viewers/{uid}) on
+      // a doc that does not exist yet. For a missing document `resource` is
+      // null, so `resource.data...` fails and the READ is denied — killing the
+      // transaction before the write is ever attempted. That is why, between
+      // the C2 read-side hardening (2026-07-08) and 2026-08-08, NOT ONE story
+      // view or reaction was ever recorded: every story sat at viewCount=0
+      // with zero viewer docs and reactionCounts={}. Allowing the get of a
+      // missing doc leaks nothing (there is no data to read) and restores the
+      // read-then-write path. Covered by tests/story_engagement.test.js.
       allow read: if isAuth()
-        && resource.data.get('schoolId', '') == request.auth.token.school_id;
+        && (resource == null
+            || resource.data.get('schoolId', '') == request.auth.token.school_id);
       allow create, update: if isAuth()
         && request.resource.data.userId == uid
         && request.resource.data.schoolId == request.auth.token.school_id;
