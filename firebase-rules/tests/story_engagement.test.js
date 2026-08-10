@@ -107,20 +107,32 @@ describe('story viewers', () => {
     await assertFails(foreign.doc(viewerPath()).get());
   });
 
-  // KNOWN GAP (documented, not fixed here). The rule asserts only that the
-  // PAYLOAD's userId equals the doc id — never that the writer IS that user.
-  // So any authenticated member of the school can forge a marker under
-  // someone else's id: faking that a parent saw a story, or a reaction they
-  // never made. The block comment justifies this by saying the doc id "is NOT
-  // necessarily request.auth.uid" under synthetic-email auth — but every
-  // account inspected in production has request.auth.uid EQUAL to the app id
-  // (STU0012, STA0011, …), so `uid == request.auth.uid` would close it.
-  // Tightening that is a behaviour change that could lock out any account
-  // where the two genuinely diverge, so it needs a deliberate decision rather
-  // than a silent edit. This test pins TODAY'S behaviour so the gap is
-  // visible and any future tightening shows up as a deliberate change here.
-  test('KNOWN GAP: a viewer CAN currently forge a marker under another id', async () => {
+  // ST-SEC-13 (closed 2026-08-08). Previously the rule checked only that the
+  // PAYLOAD's userId matched the doc id — a condition ANY authenticated member
+  // of the school could satisfy for ANYONE's id, forging a "seen" record or a
+  // reaction that never happened. `uid == request.auth.uid` now asserts the
+  // writer IS that person.
+  //
+  // Verified before tightening: across 140 auth users every real account has
+  // request.auth.uid EQUAL to its app id; the only exceptions are 2 PROBE_*
+  // rows and 3 *_test_phase1 fixtures, none of which post or view stories.
+  test('a viewer CANNOT forge a marker under someone else’s id', async () => {
     const db = parentCtx().firestore();
+    await assertFails(db.doc(viewerPath(OTHER_PARENT)).set(viewerDoc(OTHER_PARENT)));
+  });
+
+  test('a viewer CANNOT forge even with a perfectly-matching payload', async () => {
+    // The payload is internally consistent (userId == doc id == OTHER_PARENT,
+    // correct school) — only the WRITER is wrong. This is precisely the case
+    // the old rule let through.
+    const db = parentCtx(PARENT).firestore();
+    await assertFails(db.doc(viewerPath(OTHER_PARENT)).set(viewerDoc(OTHER_PARENT, SCHOOL)));
+  });
+
+  test('the real owner CAN still write their own marker', async () => {
+    // The other half of the tightening: it must not lock out the legitimate
+    // writer. auth.uid == doc id == payload userId.
+    const db = parentCtx(OTHER_PARENT).firestore();
     await assertSucceeds(db.doc(viewerPath(OTHER_PARENT)).set(viewerDoc(OTHER_PARENT)));
   });
 
@@ -153,6 +165,16 @@ describe('story reactions', () => {
           userPic: '', schoolId: SCHOOL, reactedAt: new Date(),
         });
       }
+    }));
+  });
+
+  test('a reactor CANNOT forge a reaction under someone else’s id', async () => {
+    // Same ST-SEC-13 tightening on the reactions block — a faked reaction is
+    // arguably worse than a faked view, since it attributes an opinion.
+    const db = parentCtx(PARENT).firestore();
+    await assertFails(db.doc(reactionPath(OTHER_PARENT)).set({
+      emoji: '❤️', userId: OTHER_PARENT, userName: 'Someone Else',
+      userPic: '', schoolId: SCHOOL, reactedAt: new Date(),
     }));
   });
 

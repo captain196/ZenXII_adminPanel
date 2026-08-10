@@ -1390,7 +1390,20 @@ service cloud.firestore {
       allow read: if isAuth()
         && (resource == null
             || resource.data.get('schoolId', '') == request.auth.token.school_id);
+      // ST-SEC-13 (2026-08-08): `uid == request.auth.uid` asserts the writer
+      // IS the person the marker claims. Without it the rule only checked that
+      // the PAYLOAD's userId matched the doc id — which any authenticated
+      // member of the school could satisfy for ANYONE's id, forging a "seen"
+      // record or a reaction that never happened.
+      //
+      // The old comment justified the omission with "the doc id is NOT
+      // necessarily request.auth.uid under synthetic-email auth". Audited
+      // before changing this: 140 auth users, every real account has
+      // request.auth.uid EQUAL to its app id (STU0012, STA0011, SUP0001…).
+      // The only non-conforming uids are 2 PROBE_* rows and 3 *_test_phase1
+      // fixtures, none of which post or view stories.
       allow create, update: if isAuth()
+        && uid == request.auth.uid
         && request.resource.data.userId == uid
         && request.resource.data.schoolId == request.auth.token.school_id;
       allow delete: if isAuth()
@@ -1411,7 +1424,20 @@ service cloud.firestore {
       allow read: if isAuth()
         && (resource == null
             || resource.data.get('schoolId', '') == request.auth.token.school_id);
+      // ST-SEC-13 (2026-08-08): `uid == request.auth.uid` asserts the writer
+      // IS the person the marker claims. Without it the rule only checked that
+      // the PAYLOAD's userId matched the doc id — which any authenticated
+      // member of the school could satisfy for ANYONE's id, forging a "seen"
+      // record or a reaction that never happened.
+      //
+      // The old comment justified the omission with "the doc id is NOT
+      // necessarily request.auth.uid under synthetic-email auth". Audited
+      // before changing this: 140 auth users, every real account has
+      // request.auth.uid EQUAL to its app id (STU0012, STA0011, SUP0001…).
+      // The only non-conforming uids are 2 PROBE_* rows and 3 *_test_phase1
+      // fixtures, none of which post or view stories.
       allow create, update: if isAuth()
+        && uid == request.auth.uid
         && request.resource.data.userId == uid
         && request.resource.data.schoolId == request.auth.token.school_id;
       allow delete: if isAuth()
