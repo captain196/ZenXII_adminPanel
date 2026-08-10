@@ -559,10 +559,19 @@ class Sis extends MY_Controller
         // 2. FIREBASE AUTH — Parent app login
         // ══════════════════════════════════════════════════════════════
         // SIS Wave-3 D3 (2026-05-31): consolidated via _createFirebaseAuthStudent.
-        // Return value intentionally ignored — save_admission's pre-fix
-        // behavior was silent-continue on Auth failure. B3 fix (surface
-        // Auth failure to operator) is separate Tier-2 territory.
-        $this->_createFirebaseAuthStudent($userId, $password, $name, 'SIS save_admission');
+        // B3 fix (2026-08-10): the return value is no longer discarded. Swallowing
+        // it meant a student could be admitted with NO login account while the UI
+        // reported plain success and handed the operator a password that does not
+        // work — the failure only ever appeared in the PHP log. The admission
+        // itself still stands (the student doc is written and fees are assigned);
+        // we surface the login gap so it can be repaired from SIS → Reset Password,
+        // which self-heals a missing Auth account.
+        $authResult = $this->_createFirebaseAuthStudent($userId, $password, $name, 'SIS save_admission');
+        $authWarning = empty($authResult['success'])
+            ? 'Student admitted, but the app login account could not be created ('
+              . ($authResult['error'] ?? 'unknown error')
+              . '). Use SIS → Reset Password on this student to create it.'
+            : null;
 
         // ══════════════════════════════════════════════════════════════
         // 4. POST-ADMISSION — Fees, history, leads, notifications
@@ -614,12 +623,15 @@ class Sis extends MY_Controller
         }
 
         return $this->json_success([
-            'message'  => 'Student admitted successfully.',
-            'user_id'  => $userId,
-            'name'     => $name,
-            'password' => $password,
-            'class'    => str_replace('Class ', '', $classOrd),
-            'section'  => str_replace('Section ', '', $section),
+            'message'      => $authWarning === null
+                ? 'Student admitted successfully.'
+                : 'Student admitted — but their app login was NOT created.',
+            'user_id'      => $userId,
+            'name'         => $name,
+            'password'     => $password,
+            'class'        => str_replace('Class ', '', $classOrd),
+            'section'      => str_replace('Section ', '', $section),
+            'auth_warning' => $authWarning,
         ]);
     }
 
@@ -3721,6 +3733,7 @@ class Sis extends MY_Controller
         $error       = 0;
         $skipped     = [];
         $feesPending = []; // imported students whose class/section has no fee chart yet
+        $loginPending = []; // imported students whose Firebase Auth account failed to create
         $duplicates  = []; // rows skipped as duplicates (skip policy)
         $updated     = 0;  // existing students updated (update policy)
         $credentials = []; // {name,phone,userId,password} per newly-created student (for the handout PDF)
@@ -3988,13 +4001,16 @@ class Sis extends MY_Controller
                     $this->fs->updateEntity('students', $studentId, ['additionalSubjects' => $subjectCache[$classNumber]['additionalSubjects']]);
                 }
 
-                // Create Firebase Auth user (best-effort, don't block import on failure)
+                // Create Firebase Auth user (best-effort, don't block import on failure).
                 // SIS Wave-3 D3 (2026-05-31): consolidated via _createFirebaseAuthStudent.
-                // Return value intentionally ignored — import_students's pre-fix
-                // behavior was silent-continue per row on Auth failure. Each row
-                // becomes a separate Auth attempt; one row's failure doesn't
-                // abort the rest of the import (matches B2 per-row pattern).
-                $this->_createFirebaseAuthStudent($studentId, $password, $studentName, 'SIS import_students');
+                // B3 fix (2026-08-10): one row's failure still doesn't abort the
+                // import, but it is no longer invisible. Previously the row landed
+                // in the credentials handout with a password that could never work,
+                // and the only trace was a PHP log line.
+                $rowAuth = $this->_createFirebaseAuthStudent($studentId, $password, $studentName, 'SIS import_students');
+                if (empty($rowAuth['success'])) {
+                    $loginPending[] = "{$studentName} ({$studentId})";
+                }
 
                 // Firestore sync for Android apps (entity_sync loaded in constructor)
                 // SIS Wave-2 S6 (2026-05-31): observability for sync return.
@@ -4038,13 +4054,14 @@ class Sis extends MY_Controller
         }
 
         return [
-            'success'     => $success,
-            'error'       => $error,
-            'skipped'     => $skipped,
-            'feesPending' => $feesPending,
-            'duplicates'  => $duplicates,
-            'updated'     => $updated,
-            'credentials' => $credentials,
+            'success'      => $success,
+            'error'        => $error,
+            'skipped'      => $skipped,
+            'feesPending'  => $feesPending,
+            'loginPending' => $loginPending,
+            'duplicates'   => $duplicates,
+            'updated'      => $updated,
+            'credentials'  => $credentials,
         ];
     }
 
@@ -4158,6 +4175,7 @@ class Sis extends MY_Controller
         $updated     = (int) ($res['updated'] ?? 0);
         $skipped     = is_array($res['skipped'] ?? null) ? $res['skipped'] : [];
         $feesPending = is_array($res['feesPending'] ?? null) ? $res['feesPending'] : [];
+        $loginPending = is_array($res['loginPending'] ?? null) ? $res['loginPending'] : [];
         $duplicates  = is_array($res['duplicates'] ?? null) ? $res['duplicates'] : [];
 
         $msg = "Imported Successfully: {$success} | Failed: {$error}";
@@ -4171,6 +4189,11 @@ class Sis extends MY_Controller
             $msg .= " | Fees pending for " . count($feesPending)
                  . " (no fee chart yet — set up Fees → Chart for these class/sections, then demands auto-assign): "
                  . implode('; ', $feesPending);
+        }
+        if (!empty($loginPending)) {
+            $msg .= " | NO APP LOGIN created for " . count($loginPending)
+                 . " (the handout password will not work for them — run SIS → Reset Password on each to create the account): "
+                 . implode('; ', $loginPending);
         }
         if (!empty($skipped)) {
             $msg .= " | Skipped: " . count($skipped) . " — " . implode('; ', $skipped);
@@ -4391,10 +4414,12 @@ class Sis extends MY_Controller
                 'duplicates'  => count($res['duplicates'] ?? []),
                 'error'       => (int) ($res['error'] ?? 0),
                 'feesPending' => count($res['feesPending'] ?? []),
+                'loginPending' => count($res['loginPending'] ?? []),
             ],
             'skipped'     => $res['skipped'] ?? [],
             'duplicates'  => $res['duplicates'] ?? [],
             'feesPending' => $res['feesPending'] ?? [],
+            'loginPending' => $res['loginPending'] ?? [],
         ]);
     }
 

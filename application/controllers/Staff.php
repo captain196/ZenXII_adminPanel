@@ -2139,7 +2139,13 @@ class Staff extends MY_Controller
             // [FIX-2] Hash the password (bcrypt cost 12 — matches admin pattern)
             $rawPassword = $normalizedPostData['password'] ?? '';
             if (empty($rawPassword)) {
-                $rawPassword = substr(ucfirst($staffName), 0, 3) . '123@';
+                // The old default was ucfirst(name)[0..3] . '123@' — 7 characters,
+                // one BELOW the 8-char minimum that the same user is forced to meet
+                // minutes later, and fully derivable from a name anyone can read off
+                // a staff list. Keep the familiar shape for the handout, but make the
+                // tail unpredictable and the whole thing policy-compliant. The value
+                // is returned to the admin in the create response exactly as before.
+                $rawPassword = substr(ucfirst($staffName), 0, 3) . '@' . random_int(1000, 9999);
             }
             $hashedPassword = password_hash($rawPassword, PASSWORD_BCRYPT, ['cost' => 12]);
 

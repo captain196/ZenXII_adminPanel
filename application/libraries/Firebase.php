@@ -906,7 +906,49 @@ class Firebase
         if (!isset($ctx['staff_id']) && empty($ctx['student_id'])) {
             $ctx['staff_id'] = $uid;
         }
+
+        // A re-mint REPLACES the entire claim set, so a PENDING forced password
+        // change is silently dropped by every call site that doesn't know about
+        // it — role edits, capability refreshes, the claims backfill, the admin
+        // fold. The profile-doc mirror still says "must change", so the app gates
+        // the user forever while /auth/clear_must_change sees no claim. Observed
+        // in production on STA0078 and STA0094, whose claim sets had been re-minted
+        // down to the bare canonical keys while their staff docs still said true.
+        //
+        // Only 2 of ~20 call sites hand-carried these claims. Carrying them here
+        // fixes all of them at once. A caller deliberately setting
+        // must_change_password in `extra` (every reset site) still wins.
+        $extra = (isset($ctx['extra']) && is_array($ctx['extra'])) ? $ctx['extra'] : [];
+        if (!array_key_exists('must_change_password', $extra)) {
+            $existing = $this->getCustomClaimsAll($uid);
+            foreach (['must_change_password', 'password_reset_at', 'password_reset_by'] as $k) {
+                if (array_key_exists($k, $existing)) {
+                    $extra[$k] = $existing[$k];
+                }
+            }
+        }
+        if (!empty($extra)) {
+            $ctx['extra'] = $extra;
+        }
+
         return $this->setFirebaseClaims($uid, $this->buildCanonicalClaims($ctx));
+    }
+
+    /**
+     * Read a user's full existing custom-claims array (one getUser round trip).
+     * Returns [] for an unknown user or on any error — callers merge into it, so
+     * an empty result degrades to "carry nothing forward" rather than throwing.
+     */
+    public function getCustomClaimsAll(string $uid): array
+    {
+        try {
+            $user   = $this->auth->getUser($uid);
+            $claims = method_exists($user, 'customClaims') ? $user->customClaims() : ($user->customClaims ?? []);
+            return is_array($claims) ? $claims : [];
+        } catch (\Exception $e) {
+            log_message('error', 'Firebase::getCustomClaimsAll() failed [uid=' . $uid . ']: ' . $e->getMessage());
+            return [];
+        }
     }
 
     /**

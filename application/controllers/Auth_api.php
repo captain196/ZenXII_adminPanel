@@ -72,11 +72,33 @@ class Auth_api extends CI_Controller
         $schoolId   = (string) ($claims['school_id'] ?? '');
         $schoolCode = (string) ($claims['school_code'] ?? '');
 
+        // verifyFirebaseToken only copies out the snake_case tenant keys, and a
+        // few legacy accounts carry camelCase only. Fall back to the raw claim so
+        // the mirror write below stays reachable — when $schoolId came back empty
+        // the entire Firestore clear used to be skipped in silence, which is one
+        // of the ways an account ends up claim-cleared but mirror-still-true.
+        if ($schoolId === '') {
+            $schoolId = (string) $this->firebase->getCustomClaim($uid, 'schoolId', '');
+        }
+
+        $this->load->helper('force_change');
+        $collection = force_change_profile_collection($uid, $role);
+
         // 3. Confirm the user is actually in the forced-change state.
-        //    Defence in depth — prevents this endpoint being used as a
-        //    generic password-change API by tokens that don't carry the flag.
-        $mustChange = (bool) $this->firebase->getCustomClaim($uid, 'must_change_password', false);
-        if (!$mustChange) {
+        //    Defence in depth — this must not become a generic password-change
+        //    API for tokens carrying no pending reset.
+        //
+        //    The predicate is (claim OR mirror), which is exactly what both apps
+        //    gate on. Requiring the CLAIM alone made this endpoint NON-IDEMPOTENT:
+        //    once step 6 cleared the claim, any failure before the client saw the
+        //    response — dropped connection, app killed, 502, or a later wholesale
+        //    claim re-mint that dropped the flag — left the user permanently
+        //    unable to retry while their app kept showing the force-change screen
+        //    and rejecting every submit with "No password change required".
+        $claimFlag  = $this->firebase->getCustomClaim($uid, 'must_change_password', false);
+        $mirrorFlag = $this->_read_firestore_flag($schoolId, $uid, $collection);
+
+        if (!force_change_is_pending($claimFlag, $mirrorFlag)) {
             $this->_json([
                 'status'  => 'error',
                 'message' => 'No password change required for this account.',
@@ -119,11 +141,27 @@ class Auth_api extends CI_Controller
             'must_change_password', 'password_reset_at', 'password_reset_by',
         ]);
 
-        // 7. Clear mustChangePassword on the Firestore profile doc (collection
-        //    chosen from the role claim — keeps the app's force-change UI gate
-        //    in sync with the cleared state).
+        // 7. Clear mustChangePassword on the profile doc the apps gate on.
+        //    Runs unconditionally, including when the claim was already gone:
+        //    a stale `true` here is precisely what re-gates the user on their
+        //    next cold start, so this is also the self-healing path for accounts
+        //    left stuck by the earlier role-label misrouting.
         if ($schoolId !== '') {
-            $this->_clear_firestore_flag($schoolId, $uid, $role);
+            $cleared = $this->_clear_firestore_flag($schoolId, $uid, $collection);
+            if (!$cleared) {
+                // Fail LOUD. Reporting success here is what produced the lockout:
+                // the claim is gone, so the client believes it is done, while the
+                // mirror still gates it and every retry is refused. Telling the
+                // user to try again keeps the account recoverable.
+                log_message('error',
+                    'Auth_api::clear_must_change mirror clear FAILED uid=' . $uid
+                    . ' coll=' . $collection . ' school=' . $schoolId);
+                $this->_json([
+                    'status'  => 'error',
+                    'message' => 'Your password was updated, but the change could not be finalised. Please try again.',
+                ], 500);
+                return;
+            }
             $this->_audit($schoolId, $uid, $role);
         }
 
@@ -141,29 +179,56 @@ class Auth_api extends CI_Controller
     // ─────────────────────────────────────────────────────────────────────
 
     /**
-     * Clear mustChangePassword=false on the appropriate Firestore profile doc.
-     * Collection is chosen from the role claim — parents land in students,
-     * admin roles in admins, everything else (teacher/staff) in staff.
+     * Read the mustChangePassword mirror off the profile doc.
+     *
+     * Returns null when the doc is missing or unreadable — the caller treats
+     * null as "no signal" rather than "not pending", so a transient Firestore
+     * failure can never on its own authorise a password set.
+     *
+     * @return bool|null
      */
-    private function _clear_firestore_flag(string $schoolId, string $uid, string $role): void
+    private function _read_firestore_flag(string $schoolId, string $uid, string $collection)
+    {
+        if ($schoolId === '') return null;
+        try {
+            $doc = $this->firebase->firestoreGet($collection, $schoolId . '_' . $uid);
+            if (!is_array($doc) || !array_key_exists('mustChangePassword', $doc)) return null;
+            return force_change_truthy($doc['mustChangePassword']);
+        } catch (\Throwable $e) {
+            log_message('error', 'Auth_api::_read_firestore_flag failed: ' . $e->getMessage());
+            return null;
+        }
+    }
+
+    /**
+     * Set mustChangePassword=false on the profile doc the apps gate on.
+     *
+     * The collection is resolved by the CALLER via force_change_profile_collection(),
+     * which routes on the id prefix. This method previously chose it from the role
+     * claim — its own comment said "route by uid prefix, not role label" while the
+     * code did the opposite, so a first-login student (role 'student', not 'Parent')
+     * had their clear written to `admins/{schoolId}_STU####` and stayed gated.
+     *
+     * @return bool true when the write landed; false is a hard failure the caller
+     *              must surface rather than swallow.
+     */
+    private function _clear_firestore_flag(string $schoolId, string $uid, string $collection): bool
     {
         try {
             $this->load->library('firestore_service', null, 'fs');
             $this->fs->init($schoolId);
-            if (!$this->fs->isReady()) return;
+            if (!$this->fs->isReady()) {
+                log_message('error', 'Auth_api::_clear_firestore_flag — Firestore not ready for ' . $schoolId);
+                return false;
+            }
 
-            // FOLD: route by uid prefix, not role label. A demoted admin's record
-            // lives in `staff` under an STA id; only legacy ADM ids remain in
-            // `admins`. Parents stay in `students`.
-            $this->load->helper('admin_roster');
-            $collection = ($role === 'Parent') ? 'students' : admin_record_collection($uid);
-
-            $this->fs->set($collection, $this->fs->docId($uid), [
+            return (bool) $this->fs->set($collection, $this->fs->docId($uid), [
                 'mustChangePassword' => false,
                 'updatedAt'          => date('c'),
             ], true);
         } catch (\Exception $e) {
             log_message('error', 'Auth_api::_clear_firestore_flag failed: ' . $e->getMessage());
+            return false;
         }
     }
 
