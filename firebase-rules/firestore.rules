@@ -227,6 +227,39 @@ service cloud.firestore {
         );
     }
 
+    // F9 (2026-07-07) — driver identity for driver-scoped Transport writes.
+    // Realigned (Phase 2) to request.auth.uid: the Firebase Auth uid IS the SIS
+    // staff id (STA0001), matching live's owner-filter convention
+    // (resource.data.staffId == request.auth.uid) and RBAC Phase A. No custom
+    // user_id/staffId claim is required, so no Teacher-app change is needed.
+    function driverIs(staffId) {
+      return isStaff()
+        && request.auth.uid is string
+        && request.auth.uid != ''
+        && request.auth.uid == staffId;
+    }
+
+    // F9 — a driver may update tripLogs / write transportAttendance ONLY
+    // when the incoming payload doesn't attempt to change the doc's
+    // driver_staff_id (protecting F4 driver ownership from client-side
+    // hijack). Existing doc's driver_staff_id must match caller's staff id (uid).
+    function isDriverOfTrip() {
+      return driverIs(resource.data.driver_staff_id);
+    }
+
+    // F9 (Refinement additional) — client diagnostic metadata guard.
+    // Teacher-app writes must carry app_version + client_platform (string)
+    // and client_timestamp (integer ms). Values are NOT used for authz —
+    // they're operational telemetry for troubleshooting and audit analysis.
+    // Presence-only check: missing metadata → reject with a clean signal.
+    function hasClientMetadata() {
+      return request.resource.data.get('app_version', '') is string
+        && request.resource.data.get('app_version', '') != ''
+        && request.resource.data.get('client_platform', '') is string
+        && request.resource.data.get('client_platform', '') in ['android', 'ios', 'web']
+        && request.resource.data.get('client_timestamp', 0) is int;
+    }
+
     // Per-student fee collections need to differentiate "this parent
     // accessing their own child's data" from "this parent accessing
     // some other student's data". Parent-app auth uses the student's
@@ -319,6 +352,11 @@ service cloud.firestore {
       // A SEPARATE clause on purpose: widening the mustChangePassword
       // allowlist above would let a student send both fields in one write,
       // and that allowlist needs to stay byte-narrow.
+      //
+      // RESTORED 2026-08-11: this clause was committed to git but is absent
+      // from the deployed ruleset — a deploy from a working tree that predated
+      // the commit silently reverted it, so prefLang writes have been denied in
+      // production since. Do not drop it again when reconciling live vs git.
       allow update: if isSameSchool()
                     && request.auth.uid == resource.data.studentId
                     && request.resource.data.diff(resource.data)
@@ -350,6 +388,29 @@ service cloud.firestore {
       allow read: if isAuth()
                   && docId == (request.auth.token.school_id + '_' + request.auth.uid);
       allow write: if false;
+    }
+
+    // ── Locations (ZenX HRMS Phase 1: campus/office/store) ─────────
+    // Same idiom as `staff` above — same-school readable, admin-only
+    // write. orgId == schoolId for every tenant today (see the Phase 1
+    // blueprint), so this needs no new claim beyond the existing
+    // school_id one every other school-scoped collection already uses.
+    // NOT DEPLOYED as part of Phase 1 — PHP (service account) bypasses
+    // rules entirely regardless, so this only matters once a mobile
+    // client reads this collection directly, which Phase 1 does not do.
+    match /locations/{docId} {
+      allow read: if isSameSchool();
+      // SECURITY: `isAdmin()` alone proves the caller is an admin of SOME
+      // active tenant — it does NOT bind the write to the target document's
+      // school. A bare `allow write: if isAdmin()` therefore let any school's
+      // admin create/update/delete ANY school's location (caught by
+      // tests/locations_sec.test.js before deployment). Split into the
+      // house idiom used by feeDemands / feeReceipts / feeOnlineOrders:
+      // isSameSchoolWrite() pins request.resource.data.schoolId on
+      // create+update, and isSameSchool() pins resource.data.schoolId on
+      // delete (where request.resource is null).
+      allow create, update: if isAdmin() && isSameSchoolWrite();
+      allow delete: if isAdmin() && isSameSchool();
     }
 
     // ── Subjects ─────────────────────────────────────────────────
@@ -883,7 +944,16 @@ service cloud.firestore {
     // ── Fee settings (gateway, blocking policy, reminders) ───────
     // Parent reads gateway provider/api_key for the Razorpay SDK.
     match /feeSettings/{docId} {
-      allow read: if isSameSchool();
+      // SECURITY (2026-07): the gateway config doc
+      // ({schoolId}_{session}_gateway, type='gateway') holds the payment
+      // gateway's api_secret + webhook_secret in PLAINTEXT. No client reads it:
+      // the parent app receives the PUBLIC api_key + provider + mode in the
+      // parent_create_order server response, and the admin panel reads a
+      // MASKED copy via the PHP service account (which bypasses these rules).
+      // So exclude any gateway-type doc from ALL client reads; other
+      // (non-secret) fee settings remain readable within the tenant.
+      allow read: if isSameSchool()
+                  && resource.data.get('type', '') != 'gateway';
       allow write: if isAdmin();
     }
 
@@ -944,6 +1014,27 @@ service cloud.firestore {
     // service account; client direct access is a bug — deny explicitly.
     match /studentServiceEnrollments/{docId} { allow read, write: if false; }
     match /studentConcessions/{docId}         { allow read, write: if false; }
+
+    // ── Student Entitlements (Phase B, 2026-08-08) ───────────────
+    // studentEntitlements: the unified successor to the two collections
+    // above — one effective-dated, audited log covering BOTH service
+    // enrolments (transport/hostel/meals) and concessions (percent /
+    // fixed / fullExempt / RTE-EWS), plus credit notes. Spec:
+    // STUDENT_ENTITLEMENTS_ARCHITECTURE_BASELINE.md §Data Model.
+    // studentFeeCredits: per-student undrawn credit balance, drawn down
+    // at generation time (§0B.2). Deterministic doc-id fetch only.
+    //
+    // Phase B is ADDITIVE and PARALLEL — nothing generates from these
+    // yet (that is Phase C/D). Deliberately DENY-ALL, byte-identical to
+    // the two predecessors above: written and read exclusively by the
+    // PHP backend through the service account, which bypasses rules.
+    // The Parent/Teacher apps never read entitlement documents directly
+    // — they see the *effect* via the additive feeDemands fields
+    // (entitlementRefs / netEffect / creditApplied), and feeDemands
+    // already grants own-student read. Any client hitting these
+    // collections directly is a bug; fail closed.
+    match /studentEntitlements/{docId}       { allow read, write: if false; }
+    match /studentFeeCredits/{docId}         { allow read, write: if false; }
 
     // ── Fee carry-forward (Phase 9 wallet replacement) ───────────
     // Per-student doc carrying accumulated unpaid dues across
@@ -1378,30 +1469,18 @@ service cloud.firestore {
     // belong to stories that expire within 24h and are swept.
     match /{path=**}/viewers/{uid} {
       // `resource == null` is REQUIRED, not defensive. Both apps write this
-      // marker inside a transaction whose first step is get(viewers/{uid}) on
-      // a doc that does not exist yet. For a missing document `resource` is
-      // null, so `resource.data...` fails and the READ is denied — killing the
-      // transaction before the write is ever attempted. That is why, between
-      // the C2 read-side hardening (2026-07-08) and 2026-08-08, NOT ONE story
-      // view or reaction was ever recorded: every story sat at viewCount=0
-      // with zero viewer docs and reactionCounts={}. Allowing the get of a
-      // missing doc leaks nothing (there is no data to read) and restores the
-      // read-then-write path. Covered by tests/story_engagement.test.js.
+      // marker inside a transaction whose first step is get(<sub>/{uid}) on a
+      // doc that does not exist yet. For a MISSING document `resource` is null,
+      // so `resource.data...` fails and the READ is denied — killing the
+      // transaction before the write is attempted. Without it, NO story view or
+      // reaction can ever be recorded. Allowing the get of a missing doc leaks
+      // nothing (there is no data to read). Covered by tests/story_engagement.test.js.
       allow read: if isAuth()
         && (resource == null
             || resource.data.get('schoolId', '') == request.auth.token.school_id);
-      // ST-SEC-13 (2026-08-08): `uid == request.auth.uid` asserts the writer
-      // IS the person the marker claims. Without it the rule only checked that
-      // the PAYLOAD's userId matched the doc id — which any authenticated
-      // member of the school could satisfy for ANYONE's id, forging a "seen"
-      // record or a reaction that never happened.
-      //
-      // The old comment justified the omission with "the doc id is NOT
-      // necessarily request.auth.uid under synthetic-email auth". Audited
-      // before changing this: 140 auth users, every real account has
-      // request.auth.uid EQUAL to its app id (STU0012, STA0011, SUP0001…).
-      // The only non-conforming uids are 2 PROBE_* rows and 3 *_test_phase1
-      // fixtures, none of which post or view stories.
+      // ST-SEC-13: assert the writer IS the person the marker claims. Without
+      // it the rule only checked that the PAYLOAD's userId matched the doc id —
+      // which any member of the school could satisfy for ANYONE's id.
       allow create, update: if isAuth()
         && uid == request.auth.uid
         && request.resource.data.userId == uid
@@ -1412,30 +1491,18 @@ service cloud.firestore {
     }
     match /{path=**}/reactions/{uid} {
       // `resource == null` is REQUIRED, not defensive. Both apps write this
-      // marker inside a transaction whose first step is get(viewers/{uid}) on
-      // a doc that does not exist yet. For a missing document `resource` is
-      // null, so `resource.data...` fails and the READ is denied — killing the
-      // transaction before the write is ever attempted. That is why, between
-      // the C2 read-side hardening (2026-07-08) and 2026-08-08, NOT ONE story
-      // view or reaction was ever recorded: every story sat at viewCount=0
-      // with zero viewer docs and reactionCounts={}. Allowing the get of a
-      // missing doc leaks nothing (there is no data to read) and restores the
-      // read-then-write path. Covered by tests/story_engagement.test.js.
+      // marker inside a transaction whose first step is get(<sub>/{uid}) on a
+      // doc that does not exist yet. For a MISSING document `resource` is null,
+      // so `resource.data...` fails and the READ is denied — killing the
+      // transaction before the write is attempted. Without it, NO story view or
+      // reaction can ever be recorded. Allowing the get of a missing doc leaks
+      // nothing (there is no data to read). Covered by tests/story_engagement.test.js.
       allow read: if isAuth()
         && (resource == null
             || resource.data.get('schoolId', '') == request.auth.token.school_id);
-      // ST-SEC-13 (2026-08-08): `uid == request.auth.uid` asserts the writer
-      // IS the person the marker claims. Without it the rule only checked that
-      // the PAYLOAD's userId matched the doc id — which any authenticated
-      // member of the school could satisfy for ANYONE's id, forging a "seen"
-      // record or a reaction that never happened.
-      //
-      // The old comment justified the omission with "the doc id is NOT
-      // necessarily request.auth.uid under synthetic-email auth". Audited
-      // before changing this: 140 auth users, every real account has
-      // request.auth.uid EQUAL to its app id (STU0012, STA0011, SUP0001…).
-      // The only non-conforming uids are 2 PROBE_* rows and 3 *_test_phase1
-      // fixtures, none of which post or view stories.
+      // ST-SEC-13: assert the writer IS the person the marker claims. Without
+      // it the rule only checked that the PAYLOAD's userId matched the doc id —
+      // which any member of the school could satisfy for ANYONE's id.
       allow create, update: if isAuth()
         && uid == request.auth.uid
         && request.resource.data.userId == uid
@@ -1641,7 +1708,36 @@ service cloud.firestore {
       allow delete: if isAdmin();
     }
 
-    // ── Transport ────────────────────────────────────────────────
+    // ── Transport (TMS Phase 0 foundation, 2026-07-06) ───────────
+    //
+    // Layout: 22 primary Transport collections + 5 denormalised caches.
+    // The 3 pre-existing blocks (routes, vehicles, studentRoutes) are
+    // preserved BYTE-EQUIVALENT to guarantee no behaviour change on the
+    // Admin panel, Parent App, or Teacher App at Phase 0 landing.
+    // Every other collection is empty at deploy time — reads succeed
+    // trivially, writes are gated tighter than the pre-existing blocks
+    // to prevent client-side entry into new surfaces before their
+    // Phase 1+ writers ship.
+    //
+    // Rule pattern (aligned with existing coarse gating):
+    //   - reads:  isSameSchool()      — same-school + tenantActive
+    //   - writes: isAdmin() && isSameSchoolWrite()  — Phase 0 default
+    //   - append-only histories + audit + caches: writes DISABLED
+    //   - sosAlerts: (isAdmin() OR isStaff()) — Teacher App triggers here
+    //   - tripLogs / fuelLogs: (isAdmin() OR isStaff()) — driver entries
+    //   - sensitive reads (driverIncidents, transportExpenses, audit,
+    //     performance reviews, activity/expense caches): isStaff-gated
+    //     to keep parents/students out.
+    //
+    // NOTE — sosAlerts was previously not rule-covered; the catch-all
+    // (line 1619) was denying every direct-client write attempt from
+    // Teacher App's TransportFirestoreRepository::triggerSos. Phase 0
+    // closes that gap.  (transportStops was similarly uncovered.)
+    //
+    // PHP service-account writes bypass these rules entirely (see file
+    // header) — Admin panel operations are unaffected by tightening.
+
+    // ── Transport: pre-existing (unchanged for Phase 0) ──────────
     match /routes/{docId} {
       allow read: if isSameSchool();
       allow write: if isAdmin();
@@ -1655,6 +1751,471 @@ service cloud.firestore {
     match /studentRoutes/{docId} {
       allow read: if isSameSchool();
       allow write: if isAdmin();
+    }
+
+    // ── Transport: gap-close (previously uncovered by rules) ─────
+    match /transportStops/{docId} {
+      allow read: if isSameSchool();
+      allow write: if isAdmin() && isSameSchoolWrite();
+    }
+
+    match /sosAlerts/{docId} {
+      // Same-school read: parents, teachers, admin, drivers can see
+      // active alerts for their school. Writes allowed for admin +
+      // staff (drivers/teachers trigger SOS from Teacher App).
+      // F9 (2026-07-07) — SOS severity enum + alertType enum enforced
+      // at rule level so a client can't submit malformed values that
+      // would trip the Transport_notifier priority routing. Client
+      // diagnostic metadata required on driver-fired writes (staff),
+      // exempted for admin PHP writes (bypass rules).
+      allow read: if isSameSchool();
+      allow create: if isSameSchoolWrite()
+        && (isAdmin() || isStaff())
+        && request.resource.data.get('alertType', '') in ['emergency', 'breakdown', 'accident', 'medical', 'other']
+        && request.resource.data.get('severity', 'High') in ['Low', 'Medium', 'High', 'Critical']
+        && (isAdmin() || hasClientMetadata());
+      allow update, delete: if isAdmin() && isSameSchool();
+    }
+
+    // ── Transport: Phase-1+ writer targets (empty at Phase 0) ────
+    match /vehicleDocuments/{docId} {
+      allow read: if isSameSchool();
+      allow write: if isAdmin() && isSameSchoolWrite();
+    }
+
+    match /transportVendors/{docId} {
+      allow read: if isSameSchool();
+      allow write: if isAdmin() && isSameSchoolWrite();
+    }
+
+    match /routeSuspensions/{docId} {
+      allow read: if isSameSchool();
+      allow write: if isAdmin() && isSameSchoolWrite();
+    }
+
+    match /routeAssignments/{docId} {
+      // v2 session-scoped assignment (canonical replacement for the
+      // pre-existing `studentRoutes` schema — coexists during rollover).
+      allow read: if isSameSchool();
+      allow write: if isAdmin() && isSameSchoolWrite();
+    }
+
+    match /tripLogs/{docId} {
+      // Drivers write their own trip logs via Teacher App; admin
+      // writes via the PHP panel (bypass). Reads visible to same-school
+      // staff/admin PLUS parents/students whose identity is in the
+      // trip's frozen roster snapshot (release-cert C-1 fix 2026-07-08).
+      //
+      // roster_student_ids is authoritative + immutable — set once at
+      // createTrip (Transport_service.php:5760 merge=false) and never
+      // touched by any subsequent write. Verified audit of all 7 tripLogs
+      // write sites (start/checkpoint/complete/cancel/tally paths). The
+      // driver-update allowlist below explicitly EXCLUDES roster_student_ids
+      // so the field cannot be forged client-side for privilege escalation.
+      //
+      // Precedent: studentFlags rule at 1746-1757 uses the same three-arm
+      // ownership pattern (student_ids array claim / student_id single
+      // claim / auth.uid fallback).
+      allow read: if isSameSchool() && (
+        isStaff() ||
+        resource.data.roster_student_ids.hasAny(request.auth.token.get('student_ids', [])) ||
+        request.auth.uid in resource.data.roster_student_ids
+      );
+      // SEC-2 (2026-07-22) — a bare isStaff() create let any same-school staff
+      // plant a trip with an arbitrary driver_staff_id, then drive its state
+      // machine (forged safety events). No client creates tripLogs today (admin
+      // PHP creates via service account, which bypasses rules; the Teacher app
+      // only UPDATEs), so binding the staff arm to the trip's own driver is
+      // safe and future-proofs a driver-created-trip flow: a driver may only
+      // create a trip whose driver_staff_id equals their own user_id claim.
+      allow create: if isSameSchoolWrite() && (
+        isAdmin() ||
+        driverIs(request.resource.data.get('driver_staff_id', ''))
+      );
+      // F9 (2026-07-07) — driver may update ONLY their own trip and
+      // ONLY the fields that belong to the trip-execution surface:
+      // actual_start_at, actual_end_at, endTime, endOdometer, distance,
+      // distance_km, fuelUsed, stopsCompleted, alerts, checkpoints,
+      // status, notes, route_progress_pct, next_checkpoint_id,
+      // updated_at + client diagnostic metadata (Refinement additional).
+      // Roster + driver_staff_id + event_id + gps_session_id + all
+      // create-time immutables STAY locked from driver mutation.
+      // Trip start ownership (Refinement 2): assigned driver is the
+      // normal path; admin override permitted for operational recovery
+      // and is fully audited via emitAudit() at the service layer.
+      // D-8 HARDENING (2026-08-08) — ONE canonical trip lifecycle.
+      //
+      // The driver app no longer writes trip STATE. `startMyTrip` and
+      // `completeMyTrip` now call the canonical Transport_service lifecycle
+      // via transport_driver_api, so driver-readiness re-validation (LOG-1),
+      // the CAS transition guard (CON-6), the audit row, the trip.started
+      // parent notification, XMOD-1 route denormalisation and F13 GPS session
+      // open/close all execute — none of which the old direct write performed.
+      //
+      // The allowlist is therefore narrowed to the ONLY surface the app still
+      // writes directly: checkpoint marking. Removed — 'status',
+      // 'actual_start_at', 'actual_end_at', 'endTime', 'endOdometer',
+      // 'distance', 'distance_km', 'fuelUsed', 'stopsCompleted', 'notes',
+      // 'alerts'. Verified against the app: those fields were written in
+      // exactly two functions, both of which now go through PHP.
+      //
+      // This is what makes "one canonical flow" ENFORCED rather than merely
+      // agreed: a future client cannot reintroduce a second lifecycle writer,
+      // because Firestore will reject the status transition outright.
+      //
+      // The Ready/InProgress guard is retained — a driver may only mark
+      // checkpoints on a live trip, never on a completed or cancelled one.
+      allow update: if isSameSchool() && (
+        isAdmin() ||
+        (isDriverOfTrip()
+          && request.resource.data.diff(resource.data).affectedKeys().hasOnly([
+              'checkpoints', 'route_progress_pct', 'next_checkpoint_id',
+              'updated_at', 'app_version', 'client_platform', 'client_timestamp'
+             ])
+          && hasClientMetadata()
+          && (resource.data.status in ['Ready', 'InProgress'])
+        )
+      );
+      allow delete: if isAdmin() && isSameSchool();
+    }
+
+    // F7 (2026-07-07) — per-student boarding-event log. Staff-gated read
+    // for admin panel + Teacher App driver UI. Parents do NOT read this
+    // collection directly; they receive events via the `notifications`
+    // inbox that Transport_notifier writes.
+    //
+    // F9 (2026-07-07) — driver-write path enabled. Every write must:
+    //   • carry a valid `tripId` string
+    //   • declare `marked_by_role` ∈ {'admin', 'driver'} (F9-4 gate)
+    //   • carry client diagnostic metadata (Refinement additional)
+    // Updates blocked at the collection level because F7's deterministic
+    // {schoolId}_{tripId}_{studentId}_{event_type} doc-id makes repeat
+    // driver taps idempotent via create-overwrite semantics; a genuine
+    // update path would signal a schema-drift bug.
+    match /transportAttendance/{docId} {
+      allow read: if isSameSchool() && isStaff();
+      // SEC-1 (2026-07-22) — a boarding event is a parent-facing safety signal
+      // (a forged `no_show` fires a false alert). The prior rule let ANY
+      // same-school staff create one for ANY trip (distinct doc-id → create
+      // allowed). Bind non-admin creates to the DRIVER OF THE REFERENCED TRIP:
+      // the caller's user_id claim must equal tripLogs.driver_staff_id. Mirrors
+      // the fuelLogs driver-of-vehicle binding; admin (PHP panel / admin app)
+      // retains unrestricted create. The trip doc path is
+      // {schoolId}_{tripId} (tripId is stored bare; schoolId denormalised on
+      // the event) — same convention the tripLogs driver-update rule relies on.
+      // isSameSchoolWrite() already establishes tenantActive() + same-school,
+      // so the role arms below use lightweight claim checks (no repeat
+      // tenantActive() get()s) — keeping the total document-access calls low
+      // (tenantActive ×1 + the tripLogs get()) and mirroring isAdmin()/isStaff()
+      // role semantics inline.
+      allow create: if isSameSchoolWrite()
+        && hasClientMetadata()
+        && request.resource.data.get('tripId', '') is string
+        && request.resource.data.get('tripId', '') != ''
+        && request.resource.data.get('marked_by_role', '') in ['admin', 'driver']
+        && (
+          request.auth.token.role in ['Admin', 'admin', 'School Super Admin', 'school_super_admin', 'Super Admin', 'super_admin', 'Principal']
+          ||
+          (!(request.auth.token.role in ['Student', 'student', 'Parent', 'parent', 'Guardian', 'guardian'])
+            && request.auth.uid is string
+            && request.auth.uid != ''
+            && get(/databases/$(database)/documents/tripLogs/$(request.resource.data.schoolId + '_' + request.resource.data.tripId)).data.driver_staff_id == request.auth.uid
+          )
+        );
+      allow update, delete: if false;
+    }
+
+    match /maintenanceLogs/{docId} {
+      allow read: if isSameSchool() && isStaff();
+      allow write: if isAdmin() && isSameSchoolWrite();
+    }
+
+    match /fuelLogs/{docId} {
+      // Drivers may enter fuel from Teacher App; admin from panel.
+      // F9 (Refinement 3, 2026-07-07) — driver-submitted fuel logs are
+      // restricted to the driver's currently assigned vehicle. Admin
+      // retains unrestricted access. Enforced by:
+      //   • payload's vehicle_id must exist
+      //   • when NOT admin: driver's user_id claim must match a vehicle
+      //     document's staff_id field (checked via a get() to /vehicles).
+      // Client diagnostic metadata required on driver writes.
+      allow read: if isSameSchool() && isStaff();
+      allow create: if isSameSchoolWrite() && (
+        isAdmin() ||
+        (isStaff()
+          && hasClientMetadata()
+          && request.resource.data.get('vehicle_id', '') is string
+          && request.resource.data.get('vehicle_id', '') != ''
+          && get(/databases/$(database)/documents/vehicles/$(request.resource.data.schoolId + '_' + request.resource.data.vehicle_id)).data.staff_id == request.auth.uid
+        )
+      );
+      allow update, delete: if isAdmin() && isSameSchool();
+    }
+
+    match /transportExpenses/{docId} {
+      // Financial — staff-gated read (accountants/admin), admin write.
+      allow read: if isSameSchool() && isStaff();
+      allow write: if isAdmin() && isSameSchoolWrite();
+    }
+
+    match /driverIncidents/{docId} {
+      // HR-sensitive — staff-gated read (HR/admin), admin write.
+      allow read: if isSameSchool() && isStaff();
+      allow write: if isAdmin() && isSameSchoolWrite();
+    }
+
+    match /driverPerformanceReviews/{docId} {
+      allow read: if isSameSchool() && isStaff();
+      allow write: if isAdmin() && isSameSchoolWrite();
+    }
+
+    match /temporaryDriverAssignments/{docId} {
+      allow read: if isSameSchool() && isStaff();
+      allow write: if isAdmin() && isSameSchoolWrite();
+    }
+
+    match /transportEvents/{docId} {
+      allow read: if isSameSchool();
+      allow write: if isAdmin() && isSameSchoolWrite();
+    }
+
+    match /eventTripAssignments/{docId} {
+      allow read: if isSameSchool();
+      allow write: if isAdmin() && isSameSchoolWrite();
+    }
+
+    // ── Transport: append-only histories + audit (server-only) ───
+    match /vehicleLifecycleLog/{docId} {
+      allow read: if isSameSchool() && isStaff();
+      allow write: if false;   // PHP service account bypasses
+    }
+
+    match /vehicleReplacementHistory/{docId} {
+      allow read: if isSameSchool() && isStaff();
+      allow write: if false;
+    }
+
+    match /vehicleRouteTransferHistory/{docId} {
+      allow read: if isSameSchool() && isStaff();
+      allow write: if false;
+    }
+
+    match /routeAssignmentHistory/{docId} {
+      allow read: if isSameSchool() && isStaff();
+      allow write: if false;
+    }
+
+    match /transportAuditLog/{docId} {
+      allow read: if isSameSchool() && isStaff();
+      allow write: if false;
+    }
+
+    // F6 (2026-07-07) — Transport_notifier idempotency layer. Server-only
+    // writes (PHP service account via Transport_notifier); operational
+    // reads gated to staff for retention/dedup investigation.
+    match /transportNoticeIdempotency/{docId} {
+      allow read: if isSameSchool() && isStaff();
+      allow write: if false;
+    }
+
+    // F12.1 M1 (2026-08-07) — CBSE Transport Safety Compliance. All three
+    // collections are server-only writes (Transport_compliance_service via
+    // the PHP service account); staff-read for the compliance dashboard.
+    // Authorization grading (view/edit/manage) is a panel-layer concern
+    // (Transport_compliance controller, M4) — the rules layer intentionally
+    // stays a simple staff-read / server-write boundary and does not mirror
+    // RBAC levels (spec §5 amendment, 2026-08-07).
+    match /transportComplianceRules/{docId} {
+      allow read: if isSameSchool() && isStaff();
+      allow write: if false;
+    }
+    match /vehicleCompliance/{docId} {
+      allow read: if isSameSchool() && isStaff();
+      allow write: if false;
+    }
+    match /vehicleCompliancePosture/{docId} {
+      allow read: if isSameSchool() && isStaff();
+      allow write: if false;
+    }
+
+    // ── Maps & Location platform (2026-08-08) ─────────────────────────
+    // Centralized map-provider configuration. Every surface that renders a
+    // map resolves its provider from here instead of carrying its own setting.
+    //
+    // THE SPLIT IS THE SECURITY MODEL. Firestore rules gate a DOCUMENT; they
+    // cannot hide a field. A secret placed in a client-readable config doc IS
+    // readable by every client, whatever the admin UI shows. So sensitivity
+    // decides which document a credential lands in, and the rules below make
+    // that split real rather than advisory.
+    //
+    // PUBLIC config: mode, per-platform provider, style URLs, client-restricted
+    // keys, default centre/zoom. Readable by any authenticated same-school
+    // user, because the admin panel and both apps all need it to draw a map.
+    // Client-restricted keys are exposed by necessity — a map SDK sends them
+    // from the device — and must be locked down at the PROVIDER by HTTP
+    // referrer or package name + SHA-1.
+    //
+    // Server-only: written by the PHP service account, which bypasses rules.
+    match /mapsConfig/{docId} {
+      allow read: if isSameSchool() && isAuth();
+      allow write: if false;
+    }
+
+    // Unrestricted / server-side keys — geocoding, static maps, provider
+    // validation. NO client may read or write these, ever.
+    match /mapsSecrets/{docId} {
+      allow read, write: if false;
+    }
+
+    // Configuration change history. Staff-read for the admin page; append-only
+    // and server-written. Credential VALUES are never stored here — only which
+    // keys were touched — so the trail cannot become a key archive.
+    match /mapsConfigAudit/{docId} {
+      allow read: if isSameSchool() && isStaff();
+      allow write: if false;
+    }
+
+    // ── F13.1 Live GPS (M1, 2026-08-08) ───────────────────────────────
+    // Hot current-position doc: ONE per vehicle, overwritten in place, at
+    // most one write per 15s. This is the only document a parent's live map
+    // subscribes to, which keeps the parent read cost at exactly one doc.
+    //
+    // D-1 — SERVER-CREATED, DRIVER-UPDATED. The doc is created by
+    // Transport_gps_service at trip start and deleted at trip end; the client
+    // may only update it. This is not a stylistic choice: `isDriverOfTrip()`
+    // reads resource.data.driver_staff_id, which is NULL on a create, and
+    // isSameSchool() is deliberately permissive when resource == null — so a
+    // client-create rule would have had neither a driver check nor a tenant
+    // check. Forbidding client creates removes that whole class of hole and
+    // lets both existing helpers be reused unmodified.
+    //
+    // Parent read is the tenant-isolation control. `authorized_viewer_uids`
+    // is denormalised onto the doc by the server from the frozen trip roster,
+    // so the rule is a cheap `in` with NO cross-document get() — a get() here
+    // would cost a rule-read on every position update. The UIDs are STUDENT
+    // userIds: parent-app auth uses the student's userId as the Firebase auth
+    // uid (see isOwnStudent above), so there is no parent identity to match.
+    //
+    // live_tracking_enabled is the server-side kill switch (D-2): once
+    // completeTrip/cancelTrip flips it false, no further driver write is
+    // accepted regardless of what the client believes.
+    match /vehicleLivePositions/{docId} {
+      allow read: if isSameSchool()
+                  && (isStaff()
+                      || request.auth.uid in resource.data.get('authorized_viewer_uids', []));
+      allow create, delete: if false;   // server-only (Transport_gps_service)
+      // M2 — FIX ORDERING. The driver writes this doc DIRECTLY, so PHP never
+      // sees a position and the rule is the real enforcement point.
+      //
+      //  • MONOTONIC: recorded_at_ms must strictly increase. A device queues
+      //    fixes while offline; without this, a flush after a tunnel replays a
+      //    20-minute-old position over the current one and the bus jumps
+      //    backwards on the parent's map. Ordering uses the integer millis
+      //    field, not the ISO string — string comparison is only safe if every
+      //    writer emits identical zero-padded UTC, and a device sending +05:30
+      //    instead of Z would compare wrong. `.get(...,0)` lets the first fix
+      //    of a session through, since the server seeds the key at 0.
+      //  • NOT FUTURE: request.time is SERVER time and cannot be spoofed by a
+      //    skewed device. Without this bound, one wrong clock could stamp a
+      //    far-future value and permanently block that vehicle's later fixes.
+      //  • NOT ANCIENT: a fix older than 5 minutes never becomes "current".
+      //    Breadcrumbs are exempt — late history is legitimate there.
+      allow update: if isSameSchoolWrite()
+                    && isDriverOfTrip()
+                    && hasClientMetadata()
+                    && resource.data.get('live_tracking_enabled', false) == true
+                    && request.resource.data.recorded_at_ms is int
+                    && request.resource.data.recorded_at_ms > resource.data.get('recorded_at_ms', 0)
+                    && request.resource.data.recorded_at_ms <= request.time.toMillis() + 120000
+                    && request.resource.data.recorded_at_ms >= request.time.toMillis() - 300000
+                    && request.resource.data.diff(resource.data).affectedKeys().hasOnly([
+                         'lat', 'lng', 'speed_kmph', 'heading', 'accuracy_m', 'altitude_m',
+                         'recorded_at', 'recorded_at_ms', 'received_at', 'is_mock', 'source',
+                         'app_version', 'client_platform', 'client_timestamp'
+                       ]);
+    }
+
+    // Append-only breadcrumb trail: one immutable doc per accepted ping,
+    // TTL-expired at 30 days via a Firestore TTL policy on `expires_at`
+    // (an OUT-OF-BAND console/gcloud step — see DEPLOY_RUNBOOK; the field
+    // alone deletes nothing, and it must be a Timestamp, never a string).
+    //
+    // Client-created by necessity — routing every ping through PHP would
+    // defeat the whole hot/cold design. Safe because driverIs() compares the
+    // stamped driver_staff_id against the caller's own auth uid, so a driver
+    // can only ever write breadcrumbs attributed to themselves, and
+    // isSameSchoolWrite() validates the tenant on the INCOMING payload
+    // (unlike isSameSchool(), which is permissive on a null resource).
+    //
+    // Staff-read only. Parents never get breadcrumb access — the trail is a
+    // movement history, a materially more sensitive artifact than a single
+    // current position.
+    match /vehicleBreadcrumbs/{docId} {
+      allow read: if isSameSchool() && isStaff();
+      allow create: if isSameSchoolWrite()
+                    && driverIs(request.resource.data.driver_staff_id)
+                    && hasClientMetadata();
+      allow update, delete: if false;   // immutable
+    }
+
+    // F10 (2026-07-07) — Parent notification preferences (server-
+    // authoritative mute list). Owner-only read/write: the doc-id is
+    // {schoolId}_{userId} so the caller must match both claim fields
+    // via isSameSchool() + doc-id string match. Admin also permitted
+    // (support / operational recovery). Mute-list content is validated
+    // client-side and server-side in Transport_notifier — safety-
+    // exempt categories cannot be muted regardless of what a client
+    // writes here (server-side enforcement in
+    // Transport_notifier::_filterByPreferences).
+    match /notificationPreferences/{docId} {
+      // Owner-only doc-id match. Accept EITHER the custom user_id claim
+      // (set for staff via Firebase::setCanonicalClaims) OR auth.uid — for
+      // parents, Firebase Auth uid == studentId (Sis.php:2035 mints uid =
+      // $user_id at parent password reset), but the SIS parent-claims
+      // path (Sis.php:2049) does NOT include a user_id custom claim, so
+      // the token.user_id check fails for parents. auth.uid is the same
+      // identity signal, server-controlled, and un-spoofable. Release-
+      // cert manual-test finding 2026-07-08 pm: without this fallback,
+      // parents hit PERMISSION_DENIED on every notification-preference
+      // toggle, breaking the entire F10 Parent-side prefs feature.
+      allow read: if isSameSchool() && (
+        isAdmin() ||
+        docId == (request.auth.token.school_id + '_' + request.auth.uid) ||
+        docId == (request.auth.token.school_id + '_' + request.auth.uid)
+      );
+      allow write: if isSameSchool()
+        && isSameSchoolWrite()
+        && (
+          isAdmin() ||
+          docId == (request.auth.token.school_id + '_' + request.auth.uid) ||
+          docId == (request.auth.token.school_id + '_' + request.auth.uid)
+        );
+    }
+
+    // ── Transport: denormalised caches (server-only writes) ──────
+    match /busCapacityCache/{docId} {
+      allow read: if isSameSchool();
+      allow write: if false;
+    }
+
+    match /routeFleetSummary/{docId} {
+      allow read: if isSameSchool() && isStaff();
+      allow write: if false;
+    }
+
+    match /driverActivitySummary/{docId} {
+      allow read: if isSameSchool() && isStaff();
+      allow write: if false;
+    }
+
+    match /vehicleExpiryDashboardCache/{docId} {
+      allow read: if isSameSchool() && isStaff();
+      allow write: if false;
+    }
+
+    match /fleetMonthlyExpenseSummary/{docId} {
+      allow read: if isSameSchool() && isStaff();
+      allow write: if false;
     }
 
     // ── Library ──────────────────────────────────────────────────
@@ -1755,7 +2316,12 @@ service cloud.firestore {
     // ── HR Jobs (recruitment) ───────────────────────────────────
     match /hrJobs/{docId} {
       allow read: if isSameSchool();
-      allow write: if isAdmin();
+      // W1.3: was `isAdmin()` alone, which proves the caller is AN admin but
+      // never binds the write to their own tenant — an admin of school A could
+      // create or overwrite school B's job postings. Same defect, same fix as
+      // the `locations` block.
+      allow create, update: if isAdmin() && isSameSchoolWrite();
+      allow delete: if isAdmin() && isSameSchool();
     }
 
     // ── HR Applicants (recruitment) ──────────────────────────────
@@ -1764,7 +2330,10 @@ service cloud.firestore {
       // (the app reads hrJobs openings, never hrApplicants). Panel reads via Admin SDK.
       // Was isSameSchool() — exposed applicant contact details to any same-school token.
       allow read: if isAdmin() && isSameSchool();
-      allow write: if isAdmin();
+      // W1.3: cross-tenant write binding, as above. Candidate PII makes the
+      // unbound write arm materially worse here than on hrJobs.
+      allow create, update: if isAdmin() && isSameSchoolWrite();
+      allow delete: if isAdmin() && isSameSchool();
     }
 
     // ── Appraisals ──────────────────────────────────────────────
@@ -1976,6 +2545,20 @@ service cloud.firestore {
       allow read, write: if false;
     }
 
+    // ── Security telemetry audit trail (Phase 1, 2026-07-03) ──────
+    // security_events: canonical Firestore sink for the Security_telemetry
+    // library — login audit (ADMIN_/SA_LOGIN_*), RBAC/cross-tenant denials,
+    // control-plane (B2_*/ONBOARD_*), and the migrated legacy guards
+    // (CROSS_SCHOOL_ATTEMPT, PATH_VIOLATION, ROLE_DENIED, CROSS_SCHOOL).
+    // Written exclusively by the PHP backend via the service account, which
+    // bypasses these rules; read only server-side (AdminUsers Login Activity,
+    // Superadmin last-login). No client read/write is ever legitimate — a
+    // direct client access is a bug. Explicit deny-all matches the existing
+    // default-deny (additive intent-lock, no behavioral change).
+    match /security_events/{docId} {
+      allow read, write: if false;
+    }
+
     // ── Wave B2.2-F (2026-05-30): Firestore-only control-plane (F3) ──
     // Server-only collections. All writes (and reads except tenantPublic)
     // bypass these rules via the Admin SDK service account (rules:4-6);
@@ -2014,6 +2597,17 @@ service cloud.firestore {
     // RTDB<->Firestore bridge). Forward-reconciler marker keyed by
     // (schoolId, op). Server-only.
     match /_b2_pending/{docId}      { allow read, write: if false; }
+
+    // ── Canonical Document Service (Phase 1) — SERVER-ONLY ────────
+    // documents/{schoolId}_{documentId} = one physical file's metadata;
+    // documentLinks/{...} = per-module reference links (reference count).
+    // Both are written EXCLUSIVELY by the PHP backend via the Admin SDK
+    // (service account bypasses these rules). Client apps NEVER read these
+    // directly — they read the denormalized pointer cached on the owning
+    // doc (crmApplications.documentRefs / student Doc[]). Deny all client
+    // access so one school can never read another's document metadata.
+    match /documents/{docId}        { allow read, write: if false; }
+    match /documentLinks/{linkId}   { allow read, write: if false; }
 
     // ── Deny everything else (catch-all) ─────────────────────────
     match /{document=**} {
