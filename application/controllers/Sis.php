@@ -2748,16 +2748,25 @@ class Sis extends MY_Controller
     }
 
     /**
-     * Generate student password — exact copy of Student.php::generatePassword().
-     * Format: Ucfirst(first 3 letters of name) + first 4 DOB digits + @
+     * Generate the initial student password.
+     *
+     * WAS: Ucfirst(name[0..3]) . dobDigits[0..4] . '@'  →  "Ayu1503@"
+     * That was computable by anyone holding a name and a date of birth — i.e.
+     * anyone with a class list — so a new student's account was guessable for
+     * the whole window between handover and their forced first-login change.
+     *
+     * Now delegates to generate_temp_password(), which keeps the same shape but
+     * draws the digits from a CSPRNG. $dob is retained in the signature only so
+     * the four existing call sites keep working; it is deliberately unused, and
+     * nothing guessable must ever feed the digits again.
+     *
+     * Safe for repair_student_auth(): that path CREATES the Auth account with
+     * whatever this returns, so there is no stored value to match.
      */
-    private function _generatePassword(string $name, string $dob): string
+    private function _generatePassword(string $name, string $dob = ''): string
     {
-        $cleanName = preg_replace('/[^a-zA-Z]/', '', $name);
-        $prefix    = strtolower(substr($cleanName, 0, 3));
-        $dobPart   = preg_replace('/[^0-9]/', '', $dob);
-        $suffix    = substr($dobPart, 0, 4);
-        return ucfirst($prefix) . $suffix . '@';
+        $this->load->helper('temp_password');
+        return generate_temp_password($name);
     }
 
     /**

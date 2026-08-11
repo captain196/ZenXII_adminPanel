@@ -1271,19 +1271,17 @@ class Staff extends MY_Controller
         $basicRaw     = $rowData['Basic Salary'] ?? '';
         $primaryRole  = $roleIds[0] ?? '';   // '' when role unresolved (assign later)
 
-        // Password: First3Name + (last3 DOB year | last3 phone | "123") + @.
-        // DOB is optional now, so fall back when it's missing so the generated
-        // password is never just "Nam@".
-        $timestamp      = strtotime($dob);
-        $cleanName      = preg_replace('/\s+/', '', $name);
-        $first3         = ucfirst(substr($cleanName, 0, 3));
-        $year           = $timestamp ? date('Y', $timestamp) : '';
-        $last3          = substr($year, -3);
-        if ($last3 === '') {
-            $digits = preg_replace('/\D/', '', $phone);
-            $last3  = $digits !== '' ? substr($digits, -3) : '123';
-        }
-        $plainPassword  = $first3 . $last3 . '@';
+        // WAS: First3Name + (last3 DOB year | last3 phone | "123") + '@' — 7
+        // characters, below the 8-char minimum the user is forced to meet on
+        // first login, and computable from a staff list: the name plus either a
+        // birth year or a phone number, both of which sit on the same imported
+        // sheet. A row that fell through to the "123" branch was fully
+        // predictable from the name alone.
+        //
+        // The import returns this value for the login-handout PDF, so it stays a
+        // readable, transcribable string — only the guessability is removed.
+        $this->load->helper('temp_password');
+        $plainPassword  = generate_temp_password($name);
         $hashedPassword = password_hash($plainPassword, PASSWORD_DEFAULT);
 
         $basic = (float) $basicRaw;
@@ -2140,12 +2138,16 @@ class Staff extends MY_Controller
             $rawPassword = $normalizedPostData['password'] ?? '';
             if (empty($rawPassword)) {
                 // The old default was ucfirst(name)[0..3] . '123@' — 7 characters,
-                // one BELOW the 8-char minimum that the same user is forced to meet
-                // minutes later, and fully derivable from a name anyone can read off
-                // a staff list. Keep the familiar shape for the handout, but make the
-                // tail unpredictable and the whole thing policy-compliant. The value
-                // is returned to the admin in the create response exactly as before.
-                $rawPassword = substr(ucfirst($staffName), 0, 3) . '@' . random_int(1000, 9999);
+                // one BELOW the 8-char minimum the same user is forced to meet
+                // minutes later, and fully derivable from a name anyone can read
+                // off a staff list. generate_temp_password keeps the familiar
+                // shape, draws the digits from a CSPRNG, and is policy-compliant
+                // for ANY name (blank, one letter, or non-Latin) — the inline
+                // version this replaced produced "A@1234" for a one-letter name,
+                // which has no lowercase and would fail the policy it feeds.
+                // The value is returned in the create response exactly as before.
+                $this->load->helper('temp_password');
+                $rawPassword = generate_temp_password($staffName);
             }
             $hashedPassword = password_hash($rawPassword, PASSWORD_BCRYPT, ['cost' => 12]);
 

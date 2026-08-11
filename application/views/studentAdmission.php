@@ -833,8 +833,12 @@ function submitFinalForm() {
             }
             if (res.status === 'success') {
                 closePreviewModal();
-                showAlert('success', res.message || 'Student admitted successfully!');
-                setTimeout(function() { location.reload(); }, 1600);
+                // The generated Student ID + password are only ever available in
+                // THIS response — the password is hashed on the doc and can never
+                // be read back. Showing a toast and reloading (the old behaviour)
+                // discarded them, leaving the operator with no way to tell the
+                // parent how to log in. Mirrors the staff flow in new_staff.php.
+                showStudentConfirmation(res);
             } else {
                 showAlert('error', res.message || 'Submission failed. Please try again.');
                 if (btn) { btn.disabled = false; btn.innerHTML = '<i class="fa fa-check"></i> Final Submit'; }
@@ -1466,4 +1470,170 @@ document.addEventListener('DOMContentLoaded', function() {
 .sa-toast.success { background: var(--sa-green); }
 .sa-toast.error   { background: var(--sa-red);   }
 .sa-toast.warning { background: var(--sa-amber);  }
+
+/* ══ Admission credential slip ══
+   The generated password exists only in the save_admission response — it is
+   hashed on the student doc and unreadable afterwards. Mirrors the staff
+   credential box in new_staff.php so both flows hand over logins the same way. */
+.stu-confirm-overlay {
+    position:fixed; inset:0; background:rgba(0,0,0,.55); z-index:10000;
+    display:flex; align-items:center; justify-content:center; padding:20px;
+    animation:stuFadeIn .2s ease;
+}
+.stu-confirm-box {
+    background:var(--sa-card,#fff); color:var(--sa-ink,#111); border-radius:14px;
+    padding:28px 26px; width:100%; max-width:430px; text-align:center;
+    max-height:92vh; overflow-y:auto; animation:stuScaleIn .22s ease;
+    box-shadow:0 20px 50px rgba(0,0,0,.28);
+}
+.stu-confirm-box .stu-icon {
+    width:56px; height:56px; border-radius:50%; margin:0 auto 14px;
+    display:flex; align-items:center; justify-content:center;
+    background:var(--sa-green,#1B6A4E); color:#fff; font-size:26px;
+}
+.stu-confirm-box h2 { margin:0 0 6px; font-size:1.22rem; }
+.stu-confirm-box .stu-sub { color:var(--sa-muted,#6b7280); font-size:.86rem; margin:0 0 18px; }
+.stu-cred-card {
+    background:var(--sa-bg2,#f6f7f9); border:1px solid var(--sa-border,#e3e6ea);
+    border-radius:10px; padding:4px 14px; margin-bottom:14px; text-align:left;
+}
+.stu-cred-row {
+    display:flex; justify-content:space-between; align-items:center; gap:12px;
+    padding:9px 0; border-bottom:1px solid var(--sa-border,#e8eaee);
+}
+.stu-cred-row:last-child { border-bottom:none; }
+.stu-label { color:var(--sa-muted,#6b7280); font-size:.8rem; }
+.stu-value { font-weight:600; font-size:.9rem; word-break:break-all; text-align:right; }
+.stu-value.stu-pwd { color:#b91c1c; font-family:ui-monospace,Menlo,monospace; letter-spacing:.4px; }
+.stu-note {
+    font-size:.78rem; color:var(--sa-muted,#6b7280); background:var(--sa-bg2,#f6f7f9);
+    padding:10px 12px; border-radius:8px; margin-bottom:16px; text-align:left; line-height:1.5;
+}
+.stu-warn {
+    font-size:.8rem; color:#7c2d12; background:#fef3c7; border:1px solid #fde68a;
+    padding:10px 12px; border-radius:8px; margin-bottom:14px; text-align:left; line-height:1.5;
+}
+.stu-actions { display:flex; gap:10px; justify-content:center; flex-wrap:wrap; }
+.stu-btn {
+    padding:10px 22px; border-radius:8px; border:none; cursor:pointer;
+    font-size:.88rem; font-weight:600; transition:opacity .15s;
+}
+.stu-btn:focus-visible { outline:2px solid var(--sa-navy,#2F5484); outline-offset:2px; }
+.stu-btn-print { background:var(--sa-navy,#BC5A3C); color:#fff; }
+.stu-btn-copy  { background:var(--sa-bg3,#eceff3); color:var(--sa-ink,#111); border:1px solid var(--sa-border,#dcdfe4); }
+.stu-btn-done  { background:var(--sa-bg3,#eceff3); color:var(--sa-ink,#111); border:1px solid var(--sa-border,#dcdfe4); }
+.stu-btn:hover { opacity:.86; }
+@keyframes stuFadeIn  { from{opacity:0} to{opacity:1} }
+@keyframes stuScaleIn { from{transform:scale(.93);opacity:0} to{transform:scale(1);opacity:1} }
+@media (max-width:480px) { .stu-confirm-box { padding:22px 18px; } }
 </style>
+
+<script>
+/* ── Post-admission credential handover ── */
+function stuEsc(s) {
+    return String(s == null ? '' : s).replace(/[&<>"']/g, function(c) {
+        return { '&':'&amp;', '<':'&lt;', '>':'&gt;', '"':'&quot;', "'":'&#39;' }[c];
+    });
+}
+
+function showStudentConfirmation(res) {
+    window._stuSlipData = res;
+
+    // save_admission sets auth_warning when the Firebase Auth account could not
+    // be created. The credentials below are then useless until it is repaired,
+    // so say that instead of letting the operator hand out a dead password.
+    var warn = res.auth_warning
+        ? '<div class="stu-warn"><i class="fa fa-exclamation-triangle"></i> ' + stuEsc(res.auth_warning) + '</div>'
+        : '';
+
+    var overlay = document.createElement('div');
+    overlay.className = 'stu-confirm-overlay';
+    overlay.setAttribute('role', 'dialog');
+    overlay.setAttribute('aria-modal', 'true');
+    overlay.innerHTML =
+        '<div class="stu-confirm-box">' +
+            '<div class="stu-icon"><i class="fa fa-check"></i></div>' +
+            '<h2>Student Admitted</h2>' +
+            '<p class="stu-sub">Share these credentials with the parent for app login.</p>' +
+            warn +
+            '<div class="stu-cred-card">' +
+                '<div class="stu-cred-row"><span class="stu-label">Name</span><span class="stu-value">' + stuEsc(res.name) + '</span></div>' +
+                '<div class="stu-cred-row"><span class="stu-label">Student ID</span><span class="stu-value">' + stuEsc(res.user_id) + '</span></div>' +
+                '<div class="stu-cred-row"><span class="stu-label">Password</span><span class="stu-value stu-pwd">' + stuEsc(res.password) + '</span></div>' +
+                '<div class="stu-cred-row"><span class="stu-label">Class</span><span class="stu-value">' + stuEsc(res.class) + ' / ' + stuEsc(res.section) + '</span></div>' +
+            '</div>' +
+            '<div class="stu-note">' +
+                'The parent logs into the <strong>ZenXii Parent app</strong> with the <strong>Student ID</strong> and this password, ' +
+                'then sets their own password on first login. ' +
+                '<strong>This password is shown only once</strong> — it cannot be read back later. ' +
+                'If it is lost, reset it from SIS → Reset Password.' +
+            '</div>' +
+            '<div class="stu-actions">' +
+                '<button class="stu-btn stu-btn-copy" onclick="copyStudentSlip(this)"><i class="fa fa-copy"></i> Copy</button>' +
+                '<button class="stu-btn stu-btn-print" onclick="printStudentSlip()"><i class="fa fa-print"></i> Print Slip</button>' +
+                '<button class="stu-btn stu-btn-done" onclick="closeStudentConfirm()"><i class="fa fa-check"></i> Done</button>' +
+            '</div>' +
+        '</div>';
+    document.body.appendChild(overlay);
+    var first = overlay.querySelector('.stu-btn-copy');
+    if (first) first.focus();
+}
+
+function copyStudentSlip(btn) {
+    var d = window._stuSlipData || {};
+    var text = 'ZenXii Parent app login\n'
+             + 'Student: ' + (d.name || '') + '\n'
+             + 'Student ID: ' + (d.user_id || '') + '\n'
+             + 'Password: ' + (d.password || '');
+    var done = function() {
+        if (btn) { btn.innerHTML = '<i class="fa fa-check"></i> Copied'; }
+    };
+    if (navigator.clipboard && navigator.clipboard.writeText) {
+        navigator.clipboard.writeText(text).then(done, function() { showAlert('error', 'Could not copy — select the text manually.'); });
+    } else {
+        var ta = document.createElement('textarea');
+        ta.value = text; document.body.appendChild(ta); ta.select();
+        try { document.execCommand('copy'); done(); }
+        catch (e) { showAlert('error', 'Could not copy — select the text manually.'); }
+        ta.remove();
+    }
+}
+
+function closeStudentConfirm() {
+    var el = document.querySelector('.stu-confirm-overlay');
+    if (el) el.remove();
+    // Reload so the form issues the NEXT student id (the old flow reloaded too).
+    location.reload();
+}
+
+function printStudentSlip() {
+    var d = window._stuSlipData || {};
+    var w = window.open('', '_blank', 'width=400,height=470');
+    if (!w) { showAlert('error', 'Pop-up blocked — allow pop-ups to print the slip.'); return; }
+    w.document.write(
+        '<!DOCTYPE html><html><head><title>Student Credential Slip</title>' +
+        '<style>body{font-family:sans-serif;padding:30px;max-width:360px;margin:auto;}' +
+        'h2{text-align:center;margin-bottom:5px;}' +
+        '.sub{text-align:center;color:#888;font-size:13px;margin-bottom:20px;}' +
+        'table{width:100%;border-collapse:collapse;margin-bottom:20px;}' +
+        'td{padding:8px 10px;border-bottom:1px solid #eee;font-size:14px;}' +
+        'td:first-child{color:#888;width:40%;}td:last-child{font-weight:600;}' +
+        '.pwd{color:#dc2626;letter-spacing:.5px;font-family:monospace;}' +
+        '.note{font-size:12px;color:#888;background:#f9f9f9;padding:10px;border-radius:6px;}' +
+        '</style></head><body>' +
+        '<h2>Student Credential Slip</h2><p class="sub">ZenXii Parent App Login</p>' +
+        '<table>' +
+        '<tr><td>Name</td><td>' + stuEsc(d.name) + '</td></tr>' +
+        '<tr><td>Student ID</td><td>' + stuEsc(d.user_id) + '</td></tr>' +
+        '<tr><td>Password</td><td class="pwd">' + stuEsc(d.password) + '</td></tr>' +
+        '<tr><td>Class</td><td>' + stuEsc(d.class) + ' / ' + stuEsc(d.section) + '</td></tr>' +
+        '</table>' +
+        '<div class="note"><strong>Note:</strong> Log in to the ZenXii Parent app with the Student ID and this password. ' +
+        'You will be asked to set your own password on first login.</div>' +
+        '</body></html>'
+    );
+    w.document.close();
+    w.focus();
+    w.print();
+}
+</script>
