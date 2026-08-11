@@ -16,10 +16,15 @@ AEGIS_DIR="$(cd "$(dirname "$0")/.." && pwd)"
 
 REPOS=("$@")
 if [ ${#REPOS[@]} -eq 0 ]; then
-  REPOS=(
-    "/Users/yuggi/Desktop/Zennxii_adminPanel"
-    "/Users/yuggi/AndroidStudioProjects"
-    "/Users/yuggi/Desktop/project2"
+  # From the surface map, not hardcoded paths — see hooks/install.sh.
+  REPOS=()
+  while IFS= read -r r; do [ -n "$r" ] && REPOS+=("$r"); done < <(
+    node -e '
+      const c = require(process.argv[1] + "/lib/config").load();
+      const seen = new Set();
+      for (const s of Object.values(c.surfaces || {}))
+        if (s.gitRepo && !seen.has(s.gitRepo)) { seen.add(s.gitRepo); console.log(s.gitRepo); }
+    ' "$AEGIS_DIR" 2>/dev/null || true
   )
 fi
 

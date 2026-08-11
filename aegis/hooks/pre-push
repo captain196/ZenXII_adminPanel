@@ -9,8 +9,19 @@
 set -euo pipefail
 
 REPO="$(git rev-parse --show-toplevel)"
+
+# Aegis normally sits inside the repo being pushed (the admin panel). When it
+# does not — pushing one of the app repos, or the legacy-forks repo — fall back
+# to the usual checkout locations. The old hardcoded absolute path was wrong on
+# every machine but one, and broke outright when Aegis moved.
 AEGIS_DIR="${AEGIS_HOME:-$REPO/aegis}"
-[ -f "$AEGIS_DIR/cli.js" ] || AEGIS_DIR="/Users/yuggi/AndroidStudioProjects/aegis"
+if [ ! -f "$AEGIS_DIR/cli.js" ]; then
+  for cand in "$HOME/Desktop/Zennxii_adminPanel/aegis" "$HOME/dev/Zennxii_adminPanel/aegis" \
+              "$HOME/projects/Zennxii_adminPanel/aegis" "$HOME/Zennxii_adminPanel/aegis" \
+              "$HOME/AndroidStudioProjects/aegis" "$HOME/dev/aegis" "$HOME/aegis"; do
+    [ -f "$cand/cli.js" ] && { AEGIS_DIR="$cand"; break; }
+  done
+fi
 
 if [ ! -f "$AEGIS_DIR/cli.js" ]; then
   echo "aegis: cli not found; skipping impact check" >&2

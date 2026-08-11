@@ -7,10 +7,18 @@ set -euo pipefail
 HOOKS_DIR="$(cd "$(dirname "$0")" && pwd)"
 chmod +x "$HOOKS_DIR/pre-push"
 
-DEFAULT_REPOS=(
-  "/Users/yuggi/AndroidStudioProjects"
-  "/Users/yuggi/Desktop/Zennxii_adminPanel"
-  "/Users/yuggi/Desktop/project2"
+# Derive the repo list from the surface map rather than hardcoding one
+# machine's absolute paths — aegis.config.local.json and $AEGIS_* overrides are
+# honoured automatically, so this works on a colleague's checkout unchanged.
+AEGIS_DIR="$(cd "$HOOKS_DIR/.." && pwd)"
+DEFAULT_REPOS=()
+while IFS= read -r r; do [ -n "$r" ] && DEFAULT_REPOS+=("$r"); done < <(
+  node -e '
+    const c = require(process.argv[1] + "/lib/config").load();
+    const seen = new Set();
+    for (const s of Object.values(c.surfaces || {}))
+      if (s.gitRepo && !seen.has(s.gitRepo)) { seen.add(s.gitRepo); console.log(s.gitRepo); }
+  ' "$AEGIS_DIR" 2>/dev/null || true
 )
 REPOS=("$@")
 [ ${#REPOS[@]} -eq 0 ] && REPOS=("${DEFAULT_REPOS[@]}")
