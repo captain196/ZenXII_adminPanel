@@ -447,18 +447,32 @@ class Stories extends MY_Controller
             $viewers[] = [
                 'userId'   => $uid,
                 'userName' => (string) ($vd['userName'] ?? ''),
+                // Denormalised avatar written by both apps alongside userName,
+                // so the panel's list matches the apps' rows without an
+                // N-per-viewer profile lookup. Empty → the view draws initials.
+                'userPic'  => (string) ($vd['userPic'] ?? ''),
                 'viewedAt' => $this->_to_millis($vd['viewedAt'] ?? 0),
                 'emoji'    => (string) ($reactionByUser[$uid] ?? ''),
+                'reactedOnly' => false,
+                // Watched to the end, vs merely opened. Both apps set this when
+                // an image's timer elapses or a video hits its last frame; a
+                // tap-forward doesn't count. Legacy docs have no field → false.
+                'completed' => !empty($vd['completed']),
             ];
         }
-        // Defensive union: reactors with no viewer doc still appear.
+        // Defensive union: reactors with no viewer doc still appear — flagged,
+        // so a reaction that landed without its view marker is visible rather
+        // than looking like an ordinary view with no timestamp.
         foreach ($reactionByUser as $uid => $emoji) {
             if (isset($seen[$uid])) continue;
             $viewers[] = [
                 'userId'   => (string) $uid,
                 'userName' => '',
+                'userPic'  => '',
                 'viewedAt' => 0,
                 'emoji'    => (string) $emoji,
+                'reactedOnly' => true,
+                'completed' => false,
             ];
         }
         usort($viewers, function ($a, $b) { return $b['viewedAt'] <=> $a['viewedAt']; });
@@ -805,6 +819,11 @@ class Stories extends MY_Controller
      */
     public function upload_story_chunk()
     {
+        // Pair the graded gate with the legacy check exactly as the ten sibling
+        // endpoints do. _require_moderate() alone is permissive-OR, so a built-in
+        // role NAME in MODERATE_ROLES would re-grant posting to a holder whose
+        // Stories capability was deliberately downgraded to view-only.
+        $this->_require_role(self::MODERATE_ROLES, 'upload_story_chunk', 'Stories', 'edit');
         $this->_require_moderate();
         $this->output->set_content_type('application/json');
 
@@ -816,6 +835,8 @@ class Stories extends MY_Controller
 
     public function upload_story()
     {
+        // See upload_story_chunk() — same graded-gate pairing, same reason.
+        $this->_require_role(self::MODERATE_ROLES, 'upload_story', 'Stories', 'edit');
         $this->_require_moderate();
         $this->output->set_content_type('application/json');
 

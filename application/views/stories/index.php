@@ -243,31 +243,27 @@ $can_manage = function_exists('has_permission') ? has_permission('Stories', 'man
                     Media <span style="color:#dc2626;">*</span>
                 </label>
                 <input type="file" id="asMedia" accept="image/*,video/*" required
+                       onchange="ST.onMediaPicked()"
                        style="width:100%;padding:9px;border:1.5px dashed #cbd5e1;border-radius:8px;background:#f8fafc;cursor:pointer;">
-                <div style="font-size:11px;color:#64748b;margin-top:4px;">
+                <!-- Live read-out of what was actually picked. Replaces the old
+                     "Type" dropdown: the server sniffs the real MIME with finfo
+                     and REJECTS a mismatch, so asking the admin to also declare
+                     image-vs-video could only ever be redundant (they matched)
+                     or fatal (they didn't, and a 50 MB upload was rejected on
+                     arrival). The file already carries the answer. -->
+                <div id="asDetected" style="font-size:11px;color:#64748b;margin-top:5px;">
                     Image ≤ 10 MB · Video ≤ 50 MB
                 </div>
             </div>
 
-            <div style="display:grid;grid-template-columns:1fr 1fr;gap:12px;margin-bottom:14px;">
-                <div>
-                    <label style="font-size:11px;font-weight:700;text-transform:uppercase;letter-spacing:.5px;color:#475569;display:block;margin-bottom:5px;">
-                        Type <span style="color:#dc2626;">*</span>
-                    </label>
-                    <select id="asType" required style="width:100%;padding:10px;border:1.5px solid #cbd5e1;border-radius:8px;font-size:14px;">
-                        <option value="image">Image</option>
-                        <option value="video">Video</option>
-                    </select>
-                </div>
-                <div>
-                    <label style="font-size:11px;font-weight:700;text-transform:uppercase;letter-spacing:.5px;color:#475569;display:block;margin-bottom:5px;">
-                        Priority <span style="color:#dc2626;">*</span>
-                    </label>
-                    <select id="asPriority" required style="width:100%;padding:10px;border:1.5px solid #cbd5e1;border-radius:8px;font-size:14px;">
-                        <option value="normal">Normal</option>
-                        <option value="high">High (pin to top)</option>
-                    </select>
-                </div>
+            <div style="margin-bottom:14px;">
+                <label style="font-size:11px;font-weight:700;text-transform:uppercase;letter-spacing:.5px;color:#475569;display:block;margin-bottom:5px;">
+                    Priority <span style="color:#dc2626;">*</span>
+                </label>
+                <select id="asPriority" required style="width:100%;padding:10px;border:1.5px solid #cbd5e1;border-radius:8px;font-size:14px;">
+                    <option value="normal">Normal</option>
+                    <option value="high">High (pin to top)</option>
+                </select>
             </div>
 
             <div style="margin-bottom:14px;">
@@ -500,6 +496,8 @@ ST.charts = {};
 ST.openUpload = function() {
     if (!ST.CAN_EDIT) { ST.toast('You do not have permission to post admin stories.', 'error'); return; }
     document.getElementById('adminStoryForm').reset();
+    // form.reset() clears the file input but not our derived read-out.
+    ST.onMediaPicked();
     document.getElementById('asProgressWrap').style.display = 'none';
     document.getElementById('asProgressBar').style.width = '0%';
     document.getElementById('asProgressPct').textContent = '0';
@@ -541,18 +539,72 @@ ST.closeUpload = function() {
     document.getElementById('adminStoryModal').style.display = 'none';
 };
 
+/**
+ * Media type derived from the FILE, never asked of the user.
+ *
+ * Mirrors the Teacher app, which auto-detects from the picked file's MIME.
+ * Returns '' when the browser reports something that is neither image nor
+ * video, so the caller can reject it up front instead of after the upload.
+ */
+ST.detectMediaType = function(file) {
+    if (!file) return '';
+    var mime = (file.type || '').toLowerCase();
+    if (mime.indexOf('video/') === 0) return 'video';
+    if (mime.indexOf('image/') === 0) return 'image';
+    // Some browsers report an empty type for less common containers — fall
+    // back to the extension rather than guessing wrong. The server's finfo
+    // sniff is the authority either way.
+    var name = (file.name || '').toLowerCase();
+    if (/\.(mp4|mov|m4v|3gp|webm)$/.test(name)) return 'video';
+    if (/\.(jpg|jpeg|png|webp)$/.test(name))     return 'image';
+    return '';
+};
+
+ST.MEDIA_LIMITS = { image: 10 * 1024 * 1024, video: 50 * 1024 * 1024 };
+
+/** Live read-out under the file input: what we detected, how big, the cap. */
+ST.onMediaPicked = function() {
+    var out  = document.getElementById('asDetected');
+    var file = (document.getElementById('asMedia').files || [])[0];
+    if (!out) return;
+    if (!file) {
+        out.style.color = '#64748b';
+        out.textContent = 'Image ≤ 10 MB · Video ≤ 50 MB';
+        return;
+    }
+    var type = ST.detectMediaType(file);
+    if (!type) {
+        out.style.color = '#dc2626';
+        out.textContent = 'Unsupported file — pick a JPG/PNG/WebP image or an MP4/MOV/WebM video.';
+        return;
+    }
+    var cap   = ST.MEDIA_LIMITS[type];
+    var mb    = file.size / (1024 * 1024);
+    var capMb = cap / (1024 * 1024);
+    var over  = file.size > cap;
+    out.style.color = over ? '#dc2626' : '#0f766e';
+    out.textContent = (type === 'video' ? 'Video' : 'Image')
+        + ' · ' + mb.toFixed(1) + ' MB'
+        + (over ? ' — over the ' + capMb + ' MB limit' : ' of ' + capMb + ' MB');
+};
+
 ST.submitUpload = function() {
     if (!ST.CAN_EDIT) { alert('You do not have permission to post admin stories.'); return; }
     var fileEl  = document.getElementById('asMedia');
-    var typeEl  = document.getElementById('asType');
     var priEl   = document.getElementById('asPriority');
     var capEl   = document.getElementById('asCaption');
     var file    = fileEl.files && fileEl.files[0];
     if (!file) { alert('Please pick a file'); return; }
 
+    // Type comes from the FILE, not a dropdown the admin could contradict.
+    var type = ST.detectMediaType(file);
+    if (!type) {
+        alert('Unsupported file type. Pick a JPG/PNG/WebP image or an MP4/MOV/WebM video.');
+        return;
+    }
+
     // Client-side size guard (server enforces too)
-    var type = typeEl.value;
-    var maxBytes = type === 'image' ? 10 * 1024 * 1024 : 50 * 1024 * 1024;
+    var maxBytes = ST.MEDIA_LIMITS[type];
     if (file.size > maxBytes) {
         var maxMb = maxBytes / (1024 * 1024);
         alert(type + ' must be ≤ ' + maxMb + ' MB.'); return;
@@ -1119,17 +1171,48 @@ ST.openDetail = function(teacherId, storyId) {
             + '</div></div>';
 
         // "Viewed by" list — who opened this story (admin oversight).
+        // Mirrors the apps' seen-by list: avatar · name · when · reaction, with
+        // the header count reconciled against the server-side viewCount so the
+        // two can never contradict each other on the same screen.
         var viewers = s.viewers || [];
-        html += '<div class="st-detail-field" style="margin-top:12px"><div class="st-detail-label">Viewed by (' + viewers.length + ')</div>';
+        var realViews = viewers.filter(function (v) { return !v.reactedOnly; }).length;
+        var headCount = Math.max(parseInt(s.viewCount, 10) || 0, realViews);
+        // "Watched" is the subset who reached the end, vs merely opening it —
+        // a view is recorded after a 500ms dwell, so the two numbers together
+        // say far more than either alone.
+        var watched = viewers.filter(function (v) { return v.completed; }).length;
+        var watchedLabel = watched > 0 ? ' · ' + watched + ' watched fully' : '';
+        html += '<div class="st-detail-field" style="margin-top:12px"><div class="st-detail-label">Viewed by (' + headCount + ')' + ST.esc(watchedLabel) + '</div>';
         if (!viewers.length) {
-            html += '<div class="st-detail-value" style="color:var(--t4)">No views yet.</div>';
+            html += '<div class="st-detail-value" style="color:var(--t4)">'
+                + 'No views yet. People appear here as they watch; the author\'s own views aren\'t counted.'
+                + '</div>';
         } else {
-            html += '<div style="max-height:180px;overflow-y:auto;border:1px solid var(--border);border-radius:8px;padding:6px 10px;margin-top:4px">';
+            html += '<div style="max-height:220px;overflow-y:auto;border:1px solid var(--border);border-radius:8px;padding:6px 10px;margin-top:4px">';
             viewers.forEach(function(v) {
+                var name = v.userName || v.userId || 'Unknown';
+                var pic = ST.safeUrl(v.userPic);
+                var avatar = pic
+                    ? '<img src="' + ST.escAttr(pic) + '" alt="" style="width:26px;height:26px;border-radius:50%;object-fit:cover;flex:0 0 auto"'
+                      + ' onerror="this.style.display=\'none\'">'
+                    : '<span style="width:26px;height:26px;border-radius:50%;flex:0 0 auto;display:inline-flex;'
+                      + 'align-items:center;justify-content:center;background:var(--bg3);color:var(--t3);font-size:11px;font-weight:600">'
+                      + ST.esc(name.trim().charAt(0).toUpperCase() || '?') + '</span>';
                 var emoji = v.emoji ? ' <span style="font-size:13px">' + ST.esc(v.emoji) + '</span>' : '';
-                html += '<div style="display:flex;justify-content:space-between;gap:10px;padding:4px 0;font-size:13px;border-bottom:1px solid var(--border)">'
-                    + '<span style="color:var(--t2)">' + ST.esc(v.userName || v.userId || 'Unknown') + emoji + '</span>'
-                    + '<span style="color:var(--t4);font-size:11px">' + (v.viewedAt ? ST.timeAgo(v.viewedAt) : '') + '</span>'
+                // A reaction with no view marker is labelled rather than shown
+                // with a blank timestamp, which read as an ordinary view.
+                var when = v.reactedOnly ? 'Reacted' : (v.viewedAt ? ST.timeAgo(v.viewedAt) : 'Just now');
+                // Kept OUT of `when`, which is escaped below — this is a fixed
+                // literal with no user data in it, so it can be appended raw.
+                var watchedTag = v.completed
+                    ? ' · <span style="color:#0f766e"><i class="fa fa-check-circle"></i> watched</span>'
+                    : '';
+                html += '<div style="display:flex;align-items:center;justify-content:space-between;gap:10px;padding:5px 0;font-size:13px;border-bottom:1px solid var(--border)">'
+                    + '<span style="display:flex;align-items:center;gap:8px;min-width:0;color:var(--t2)">'
+                    + avatar
+                    + '<span style="overflow:hidden;text-overflow:ellipsis;white-space:nowrap">' + ST.esc(name) + emoji + '</span>'
+                    + '</span>'
+                    + '<span style="color:var(--t4);font-size:11px;flex:0 0 auto">' + ST.esc(when) + watchedTag + '</span>'
                     + '</div>';
             });
             html += '</div>';
