@@ -1,0 +1,170 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>ZenXii Aegis — Health</title>
+<style>
+  :root{
+    --bg:#0B1413;--surface:#10201E;--surface2:#172826;--ink:#E7EEEC;--ink2:#A9BAB6;--ink3:#7C8E8A;
+    --border:#253734;--accent:#2ED2BE;--accent2:#4FE0CE;--accentghost:#12302C;
+    --good:#3FCB82;--goodg:#123024;--warn:#D9A441;--warng:#2F2711;--crit:#E8695D;--critg:#331A17;
+    --mono:ui-monospace,"SF Mono",Menlo,monospace;--sans:system-ui,-apple-system,"Segoe UI",Roboto,sans-serif;
+  }
+  @media (prefers-color-scheme:light){:root{
+    --bg:#F1F5F5;--surface:#FFFFFF;--surface2:#E9EFEF;--ink:#142320;--ink2:#3D4F4C;--ink3:#6B7C79;
+    --border:#D3DEDC;--accent:#0C857A;--accent2:#0A6E65;--accentghost:#DBEEEB;
+    --good:#1C7F53;--goodg:#DBEEE2;--warn:#9A6410;--warng:#F3E7CE;--crit:#B63A31;--critg:#F5DFDC;
+  }}
+  *{box-sizing:border-box}
+  body{margin:0;background:var(--bg);color:var(--ink);font-family:var(--sans);font-size:15px;line-height:1.5}
+  .wrap{max-width:1120px;margin:0 auto;padding:28px 22px 80px}
+  header{display:flex;align-items:center;justify-content:space-between;gap:16px;flex-wrap:wrap;margin-bottom:22px;
+    padding-bottom:18px;border-bottom:1px solid var(--border)}
+  .brand{display:flex;align-items:center;gap:12px}
+  .brand svg{width:30px;height:30px;color:var(--accent)}
+  .brand h1{font-size:20px;margin:0;letter-spacing:-.01em}
+  .brand .sub{font-family:var(--mono);font-size:11px;color:var(--ink3);text-transform:uppercase;letter-spacing:.1em}
+  .headline{display:flex;align-items:center;gap:22px}
+  .big{text-align:right}
+  .big .n{font-size:40px;font-weight:800;line-height:1;font-variant-numeric:tabular-nums}
+  .big .l{font-family:var(--mono);font-size:10.5px;text-transform:uppercase;letter-spacing:.1em;color:var(--ink3)}
+  .pill{font-family:var(--mono);font-size:12px;font-weight:700;padding:6px 12px;border-radius:20px;border:1px solid}
+  .pill.yes{color:var(--good);background:var(--goodg);border-color:color-mix(in srgb,var(--good) 35%,transparent)}
+  .pill.no{color:var(--crit);background:var(--critg);border-color:color-mix(in srgb,var(--crit) 35%,transparent)}
+  h2{font-family:var(--mono);font-size:11px;text-transform:uppercase;letter-spacing:.13em;color:var(--ink3);
+    margin:26px 0 12px;font-weight:600}
+  .grid{display:grid;gap:12px}
+  .g4{grid-template-columns:repeat(4,1fr)}.g3{grid-template-columns:repeat(3,1fr)}.g2{grid-template-columns:repeat(2,1fr)}
+  .tile{background:var(--surface);border:1px solid var(--border);border-radius:11px;padding:15px 16px}
+  .tile .top{display:flex;align-items:center;justify-content:space-between;gap:8px}
+  .tile .name{font-weight:650;font-size:14px}
+  .tile .sub{font-family:var(--mono);font-size:11px;color:var(--ink3);margin-top:3px;word-break:break-word}
+  .dot{width:9px;height:9px;border-radius:50%;flex:none}
+  .dot.good{background:var(--good)}.dot.warn{background:var(--warn)}.dot.crit{background:var(--crit)}.dot.dim{background:var(--ink3)}
+  .hbar{height:5px;border-radius:3px;background:var(--surface2);margin-top:10px;overflow:hidden}
+  .hbar>i{display:block;height:100%;border-radius:3px}
+  .chip{display:inline-flex;align-items:center;gap:5px;font-family:var(--mono);font-size:11px;font-weight:700;
+    padding:2px 8px;border-radius:14px;border:1px solid}
+  .chip.pass{color:var(--good);background:var(--goodg);border-color:color-mix(in srgb,var(--good) 30%,transparent)}
+  .chip.warn{color:var(--warn);background:var(--warng);border-color:color-mix(in srgb,var(--warn) 30%,transparent)}
+  .chip.fail{color:var(--crit);background:var(--critg);border-color:color-mix(in srgb,var(--crit) 30%,transparent)}
+  .chip.skip{color:var(--ink3);background:var(--surface2);border-color:var(--border)}
+  .list{display:flex;flex-direction:column;gap:1px;background:var(--border);border:1px solid var(--border);border-radius:11px;overflow:hidden}
+  .row{background:var(--surface);padding:11px 15px;display:flex;align-items:center;justify-content:space-between;gap:12px}
+  .row .l{display:flex;align-items:center;gap:10px;min-width:0}
+  .row .nm{font-weight:600;font-size:13.5px}
+  .row .meta{font-family:var(--mono);font-size:11px;color:var(--ink3)}
+  .muted{opacity:.55}
+  .note{font-size:12.5px;color:var(--ink3);background:var(--surface2);border:1px dashed var(--border);border-radius:9px;padding:12px 14px}
+  footer{margin-top:30px;padding-top:16px;border-top:1px solid var(--border);font-family:var(--mono);font-size:11px;color:var(--ink3);
+    display:flex;justify-content:space-between;gap:12px;flex-wrap:wrap}
+  code{font-family:var(--mono);font-size:12px;background:var(--surface2);border:1px solid var(--border);padding:1px 5px;border-radius:5px}
+  @media (max-width:820px){.g4{grid-template-columns:repeat(2,1fr)}.g3{grid-template-columns:1fr 1fr}}
+  @media (max-width:520px){.g4,.g3,.g2{grid-template-columns:1fr}.headline{gap:12px}}
+</style>
+</head>
+<body>
+<div class="wrap">
+  <header>
+    <div class="brand">
+      <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6"><path d="M12 2 4 5v6c0 5 3.4 8.5 8 11 4.6-2.5 8-6 8-11V5l-8-3Z" stroke-linejoin="round"/><path d="m8.5 12 2.4 2.4 4.6-4.7" stroke-linecap="round" stroke-linejoin="round"/></svg>
+      <div><h1>ZenXii Aegis</h1><div class="sub">Integrity &amp; Change Health</div></div>
+    </div>
+    <div class="headline">
+      <span id="deploy" class="pill">—</span>
+      <div class="big"><div class="n" id="health">—</div><div class="l">Integrity health</div></div>
+    </div>
+  </header>
+
+  <div id="blocking"></div>
+
+  <h2>Surfaces — change risk</h2>
+  <div class="grid g4" id="surfaces"></div>
+
+  <h2>Contract checks (across all working diffs)</h2>
+  <div class="grid g3" id="contracts"></div>
+
+  <h2>High-risk modules</h2>
+  <div class="list" id="highrisk"></div>
+
+  <h2>Foundations</h2>
+  <div class="grid g2" id="foundations"></div>
+
+  <h2>Runtime health</h2>
+  <div class="note" id="runtime"></div>
+
+  <footer>
+    <span id="gen">generated —</span>
+    <span>node cli.js dashboard · integrity/change health from static analysis</span>
+  </footer>
+</div>
+
+<script>window.AEGIS = __AEGIS_DATA__;</script>
+<script>
+(function(){
+  var d = window.AEGIS || {};
+  var el = function(id){return document.getElementById(id)};
+  var band = function(h){return h>=95?'good':h>=85?'warn':'crit'};
+  // escape ALL dynamic values before interpolation (data is Aegis's own output,
+  // but a stray < in a manifest note must never break the render).
+  var esc = function(s){return String(s==null?'':s).replace(/[&<>"']/g,function(c){
+    return {'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c];});};
+  var num = function(n){n=Number(n); return isFinite(n)?n:0;};
+
+  // headline
+  var health = num(d.system&&d.system.integrityHealth);
+  el('health').textContent = health + '%';
+  el('health').style.color = 'var(--'+({good:'good',warn:'warn',crit:'crit'}[band(health)])+')';
+  var ready = d.system && d.system.deployReady;
+  var dp = el('deploy'); dp.textContent = ready?'● deploy-ready':'● not deploy-ready';
+  dp.className = 'pill ' + (ready?'yes':'no');
+
+  // blocking banner
+  if (d.system && d.system.blocking && d.system.blocking.length){
+    el('blocking').innerHTML = '<div class="note" style="border-style:solid;border-color:var(--crit);color:var(--crit);background:var(--critg)">⛔ BLOCKING contracts failing: <b>'+esc(d.system.blocking.join(', '))+'</b> — do not deploy.</div>';
+  }
+
+  // surfaces
+  el('surfaces').innerHTML = (d.surfaces||[]).map(function(s){
+    var b = s.exists?band(num(s.health)):'crit';
+    return '<div class="tile"><div class="top"><span class="name">'+esc(s.key)+'</span><span class="dot '+b+'"></span></div>'+
+      '<div class="sub">'+(s.exists?(num(s.changed)+' changed · '+num(s.mapped)+' mapped'):'MISSING PATH')+'</div>'+
+      '<div class="hbar"><i style="width:'+(s.exists?num(s.health):0)+'%;background:var(--'+b+')"></i></div></div>';
+  }).join('');
+
+  // contracts
+  el('contracts').innerHTML = (d.contracts||[]).map(function(c){
+    var cls = c.status==='pass'?'pass':c.status==='warn'?'warn':c.status==='fail'||c.status==='error'?'fail':'skip';
+    return '<div class="tile"><div class="top"><span class="name">'+esc(c.id)+'</span><span class="chip '+cls+'">'+esc(c.status)+'</span></div>'+
+      '<div class="sub">'+(c.blocking?'[block] ':'[warn] ')+esc(c.note||'')+(c.findings?(' · '+num(c.findings)+' finding'+(c.findings>1?'s':'')):'')+'</div></div>';
+  }).join('');
+
+  // high-risk modules
+  var hr = (d.modules&&d.modules.highRisk)||[];
+  el('highrisk').innerHTML = hr.length ? hr.map(function(m){
+    var sev = m.changed>0?'warn':'dim';
+    return '<div class="row"><div class="l"><span class="dot '+sev+'"></span><div style="min-width:0"><div class="nm">'+esc(m.module)+'</div>'+
+      '<div class="meta">'+esc(m.reason)+(m.notes?(' · '+esc(String(m.notes).slice(0,90))):'')+'</div></div></div>'+
+      '<span class="meta">'+(m.changed?num(m.changed)+' changed':'quiet')+'</span></div>';
+  }).join('') : '<div class="row"><span class="meta">no high-risk modules flagged</span></div>';
+
+  // foundations
+  var g = d.graph||{};
+  var found = [
+    {name:'Manifest graph', ok:g.ok, sub:num(g.moduleCount)+' modules · '+num(g.contractCount)+' contracts · '+(g.ok?'no dangling edges':(g.dangling||[]).length+' dangling')},
+    {name:'Doctor (paths)', ok:d.doctor&&d.doctor.ok, sub:((d.doctor&&d.doctor.checks)||[]).filter(function(c){return c.ok}).length+'/'+((d.doctor&&d.doctor.checks)||[]).length+' checks pass'}
+  ];
+  el('foundations').innerHTML = found.map(function(f){
+    return '<div class="tile"><div class="top"><span class="name">'+esc(f.name)+'</span><span class="dot '+(f.ok?'good':'crit')+'"></span></div><div class="sub">'+esc(f.sub)+'</div></div>';
+  }).join('');
+
+  // runtime
+  el('runtime').textContent = '⏳ ' + ((d.runtime&&d.runtime.note)||'Runtime telemetry not connected yet.');
+  el('runtime').classList.add('muted');
+
+  el('gen').textContent = 'generated ' + esc(d.generatedAt || '—');
+})();
+</script>
+</body>
+</html>

@@ -1,0 +1,46 @@
+{
+  "$comment": "Aegis surface map — every path Aegis observes. Zero-dependency, all local. Edit paths if repos move.",
+  "surfaces": {
+    "admin": {
+      "root": "${HOME}/Desktop/Zennxii_adminPanel",
+      "lang": "php",
+      "codeDirs": ["application/controllers", "application/models", "application/libraries", "application/core", "application/views"],
+      "gitRepo": "${HOME}/Desktop/Zennxii_adminPanel"
+    },
+    "backend": {
+      "root": "${HOME}/Desktop/project2",
+      "lang": "node",
+      "codeDirs": ["src", "server.js", "start.js"],
+      "gitRepo": "${HOME}/Desktop/project2"
+    },
+    "functions": {
+      "root": "${HOME}/Desktop/Zennxii_adminPanel/functions",
+      "lang": "node",
+      "codeDirs": ["."],
+      "gitRepo": "${HOME}/Desktop/Zennxii_adminPanel"
+    },
+    "teacher": {
+      "root": "${HOME}/AndroidStudioProjects/ZenXII_Teacher",
+      "lang": "kotlin",
+      "codeDirs": ["app/src/main/java"],
+      "packagePrefix": "com.schoolsync.teacher",
+      "gitRepo": "${HOME}/AndroidStudioProjects"
+    },
+    "parent": {
+      "root": "${HOME}/AndroidStudioProjects/ZenXII_Parent",
+      "lang": "kotlin",
+      "codeDirs": ["app/src/main/java"],
+      "packagePrefix": "com.schoolsync.parent",
+      "gitRepo": "${HOME}/AndroidStudioProjects"
+    }
+  },
+  "firebase": {
+    "$comment": "Read-only access to the LIVE ruleset. serviceAccount is gitignored and never copied by Aegis — only its path is stored. Override with $AEGIS_FIREBASE_SA.",
+    "project": "graderadmin",
+    "serviceAccount": "${HOME}/Desktop/Zennxii_adminPanel/application/config/graderadmin-firebase-adminsdk-a1sml-2b5f1862a7.json"
+  },
+  "firestoreRules": "${HOME}/Desktop/Zennxii_adminPanel/firebase-rules/firestore.rules",
+  "firestoreIndexes": "${HOME}/Desktop/Zennxii_adminPanel/firebase-rules/firestore.indexes.json",
+  "bugLedger": "${HOME}/Desktop/Zennxii_adminPanel/BUG_LEDGER.md",
+  "outputDir": "${AEGIS_ROOT}/.reports"
+}

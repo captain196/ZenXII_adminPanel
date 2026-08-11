@@ -1,0 +1,38 @@
+#!/usr/bin/env bash
+# ─────────────────────────────────────────────────────────────────────────────
+# ZenXii Aegis — pre-push hook (Tier 0, no CI required)
+#
+# Runs the change-impact engine on the outgoing diff and prints a risk report.
+# Philosophy (matches the user's working-system hooks): WARN, don't block.
+# Set AEGIS_STRICT=1 to hard-stop when a blocking contract is at risk.
+# ─────────────────────────────────────────────────────────────────────────────
+set -euo pipefail
+
+REPO="$(git rev-parse --show-toplevel)"
+AEGIS_DIR="${AEGIS_HOME:-$REPO/aegis}"
+[ -f "$AEGIS_DIR/cli.js" ] || AEGIS_DIR="/Users/yuggi/AndroidStudioProjects/aegis"
+
+if [ ! -f "$AEGIS_DIR/cli.js" ]; then
+  echo "aegis: cli not found; skipping impact check" >&2
+  exit 0
+fi
+
+echo ""
+echo "🛡  Aegis pre-push check — everything below ships on this push:"
+# Per-module breakdown FIRST — surfaces any forgotten/half-done module riding along.
+node "$AEGIS_DIR/cli.js" pending --repo "$REPO" || true
+echo ""
+node "$AEGIS_DIR/cli.js" impact --repo "$REPO" || true
+
+# In strict mode, block if the gate finds a blocking contract at risk.
+if [ "${AEGIS_STRICT:-0}" = "1" ]; then
+  if ! node "$AEGIS_DIR/cli.js" gate --repo "$REPO" >/dev/null 2>&1; then
+    echo ""
+    echo "⛔ AEGIS_STRICT: blocking contract at risk — push aborted. Run: node $AEGIS_DIR/cli.js gate --repo \"$REPO\""
+    exit 1
+  fi
+fi
+
+echo ""
+echo "🛡  Aegis: advisory only (warn-not-block). Run 'aegis gate' before deploy."
+exit 0
