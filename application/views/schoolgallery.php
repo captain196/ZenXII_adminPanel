@@ -611,12 +611,16 @@ function extractFileName(url) {
 }
 
 /* ── Chunked upload ──────────────────────────────────────────────────
- * 4 MB slices: comfortably under a stock post_max_size of 8M while keeping
- * the request count low (a 25 MB video = 7 requests). Sequential, because
- * the server concatenates parts by index and we want backpressure rather
- * than N parallel requests fighting for the same connection.
+ * 1.5 MB slices. The earlier 4 MB was chosen against post_max_size (stock 8M)
+ * but missed the limit that actually applies per uploaded file:
+ * upload_max_filesize, which defaults to just **2M**. PHP silently discarded a
+ * 4 MB slice, $_FILES['chunk'] never arrived, and video upload failed outright
+ * on any default configuration. 1.5 MB leaves room for multipart overhead
+ * under a 2M cap. Sequential, because the server concatenates parts by index
+ * and we want backpressure rather than N parallel requests fighting for the
+ * same connection. (Found while fixing the identical bug in Stories.)
  */
-var CHUNK_SIZE = 4 * 1024 * 1024;
+var CHUNK_SIZE = 1536 * 1024;
 
 function randomUploadId() {
     // 32 hex chars — the server validates this shape strictly before using it
