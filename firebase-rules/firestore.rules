@@ -1400,16 +1400,33 @@ service cloud.firestore {
       // storyAudience index (NOT a client-supplied value). The exists()
       // guard keeps the rule from erroring when a parent has no index doc
       // yet (they then see only school-wide stories — fail-safe, no leak).
+      //
+      // MODERATION (F-R4.9): a parent additionally may not read a story that is
+      // flagged or removed. Both apps already hide those, but only with a
+      // CLIENT-SIDE filter (`.filter { it.status == "active" }`), so the doc was
+      // still delivered to the device and an older or modified client would
+      // render content an admin had explicitly pulled. Enforcing it here makes
+      // "Remove" actually revoke access rather than merely hide.
+      // Staff are deliberately exempt: the Teacher app must still surface a
+      // teacher's own story after it has been moderated, and the admin panel
+      // reads through the Admin SDK (which bypasses rules) to run the queue.
+      // Default 'active' keeps legacy docs written before the field existed
+      // readable — absence of the field must not lock parents out.
       allow read: if isSameSchool()
         && (
           isStaff()
-          || resource.data.get('audienceClassKeys', []).size() == 0
-          || ('*' in resource.data.get('audienceClassKeys', []))
           || (
-            exists(/databases/$(database)/documents/storyAudience/$(request.auth.uid))
-            && resource.data.get('audienceClassKeys', []).hasAny(
-                 get(/databases/$(database)/documents/storyAudience/$(request.auth.uid))
-                   .data.get('classKeys', []))
+            resource.data.get('status', 'active') == 'active'
+            && (
+              resource.data.get('audienceClassKeys', []).size() == 0
+              || ('*' in resource.data.get('audienceClassKeys', []))
+              || (
+                exists(/databases/$(database)/documents/storyAudience/$(request.auth.uid))
+                && resource.data.get('audienceClassKeys', []).hasAny(
+                     get(/databases/$(database)/documents/storyAudience/$(request.auth.uid))
+                       .data.get('classKeys', []))
+              )
+            )
           )
         );
 
