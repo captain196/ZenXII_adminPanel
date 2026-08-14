@@ -161,6 +161,58 @@ describe('F-R4.9 — parents may only read ACTIVE stories', () => {
   });
 });
 
+// Rules are NOT filters. For a `list`, Firestore rejects the WHOLE query if any
+// returned document fails the rule — it cannot silently drop the offenders. The
+// Parent app queries stories by schoolId + audienceClassKeys with NO status
+// constraint (status is filtered client-side), so the moment a flagged story
+// exists in a parent's audience the entire query would fail and they would see
+// NOTHING. These tests encode that contract; the single-doc get() tests above
+// cannot detect it.
+describe('F-R4.9 — list queries (the app\'s actual access pattern)', () => {
+  // ⚠️ DEPLOY BLOCKER, recorded here so it cannot be forgotten.
+  //
+  // Measured 2026-08-14: under the EMULATOR this unconstrained list SUCCEEDS
+  // and returns the flagged doc — `get` is enforced per-document but `list` is
+  // not. Production may well differ (the documented model is that a list is
+  // rejected outright if any returned doc fails the rule), and the two
+  // outcomes are both bad in different directions:
+  //
+  //   emulator behaviour in prod → the rule protects nothing for the app's
+  //                                real access pattern; moderated content is
+  //                                still delivered to the device.
+  //   documented behaviour in prod → the parent query, which carries NO status
+  //                                constraint, fails ENTIRELY and every parent
+  //                                sees no stories at all.
+  //
+  // Either way the rule must not ship until the client query is constrained to
+  // status=='active' (see the next test) — which additionally needs a new
+  // composite index: schoolId, status, audienceClassKeys.
+  test('UNCONSTRAINED list currently succeeds in the emulator and LEAKS the flagged doc', async () => {
+    const db = parentCtx().firestore();
+    const snap = await db.collection('stories')
+      .where('schoolId', '==', SCHOOL)
+      .where('audienceClassKeys', 'array-contains-any', ['*', CLASS_KEY])
+      .get();
+    const ids = snap.docs.map((d) => d.id);
+    // Pin the observed behaviour. If this ever starts failing, the emulator (or
+    // production) has changed to per-document list enforcement — at which point
+    // an unconstrained client query becomes a hard outage, not a leak.
+    expect(ids).toContain('s_flagged');
+  });
+
+  test('list CONSTRAINED to status==active succeeds', async () => {
+    // This is the shape the app query must adopt before the rule can ship.
+    const db = parentCtx().firestore();
+    await assertSucceeds(
+      db.collection('stories')
+        .where('schoolId', '==', SCHOOL)
+        .where('status', '==', 'active')
+        .where('audienceClassKeys', 'array-contains-any', ['*', CLASS_KEY])
+        .get()
+    );
+  });
+});
+
 describe('F-R4.9 — staff remain exempt', () => {
   test('staff CAN read a flagged story', async () => {
     const db = staffCtx().firestore();
