@@ -55,21 +55,39 @@ function audienceKey(className, section) {
 
 // Compute the union of class-section keys for a set of student ids within a
 // school, reading the authoritative `students/{schoolId}_{studentId}` docs.
+/**
+ * Resolve the audience keys for a set of students.
+ *
+ * Returns { keys, resolved } — `resolved` counts the student docs we actually
+ * READ. An empty `keys` is ambiguous on its own and the difference matters:
+ *
+ *   resolved > 0, keys empty  → legitimate. The children exist but have no
+ *                               class/section yet. Safe to persist.
+ *   resolved === 0            → we resolved NOTHING (docs missing, reads
+ *                               failed, tenant mismatch). Indistinguishable
+ *                               from a transient fault, so callers must NOT
+ *                               persist this — an entitlement written with
+ *                               classKeys:[] looks healthy forever and is
+ *                               never retried, permanently limiting the parent
+ *                               to whole-school stories.
+ */
 async function computeClassKeys(schoolId, studentIds) {
   const keys = new Set();
+  let resolved = 0;
   for (const sid of studentIds) {
     try {
       const snap = await db.collection('students').doc(`${schoolId}_${sid}`).get();
       if (!snap.exists) continue;
       const d = snap.data() || {};
       if (String(d.schoolId || '') !== schoolId) continue; // tenant guard
+      resolved++;
       const k = audienceKey(d.className || '', d.section || '');
       if (k && k !== '-') keys.add(k); // "-" == blank class AND section
     } catch (e) {
       logger.warn(`[story-audience] student ${sid} read failed: ${e.message}`);
     }
   }
-  return [...keys];
+  return { keys: [...keys], resolved };
 }
 
 // ─── Path 1: parent-app callable ───────────────────────────────────
@@ -89,7 +107,41 @@ exports.refreshStoryAudience = onCall({ region: REGION }, async (request) => {
   }
   studentIds = [...new Set(studentIds.map(String).filter(Boolean))];
 
-  const classKeys = await computeClassKeys(schoolId, studentIds);
+  const { keys: classKeys, resolved } = await computeClassKeys(schoolId, studentIds);
+
+  // Never persist an entitlement we could not actually resolve. Writing
+  // classKeys:[] here used to be permanent damage: the doc exists, the app's
+  // listener fires, nothing errors — but hasAny([]) is always false, so the
+  // parent silently sees ONLY whole-school stories forever, and nothing ever
+  // retries because from the system's point of view this succeeded. Throwing
+  // instead leaves the doc absent, which IS the retry signal.
+  if (resolved === 0) {
+    logger.error(
+      `[story-audience] refresh ${uid} resolved 0/${studentIds.length} student docs ` +
+      `(school=${schoolId}, ids=[${studentIds.join(',')}]) — refusing to write an empty entitlement`
+    );
+    throw new HttpsError(
+      'unavailable',
+      'Could not resolve your student records yet. Please try again in a moment.'
+    );
+  }
+
+  // Belt-and-braces: never downgrade a WORKING entitlement to an empty one.
+  // resolved > 0 with no keys is legitimate (child has no class/section yet),
+  // but if we already hold keys for this parent, an empty result is far more
+  // likely to be mid-update data than a real un-assignment.
+  if (classKeys.length === 0) {
+    const existing = await db.collection('storyAudience').doc(uid).get();
+    const prior = existing.exists ? (existing.data() || {}).classKeys : null;
+    if (Array.isArray(prior) && prior.length > 0) {
+      logger.warn(
+        `[story-audience] refresh ${uid} computed [] but existing entitlement has ` +
+        `[${prior.join(',')}] — keeping the existing keys`
+      );
+      return { classKeys: prior, kept: true };
+    }
+  }
+
   await db.collection('storyAudience').doc(uid).set({
     schoolId,
     classKeys,
@@ -97,7 +149,7 @@ exports.refreshStoryAudience = onCall({ region: REGION }, async (request) => {
     updatedAt: admin.firestore.FieldValue.serverTimestamp(),
   });
 
-  logger.info(`[story-audience] refresh ${uid} → [${classKeys.join(',')}]`);
+  logger.info(`[story-audience] refresh ${uid} → [${classKeys.join(',')}] (resolved ${resolved}/${studentIds.length})`);
   return { classKeys };
 });
 
@@ -121,12 +173,25 @@ exports.onStudentClassChanged = onDocumentWritten(
       const studentIds = Array.isArray(data.studentIds) && data.studentIds.length
         ? data.studentIds.map(String)
         : [sid];
-      const classKeys = await computeClassKeys(schoolId, studentIds);
+      const { keys: classKeys, resolved } = await computeClassKeys(schoolId, studentIds);
+
+      // Same rule as the callable: a rebuild that resolved nothing must not
+      // overwrite a working entitlement with []. This trigger fires on every
+      // student write, so a single transient read failure here would otherwise
+      // silently strip a parent's class access with no way back.
+      if (resolved === 0) {
+        logger.error(
+          `[story-audience] rebuild ${doc.id} resolved 0/${studentIds.length} student docs ` +
+          `(school=${schoolId}) — leaving the existing entitlement untouched`
+        );
+        continue;
+      }
+
       await doc.ref.set({
         classKeys,
         updatedAt: admin.firestore.FieldValue.serverTimestamp(),
       }, { merge: true });
-      logger.info(`[story-audience] rebuild ${doc.id} → [${classKeys.join(',')}]`);
+      logger.info(`[story-audience] rebuild ${doc.id} → [${classKeys.join(',')}] (resolved ${resolved}/${studentIds.length})`);
     }
   }
 );
