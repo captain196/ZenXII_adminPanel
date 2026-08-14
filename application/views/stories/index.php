@@ -391,6 +391,7 @@ $can_manage = function_exists('has_permission') ? has_permission('Stories', 'man
     <div class="st-bulk-bar" id="bulkBar">
         <div class="st-bulk-count"><span id="bulkCount">0</span> story(ies) selected</div>
         <div class="st-bulk-actions">
+            <button class="st-btn st-btn-success st-btn-sm" onclick="ST.bulkAction('active')" <?= $can_edit ? '' : 'disabled title="Edit access required"' ?>><i class="fa fa-rotate-left"></i> Restore Selected</button>
             <button class="st-btn st-btn-amber st-btn-sm" onclick="ST.bulkAction('flagged')" <?= $can_edit ? '' : 'disabled title="Edit access required"' ?>><i class="fa fa-flag"></i> Flag Selected</button>
             <button class="st-btn st-btn-danger st-btn-sm" onclick="ST.bulkAction('removed')" <?= $can_edit ? '' : 'disabled title="Edit access required"' ?>><i class="fa fa-ban"></i> Remove Selected</button>
         </div>
@@ -635,7 +636,17 @@ ST.submitUpload = function() {
     // single POST could never carry a real clip: PHP would drop $_POST AND
     // $_FILES, CI's CSRF check would 403, and the user would see nothing happen.
     // Mirrors the gallery uploader; server side is Stories::upload_story_chunk.
-    var CHUNK_SIZE = 4 * 1024 * 1024;
+    //
+    // 1.5 MB, NOT 4 MB. The slice has to clear TWO stock PHP limits, and the
+    // binding one is the smaller: post_max_size defaults to 8M but
+    // upload_max_filesize defaults to only **2M**, and that is the one applied
+    // per uploaded file. A 4 MB slice was silently discarded by PHP, leaving
+    // $_FILES['chunk'] unset, so _receive_chunk answered "Chunk upload failed.
+    // The chunk may exceed the server limit." and NO video could ever be posted
+    // on a default configuration — the exact failure the chunking was added to
+    // avoid. 1.5 MB leaves headroom for multipart overhead under a 2M cap.
+    // A 50 MB video is then 34 parts, still inside CHUNK_MAX_PARTS (64).
+    var CHUNK_SIZE = 1536 * 1024;
 
     function randomUploadId() {
         // 32 hex chars — server validates this shape strictly before using it
@@ -650,11 +661,25 @@ ST.submitUpload = function() {
     var uploadId    = randomUploadId();
     var totalChunks = Math.max(1, Math.ceil(file.size / CHUNK_SIZE));
 
-    function fail(msg) {
+    // Put the modal back into a clean, retryable state. Without this the bar
+    // stayed at "Publishing… 100%" after a rejected upload: the error alert was
+    // raised correctly, but once dismissed the UI still read as in-flight, so a
+    // failure was indistinguishable from a hang.
+    function resetProgress() {
         btn.disabled = false;
         $('#rxLoadbar').removeClass('on');
         bar.classList.remove('as-indeterminate');
-        alert(msg || 'Upload failed.');
+        bar.style.width = '0%';
+        if (pct)   pct.textContent = 0;
+        if (label) label.textContent = 'Uploading';
+        if (wrap)  wrap.style.display = 'none';
+    }
+
+    function fail(msg) {
+        resetProgress();
+        // Prefer the page's own toast; alert() is a blocking fallback.
+        if (typeof ST.toast === 'function') ST.toast(msg || 'Upload failed.', 'error');
+        else alert(msg || 'Upload failed.');
     }
 
     // One slice via XHR so real byte-level progress is preserved; overall
@@ -715,12 +740,14 @@ ST.submitUpload = function() {
         var xhr = new XMLHttpRequest();
         xhr.open('POST', ST.BASE + 'stories/upload_story', true);
         xhr.onload = function () {
-            btn.disabled = false;
-            $('#rxLoadbar').removeClass('on');
-            bar.classList.remove('as-indeterminate');
+            resetProgress();
             var resp;
             try { resp = JSON.parse(xhr.responseText); } catch (_) {
-                alert('Unexpected server response');
+                // A non-JSON body here means PHP died mid-request (the classic
+                // cause is max_execution_time firing during the Storage upload),
+                // so say that rather than the opaque "Unexpected server response".
+                fail('The server did not finish publishing (HTTP ' + xhr.status +
+                     '). The upload may have exceeded the server time limit.');
                 return;
             }
             // Rotate CSRF if the server sent a new token.
@@ -729,9 +756,10 @@ ST.submitUpload = function() {
             if (xhr.status >= 200 && xhr.status < 300 && resp.status === 'success') {
                 ST.closeUpload();
                 if (typeof ST.refresh === 'function') ST.refresh();
-                alert(resp.message || 'Story published.');
+                if (typeof ST.toast === 'function') ST.toast(resp.message || 'Story published.');
+                else alert(resp.message || 'Story published.');
             } else {
-                alert((resp && resp.message) || 'Upload failed.');
+                fail((resp && resp.message) || 'Upload failed.');
             }
         };
         xhr.onerror = function () { fail('Network error while publishing.'); };
@@ -915,7 +943,9 @@ ST.bulkAction = function(status) {
     ST.ajaxPost('stories/bulk_moderate', {
         status: status,
         items: JSON.stringify(items),
-        reason: 'Bulk action from admin portal'
+        // Restoring clears the reason — the story is no longer moderated, so a
+        // leftover justification would be actively misleading.
+        reason: (status === 'active') ? '' : 'Bulk action from admin portal'
     }, function(r) {
         if (r.status === 'success') {
             ST.toast(r.message || 'Done.');
@@ -1236,6 +1266,14 @@ ST.openDetail = function(teacherId, storyId) {
             + '<h5>Moderation Actions</h5>'
             + '<textarea class="st-mod-reason" id="modReason" placeholder="Reason for moderation (optional)..."' + (ST.CAN_EDIT ? '' : ' disabled') + '></textarea>'
             + '<div class="st-mod-actions">'
+            // Restore was missing entirely: Flag and Remove sit side by side, and
+            // a mis-click had NO way back from the panel even though the backend
+            // accepts 'active'. Shown only when the story is actually moderated —
+            // use s.status, not effectiveStatus, so a merely EXPIRED story is not
+            // offered a "restore" that cannot bring it back.
+            + (s.status !== 'active'
+                ? '<button class="st-btn st-btn-success st-btn-sm" onclick="ST.moderate(\'' + tid + '\',\'' + sid + '\',\'active\')"' + edAttr + '><i class="fa fa-rotate-left"></i> Restore</button>'
+                : '')
             + '<button class="st-btn st-btn-amber st-btn-sm" onclick="ST.moderate(\'' + tid + '\',\'' + sid + '\',\'flagged\')"' + edAttr + '><i class="fa fa-flag"></i> Flag</button>'
             + '<button class="st-btn st-btn-danger st-btn-sm" onclick="ST.moderate(\'' + tid + '\',\'' + sid + '\',\'removed\')"' + edAttr + '><i class="fa fa-ban"></i> Remove</button>'
             + '<button class="st-btn st-btn-danger" onclick="ST.deleteStory(\'' + tid + '\',\'' + sid + '\')" style="margin-left:auto"' + mgAttr + '><i class="fa fa-trash"></i> Delete Permanently</button>'
@@ -1336,6 +1374,11 @@ ST.loadFlagged = function() {
                 + '<td>' + (s.viewCount || 0) + '</td>'
                 + '<td style="white-space:nowrap">' + ST.fmtDate(s.createdAt) + '</td>'
                 + '<td style="white-space:nowrap">'
+                // The queue previously offered only Remove and View — every route
+                // out of it made the story MORE restricted. Reviewing a flagged
+                // story and deciding it is fine is the common case, so it needs a
+                // one-click way back to active.
+                + '<button class="st-btn st-btn-success st-btn-sm" onclick="ST.moderate(\'' + tid + '\',\'' + sid + '\',\'active\')" title="Restore to active"' + edAttr + '><i class="fa fa-rotate-left"></i></button> '
                 + '<button class="st-btn st-btn-danger st-btn-sm" onclick="ST.moderate(\'' + tid + '\',\'' + sid + '\',\'removed\')" title="Remove"' + edAttr + '><i class="fa fa-ban"></i></button> '
                 + '<button class="st-btn st-btn-outline st-btn-sm" onclick="ST.openDetail(\'' + tid + '\',\'' + sid + '\')" title="View Details"><i class="fa fa-eye"></i></button>'
                 + '</td></tr>';

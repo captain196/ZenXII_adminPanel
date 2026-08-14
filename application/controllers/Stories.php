@@ -620,9 +620,13 @@ class Stories extends MY_Controller
             'moderatedByName' => $this->admin_name,
             'moderatedAt'     => (int) round(microtime(true) * 1000),
         ];
-        if ($reason !== '') {
-            $updateData['moderationReason'] = $reason;
-        }
+        // Always write the reason for THIS action, even when blank. Keeping the
+        // previous one on an empty submit meant a story flagged as "spam" and
+        // later removed from the Flagged queue (which has no reason field) still
+        // read "spam" against status=removed — an auditor sees a justification
+        // that belongs to a different decision. A restore to active likewise has
+        // to clear the reason that put the story in moderation.
+        $updateData['moderationReason'] = $reason;
 
         if (!$this->firebase->firestoreUpdate(self::COLLECTION, $storyId, $updateData)) {
             $this->json_error('Failed to update story status.');
@@ -754,14 +758,14 @@ class Stories extends MY_Controller
             if ($this->_get_owned_story($sid) === null) { $failed++; continue; }
 
             $updateData = [
-                'status'          => $newStatus,
-                'moderatedBy'     => $this->admin_id,
-                'moderatedByName' => $this->admin_name,
-                'moderatedAt'     => $now,
+                'status'           => $newStatus,
+                'moderatedBy'      => $this->admin_id,
+                'moderatedByName'  => $this->admin_name,
+                'moderatedAt'      => $now,
+                // Same rule as moderate_story: the stored reason must describe
+                // THIS action, never a previous one.
+                'moderationReason' => $reason,
             ];
-            if ($reason !== '') {
-                $updateData['moderationReason'] = $reason;
-            }
 
             if ($this->firebase->firestoreUpdate(self::COLLECTION, $sid, $updateData)) {
                 $success++;
@@ -839,6 +843,21 @@ class Stories extends MY_Controller
         $this->_require_role(self::MODERATE_ROLES, 'upload_story', 'Stories', 'edit');
         $this->_require_moderate();
         $this->output->set_content_type('application/json');
+
+        // This request assembles the staged chunks and pushes the file to
+        // Firebase Storage SYNCHRONOUSLY over Guzzle. A stock
+        // max_execution_time of 30 s cannot cover that: a 9.2 MB video measured
+        // 93 s and died with
+        //   "Fatal error: Maximum execution time exceeded in CurlHandler.php"
+        // — PHP was killed mid-upload, so no JSON was ever returned and the
+        // browser reported only a generic network error. The declared ceiling is
+        // 50 MB, so the time budget has to match the bytes we accept, not the
+        // default. Best-effort: safe_mode/hardened hosts may refuse, and the
+        // request simply keeps whatever limit it had.
+        @set_time_limit(600);
+        // Finish the Storage write + Firestore doc even if the browser hangs up,
+        // otherwise an aborted request can orphan a Storage object.
+        @ignore_user_abort(true);
 
         // ── 1. Validate POST fields ───────────────────────────────────
         $caption  = trim((string) $this->input->post('caption'));
@@ -992,6 +1011,60 @@ class Stories extends MY_Controller
         // entire footprint lives under one ID-keyed prefix.
         $remotePath = "schools/{$schoolId}/stories/{$adminId}/{$ts}.{$ext}";
 
+        // ── 3c. Decodability gate (videos only) ───────────────────────
+        // finfo proves the CONTAINER is a video, never that the bytes decode. A
+        // phone recording that was interrupted keeps a valid ftyp/moov header
+        // while its STSC and STCO tables contradict each other — finfo says
+        // video/mp4, the size check passes, and we publish a story that will not
+        // play anywhere, with the push already delivered.
+        //
+        // Extracting the poster is exactly that decode test, so run it HERE,
+        // before the Storage upload: a reject then costs nothing and leaves no
+        // orphaned object. The frame is reused in 4b rather than shelling out
+        // twice.
+        //
+        // Only enforced when ffmpeg actually runs. Where it is missing or
+        // shell_exec is disabled we cannot distinguish "broken file" from "no
+        // decoder", and refusing every video would be far worse than the gap.
+        $thumbName   = '';
+        $thumbLocal  = '';
+        $posterReady = false;
+        if ($type === 'video') {
+            // FFMPEG_PATH is picked from a fixed allow-list of absolute paths in
+            // constants.php and is never user-supplied, but escape it anyway so
+            // no argument of this command is ever a bare interpolation.
+            $ff = escapeshellarg(defined('FFMPEG_PATH') ? FFMPEG_PATH : 'ffmpeg');
+            $ffmpegUsable = function_exists('shell_exec')
+                && stripos((string) @shell_exec("$ff -version 2>&1"), 'ffmpeg version') !== false;
+
+            if ($ffmpegUsable) {
+                $thumbName  = "thumb_{$ts}.jpg";
+                $thumbLocal = rtrim($this->_upload_staging_dir(), "/\\") . DIRECTORY_SEPARATOR . $thumbName;
+                @shell_exec("$ff -i " . escapeshellarg($file['tmp_name'])
+                    . " -ss 00:00:01.000 -vframes 1 -q:v 2 " . escapeshellarg($thumbLocal) . " 2>&1");
+                $posterReady = is_file($thumbLocal) && filesize($thumbLocal) > 0;
+
+                if (!$posterReady) {
+                    // Retry at t=0: a clip shorter than one second is legitimate
+                    // and must not be mistaken for a corrupt file.
+                    @shell_exec("$ff -i " . escapeshellarg($file['tmp_name'])
+                        . " -vframes 1 -q:v 2 " . escapeshellarg($thumbLocal) . " 2>&1");
+                    $posterReady = is_file($thumbLocal) && filesize($thumbLocal) > 0;
+                }
+
+                if (!$posterReady) {
+                    @unlink($thumbLocal);
+                    log_message('error',
+                        'Story upload REJECTED: video is not decodable by ffmpeg. '
+                        . 'school=' . $schoolId . ' admin=' . $adminId . ' ts=' . $ts);
+                    $this->json_error(
+                        'This video file appears to be damaged and could not be read. '
+                        . 'It would not play for parents. Please re-export or re-record it and try again.'
+                    );
+                }
+            }
+        }
+
         // ── 4. Upload to Firebase Storage ─────────────────────────────
         $okUp = $this->firebase->uploadFile($file['tmp_name'], $remotePath);
         if (!$okUp) {
@@ -1010,31 +1083,31 @@ class Stories extends MY_Controller
         // Teacher app already writes `thumbnailUrl`; this brings the panel to
         // the same contract so both apps can show a still while buffering.
         // Best-effort: a poster failure must never fail the upload.
+        // The frame was already extracted by the 3c decodability gate — this
+        // step only ships it. Re-running ffmpeg here would decode the clip a
+        // second time for no reason, and on a 50 MB video that is not cheap.
         $thumbnailUrl = '';
-        if ($type === 'video') {
-            $ffmpeg     = defined('FFMPEG_PATH') ? FFMPEG_PATH : 'ffmpeg';
-            $thumbName  = "thumb_{$ts}.jpg";
-            $thumbLocal = rtrim($this->_upload_staging_dir(), "/\\") . DIRECTORY_SEPARATOR . $thumbName;
-            $thumbCmd   = "\"$ffmpeg\" -i " . escapeshellarg($file['tmp_name'])
-                        . " -ss 00:00:01.000 -vframes 1 -q:v 2 " . escapeshellarg($thumbLocal);
-            shell_exec($thumbCmd);
-
-            if (is_file($thumbLocal) && filesize($thumbLocal) > 0) {
-                $thumbRemote = "schools/{$schoolId}/stories/{$adminId}/{$thumbName}";
-                if ($this->firebase->uploadFile($thumbLocal, $thumbRemote)) {
-                    $thumbnailUrl = $this->firebase->getDownloadUrl($thumbRemote);
-                }
-                @unlink($thumbLocal);
+        if ($type === 'video' && $posterReady) {
+            $thumbRemote = "schools/{$schoolId}/stories/{$adminId}/{$thumbName}";
+            if ($this->firebase->uploadFile($thumbLocal, $thumbRemote)) {
+                $thumbnailUrl = $this->firebase->getDownloadUrl($thumbRemote);
             } else {
-                // Silent failure here is what left gallery videos posterless for
-                // months — log it so the cause (missing ffmpeg / disabled
-                // shell_exec) is visible instead of guessed at.
                 log_message('error',
-                    'Story video poster extraction FAILED (thumbnailUrl will be empty). '
-                    . 'ffmpeg=' . $ffmpeg
-                    . ' shell_exec_available=' . (function_exists('shell_exec') ? 'yes' : 'NO')
-                    . ' story_ts=' . $ts . ' school=' . $schoolId);
+                    'Story poster extracted but Storage upload FAILED (thumbnailUrl empty). '
+                    . 'remote=' . $thumbRemote . ' school=' . $schoolId);
             }
+            @unlink($thumbLocal);
+        } elseif ($type === 'video') {
+            // Reached only where ffmpeg is unavailable, so decodability could
+            // not be checked and 3c deliberately let the video through. The
+            // story is still valid; it just has no poster. Log the cause rather
+            // than leaving it to be guessed at, as happened with gallery videos.
+            log_message('error',
+                'Story video has NO poster: ffmpeg unavailable, so the decodability '
+                . 'gate was skipped. Install ffmpeg (apt-get install -y ffmpeg) or set '
+                . 'FFMPEG_PATH. shell_exec_available='
+                . (function_exists('shell_exec') ? 'yes' : 'NO')
+                . ' story_ts=' . $ts . ' school=' . $schoolId);
         }
 
         // ── 5. Write canonical Firestore doc ──────────────────────────
