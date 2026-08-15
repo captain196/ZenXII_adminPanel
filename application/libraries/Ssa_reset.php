@@ -93,9 +93,31 @@ class Ssa_reset
             log_message('error', 'Ssa_reset: RTDB mirror failed for ' . $ssa_id . ': ' . $e->getMessage());
         }
 
-        // 5. Firestore admins/{ssa_id} — mirror mustChangePassword if the doc exists.
-        //    SSAs aren't always written to Firestore admins during onboarding, so
-        //    update only if present; skip silently otherwise.
+        // 5. Firestore mirror of mustChangePassword.
+        //
+        //    WAS: admins/{ssa_id} only, and only "if the doc already exists".
+        //    Production has 3 SSAs with a `staff` doc but NO `admins` doc, so for
+        //    them this wrote NOWHERE — their reset left no readable trace at all.
+        //    That matters because the panel's mid-session check cannot read Firebase
+        //    claims (it authenticates by CI session, not by token), so the mirror is
+        //    its only signal: resetting the most privileged school account was
+        //    invisible to an already-open web session.
+        //
+        //    Now writes the `staff` mirror unconditionally — that is the post-fold
+        //    home of the record, it is where Admin_login already reads status, and
+        //    every SSA who can reach the panel has one (Admin_login refuses login
+        //    without it). The legacy `admins` write is kept, still conditional, so
+        //    nothing that reads the old location regresses and no stray doc is
+        //    created for SSAs that never had one.
+        try {
+            $this->fs->set('staff', $this->fs->docId($ssa_id), [
+                'mustChangePassword' => true,
+                'updatedAt'          => date('c'),
+            ], true);
+        } catch (\Exception $e) {
+            log_message('error', 'Ssa_reset: staff mustChange write failed for ' . $ssa_id . ': ' . $e->getMessage());
+        }
+
         try {
             $existingFs = $this->fs->get('admins', $this->fs->docId($ssa_id));
             if (!empty($existingFs)) {

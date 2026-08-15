@@ -580,6 +580,82 @@ class MY_Controller extends CI_Controller
                                     'Your account has been deactivated. Please contact your administrator.'
                                 );
                             }
+
+                            // ── Password-reset re-check (piggyback — same staff doc) ──
+                            // An admin reset sets staff.mustChangePassword + the Firebase
+                            // claim and revokes Firebase refresh tokens. None of that can
+                            // touch THIS CI session cookie, and the login-time gate above
+                            // reads a session value that is seeded once and never
+                            // refreshed — so before this check a staff member already
+                            // signed into the panel kept full access indefinitely after
+                            // their password had been reset. Staff sign in on both the
+                            // panel and the Teacher app, so the app-side cold-start check
+                            // alone left the web session wide open.
+                            //
+                            // Costs nothing: $staffDoc was just read for the status check.
+                            //
+                            // LOG OUT rather than confine to the change-password screen.
+                            // The forced flow in AdminUsers::change_my_password
+                            // deliberately skips current-password re-auth, so confining a
+                            // hijacked session would let whoever holds it set a new
+                            // password and keep access — defeating the reset. Re-auth with
+                            // the admin-issued password is the point.
+                            //
+                            // Guarded on the session flag: a user who logged in WITH the
+                            // flag is legitimately mid-force-change and must not be kicked.
+                            // The reset endpoints write the mirror through
+                            // admin_record_collection(): STA ids land in `staff`,
+                            // but legacy ADM ids and SSAs land in `admins` (see
+                            // AdminUsers::reset_password and Ssa_reset). Reading
+                            // only `staff` here would silently miss the School
+                            // Super Admin — the most privileged school account.
+                            // For STA (the overwhelming majority) the collection
+                            // is `staff`, so we reuse the doc already fetched
+                            // above and add no read at all.
+                            $this->load->helper('force_change');
+                            $mirrorColl = force_change_profile_collection(
+                                (string) $this->admin_id,
+                                (string) $this->session->userdata('admin_role')
+                            );
+                            $mirrorDoc = ($mirrorColl === 'staff')
+                                ? $staffDoc
+                                : $this->fs->getEntity($mirrorColl, (string) $this->admin_id);
+
+                            // force_change_truthy(), not !empty(): PHP treats the
+                            // STRING "false" as truthy, so a Firestore field that
+                            // round-tripped as a string would force-logout a user
+                            // whose flag is actually clear. Same normaliser the
+                            // mobile endpoint uses, so both agree on the value.
+                            // Check BOTH the staff doc and the routed mirror.
+                            //
+                            // Real layouts across production (all web-capable,
+                            // enabled accounts):
+                            //   STA  staff only .......... 86   routed -> staff   ✓
+                            //   STA  staff + admins ......  2   routed -> staff   ✓
+                            //   ADM  staff + admins ......  5   routed -> admins  ✓
+                            //   SSA  staff + admins ......  2   routed -> admins  ✓
+                            //   SSA  staff, NO admins ....  3   routed -> admins  ✗ absent
+                            //
+                            // Those 3 SSAs are why this ORs the two: Ssa_reset
+                            // writes its mirror to `admins` only "if the doc
+                            // exists", so for them it writes nowhere and a routed
+                            // read finds nothing — the reset of the most
+                            // privileged school account stayed invisible. Reading
+                            // the staff doc too closes it, and costs nothing
+                            // because it was fetched above for the status check.
+                            // (Ssa_reset is also fixed to write the staff mirror.)
+                            $docMustChange =
+                                (is_array($staffDoc)  && force_change_truthy($staffDoc['mustChangePassword']  ?? null))
+                             || (is_array($mirrorDoc) && force_change_truthy($mirrorDoc['mustChangePassword'] ?? null));
+                            if ($docMustChange && !$this->session->userdata('must_change_password')) {
+                                log_message('info',
+                                    "Password reset detected mid-session admin=[{$this->admin_id}]"
+                                    . " school=[{$this->school_name}] — forcing logout."
+                                );
+                                $this->_force_logout(
+                                    'Your password was reset by an administrator. Please sign in with your new password.'
+                                );
+                            }
                         } catch (\Throwable $e) {
                             log_message('error', 'MY_Controller admin status re-check failed: ' . $e->getMessage());
                         }

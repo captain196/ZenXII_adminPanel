@@ -67,6 +67,8 @@ class Admin_login extends CI_Controller
         'school_code',            // numeric login code (back-compat)
         'admin_role',
         'admin_name',
+        'must_change_password',   // forced set-new-password gate; omitting it left
+                                  // a stale flag behind on logout / force-logout
         'session',
         'current_session',
         'session_year',
@@ -83,6 +85,18 @@ class Admin_login extends CI_Controller
                                   // different role can't inherit stale permissions
         'rbac_ts',                // last real-time permission-refresh timestamp
     ];
+
+    /**
+     * Set when a sign-in was rejected for AUTHORIZATION reasons (missing claims,
+     * missing profile record) rather than a bad credential.
+     *
+     * The password was correct in these cases — the account is mis-provisioned.
+     * Counting them toward the 5-strike / 30-minute lockout punished users for a
+     * configuration problem they cannot see or fix, and compounded it: an SSA
+     * with no staff doc got "Invalid credentials" AND was locked out for half an
+     * hour after five honest attempts.
+     */
+    private bool $_authz_failed = false;
 
     // ─────────────────────────────────────────────────────────────────────
     public function __construct()
@@ -192,8 +206,23 @@ class Admin_login extends CI_Controller
         // ══════════════════════════════════════════════════════════════
         $this->_try_firebase_admin_login($adminId, $password, $ip, $now);
 
-        // Reached here means Firebase Auth rejected (or claims/status check failed).
-        // Record per-IP + per-account fails, emit telemetry, return to login form.
+        // Reached here means the sign-in did not complete. Distinguish WHY.
+        //
+        // An AUTHORIZATION failure means the password was correct but the account
+        // is mis-provisioned (claims incomplete, or no profile record). Counting
+        // those toward the lockout punished the user for a configuration problem
+        // they cannot see: five honest attempts and they were locked out for 30
+        // minutes, still being told "Invalid credentials". The telemetry event was
+        // already emitted at the point of failure, so nothing is lost by
+        // returning early here.
+        if ($this->_authz_failed) {
+            $this->session->set_flashdata('error',
+                'Your account is not fully set up for the admin panel. Please contact your administrator.');
+            redirect('admin_login');
+            return;
+        }
+
+        // Genuine credential rejection — record per-IP + per-account fails.
         $this->_record_admin_ip_fail($ip, $now);
         $locked = $this->_record_admin_account_fail($adminId, $ip, $now);
 
@@ -245,6 +274,9 @@ class Admin_login extends CI_Controller
         $roleRaw    = (string) ($claims['role']       ?? '');
 
         if ($schoolId === '' || $roleRaw === '') {
+            // Claims are incomplete — the credential was fine, the account is
+            // mis-minted. Don't count it against the lockout.
+            $this->_authz_failed = true;
             $this->sec_telem->emit('ADMIN_LOGIN_AUTHZ_MISSING', 'warning', [
                 'admin_id'     => $adminId,
                 'ip'           => $ip,
@@ -261,14 +293,43 @@ class Admin_login extends CI_Controller
             log_message('error', 'Wave C: staff status read failed for ' . $adminId . ': ' . $e->getMessage());
             $staffDoc = null;
         }
+
+        // A School Super Admin is provisioned by PLATFORM onboarding, not by
+        // school HR, so they do not necessarily have a `staff` record — three
+        // production SSAs (SSA0008/0009/0010) have none in any collection.
+        // Requiring one turned a provisioning gap into a permanent lockout: the
+        // correct password returned the generic "Invalid credentials", and every
+        // attempt also burnt their 5-strike / 30-minute lockout budget.
+        //
+        // Their identity is not in doubt — the role arrives on a SERVER-SIGNED
+        // custom claim, and the tenant + subscription gates below still apply.
+        // So an SSA with no staff doc is admitted (and logged); an SSA that DOES
+        // have one still gets the full status check underneath.
+        $isSsa = (strcasecmp($roleRaw, 'school_super_admin') === 0)
+              || (strcasecmp($roleLabel, 'School Super Admin') === 0)
+              || (bool) preg_match('/^SSA\d+$/i', $adminId);
+
         if (!is_array($staffDoc) || empty($staffDoc)) {
-            $this->sec_telem->emit('ADMIN_LOGIN_AUTHZ_MISSING', 'warning', [
+            if (!$isSsa) {
+                $this->_authz_failed = true;   // provisioning gap, NOT a bad password
+                $this->sec_telem->emit('ADMIN_LOGIN_AUTHZ_MISSING', 'warning', [
+                    'admin_id' => $adminId,
+                    'ip'       => $ip,
+                    'reason'   => 'staff_doc_absent',
+                    'schoolId' => $schoolId,
+                ], ['type' => 'school_admin', 'id' => $adminId]);
+                return;
+            }
+
+            log_message('info',
+                'SSA login without a staff doc — admitted on claim: ' . $this->_log_safe($adminId)
+                . ' school=' . $this->_log_safe($schoolId));
+            $this->sec_telem->emit('ADMIN_LOGIN_SSA_NO_STAFF_DOC', 'info', [
                 'admin_id' => $adminId,
                 'ip'       => $ip,
-                'reason'   => 'staff_doc_absent',
                 'schoolId' => $schoolId,
             ], ['type' => 'school_admin', 'id' => $adminId]);
-            return;
+            $staffDoc = [];   // no HR record; status check below is skipped
         }
         $rawStatus = (string) ($staffDoc['status'] ?? $staffDoc['Status'] ?? 'Active');
         if (strcasecmp(trim($rawStatus), 'Active') !== 0) {
