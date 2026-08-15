@@ -87,6 +87,54 @@ class MY_Superadmin_Controller extends CI_Controller
             }
             redirect('superadmin/change_my_password');
         }
+
+        // ── Mid-session password-reset re-check (throttled) ──────────────────
+        // The gate above reads a SESSION value seeded once at login, and
+        // revokeRefreshTokens cannot touch a CI session cookie — so a developer
+        // SA already signed into this panel kept full cross-tenant access
+        // indefinitely after their password was reset. This panel has no
+        // periodic-check machinery to piggyback on (unlike MY_Controller's
+        // 5-minute subscription block), so it carries its own throttle.
+        //
+        // Force logout rather than confine: Superadmin::change_my_password skips
+        // current-password re-auth in the forced flow, so confining a hijacked
+        // session would let whoever holds it set a new password and keep access.
+        // Re-auth with the newly issued password is the point of a reset.
+        //
+        // superAdmins docs are NOT school-prefixed — SUP accounts are
+        // cross-tenant (see Superadmin::change_my_password, which writes
+        // firestoreSet('superAdmins', $sa_id, …)).
+        $now          = time();
+        $lastPwCheck  = (int) $this->session->userdata('sa_pw_check_ts');
+        $isSaLogout   = ($route_key === 'superadmin_login/logout');
+        if (!$isSaLogout && ($now - $lastPwCheck) >= 300) {
+            $this->session->set_userdata('sa_pw_check_ts', $now);
+            try {
+                $saDoc = $this->firebase->firestoreGet('superAdmins', (string) $this->sa_id);
+                $this->load->helper('force_change');
+                if (is_array($saDoc)
+                    && force_change_truthy($saDoc['mustChangePassword'] ?? null)
+                    && !$this->session->userdata('sa_must_change_password')) {
+                    log_message('info',
+                        'SA password reset detected mid-session sa=[' . $this->sa_id . '] — forcing logout.');
+                    $this->session->unset_userdata(
+                        ['sa_id', 'sa_name', 'sa_role', 'sa_email', 'sa_csrf_token',
+                         'sa_must_change_password', 'sa_pw_check_ts']
+                    );
+                    if ($this->input->is_ajax_request()) {
+                        $this->json_error(
+                            'Your password was reset. Please sign in with your new password.', 403);
+                    }
+                    $this->session->set_flashdata('error',
+                        'Your password was reset. Please sign in with your new password.');
+                    redirect('superadmin/login');
+                }
+            } catch (\Throwable $e) {
+                // Fail open on a read error — a Firestore blip must not end the
+                // session, matching MY_Controller's behaviour.
+                log_message('error', 'SA mid-session password check failed: ' . $e->getMessage());
+            }
+        }
     }
 
     // ─────────────────────────────────────────────────────────────────────────

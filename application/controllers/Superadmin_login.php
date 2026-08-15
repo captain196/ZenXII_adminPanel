@@ -241,9 +241,36 @@ class Superadmin_login extends CI_Controller
             return;
         }
 
-        // Primary owner → OTP self-reset.
-        if ($adminId === 'SUP0001') {
-            $this->_json(['status' => 'success', 'mode' => 'otp']);
+        // Primary owner → real recovery routes.
+        //
+        // WAS: mode 'otp', which sent the owner into send_otp → Auth_client →
+        // POST http://localhost:3000/internal/forgot-password. Nothing listens on
+        // that port in production (verified: no process, and AUTH_API_URL is not
+        // in .env), so the wizard always failed after the 5s connect timeout with
+        // "Failed to send OTP." The primary owner therefore had NO working
+        // recovery at all — and the UI actively hid that fact behind a flow that
+        // looked like it should work.
+        //
+        // Reviving the Node backend to serve this one path would contradict the
+        // project's deliberate no-self-service-OTP model, so point at the two
+        // routes that genuinely work instead:
+        //   1. Any other active super admin can reset this account from
+        //      Super Admins → Reset password (Superadmin_admins::reset_password
+        //      carries no isPrimary guard, unlike toggle_status/delete).
+        //   2. Break-glass on the server: `php index.php sa_recover reset_password
+        //      SUP0001` (CLI only, not web-routable — see Sa_recover.php).
+        if (!empty($doc['isPrimary']) || $adminId === 'SUP0001') {
+            // found:false deliberately — the view renders r.message in a styled
+            // alert for that branch, whereas found:true calls renderCard() and
+            // would paint an empty name/phone/email card. Reusing the existing
+            // branch means no view change is needed.
+            $this->_json([
+                'status'  => 'success', 'mode' => 'contact', 'found' => false,
+                'message' => 'Self-service reset is not available for the primary super admin. '
+                           . 'Ask another super admin to reset it from Super Admins → Reset '
+                           . 'password. If no other super admin is reachable, an operator can '
+                           . 'recover this account on the server using the break-glass command.',
+            ]);
             return;
         }
 

@@ -2812,10 +2812,46 @@ class Sis extends MY_Controller
         }
         try {
             $authEmail = Firebase::authEmail($studentId);
-            $this->firebase->createFirebaseUser($authEmail, $password, [
+
+            // B3 fix: the return value used to be DISCARDED here.
+            // Firebase::createFirebaseUser swallows its own exception and returns
+            // null, so the try/catch below never fired on a creation failure and
+            // this helper returned ['success' => true] unconditionally — the
+            // caller-facing warnings (save_admission's auth_warning, import's
+            // loginPending, enroll's authCreated) could therefore never fire, and
+            // a student was reported as fully admitted with no login behind them.
+            $created = $this->firebase->createFirebaseUser($authEmail, $password, [
                 'uid'         => $studentId,
                 'displayName' => $displayName,
             ]);
+
+            if ($created === null) {
+                // Distinguish a TRANSIENT failure (network blip, quota) from a
+                // permanent one (uid/email already taken). If no account exists
+                // for this id, nothing is occupying it and a retry can succeed;
+                // if one does exist, retrying is pointless and would loop.
+                $taken = ($this->firebase->getFirebaseUser($studentId) !== null);
+
+                if ($taken) {
+                    $err = "Auth id {$studentId} is already in use.";
+                    log_message('error', "{$context}: Firebase Auth create failed for {$studentId}: {$err}");
+                    return ['success' => false, 'error' => $err];
+                }
+
+                usleep(400000); // 0.4s — ride out a brief blip before one retry
+                $created = $this->firebase->createFirebaseUser($authEmail, $password, [
+                    'uid'         => $studentId,
+                    'displayName' => $displayName,
+                ]);
+
+                if ($created === null) {
+                    $err = 'Firebase Auth account could not be created (transient failure, retried once).';
+                    log_message('error', "{$context}: Firebase Auth create failed for {$studentId} after retry.");
+                    return ['success' => false, 'error' => $err];
+                }
+                log_message('info', "{$context}: Firebase Auth create succeeded for {$studentId} on retry.");
+            }
+
             $this->firebase->setCanonicalClaims($studentId, [
                 'role'          => 'student',
                 'school_id'     => $this->school_id,

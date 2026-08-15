@@ -1463,10 +1463,26 @@ class Staff extends MY_Controller
         // Firebase Auth (best-effort).
         try {
             $authEmail = Firebase::authEmail($staffId);
-            $this->firebase->createFirebaseUser($authEmail, $plainPassword, [
+            // Capture the return — createFirebaseUser returns null instead of
+            // throwing, so discarding it meant an imported row could be reported
+            // as created with no login behind it and no warning anywhere.
+            $createdAuth = $this->firebase->createFirebaseUser($authEmail, $plainPassword, [
                 'uid'         => $staffId,
                 'displayName' => $name,
             ]);
+            if ($createdAuth === null) {
+                if ($this->firebase->getFirebaseUser($staffId) === null) {
+                    usleep(400000);   // transient — one retry
+                    $createdAuth = $this->firebase->createFirebaseUser($authEmail, $plainPassword, [
+                        'uid'         => $staffId,
+                        'displayName' => $name,
+                    ]);
+                }
+                if ($createdAuth === null) {
+                    throw new \RuntimeException(
+                        'Firebase Auth account could not be created for ' . $staffId . '.');
+                }
+            }
             $this->firebase->setCanonicalClaims($staffId, [
                 'role'           => $roleClaimLabel,   // ROLE LABEL — panel resolves access by this
                 'school_id'      => $this->school_id,
@@ -2350,10 +2366,29 @@ class Staff extends MY_Controller
                 $authWarning = null;
                 try {
                     $authEmail = Firebase::authEmail($staffId);
-                    $this->firebase->createFirebaseUser($authEmail, $rawPassword, [
+                    // Capture the return. Firebase::createFirebaseUser swallows its
+                    // own exception and returns null, so the catch below never fired
+                    // on a creation failure and $authWarning stayed null — the admin
+                    // was told the staff member was added while no login existed.
+                    $createdAuth = $this->firebase->createFirebaseUser($authEmail, $rawPassword, [
                         'uid'         => $staffId,
                         'displayName' => $staffName,
                     ]);
+                    if ($createdAuth === null) {
+                        // Retry once, but only when nothing already occupies the id —
+                        // a taken id can never succeed and would loop.
+                        if ($this->firebase->getFirebaseUser($staffId) === null) {
+                            usleep(400000);
+                            $createdAuth = $this->firebase->createFirebaseUser($authEmail, $rawPassword, [
+                                'uid'         => $staffId,
+                                'displayName' => $staffName,
+                            ]);
+                        }
+                        if ($createdAuth === null) {
+                            throw new \RuntimeException(
+                                'Firebase Auth account could not be created for ' . $staffId . '.');
+                        }
+                    }
                     $this->firebase->setCanonicalClaims($staffId, [
                         'role'           => $roleClaimLabel,   // ROLE LABEL — panel resolves module access by this (not the designation)
                         'school_id'      => $this->school_id,
