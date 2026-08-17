@@ -63,6 +63,25 @@
       ]
     },
     {
+      "_comment": "F-R4.9 (2026-08-17) \u2014 the stories read rule now requires status=='active' for non-staff, so the Parent query must constrain status too: one denied doc fails the WHOLE listener. schoolId== AND status=='active' AND audienceClassKeys array-contains-any [childKeys + '*'].",
+      "collectionGroup": "stories",
+      "queryScope": "COLLECTION",
+      "fields": [
+        {
+          "fieldPath": "schoolId",
+          "order": "ASCENDING"
+        },
+        {
+          "fieldPath": "status",
+          "order": "ASCENDING"
+        },
+        {
+          "fieldPath": "audienceClassKeys",
+          "arrayConfig": "CONTAINS"
+        }
+      ]
+    },
+    {
       "_comment": "SEC-3 (2026-07-08) \u2014 tenant-scoped seen-state: collectionGroup('viewers') where schoolId== AND userId==. Aligns with the tenant-bound viewers read rule.",
       "collectionGroup": "viewers",
       "queryScope": "COLLECTION_GROUP",
