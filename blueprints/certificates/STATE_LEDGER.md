@@ -36,8 +36,12 @@ Active: 6 of MAX 15. No conflicts detected at seeding.
 | A4 | English-only is acceptable at launch | **l** | R4, S13 |
 | A5 | dompdf renders a locked Annexure-I form acceptably at A4 | m | R2, S6 |
 | A6 | One active template per (school, docType) is sufficient — no per-class variants | m | S7 |
+| A7 | Quill's HTML output renders faithfully through dompdf (semantic tags, no flex/grid) | m | R2→S6, proof-render |
+| A8 | Self-hosting Quill in `assets/js/` beats CDN for tier-2/3 school connectivity | m | S6 |
 
-Unresolved: 6 of MAX 20.
+Unresolved: 8 of MAX 20.
+
+**R2 RESOLVED:** G1 (editor undecided) → Quill 2.0.3 recommended. CKEditor 4 and 5 both rejected.
 
 ---
 
