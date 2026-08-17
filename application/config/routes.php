@@ -1381,3 +1381,35 @@ $route['staff_access/delete_department']             = 'Staff_access/delete_depa
 $route['staff_access/reorder_departments']           = 'Staff_access/reorder_departments';
 $route['staff_access/move_role']                     = 'Staff_access/move_role';
 
+
+// ─────────────────────────────────────────────────────────────────────────────
+//  Doc_templates — Certificate Designer (Document Engine, Template Engine half)
+//
+//  NOTE: none of these belong in $config['csrf_exclude_uris'].
+//  Gate G0.7 proved the CSRF token round-trips correctly with the existing
+//  config; excluding them would disable CSRF on publish/activate and let a
+//  forged cross-site POST flip a school's active Transfer Certificate template.
+//  The client sends the token; the routes stay protected.
+//
+//  Capability per endpoint is enforced centrally in Doc_templates::_remap().
+// ─────────────────────────────────────────────────────────────────────────────
+$route['doc_templates']                              = 'Doc_templates/index';
+$route['doc_templates/gallery/(:any)']               = 'Doc_templates/gallery/$1';
+$route['doc_templates/design/(:any)']                = 'Doc_templates/design/$1';
+
+$route['doc_templates/get_types']                    = 'Doc_templates/get_types';
+$route['doc_templates/get_templates']                = 'Doc_templates/get_templates';
+$route['doc_templates/get_template']                 = 'Doc_templates/get_template';
+$route['doc_templates/get_blocks']                   = 'Doc_templates/get_blocks';
+
+$route['doc_templates/create']                       = 'Doc_templates/create';
+$route['doc_templates/save']                         = 'Doc_templates/save';
+$route['doc_templates/validate']                     = 'Doc_templates/validate';
+$route['doc_templates/preview']                      = 'Doc_templates/preview';
+$route['doc_templates/proof_pdf']                    = 'Doc_templates/proof_pdf';
+$route['doc_templates/upload_asset']                 = 'Doc_templates/upload_asset';
+$route['doc_templates/save_block']                   = 'Doc_templates/save_block';
+
+$route['doc_templates/publish']                      = 'Doc_templates/publish';
+$route['doc_templates/activate']                     = 'Doc_templates/activate';
+$route['doc_templates/archive']                      = 'Doc_templates/archive';
