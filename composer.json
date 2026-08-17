@@ -18,7 +18,13 @@
 		"dompdf/dompdf": "^2.0",
 		"google/cloud-firestore": "*",
 		"chillerlan/php-qrcode": "^5.0",
-		"symfony/polyfill-intl-normalizer": "^1.28"
+		"symfony/polyfill-intl-normalizer": "^1.28",
+		"mpdf/mpdf": "^8.2"
+	},
+	"config": {
+		"platform": {
+			"php": "8.2.0"
+		}
 	},
 	"suggest": {
 		"paragonie/random_compat": "Provides better randomness in PHP 5.x"

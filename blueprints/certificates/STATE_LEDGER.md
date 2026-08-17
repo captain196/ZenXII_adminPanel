@@ -15,7 +15,9 @@ S9 roadmap = relative-sequence, no dates (operator Q2).
 
 | ID | Type | Statement | Source |
 |---|---|---|---|
-| CON-RENDERER | HARD | dompdf 2.0.8 only; no new rendering infra | operator, this session |
+| CON-RENDERER | HARD | ~~dompdf 2.0.8 only~~ → **MODIFIED 2026-08-17 (option 3)**: pure-PHP renderer, no new server infra. **mPDF** for the document engine; existing dompdf paths untouched. | operator, conflict resolution |
+| CON-MULTILINGUAL | REQUIREMENT | Must render correctly in English, Hindi, Tamil, Telugu, Marathi, Gujarati, Bengali, Kannada, Malayalam | operator Q2 |
+| CON-CANVAS_FULL | HARD | Single full blank canvas with complete design control (Figma-grade); compliance = required objects, presence-only | operator, CONFLICT-1 resolution |
 | CON-V1_SCOPE | HARD | v1 = Transfer Certificate, Bonafide, Character | operator, this session |
 | CON-NO_PRINT_IMPL | HARD | No module's print button wired in this build | operator brief |
 | CON-NO_DEPLOY | HARD | No commit/push/deploy without explicit per-change permission | CLAUDE.md working agreement |

@@ -1,0 +1,10 @@
+{
+    "name": "zenxii/doctemplates-gate0",
+    "description": "Gate 0 throwaway harnesses — isolated vendor tree. NOT part of the app.",
+    "require": {
+        "mpdf/mpdf": "^8.2"
+    },
+    "config": {
+        "vendor-dir": "vendor"
+    }
+}
