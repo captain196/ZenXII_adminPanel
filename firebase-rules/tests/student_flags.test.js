@@ -162,3 +162,108 @@ describe('studentFlags — create hardening', () => {
     await assertFails(teacher(T1).doc(docId('NEW6')).set(baseFlag({ flagId: 'NEW6', status: 'resolved' })));
   });
 });
+
+/**
+ * F5 (2026-08-15) — graded capability on create.
+ *
+ * The create arm used hasCapability('Red Flags'), which only checks module
+ * PRESENCE. A staff member granted Red Flags at `view` was blocked in the UI
+ * (ModuleGate.canEdit) but NOT by the rules, so a direct SDK call was accepted:
+ * the client and the server disagreed on who may write. It is now
+ * hasCapabilityLevel('Red Flags', 'edit').
+ *
+ * These tests seed an actual staffCapabilities doc — the pre-existing suite
+ * never did, which is precisely why the gap went unnoticed.
+ */
+describe('studentFlags — create requires Red Flags at edit level (F5)', () => {
+  async function seedCaps(uid, modules, levels) {
+    await env.withSecurityRulesDisabled(async (ctx) => {
+      await ctx.firestore().doc(`staffCapabilities/${uid}`).set({
+        schoolId: SCHOOL, modules, levels,
+      });
+    });
+  }
+
+  beforeEach(async () => { await seedWorld('active'); });
+
+  test('view-level grantee CANNOT create (was allowed before the fix)', async () => {
+    await seedCaps(T1, ['Red Flags'], { 'Red Flags': 'view' });
+    await assertFails(teacher(T1).doc(docId('CAP1')).set(baseFlag({ flagId: 'CAP1' })));
+  });
+
+  test('edit-level grantee CAN create', async () => {
+    await seedCaps(T1, ['Red Flags'], { 'Red Flags': 'edit' });
+    await assertSucceeds(teacher(T1).doc(docId('CAP2')).set(baseFlag({ flagId: 'CAP2' })));
+  });
+
+  test('manage-level grantee CAN create', async () => {
+    await seedCaps(T1, ['Red Flags'], { 'Red Flags': 'manage' });
+    await assertSucceeds(teacher(T1).doc(docId('CAP3')).set(baseFlag({ flagId: 'CAP3' })));
+  });
+
+  test('module absent from a populated caps doc → denied', async () => {
+    await seedCaps(T1, ['Attendance'], { Attendance: 'manage' });
+    await assertFails(teacher(T1).doc(docId('CAP4')).set(baseFlag({ flagId: 'CAP4' })));
+  });
+
+  /**
+   * Documents a real client/server asymmetry in an UNREACHABLE state:
+   * hasCapabilityLevel() defaults a missing level entry to 'view' (→ denied),
+   * whereas ModuleGate.canEdit() treats present-but-unlevelled as full access
+   * (→ FAB shown). Unreachable because functions/staffCapabilities.js writes a
+   * levels[m] entry for EVERY module it grants (defaulting to 'manage', incl.
+   * the legacy-roles fallback), so `modules` can never contain a module absent
+   * from `levels`. Pinned here so a future change to that writer trips a test
+   * instead of silently locking teachers out of raising flags.
+   */
+  test('module held with NO level entry → denied (fails closed; unreachable in practice)', async () => {
+    await seedCaps(T1, ['Red Flags'], {});
+    await assertFails(teacher(T1).doc(docId('CAP5')).set(baseFlag({ flagId: 'CAP5' })));
+  });
+
+  test('NO caps doc at all → still fail-open (pre-rollout accounts unaffected)', async () => {
+    await assertSucceeds(teacher(T1).doc(docId('CAP6')).set(baseFlag({ flagId: 'CAP6' })));
+  });
+
+  /**
+   * F15 (2026-08-15) — the owner (non-admin) update arm had NO capability check,
+   * so a view-level grantee could not CREATE a flag but could still RESOLVE or
+   * SOFT-DELETE their own, while the admin panel gates resolve at `edit`. The
+   * owner arm now requires `edit` too — deliberately not `manage`, because the
+   * 5-second Undo soft-deletes the flag the teacher just raised.
+   */
+  test('view-level grantee CANNOT resolve their own flag (was allowed before the fix)', async () => {
+    await seedCaps(T1, ['Red Flags'], { 'Red Flags': 'view' });
+    await assertFails(teacher(T1).doc(docId('F1')).update({
+      status: 'resolved', resolvedBy: T1, resolvedAtMs: 1751000009999,
+    }));
+  });
+
+  test('view-level grantee CANNOT soft-delete their own flag', async () => {
+    await seedCaps(T1, ['Red Flags'], { 'Red Flags': 'view' });
+    await assertFails(teacher(T1).doc(docId('F1')).update({
+      status: 'deleted', deletedBy: T1, deletedAtMs: 1751000009999,
+    }));
+  });
+
+  test('edit-level grantee CAN resolve their own flag', async () => {
+    await seedCaps(T1, ['Red Flags'], { 'Red Flags': 'edit' });
+    await assertSucceeds(teacher(T1).doc(docId('F1')).update({
+      status: 'resolved', resolvedBy: T1, resolvedAtMs: 1751000009999,
+    }));
+  });
+
+  test('edit-level grantee CAN soft-delete their own flag (Undo must keep working)', async () => {
+    await seedCaps(T1, ['Red Flags'], { 'Red Flags': 'edit' });
+    await assertSucceeds(teacher(T1).doc(docId('F1')).update({
+      status: 'deleted', deletedBy: T1, deletedAtMs: 1751000009999,
+    }));
+  });
+
+  test('ADMIN is unaffected by the capability gate on update', async () => {
+    await seedCaps(ADMIN, ['Attendance'], { Attendance: 'view' });
+    await assertSucceeds(admin(ADMIN).doc(docId('F1')).update({
+      status: 'resolved', resolvedBy: ADMIN, resolvedAtMs: 1751000009999,
+    }));
+  });
+});

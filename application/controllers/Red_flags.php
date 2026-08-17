@@ -34,6 +34,13 @@ class Red_flags extends MY_Controller
     /** Max text length for flag messages */
     private const MAX_MESSAGE_LENGTH = 1000;
 
+    /**
+     * Student states that make a student un-flaggable. Byte-for-byte mirror of
+     * `ZenXII_Teacher StudentRepository.INACTIVE_STATUSES` (F9) — keep in sync
+     * or the panel and the app will offer different rosters for one class.
+     */
+    private const INACTIVE_STUDENT_STATUSES = ['tc', 'withdrawn', 'inactive', 'suspended'];
+
     public function __construct()
     {
         parent::__construct();
@@ -45,11 +52,43 @@ class Red_flags extends MY_Controller
     // =========================================================================
 
     /**
-     * Build base Firebase path for a class/section within current session.
+     * Server-authoritative UI capability probe for a graded level.
+     *
+     * Mirrors MY_Controller::_require_role() EXACTLY — including the rule that
+     * the graded RBAC map is AUTHORITATIVE once the user holds the module, so a
+     * deliberately-lowered level is never re-granted by the legacy role-name
+     * list. Used only to decide which buttons the view renders; every endpoint
+     * still enforces the real gate server-side.
+     *
+     * FIX 2026-08-15 (F1): the view has read `$can_edit` since commit 7ccebc0 but
+     * nothing ever set it, so `!empty($can_edit)` was silently false for EVERY
+     * role — including Super Admin — which disabled Resolve / Bulk Resolve /
+     * Create Flag for the whole panel with no error anywhere. Both flags are now
+     * computed here from the same logic the endpoints enforce.
      */
-    private function _class_path(string $classKey, string $sectionKey): string
+    private function _ui_can(string $level): bool
     {
-        return "Schools/{$this->school_name}/{$this->session_year}/{$classKey}/{$sectionKey}";
+        $role = $this->admin_role ?? '';
+
+        if (strcasecmp($role, 'Super Admin') === 0) return true;
+        if (strcasecmp($role, 'School Super Admin') === 0) return true;
+
+        $graded_authoritative = false;
+        if (function_exists('has_permission')) {
+            if (has_permission('Red Flags', $level)) return true;
+            if (function_exists('rbac_user_holds_module')
+                && rbac_user_holds_module('Red Flags')) {
+                $graded_authoritative = true;
+            }
+        }
+
+        if (!$graded_authoritative) {
+            foreach (self::MANAGE_ROLES as $a) {
+                if (strcasecmp($role, $a) === 0) return true;
+            }
+        }
+
+        return false;
     }
 
     /**
@@ -144,7 +183,8 @@ class Red_flags extends MY_Controller
         ?array $classFilter = null,
         bool $includeDeleted = false,
         ?int $sinceMs = null,
-        ?array &$meta = null
+        ?array &$meta = null,
+        ?string $studentId = null
     ): array {
         // $meta (by-ref, optional) reports read health to the caller so the UI
         // can distinguish "genuinely no flags" from "couldn't read the store"
@@ -172,9 +212,21 @@ class Red_flags extends MY_Controller
         // the 60-day window already captures the practical session
         // boundary. Session-level filtering happens client-side below
         // when explicitly needed.
+        // Optional studentId push-down (F3). Without it a single-student
+        // drill-down had to scan the 500 most recent flags of the WHOLE school
+        // and filter in PHP — so a student's older flags fell off the end and
+        // the drill-down under-reported. Served by the existing
+        // (schoolId, studentId, createdAtMs) composite index, so this is both
+        // exact and cheaper. The schoolCode arm below is deliberately left
+        // unscoped: there is no (schoolCode, studentId, createdAtMs) index, and
+        // adding one would mean an index deploy for a legacy-only fallback.
+        $idFilter = $studentId !== null && $studentId !== ''
+            ? [['studentId', '==', $studentId]]
+            : [];
+
         $bySchoolId = (array) $this->fs->where(
             'studentFlags',
-            array_merge([['schoolId', '==', $this->school_id]], $timeFilter),
+            array_merge([['schoolId', '==', $this->school_id]], $idFilter, $timeFilter),
             'createdAtMs',
             'DESC',
             500
@@ -280,6 +332,14 @@ class Red_flags extends MY_Controller
                 'message'     => $f['message']     ?? '',
                 'subject'     => $f['subject']     ?? '',
                 'teacherId'   => $f['teacherId']   ?? '',
+                // Stable per-human identity for analytics grouping (F4).
+                // `teacherId` is NOT comparable across surfaces: the panel
+                // stores the staff id (STA0067) while the app stores the
+                // Firebase Auth uid (rules require teacherId == auth.uid).
+                // Grouping on it therefore splits one teacher into two rows.
+                // Both writers now also stamp `teacherStaffId`; fall back to
+                // teacherId for legacy docs written before this field existed.
+                'teacherStaffId' => (string) ($f['teacherStaffId'] ?? ($f['teacherId'] ?? '')),
                 'teacherName' => $f['teacherName'] ?? '',
                 'createdAt'   => $f['createdAtMs'] ?? 0,
                 'status'      => $this->_display_enum((string)($f['status']   ?? 'active'), self::ALLOWED_STATUSES),
@@ -301,20 +361,15 @@ class Red_flags extends MY_Controller
     public function index()
     {
         $this->_require_role(self::VIEW_ROLES, 'red_flags_view', 'Red Flags', 'view');
-        // Server-authoritative manage capability, computed with the SAME
-        // case-insensitive logic the mutation endpoints enforce. Passing this
-        // to the view lets it hide action buttons from view-only roles without
-        // the client-side role-casing drift that previously caused false
-        // negatives (the old code gave up and hardcoded CAN_MANAGE=true).
-        $role = $this->admin_role ?? '';
-        $can_manage = (strcasecmp($role, 'Super Admin') === 0)
-            || (strcasecmp($role, 'School Super Admin') === 0);
-        if (!$can_manage) {
-            foreach (self::MANAGE_ROLES as $a) {
-                if (strcasecmp($role, $a) === 0) { $can_manage = true; break; }
-            }
-        }
-        $data = ['can_manage' => $can_manage];
+        // Server-authoritative capabilities, computed with the SAME graded logic
+        // the mutation endpoints enforce, so the view never renders a button the
+        // server would 403 — and never disables one the server would allow.
+        //   can_edit   → resolve / create / bulk-resolve   (level 'edit')
+        //   can_manage → delete / restore                  (level 'manage')
+        $data = [
+            'can_edit'   => $this->_ui_can('edit'),
+            'can_manage' => $this->_ui_can('manage'),
+        ];
         $this->load->view('include/header', $data);
         $this->load->view('red_flags/index', $data);
         $this->load->view('include/footer');
@@ -424,7 +479,11 @@ class Red_flags extends MY_Controller
     {
         $this->_require_role(self::VIEW_ROLES, 'red_flags_overview', 'Red Flags', 'view');
 
-        $allFlags = $this->_collect_all_flags();
+        // Read health (F2): the 500-row cap and the 60-day window apply here
+        // too, so KPIs can under-report. Previously only get_flags surfaced
+        // this, which made partial analytics look authoritative.
+        $readMeta = [];
+        $allFlags = $this->_collect_all_flags(null, false, null, $readMeta);
 
         $total    = count($allFlags);
         $active   = 0;
@@ -513,6 +572,8 @@ class Red_flags extends MY_Controller
             'byStatus'    => $byStatus,
             'recentFlags' => $recentFlags,
             'topStudents' => $topStudents,
+            'truncated'   => !empty($readMeta['truncated']),
+            'read_error'  => !empty($readMeta['error']),
         ]);
     }
 
@@ -625,7 +686,13 @@ class Red_flags extends MY_Controller
         }
 
         $studentId = $this->safe_path_segment($studentId, 'studentId');
-        $allFlags = $this->_collect_all_flags();
+        // FULL history for a single student (F3). The default 60-day window
+        // silently truncated the drill-down, so a student's "Total" here could
+        // read lower than what that student's own parent sees in the Parent app
+        // (which applies no window at all). Per-student flag volume is low, so
+        // the unbounded read is cheap — sinceMs = 0 disables the time floor.
+        $readMeta = [];
+        $allFlags = $this->_collect_all_flags(null, false, 0, $readMeta, $studentId);
 
         $studentFlags = [];
         $studentInfo  = null;
@@ -695,6 +762,8 @@ class Red_flags extends MY_Controller
                 'active'     => $activeCount,
                 'resolved'   => $resolvedCount,
             ],
+            'truncated'  => !empty($readMeta['truncated']),
+            'read_error' => !empty($readMeta['error']),
         ]);
     }
 
@@ -865,6 +934,11 @@ class Red_flags extends MY_Controller
             'message'       => $message,
             'subject'       => $subject,
             'teacherId'     => $this->admin_id,
+            // Cross-surface stable identity (F4). The Teacher app must write
+            // teacherId = Firebase auth uid to satisfy the create rule, so
+            // teacherId alone cannot group one human's flags across surfaces.
+            // Both writers stamp the staff id here for analytics.
+            'teacherStaffId' => $this->admin_id,
             'teacherName'   => $this->admin_name ?? $this->admin_id,
             'createdAtMs'   => $nowMs,
             'createdByRole' => 'admin',
@@ -1147,7 +1221,8 @@ class Red_flags extends MY_Controller
     {
         $this->_require_role(self::VIEW_ROLES, 'red_flags_trends', 'Red Flags', 'view');
 
-        $allFlags = $this->_collect_all_flags();
+        $readMeta = [];
+        $allFlags = $this->_collect_all_flags(null, false, null, $readMeta);
 
         // ── Weekly trend (last 12 weeks) ──
         // We keep two parallel structures so the response shape stays
@@ -1206,10 +1281,19 @@ class Red_flags extends MY_Controller
                 $lastMonth++;
             }
 
-            // Teacher activity
-            $tid = $f['teacherName'] ?: ($f['teacherId'] ?? 'Unknown');
+            // Teacher activity — key on the cross-surface stable id (F4), not
+            // the display name (two teachers can share a name) and not the raw
+            // teacherId (which differs per surface for the same human).
+            $tid = ($f['teacherStaffId'] ?? '') !== ''
+                ? $f['teacherStaffId']
+                : ($f['teacherId'] ?? 'Unknown');
             if (!isset($teacherActivity[$tid])) {
-                $teacherActivity[$tid] = ['name' => $tid, 'teacherId' => $f['teacherId'] ?? '', 'count' => 0, 'high' => 0];
+                $teacherActivity[$tid] = [
+                    'name'      => $f['teacherName'] ?: $tid,
+                    'teacherId' => $tid,
+                    'count'     => 0,
+                    'high'      => 0,
+                ];
             }
             $teacherActivity[$tid]['count']++;
             if (($f['severity'] ?? '') === 'High') $teacherActivity[$tid]['high']++;
@@ -1255,6 +1339,8 @@ class Red_flags extends MY_Controller
             'subjectBreakdown' => $subjectBreakdown,
             'avgResolutionHrs' => $avgResolution,
             'resolutionTimes'  => $resolutionTimes,
+            'truncated'        => !empty($readMeta['truncated']),
+            'read_error'       => !empty($readMeta['error']),
         ]);
     }
 
@@ -1348,27 +1434,39 @@ class Red_flags extends MY_Controller
             $this->json_error('Access denied for this class.', 403);
         }
 
-        // Firestore students collection: schoolId+className+section+status.
+        // Firestore students collection: schoolId+className+section.
         // Two field naming conventions exist for legacy reasons — query the
         // canonical camelCase first, fall back to PascalCase if empty.
+        //
+        // F9 (2026-08-15): status is NO LONGER part of the query. It used to
+        // require status == 'Active' exactly, which silently dropped every
+        // student whose status field is blank or differently-cased — those
+        // students ARE flaggable from the Teacher app (StudentRepository keeps
+        // anything not explicitly inactive), so the same class produced two
+        // different rosters depending on the surface. We now mirror the app's
+        // rule exactly: exclude only the known-inactive states, keep blanks.
         $docs = $this->fs->schoolWhere('students', [
             ['className', '==', $classKey],
             ['section',   '==', $sectionKey],
-            ['status',    '==', 'Active'],
         ]);
         if (empty($docs)) {
             $docs = $this->fs->schoolWhere('students', [
                 ['Class',   '==', $classKey],
                 ['Section', '==', $sectionKey],
-                ['Status',  '==', 'Active'],
             ]);
         }
 
         $list = [];
         foreach ((array) $docs as $row) {
-            $d = $row['data'] ?? $row;
             $d = is_array($row) ? ($row['data'] ?? $row) : null;
             if (!is_array($d)) continue;
+
+            // Mirror ZenXII_Teacher StudentRepository.INACTIVE_STATUSES —
+            // anything not explicitly inactive (including blank) stays visible.
+            $st = strtolower(trim((string) ($d['status'] ?? $d['Status'] ?? '')));
+            if ($st !== '' && in_array($st, self::INACTIVE_STUDENT_STATUSES, true)) {
+                continue;
+            }
 
             // Resolve canonical bare userId — drives the studentId we
             // write into the flag doc, which the parent app queries on.
@@ -1413,7 +1511,8 @@ class Red_flags extends MY_Controller
     {
         $this->_require_role(self::VIEW_ROLES, 'red_flags_class_summary', 'Red Flags', 'view');
 
-        $allFlags = $this->_collect_all_flags();
+        $readMeta = [];
+        $allFlags = $this->_collect_all_flags(null, false, null, $readMeta);
         $summary  = [];
 
         foreach ($allFlags as $f) {
@@ -1465,7 +1564,11 @@ class Red_flags extends MY_Controller
             return $b['total'] <=> $a['total'];
         });
 
-        $this->json_success(['classSummary' => array_values($summary)]);
+        $this->json_success([
+            'classSummary' => array_values($summary),
+            'truncated'    => !empty($readMeta['truncated']),
+            'read_error'   => !empty($readMeta['error']),
+        ]);
     }
 
     /**
@@ -1475,11 +1578,17 @@ class Red_flags extends MY_Controller
     {
         $this->_require_role(self::VIEW_ROLES, 'red_flags_teacher_activity', 'Red Flags', 'view');
 
-        $allFlags = $this->_collect_all_flags();
+        $readMeta = [];
+        $allFlags = $this->_collect_all_flags(null, false, null, $readMeta);
         $teachers = [];
 
         foreach ($allFlags as $f) {
-            $tid  = $f['teacherId'] ?? 'Unknown';
+            // Group on the cross-surface stable id (F4) — grouping on the raw
+            // teacherId listed the same teacher twice (staff id from the panel,
+            // Firebase uid from the app).
+            $tid  = ($f['teacherStaffId'] ?? '') !== ''
+                ? $f['teacherStaffId']
+                : ($f['teacherId'] ?? 'Unknown');
             $name = $f['teacherName'] ?: $tid;
 
             if (!isset($teachers[$tid])) {
@@ -1528,7 +1637,11 @@ class Red_flags extends MY_Controller
             return $b['total'] <=> $a['total'];
         });
 
-        $this->json_success(['teachers' => array_values($teachers)]);
+        $this->json_success([
+            'teachers'   => array_values($teachers),
+            'truncated'  => !empty($readMeta['truncated']),
+            'read_error' => !empty($readMeta['error']),
+        ]);
     }
 
     /**

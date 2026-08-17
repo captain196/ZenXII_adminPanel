@@ -747,6 +747,9 @@ $can_manage = function_exists('has_permission') ? has_permission('Red Flags', 'm
          ═══════════════════════════════════════════════════════════ -->
     <div class="rf-tab-panel active" id="tab-overview">
 
+        <!-- Read-health strip (F2): partial / failed reads must be visible -->
+        <div id="rf-overview-health" style="display:none"></div>
+
         <!-- KPI Cards -->
         <div class="rf-kpis">
             <div class="rf-kpi total">
@@ -980,6 +983,9 @@ $can_manage = function_exists('has_permission') ? has_permission('Red Flags', 'm
          ═══════════════════════════════════════════════════════════ -->
     <div class="rf-tab-panel" id="tab-analytics">
 
+        <!-- Read-health strip (F2) -->
+        <div id="rf-analytics-health" style="display:none"></div>
+
         <div id="analytics-area">
             <div class="rf-loading-overlay"><i class="fa fa-spinner"></i> Loading analytics...</div>
         </div>
@@ -1167,6 +1173,24 @@ function __rfInitRedFlags() {
         return true;
     }
 
+    /**
+     * Escaper for a value that lands inside a JS string literal within an HTML
+     * attribute — i.e. onclick="RF.fn('HERE')".
+     *
+     * esc() alone is NOT enough there: it escapes & < > (via textNode→innerHTML)
+     * but leaves quotes and backslashes untouched, so an id containing an
+     * apostrophe terminates the JS string early and breaks the handler (and is
+     * injectable). safe_path_segment PERMITS apostrophes in flag ids
+     * (/^[A-Za-z0-9 ',_\-]+$/u), and className/section are free-text, so this is
+     * reachable — not theoretical. JS-escape first, then HTML-escape.
+     */
+    function jsq(str) {
+        var v = String(str === null || str === undefined ? '' : str)
+            .replace(/\\/g, '\\\\')
+            .replace(/'/g, "\\'");
+        return esc(v);
+    }
+
     /** XSS-safe text escaper */
     function esc(str) {
         if (str === null || str === undefined) return '';
@@ -1317,8 +1341,9 @@ function __rfInitRedFlags() {
         flags: [],
         selectedFlags: {},
         charts: {},
-        allStudents: [],         // populated from flags for search
+        allStudents: [],         // flagged students only — see searchStudents()
         currentStudentId: null,
+        pendingIdLookup: null,   // raw search text awaiting an explicit ID lookup
         analyticsLoaded: false,
         // expandDetailHtml is populated during loadFlags rendering and
         // consumed by toggleExpand via DataTables row().child().
@@ -1532,6 +1557,12 @@ function __rfInitRedFlags() {
                 if (r.status !== 'success') return;
                 state.overview = r;
 
+                // Read health (F2). The KPIs are computed over the SAME capped
+                // 500-row / 60-day read as the flag list, so they can silently
+                // under-report. A monitoring dashboard that quietly shows a low
+                // number is worse than one that admits it is partial.
+                RF.renderReadHealth('#rf-overview-health', r);
+
                 // KPIs
                 $('#kpi-total').text(r.total || 0);
                 $('#kpi-active').text(r.active || 0);
@@ -1555,6 +1586,31 @@ function __rfInitRedFlags() {
                 toast('Failed to load overview data', 'error');
                 $('#kpi-total, #kpi-active, #kpi-resolved, #kpi-high, #kpi-week').text('?');
             });
+        },
+
+        /* ── Shared read-health banner (F2) ──
+         * Every aggregate endpoint (overview / class summary / teacher
+         * activity / trends / student drill-down) now returns `truncated`
+         * and `read_error`. Render a single consistent strip so a partial
+         * or failed read can never be mistaken for an authoritative
+         * "all clear" — the whole point of a monitoring module.
+         */
+        renderReadHealth: function(sel, r) {
+            var el = $(sel);
+            if (!el.length) return;
+            if (r && r.read_error) {
+                el.html('<div class="rf-warn-strip" style="background:#fdecea;border:1px solid #f5c2c0;color:#8a1c13;padding:8px 12px;border-radius:8px;margin-bottom:10px;font-size:13px;">'
+                    + '<i class="fa fa-warning"></i> Couldn\'t read the flag store — these numbers are NOT a confirmation that there are no flags. '
+                    + '<a href="#" onclick="RF.refresh();return false;">Retry</a></div>').show();
+                return;
+            }
+            if (r && r.truncated) {
+                el.html('<div class="rf-warn-strip" style="background:#fff3cd;border:1px solid #ffe08a;color:#7a5b00;padding:8px 12px;border-radius:8px;margin-bottom:10px;font-size:13px;">'
+                    + '<i class="fa fa-exclamation-triangle"></i> Computed over the most recent 500 flags — these totals under-report. '
+                    + 'Narrow the date range for exact figures.</div>').show();
+                return;
+            }
+            el.empty().hide();
         },
 
         /* ── Build student index from all flags ── */
@@ -1768,7 +1824,7 @@ function __rfInitRedFlags() {
                 var s = students[i];
                 html += '<tr>'
                     + '<td><span class="rf-top-rank">' + (i + 1) + '</span></td>'
-                    + '<td><span class="rf-student-name" onclick="RF.drillDown(\'' + esc(s.studentId) + '\')">' + esc(s.studentName) + '</span></td>'
+                    + '<td><span class="rf-student-name" onclick="RF.drillDown(\'' + jsq(s.studentId) + '\')">' + esc(s.studentName) + '</span></td>'
                     + '<td style="font-size:12px;color:var(--rf-t3)">' + esc(s.classLabel) + '</td>'
                     + '<td><strong>' + (s.count || 0) + '</strong></td>'
                     + '<td>' + (s.highCount > 0 ? '<span class="rf-badge high">' + s.highCount + '</span>' : '<span style="color:var(--rf-t4)">0</span>') + '</td>'
@@ -1897,7 +1953,7 @@ function __rfInitRedFlags() {
                     +   '<div class="rf-stu-cell">'
                     +     '<div class="rf-stu-avatar" style="background:' + avatarColor + '">' + esc(initialsOf(f.studentName)) + '</div>'
                     +     '<div class="rf-stu-info">'
-                    +       '<span class="rf-student-name" onclick="RF.drillDown(\'' + esc(f.studentId) + '\')">' + esc(f.studentName) + '</span>'
+                    +       '<span class="rf-student-name" onclick="RF.drillDown(\'' + jsq(f.studentId) + '\')">' + esc(f.studentName) + '</span>'
                     +       (metaLine ? '<span class="rf-stu-meta">' + esc(metaLine) + '</span>' : '')
                     +     '</div>'
                     +   '</div>'
@@ -1924,13 +1980,13 @@ function __rfInitRedFlags() {
                 // data itself remains fully readable. Server re-enforces every
                 // mutation via _require_role regardless of these UI states.
                 if (f.status === 'Active') {
-                    html += '<button class="rf-btn success sm" title="' + (CAN_EDIT ? 'Resolve' : 'You do not have edit access') + '"' + (CAN_EDIT ? '' : ' disabled') + ' onclick="RF.resolveFlag(\'' + esc(f.classKey) + '\',\'' + esc(f.sectionKey) + '\',\'' + esc(f.studentId) + '\',\'' + esc(f.flagId) + '\')"><i class="fa fa-check"></i></button>';
+                    html += '<button class="rf-btn success sm" title="' + (CAN_EDIT ? 'Resolve' : 'You do not have edit access') + '"' + (CAN_EDIT ? '' : ' disabled') + ' onclick="RF.resolveFlag(\'' + jsq(f.classKey) + '\',\'' + jsq(f.sectionKey) + '\',\'' + jsq(f.studentId) + '\',\'' + jsq(f.flagId) + '\')"><i class="fa fa-check"></i></button>';
                 }
                 // Deleted flags get a Restore button instead of Delete.
                 if (f.status === 'Deleted') {
-                    html += '<button class="rf-btn outline sm" title="' + (CAN_MANAGE ? 'Restore' : 'You do not have manage access') + '"' + (CAN_MANAGE ? '' : ' disabled') + ' onclick="RF.restoreFlag(\'' + esc(f.flagId) + '\')"><i class="fa fa-undo"></i></button>';
+                    html += '<button class="rf-btn outline sm" title="' + (CAN_MANAGE ? 'Restore' : 'You do not have manage access') + '"' + (CAN_MANAGE ? '' : ' disabled') + ' onclick="RF.restoreFlag(\'' + jsq(f.flagId) + '\')"><i class="fa fa-undo"></i></button>';
                 } else {
-                    html += '<button class="rf-btn danger sm" title="' + (CAN_MANAGE ? 'Delete' : 'You do not have manage access') + '"' + (CAN_MANAGE ? '' : ' disabled') + ' onclick="RF.deleteFlag(\'' + esc(f.classKey) + '\',\'' + esc(f.sectionKey) + '\',\'' + esc(f.studentId) + '\',\'' + esc(f.flagId) + '\')"><i class="fa fa-trash"></i></button>';
+                    html += '<button class="rf-btn danger sm" title="' + (CAN_MANAGE ? 'Delete' : 'You do not have manage access') + '"' + (CAN_MANAGE ? '' : ' disabled') + ' onclick="RF.deleteFlag(\'' + jsq(f.classKey) + '\',\'' + jsq(f.sectionKey) + '\',\'' + jsq(f.studentId) + '\',\'' + jsq(f.flagId) + '\')"><i class="fa fa-trash"></i></button>';
                 }
                 html += '</div></td></tr>';
 
@@ -2150,19 +2206,50 @@ function __rfInitRedFlags() {
 
             var el = $('#student-search-results');
             if (results.length === 0) {
-                el.html('<div style="padding:12px;text-align:center;color:var(--rf-t3);font-size:12px">No students found</div>').addClass('show');
+                // The index is built ONLY from topStudents + recentFlags + the
+                // currently-loaded (filtered) flag list, so it covers flagged
+                // students only — and only those currently in scope. Saying a
+                // flat "No students found" was therefore wrong twice over: a
+                // student with ZERO flags can never appear here, and neither can
+                // a flagged student outside the top-10 / recent-10 / active
+                // filter. get_student_flags already handles the zero-flag case
+                // (it falls back to the students profile so the card renders with
+                // an empty list) — that path was simply unreachable from the UI.
+                // Offer an explicit ID lookup so it is reachable, and say plainly
+                // what the quick list does and does not cover.
+                state.pendingIdLookup = q;
+                el.html(
+                    '<div style="padding:10px 12px;color:var(--rf-t3);font-size:12px;line-height:1.6">'
+                    + 'No match among students who already have flags.'
+                    + '<br><a href="#" onclick="RF.drillDownPending();return false;" style="color:var(--rf-primary);font-weight:600">'
+                    + 'Look up &ldquo;' + esc(q) + '&rdquo; as a Student ID</a>'
+                    + '</div>'
+                ).addClass('show');
                 return;
             }
 
             var html = '';
             for (var j = 0; j < results.length; j++) {
                 var r = results[j];
-                html += '<div class="rf-search-item" onclick="RF.drillDown(\'' + esc(r.studentId) + '\')">'
+                html += '<div class="rf-search-item" onclick="RF.drillDown(\'' + jsq(r.studentId) + '\')">'
                     + '<div><div class="rf-search-item-name">' + esc(r.studentName) + '</div>'
                     + '<div class="rf-search-item-sub">' + esc(r.classLabel) + (r.rollNo ? ' | Roll: ' + esc(r.rollNo) : '') + '</div></div>'
                     + '</div>';
             }
             el.html(html).addClass('show');
+        },
+
+        /**
+         * Open the raw search text as a Student ID. Kept as a no-arg call that
+         * reads `state.pendingIdLookup` rather than interpolating the query into
+         * an onclick attribute: esc() escapes &<> but NOT quotes, and
+         * safe_path_segment permits apostrophes in ids, so inlining would break
+         * (and be injectable) on a value like O'Brien.
+         */
+        drillDownPending: function() {
+            var id = (state.pendingIdLookup || '').trim();
+            if (!id) return;
+            RF.drillDown(id);
         },
 
         drillDown: function(studentId) {
@@ -2291,7 +2378,7 @@ function __rfInitRedFlags() {
 
                 if (f.status === 'Active') {
                     html += '<div class="rf-timeline-actions">'
-                        + '<button class="rf-btn success sm"' + (CAN_EDIT ? '' : ' disabled title="You do not have edit access"') + ' onclick="RF.resolveFlag(\'' + esc(f.classKey) + '\',\'' + esc(f.sectionKey) + '\',\'' + esc(f.studentId) + '\',\'' + esc(f.flagId) + '\')"><i class="fa fa-check"></i> Resolve</button>'
+                        + '<button class="rf-btn success sm"' + (CAN_EDIT ? '' : ' disabled title="You do not have edit access"') + ' onclick="RF.resolveFlag(\'' + jsq(f.classKey) + '\',\'' + jsq(f.sectionKey) + '\',\'' + jsq(f.studentId) + '\',\'' + jsq(f.flagId) + '\')"><i class="fa fa-check"></i> Resolve</button>'
                         + '</div>';
                 }
 
@@ -2314,6 +2401,10 @@ function __rfInitRedFlags() {
                 state.analyticsLoaded = true;
                 $('#analytics-area').hide();
                 $('#analytics-content').show();
+
+                // Read health (F2) — trends are computed over the same capped
+                // read, so a truncated set skews every chart on this tab.
+                RF.renderReadHealth('#rf-analytics-health', r);
 
                 // Month comparison
                 var changeClass = r.monthChange > 0 ? 'up' : r.monthChange < 0 ? 'down' : 'flat';

@@ -2424,9 +2424,15 @@ service cloud.firestore {
       // depends on (studentId/flagId/createdAtMs) to be present & valid, so a
       // flag can never be written in a state that makes it un-resolvable or
       // invisible to the createdAtMs-ordered feeds.
+      // F5 (2026-08-15): was hasCapability('Red Flags') — module PRESENCE only,
+      // which let a staff member holding Red Flags at `view` level create flags
+      // via a direct SDK call. The Teacher app already hides the FAB for them
+      // (ModuleGate.canEdit), so the client and the rule disagreed on who may
+      // write. Now graded, matching Stories/Events: raising a flag needs `edit`.
+      // Still fail-open when the staffCapabilities doc is absent (pre-rollout).
       allow create: if isStaff()
         && isSameSchoolWrite()
-        && hasCapability('Red Flags')
+        && hasCapabilityLevel('Red Flags', 'edit')
         && request.resource.data.teacherId == request.auth.uid
         && request.resource.data.studentId != ''
         && request.resource.data.flagId != ''
@@ -2468,6 +2474,16 @@ service cloud.firestore {
           isAdmin()
           || (
             isStaff()
+            // F15 (2026-08-15): the owner arm had NO capability check at all,
+            // so a staff member holding Red Flags at `view` could not create a
+            // flag but COULD resolve/soft-delete their own — while the panel
+            // gates resolve at `edit`. Acting on your own flag now needs the
+            // same level it took to raise it. Deliberately `edit`, not `manage`:
+            // the 5-second Undo soft-deletes the flag you just created, so
+            // requiring manage would break undo for ordinary teachers.
+            // Admins keep the unrestricted arm above. Fail-open when the
+            // staffCapabilities doc is absent, like every other gate here.
+            && hasCapabilityLevel('Red Flags', 'edit')
             && resource.data.get('teacherId', '') == request.auth.uid
             && (
               request.resource.data.status == 'resolved'
