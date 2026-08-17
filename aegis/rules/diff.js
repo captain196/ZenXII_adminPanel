@@ -291,7 +291,50 @@ function direction(headBlock, liveBlock) {
     const hl = (headBlock.ownCanon || '').length, ll = (liveBlock.ownCanon || '').length;
     return hl > ll ? 'git_adds' : ll > hl ? 'live_adds' : 'divergent';
   }
+
+  // Whole-condition containment only catches a side that ADDS an allow. When a
+  // side instead TIGHTENS an existing one — wrapping the old condition in a new
+  // clause — neither grant set contains the other and we would fall through to
+  // `divergent`, i.e. THEIRS, i.e. "pull in production's version", which would
+  // silently delete the tightening.
+  //
+  // Reported by a real reconciliation: the `stories` moderation gate (F-R4.9)
+  // rewrote one `allow read` to wrap the audience test in
+  // `status == 'active' && (…)`. It was committed but never deployed, yet the
+  // board called it THEIRS and `plan` refused to ship, telling the user to
+  // recover a live copy that was strictly OLDER.
+  //
+  // Compare the atomic sub-expressions instead: split each condition on its
+  // boolean operators at any depth. A pure tightening leaves every live atom
+  // present in git and adds at least one more — decisive, and still symmetric,
+  // so a genuine live-side tightening is reported as live_adds.
+  const HA = atomsOf(headBlock), LA = atomsOf(liveBlock);
+  if (HA.size && LA.size) {
+    const liveAtomsInHead = [...LA].every(x => HA.has(x));
+    const headAtomsInLive = [...HA].every(x => LA.has(x));
+    if (liveAtomsInHead && !headAtomsInLive) return 'git_adds';
+    if (headAtomsInLive && !liveAtomsInHead) return 'live_adds';
+  }
   return 'divergent';
+}
+
+/**
+ * Atomic sub-expressions of every allow in a block, keyed by ops.
+ * Splits on `&&` / `||` at ANY nesting depth and strips parens + whitespace, so
+ * `a && (b || c)` and `(a && b) || c` both reduce to the atoms {a, b, c}.
+ * Deliberately structure-blind: we are answering "does one side contain every
+ * term the other has", not "are these logically equivalent".
+ */
+function atomsOf(block) {
+  const out = new Set();
+  for (const a of (block.allows || [])) {
+    String(a.cond || '')
+      .split(/\s*(?:\|\||&&)\s*/)
+      .map(s => s.replace(/[()\s]+/g, ''))
+      .filter(Boolean)
+      .forEach(s => out.add(`${a.ops}|${s}`));
+  }
+  return out;
 }
 
 /** Group blocks by owning module — the "which product does this touch" view. */

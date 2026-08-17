@@ -93,6 +93,28 @@ module.exports = function runRulesTests({ ok, eq }) {
     eq('rules/diff: direction — git superset', direction(blk(edited), blk(base)), 'git_adds');
     eq('rules/diff: direction — live superset', direction(blk(base), blk(edited)), 'live_adds');
     eq('rules/diff: direction — both changed independently', direction(blk(edited), blk(otherEdit)), 'divergent');
+
+    // A side that TIGHTENS an existing allow (rather than adding one) used to
+    // defeat whole-condition containment and land on `divergent` → THEIRS →
+    // "pull production in", which would have deleted the tightening.
+    // Real case: the `stories` F-R4.9 moderation gate, committed but never
+    // deployed, wrapped the audience test in `status == 'active' && (…)`.
+    const loose  = WRAP(STUDENTS("      allow read: if isSameSchool() && (isStaff() || a() || b());"));
+    const tight  = WRAP(STUDENTS("      allow read: if isSameSchool() && (isStaff() || (s() && (a() || b())));"));
+    eq('rules/diff: direction — git tightened an existing allow → git_adds',
+      direction(blk(tight), blk(loose)), 'git_adds');
+    eq('rules/diff: direction — live tightened an existing allow → live_adds',
+      direction(blk(loose), blk(tight)), 'live_adds');
+    eq('rules/diff: committed tightening is undeployed, not theirs',
+      findStudents(threeWay({ live: loose, head: tight, work: tight })).status, STATUS.UNDEPLOYED);
+    // Symmetry must hold: a genuine live-side tightening still blocks the deploy.
+    eq('rules/diff: live-side tightening is still theirs',
+      findStudents(threeWay({ live: tight, head: loose, work: loose })).status, STATUS.THEIRS);
+    // A rewrite that swaps terms (rather than adding) stays ambiguous — we must
+    // not "resolve" a real disagreement into a confident answer.
+    const swapped = WRAP(STUDENTS("      allow read: if isSameSchool() && (isStaff() || c());"));
+    eq('rules/diff: direction — disjoint rewrite stays divergent',
+      direction(blk(swapped), blk(loose)), 'divergent');
     eq('rules/diff: direction — a missing side is never guessed', direction(null, blk(base)), 'divergent');
     eq('rules/diff: no direction when live and head agree',
       findStudents(threeWay({ live: base, head: base, work: edited })).direction, null);
