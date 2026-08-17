@@ -107,6 +107,40 @@ $config['numbering'] = [
             ],
         ],
 
+        // ─── Document Engine — Template Engine (P1.4) ───────────────────────
+        //
+        // INTERNAL identifiers only: they name a template or a reusable block
+        // inside the designer. They are NOT the number printed on an issued
+        // certificate.
+        //
+        // No seedSource: these are new kinds with no legacy data to continue
+        // from, so the missing-pointer path simply starts at 1.
+        //
+        // periodScope 'none': a template's identity does not reset per session.
+        // Issued-document numbers WILL need period scoping ('session' derives
+        // the Indian financial year here), but that belongs to the Issuance
+        // Engine, not this build.
+        //
+        // ⚠ gaplessClass is DECLARATIVE ONLY. It is returned by describe() and
+        // nothing enforces it — see the note under _kindFlags. INTERNAL is the
+        // honest grade for these two: a gap in template numbering is harmless.
+        // Statutory document numbering must NOT be added here until the
+        // contract is made real.
+
+        'doc_template' => [
+            'prefix'       => 'TPL',
+            'padWidth'     => 4,
+            'gaplessClass' => 'INTERNAL',
+            'periodScope'  => 'none',
+        ],
+
+        'doc_block' => [
+            'prefix'       => 'BLK',
+            'padWidth'     => 4,
+            'gaplessClass' => 'INTERNAL',
+            'periodScope'  => 'none',
+        ],
+
     ],
 
     // ═════════════════════════════════════════════════════════════════════════
@@ -127,5 +161,36 @@ $config['numbering'] = [
         'trigger'  => 'enabled',
         'queue'    => 'enabled',
         'log'      => 'enabled',
+
+        // Document Engine (P1.4). Enabled on registration: these allocate
+        // INTERNAL ids only, there is no legacy sequence to cut over from,
+        // and no issued document depends on them.
+        'doc_template' => 'enabled',
+        'doc_block'    => 'enabled',
     ],
 ];
+
+/*
+|--------------------------------------------------------------------------
+| KNOWN GAP — gaplessClass is not enforced
+|--------------------------------------------------------------------------
+| Every kind above declares a gaplessClass, and Numbering_service's docblock
+| describes a "gapless contract". Neither is true today: the string appears
+| exactly once in Numbering_service.php (inside describe()'s return value)
+| and nothing acts on it.
+|
+| That is acceptable for OPERATIONAL and INTERNAL kinds, where a gap is
+| harmless. It is NOT acceptable for a statutory series — a Transfer
+| Certificate or fee-receipt register must be gapless and auditable, and an
+| unexplained missing number is an audit finding.
+|
+| Before ANY issued-document kind is registered here, gaplessClass must be
+| made real:
+|   STATUTORY   throw on allocation failure; never skip. A number leaves the
+|               series only by an explicit void carrying a reason.
+|   OPERATIONAL retry, then skip.
+|   INTERNAL    skip freely.
+|
+| See blueprints/certificates/EXECUTION_PLAN_v1.1.md and
+| DOCUMENT_ENGINE_ARCHITECTURE.md §5.4.
+*/
