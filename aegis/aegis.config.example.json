@@ -1,0 +1,44 @@
+{
+  "$comment": [
+    "TEMPLATE for aegis.config.local.json — per-machine overrides. Copy to",
+    "aegis.config.local.json (gitignored) and delete every key you do NOT need",
+    "to change. It is DEEP-MERGED over aegis.config.json, so overriding one",
+    "surface root does not require restating the others.",
+    "",
+    "Easier: run `node cli.js setup`, which detects these paths for you.",
+    "",
+    "Precedence, lowest first:",
+    "  aegis.config.json  <  aegis.config.local.json  <  AEGIS_* env vars",
+    "",
+    "Paths may use ~, ${HOME} and ${AEGIS_ROOT}.",
+    "",
+    "Env-var equivalents (highest precedence, no file needed):",
+    "  AEGIS_ADMIN_ROOT      AEGIS_BACKEND_ROOT   AEGIS_TEACHER_ROOT",
+    "  AEGIS_PARENT_ROOT     AEGIS_RULES_FILE     AEGIS_FIREBASE_SA",
+    "  AEGIS_FIREBASE_PROJECT                     AEGIS_CONFIG (alternate base file)"
+  ],
+
+  "surfaces": {
+    "admin":   { "root": "${HOME}/dev/Zennxii_adminPanel", "gitRepo": "${HOME}/dev/Zennxii_adminPanel" },
+    "backend": { "root": "${HOME}/dev/project2",           "gitRepo": "${HOME}/dev/project2" },
+    "teacher": { "root": "${HOME}/dev/ZenXII_Teacher",     "gitRepo": "${HOME}/dev/ZenXII_Teacher" },
+    "parent":  { "root": "${HOME}/dev/ZenXII_Parent",      "gitRepo": "${HOME}/dev/ZenXII_Parent" }
+  },
+
+  "firebase": {
+    "$comment": [
+      "Read-only access to the LIVE deployed ruleset via the Firebase Rules API.",
+      "Aegis stores only the PATH — the key itself is never copied, never",
+      "committed and never sent anywhere but Google. Without it the live axis",
+      "goes dark and every command says so instead of guessing.",
+      "Needs the 'Firebase Rules Viewer' role (roles/firebaserules.viewer) at",
+      "minimum; a full admin key works but is more than this needs."
+    ],
+    "project": "graderadmin",
+    "serviceAccount": "${HOME}/.config/aegis/graderadmin-firebase-adminsdk.json"
+  },
+
+  "firestoreRules":   "${HOME}/dev/Zennxii_adminPanel/firebase-rules/firestore.rules",
+  "firestoreIndexes": "${HOME}/dev/Zennxii_adminPanel/firebase-rules/firestore.indexes.json",
+  "bugLedger":        "${HOME}/dev/Zennxii_adminPanel/BUG_LEDGER.md"
+}
