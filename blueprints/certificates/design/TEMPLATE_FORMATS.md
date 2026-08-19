@@ -55,33 +55,97 @@ books with pre-numbered leaves.
 
 ---
 
-## 3. Bonafide — CLASSIC and STANDARD  **[reconstructed]**
+## 3. Bonafide  **[verified — 12 primary sources]**
 
-⚠ **No primary school-issued PDF was reachable** (four sources 403'd, one TLS-expired). Layout
-below is common practice reconstructed from format guides — **not prescribed, not measured.** The
-prose sentences are verbatim from those guides.
+> **SUPERSEDES the reconstructed section previously here.** That version was built from template
+> guides and got three things wrong, corrected below.
 
-**Classic:** A4 portrait, ~25 mm margins, on school letterhead. Ruled border inset ~10 mm and a
-screened crest watermark are the usual "classic" cues; serif, body ~12 pt.
-Title `BONAFIDE CERTIFICATE`, centred caps, **underlined** — underlining is near-universal here,
-unlike the TC. `Ref. No. …` left / `Date: …` right, on one line **above** the title.
-**No Book No./Sl. No.** — bonafides are not issued from bound books.
-Body: one justified paragraph. **One signatory**, right-aligned `Principal`, round seal struck to
-overlap the signature.
+### What was wrong
 
-**Standard:** A4, ~20 mm margins, sans, body 11 pt, title 14 pt bold caps **not underlined**, one
-rule under the letterhead, `Ref No.`/`Date` as a left/right pair beneath it. Body as three short
-blocks: certifying sentence · supporting facts (DOB per school records, admission no., date of
-admission) · purpose. One right-aligned `Principal` over a rule, seal beside.
+| Earlier claim | Reality across 12 primary sources |
+|---|---|
+| Title `BONAFIDE CERTIFICATE` **underlined** | Underlining is a template-site habit. Real documents just centre it. |
+| `Ref. No.` left / `Date` right **above** the title | **No primary source has a Ref. No. field at all.** |
+| Date at the top | **Date is emphatically bottom-left**, in the signature block, in every primary source |
+| "To Whom It May Concern" is a common heading | **0 of 12 primary sources.** Template sites only — and there it *replaces* the title. No verified document carries both a `BONAFIDE CERTIFICATE` title *and* that salutation. |
 
-**Verbatim sentences:**
-1. "This is to certify that ____, son/daughter of Shri ____, is a bonafide student of this school
-   and is studying in Class ____ during the academic year 2026-27."
-2. "He/She has been enrolled in our institution since ____, and is currently studying in the
-   10th Grade."
-3. "This certificate is issued for the purpose of availing student concession on ____."
+### The de-facto national standard
 
-⚠ A verify-URL/QR footer: **no primary Indian school source confirming one was found.**
+Not a school format at all — the **Government of India Children Education Allowance claim form,
+"Annexure 'B' — BONAFIDE CERTIFICATE FROM THE HEAD OF INSTITUTION/SCHOOL"**, published by CAG and
+MoHFW and mirrored verbatim by universities. **This is the format Indian schools have copied.**
+
+```
+This is to certify that Master/Baby/Mr./Miss ____ Roll no ____ Admission No ____
+son of Sri/Smt ____ is a bonafide student of this school and studied in Class ____
+during the financial year ____ and as per School records his/her date of birth is
+____ in words ____
+He/She bears a good moral character.
+This Institution/School is affiliated recognized by ____ and the affiliation/
+recognition Number is ____.
+Dated:                                   Signature Head of the Institution/School
+Place:                                   (with Stamp and seal)
+                          **(Strike out it is not applicable)
+```
+
+Note `financial year`, not academic year — it is a CEA claim form.
+
+### Heading tally (12 primary documents)
+
+`BONAFIDE CERTIFICATE` **6** · `BONAFIDE STUDENT CERTIFICATE` 2 · `Bona-fide Certificate` 1 ·
+`CERTIFICATE REGARDING BONAFIDE STUDENT` 1 (BSE Odisha) · `BONAFIED CERTIFICATE` *(sic)* 1 ·
+`TO WHOM IT MAY CONCERN` **0**
+
+Spelling is inconsistent *within* single documents — heading "BONAFIDE", body "bona fide".
+
+### Field set, by frequency
+
+- **Near-universal:** name with honorific (`Master/Baby/Mr./Miss`, `Sri/Kumari`, `Selvan/Selvi`),
+  father's name (`S/o or D/o`), class/standard, academic year, head's signature + seal
+- **Common:** Admission No., Roll No., **DOB "as per School records"**, **DOB in words**,
+  Place + Date of issue, **school affiliation/recognition number** (a recurring field people forget)
+- **Occasional:** date of admission, address, purpose of issue, General Register No.,
+  domicile state (NSP), mother's name / Aadhaar / PEN / U-DISE (Andhra Pradesh only)
+- **Not found on any primary certificate:** caste/category, and **Section** — which appears on
+  *request forms* but not on the certificate itself
+
+### Structure
+
+**Prose paragraph with inline blanks in 10 of 12.** Two exceptions: Andhra Pradesh adds a
+label/value header block (`U-DISE CODE`, `MANDAL & DISTRICT`, recognition proc. no.), and Tamil
+Nadu adds a 7-row class-history table after the paragraph.
+
+**One signatory**, almost always. Labels vary: `Signature Head of the Institution/School (with
+Stamp and seal)` · `Seal and Signature of the Head of the Institution` · `Head Master/ Principal
+Signature with Stamp` · `Seal and Signature of the Headmaster / Headmistress`.
+**No primary source has a Class Teacher, Office Superintendent or Clerk line.**
+
+**Seal** either merges with the signature bottom-right, or sits as a separate bottom-**left** block
+opposite it.
+
+**Footer:** the only convention found on multiple primaries is the strike-out note
+`**(Strike out it is not applicable)`. **"Valid for 6 months" is NOT a documented footer** — blogs
+only. **No primary source carries a QR, verify-URL or "computer generated" line.**
+
+### Who prescribes one
+
+- **CBSE: NO.** The Affiliation Bye-laws were downloaded and grepped — `bonafide` appears **twice**,
+  both incidental, neither a proforma. CBSE prescribes the *Transfer* Certificate, not this.
+- **CISCE: none found.**
+- **Tamil Nadu: YES, statutory** — `CERTIFICATE No. VII` under TN Act 14 of 2021.
+- **BSE Odisha: YES** — the one state *board* publishing a format.
+- **Andhra Pradesh:** a departmental format is in use; the originating proceedings could not be located.
+
+### ⚠ UIDAI — a prescribed form that would reject a school's own
+
+Circular F.No. 4(4)/57/405/AM/2019-E&U-II (27/11/2019) put a mandatory
+`CERTIFICATE FOR AADHAAR ENROLMENT/UPDATE` into Schedule II of Regulation 10(2), replacing
+free-form letterhead certificates. `Head of Recognized Educational Institution` is a tick-box
+certifier type. It carries **`To be valid for 3 months from date of issue`**, a cross-stamped photo
+box, and a certifier block.
+
+**If a school issues an Aadhaar-purpose certificate, this form is prescribed and its own bonafide
+will be rejected.** That is a compliance-layer entry, not a template variant.
 
 ---
 
