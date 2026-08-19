@@ -75,8 +75,10 @@ Holds the working draft **and the pointers**. Publishing freezes a snapshot else
   activeVersion: 2,                    // exactly one active per (schoolId, docType); null if none
   lockVersion: 17,                     // optimistic concurrency — stale write returns conflict
 
-  complianceProfileId: "cbse",
-  complianceProfileVersion: 4,
+  // compliance is a STACK, not a lookup — see §5
+  complianceBasis:  { board: "CBSE", state: "Kerala", stage: "secondary" },
+  complianceLayers: [ { authorityId: "cbse", version: 4, applied: true },
+                      { authorityId: "ker",  version: 2, applied: true } ],
   contractRef: "transfer_certificate_v3",
 
   languages: ["en", "hi"],
@@ -109,6 +111,7 @@ Holds the working draft **and the pointers**. Publishing freezes a snapshot else
   xMm: 20, yMm: 45, wMm: 170, hMm: 12,
   z: 3,
   height: "auto",          // fixed | auto
+  maxHMm: 34,              // ⛔ ceiling for height:"auto" — see §3.5
   anchorTo: "obj_6",       // null = absolute at (x,y); else holds a GAP below that object
   anchorGapMm: 4,
   flowRegion: false,       // at most ONE per template — see §3.3
@@ -146,6 +149,30 @@ The single chain permitted to paginate. Everything else is absolute. Required be
 **18.03 mm vs 9.53 mm** on one block, ~2× out, compounding down a chain. A template with a null
 `lineHeight` must fail validation, not render.
 
+### 3.5 `maxHMm` — auto-grow needs a ceiling *(added 2026-08-19)*
+
+`design/FIGMA_ARCHITECTURE_STUDY.md` §2 caught a hole in the model above: `height` had only
+`auto | fixed`, and **an `auto` box by definition never overflows — it pushes everything below it
+off the sheet.** The overflow badge fires on `fixed` boxes only, so the dangerous case was silent.
+
+Concretely: `tc.reasonForLeaving` is auto-grow, anchored above the issue date, the declaration and
+the signature block. A p95 reason is two lines; a clerk pasting a parent's letter is eight. Every
+anchored object below moves down and **the signature block leaves the page — on a document legally
+required to carry three signatures and a seal.**
+
+So `height: "auto"` may carry `maxHMm`. When resolved content exceeds it:
+
+- the object **clamps** at `maxHMm`, so downstream anchors stay where the designer put them;
+- a **blocking** finding is raised — not a warning. Content that does not fit is content that will
+  not print, and silent truncation of a statutory field is the worst available outcome;
+- the finding names the field and the overshoot in mm, at the current data mode.
+
+Max-height rather than max-lines is deliberate: a certificate is measured against a physical sheet,
+and line count is an accident of the font.
+
+**This complements, not replaces, the §8 tier-2 chain check.** `maxHMm` stops one object pushing
+the chain; `wouldOverflow()` catches the chain's aggregate against the page. Both are needed.
+
 ---
 
 ## 4. `documentTemplateVersions/{schoolId}_TPL0007_v2` — create-only
@@ -156,7 +183,7 @@ The answer to *"show me the exact template that produced this certificate"*, yea
 {
   schoolId, templateId, docType, version: 2,
   snapshot: { page, header, footer, objects, languages, defaultLanguage },  // frozen, complete
-  contractRef, complianceProfileId, complianceProfileVersion,
+  contractRef, complianceBasis, complianceLayers,      // layers FROZEN — see §5.2
   validationResult: { blocking: [], warnings: [] },      // as at publish
   proofPdfHash: "sha256:…",
   proofPdfPaths: { en: "schools/…/_proofs/TPL0007_v2_en.pdf", hi: "…" },
@@ -177,7 +204,79 @@ output.
 
 ---
 
-## 5. Compliance profiles — embedded in `documentTypes`
+## 5. Compliance — **a stack, not a lookup** *(revised 2026-08-19)*
+
+> **SUPERSEDED.** The `board + state → profile` model below was wrong, and
+> `design/COMPLIANCE_ARCHITECTURE.md` §1 is right: a school is under **several authorities at
+> once**. A CBSE school in Kerala is bound by RTE (national, classes I–VIII), CBSE (board) **and**
+> the Kerala Education Rules (state) simultaneously. A single-profile lookup forces a choice, and
+> whichever layer loses is **silently unenforced** — invisible until an audit.
+
+### 5.1 `complianceAuthorities/{authorityId}` — platform, many-to-many
+
+A state authority spans many document types; a document type spans many states. That relation
+cannot live embedded inside `documentTypes`.
+
+```jsonc
+{
+  id: "ker",
+  tier: "national" | "board" | "state",
+  label: "Kerala Education Rules 1959",
+  authority: "Kerala Education Rules 1959, Chapter VI",
+  evidenceLevel: "A",
+  verifiedOn: "2026-08-18",
+  owner: "platform-compliance",
+  sourceRef: "gs://…/ker_chapter6.pdf",        // the artefact actually read
+  reviewIntervalMonths: 12,
+  scope: { board: null, state: "Kerala", stages: ["elementary","secondary"] },
+  docs: {
+    transfer_certificate: {
+      form: "Form 5",
+      requiredKeys: [],            // empty = enforces nothing, AND SAYS SO
+      fieldListVerified: false,
+      requiredSignatures: [], sealRequired: false,
+      constraints: [ { text, citation, judicialNote? } ]
+    }
+  }
+}
+```
+
+**Resolution is a union, not a pick:**
+
+```
+resolveStack(docType, school) = [ national…, board…, state… ]  filtered by scope
+requiredKeys = ⋃ layer.requiredKeys
+```
+
+Three things fall out for free:
+
+- A state with no transcribed rule becomes a **named layer** — *"Jharkhand — no verified
+  authority"* — which is a finding, not a silence.
+- **RTE drops out automatically at the secondary stage**, because its scope is classes I–VIII.
+  Under the old model a human had to remember that.
+- A document type can be **state-specific**: Kerala's Certificate of School Education (KER r.22A)
+  simply does not exist for a Jharkhand school, and the hub says why rather than hiding it.
+
+### 5.2 On the template head — replaces `complianceProfileId`
+
+```jsonc
+complianceBasis: { board: "CBSE", state: "Kerala", stage: "secondary" },
+complianceLayers: [
+  { authorityId: "cbse", version: 4, applied: true },
+  { authorityId: "ker",  version: 2, applied: true },
+  { authorityId: "rte",  version: 1, applied: false,
+    excludedReason: "school teaches IX–XII only" }
+]
+```
+
+**The layers freeze into the published snapshot (§4).** The question a published template must
+answer years later is not *"what does Kerala require today?"* but *"what was this validated against
+when it was issued?"* Storing only the basis would re-resolve against a corpus that has since
+moved — the same reason the snapshot already records `fontManifest` and `mpdfVersion`.
+
+---
+
+## 5A. Superseded — compliance profiles embedded in `documentTypes`
 
 ```jsonc
 {
@@ -232,17 +331,57 @@ never invent a requirement to fill a gap.
   schoolId, blockId: "BLK0003",
   blockType: "letterhead",         // letterhead | signature | seal
   name: "Main letterhead",
+  version: 3,                      // bumped on every edit
   objects: [ … ],
-  usedByTemplates: ["TPL0007"],    // denormalised for propagation
+  usedByTemplates: ["TPL0007"],    // denormalised, for the update OFFER
   createdAt, updatedAt, updatedBy
 }
 ```
 
+### 7.1 Block edits are an OFFER, not a propagation *(revised 2026-08-19)*
+
+`design/FIGMA_ARCHITECTURE_STUDY.md` §1 caught a contradiction between two of our own documents,
+and it is the sharper of the two it found:
+
+- `FINAL_BLUEPRINT.md` S5.3 — block edits *"propagate to templates that reference the block"*
+- `COLLECTION_SHAPES.md` §4 — published versions *"No update, no delete — ever."*
+
+**These cannot both be true.** If a school fixes a typo in its letterhead and that propagates into
+a template whose v2 is published and active, the frozen snapshot that is supposed to answer *"show
+me the exact template that produced this certificate"* has changed underneath a document already
+issued to a student. That is the module's central integrity claim failing on the most ordinary
+action a clerk performs — and neither document acknowledged the other.
+
+Figma does not propagate; it **offers**. Adopt the pull model with our immutability on top:
+
+| Target | Behaviour |
+|---|---|
+| **Draft** templates | Edit propagates immediately — a draft is a working document |
+| **Published / active** versions | **Never change.** The snapshot is the legal record. |
+| Published template whose block changed | Shows a **pending block update** badge; review is before/after; accepting creates **draft v+1** and never touches the published version |
+| Ignoring | Permitted **and remembered**, so the badge does not nag. A school may deliberately keep an old letterhead on one certificate type. |
+
+Needs on the template head: `blockRefs: [{ blockId, acceptedVersion, ignoredVersion }]`.
+
+**Risk if unfixed:** the first school to edit a letterhead silently invalidates every published
+template using it, and nobody finds out until an audit compares a printed TC against its snapshot.
+
 ---
 
-## 8. Indexes (P1.2) — **declared, NOT deployed**
+## 8. Indexes (P1.2) — **NOT declared, NOT deployed** *(withdrawn 2026-08-19)*
 
-Written into `firebase-rules/firestore.indexes.json` alongside the existing 184.
+> **Withdrawn from `firestore.indexes.json` on operator instruction.** The table below records what
+> the Document Engine will need; nothing is declared in the repo and nothing exists in Firestore.
+>
+> **Why this matters — the drift is worse than documented.** A read-only
+> `firebase firestore:indexes --project graderadmin` returned **285 live** indexes against **184**
+> in the file: 180 in both, and **105 live-only**. Deploying the file as desired state would offer
+> to **delete** those 105, which cover Transport (`tripLogs`, `vehicles`, `routes`,
+> `studentRoutes`, `routeAssignments`), CRM (`crmApplications`), campus access, visitor passes,
+> driver incidents — and `auditLogs` itself.
+>
+> **Reconcile the file to live before anyone runs an index deploy on this project.** That is a
+> standing hazard independent of this module.
 
 | Collection | Fields |
 |---|---|
@@ -251,6 +390,8 @@ Written into `firebase-rules/firestore.indexes.json` alongside the existing 184.
 | `documentTemplates` | `schoolId` ASC, `updatedAt` DESC |
 | `documentTemplateVersions` | `templateId` ASC, `version` DESC |
 | `reusableBlocks` | `schoolId` ASC, `blockType` ASC |
+| `complianceAuthorities` | `scope.state` ASC, `tier` ASC |
+| `complianceAuthorities` | `scope.board` ASC, `tier` ASC |
 
 ⚠ **Deploy these BEFORE any query code exists.** Index builds take time, and this project already
 carries drift (284 live vs 183 declared). Verify with `node aegis/cli.js indexes`.

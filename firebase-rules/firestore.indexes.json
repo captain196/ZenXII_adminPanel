@@ -3348,53 +3348,6 @@
           "order": "ASCENDING"
         }
       ]
-    },
-    {
-      "_comment": "Document Engine (P1.2) — gallery listing: templates for a school and doc type, filtered by lifecycle status.",
-      "collectionGroup": "documentTemplates",
-      "queryScope": "COLLECTION",
-      "fields": [
-        { "fieldPath": "schoolId", "order": "ASCENDING" },
-        { "fieldPath": "docType", "order": "ASCENDING" },
-        { "fieldPath": "status", "order": "ASCENDING" }
-      ]
-    },
-    {
-      "_comment": "Document Engine (P1.2) — resolve the ACTIVE template for a school and doc type. This is the query every future print point calls.",
-      "collectionGroup": "documentTemplates",
-      "queryScope": "COLLECTION",
-      "fields": [
-        { "fieldPath": "schoolId", "order": "ASCENDING" },
-        { "fieldPath": "docType", "order": "ASCENDING" },
-        { "fieldPath": "activeVersion", "order": "ASCENDING" }
-      ]
-    },
-    {
-      "_comment": "Document Engine (P1.2) — gallery ordering, most recently edited first.",
-      "collectionGroup": "documentTemplates",
-      "queryScope": "COLLECTION",
-      "fields": [
-        { "fieldPath": "schoolId", "order": "ASCENDING" },
-        { "fieldPath": "updatedAt", "order": "DESCENDING" }
-      ]
-    },
-    {
-      "_comment": "Document Engine (P1.2) — version history for one template, newest first. Snapshots are create-only.",
-      "collectionGroup": "documentTemplateVersions",
-      "queryScope": "COLLECTION",
-      "fields": [
-        { "fieldPath": "templateId", "order": "ASCENDING" },
-        { "fieldPath": "version", "order": "DESCENDING" }
-      ]
-    },
-    {
-      "_comment": "Document Engine (P1.2) — reusable blocks for a school by type (letterhead/signature/seal).",
-      "collectionGroup": "reusableBlocks",
-      "queryScope": "COLLECTION",
-      "fields": [
-        { "fieldPath": "schoolId", "order": "ASCENDING" },
-        { "fieldPath": "blockType", "order": "ASCENDING" }
-      ]
     }
   ],
   "fieldOverrides": [
