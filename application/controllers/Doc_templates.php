@@ -167,8 +167,10 @@ class Doc_templates extends MY_Controller
             'can_manage'   => has_permission(self::MODULE, 'manage'),
         ];
 
+        // Same shell as index(): D0/D1/D2 are one view switched client-side,
+        // with the breadcrumb as the only back-navigation (UX_SPEC §2).
         $this->load->view('include/header');
-        $this->load->view('doc_templates/designer', $data);
+        $this->load->view('doc_templates/index', $data);
         $this->load->view('include/footer');
     }
 
