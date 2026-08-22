@@ -111,7 +111,11 @@ class Transport_probe_f5 extends CI_Controller
                 'payment_method' => 'Cash',
                 'notes'          => 'F5 probe step 2 — force post',
                 'force_post'     => true,
-            ]);
+            // Second arg = postingAuthorized. This CLI probe stands in for an
+            // authorised manager; force_post now REQUIRES it (finance
+            // maker/checker). Passing it keeps this step a hard PASS instead of
+            // silently degrading to the 'pending' soft-pass branch below.
+            ], /* postingAuthorized */ true);
             $id2 = (string) ($exp2['id'] ?? '');
             if ($id2 === '') { throw new \RuntimeException('no expense id returned'); }
             $this->created[] = $id2;

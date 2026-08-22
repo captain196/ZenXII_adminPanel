@@ -26,6 +26,15 @@ class Transport_probe_log2 extends CI_Controller
 {
     private array $fixtures = [];
 
+    // ── UNIT 2B campus-geofence fixture (same mechanism as Transport_probe_f7,
+    //    _f8, _f13_2 and _f14_ov: seed-only-when-absent, snapshot, restore
+    //    verbatim). Identical semantics — deliberately not a second variant.
+    private $priorPolicy = null;
+    private bool $policySeeded = false;
+    private string $fixSchoolId = '';
+    private const FIX_LAT = 12.9716;
+    private const FIX_LNG = 77.5946;
+
     public function __construct()
     {
         parent::__construct();
@@ -46,6 +55,13 @@ class Transport_probe_log2 extends CI_Controller
             $this->numbering->init($this->fs, $sid, $sess);
             $this->transport->init($this->fs, $this->numbering, $sid, $sess, 'transport_probe_log2');
         } catch (\Throwable $e) { fwrite(STDERR, "ERROR: init — " . $e->getMessage() . "\n"); exit(1); }
+
+        // UNIT 2B — this suite asserts that createTrip() REFUSES a Pickup trip
+        // on a suspended route. Without a campus fence the refusal could come
+        // from the geofence guard instead, i.e. the right verdict for the wrong
+        // reason. Seeding the fence keeps the assertion honest. Restored below.
+        $this->fixSchoolId = $sid;
+        $this->_ensureCampusFence();
 
         $passed = 0; $failed = 0;
         $pass = function (string $m) use (&$passed) { echo "  PASS: {$m}\n"; $passed++; };
@@ -95,6 +111,7 @@ class Transport_probe_log2 extends CI_Controller
             $fail("unexpected exception: " . $e->getMessage());
         } finally {
             echo "\n[TEARDOWN]\n";
+            $this->_restoreCampusFence();
             foreach ($this->fixtures as [$col, $id]) { try { $this->fs->removeEntity($col, $id); } catch (\Throwable $e) {} }
             echo "  cleaned\n";
         }
@@ -103,5 +120,52 @@ class Transport_probe_log2 extends CI_Controller
         echo " RESULT: passed={$passed} failed={$failed}\n";
         echo "==================================================\n";
         exit($failed === 0 ? 0 : 2);
+    }
+
+    /**
+     * UNIT 2B — guarantee a valid campus fence BEFORE any Pickup trip is
+     * created. Same mechanism as Transport_probe_f7/_f8/_f13_2/_f14_ov: seeds
+     * ONLY when no fence exists, snapshots the whole attendancePolicy first,
+     * and _restoreCampusFence() puts the original back verbatim. A tenant that
+     * already has a fence is preserved, never overwritten.
+     */
+    private function _ensureCampusFence(): void
+    {
+        if ($this->policySeeded) { return; }
+        try {
+            $school = $this->fs->get('schools', $this->fixSchoolId);
+            $school = is_array($school) ? ($school['data'] ?? $school) : [];
+            $pol    = (array) ($school['attendancePolicy'] ?? []);
+            if ((array) (($pol['gps'] ?? [])['geofences'] ?? []) !== []) {
+                echo "  fixture: campus fence already present — preserved, not overwritten\n";
+                return;
+            }
+            $this->priorPolicy = $pol;
+            $gps = (array) ($pol['gps'] ?? []);
+            $gps['geofences'] = [[
+                'id' => 'PROBE_LOG2_CAMPUS', 'name' => 'Probe Campus',
+                'centerLat' => self::FIX_LAT, 'centerLng' => self::FIX_LNG, 'radius' => 300,
+            ]];
+            if (!isset($gps['maxAccuracyMeters'])) { $gps['maxAccuracyMeters'] = 100; }
+            $pol['gps'] = $gps;
+            $this->fs->update('schools', $this->fixSchoolId, ['attendancePolicy' => $pol]);
+            $this->policySeeded = true;
+            echo "  fixture: temporary campus fence seeded (restored at teardown)\n";
+        } catch (\Throwable $e) {
+            echo '  fixture WARN (_ensureCampusFence): ' . $e->getMessage() . "\n";
+        }
+    }
+
+    private function _restoreCampusFence(): void
+    {
+        if (!$this->policySeeded) { return; }
+        $this->policySeeded = false;
+        try {
+            $this->fs->update('schools', $this->fixSchoolId,
+                ['attendancePolicy' => $this->priorPolicy ?? []]);
+            echo "  restored attendancePolicy\n";
+        } catch (\Throwable $e) {
+            echo '  RESTORE FAILED (attendancePolicy) — ' . $e->getMessage() . "\n";
+        }
     }
 }

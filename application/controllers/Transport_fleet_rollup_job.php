@@ -50,7 +50,27 @@ class Transport_fleet_rollup_job extends CI_Controller
             if ($sid !== '') { $tenantIds[] = $sid; }
         }
         $tenantIds = array_values(array_unique($tenantIds));
-        if ($tenantIds === []) { echo "  ⚠ no tenants resolved — nothing to roll up.\n"; exit(0); }
+
+        // ── LIFECYCLE GUARD ─────────────────────────────────────────────
+        // class = analytics. This is a CROSS-TENANT rollup, so the guard
+        // filters the tenant list rather than exiting: one suspended school
+        // must not stop every other school's rollup. Excluded tenants are
+        // named on stdout so the operator can see the rollup is partial —
+        // a silently narrowed denominator would misreport fleet metrics.
+        $this->load->helper('lifecycle_guard');
+        $eligible = [];
+        foreach ($tenantIds as $sid) {
+            $v = lifecycle_guard_check($this->firebase, $sid, Lifecycle_resolver::JOB_ANALYTICS);
+            if (!empty($v['allowed'])) { $eligible[] = $sid; continue; }
+            echo "  ⏭ skipping {$sid} (lifecycle: commercial="
+               . ($v['commercial'] !== '' ? $v['commercial'] : 'unknown')
+               . " institution={$v['institution']})\n";
+        }
+        $skippedCount = count($tenantIds) - count($eligible);
+        $tenantIds = $eligible;
+
+        if ($tenantIds === []) { echo "  ⚠ no eligible tenants — nothing to roll up.\n"; exit(0); }
+        if ($skippedCount > 0) { echo "  ℹ rollup is PARTIAL — {$skippedCount} tenant(s) excluded by lifecycle state.\n"; }
 
         // Init analytics on the first tenant; storeCrossTenantFleetRollup
         // rewires the per-tenant state internally and restores it at the end.

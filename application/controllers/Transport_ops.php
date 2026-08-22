@@ -17,19 +17,11 @@ defined('BASEPATH') or exit('No direct script access allowed');
  */
 class Transport_ops extends MY_Controller
 {
-    private const MANAGE_ROLES = [
-        'Super Admin', 'School Super Admin', 'Admin', 'Principal', 'Vice Principal',
-        'Operations Manager', 'Transport Manager',
-    ];
-    private const VIEW_ROLES = [
-        'Super Admin', 'School Super Admin', 'Admin', 'Principal', 'Vice Principal',
-        'Operations Manager', 'Transport Manager', 'Accountant', 'Teacher',
-    ];
 
     public function __construct()
     {
         parent::__construct();
-        require_permission('Operations');
+        require_permission('Transport');
         $this->load->library('numbering_service', null, 'numbering');
         $this->numbering->init($this->fs, $this->school_name, $this->session_year);
         $this->load->library('transport_service', null, 'transport');
@@ -40,35 +32,20 @@ class Transport_ops extends MY_Controller
         );
     }
 
-    private function _require_manage(): void
-    {
-        if (!in_array($this->admin_role, self::MANAGE_ROLES, true)) {
-            $this->json_error('Access denied.', 403);
-        }
-    }
-    private function _require_view(): void
-    {
-        if (!in_array($this->admin_role, self::VIEW_ROLES, true)) {
-            $this->json_error('Access denied.', 403);
-        }
-    }
-
     // ═══════════════════════════════════════════════════════════════════
     //  Maintenance
     // ═══════════════════════════════════════════════════════════════════
 
     public function get_maintenance_logs()
     {
-        $this->_require_role(self::VIEW_ROLES, 'transport_view');
-        $this->_require_view();
+        require_permission('Transport', 'transport_view', 'view');
         $vid = $this->safe_path_segment(trim($this->input->get('vehicle_id') ?? ''), 'vehicle_id');
         $this->json_success(['logs' => $this->transport->listMaintenanceLogs($vid)]);
     }
 
     public function save_maintenance_log()
     {
-        $this->_require_role(self::MANAGE_ROLES, 'save_maintenance_log');
-        $this->_require_manage();
+        require_permission('Transport', 'save_maintenance_log', 'edit');
         $parts = $this->input->post('parts_replaced');
         $parts = is_array($parts) ? $parts : (is_string($parts) && $parts !== '' ? explode(',', $parts) : []);
         try {
@@ -99,16 +76,14 @@ class Transport_ops extends MY_Controller
 
     public function get_fuel_logs()
     {
-        $this->_require_role(self::VIEW_ROLES, 'transport_view');
-        $this->_require_view();
+        require_permission('Transport', 'transport_view', 'view');
         $vid = $this->safe_path_segment(trim($this->input->get('vehicle_id') ?? ''), 'vehicle_id');
         $this->json_success(['logs' => $this->transport->listFuelLogs($vid)]);
     }
 
     public function save_fuel_log()
     {
-        $this->_require_role(self::MANAGE_ROLES, 'save_fuel_log');
-        $this->_require_manage();
+        require_permission('Transport', 'save_fuel_log', 'edit');
         try {
             $result = $this->transport->saveFuelLog([
                 'vehicle_id'      => $this->safe_path_segment(trim($this->input->post('vehicle_id') ?? ''), 'vehicle_id'),
@@ -147,8 +122,7 @@ class Transport_ops extends MY_Controller
      */
     public function get_expiry_dashboard()
     {
-        $this->_require_role(self::VIEW_ROLES, 'transport_view');
-        $this->_require_view();
+        require_permission('Transport', 'transport_view', 'view');
         // RC-3: bare entity id (getEntity adds the single {schoolId} prefix) so
         // this reads the same canonical {schoolId}_VEXPCACHE the writer now emits.
         $cacheDocId = 'VEXPCACHE';
@@ -174,8 +148,7 @@ class Transport_ops extends MY_Controller
      */
     public function recompute_expiry_dashboard()
     {
-        $this->_require_role(self::MANAGE_ROLES, 'recompute_expiry_dashboard');
-        $this->_require_manage();
+        require_permission('Transport', 'recompute_expiry_dashboard', 'manage');
         try {
             $summary = $this->transport->computeFleetExpiryDashboard();
         } catch (\Throwable $e) {
@@ -197,8 +170,7 @@ class Transport_ops extends MY_Controller
     /** GET /transport_ops/get_expenses[?filters] */
     public function get_expenses()
     {
-        $this->_require_role(self::VIEW_ROLES, 'transport_view');
-        $this->_require_view();
+        require_permission('Transport', 'transport_view', 'view');
         $filters = [
             'expense_type' => trim($this->input->get('expense_type') ?? ''),
             'vehicle_id'   => trim($this->input->get('vehicle_id') ?? ''),
@@ -212,8 +184,7 @@ class Transport_ops extends MY_Controller
     /** GET /transport_ops/get_expense?id=X */
     public function get_expense()
     {
-        $this->_require_role(self::VIEW_ROLES, 'transport_view');
-        $this->_require_view();
+        require_permission('Transport', 'transport_view', 'view');
         $id = $this->safe_path_segment(trim($this->input->get('id') ?? ''), 'expense_id');
         $this->json_success(['expense' => $this->transport->getExpense($id)]);
     }
@@ -221,8 +192,7 @@ class Transport_ops extends MY_Controller
     /** POST /transport_ops/save_expense */
     public function save_expense()
     {
-        $this->_require_role(self::MANAGE_ROLES, 'save_expense');
-        $this->_require_manage();
+        require_permission('Transport', 'save_expense', 'edit');
         $attachments = $this->input->post('attachments_json');
         $attachments = is_string($attachments) && $attachments !== '' ? json_decode($attachments, true) : [];
         if (!is_array($attachments)) { $attachments = []; }
@@ -248,7 +218,13 @@ class Transport_ops extends MY_Controller
             'force_post'             => ((string) ($this->input->post('force_post') ?? '')) === '1',
         ];
         try {
-            $result = $this->transport->saveExpense($input);
+            // Recording stays at 'edit'; creating the Accounting journal needs
+            // 'manage'. Read from the existing Graded RBAC resolver — no new
+            // authorization mechanism, no role names, no RBAC change.
+            $result = $this->transport->saveExpense(
+                $input,
+                function_exists('has_permission') ? has_permission('Transport', 'manage') : false
+            );
         } catch (\InvalidArgumentException $e) {
             $this->json_error($e->getMessage());
         } catch (\Throwable $e) {
@@ -266,8 +242,7 @@ class Transport_ops extends MY_Controller
     /** POST /transport_ops/void_expense */
     public function void_expense()
     {
-        $this->_require_role(self::MANAGE_ROLES, 'void_expense');
-        $this->_require_manage();
+        require_permission('Transport', 'void_expense', 'manage');
         try {
             $this->transport->voidExpense(
                 $this->safe_path_segment(trim($this->input->post('id') ?? ''), 'expense_id'),
@@ -285,8 +260,7 @@ class Transport_ops extends MY_Controller
     /** POST /transport_ops/create_expense_from_maintenance */
     public function create_expense_from_maintenance()
     {
-        $this->_require_role(self::MANAGE_ROLES, 'create_expense_from_maintenance');
-        $this->_require_manage();
+        require_permission('Transport', 'create_expense_from_maintenance', 'manage');
         try {
             $result = $this->transport->createExpenseFromMaintenanceLog(
                 $this->safe_path_segment(trim($this->input->post('maintenance_id') ?? ''), 'maintenance_id'),
@@ -306,8 +280,7 @@ class Transport_ops extends MY_Controller
     /** POST /transport_ops/create_expense_from_fuel */
     public function create_expense_from_fuel()
     {
-        $this->_require_role(self::MANAGE_ROLES, 'create_expense_from_fuel');
-        $this->_require_manage();
+        require_permission('Transport', 'create_expense_from_fuel', 'manage');
         try {
             $result = $this->transport->createExpenseFromFuelLog(
                 $this->safe_path_segment(trim($this->input->post('fuel_id') ?? ''), 'fuel_id'),
@@ -327,8 +300,7 @@ class Transport_ops extends MY_Controller
     /** POST /transport_ops/reconcile_pending_posts */
     public function reconcile_pending_posts()
     {
-        $this->_require_role(self::MANAGE_ROLES, 'reconcile_pending_posts');
-        $this->_require_manage();
+        require_permission('Transport', 'reconcile_pending_posts', 'manage');
         try {
             $r = $this->transport->reconcilePendingAccountingPosts(50);
         } catch (\Throwable $e) {
@@ -344,8 +316,7 @@ class Transport_ops extends MY_Controller
     /** POST /transport_ops/retry_expense_post */
     public function retry_expense_post()
     {
-        $this->_require_role(self::MANAGE_ROLES, 'retry_expense_post');
-        $this->_require_manage();
+        require_permission('Transport', 'retry_expense_post', 'manage');
         try {
             $r = $this->transport->retryExpensePost(
                 $this->safe_path_segment(trim($this->input->post('id') ?? ''), 'expense_id')
@@ -362,8 +333,7 @@ class Transport_ops extends MY_Controller
     /** POST /transport_ops/post_expense_now — for manual-mode expenses */
     public function post_expense_now()
     {
-        $this->_require_role(self::MANAGE_ROLES, 'post_expense_now');
-        $this->_require_manage();
+        require_permission('Transport', 'post_expense_now', 'manage');
         try {
             $r = $this->transport->postExpenseNow(
                 $this->safe_path_segment(trim($this->input->post('id') ?? ''), 'expense_id')
@@ -380,16 +350,14 @@ class Transport_ops extends MY_Controller
     /** GET /transport_ops/get_expense_categories */
     public function get_expense_categories()
     {
-        $this->_require_role(self::VIEW_ROLES, 'transport_view');
-        $this->_require_view();
+        require_permission('Transport', 'transport_view', 'view');
         $this->json_success($this->transport->getExpenseCategories());
     }
 
     /** GET /transport_ops/get_expense_summary?year_month=YYYY-MM */
     public function get_expense_summary()
     {
-        $this->_require_role(self::VIEW_ROLES, 'transport_view');
-        $this->_require_view();
+        require_permission('Transport', 'transport_view', 'view');
         $ym = trim($this->input->get('year_month') ?? date('Y-m'));
         // RC-3: bare entity id (getEntity adds the single {schoolId} prefix) so
         // this reads the same canonical {schoolId}_FMES__{ym} the writer now emits.
@@ -404,8 +372,7 @@ class Transport_ops extends MY_Controller
     /** POST /transport_ops/rebuild_expense_summary */
     public function rebuild_expense_summary()
     {
-        $this->_require_role(self::MANAGE_ROLES, 'rebuild_expense_summary');
-        $this->_require_manage();
+        require_permission('Transport', 'rebuild_expense_summary', 'manage');
         $ym = trim($this->input->post('year_month') ?? '');
         try {
             $r = $this->transport->rebuildMonthlyExpenseSummary($ym);

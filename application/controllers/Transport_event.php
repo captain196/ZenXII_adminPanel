@@ -34,7 +34,6 @@ defined('BASEPATH') or exit('No direct script access allowed');
  */
 class Transport_event extends MY_Controller
 {
-    private const REQUIRED_ROLES = ['Admin', 'Super Admin', 'Transport Manager'];
 
     public function __construct()
     {
@@ -50,11 +49,7 @@ class Transport_event extends MY_Controller
             $this->_json(['status' => 'error', 'message' => 'Session missing school/session context.']);
             exit;
         }
-        $role = (string) ($this->admin_role ?? '');
-        if (!in_array($role, self::REQUIRED_ROLES, true)) {
-            $this->_json(['status' => 'error', 'message' => 'Access denied.']);
-            exit;
-        }
+        require_permission('Transport', 'transport_event', 'view');
         $this->fs->init($sid, $sess);
         $this->numbering->init($this->fs, $sid, $sess);
         $this->transport->init($this->fs, $this->numbering, $sid, $sess, $uid);
@@ -62,6 +57,7 @@ class Transport_event extends MY_Controller
 
     public function create(): void
     {
+        require_permission('Transport', 'event_create', 'manage');
         try {
             $escortsJson = (string) $this->input->post('escorts_json');
             $vehiclesJson = (string) $this->input->post('assigned_vehicle_ids_json');
@@ -92,6 +88,7 @@ class Transport_event extends MY_Controller
 
     public function update(): void
     {
+        require_permission('Transport', 'event_update', 'manage');
         try {
             $body = [];
             foreach (['title','description','destination','pickup_location','drop_location',
@@ -114,6 +111,7 @@ class Transport_event extends MY_Controller
 
     public function assign_student(): void
     {
+        require_permission('Transport', 'event_assign_student', 'manage');
         try {
             $r = $this->transport->assignStudentToEvent(
                 (string) $this->input->post('event_id'),
@@ -132,6 +130,7 @@ class Transport_event extends MY_Controller
 
     public function unassign_student(): void
     {
+        require_permission('Transport', 'event_unassign_student', 'manage');
         try {
             $this->transport->unassignStudentFromEvent(
                 (string) $this->input->post('event_id'),
@@ -145,6 +144,7 @@ class Transport_event extends MY_Controller
 
     public function update_consent(): void
     {
+        require_permission('Transport', 'event_update_consent', 'manage');
         try {
             $r = $this->transport->updateEventConsent(
                 (string) $this->input->post('assignment_id'),
@@ -159,6 +159,7 @@ class Transport_event extends MY_Controller
 
     public function add_escort(): void
     {
+        require_permission('Transport', 'event_add_escort', 'manage');
         try {
             $r = $this->transport->addEventEscort(
                 (string) $this->input->post('event_id'),
@@ -176,6 +177,7 @@ class Transport_event extends MY_Controller
 
     public function remove_escort(): void
     {
+        require_permission('Transport', 'event_remove_escort', 'manage');
         try {
             $r = $this->transport->removeEventEscort(
                 (string) $this->input->post('event_id'),
@@ -189,6 +191,7 @@ class Transport_event extends MY_Controller
 
     public function schedule(): void
     {
+        require_permission('Transport', 'event_schedule', 'manage');
         try {
             $r = $this->transport->scheduleEvent((string) $this->input->post('id'));
             $this->_json(['status' => 'success', 'message' => "Event Scheduled ({$r['roster_size']} students; parents notified).", 'event' => $r]);
@@ -199,6 +202,7 @@ class Transport_event extends MY_Controller
 
     public function dispatch_trip(): void
     {
+        require_permission('Transport', 'event_dispatch_trip', 'manage');
         try {
             $r = $this->transport->dispatchEventTrip((string) $this->input->post('event_id'), [
                 'vehicle_id'         => (string) $this->input->post('vehicle_id'),
@@ -214,6 +218,7 @@ class Transport_event extends MY_Controller
 
     public function complete(): void
     {
+        require_permission('Transport', 'event_complete', 'manage');
         try {
             $r = $this->transport->completeEvent(
                 (string) $this->input->post('id'),
@@ -229,6 +234,7 @@ class Transport_event extends MY_Controller
 
     public function cancel(): void
     {
+        require_permission('Transport', 'event_cancel', 'manage');
         try {
             $r = $this->transport->cancelEvent(
                 (string) $this->input->post('id'),

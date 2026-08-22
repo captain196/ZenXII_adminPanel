@@ -1,4 +1,12 @@
 <?php defined('BASEPATH') or exit('No direct script access allowed'); ?>
+<?php
+// 2026-08-07 — graded RBAC (TL convention, commit 7ccebc0). Recomputed locally:
+// this partial is loaded via $this->load->view() with no data, so the parent
+// view's flags are NOT in scope. The server remains authoritative — every
+// endpoint re-checks via require_permission('Transport', <action>, <level>).
+$can_edit   = function_exists('has_permission') ? has_permission('Transport','edit')   : true;
+$can_manage = function_exists('has_permission') ? has_permission('Transport','manage') : true;
+?>
 <!--
   transport/partials/sos_modal.php
   F6 SOS admin panel (LC-13, 2026-07-07)
@@ -45,7 +53,7 @@
     <textarea id="sosMessage" rows="3" placeholder="Concise emergency description; will fan out unedited."></textarea>
   </div>
 
-  <button class="trn-btn trn-btn-danger" onclick="TRN.confirmRaiseSos()" style="width:100%">
+  <button class="trn-btn trn-btn-danger" onclick="TRN.confirmRaiseSos()" <?= $can_edit?'':'disabled' ?> style="width:100%">
     <i class="fa fa-exclamation-triangle"></i> Raise SOS
   </button>
 </div></div>
@@ -61,5 +69,5 @@
   <div class="trn-form-group"><label>Notes *</label>
     <textarea id="sosActionNotes" rows="3" placeholder="Describe the response / resolution briefly."></textarea>
   </div>
-  <button id="sosActionSubmit" class="trn-btn trn-btn-primary" onclick="TRN.confirmSosAction()" style="width:100%">Submit</button>
+  <button id="sosActionSubmit" class="trn-btn trn-btn-primary" onclick="TRN.confirmSosAction()" <?= $can_edit?'':'disabled' ?> style="width:100%">Submit</button>
 </div></div>

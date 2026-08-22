@@ -39,6 +39,14 @@ class Transport_expense_reconciler extends CI_Controller
             fwrite(STDERR, "ERROR: SCHOOL_ID + SESSION_YEAR required.\n");
             exit(1);
         }
+
+        // ── LIFECYCLE GUARD ─────────────────────────────────────────────
+        // class = money. Expense reconciliation posts financial state; it
+        // stops for suspended/closed tenants and resumes untouched, since
+        // the pending docs it repairs are still there on the next run.
+        $this->load->helper('lifecycle_guard');
+        lifecycle_guard_or_skip($this->firebase, $sid, Lifecycle_resolver::JOB_MONEY, 'transport_expense_reconciler');
+
         try {
             $this->fs->init($sid, $sess);
             $this->numbering->init($this->fs, $sid, $sess);

@@ -1,4 +1,12 @@
 <?php defined('BASEPATH') or exit('No direct script access allowed'); ?>
+<?php
+// 2026-08-07 — graded RBAC (TL convention, commit 7ccebc0). Recomputed locally:
+// this partial is loaded via $this->load->view() with no data, so the parent
+// view's flags are NOT in scope. The server remains authoritative — every
+// endpoint re-checks via require_permission('Transport', <action>, <level>).
+$can_edit   = function_exists('has_permission') ? has_permission('Transport','edit')   : true;
+$can_manage = function_exists('has_permission') ? has_permission('Transport','manage') : true;
+?>
 <!--
   transport/partials/route_suspension_modal.php
   F2 Route & Stop Management (2026-07-07)
@@ -57,7 +65,7 @@
     <b>Notification policy (F2):</b> Admin and Transport Manager are always notified. Parents are notified only when the category or your override selects it.
   </div>
 
-  <button class="trn-btn trn-btn-primary" onclick="TRN.doSuspendRoute()" style="width:100%">Suspend Route</button>
+  <button class="trn-btn trn-btn-primary" onclick="TRN.doSuspendRoute()" <?= $can_manage?'':'disabled title="Requires Transport · manage"' ?> style="width:100%">Suspend Route</button>
 </div></div>
 
 <div class="trn-modal-bg" id="resumeModal"><div class="trn-modal" style="width:480px">
@@ -70,7 +78,7 @@
   <div style="font-size:12px;color:var(--t3);font-family:var(--font-b);margin-bottom:12px">
     A resume notice will be sent using the same audience rule as the original suspension.
   </div>
-  <button class="trn-btn trn-btn-primary" onclick="TRN.doResumeRoute()" style="width:100%">Resume Route</button>
+  <button class="trn-btn trn-btn-primary" onclick="TRN.doResumeRoute()" <?= $can_manage?'':'disabled title="Requires Transport · manage"' ?> style="width:100%">Resume Route</button>
 </div></div>
 
 <div class="trn-modal-bg" id="archiveModal"><div class="trn-modal" style="width:480px">
@@ -84,7 +92,7 @@
   </div>
   <div class="trn-form-group"><label>Reason *</label><input type="text" id="arReason" placeholder="e.g. Discontinued for 2026-27 session"></div>
   <div style="display:flex;gap:8px">
-    <button class="trn-btn trn-btn-primary" onclick="TRN.doArchiveRoute()" style="flex:1">Archive</button>
-    <button class="trn-btn trn-btn-danger" onclick="TRN.doPermanentlyDeleteRoute()" style="flex:1" title="Permanent delete — only works when no assignments reference the route">Permanently Delete</button>
+    <button class="trn-btn trn-btn-primary" onclick="TRN.doArchiveRoute()" <?= $can_edit?'':'disabled' ?> style="flex:1">Archive</button>
+    <button class="trn-btn trn-btn-danger" onclick="TRN.doPermanentlyDeleteRoute()" <?= $can_manage?'':'disabled' ?> style="flex:1" title="Permanent delete — only works when no assignments reference the route">Permanently Delete</button>
   </div>
 </div></div>

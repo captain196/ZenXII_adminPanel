@@ -31,7 +31,6 @@ defined('BASEPATH') or exit('No direct script access allowed');
  */
 class Transport_trip extends MY_Controller
 {
-    private const REQUIRED_ROLES = ['Admin', 'Super Admin', 'Transport Manager'];
 
     public function __construct()
     {
@@ -42,16 +41,19 @@ class Transport_trip extends MY_Controller
 
         $sid  = (string) ($this->session->userdata('school_id')    ?? '');
         $sess = (string) ($this->session->userdata('session_year') ?? '');
-        $uid  = (string) ($this->session->userdata('user_id')      ?? 'admin');
+        // Canonical administrator identity. `user_id` is NEVER set by
+        // Admin_login (verified 2026-08-13: zero setters repo-wide), so this
+        // silently fell through to the literal 'admin' and every audit row —
+        // including Unit 2A's override_by — recorded a placeholder instead of
+        // the acting administrator. `admin_id` is the login id, which for
+        // staff-sourced admins IS the staff doc id. Matches the mechanism
+        // already used by Transport_driver and Transport_ops.
+        $uid  = (string) ($this->admin_id ?? 'system');
         if ($sid === '' || $sess === '') {
             $this->_json(['status' => 'error', 'message' => 'Session missing school/session context.']);
             exit;
         }
-        $role = (string) ($this->admin_role ?? '');
-        if (!in_array($role, self::REQUIRED_ROLES, true)) {
-            $this->_json(['status' => 'error', 'message' => 'Access denied.']);
-            exit;
-        }
+        require_permission('Transport', 'transport_trip', 'view');
         $this->fs->init($sid, $sess);
         $this->numbering->init($this->fs, $sid, $sess);
         $this->transport->init($this->fs, $this->numbering, $sid, $sess, $uid);
@@ -59,6 +61,7 @@ class Transport_trip extends MY_Controller
 
     public function create(): void
     {
+        require_permission('Transport', 'trip_create', 'manage');
         try {
             $r = $this->transport->createTrip([
                 'vehicle_id'        => (string) $this->input->post('vehicle_id'),
@@ -76,6 +79,7 @@ class Transport_trip extends MY_Controller
 
     public function start(): void
     {
+        require_permission('Transport', 'trip_start', 'edit');
         try {
             $r = $this->transport->startTrip((string) $this->input->post('id'));
             $this->_json(['status' => 'success', 'message' => 'Trip started.', 'trip' => $r]);
@@ -86,6 +90,7 @@ class Transport_trip extends MY_Controller
 
     public function checkpoint_reached(): void
     {
+        require_permission('Transport', 'trip_checkpoint_reached', 'edit');
         try {
             $r = $this->transport->markCheckpointReached(
                 (string) $this->input->post('trip_id'),
@@ -99,6 +104,7 @@ class Transport_trip extends MY_Controller
 
     public function checkpoint_left(): void
     {
+        require_permission('Transport', 'trip_checkpoint_left', 'edit');
         try {
             $r = $this->transport->markCheckpointLeft(
                 (string) $this->input->post('trip_id'),
@@ -112,6 +118,7 @@ class Transport_trip extends MY_Controller
 
     public function checkpoint_skipped(): void
     {
+        require_permission('Transport', 'trip_checkpoint_skipped', 'edit');
         try {
             $r = $this->transport->markCheckpointSkipped(
                 (string) $this->input->post('trip_id'),
@@ -126,6 +133,7 @@ class Transport_trip extends MY_Controller
 
     public function board_student(): void
     {
+        require_permission('Transport', 'trip_board_student', 'edit');
         try {
             $r = $this->transport->markStudentBoarded(
                 (string) $this->input->post('trip_id'),
@@ -141,6 +149,7 @@ class Transport_trip extends MY_Controller
 
     public function drop_student(): void
     {
+        require_permission('Transport', 'trip_drop_student', 'edit');
         try {
             $r = $this->transport->markStudentDropped(
                 (string) $this->input->post('trip_id'),
@@ -156,6 +165,7 @@ class Transport_trip extends MY_Controller
 
     public function no_show_student(): void
     {
+        require_permission('Transport', 'trip_no_show_student', 'edit');
         try {
             $r = $this->transport->markStudentNoShow(
                 (string) $this->input->post('trip_id'),
@@ -170,6 +180,7 @@ class Transport_trip extends MY_Controller
 
     public function complete(): void
     {
+        require_permission('Transport', 'trip_complete', 'edit');
         try {
             $r = $this->transport->completeTrip(
                 (string) $this->input->post('id'),
@@ -187,8 +198,55 @@ class Transport_trip extends MY_Controller
         }
     }
 
+    /**
+     * F14 Phase 2A — audited admin-only completion override.
+     *
+     * The ONLY server path that can construct a completion override. It excuses
+     * exactly one thing: an unprovable school arrival (no GPS fix, a stale fix,
+     * or a bus outside the campus geofence) on a Pickup trip that has genuinely
+     * reached school. It excuses NOTHING about the children: unresolved students
+     * and students still on board continue to block completion.
+     *
+     * `manage` level, matching cancel() — the other irreversible trip action —
+     * and one grade above ordinary completion, so Transport:edit staff (and
+     * drivers, who hold no Transport grant at all) cannot reach it.
+     */
+    public function override_complete(): void
+    {
+        require_permission('Transport', 'override_complete_trip', 'manage');
+        try {
+            $reason = trim((string) $this->input->post('reason'));
+            if ($reason === '') {
+                $this->_json(['status' => 'error',
+                    'message' => 'A written reason is required to override trip completion.']);
+                return;
+            }
+            $r = $this->transport->completeTrip(
+                (string) $this->input->post('id'),
+                [
+                    'end_time'      => (string) $this->input->post('end_time'),
+                    'end_odometer'  => (float)  $this->input->post('end_odometer'),
+                    'fuel_used'     => (float)  $this->input->post('fuel_used'),
+                    'distance_km'   => (float)  $this->input->post('distance_km'),
+                    'notes'         => (string) $this->input->post('notes'),
+                ],
+                // Provenance is taken from the authenticated session, never from
+                // the request body — the caller cannot attribute the override to
+                // somebody else.
+                ['reason' => $reason,
+                 'by'     => (string) ($this->admin_id ?? '')]
+            );
+            $this->_json(['status' => 'success',
+                'message' => 'Trip completed by admin override. The override and your reason have been recorded.',
+                'trip' => $r]);
+        } catch (\Throwable $e) {
+            $this->_json(['status' => 'error', 'message' => $e->getMessage()]);
+        }
+    }
+
     public function cancel(): void
     {
+        require_permission('Transport', 'trip_cancel', 'manage');
         try {
             $r = $this->transport->cancelTrip(
                 (string) $this->input->post('id'),

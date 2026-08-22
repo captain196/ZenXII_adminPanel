@@ -85,9 +85,25 @@ beforeAll(async () => {
 afterAll(async () => { if (env) await env.cleanup(); });
 beforeEach(async () => { await env.clearFirestore(); await seedWorld(); });
 
-describe('transportAttendance SEC-1 — driver-of-trip binding on create', () => {
-  test('DRIVER OF THE TRIP creates no_show → allowed', async () => {
-    await assertSucceeds(staff(DRIVER).doc(attId('no_show')).set(attendance()));
+describe('transportAttendance SEC-1 — client writes are server-mediated (F14)', () => {
+  // RE-SCOPED at F14 (2026-08-12), not weakened — the assertion is strictly
+  // stronger than before.
+  //
+  // SEC-1 originally bound a driver's client-side create to the trip they own,
+  // which was the tightest thing security RULES can express. It is not enough:
+  // rules cannot verify the student ID card's HMAC signature, nor resolve a
+  // transport entitlement across studentRoutes status + effective dates +
+  // session + service days. A student with a valid QR but NO transport facility
+  // could therefore be recorded — precisely the hole F14 closes.
+  //
+  // So the driver arm is withdrawn entirely. Attendance mutations now go through
+  // Transport_driver_api (authorized by trip ownership) and are written with the
+  // admin SDK, which bypasses these rules by design.
+  //
+  // Old assertion: driver-of-trip create SUCCEEDS.
+  // New assertion: NO driver client create succeeds at all.
+  test('DRIVER OF THE TRIP client-create → DENIED (server-mediated only)', async () => {
+    await assertFails(staff(DRIVER).doc(attId('no_show')).set(attendance()));
   });
 
   test('DIFFERENT staff forges no_show for the trip → DENIED (core SEC-1)', async () => {

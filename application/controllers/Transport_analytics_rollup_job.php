@@ -74,7 +74,24 @@ class Transport_analytics_rollup_job extends CI_Controller
         $rollup = [];   // schoolId => transportFleetRollup sub-object
         $ok = 0; $err = 0;
 
+        $this->load->helper('lifecycle_guard');
+        $lifecycleSkipped = 0;
+
         foreach ($tenants as $sid) {
+            // ── LIFECYCLE GUARD ─────────────────────────────────────────
+            // class = analytics. Per-tenant `continue` rather than exit: one
+            // suspended or closed school must never stop the rollup for the
+            // rest of the fleet. Skips are counted and reported so a partial
+            // rollup is never mistaken for a complete one.
+            $lcv = lifecycle_guard_check($this->firebase, $sid, Lifecycle_resolver::JOB_ANALYTICS);
+            if (empty($lcv['allowed'])) {
+                $lifecycleSkipped++;
+                echo "  ⏭ {$sid}: skipped (lifecycle commercial="
+                   . ($lcv['commercial'] !== '' ? $lcv['commercial'] : 'unknown')
+                   . " institution={$lcv['institution']})\n";
+                continue;
+            }
+
             try {
                 // Re-init all libraries per tenant
                 $sess = $this->_discoverSessionYear($sid);

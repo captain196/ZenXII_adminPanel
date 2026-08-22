@@ -22,6 +22,15 @@ class Transport_probe_con1 extends CI_Controller
 {
     private array $createdFixtures = [];
 
+    // ── UNIT 2B campus-geofence fixture (same mechanism as Transport_probe_f7,
+    //    _f8, _f13_2 and _f14_ov: seed-only-when-absent, snapshot, restore
+    //    verbatim). Identical semantics — deliberately not a second variant.
+    private $priorPolicy = null;
+    private bool $policySeeded = false;
+    private string $fixSchoolId = '';
+    private const FIX_LAT = 12.9716;
+    private const FIX_LNG = 77.5946;
+
     public function __construct()
     {
         parent::__construct();
@@ -50,6 +59,12 @@ class Transport_probe_con1 extends CI_Controller
             fwrite(STDERR, "ERROR: init failed — " . $e->getMessage() . "\n");
             exit(1);
         }
+
+        // UNIT 2B — createTrip() refuses a Pickup trip when no valid campus
+        // geofence is configured. Seeded only when absent and restored verbatim
+        // in the finally below. The production guard is not weakened.
+        $this->fixSchoolId = $sid;
+        $this->_ensureCampusFence();
 
         $passed = 0; $failed = 0;
         $pass = function (string $m) use (&$passed) { echo "  PASS: {$m}\n"; $passed++; };
@@ -140,6 +155,7 @@ class Transport_probe_con1 extends CI_Controller
             $fail("exception: " . $e->getMessage());
         } finally {
             echo "\n[TEARDOWN]\n";
+            $this->_restoreCampusFence();
             // deterministic boarding doc id (built WITH schoolId prefix)
             $boardEntity = "{$sid}_{$tripId}_{$studentId}_boarded_pickup";
             foreach (array_merge($this->createdFixtures, [['transportAttendance', $boardEntity]]) as [$col, $id]) {
@@ -163,5 +179,52 @@ class Transport_probe_con1 extends CI_Controller
             }
         }
         return -999;
+    }
+
+    /**
+     * UNIT 2B — guarantee a valid campus fence BEFORE any Pickup trip is
+     * created. Same mechanism as Transport_probe_f7/_f8/_f13_2/_f14_ov: seeds
+     * ONLY when no fence exists, snapshots the whole attendancePolicy first,
+     * and _restoreCampusFence() puts the original back verbatim. A tenant that
+     * already has a fence is preserved, never overwritten.
+     */
+    private function _ensureCampusFence(): void
+    {
+        if ($this->policySeeded) { return; }
+        try {
+            $school = $this->fs->get('schools', $this->fixSchoolId);
+            $school = is_array($school) ? ($school['data'] ?? $school) : [];
+            $pol    = (array) ($school['attendancePolicy'] ?? []);
+            if ((array) (($pol['gps'] ?? [])['geofences'] ?? []) !== []) {
+                echo "  fixture: campus fence already present — preserved, not overwritten\n";
+                return;
+            }
+            $this->priorPolicy = $pol;
+            $gps = (array) ($pol['gps'] ?? []);
+            $gps['geofences'] = [[
+                'id' => 'PROBE_CON1_CAMPUS', 'name' => 'Probe Campus',
+                'centerLat' => self::FIX_LAT, 'centerLng' => self::FIX_LNG, 'radius' => 300,
+            ]];
+            if (!isset($gps['maxAccuracyMeters'])) { $gps['maxAccuracyMeters'] = 100; }
+            $pol['gps'] = $gps;
+            $this->fs->update('schools', $this->fixSchoolId, ['attendancePolicy' => $pol]);
+            $this->policySeeded = true;
+            echo "  fixture: temporary campus fence seeded (restored at teardown)\n";
+        } catch (\Throwable $e) {
+            echo '  fixture WARN (_ensureCampusFence): ' . $e->getMessage() . "\n";
+        }
+    }
+
+    private function _restoreCampusFence(): void
+    {
+        if (!$this->policySeeded) { return; }
+        $this->policySeeded = false;
+        try {
+            $this->fs->update('schools', $this->fixSchoolId,
+                ['attendancePolicy' => $this->priorPolicy ?? []]);
+            echo "  restored attendancePolicy\n";
+        } catch (\Throwable $e) {
+            echo '  RESTORE FAILED (attendancePolicy) — ' . $e->getMessage() . "\n";
+        }
     }
 }

@@ -125,7 +125,12 @@ class Transport_probe_fin3 extends CI_Controller
             }
 
             echo "\n[G4] real post -> void reverses the journal (adaptive)\n";
-            $r2 = $this->transport->saveExpense(array_merge($base, ['amount' => 3300, 'force_post' => true, 'notes' => 'g4 real post']));
+            // Second arg = postingAuthorized. force_post now requires it (finance
+            // maker/checker); this CLI probe stands in for an authorised manager.
+            $r2 = $this->transport->saveExpense(
+                array_merge($base, ['amount' => 3300, 'force_post' => true, 'notes' => 'g4 real post']),
+                /* postingAuthorized */ true
+            );
             $eid2 = (string) $r2['id'];
             $this->fixtures[] = $eid2;
             $postStatus = (string) ($r2['posting']['status'] ?? '');

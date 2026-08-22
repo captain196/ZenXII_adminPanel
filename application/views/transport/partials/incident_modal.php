@@ -1,4 +1,12 @@
 <?php defined('BASEPATH') or exit('No direct script access allowed'); ?>
+<?php
+// 2026-08-07 — graded RBAC (TL convention, commit 7ccebc0). Recomputed locally:
+// this partial is loaded via $this->load->view() with no data, so the parent
+// view's flags are NOT in scope. The server remains authoritative — every
+// endpoint re-checks via require_permission('Transport', <action>, <level>).
+$can_edit   = function_exists('has_permission') ? has_permission('Transport','edit')   : true;
+$can_manage = function_exists('has_permission') ? has_permission('Transport','manage') : true;
+?>
 <!--
   transport/partials/incident_modal.php
   F4 Driver Management (2026-07-07)
@@ -43,7 +51,7 @@
   </div>
   <div class="trn-form-group"><label>Location</label><input type="text" id="incLocation"></div>
   <div class="trn-form-group"><label>Description *</label><textarea id="incDesc" style="width:100%;min-height:100px;padding:8px;font-family:var(--font-b);font-size:13px;border:1px solid var(--border);border-radius:6px;background:var(--bg);color:var(--t1)"></textarea></div>
-  <button class="trn-btn trn-btn-primary" onclick="TRN.doRecordIncident()" style="width:100%">Record Incident</button>
+  <button class="trn-btn trn-btn-primary" onclick="TRN.doRecordIncident()" <?= $can_edit?'':'disabled' ?> style="width:100%">Record Incident</button>
 </div></div>
 
 <!-- Incident resolution mini-modal -->
@@ -55,5 +63,5 @@
   <input type="hidden" id="incResId">
   <div class="trn-form-group"><label>Resolution *</label><input type="text" id="incResText"></div>
   <div class="trn-form-group"><label>Action Taken</label><input type="text" id="incResAction"></div>
-  <button class="trn-btn trn-btn-primary" onclick="TRN.doResolveIncident()" style="width:100%">Resolve</button>
+  <button class="trn-btn trn-btn-primary" onclick="TRN.doResolveIncident()" <?= $can_manage?'':'disabled title="Requires Transport · manage"' ?> style="width:100%">Resolve</button>
 </div></div>

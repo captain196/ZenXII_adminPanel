@@ -21,19 +21,11 @@ defined('BASEPATH') or exit('No direct script access allowed');
  */
 class Transport_rollover extends MY_Controller
 {
-    private const MANAGE_ROLES = [
-        'Super Admin', 'School Super Admin', 'Admin', 'Principal', 'Vice Principal',
-        'Operations Manager', 'Transport Manager',
-    ];
-    private const VIEW_ROLES = [
-        'Super Admin', 'School Super Admin', 'Admin', 'Principal', 'Vice Principal',
-        'Operations Manager', 'Transport Manager',
-    ];
 
     public function __construct()
     {
         parent::__construct();
-        require_permission('Operations');
+        require_permission('Transport');
         $this->load->library('Fee_lifecycle', null, 'feeLifecycle');
         $this->feeLifecycle->init($this->firebase, $this->school_name, $this->session_year, $this->admin_id ?? 'system');
         $this->load->library('numbering_service', null, 'numbering');
@@ -44,19 +36,6 @@ class Transport_rollover extends MY_Controller
             $this->school_name, $this->session_year,
             $this->admin_id ?? 'system'
         );
-    }
-
-    private function _require_manage(): void
-    {
-        if (!in_array($this->admin_role, self::MANAGE_ROLES, true)) {
-            $this->json_error('Access denied.', 403);
-        }
-    }
-    private function _require_view(): void
-    {
-        if (!in_array($this->admin_role, self::VIEW_ROLES, true)) {
-            $this->json_error('Access denied.', 403);
-        }
     }
 
     /**
@@ -70,8 +49,7 @@ class Transport_rollover extends MY_Controller
      */
     public function start()
     {
-        $this->_require_role(self::MANAGE_ROLES, 'transport_rollover_start');
-        $this->_require_manage();
+        require_permission('Transport', 'transport_rollover_start', 'manage');
         $from = trim($this->input->post('from_session') ?? '');
         $to   = trim($this->input->post('to_session')   ?? '');
         if ($from === '' || $to === '' || $from === $to) {
@@ -85,8 +63,22 @@ class Transport_rollover extends MY_Controller
             log_message('error', 'Transport_rollover::start failed: ' . $e->getMessage());
             $this->json_error('Rollover failed: ' . $e->getMessage());
         }
+        // ROLL-1 (2026-08-19): the rollover state must NOT be called 'status'.
+        //
+        // json_success() does array_merge(['status'=>'success'], $data), so $data
+        // WINS: a payload key named 'status' silently overwrote the envelope with
+        // 'complete' / 'in_progress'. The client's first line is
+        // `if (r.status !== 'success')`, so every response — including a
+        // successful one — took the failure branch, painted a red "Failed", and
+        // returned. The auto-continue branch that resumes the remaining students
+        // was therefore unreachable: a rollover that hit the wall-clock ceiling
+        // stopped for good, and a completed one reported failure.
+        //
+        // Renamed rather than reordered: the envelope's `status` means
+        // transport-level success/error everywhere in this codebase, and a
+        // payload must not redefine it.
         $this->json_success([
-            'status'        => $r['status'],
+            'rollover_status' => $r['status'],
             'processed'     => $r['processed'],
             'batch_id'      => $r['batch_id'],
             'checkpoint_id' => $r['checkpoint_id'],
@@ -107,8 +99,7 @@ class Transport_rollover extends MY_Controller
     /** GET /transport_rollover/status?from_session=X&to_session=Y */
     public function status()
     {
-        $this->_require_role(self::VIEW_ROLES, 'transport_view');
-        $this->_require_view();
+        require_permission('Transport', 'transport_view', 'view');
         $from = trim($this->input->get('from_session') ?? '');
         $to   = trim($this->input->get('to_session')   ?? '');
         if ($from === '' || $to === '') {
@@ -116,11 +107,15 @@ class Transport_rollover extends MY_Controller
         }
         $docId = "{$this->school_name}_ROLLOVER_{$from}_{$to}";
         $cp = $this->fs->getEntity('rolloverCheckpoint', $docId);
+        // ROLL-1: same envelope collision as start() — a payload key named
+        // 'status' overwrites json_success()'s own. Reported under
+        // rollover_status so a caller can tell "the request succeeded" from
+        // "the rollover is not started".
         if (!is_array($cp)) {
-            $this->json_success(['status' => 'not_started', 'processed' => 0, 'checkpoint_id' => $docId]);
+            $this->json_success(['rollover_status' => 'not_started', 'processed' => 0, 'checkpoint_id' => $docId]);
         }
         $this->json_success([
-            'status'          => (string) ($cp['status'] ?? 'unknown'),
+            'rollover_status' => (string) ($cp['status'] ?? 'unknown'),
             'processed'       => (int) ($cp['processed_count'] ?? 0),
             'error_count'     => (int) ($cp['error_count']    ?? 0),
             'batch_id'        => (string) ($cp['batch_id']    ?? ''),
@@ -138,8 +133,7 @@ class Transport_rollover extends MY_Controller
      */
     public function reset()
     {
-        $this->_require_role(self::MANAGE_ROLES, 'transport_rollover_reset');
-        $this->_require_manage();
+        require_permission('Transport', 'transport_rollover_reset', 'manage');
         $from = trim($this->input->post('from_session') ?? '');
         $to   = trim($this->input->post('to_session')   ?? '');
         if ($from === '' || $to === '') {
@@ -149,7 +143,7 @@ class Transport_rollover extends MY_Controller
         try {
             $this->fs->remove('rolloverCheckpoint', $this->fs->docId($docId));
         } catch (\Throwable $e) {
-            log_message('warning', 'Transport_rollover::reset remove failed: ' . $e->getMessage());
+            log_message('error', 'Transport_rollover::reset remove failed: ' . $e->getMessage());
         }
         $this->json_success(['message' => 'Rollover checkpoint cleared.']);
     }

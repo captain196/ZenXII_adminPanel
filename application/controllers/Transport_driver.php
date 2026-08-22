@@ -29,19 +29,11 @@ defined('BASEPATH') or exit('No direct script access allowed');
  */
 class Transport_driver extends MY_Controller
 {
-    private const MANAGE_ROLES = [
-        'Super Admin', 'School Super Admin', 'Admin', 'Principal', 'Vice Principal',
-        'Operations Manager', 'Transport Manager', 'HR Manager',
-    ];
-    private const VIEW_ROLES = [
-        'Super Admin', 'School Super Admin', 'Admin', 'Principal', 'Vice Principal',
-        'Operations Manager', 'Transport Manager', 'HR Manager', 'Accountant',
-    ];
 
     public function __construct()
     {
         parent::__construct();
-        require_permission('Operations');
+        require_permission('Transport');
         $this->load->library('numbering_service', null, 'numbering');
         $this->numbering->init($this->fs, $this->school_name, $this->session_year);
         $this->load->library('transport_service', null, 'transport');
@@ -52,62 +44,85 @@ class Transport_driver extends MY_Controller
         );
     }
 
-    private function _require_manage(): void
-    {
-        if (!in_array($this->admin_role, self::MANAGE_ROLES, true)) {
-            $this->json_error('Access denied.', 403);
-        }
-    }
-    private function _require_view(): void
-    {
-        if (!in_array($this->admin_role, self::VIEW_ROLES, true)) {
-            $this->json_error('Access denied.', 403);
-        }
-    }
-
     // ═══════════════════════════════════════════════════════════════════
     //  Driver identity + meta
     // ═══════════════════════════════════════════════════════════════════
 
     public function list()
     {
-        $this->_require_role(self::VIEW_ROLES, 'transport_view');
-        $this->_require_view();
+        require_permission('Transport', 'transport_view', 'view');
         $this->json_success(['drivers' => $this->transport->listActiveDrivers()]);
     }
 
     public function get()
     {
-        $this->_require_role(self::VIEW_ROLES, 'transport_view');
-        $this->_require_view();
+        require_permission('Transport', 'transport_view', 'view');
         $sid = $this->safe_path_segment(trim($this->input->get('staff_id') ?? ''), 'staff_id');
         $this->json_success(['driver' => $this->transport->getDriver($sid)]);
     }
 
     public function save_meta()
     {
-        $this->_require_role(self::MANAGE_ROLES, 'save_driver_meta');
-        $this->_require_manage();
+        // ── Batch 3 — MIXED-PURPOSE ENDPOINT, FIELD-PARTITIONED ──────────────
+        //
+        // Stays at Transport:edit deliberately: it carries legitimate driver
+        // self-service (emergency contacts etc.) alongside the credential fields
+        // that gate dispatch fitness. The partition is:
+        //
+        //   SENSITIVE  → additionally requires Transport:manage
+        //   BENIGN     → Transport:edit, but ONLY on the actor's own record
+        //
+        // Authorization decisions are made on the fields the client ACTUALLY
+        // submitted (post() !== null), never on the shape of this array — so a
+        // sensitive field cannot be smuggled into an otherwise-benign request.
+        // Graded RBAC remains the first boundary; everything here is additive and
+        // uses the existing resolver via has_permission(). No RBAC change.
+        require_permission('Transport', 'save_driver_meta', 'edit');
         $sid = $this->safe_path_segment(trim($this->input->post('staff_id') ?? ''), 'staff_id');
-        $canDriveTypes = $this->input->post('can_drive_types');
-        $canDriveTypes = is_array($canDriveTypes) ? $canDriveTypes : (is_string($canDriveTypes) && $canDriveTypes !== '' ? explode(',', $canDriveTypes) : []);
-        $meta = [
-            'licence_no'              => trim($this->input->post('licence_no') ?? ''),
-            'licence_class'           => trim($this->input->post('licence_class') ?? ''),
-            'licence_issued'          => trim($this->input->post('licence_issued') ?? ''),
-            'licence_expires'         => trim($this->input->post('licence_expires') ?? ''),
-            'licence_authority'       => trim($this->input->post('licence_authority') ?? ''),
-            'medical_check_last'      => trim($this->input->post('medical_check_last') ?? ''),
-            'medical_expires'         => trim($this->input->post('medical_expires') ?? ''),
-            'badge_no'                => trim($this->input->post('badge_no') ?? ''),
-            'badge_expires'           => trim($this->input->post('badge_expires') ?? ''),
-            'years_experience'        => (int) ($this->input->post('years_experience') ?? 0),
-            'can_drive_types'         => array_map('trim', $canDriveTypes),
-            'emergency_contact_name'  => trim($this->input->post('emergency_contact_name') ?? ''),
-            'emergency_contact_phone' => trim($this->input->post('emergency_contact_phone') ?? ''),
-            'replacement_availability'=> ((string) ($this->input->post('replacement_availability') ?? '')) === '1',
-            'operational_status'      => trim($this->input->post('operational_status') ?? 'Available'),
-        ];
+
+        $sensitive = Transport_service::DRIVER_META_SENSITIVE_FIELDS;
+        $benign    = Transport_service::DRIVER_META_BENIGN_FIELDS;
+
+        $submitted = [];
+        foreach (array_merge($sensitive, $benign) as $f) {
+            if ($this->input->post($f) !== null) { $submitted[] = $f; }
+        }
+        $hasSensitive = array_intersect($submitted, $sensitive) !== [];
+
+        if ($submitted === []) {
+            $this->json_error('No driver metadata fields were supplied.');
+            return;
+        }
+        if ($hasSensitive && !has_permission('Transport', 'manage')) {
+            $this->json_error(
+                'Driver licence, medical, badge and operational-status fields require '
+                . 'Transport · manage. Ask an administrator to update them.', 403);
+            return;
+        }
+        if (!$hasSensitive && (string) $sid !== (string) ($this->admin_id ?? '')) {
+            $this->json_error(
+                'You may only update your own driver details. Editing another staff '
+                . "member's record requires Transport · manage.", 403);
+            return;
+        }
+
+        // Build ONLY the submitted keys. The service merges them over the stored
+        // driver_meta, so unsubmitted fields are preserved rather than erased.
+        $meta = [];
+        foreach ($submitted as $f) {
+            $raw = $this->input->post($f);
+            switch ($f) {
+                case 'years_experience':
+                    $meta[$f] = (int) $raw; break;
+                case 'replacement_availability':
+                    $meta[$f] = ((string) $raw) === '1'; break;
+                case 'can_drive_types':
+                    $list = is_array($raw) ? $raw : (is_string($raw) && $raw !== '' ? explode(',', $raw) : []);
+                    $meta[$f] = array_map('trim', $list); break;
+                default:
+                    $meta[$f] = trim((string) $raw);
+            }
+        }
         try {
             $this->transport->updateDriverMeta($sid, $meta);
         } catch (\InvalidArgumentException $e) {
@@ -124,8 +139,7 @@ class Transport_driver extends MY_Controller
 
     public function replace_permanently()
     {
-        $this->_require_role(self::MANAGE_ROLES, 'replace_driver');
-        $this->_require_manage();
+        require_permission('Transport', 'replace_driver', 'manage');
         try {
             $this->transport->replaceDriverPermanently(
                 $this->safe_path_segment(trim($this->input->post('vehicle_id') ?? ''), 'vehicle_id'),
@@ -147,8 +161,7 @@ class Transport_driver extends MY_Controller
 
     public function record_incident()
     {
-        $this->_require_role(self::MANAGE_ROLES, 'record_incident');
-        $this->_require_manage();
+        require_permission('Transport', 'record_incident', 'edit');
         $attachments = $this->input->post('attachment_paths');
         $attachments = is_array($attachments) ? $attachments : (is_string($attachments) && $attachments !== '' ? explode(',', $attachments) : []);
         try {
@@ -163,7 +176,10 @@ class Transport_driver extends MY_Controller
                 'related_vehicle_id'=> trim($this->input->post('related_vehicle_id') ?? ''),
                 'location'          => trim($this->input->post('location') ?? ''),
                 'attachment_paths'  => array_map('trim', $attachments),
-            ]);
+            // Second arg = anySubject. Manage may file against anyone; an
+            // edit-level caller is scoped to themselves or a trip they operated.
+            // Existing Graded RBAC resolver, read only — no RBAC change.
+            ], function_exists('has_permission') ? has_permission('Transport', 'manage') : false);
         } catch (\InvalidArgumentException $e) {
             $this->json_error($e->getMessage());
         } catch (\Throwable $e) {
@@ -175,8 +191,7 @@ class Transport_driver extends MY_Controller
 
     public function resolve_incident()
     {
-        $this->_require_role(self::MANAGE_ROLES, 'resolve_incident');
-        $this->_require_manage();
+        require_permission('Transport', 'resolve_incident', 'manage');
         try {
             $this->transport->resolveDriverIncident(
                 $this->safe_path_segment(trim($this->input->post('incident_id') ?? ''), 'incident_id'),
@@ -194,8 +209,7 @@ class Transport_driver extends MY_Controller
 
     public function list_incidents()
     {
-        $this->_require_role(self::VIEW_ROLES, 'transport_view');
-        $this->_require_view();
+        require_permission('Transport', 'transport_view', 'view');
         $sid = trim($this->input->get('staff_id') ?? '');
         $sev = trim($this->input->get('severity') ?? '');
         $this->json_success(['incidents' => $this->transport->listDriverIncidents($sid, $sev)]);
@@ -207,8 +221,7 @@ class Transport_driver extends MY_Controller
 
     public function save_review()
     {
-        $this->_require_role(self::MANAGE_ROLES, 'save_review');
-        $this->_require_manage();
+        require_permission('Transport', 'save_review', 'manage');
         $actions = $this->input->post('action_items');
         $actions = is_array($actions) ? $actions : (is_string($actions) && $actions !== '' ? explode(',', $actions) : []);
         try {
@@ -234,16 +247,14 @@ class Transport_driver extends MY_Controller
 
     public function list_reviews()
     {
-        $this->_require_role(self::VIEW_ROLES, 'transport_view');
-        $this->_require_view();
+        require_permission('Transport', 'transport_view', 'view');
         $sid = $this->safe_path_segment(trim($this->input->get('staff_id') ?? ''), 'staff_id');
         $this->json_success(['reviews' => $this->transport->listPerformanceReviews($sid)]);
     }
 
     public function activity_snapshot()
     {
-        $this->_require_role(self::VIEW_ROLES, 'transport_view');
-        $this->_require_view();
+        require_permission('Transport', 'transport_view', 'view');
         $sid  = $this->safe_path_segment(trim($this->input->get('staff_id') ?? ''), 'staff_id');
         $from = trim($this->input->get('from') ?? '');
         $to   = trim($this->input->get('to')   ?? '');
@@ -256,8 +267,7 @@ class Transport_driver extends MY_Controller
 
     public function assign_temp()
     {
-        $this->_require_role(self::MANAGE_ROLES, 'assign_temp');
-        $this->_require_manage();
+        require_permission('Transport', 'assign_temp', 'manage');
         try {
             $result = $this->transport->assignTemporaryDriver([
                 'vehicle_id'        => $this->safe_path_segment(trim($this->input->post('vehicle_id') ?? ''), 'vehicle_id'),
@@ -280,8 +290,7 @@ class Transport_driver extends MY_Controller
 
     public function resolve_temp()
     {
-        $this->_require_role(self::MANAGE_ROLES, 'resolve_temp');
-        $this->_require_manage();
+        require_permission('Transport', 'resolve_temp', 'manage');
         try {
             $this->transport->resolveTemporaryDriver(
                 $this->safe_path_segment(trim($this->input->post('assignment_id') ?? ''), 'assignment_id'),
@@ -298,8 +307,7 @@ class Transport_driver extends MY_Controller
 
     public function list_temp()
     {
-        $this->_require_role(self::VIEW_ROLES, 'transport_view');
-        $this->_require_view();
+        require_permission('Transport', 'transport_view', 'view');
         $vid = trim($this->input->get('vehicle_id') ?? '');
         $activeOnly = ((string) ($this->input->get('active_only') ?? '1')) !== '0';
         $this->json_success(['assignments' => $this->transport->listTemporaryAssignments($vid, $activeOnly)]);
@@ -307,8 +315,7 @@ class Transport_driver extends MY_Controller
 
     public function effective()
     {
-        $this->_require_role(self::VIEW_ROLES, 'transport_view');
-        $this->_require_view();
+        require_permission('Transport', 'transport_view', 'view');
         $vid = $this->safe_path_segment(trim($this->input->get('vehicle_id') ?? ''), 'vehicle_id');
         $onDate = trim($this->input->get('on_date') ?? '');
         $this->json_success(['effective_staff_id' => $this->transport->getEffectiveDriver($vid, $onDate === '' ? null : $onDate)]);
@@ -316,8 +323,7 @@ class Transport_driver extends MY_Controller
 
     public function rebuild_activity()
     {
-        $this->_require_role(self::MANAGE_ROLES, 'rebuild_activity');
-        $this->_require_manage();
+        require_permission('Transport', 'rebuild_activity', 'manage');
         $sid = trim($this->input->post('staff_id') ?? '');
         $ym  = trim($this->input->post('year_month') ?? '');
         try {

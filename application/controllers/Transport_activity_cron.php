@@ -39,6 +39,15 @@ class Transport_activity_cron extends CI_Controller
             fwrite(STDERR, "ERROR: SCHOOL_ID + SESSION_YEAR env vars required.\n");
             exit(1);
         }
+
+        // ── LIFECYCLE GUARD ─────────────────────────────────────────────
+        // class = operational (NOT safety). This job sweeps activity records;
+        // it does not run trips, GPS or SOS, so pausing it on a suspended or
+        // closed tenant removes no safety capability. Live-trip, GPS and SOS
+        // paths are classified JOB_SAFETY and are never gated.
+        $this->load->helper('lifecycle_guard');
+        lifecycle_guard_or_skip($this->firebase, $sid, Lifecycle_resolver::JOB_OPERATIONAL, 'transport_activity_cron');
+
         try {
             $this->fs->init($sid, $sess);
             $this->numbering->init($this->fs, $sid, $sess);

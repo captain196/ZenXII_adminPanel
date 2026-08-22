@@ -267,25 +267,38 @@ class Transport_analytics_service
             // already in the [trip_date==today] scan below. We bucket boarded/
             // dropped per tripId in-memory, then sum max(0, boarded-dropped) for
             // the InProgress cohort only (identical semantics, O(1) queries).
+            //
+            // F14 VOCABULARY (2026-08-16). `Transport_service::BOARDING_EVENT_TYPES`
+            // accepts EIGHT event types: the four legacy ones the old tap-to-board
+            // app wrote, and the four leg-explicit ones the QR attendance service
+            // writes. This block counted only the legacy four, so every figure
+            // here silently read ZERO for a trip boarded by scanning — the office
+            // would lose its head count at exactly the moment a conductor started
+            // using the scanner. Both vocabularies are counted now.
             try {
-                $perTripBoarded = [];   // tid => boarded_pickup + alternate_pickup
-                $perTripDropped = [];   // tid => dropped_home
+                $perTripBoarded = [];   // tid => any BOARDING event, either vocabulary
+                $perTripDropped = [];   // tid => any ALIGHTING event, either vocabulary
+                // Taken from Transport_service, not retyped here. Two consumers
+                // each keeping their own copy of this classification is exactly
+                // how the legacy-only lists survived unnoticed.
+                $boardEvents  = Transport_service::BOARDING_ON_EVENTS;
+                $alightEvents = Transport_service::BOARDING_OFF_EVENTS;
                 $todayEvents = (array) $this->fs->schoolWhere('transportAttendance',
                     [['trip_date', '==', $today]], null, 'ASC', 2000);
                 foreach ($todayEvents as $e) {
                     $inner = (isset($e['data']) && is_array($e['data'])) ? $e['data'] : $e;
                     $et  = (string) ($inner['event_type'] ?? '');
                     $tid = (string) ($inner['tripId'] ?? '');
-                    if ($et === 'boarded_pickup' || $et === 'alternate_pickup') {
+                    if (in_array($et, $boardEvents, true)) {
                         $perTripBoarded[$tid] = ($perTripBoarded[$tid] ?? 0) + 1;
-                    } elseif ($et === 'dropped_home') {
+                    } elseif (in_array($et, $alightEvents, true)) {
                         $perTripDropped[$tid] = ($perTripDropped[$tid] ?? 0) + 1;
                         $snap['students_dropped_today']++;
                     } elseif ($et === 'no_show') {
                         $snap['no_shows_today']++;
                     }
                 }
-                // Onboard = boarded MINUS dropped, per InProgress trip, floored at 0.
+                // Onboard = boarded MINUS alighted, per InProgress trip, floored at 0.
                 foreach ($inProgressIds as $tid) {
                     $snap['students_currently_onboard'] += max(0,
                         ($perTripBoarded[$tid] ?? 0) - ($perTripDropped[$tid] ?? 0));

@@ -11,13 +11,37 @@ $tab_map = [
     'drivers'     => ['panel'=>'panelDrivers',     'icon'=>'fa-id-card-o',     'label'=>'Drivers'],
     'routes'      => ['panel'=>'panelRoutes',      'icon'=>'fa-road',          'label'=>'Routes & Stops'],
     'assignments' => ['panel'=>'panelAssignments',  'icon'=>'fa-users',         'label'=>'Assignments'],
+    // F-3 worklist (2026-08-19). The request → approve → assignment workflow was
+    // fully implemented server-side (probe gates H1–H12) with NO user-facing
+    // surface, so a school could not process a transport request at all: the
+    // pending rows accumulated where nobody could see them. Placed next to
+    // Assignments because approving a request IS what creates an assignment.
+    'requests'    => ['panel'=>'panelRequests',    'icon'=>'fa-inbox',         'label'=>'Requests'],
     'trips'       => ['panel'=>'panelTrips',       'icon'=>'fa-map-signs',     'label'=>'Trips'],
     'expenses'    => ['panel'=>'panelExpenses',    'icon'=>'fa-money',         'label'=>'Expenses'],
     'events'      => ['panel'=>'panelEvents',      'icon'=>'fa-calendar-o',    'label'=>'Events'],
     'sos'         => ['panel'=>'panelSos',         'icon'=>'fa-bell',          'label'=>'SOS Monitor'],
     'expiry'      => ['panel'=>'panelExpiry',      'icon'=>'fa-exclamation-triangle', 'label'=>'Expiry Dashboard'],
+    // F12.1 M4 (2026-08-07) — CBSE safety compliance posture.
+    'compliance'  => ['panel'=>'panelCompliance',  'icon'=>'fa-shield',        'label'=>'Compliance'],
 ];
+// 2026-08-07 — graded RBAC, TL convention (commit 7ccebc0). The server side is
+// authoritative (require_permission('Transport', <action>, 'view'|'edit'|'manage'));
+// these flags exist so a view-only user never sees an enabled control that would
+// 403 on click. Never treat them as the security boundary.
+$can_edit   = function_exists('has_permission') ? has_permission('Transport','edit')   : true;
+$can_manage = function_exists('has_permission') ? has_permission('Transport','manage') : true;
 ?>
+<link rel="stylesheet" href="<?= base_url('assets/css/rbac_ui_kit.css') ?>">
+<?php /* GAP-2 stop coordinate picker. Same assets fleet_live.php already loads,
+         and both cdnjs origins are in the CSP script-src/style-src allowlist
+         (MY_Controller.php:802-803). The renderer resolves the tenant's provider
+         at runtime; this page never names one. Loading these here does NOT add
+         a map to the page — the picker only renders inside the Stop modal. */ ?>
+<link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/leaflet/1.9.4/leaflet.min.css">
+<script src="https://cdnjs.cloudflare.com/ajax/libs/leaflet/1.9.4/leaflet.min.js"></script>
+<script>window.ZENX_BASE_URL = '<?= rtrim(base_url(), "/") ?>';</script>
+<script src="<?= base_url('assets/js/maps/map_renderer.js') ?>"></script>
 <style>
 .trn-wrap{padding:20px;max-width:1400px;margin:0 auto}
 .trn-header{display:flex;align-items:center;justify-content:space-between;margin-bottom:24px;flex-wrap:wrap;gap:12px}
@@ -55,13 +79,25 @@ $tab_map = [
 .trn-modal-title{font-family:var(--font-b);font-size:16px;font-weight:700;color:var(--t1);margin-bottom:18px;display:flex;align-items:center;justify-content:space-between}
 .trn-modal-close{cursor:pointer;color:var(--t3);font-size:1.2rem;background:none;border:none}
 .trn-search-box{position:relative}
-.trn-search-results{position:absolute;top:100%;left:0;right:0;background:var(--bg2);border:1px solid var(--border);border-radius:0 0 var(--r-sm) var(--r-sm);max-height:200px;overflow-y:auto;z-index:100;display:none}
+/* UAT fix (2026-08-09): the result list was flat and borderless-looking — it
+   merged into the modal and sat on top of the ROUTE label, so the form read as
+   broken. It now floats as a distinct popover (shadow + gap + rounded) and each
+   row has a clear name/meta hierarchy instead of three run-together strings.
+   z-index raised above the modal's own stacking context. */
+.trn-search-results{position:absolute;top:calc(100% + 4px);left:0;right:0;background:var(--bg2);border:1px solid var(--border);border-radius:var(--r-sm);max-height:230px;overflow-y:auto;z-index:1200;display:none;box-shadow:0 10px 28px rgba(0,0,0,.18),0 2px 6px rgba(0,0,0,.08)}
 .trn-search-results.show{display:block}
-.trn-search-item{padding:8px 12px;cursor:pointer;font-size:13px;color:var(--t1);border-bottom:1px solid var(--border);font-family:var(--font-b)}
+.trn-search-item{padding:9px 12px;cursor:pointer;font-size:13px;color:var(--t1);border-bottom:1px solid var(--border);font-family:var(--font-b);display:flex;align-items:baseline;gap:8px;line-height:1.35}
+.trn-search-item:last-child{border-bottom:none}
 .trn-search-item:hover{background:var(--gold-dim)}
+.trn-search-item .si-name{font-weight:600;flex:1 1 auto;min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+.trn-search-item .si-id{font-size:11.5px;letter-spacing:.02em;opacity:.75;font-family:var(--font-m,monospace);flex:0 0 auto}
+.trn-search-item .si-cls{font-size:11.5px;opacity:.6;flex:0 0 auto;white-space:nowrap}
+.trn-search-item.is-msg{cursor:default;justify-content:center;opacity:.75}
 </style>
 
-<div class="content-wrapper"><section class="content"><div class="trn-wrap">
+<div class="content-wrapper">
+<div class="rx-loadbar" id="rxLoadbar"></div>
+<section class="content"><div class="trn-wrap">
   <div class="trn-header"><div>
     <div class="trn-header-icon"><i class="fa fa-bus"></i> Transport Management</div>
     <ol class="trn-breadcrumb"><li><a href="<?= base_url('admin') ?>">Dashboard</a></li><li><a href="<?= base_url('operations') ?>">Operations</a></li><li>Transport</li></ol>
@@ -73,10 +109,16 @@ $tab_map = [
     <?php endforeach; ?>
   </nav>
 
+  <?php if(!$can_edit): ?>
+  <div class="rx-ro-banner"><span class="rx-ro-ic">🔒</span> View-only access — you can browse Transport records but cannot add, edit, or delete.</div>
+  <?php elseif(!$can_manage): ?>
+  <div class="rx-ro-banner"><span class="rx-ro-ic">🔒</span> Limited access — you can add and edit, but deleting is restricted.</div>
+  <?php endif; ?>
+
   <!-- VEHICLES -->
   <div class="trn-panel<?= $at === 'vehicles' ? ' active' : '' ?>" id="panelVehicles">
     <div class="trn-card">
-      <div class="trn-card-title"><span>Vehicles</span><button class="trn-btn trn-btn-primary" onclick="TRN.openVehModal()"><i class="fa fa-plus"></i> Add Vehicle</button></div>
+      <div class="trn-card-title"><span>Vehicles</span><button class="trn-btn trn-btn-primary" onclick="TRN.openVehModal()" <?= $can_edit?'':'disabled' ?>><i class="fa fa-plus"></i> Add Vehicle</button></div>
       <table class="trn-table"><thead><tr><th>ID</th><th>Number</th><th>Type</th><th>Capacity</th><th>Driver</th><th>Ownership</th><th>Lifecycle</th><th>Actions</th></tr></thead><tbody id="vehTbody"></tbody></table>
     </div>
   </div>
@@ -84,7 +126,7 @@ $tab_map = [
   <!-- VENDORS (F1) -->
   <div class="trn-panel<?= $at === 'vendors' ? ' active' : '' ?>" id="panelVendors">
     <div class="trn-card">
-      <div class="trn-card-title"><span>Transport Vendors</span><button class="trn-btn trn-btn-primary" onclick="TRN.openVendorModal()"><i class="fa fa-plus"></i> Add Vendor</button></div>
+      <div class="trn-card-title"><span>Transport Vendors</span><button class="trn-btn trn-btn-primary" onclick="TRN.openVendorModal()" <?= $can_edit?'':'disabled' ?>><i class="fa fa-plus"></i> Add Vendor</button></div>
       <table class="trn-table"><thead><tr><th>ID</th><th>Name</th><th>Contact</th><th>Phone</th><th>GSTIN</th><th>Status</th><th>Actions</th></tr></thead><tbody id="vendorsTbody"></tbody></table>
     </div>
   </div>
@@ -113,7 +155,7 @@ $tab_map = [
         <div style="display:flex;gap:6px">
           <button class="trn-btn trn-btn-primary trn-btn-sm" onclick="TRN.reconcilePendingPosts()" title="Retry pending Accounting posts"><i class="fa fa-wrench"></i> Reconcile Pending</button>
           <button class="trn-btn trn-btn-primary trn-btn-sm" onclick="TRN.rebuildExpenseSummary()" title="Rebuild monthly summary"><i class="fa fa-refresh"></i> Rebuild Summary</button>
-          <button class="trn-btn trn-btn-primary" onclick="TRN.openExpense()"><i class="fa fa-plus"></i> Record Expense</button>
+          <button class="trn-btn trn-btn-primary" onclick="TRN.openExpense()" <?= $can_edit?'':'disabled' ?>><i class="fa fa-plus"></i> Record Expense</button>
         </div>
       </div>
       <div style="background:rgba(59,130,246,.08);border-left:3px solid #3b82f6;padding:10px 12px;border-radius:4px;font-size:12px;color:var(--t1);font-family:var(--font-b);margin-bottom:14px">
@@ -138,7 +180,7 @@ $tab_map = [
             <option value="Completed">Completed</option>
             <option value="Cancelled">Cancelled</option>
           </select>
-          <button class="trn-btn trn-btn-primary" onclick="TRN.openCreateTrip()"><i class="fa fa-plus"></i> Create Trip</button>
+          <button class="trn-btn trn-btn-primary" onclick="TRN.openCreateTrip()" <?= $can_edit?'':'disabled' ?>><i class="fa fa-plus"></i> Create Trip</button>
         </div>
       </div>
       <div style="background:rgba(34,197,94,.06);border-left:3px solid #22c55e;padding:10px 12px;border-radius:4px;font-size:12px;color:var(--t1);font-family:var(--font-b);margin-bottom:14px">
@@ -177,7 +219,7 @@ $tab_map = [
             <option value="Cultural_Event">Cultural Event</option>
             <option value="Other">Other</option>
           </select>
-          <button class="trn-btn trn-btn-primary" onclick="TRN.openCreateEvent()"><i class="fa fa-plus"></i> Create Event</button>
+          <button class="trn-btn trn-btn-primary" onclick="TRN.openCreateEvent()" <?= $can_edit?'':'disabled' ?>><i class="fa fa-plus"></i> Create Event</button>
         </div>
       </div>
       <div style="background:rgba(139,92,246,.06);border-left:3px solid #8b5cf6;padding:10px 12px;border-radius:4px;font-size:12px;color:var(--t1);font-family:var(--font-b);margin-bottom:14px">
@@ -202,7 +244,7 @@ $tab_map = [
             <option value="responded">Responded</option>
             <option value="resolved">Resolved</option>
           </select>
-          <button class="trn-btn trn-btn-danger" onclick="TRN.openRaiseSos()"><i class="fa fa-exclamation-triangle"></i> Raise SOS</button>
+          <button class="trn-btn trn-btn-danger" onclick="TRN.openRaiseSos()" <?= $can_edit?'':'disabled' ?>><i class="fa fa-exclamation-triangle"></i> Raise SOS</button>
         </div>
       </div>
       <div style="background:rgba(220,38,38,.06);border-left:3px solid #dc2626;padding:10px 12px;border-radius:4px;font-size:12px;color:var(--t1);font-family:var(--font-b);margin-bottom:14px">
@@ -242,6 +284,42 @@ $tab_map = [
     </div>
   </div>
 
+  <!-- COMPLIANCE (F12.1 M4) -->
+  <div class="trn-panel<?= $at === 'compliance' ? ' active' : '' ?>" id="panelCompliance">
+    <div class="trn-card">
+      <div class="trn-card-title">
+        <span>CBSE Safety Compliance</span>
+        <span>
+          <button class="trn-btn trn-btn-sm" onclick="TRN.cmpSeedPack()" <?= $can_manage?'':'disabled title="Requires Transport · manage"' ?>><i class="fa fa-download"></i> Seed CBSE Pack</button>
+          <button class="trn-btn trn-btn-primary trn-btn-sm" onclick="TRN.cmpRebuild()" <?= $can_manage?'':'disabled title="Requires Transport · manage"' ?>><i class="fa fa-refresh"></i> Re-evaluate Fleet</button>
+        </span>
+      </div>
+      <div style="display:grid;grid-template-columns:repeat(4,1fr);gap:16px;margin-bottom:16px">
+        <div class="trn-card" style="text-align:center;margin:0;border-left:4px solid var(--green)">
+          <div style="font-size:11px;color:var(--t3);text-transform:uppercase;letter-spacing:.3px">Inspection-ready</div>
+          <div style="font-size:2.4rem;font-weight:700;font-family:var(--font-b);color:var(--green)" id="cmpCompliant">—</div>
+        </div>
+        <div class="trn-card" style="text-align:center;margin:0;border-left:4px solid #f59e0b">
+          <div style="font-size:11px;color:var(--t3);text-transform:uppercase;letter-spacing:.3px">Minor gaps</div>
+          <div style="font-size:2.4rem;font-weight:700;font-family:var(--font-b);color:#f59e0b" id="cmpMinor">—</div>
+        </div>
+        <div class="trn-card" style="text-align:center;margin:0;border-left:4px solid var(--rose)">
+          <div style="font-size:11px;color:var(--t3);text-transform:uppercase;letter-spacing:.3px">Major gaps</div>
+          <div style="font-size:2.4rem;font-weight:700;font-family:var(--font-b);color:var(--rose)" id="cmpMajor">—</div>
+        </div>
+        <div class="trn-card" style="text-align:center;margin:0;border-left:4px solid #991b1b">
+          <div style="font-size:11px;color:var(--t3);text-transform:uppercase;letter-spacing:.3px">Disaffiliation risk</div>
+          <div style="font-size:2.4rem;font-weight:700;font-family:var(--font-b);color:#991b1b" id="cmpAtRisk">—</div>
+        </div>
+      </div>
+      <div id="cmpMeta" style="font-size:12px;color:var(--t3);margin-bottom:10px;font-family:var(--font-b)"></div>
+      <table class="trn-table">
+        <thead><tr><th>Vehicle</th><th>Score</th><th>Tier</th><th>Failing</th><th>Expiring</th><th>Dispatch</th><th>Actions</th></tr></thead>
+        <tbody id="cmpTbody"></tbody>
+      </table>
+    </div>
+  </div>
+
   <!-- ROUTES & STOPS -->
   <div class="trn-panel<?= $at === 'routes' ? ' active' : '' ?>" id="panelRoutes">
     <!-- F2 (2026-07-07): active suspensions banner (rendered above routes) -->
@@ -254,13 +332,16 @@ $tab_map = [
           <label style="font-size:12px;color:var(--t3);font-family:var(--font-b);cursor:pointer">
             <input type="checkbox" id="routeShowArchived" onchange="loadRoutes()"> Show Archived
           </label>
-          <button class="trn-btn trn-btn-primary" onclick="TRN.openRouteModal()"><i class="fa fa-plus"></i> Add Route</button>
+          <!-- save_route is require_permission(…,'manage'), so the control that
+               opens it must gate on manage. Gated on edit, an edit-only user
+               filled in the whole form and got a 403 on Save. -->
+          <button class="trn-btn trn-btn-primary" onclick="TRN.openRouteModal()" <?= $can_manage?'':'disabled' ?>><i class="fa fa-plus"></i> Add Route</button>
         </div>
       </div>
       <table class="trn-table"><thead><tr><th>ID</th><th>Name</th><th>Vehicle</th><th>Distance</th><th>Monthly Fee</th><th>Status</th><th>Actions</th></tr></thead><tbody id="routesTbody"></tbody></table>
     </div>
     <div class="trn-card">
-      <div class="trn-card-title"><span>Stops</span><button class="trn-btn trn-btn-primary" onclick="TRN.openStopModal()"><i class="fa fa-plus"></i> Add Stop</button></div>
+      <div class="trn-card-title"><span>Stops</span><button class="trn-btn trn-btn-primary" onclick="TRN.openStopModal()" <?= $can_manage?'':'disabled' ?>><i class="fa fa-plus"></i> Add Stop</button></div>
       <div class="trn-form-group" style="max-width:300px;margin-bottom:14px">
         <label>Filter by Route</label><select id="stopRouteFilter"><option value="">All Routes</option></select>
       </div>
@@ -274,11 +355,11 @@ $tab_map = [
       <div class="trn-card-title">
         <span>Student Transport Assignments</span>
         <div style="display:flex;gap:6px">
-          <button class="trn-btn trn-btn-primary trn-btn-sm" onclick="TRN.openBulkAssign()"><i class="fa fa-list"></i> Bulk Assign</button>
-          <button class="trn-btn trn-btn-primary trn-btn-sm" onclick="TRN.openRollover()"><i class="fa fa-refresh"></i> Session Rollover</button>
+          <button class="trn-btn trn-btn-primary trn-btn-sm" onclick="TRN.openBulkAssign()" <?= $can_manage?'':'disabled' ?>><i class="fa fa-list"></i> Bulk Assign</button>
+          <button class="trn-btn trn-btn-primary trn-btn-sm" onclick="TRN.openRollover()" <?= $can_edit?'':'disabled' ?>><i class="fa fa-refresh"></i> Session Rollover</button>
           <button class="trn-btn trn-btn-primary trn-btn-sm" onclick="TRN.reconcilePendingFees()" title="Retry any pending fee demands"><i class="fa fa-wrench"></i> Reconcile Fees</button>
           <button class="trn-btn trn-btn-primary trn-btn-sm" onclick="TRN.rebuildCapacityCache()" title="Rebuild capacity cache from source"><i class="fa fa-database"></i> Rebuild Cache</button>
-          <button class="trn-btn trn-btn-primary" onclick="TRN.openAsnModal()"><i class="fa fa-plus"></i> Assign Student</button>
+          <button class="trn-btn trn-btn-primary" onclick="TRN.openAsnModal()" <?= $can_manage?'':'disabled' ?>><i class="fa fa-plus"></i> Assign Student</button>
         </div>
       </div>
       <table class="trn-table"><thead><tr>
@@ -286,7 +367,77 @@ $tab_map = [
       </tr></thead><tbody id="asnTbody"></tbody></table>
     </div>
   </div>
+
+  <!-- F-3 TRANSPORT REQUEST WORKLIST (2026-08-19) -->
+  <div class="trn-panel<?= $at === 'requests' ? ' active' : '' ?>" id="panelRequests">
+    <div class="trn-card">
+      <div class="trn-card-title">
+        <span>Transport Requests</span>
+        <div style="display:flex;gap:6px;align-items:center">
+          <select id="reqStatusFilter" class="trn-input trn-input-sm" style="width:150px" onchange="TRN.loadRequests()">
+            <option value="pending">Pending</option>
+            <option value="approved">Approved</option>
+            <option value="rejected">Rejected</option>
+            <option value="cancelled">Cancelled</option>
+            <option value="all">All</option>
+          </select>
+          <button class="trn-btn trn-btn-primary trn-btn-sm" onclick="TRN.loadRequests()"><i class="fa fa-refresh"></i> Refresh</button>
+        </div>
+      </div>
+      <!-- A request is DESCRIPTIVE: the parent/office says roughly where the
+           child is; management picks the canonical route and stop at approval.
+           That is why this table shows an area and a hint, not a route id. -->
+      <table class="trn-table"><thead><tr>
+        <th>Student</th><th>Class</th><th>Requested Area</th><th>Stop Hint</th>
+        <th>Type</th><th>Source</th><th>Requested</th><th>Status</th><th>Actions</th>
+      </tr></thead><tbody id="reqTbody"></tbody></table>
+    </div>
+  </div>
 </div></section></div>
+
+<!-- F-3 APPROVE REQUEST MODAL — route AND stop are mandatory. Approving
+     without them would recreate the incomplete-assignment problem the
+     worklist exists to prevent, and the server refuses it anyway. -->
+<div class="trn-modal-bg" id="reqApproveModal"><div class="trn-modal" style="width:620px">
+  <div class="trn-modal-title"><span>Approve Transport Request</span><button class="trn-modal-close" onclick="TRN.closeReqApprove()">&times;</button></div>
+  <input type="hidden" id="raReqId">
+  <div id="raStudent" style="font-size:13px;color:var(--t3);margin-bottom:10px;font-family:var(--font-b)"></div>
+  <div class="trn-form-grid">
+    <div class="trn-field"><label>Route <span style="color:#dc2626">*</span></label>
+      <select id="raRoute" class="trn-input" onchange="TRN.raLoadStops()"><option value="">-- Select route --</option></select></div>
+    <div class="trn-field"><label>Stop <span style="color:#dc2626">*</span></label>
+      <select id="raStop" class="trn-input"><option value="">-- Select route first --</option></select></div>
+    <div class="trn-field"><label>Subscription</label>
+      <select id="raType" class="trn-input">
+        <option value="both">Both ways</option><option value="pickup">Pickup only</option><option value="drop">Drop only</option>
+      </select></div>
+    <div class="trn-field"><label>Effective From</label><input type="date" id="raFrom" class="trn-input"></div>
+    <div class="trn-field"><label>Effective To</label><input type="date" id="raTo" class="trn-input"></div>
+    <div class="trn-field"><label>Monthly Fee</label>
+      <input type="number" step="0.01" min="0" id="raFee" class="trn-input" placeholder="Leave blank to use the route fee"></div>
+    <div class="trn-field trn-field-full"><label>Notes</label><input type="text" id="raNotes" class="trn-input"></div>
+  </div>
+  <div class="trn-modal-actions">
+    <button class="trn-btn" onclick="TRN.closeReqApprove()">Cancel</button>
+    <button class="trn-btn trn-btn-primary" onclick="TRN.submitReqApprove()"><i class="fa fa-check"></i> Approve &amp; Assign</button>
+  </div>
+</div></div>
+
+<!-- F-3 REJECT REQUEST MODAL — a reason is required, and no assignment is made. -->
+<div class="trn-modal-bg" id="reqRejectModal"><div class="trn-modal" style="width:520px">
+  <div class="trn-modal-title"><span>Reject Transport Request</span><button class="trn-modal-close" onclick="TRN.closeReqReject()">&times;</button></div>
+  <input type="hidden" id="rjReqId">
+  <div id="rjStudent" style="font-size:13px;color:var(--t3);margin-bottom:10px;font-family:var(--font-b)"></div>
+  <div class="trn-field trn-field-full"><label>Reason <span style="color:#dc2626">*</span></label>
+    <input type="text" id="rjReason" class="trn-input" placeholder="Why is this request being rejected?"></div>
+  <div style="font-size:12px;color:var(--t3);margin-top:8px;font-family:var(--font-b)">
+    The family can request again later; this rejection stays in the request's history.
+  </div>
+  <div class="trn-modal-actions">
+    <button class="trn-btn" onclick="TRN.closeReqReject()">Cancel</button>
+    <button class="trn-btn trn-btn-primary" onclick="TRN.submitReqReject()"><i class="fa fa-times"></i> Reject</button>
+  </div>
+</div></div>
 
 <!-- VEHICLE MODAL (F1 extended fields) -->
 <div class="trn-modal-bg" id="vehModal"><div class="trn-modal" style="width:720px">
@@ -320,7 +471,7 @@ $tab_map = [
   <!-- GPS (F1 fields only; Phase 5 owns live position writes) -->
   <div class="trn-form-row"><div class="trn-form-group"><label>GPS Enabled</label><select id="vhGps"><option value="0">No</option><option value="1">Yes</option></select></div><div class="trn-form-group"><label>GPS Device ID</label><input type="text" id="vhGpsDeviceId" placeholder="(Phase 5 will populate live fields)"></div></div>
 
-  <button class="trn-btn trn-btn-primary" onclick="TRN.saveVehicle()" style="width:100%;margin-top:8px">Save Vehicle</button>
+  <button class="trn-btn trn-btn-primary" onclick="TRN.saveVehicle()" <?= $can_manage?'':'disabled title="Requires Transport · manage"' ?> style="width:100%;margin-top:8px">Save Vehicle</button>
 </div></div>
 
 <!-- VENDOR MODAL (F1) -->
@@ -332,7 +483,7 @@ $tab_map = [
   <div class="trn-form-row"><div class="trn-form-group"><label>Email</label><input type="email" id="vndEmail"></div><div class="trn-form-group"><label>GSTIN</label><input type="text" id="vndGstin"></div></div>
   <div class="trn-form-group"><label>Address</label><input type="text" id="vndAddress"></div>
   <div class="trn-form-group"><label>Notes</label><input type="text" id="vndNotes"></div>
-  <button class="trn-btn trn-btn-primary" onclick="TRN.saveVendor()" style="width:100%;margin-top:8px">Save Vendor</button>
+  <button class="trn-btn trn-btn-primary" onclick="TRN.saveVendor()" <?= $can_manage?'':'disabled title="Requires Transport · manage"' ?> style="width:100%;margin-top:8px">Save Vendor</button>
 </div></div>
 
 <!-- VENDOR TERMINATE MODAL (F1) -->
@@ -371,6 +522,9 @@ $tab_map = [
 <!-- F8 Event modals (create + manage + dispatch + escorts + complete + cancel) -->
 <?php $this->load->view('transport/partials/event_modal'); ?>
 
+<!-- F12.1 M4 — CBSE compliance checklist + attest/waive -->
+<?php $this->load->view('transport/partials/compliance_modal'); ?>
+
 
 <!-- ROUTE MODAL -->
 <div class="trn-modal-bg" id="routeModal"><div class="trn-modal" style="width:480px">
@@ -380,7 +534,7 @@ $tab_map = [
   <div class="trn-form-row"><div class="trn-form-group"><label>Vehicle</label><select id="rtVehicleId"><option value="">-- None --</option></select></div><div class="trn-form-group"><label>Monthly Fee (Rs)</label><input type="number" id="rtFee" value="0" min="0"></div></div>
   <div class="trn-form-row"><div class="trn-form-group"><label>Start Point</label><input type="text" id="rtStart"></div><div class="trn-form-group"><label>End Point</label><input type="text" id="rtEnd"></div></div>
   <div class="trn-form-group"><label>Distance (km)</label><input type="number" id="rtDistance" value="0" min="0" step="0.1"></div>
-  <button class="trn-btn trn-btn-primary" onclick="TRN.saveRoute()" style="width:100%;margin-top:8px">Save Route</button>
+  <button class="trn-btn trn-btn-primary" onclick="TRN.saveRoute()" <?= $can_manage?'':'disabled title="Requires Transport · manage"' ?> style="width:100%;margin-top:8px">Save Route</button>
 </div></div>
 
 <!-- STOP MODAL -->
@@ -389,9 +543,37 @@ $tab_map = [
   <input type="hidden" id="stId">
   <div class="trn-form-group"><label>Route *</label><select id="stRouteId"></select></div>
   <div class="trn-form-group"><label>Stop Name *</label><input type="text" id="stName"></div>
+  <div class="trn-form-group"><label>Address</label><input type="text" id="stAddress" placeholder="Optional — the human-readable address"></div>
   <div class="trn-form-row"><div class="trn-form-group"><label>Pickup Time</label><input type="time" id="stPickup"></div><div class="trn-form-group"><label>Drop Time</label><input type="time" id="stDrop"></div></div>
   <div class="trn-form-group"><label>Order</label><input type="number" id="stOrder" value="0" min="0"></div>
-  <button class="trn-btn trn-btn-primary" onclick="TRN.saveStop()" style="width:100%;margin-top:8px">Save Stop</button>
+  <!-- GEOREFERENCE (2026-08-16). Transport_service::saveStop has ALWAYS accepted
+       latitude/longitude, and createTrip() freezes them into every checkpoint as
+       stop_location{lat,lng}. The form never sent them, so every stop stored 0,0
+       and every trip snapshotted a null-island checkpoint. These two inputs close
+       that gap; they stay OPTIONAL so existing un-georeferenced stops keep working. -->
+  <div class="trn-form-row">
+    <div class="trn-form-group"><label>Latitude</label>
+      <input type="text" inputmode="decimal" id="stLat" placeholder="e.g. 26.7712786"></div>
+    <div class="trn-form-group"><label>Longitude</label>
+      <input type="text" inputmode="decimal" id="stLng" placeholder="e.g. 79.0299672"></div>
+  </div>
+  <div style="font-size:11px;color:var(--t3);font-family:var(--font-b);margin:-6px 0 8px">
+    Optional. Click the map below to place the stop, drag the pin to adjust, or paste
+    coordinates from a maps app. Leave both blank if the stop is not georeferenced yet.
+  </div>
+  <!-- GAP-2 click-to-place. The map is drawn by whichever provider the tenant
+       configured; this code never names one. The renderer hands back {lat,lng}
+       as plain numbers — no Leaflet/MapLibre/Google object reaches here. -->
+  <div id="stPickWrap" style="display:none">
+    <div id="stPickMap" style="height:230px;border:1px solid var(--border);border-radius:6px"></div>
+    <div style="display:flex;align-items:center;gap:10px;margin:6px 0 12px">
+      <span id="stPickState" style="font-size:11px;color:var(--t3);font-family:var(--font-b)">No location selected</span>
+      <button type="button" class="trn-btn" id="stPickClear" onclick="TRN.clearStopLocation()"
+              style="margin-left:auto;padding:4px 10px;font-size:11px">Clear location</button>
+    </div>
+  </div>
+  <div id="stPickNote" style="display:none;font-size:11px;color:var(--t3);font-family:var(--font-b);margin-bottom:12px"></div>
+  <button class="trn-btn trn-btn-primary" onclick="TRN.saveStop()" <?= $can_manage?'':'disabled title="Requires Transport · manage"' ?> style="width:100%;margin-top:8px">Save Stop</button>
 </div></div>
 
 <!-- ASSIGNMENT MODAL -->
@@ -400,17 +582,37 @@ $tab_map = [
   <div class="trn-form-group trn-search-box"><label>Student</label><input type="text" id="asnStudentSearch" placeholder="Search by name or ID..." autocomplete="off"><input type="hidden" id="asnStudentId"><div class="trn-search-results" id="asnStudentResults"></div></div>
   <div class="trn-form-group"><label>Route *</label><select id="asnRouteId"></select></div>
   <div class="trn-form-row"><div class="trn-form-group"><label>Stop</label><select id="asnStopId"><option value="">-- Select --</option></select></div><div class="trn-form-group"><label>Type</label><select id="asnType"><option value="both">Both (Pickup & Drop)</option><option value="pickup">Pickup Only</option><option value="drop">Drop Only</option></select></div></div>
-  <button class="trn-btn trn-btn-primary" onclick="TRN.saveAssignment()" style="width:100%;margin-top:8px">Assign</button>
+  <button class="trn-btn trn-btn-primary" onclick="TRN.saveAssignment()" <?= $can_manage?'':'disabled title="Requires Transport · manage"' ?> style="width:100%;margin-top:8px">Assign</button>
 </div></div>
 
 <script>
-var _TRN_CFG={BASE:'<?= base_url() ?>',CSRF_NAME:'<?= $this->security->get_csrf_token_name() ?>',CSRF_HASH:'<?= $this->security->get_csrf_hash() ?>',activeTab:'<?= $at ?>'};
+var _TRN_CFG={BASE:'<?= base_url() ?>',CSRF_NAME:'<?= $this->security->get_csrf_token_name() ?>',CSRF_HASH:'<?= $this->security->get_csrf_hash() ?>',activeTab:'<?= $at ?>',CAN_EDIT:<?= $can_edit?'true':'false' ?>,CAN_MANAGE:<?= $can_manage?'true':'false' ?>};
 document.addEventListener('DOMContentLoaded', function(){
 (function(){
   'use strict';
   var BASE=_TRN_CFG.BASE,CSRF_NAME=_TRN_CFG.CSRF_NAME,CSRF_HASH=_TRN_CFG.CSRF_HASH;
+  // Graded RBAC (TL convention, commit 7ccebc0). UI affordance only — the
+  // server re-checks every endpoint via require_permission('Transport', ...).
+  var CAN_EDIT=_TRN_CFG.CAN_EDIT, CAN_MANAGE=_TRN_CFG.CAN_MANAGE;
+  var EDIT_ATTR=CAN_EDIT?'':' disabled title="No edit permission"';
+  var DEL_ATTR=CAN_MANAGE?'':' disabled title="No delete permission"';
+  // Manage-gated NON-delete actions. DEL_ATTR is also CAN_MANAGE-based but its
+  // tooltip says "No delete permission", which misdescribes actions like posting
+  // an expense — hence a separate attr with the wording already used by the
+  // manage-gated compliance buttons. Presentation only: the server's
+  // require_permission(...,'manage') remains the security boundary.
+  var MANAGE_ATTR=CAN_MANAGE?'':' disabled title="Requires Transport · manage"';
   var vehicles=[],routes=[],stops=[];
-  function getJSON(u){return $.getJSON(BASE+u)}
+  // errMsg — shared server-error extractor (TL convention).
+  function errMsg(xhr,def){var m=def||'Request failed';try{var j=xhr.responseJSON;if(!j&&xhr.responseText)j=JSON.parse(xhr.responseText);if(j&&j.message)m=j.message;else if(xhr.status)m=(def||'Request failed')+' ('+xhr.status+')';}catch(e){if(xhr.status)m=(def||'Request failed')+' ('+xhr.status+')';}return m}
+  // 2026-08-07 — GET failures were previously silent (no .fail handler), so a
+  // 403/500 on any tab load left an empty table with no explanation.
+  function getJSON(u){return $.getJSON(BASE+u).fail(function(xhr){toast(errMsg(xhr,'Failed to load data'),false)})}
+  // Skeleton row placeholder while a table loads (TL convention).
+  function skel(id,cols,n){var h='';n=n||4;for(var i=0;i<n;i++){h+='<tr>';for(var c=0;c<cols;c++)h+='<td><div class="rx-skel rx-skel-row"></div></td>';h+='</tr>'}$('#'+id).html(h)}
+  // Button busy-state for save sites that do NOT route through post()'s mutex.
+  function btnOn(sel){var el=$(sel)[0];if(el)el.classList.add('rx-btnload');return el}
+  function btnOff(el){if(el)el.classList.remove('rx-btnload')}
   // post(u, d) — CSRF-stamped POST. Release-cert 2026-07-08 pm: applies a
   // TRUE MUTEX to the last primary/danger modal button clicked (see
   // TRN.__lastBtn tracker below), not just cosmetic disabled state. The
@@ -459,10 +661,66 @@ document.addEventListener('DOMContentLoaded', function(){
       });
       return jqXHR;
     }
-    return $.post(BASE+u,d);
+    // 2026-08-07 — the no-button fallback path had NO fail handler, so posts
+    // fired outside a modal button context failed silently. Same contract as
+    // the mutex path above.
+    return $.post(BASE+u,d).fail(function(xhr){toast(errMsg(xhr,'Action failed'),false)});
   }
   function toast(m,ok){var t=$('<div style="position:fixed;top:20px;right:20px;z-index:99999;padding:12px 20px;border-radius:8px;font-size:.85rem;color:#fff;background:'+(ok?'var(--green)':'var(--rose)')+'">'+m+'</div>');$('body').append(t);setTimeout(function(){t.fadeOut(300,function(){t.remove()})},3000)}
   function escH(s){return $('<span>').text(s||'').html()}
+
+  /* ── UNIT 2B-3 — campus-geofence prerequisite guidance ──────────────────
+     createTrip() hard-blocks a Pickup trip when no valid campus arrival
+     geofence is configured, because such a trip could never be completed.
+     That is a CONFIGURATION problem the operator can fix, not a system
+     error — but it arrived as a 3-second red toast carrying a 200-character
+     sentence and no way to act on it.
+
+     Detection keys on the server message, NOT on client-side direction
+     logic: the guard fires for Pickup only, so a Drop trip can never
+     produce this needle and can never show this panel. The server remains
+     the sole authority; nothing here re-validates the geofence, and the
+     browser never reads Firestore.
+
+     Destination: Attendance → Settings → GPS Attendance tab, which is the
+     page that actually writes attendancePolicy.gps.geofences[]. It enforces
+     its own authorization; this link grants nothing. */
+  var GEO_NEEDLE = 'Campus arrival geofence is not configured';
+  function geoWarnHtml(){
+    return ''
+      + '<div style="background:rgba(245,158,11,.10);border-left:3px solid #f59e0b;'
+      +      'padding:12px 14px;border-radius:4px;font-size:12px;color:var(--t1);'
+      +      'font-family:var(--font-b);margin-bottom:14px">'
+      +   '<div style="font-weight:700;margin-bottom:6px">'
+      +     '<i class="fa fa-map-marker"></i> Configuration required — campus location not set'
+      +   '</div>'
+      +   '<div style="margin-bottom:8px;color:var(--t2)">'
+      +     'A <b>Pickup</b> trip cannot be created because the campus arrival location '
+      +     'has not been configured. Pickup trips need it so the system can verify the '
+      +     'bus has actually reached school before the trip is completed. '
+      +     '<b>Drop trips are not affected.</b>'
+      +   '</div>'
+      +   '<a class="trn-btn trn-btn-primary" style="display:inline-block;text-decoration:none" '
+      +      'href="' + BASE + 'attendance/settings" target="_blank" rel="noopener">'
+      +     '<i class="fa fa-cog"></i> Configure campus location'
+      +   '</a>'
+      +   '<div style="margin-top:6px;color:var(--t3)">'
+      +     'Attendance → Settings → <b>GPS Attendance</b> tab. Set the campus, then create the trip.'
+      +   '</div>'
+      + '</div>';
+  }
+  function geoWarnClear(slotId){ $('#'+slotId).hide().empty(); }
+  /* Show the guidance panel for the geofence prerequisite; anything else keeps
+     the existing toast behaviour unchanged. */
+  function tripErr(msg, slotId){
+    if (msg && String(msg).indexOf(GEO_NEEDLE) !== -1) {
+      $('#'+slotId).html(geoWarnHtml()).show();
+      return;
+    }
+    toast(msg, false);
+  }
+  // Global request progress bar (TL convention).
+  $(document).ajaxStart(function(){$('#rxLoadbar').addClass('on')}).ajaxStop(function(){$('#rxLoadbar').removeClass('on')});
   function vehName(id){for(var i=0;i<vehicles.length;i++) if(vehicles[i].id===id) return vehicles[i].number; return id||'—'}
   function routeName(id){for(var i=0;i<routes.length;i++) if(routes[i].id===id) return routes[i].name; return id||'—'}
 
@@ -485,8 +743,10 @@ document.addEventListener('DOMContentLoaded', function(){
 
   // ── Vehicles (F1 extended) ──
   var vendors=[];   // populated by loadVendors()
+  // Returns the request promise so callers that NEED the list (the trip
+  // creator) can wait for it instead of reading a half-filled array.
   function loadVehicles(){
-    getJSON('transport/get_vehicles').done(function(r){
+    return getJSON('transport/get_vehicles').done(function(r){
       if(r.status!=='success') return; vehicles=r.vehicles||[];
       var html=''; vehicles.forEach(function(v){
         var lc = v.lifecycle_status || 'Active';
@@ -496,9 +756,9 @@ document.addEventListener('DOMContentLoaded', function(){
         html+='<td>'+escH(own)+(v.vendor_id?' <small style="opacity:.6">'+escH(v.vendor_id)+'</small>':'')+'</td>';
         html+='<td><span class="trn-badge '+lcCls+'">'+lc+'</span></td>';
         html+='<td>'+
-          '<button class="trn-btn trn-btn-sm trn-btn-primary" onclick="TRN.editVeh(\''+v.id+'\')"><i class="fa fa-pencil"></i></button> '+
-          '<button class="trn-btn trn-btn-sm trn-btn-primary" onclick="TRN.openVehManage(\''+v.id+'\')"><i class="fa fa-cog"></i> Manage</button> '+
-          '<button class="trn-btn trn-btn-sm trn-btn-danger" onclick="TRN.delVeh(\''+v.id+'\')"><i class="fa fa-trash"></i></button>'+
+          '<button class="trn-btn trn-btn-sm trn-btn-primary" onclick="TRN.editVeh(\''+v.id+'\')"'+EDIT_ATTR+'><i class="fa fa-pencil"></i></button> '+
+          '<button class="trn-btn trn-btn-sm trn-btn-primary" onclick="TRN.openVehManage(\''+v.id+'\')"'+EDIT_ATTR+'><i class="fa fa-cog"></i> Manage</button> '+
+          '<button class="trn-btn trn-btn-sm trn-btn-danger" onclick="TRN.delVeh(\''+v.id+'\')"'+DEL_ATTR+'><i class="fa fa-trash"></i></button>'+
           '</td></tr>';
       });
       $('#vehTbody').html(html||'<tr><td colspan="8" style="text-align:center;color:var(--t3)">No vehicles</td></tr>');
@@ -539,7 +799,7 @@ document.addEventListener('DOMContentLoaded', function(){
     $('#vehModalTitle').text('Edit Vehicle');$('#vehModal').addClass('show');
   };
   TRN.vhToggleContract=function(){var isC=$('#vhOwnership').val()==='Contract';$('#vhContractRow,#vhContractRow2').toggle(isC);};
-  TRN.saveVehicle=function(){
+  TRN.saveVehicle=function(){if(!CAN_EDIT){toast('You do not have edit permission',false);return}
     post('transport/save_vehicle',{
       id:$('#vhId').val(),number:$('#vhNumber').val(),type:$('#vhType').val(),capacity:$('#vhCapacity').val(),
       staff_id:$('#vhStaffId').val(),conductor_staff_id:$('#vhConductorStaffId').val(),
@@ -554,7 +814,7 @@ document.addEventListener('DOMContentLoaded', function(){
       monthly_hire_amount:$('#vhHire').val(),contract_start_date:$('#vhContractStart').val(),contract_end_date:$('#vhContractEnd').val()
     }).done(function(r){r=typeof r==='string'?JSON.parse(r):r;if(r.status==='success'){toast(r.message,true);TRN.closeVehModal();loadVehicles()}else toast(r.message,false)})
   };
-  TRN.delVeh=function(id){if(!confirm('Delete vehicle?'))return;post('transport/delete_vehicle',{id:id}).done(function(r){r=typeof r==='string'?JSON.parse(r):r;if(r.status==='success'){toast(r.message,true);loadVehicles()}else toast(r.message,false)})};
+  TRN.delVeh=function(id){if(!CAN_MANAGE){toast('You do not have delete permission',false);return}if(!confirm('Delete vehicle?'))return;post('transport/delete_vehicle',{id:id}).done(function(r){r=typeof r==='string'?JSON.parse(r):r;if(r.status==='success'){toast(r.message,true);loadVehicles()}else toast(r.message,false)})};
 
   // ═════════════════════════════════════════════════════════════════════
   //  Vendors (F1) — CRUD + terminate
@@ -567,8 +827,8 @@ document.addEventListener('DOMContentLoaded', function(){
         var cls = (v.status==='Active')?'trn-badge-green':'trn-badge-red';
         html+='<tr><td>'+escH(v.id)+'</td><td>'+escH(v.vendor_name)+'</td><td>'+escH(v.contact_person||'—')+'</td><td>'+escH(v.phone||'—')+'</td><td>'+escH(v.gstin||'—')+'</td>';
         html+='<td><span class="trn-badge '+cls+'">'+escH(v.status)+'</span></td>';
-        html+='<td><button class="trn-btn trn-btn-sm trn-btn-primary" onclick="TRN.editVendor(\''+v.id+'\')"><i class="fa fa-pencil"></i></button>';
-        if(v.status==='Active') html+=' <button class="trn-btn trn-btn-sm trn-btn-danger" onclick="TRN.openVendorTerminate(\''+v.id+'\')"><i class="fa fa-ban"></i> Terminate</button>';
+        html+='<td><button class="trn-btn trn-btn-sm trn-btn-primary" onclick="TRN.editVendor(\''+v.id+'\')"'+EDIT_ATTR+'><i class="fa fa-pencil"></i></button>';
+        if(v.status==='Active') html+=' <button class="trn-btn trn-btn-sm trn-btn-danger" onclick="TRN.openVendorTerminate(\''+v.id+'\')"'+DEL_ATTR+'><i class="fa fa-ban"></i> Terminate</button>';
         html+='</td></tr>';
       });
       $('#vendorsTbody').html(html||'<tr><td colspan="7" style="text-align:center;color:var(--t3)">No vendors</td></tr>');
@@ -581,7 +841,7 @@ document.addEventListener('DOMContentLoaded', function(){
   TRN.openVendorModal=function(){$('#vndId,#vndName,#vndContact,#vndPhone,#vndEmail,#vndGstin,#vndAddress,#vndNotes').val('');$('#vendorModalTitle').text('Add Vendor');$('#vendorModal').addClass('show')};
   TRN.closeVendorModal=function(){$('#vendorModal').removeClass('show')};
   TRN.editVendor=function(id){var v=vendors.find(function(x){return x.id===id});if(!v)return;$('#vndId').val(v.id);$('#vndName').val(v.vendor_name);$('#vndContact').val(v.contact_person||'');$('#vndPhone').val(v.phone||'');$('#vndEmail').val(v.email||'');$('#vndGstin').val(v.gstin||'');$('#vndAddress').val(v.address||'');$('#vndNotes').val(v.notes||'');$('#vendorModalTitle').text('Edit Vendor');$('#vendorModal').addClass('show')};
-  TRN.saveVendor=function(){post('transport_vendors/save_vendor',{id:$('#vndId').val(),vendor_name:$('#vndName').val(),contact_person:$('#vndContact').val(),phone:$('#vndPhone').val(),email:$('#vndEmail').val(),gstin:$('#vndGstin').val(),address:$('#vndAddress').val(),notes:$('#vndNotes').val()}).done(function(r){r=typeof r==='string'?JSON.parse(r):r;if(r.status==='success'){toast(r.message,true);TRN.closeVendorModal();loadVendors()}else toast(r.message,false)})};
+  TRN.saveVendor=function(){if(!CAN_EDIT){toast('You do not have edit permission',false);return}post('transport_vendors/save_vendor',{id:$('#vndId').val(),vendor_name:$('#vndName').val(),contact_person:$('#vndContact').val(),phone:$('#vndPhone').val(),email:$('#vndEmail').val(),gstin:$('#vndGstin').val(),address:$('#vndAddress').val(),notes:$('#vndNotes').val()}).done(function(r){r=typeof r==='string'?JSON.parse(r):r;if(r.status==='success'){toast(r.message,true);TRN.closeVendorModal();loadVendors()}else toast(r.message,false)})};
   TRN.openVendorTerminate=function(id){$('#vndTermId').val(id);$('#vndTermReason').val('');$('#vendorTerminateModal').addClass('show')};
   TRN.closeVendorTerminate=function(){$('#vendorTerminateModal').removeClass('show')};
   TRN.confirmTerminateVendor=function(){var id=$('#vndTermId').val();var reason=$('#vndTermReason').val();if(!reason){toast('Reason is required.',false);return}post('transport_vendors/terminate_vendor',{id:id,reason:reason}).done(function(r){r=typeof r==='string'?JSON.parse(r):r;if(r.status==='success'){toast(r.message,true);TRN.closeVendorTerminate();loadVendors()}else toast(r.message,false)})};
@@ -662,7 +922,7 @@ document.addEventListener('DOMContentLoaded', function(){
       (r.documents||[]).forEach(function(d){
         var link=d.file_path?'<a href="'+escH(d.file_path)+'" target="_blank">Open</a>':'—';
         html+='<tr><td>'+escH(d.doc_type)+'</td><td>'+escH(d.doc_number||'')+'</td><td>'+escH(d.issue_date||'')+'</td><td>'+escH(d.expiry_date||'')+'</td><td>'+link+'</td>';
-        html+='<td><button class="trn-btn trn-btn-sm trn-btn-danger" onclick="TRN.vmDeleteDoc(\''+d.id+'\')"><i class="fa fa-trash"></i></button></td></tr>';
+        html+='<td><button class="trn-btn trn-btn-sm trn-btn-danger" onclick="TRN.vmDeleteDoc(\''+d.id+'\')"'+DEL_ATTR+'><i class="fa fa-trash"></i></button></td></tr>';
       });
       $('#vmDocsTbody').html(html||'<tr><td colspan="6" style="text-align:center;color:var(--t3)">No documents</td></tr>');
     });
@@ -768,7 +1028,12 @@ document.addEventListener('DOMContentLoaded', function(){
   // ── Routes (F2 extended) ──
   function loadRoutes(){
     var includeArchived = $('#routeShowArchived').is(':checked') ? '1' : '0';
-    getJSON('transport/get_routes?include_archived='+includeArchived).done(function(r){
+    // UAT fix (2026-08-09): RETURN the promise. openAsnModal used to call
+    // loadRoutes() and then immediately set the route <select>'s value — but
+    // the options had not arrived yet, so the selection silently failed and the
+    // Edit dialog opened with the wrong route showing. Returning the promise
+    // lets the caller prefill only once the options actually exist.
+    return getJSON('transport/get_routes?include_archived='+includeArchived).done(function(r){
       if(r.status!=='success') return; routes=r.routes||[];
       var html=''; routes.forEach(function(rt){
         var st = rt.status || 'Active';
@@ -781,14 +1046,14 @@ document.addEventListener('DOMContentLoaded', function(){
         else badge = '<span class="trn-badge trn-badge-green">Active</span>';
         html+='<tr><td>'+escH(rt.id)+'</td><td>'+escH(rt.name)+'</td><td>'+escH(vehName(rt.vehicle_id))+'</td><td>'+rt.distance_km+' km</td><td>Rs '+rt.monthly_fee+'</td><td>'+badge+'</td>';
         html+='<td>';
-        html+='<button class="trn-btn trn-btn-sm trn-btn-primary" onclick="TRN.editRoute(\''+rt.id+'\')" title="Edit"><i class="fa fa-pencil"></i></button> ';
+        html+='<button class="trn-btn trn-btn-sm trn-btn-primary" onclick="TRN.editRoute(\''+rt.id+'\')"'+MANAGE_ATTR+' title="Edit"><i class="fa fa-pencil"></i></button> ';
         if (isArchived) {
-          html+='<button class="trn-btn trn-btn-sm trn-btn-primary" onclick="TRN.unarchiveRoute(\''+rt.id+'\')" title="Unarchive"><i class="fa fa-undo"></i></button>';
+          html+='<button class="trn-btn trn-btn-sm trn-btn-primary" onclick="TRN.unarchiveRoute(\''+rt.id+'\')"'+MANAGE_ATTR+' title="Unarchive"><i class="fa fa-undo"></i></button>';
         } else if (isSuspended) {
-          html+='<button class="trn-btn trn-btn-sm trn-btn-primary" onclick="TRN.openResumeModal(\''+rt.active_suspension_ref+'\',\''+escH(rt.name)+'\')" title="Resume"><i class="fa fa-play"></i></button>';
+          html+='<button class="trn-btn trn-btn-sm trn-btn-primary" onclick="TRN.openResumeModal(\''+rt.active_suspension_ref+'\',\''+escH(rt.name)+'\')"'+EDIT_ATTR+' title="Resume"><i class="fa fa-play"></i></button>';
         } else {
-          html+='<button class="trn-btn trn-btn-sm trn-btn-primary" onclick="TRN.openSuspendModal(\''+rt.id+'\',\''+escH(rt.name)+'\')" title="Suspend"><i class="fa fa-ban"></i></button> ';
-          html+='<button class="trn-btn trn-btn-sm trn-btn-danger" onclick="TRN.openArchiveModal(\''+rt.id+'\')" title="Archive / Delete"><i class="fa fa-archive"></i></button>';
+          html+='<button class="trn-btn trn-btn-sm trn-btn-primary" onclick="TRN.openSuspendModal(\''+rt.id+'\',\''+escH(rt.name)+'\')"'+EDIT_ATTR+' title="Suspend"><i class="fa fa-ban"></i></button> ';
+          html+='<button class="trn-btn trn-btn-sm trn-btn-danger" onclick="TRN.openArchiveModal(\''+rt.id+'\')"'+DEL_ATTR+' title="Archive / Delete"><i class="fa fa-archive"></i></button>';
         }
         html+='</td></tr>';
       });
@@ -813,9 +1078,9 @@ document.addEventListener('DOMContentLoaded', function(){
   TRN.openRouteModal=function(){loadVehicles();$('#rtId,#rtName,#rtStart,#rtEnd').val('');$('#rtFee,#rtDistance').val(0);$('#rtVehicleId').val('');$('#routeModalTitle').text('Add Route');$('#routeModal').addClass('show')};
   TRN.closeRouteModal=function(){$('#routeModal').removeClass('show')};
   TRN.editRoute=function(id){var r=routes.find(function(x){return x.id===id});if(!r)return;$('#rtId').val(r.id);$('#rtName').val(r.name);$('#rtVehicleId').val(r.vehicle_id);$('#rtFee').val(r.monthly_fee);$('#rtStart').val(r.start_point);$('#rtEnd').val(r.end_point);$('#rtDistance').val(r.distance_km);$('#routeModalTitle').text('Edit Route');$('#routeModal').addClass('show')};
-  TRN.saveRoute=function(){post('transport/save_route',{id:$('#rtId').val(),name:$('#rtName').val(),vehicle_id:$('#rtVehicleId').val(),monthly_fee:$('#rtFee').val(),start_point:$('#rtStart').val(),end_point:$('#rtEnd').val(),distance_km:$('#rtDistance').val()}).done(function(r){r=typeof r==='string'?JSON.parse(r):r;if(r.status==='success'){toast(r.message,true);TRN.closeRouteModal();loadRoutes()}else toast(r.message,false)})};
+  TRN.saveRoute=function(){if(!CAN_EDIT){toast('You do not have edit permission',false);return}post('transport/save_route',{id:$('#rtId').val(),name:$('#rtName').val(),vehicle_id:$('#rtVehicleId').val(),monthly_fee:$('#rtFee').val(),start_point:$('#rtStart').val(),end_point:$('#rtEnd').val(),distance_km:$('#rtDistance').val()}).done(function(r){r=typeof r==='string'?JSON.parse(r):r;if(r.status==='success'){toast(r.message,true);TRN.closeRouteModal();loadRoutes()}else toast(r.message,false)})};
   // F2: soft-delete by default via delete_route (archives); hard delete only from Archive modal
-  TRN.delRoute=function(id){
+  TRN.delRoute=function(id){if(!CAN_MANAGE){toast('You do not have delete permission',false);return}
     // Legacy binding — now routes to Archive modal for safety.
     TRN.openArchiveModal(id);
   };
@@ -919,7 +1184,7 @@ document.addEventListener('DOMContentLoaded', function(){
         for(var i=0;i<routes.length;i++)if(routes[i].id===s.route_id){routeName=routes[i].name;break}
         var np=s.notify_parents?'<span class="trn-badge trn-badge-blue">Notified</span>':'<span class="trn-badge trn-badge-amber">Ops only</span>';
         html+='<tr><td>'+escH(s.id)+'</td><td>'+escH(routeName||s.route_id)+'</td><td>'+escH((s.reason_category||'').replace(/_/g,' '))+'</td><td>'+escH(s.suspended_from||'')+'</td><td>'+escH(s.reason||'')+'</td><td>'+np+'</td>';
-        html+='<td><button class="trn-btn trn-btn-sm trn-btn-primary" onclick="TRN.openResumeModal(\''+s.id+'\',\''+escH(routeName||'')+'\')" title="Resume"><i class="fa fa-play"></i> Resume</button></td></tr>';
+        html+='<td><button class="trn-btn trn-btn-sm trn-btn-primary" onclick="TRN.openResumeModal(\''+s.id+'\',\''+escH(routeName||'')+'\')"'+EDIT_ATTR+' title="Resume"><i class="fa fa-play"></i> Resume</button></td></tr>';
       });
       $('#activeSuspTbody').html(html);
     });
@@ -932,7 +1197,7 @@ document.addEventListener('DOMContentLoaded', function(){
       if(r.status!=='success') return; stops=r.stops||[];
       var html=''; stops.forEach(function(s){
         html+='<tr><td>'+escH(s.id)+'</td><td>'+escH(routeName(s.route_id))+'</td><td>'+escH(s.name)+'</td><td>'+escH(s.pickup_time)+'</td><td>'+escH(s.drop_time)+'</td><td>'+s.order+'</td>';
-        html+='<td><button class="trn-btn trn-btn-sm trn-btn-primary" onclick="TRN.editStop(\''+s.id+'\')"><i class="fa fa-pencil"></i></button> <button class="trn-btn trn-btn-sm trn-btn-danger" onclick="TRN.delStop(\''+s.id+'\')"><i class="fa fa-trash"></i></button></td></tr>';
+        html+='<td><button class="trn-btn trn-btn-sm trn-btn-primary" onclick="TRN.editStop(\''+s.id+'\')"'+MANAGE_ATTR+'><i class="fa fa-pencil"></i></button> <button class="trn-btn trn-btn-sm trn-btn-danger" onclick="TRN.delStop(\''+s.id+'\')"'+DEL_ATTR+'><i class="fa fa-trash"></i></button></td></tr>';
       });
       $('#stopsTbody').html(html||'<tr><td colspan="7" style="text-align:center;color:var(--t3)">No stops</td></tr>');
       // populate assignment stop select
@@ -940,11 +1205,89 @@ document.addEventListener('DOMContentLoaded', function(){
     });
   }
   $('#stopRouteFilter').on('change', loadStops);
-  TRN.openStopModal=function(){loadRoutes();$('#stId,#stName,#stPickup,#stDrop').val('');$('#stOrder').val(0);$('#stopModalTitle').text('Add Stop');$('#stopModal').addClass('show')};
+  TRN.openStopModal=function(){loadRoutes();$('#stId,#stName,#stPickup,#stDrop,#stAddress,#stLat,#stLng').val('');$('#stOrder').val(0);$('#stopModalTitle').text('Add Stop');$('#stopModal').addClass('show');stPickInit()};
   TRN.closeStopModal=function(){$('#stopModal').removeClass('show')};
-  TRN.editStop=function(id){var s=stops.find(function(x){return x.id===id});if(!s)return;$('#stId').val(s.id);$('#stRouteId').val(s.route_id);$('#stName').val(s.name);$('#stPickup').val(s.pickup_time);$('#stDrop').val(s.drop_time);$('#stOrder').val(s.order);$('#stopModalTitle').text('Edit Stop');$('#stopModal').addClass('show')};
-  TRN.saveStop=function(){post('transport/save_stop',{id:$('#stId').val(),route_id:$('#stRouteId').val(),name:$('#stName').val(),pickup_time:$('#stPickup').val(),drop_time:$('#stDrop').val(),order:$('#stOrder').val()}).done(function(r){r=typeof r==='string'?JSON.parse(r):r;if(r.status==='success'){toast(r.message,true);TRN.closeStopModal();loadStops()}else toast(r.message,false)})};
-  TRN.delStop=function(id){if(!confirm('Delete stop?'))return;post('transport/delete_stop',{id:id}).done(function(r){r=typeof r==='string'?JSON.parse(r):r;if(r.status==='success'){toast(r.message,true);loadStops()}else toast(r.message,false)})};
+  TRN.editStop=function(id){var s=stops.find(function(x){return x.id===id});if(!s)return;$('#stId').val(s.id);$('#stRouteId').val(s.route_id);$('#stName').val(s.name);$('#stPickup').val(s.pickup_time);$('#stDrop').val(s.drop_time);$('#stOrder').val(s.order);$('#stAddress').val(s.address||'');
+    // 0/absent means NOT georeferenced — show blank, never a literal 0, or an
+    // operator would "confirm" null island by simply re-saving the form.
+    $('#stLat').val(Number(s.latitude)?s.latitude:'');$('#stLng').val(Number(s.longitude)?s.longitude:'');
+    $('#stopModalTitle').text('Edit Stop');$('#stopModal').addClass('show');stPickInit()};
+  /* ── GAP-2 — provider-neutral stop coordinate picker ──────────────────
+     The renderer is resolved at runtime from the tenant's Maps configuration
+     (ZenxMaps.forPlatform('admin')); this code never names MapTiler, Leaflet
+     or any provider, and only ever receives {lat, lng} as numbers.
+     Manual entry stays fully usable — the map is an ADDITION, not a gate. */
+  var stPick = { renderer: null, tried: false };
+  var ST_PIN = 'stop_pin';
+
+  function stPickNote(msg){ var n=$('#stPickNote'); msg?n.text(msg).show():n.hide(); }
+
+  function stPickSet(lat, lng, moveCamera){
+    // 7 dp ≈ 1 cm — well beyond what a bus stop needs, and it keeps the value
+    // identical to what the operator sees, so a re-save never drifts.
+    $('#stLat').val(Number(lat).toFixed(7));
+    $('#stLng').val(Number(lng).toFixed(7));
+    $('#stPickState').text('Stop location selected · ' + Number(lat).toFixed(5) + ', ' + Number(lng).toFixed(5));
+    if (!stPick.renderer) { return; }
+    stPick.renderer.addDraggableMarker(ST_PIN, lat, lng);
+    stPick.renderer.onMarkerDrag(ST_PIN, function (p) { stPickSet(p.lat, p.lng, false); });
+    if (moveCamera) { stPick.renderer.moveCamera(lat, lng, 15); }
+  }
+
+  TRN.clearStopLocation=function(){
+    $('#stLat,#stLng').val('');
+    $('#stPickState').text('No location selected');
+    if (stPick.renderer) { stPick.renderer.removeMarker(ST_PIN); }
+  };
+
+  function stPickInit(){
+    if (stPick.tried) { stPickAfterInit(); return; }
+    stPick.tried = true;
+    // The factory's global is ZenxMapRendererFactory (map_renderer.js:294) —
+    // the same one fleet_live.php uses. Naming it anything else silently lands
+    // in the "unavailable" branch, which is how this first failed in browser.
+    if (!window.ZenxMapRendererFactory) {
+      stPickNote('Map picker unavailable — enter coordinates manually.'); return;
+    }
+    window.ZenxMapRendererFactory.forPlatform('admin').then(function (r) {
+      // Honest failure: no provider configured is a real, nameable state —
+      // never a blank grey box, and never a blocker for manual entry.
+      if (!r || !r.isAvailable()) {
+        stPickNote('No map provider configured, so the map picker is unavailable. '
+                 + 'You can still type latitude and longitude above.');
+        return;
+      }
+      stPick.renderer = r;
+      $('#stPickWrap').show();
+      r.initialize(document.getElementById('stPickMap'), {}).then(function () {
+        r.onMapClick(function (p) { stPickSet(p.lat, p.lng, false); });
+        stPickAfterInit();
+      }).catch(function () {
+        $('#stPickWrap').hide();
+        stPickNote('The map could not be loaded. You can still type latitude and longitude above.');
+      });
+    }).catch(function () {
+      stPickNote('Map configuration could not be read. You can still type coordinates above.');
+    });
+  }
+  function stPickAfterInit(){
+    var la=parseFloat($('#stLat').val()), ln=parseFloat($('#stLng').val());
+    if (!isNaN(la) && !isNaN(ln)) { stPickSet(la, ln, true); }
+    else { $('#stPickState').text('No location selected'); }
+  }
+
+  TRN.saveStop=function(){
+    if(!CAN_EDIT){toast('You do not have edit permission',false);return}
+    // Coordinates are OPTIONAL but PAIRED: one without the other is a half-placed
+    // stop, which is worse than none because it looks georeferenced. Caught here
+    // for a fast message; the server re-validates and is the real authority.
+    var lat=$.trim($('#stLat').val()), lng=$.trim($('#stLng').val());
+    if((lat==='')!==(lng==='')){toast('Enter BOTH latitude and longitude, or leave both blank.',false);return}
+    post('transport/save_stop',{id:$('#stId').val(),route_id:$('#stRouteId').val(),name:$('#stName').val(),
+      pickup_time:$('#stPickup').val(),drop_time:$('#stDrop').val(),order:$('#stOrder').val(),
+      address:$('#stAddress').val(),latitude:lat,longitude:lng
+    }).done(function(r){r=typeof r==='string'?JSON.parse(r):r;if(r.status==='success'){toast(r.message,true);TRN.closeStopModal();loadStops()}else toast(r.message,false)})};
+  TRN.delStop=function(id){if(!CAN_MANAGE){toast('You do not have delete permission',false);return}if(!confirm('Delete stop?'))return;post('transport/delete_stop',{id:id}).done(function(r){r=typeof r==='string'?JSON.parse(r):r;if(r.status==='success'){toast(r.message,true);loadStops()}else toast(r.message,false)})};
 
   // ── Assignments (F3 extended) ──
   var assignments=[];
@@ -964,37 +1307,55 @@ document.addEventListener('DOMContentLoaded', function(){
         html+='<td>Rs '+a.monthly_fee+feeSuffix+'</td>';
         html+='<td><span class="trn-badge '+stCls+'">'+status+'</span></td>';
         html+='<td>';
-        html+='<button class="trn-btn trn-btn-sm trn-btn-primary" onclick="TRN.editAsn(\''+a.student_id+'\')" title="Edit"><i class="fa fa-pencil"></i></button> ';
+        html+='<button class="trn-btn trn-btn-sm trn-btn-primary" onclick="TRN.editAsn(\''+a.student_id+'\')"'+MANAGE_ATTR+' title="Edit"><i class="fa fa-pencil"></i></button> ';
         html+='<button class="trn-btn trn-btn-sm trn-btn-primary" onclick="TRN.openHistory(\''+a.student_id+'\',\''+escH(a.student_name)+'\')" title="History"><i class="fa fa-history"></i></button> ';
         if (isSuspended) {
-          html+='<button class="trn-btn trn-btn-sm trn-btn-primary" onclick="TRN.resumeAsn(\''+a.student_id+'\')" title="Resume"><i class="fa fa-play"></i></button> ';
+          html+='<button class="trn-btn trn-btn-sm trn-btn-primary" onclick="TRN.resumeAsn(\''+a.student_id+'\')"'+MANAGE_ATTR+' title="Resume"><i class="fa fa-play"></i></button> ';
         } else {
-          html+='<button class="trn-btn trn-btn-sm trn-btn-primary" onclick="TRN.openChange(\''+a.student_id+'\',\'route\')" title="Change Route"><i class="fa fa-exchange"></i></button> ';
-          html+='<button class="trn-btn trn-btn-sm trn-btn-primary" onclick="TRN.openChange(\''+a.student_id+'\',\'stop\')" title="Change Stop"><i class="fa fa-map-marker"></i></button> ';
-          html+='<button class="trn-btn trn-btn-sm trn-btn-primary" onclick="TRN.openSuspendAsn(\''+a.student_id+'\')" title="Suspend"><i class="fa fa-pause"></i></button> ';
+          html+='<button class="trn-btn trn-btn-sm trn-btn-primary" onclick="TRN.openChange(\''+a.student_id+'\',\'route\')"'+MANAGE_ATTR+' title="Change Route"><i class="fa fa-exchange"></i></button> ';
+          html+='<button class="trn-btn trn-btn-sm trn-btn-primary" onclick="TRN.openChange(\''+a.student_id+'\',\'stop\')"'+MANAGE_ATTR+' title="Change Stop"><i class="fa fa-map-marker"></i></button> ';
+          html+='<button class="trn-btn trn-btn-sm trn-btn-primary" onclick="TRN.openSuspendAsn(\''+a.student_id+'\')"'+EDIT_ATTR+' title="Suspend"><i class="fa fa-pause"></i></button> ';
         }
-        html+='<button class="trn-btn trn-btn-sm trn-btn-danger" onclick="TRN.delAsn(\''+a.student_id+'\')" title="Unassign"><i class="fa fa-times"></i></button>';
+        html+='<button class="trn-btn trn-btn-sm trn-btn-danger" onclick="TRN.delAsn(\''+a.student_id+'\')"'+DEL_ATTR+' title="Unassign"><i class="fa fa-times"></i></button>';
         html+='</td></tr>';
       });
       $('#asnTbody').html(html||'<tr><td colspan="8" style="text-align:center;color:var(--t3)">No assignments</td></tr>');
     });
   }
   TRN.openAsnModal=function(editData){
-    loadRoutes();
     $('#asnStudentSearch,#asnStudentId').val('');$('#asnType').val('both');$('#asnStopId').html('<option value="">-- Select --</option>');
+    $('#asnStudentResults').removeClass('show').empty();
+    // Student id/name can be set immediately — they do not depend on any
+    // dropdown being populated.
     if(editData){
-      // Edit mode: pre-fill fields
-      $('#asnStudentId').val(editData.student_id);$('#asnStudentSearch').val(editData.student_name).prop('disabled',true);
-      $('#asnRouteId').val(editData.route_id);$('#asnType').val(editData.type||'both');
-      // Load stops for selected route, then select the stop
-      loadStopsForAssignment(editData.route_id,editData.stop_id);
+      $('#asnStudentId').val(editData.student_id);
+      $('#asnStudentSearch').val(editData.student_name).prop('disabled',true);
     } else {
       $('#asnStudentSearch').prop('disabled',false);
-      // Load stops for first route in dropdown
-      var firstRoute=$('#asnRouteId').val();
-      if(firstRoute) loadStopsForAssignment(firstRoute);
     }
     $('#asnModal').addClass('show');
+
+    // UAT fix (2026-08-09): everything that depends on the ROUTE dropdown must
+    // wait for it to be populated. Previously these ran synchronously against
+    // an empty <select>, so Edit opened showing the wrong route — and saving
+    // from that state would have silently moved the student to whichever route
+    // happened to be first in the list.
+    loadRoutes().done(function(){
+      if(editData){
+        $('#asnRouteId').val(editData.route_id);
+        $('#asnType').val(editData.type||'both');
+        // Warn instead of failing silently if the assigned route is gone
+        // (archived/deleted) — otherwise the dialog quietly shows a different
+        // route than the student is actually on.
+        if($('#asnRouteId').val()!==editData.route_id){
+          toast('This student’s route is no longer selectable (archived or removed). Please choose a route before saving.',false);
+        }
+        loadStopsForAssignment(editData.route_id,editData.stop_id);
+      } else {
+        var firstRoute=$('#asnRouteId').val();
+        if(firstRoute) loadStopsForAssignment(firstRoute);
+      }
+    });
   };
   TRN.editAsn=function(sid){var a=assignments.find(function(x){return x.student_id===sid});if(!a)return;TRN.openAsnModal(a)};
   TRN.closeAsnModal=function(){$('#asnStudentSearch').prop('disabled',false);$('#asnModal').removeClass('show')};
@@ -1013,16 +1374,16 @@ document.addEventListener('DOMContentLoaded', function(){
   // Student search for assignments
   var asnTimer;
   $('#asnStudentSearch').on('input',function(){clearTimeout(asnTimer);var q=$(this).val();if(q.length<2){$('#asnStudentResults').removeClass('show');return}
-    asnTimer=setTimeout(function(){getJSON('transport/search_students?q='+encodeURIComponent(q)).done(function(r){if(r.status!=='success'||!r.students.length){$('#asnStudentResults').html('<div class="trn-search-item" style="color:var(--t3);cursor:default">No students found</div>').addClass('show');return}var h='';r.students.forEach(function(s){h+='<div class="trn-search-item" data-id="'+s.id+'" data-name="'+escH(s.name)+'">'+escH(s.name)+' <small style="opacity:.6">'+escH(s.id)+'</small> <small>'+escH(s.class)+'</small></div>'});$('#asnStudentResults').html(h).addClass('show')}).fail(function(xhr){$('#asnStudentResults').html('<div class="trn-search-item" style="color:var(--rose);cursor:default">Search failed: '+(xhr.responseJSON?xhr.responseJSON.message:xhr.statusText)+'</div>').addClass('show')})},300)});
+    asnTimer=setTimeout(function(){getJSON('transport/search_students?q='+encodeURIComponent(q)).done(function(r){if(r.status!=='success'||!r.students.length){$('#asnStudentResults').html('<div class="trn-search-item is-msg">No students found</div>').addClass('show');return}var h='';r.students.forEach(function(s){h+='<div class="trn-search-item" data-id="'+s.id+'" data-name="'+escH(s.name)+'"><span class="si-name">'+escH(s.name)+'</span><span class="si-id">'+escH(s.id)+'</span>'+(s.srNo?'<span class="si-id">SR '+escH(s.srNo)+'</span>':'')+'<span class="si-cls">'+escH(s.class)+'</span></div>'});$('#asnStudentResults').html(h).addClass('show')}).fail(function(xhr){$('#asnStudentResults').html('<div class="trn-search-item is-msg" style="color:var(--rose)">Search failed: '+escH(xhr.responseJSON?xhr.responseJSON.message:xhr.statusText)+'</div>').addClass('show')})},300)});
   $(document).on('click','#asnStudentResults .trn-search-item',function(){$('#asnStudentId').val($(this).data('id'));$('#asnStudentSearch').val($(this).data('name'));$('#asnStudentResults').removeClass('show')});
   $(document).on('click',function(e){if(!$(e.target).closest('.trn-search-box').length) $('#asnStudentResults').removeClass('show')});
   // Route change → load stops for assignment
   $('#asnRouteId').on('change',function(){loadStopsForAssignment($(this).val())});
-  TRN.saveAssignment=function(){
+  TRN.saveAssignment=function(){if(!CAN_EDIT){toast('You do not have edit permission',false);return}
     var sid=$('#asnStudentId').val();if(!sid){toast('Please select a student.',false);return}
     var rid=$('#asnRouteId').val();if(!rid){toast('Please select a route.',false);return}
     post('transport/save_assignment',{student_id:sid,route_id:rid,stop_id:$('#asnStopId').val(),type:$('#asnType').val()}).done(function(r){r=typeof r==='string'?JSON.parse(r):r;if(r.status==='success'){toast(r.message,true);TRN.closeAsnModal();loadAssignments()}else toast(r.message,false)})};
-  TRN.delAsn=function(sid){
+  TRN.delAsn=function(sid){if(!CAN_MANAGE){toast('You do not have delete permission',false);return}
     if(!confirm('Remove transport assignment?'))return;
     var reason = prompt('Reason (optional):','unassigned via admin');
     post('transport/delete_assignment',{student_id:sid,reason:reason||''}).done(function(r){r=typeof r==='string'?JSON.parse(r):r;if(r.status==='success'){toast(r.message,true);loadAssignments()}else toast(r.message,false)});
@@ -1188,7 +1549,11 @@ document.addEventListener('DOMContentLoaded', function(){
         $('#roStatus').show().html('<span style="color:var(--rose)">'+escH(r.message||'Failed')+'</span>');
         return;
       }
-      var st=r.status||'';
+      // ROLL-1: read the ROLLOVER state, not the envelope's. The server used to
+      // send both under the key `status`, where the payload overwrote the
+      // envelope — so the guard above caught every response and this branch
+      // never ran. `rollover_status` is now distinct from transport success.
+      var st=r.rollover_status||'';
       $('#roStatus').show().html('<b>Status:</b> '+escH(st)+' — <b>Processed:</b> '+r.processed+' — <b>Batch:</b> '+escH(r.batch_id||''));
       if(st==='complete'){
         $('#roStartBtn').text('Done').prop('disabled',true);
@@ -1233,7 +1598,7 @@ document.addEventListener('DOMContentLoaded', function(){
         html+='<td><span class="trn-badge '+licCls+'">'+escH(licExp)+'</span></td>';
         html+='<td><span class="trn-badge '+medCls+'">'+escH(medExp)+'</span></td>';
         html+='<td><span class="trn-badge '+opCls+'">'+escH(op)+'</span></td>';
-        html+='<td><button class="trn-btn trn-btn-sm trn-btn-primary" onclick="TRN.openDrvManage(\''+(d.staff_id||d.id)+'\')" title="Manage"><i class="fa fa-cog"></i> Manage</button></td>';
+        html+='<td><button class="trn-btn trn-btn-sm trn-btn-primary" onclick="TRN.openDrvManage(\''+(d.staff_id||d.id)+'\')"'+EDIT_ATTR+' title="Manage"><i class="fa fa-cog"></i> Manage</button></td>';
         html+='</tr>';
       });
       $('#driversTbody').html(html||'<tr><td colspan="7" style="text-align:center;color:var(--t3)">No drivers — enable a staff\'s flags.can_drive_transport in HR</td></tr>');
@@ -1280,17 +1645,37 @@ document.addEventListener('DOMContentLoaded', function(){
     $('[data-dmpanel="'+t+'"]').show();
   };
   TRN.dmSaveMeta=function(){
-    post('transport_driver/save_meta',{
+    // Credential/fitness fields require Transport · manage server-side; the
+    // benign four are editable at 'edit' on the actor's OWN record.
+    //
+    // The sensitive keys must be OMITTED — not merely sent blank — for a
+    // non-manage user. jQuery .val() reads a disabled input just the same, so
+    // including them would make every benign save look like a sensitive one and
+    // the server would (correctly) refuse it, leaving an edit-level user unable
+    // to update even their own emergency contact. The server remains the
+    // boundary: it re-checks manage on whatever actually arrives.
+    var payload={
       staff_id:dmCurrentStaff,
-      licence_no:$('#dmLicNo').val(),licence_class:$('#dmLicClass').val(),
-      licence_issued:$('#dmLicIssued').val(),licence_expires:$('#dmLicExpires').val(),
-      licence_authority:$('#dmLicAuth').val(),years_experience:$('#dmYearsExp').val(),
-      medical_check_last:$('#dmMedLast').val(),medical_expires:$('#dmMedExpires').val(),
-      badge_no:$('#dmBadgeNo').val(),badge_expires:$('#dmBadgeExpires').val(),
-      can_drive_types:$('#dmCanDrive').val(),operational_status:$('#dmOpStatus').val(),
-      emergency_contact_name:$('#dmEmerName').val(),emergency_contact_phone:$('#dmEmerPhone').val(),
+      years_experience:$('#dmYearsExp').val(),
+      emergency_contact_name:$('#dmEmerName').val(),
+      emergency_contact_phone:$('#dmEmerPhone').val(),
       replacement_availability:$('#dmReplAvail').val()
-    }).done(function(r){r=typeof r==='string'?JSON.parse(r):r;if(r.status==='success'){toast(r.message,true);}else toast(r.message,false)});
+    };
+    if(CAN_MANAGE){
+      payload.licence_no=$('#dmLicNo').val();
+      payload.licence_class=$('#dmLicClass').val();
+      payload.licence_issued=$('#dmLicIssued').val();
+      payload.licence_expires=$('#dmLicExpires').val();
+      payload.licence_authority=$('#dmLicAuth').val();
+      payload.medical_check_last=$('#dmMedLast').val();
+      payload.medical_expires=$('#dmMedExpires').val();
+      payload.badge_no=$('#dmBadgeNo').val();
+      payload.badge_expires=$('#dmBadgeExpires').val();
+      payload.can_drive_types=$('#dmCanDrive').val();
+      payload.operational_status=$('#dmOpStatus').val();
+    }
+    post('transport_driver/save_meta',payload)
+      .done(function(r){r=typeof r==='string'?JSON.parse(r):r;if(r.status==='success'){toast(r.message,true);}else toast(r.message,false)});
   };
   TRN.dmLoadIncidents=function(){
     if(!dmCurrentStaff)return;
@@ -1303,7 +1688,7 @@ document.addEventListener('DOMContentLoaded', function(){
         html+='<tr><td>'+escH(i.incident_date||'')+'</td><td>'+escH((i.incident_type||'').replace(/_/g,' '))+'</td>';
         html+='<td><span class="trn-badge '+sevCls+'">'+escH(i.severity||'')+'</span></td>';
         html+='<td>'+escH((i.description||'').substring(0,80))+'</td><td>'+resolved+'</td>';
-        html+='<td>'+(!i.resolved_at?'<button class="trn-btn trn-btn-sm trn-btn-primary" onclick="TRN.openResolveIncident(\''+i.id+'\')"><i class="fa fa-check"></i></button>':'')+'</td></tr>';
+        html+='<td>'+(!i.resolved_at?'<button class="trn-btn trn-btn-sm trn-btn-primary" onclick="TRN.openResolveIncident(\''+i.id+'\')"'+MANAGE_ATTR+'><i class="fa fa-check"></i></button>':'')+'</td></tr>';
       });
       $('#dmIncidentsTbody').html(html||'<tr><td colspan="6" style="text-align:center;color:var(--t3)">No incidents</td></tr>');
     });
@@ -1375,7 +1760,7 @@ document.addEventListener('DOMContentLoaded', function(){
         var stCls=st==='Active'?'trn-badge-green':st==='Resolved'?'trn-badge-blue':'trn-badge-red';
         html+='<tr><td>'+escH(t.vehicle_id||'')+'</td><td>'+escH(t.effective_from||'')+'</td><td>'+escH(t.effective_to||'')+'</td>';
         html+='<td>'+escH(t.reason||'')+'</td><td><span class="trn-badge '+stCls+'">'+st+'</span></td>';
-        html+='<td>'+(st==='Active'?'<button class="trn-btn trn-btn-sm trn-btn-primary" onclick="TRN.dmResolveTemp(\''+t.id+'\')"><i class="fa fa-check"></i> Resolve</button>':'')+'</td></tr>';
+        html+='<td>'+(st==='Active'?'<button class="trn-btn trn-btn-sm trn-btn-primary" onclick="TRN.dmResolveTemp(\''+t.id+'\')"'+MANAGE_ATTR+'><i class="fa fa-check"></i> Resolve</button>':'')+'</td></tr>';
       });
       $('#dmTempTbody').html(html||'<tr><td colspan="6" style="text-align:center;color:var(--t3)">No temporary assignments</td></tr>');
     });
@@ -1461,9 +1846,9 @@ document.addEventListener('DOMContentLoaded', function(){
         html+='<td><span class="trn-badge '+stCls+'">'+escH(e.status||'Active')+'</span></td>';
         html+='<td>';
         if(e.status==='Active'){
-          if(acctRef===''){html+='<button class="trn-btn trn-btn-sm trn-btn-primary" onclick="TRN.postExpenseNow(\''+e.expenseId+'\')" title="Post to Accounting"><i class="fa fa-upload"></i></button> ';}
-          if(acctRef==='pending'||acctRef==='failed'){html+='<button class="trn-btn trn-btn-sm trn-btn-primary" onclick="TRN.retryExpensePost(\''+e.expenseId+'\')" title="Retry post"><i class="fa fa-repeat"></i></button> ';}
-          html+='<button class="trn-btn trn-btn-sm trn-btn-danger" onclick="TRN.openVoidExpense(\''+e.expenseId+'\')" title="Void"><i class="fa fa-times"></i></button>';
+          if(acctRef===''){html+='<button class="trn-btn trn-btn-sm trn-btn-primary" onclick="TRN.postExpenseNow(\''+e.expenseId+'\')"'+MANAGE_ATTR+' title="Post to Accounting"><i class="fa fa-upload"></i></button> ';}
+          if(acctRef==='pending'||acctRef==='failed'){html+='<button class="trn-btn trn-btn-sm trn-btn-primary" onclick="TRN.retryExpensePost(\''+e.expenseId+'\')"'+MANAGE_ATTR+' title="Retry post"><i class="fa fa-repeat"></i></button> ';}
+          html+='<button class="trn-btn trn-btn-sm trn-btn-danger" onclick="TRN.openVoidExpense(\''+e.expenseId+'\')"'+DEL_ATTR+' title="Void"><i class="fa fa-times"></i></button>';
         }
         html+='</td></tr>';
       });
@@ -1510,7 +1895,7 @@ document.addEventListener('DOMContentLoaded', function(){
     html+='</div>';
     $('#expAttachments').append(html);
   };
-  TRN.saveExpense=function(){
+  TRN.saveExpense=function(){if(!CAN_EDIT){toast('You do not have edit permission',false);return}
     var attachments=[];
     $('#expAttachments .trn-att-row').each(function(){
       var p=$(this).find('.trn-att-path').val().trim();
@@ -1581,7 +1966,7 @@ document.addEventListener('DOMContentLoaded', function(){
         html += '<td>' + ((e.dispatched_trip_ids||[]).length) + '</td>';
         html += '<td>' + costStr + '</td>';
         html += '<td><span class="trn-badge ' + cls + '">' + escH(st) + '</span></td>';
-        html += '<td><button class="trn-btn trn-btn-sm trn-btn-primary" onclick="TRN.openEventManage(\''+(e.eventId||e.id)+'\')" title="Manage"><i class="fa fa-cog"></i></button></td>';
+        html += '<td><button class="trn-btn trn-btn-sm trn-btn-primary" onclick="TRN.openEventManage(\''+(e.eventId||e.id)+'\')"'+EDIT_ATTR+' title="Manage"><i class="fa fa-cog"></i></button></td>';
         html += '</tr>';
       });
       $('#eventsTbody').html(html);
@@ -1655,9 +2040,9 @@ document.addEventListener('DOMContentLoaded', function(){
           rHtml += '<td><span class="trn-badge ' + cls + '">' + escH(cs) + '</span></td>';
           rHtml += '<td>';
           if(editable){
-            rHtml += '<button class="trn-btn trn-btn-sm trn-btn-primary" onclick="TRN.updateConsent(\''+a.assignmentId+'\',\'Approved\')" title="Approve"><i class="fa fa-check"></i></button> ';
-            rHtml += '<button class="trn-btn trn-btn-sm" style="background:var(--bg);border:1px solid var(--border);color:var(--t1)" onclick="TRN.updateConsent(\''+a.assignmentId+'\',\'Rejected\')" title="Reject"><i class="fa fa-ban"></i></button> ';
-            rHtml += '<button class="trn-btn trn-btn-sm trn-btn-danger" onclick="TRN.unassignStudent(\''+id+'\',\''+a.studentId+'\')" title="Remove"><i class="fa fa-times"></i></button>';
+            rHtml += '<button class="trn-btn trn-btn-sm trn-btn-primary" onclick="TRN.updateConsent(\''+a.assignmentId+'\',\'Approved\')"'+MANAGE_ATTR+' title="Approve"><i class="fa fa-check"></i></button> ';
+            rHtml += '<button class="trn-btn trn-btn-sm" style="background:var(--bg);border:1px solid var(--border);color:var(--t1)" onclick="TRN.updateConsent(\''+a.assignmentId+'\',\'Rejected\')"'+MANAGE_ATTR+' title="Reject"><i class="fa fa-ban"></i></button> ';
+            rHtml += '<button class="trn-btn trn-btn-sm trn-btn-danger" onclick="TRN.unassignStudent(\''+id+'\',\''+a.studentId+'\')"'+DEL_ATTR+' title="Remove"><i class="fa fa-times"></i></button>';
           }
           rHtml += '</td></tr>';
         });
@@ -1670,7 +2055,7 @@ document.addEventListener('DOMContentLoaded', function(){
       (e.escorts||[]).forEach(function(x){
         eHtml += '<tr><td>' + escH(x.staff_id||'') + '</td><td>' + escH((x.role||'').replace(/_/g,' ')) + '</td>';
         eHtml += '<td>';
-        if(escortEditable){ eHtml += '<button class="trn-btn trn-btn-sm trn-btn-danger" onclick="TRN.removeEscort(\''+id+'\',\''+x.staff_id+'\')" title="Remove"><i class="fa fa-times"></i></button>'; }
+        if(escortEditable){ eHtml += '<button class="trn-btn trn-btn-sm trn-btn-danger" onclick="TRN.removeEscort(\''+id+'\',\''+x.staff_id+'\')"'+DEL_ATTR+' title="Remove"><i class="fa fa-times"></i></button>'; }
         eHtml += '</td></tr>';
       });
       $('#emEscorts').html(eHtml || '<tr><td colspan="3" style="text-align:center;color:var(--t3)">No escorts</td></tr>');
@@ -1769,6 +2154,7 @@ document.addEventListener('DOMContentLoaded', function(){
     (routes||[]).forEach(function(r){ ropts += '<option value="'+r.id+'">'+escH(r.name||r.id)+'</option>'; });
     $('#edtRoute').html(ropts);
     $('#edtDirection').val('Pickup'); $('#edtSchedStart').val('');
+    geoWarnClear('edtGeoWarn');             // UNIT 2B-3 — see tripErr()
     $('#eventDispatchModal').addClass('show');
   };
   TRN.closeDispatchTrip = function(){ $('#eventDispatchModal').removeClass('show'); };
@@ -1782,7 +2168,7 @@ document.addEventListener('DOMContentLoaded', function(){
     }).done(function(r){
       r = typeof r === 'string' ? JSON.parse(r) : r;
       if(r.status === 'success'){ toast(r.message, true); TRN.closeDispatchTrip(); TRN.openEventManage(eventCurrent); TRN.loadEvents(); }
-      else toast(r.message, false);
+      else tripErr(r.message, 'edtGeoWarn');
     });
   };
 
@@ -1835,7 +2221,12 @@ document.addEventListener('DOMContentLoaded', function(){
         var cls = st === 'Ready' ? 'trn-badge-blue' : (st === 'InProgress' ? 'trn-badge-amber' : (st === 'Completed' ? 'trn-badge-green' : 'trn-badge-red'));
         var progress = (t.route_progress_pct||0) + '%';
         var boarded = (t.boarded_count||0) + '/' + (t.roster_size||0);
-        html += '<tr>';
+        // Completed/Cancelled trips STAY in the list — they are operational
+        // records, not clutter, and deleting them would lose the audit trail.
+        // Dimming them separates "history" from "today's work" at a glance;
+        // filter to a single status with the Status dropdown above.
+        var terminal = (st === 'Completed' || st === 'Cancelled');
+        html += '<tr' + (terminal ? ' style="opacity:.62"' : '') + '>';
         html += '<td>' + escH(t.id||'') + '</td>';
         html += '<td>' + escH(t.date||'') + '</td>';
         html += '<td>' + escH(t.trip_direction||t.tripType||'') + '</td>';
@@ -1844,13 +2235,24 @@ document.addEventListener('DOMContentLoaded', function(){
         html += '<td>' + escH(t.driver_staff_id||'') + '</td>';
         html += '<td>' + progress + '</td>';
         html += '<td>' + boarded + '</td>';
-        html += '<td><span class="trn-badge ' + cls + '">' + escH(st) + '</span></td>';
+        // F14 Phase 2A — an admin-overridden completion is NOT a GPS-verified
+        // arrival and must not read as one. Distinct amber "OVERRIDDEN" badge
+        // beside the green Completed badge, with the reason on hover.
+        var ovBadge = '';
+        if(st === 'Completed' && t.completion_override){
+          ovBadge = ' <span class="trn-badge trn-badge-amber" title="'
+            + escH('Completed by admin override — school arrival was NOT GPS-verified.'
+                + (t.override_reason ? ' Reason: ' + t.override_reason : '')
+                + (t.override_by ? ' By: ' + t.override_by : ''))
+            + '">OVERRIDDEN</span>';
+        }
+        html += '<td><span class="trn-badge ' + cls + '">' + escH(st) + '</span>' + ovBadge + '</td>';
         html += '<td>';
         if(st === 'Ready'){
-          html += '<button class="trn-btn trn-btn-sm trn-btn-primary" onclick="TRN.startTrip(\''+t.id+'\')" title="Start Trip"><i class="fa fa-play"></i></button> ';
+          html += '<button class="trn-btn trn-btn-sm trn-btn-primary" onclick="TRN.startTrip(\''+t.id+'\')"'+EDIT_ATTR+' title="Start Trip"><i class="fa fa-play"></i></button> ';
         }
         if(st === 'InProgress' || st === 'Ready'){
-          html += '<button class="trn-btn trn-btn-sm trn-btn-primary" onclick="TRN.openTripManage(\''+t.id+'\')" title="Manage"><i class="fa fa-cog"></i></button>';
+          html += '<button class="trn-btn trn-btn-sm trn-btn-primary" onclick="TRN.openTripManage(\''+t.id+'\')"'+EDIT_ATTR+' title="Manage"><i class="fa fa-cog"></i></button>';
         }
         if(st === 'Completed' || st === 'Cancelled'){
           html += '<button class="trn-btn trn-btn-sm" onclick="TRN.openTripManage(\''+t.id+'\')" style="background:var(--bg);border:1px solid var(--border);color:var(--t1)" title="View"><i class="fa fa-eye"></i></button>';
@@ -1861,24 +2263,70 @@ document.addEventListener('DOMContentLoaded', function(){
     });
   };
 
-  TRN.openCreateTrip = function(){
-    // Populate vehicle + route pickers
-    var vopts = '';
-    (vehicles||[]).forEach(function(v){ vopts += '<option value="'+v.id+'">'+escH(v.number)+'</option>'; });
+  /**
+   * Fill the two pickers.
+   *
+   * Both show "<label> · <id>": trip creation is an operational act tied to a
+   * specific route/vehicle id, and two routes may legitimately share a display
+   * name — the id is what the operator has to be sure of.
+   *
+   * A missing list is stated in the option text rather than left as an empty
+   * <select>. A blank dropdown gives the operator nothing to act on and used to
+   * allow submitting a trip with an empty vehicle_id.
+   */
+  function fillTripPickers(){
+    var vopts = (vehicles||[]).length
+      ? '<option value="">-- Select a vehicle --</option>'
+      : '<option value="">-- No vehicles found · add one in the Vehicles tab --</option>';
+    (vehicles||[]).forEach(function(v){
+      vopts += '<option value="'+v.id+'">'+escH(v.number)+' · '+escH(v.id)+'</option>';
+    });
     $('#tcVehicle').html(vopts);
-    var ropts = '';
-    (routes||[]).forEach(function(r){ ropts += '<option value="'+r.id+'">'+escH(r.name||r.id)+'</option>'; });
+
+    // Only routes that can actually run a trip. Archived/suspended routes in
+    // the picker read as available and fail at submit time.
+    var pickable = (routes||[]).filter(function(r){
+      return (r.status||'Active') !== 'Archived';
+    });
+    var ropts = pickable.length
+      ? '<option value="">-- Select a route --</option>'
+      : '<option value="">-- No active routes · add one in Routes &amp; Stops --</option>';
+    pickable.forEach(function(r){
+      ropts += '<option value="'+r.id+'">'+escH(r.name||r.id)+' · '+escH(r.id)+'</option>';
+    });
     $('#tcRoute').html(ropts);
+  }
+
+  TRN.openCreateTrip = function(){
     $('#tcDate').val(new Date().toISOString().slice(0,10));
     $('#tcDirection').val('Pickup');
     $('#tcSchedStart,#tcNotes').val('');
+    geoWarnClear('tcGeoWarn');              // stale guidance must not persist
     $('#tripCreateModal').addClass('show');
+
+    // Populate from whatever is already cached, then re-fill once any missing
+    // list arrives. Opening the Trips tab directly does not guarantee the
+    // init-time loads have finished — the vehicle picker rendered completely
+    // blank in that case (UAT 2026-08-11). Same failure mode the assignment
+    // modal hit on 2026-08-09; fixed the same way, by waiting for the promise.
+    fillTripPickers();
+    var waits = [];
+    if (!(vehicles||[]).length) { waits.push(loadVehicles()); }
+    if (!(routes||[]).length)   { waits.push(loadRoutes()); }
+    if (waits.length) { $.when.apply($, waits).always(fillTripPickers); }
   };
   TRN.closeTripCreate = function(){ $('#tripCreateModal').removeClass('show'); };
   TRN.confirmCreateTrip = function(){
+    // Say which field is missing here. Posting an empty vehicle_id/route_id
+    // returns a generic server error that does not point at the blank select.
+    var vid = $('#tcVehicle').val(), rid = $('#tcRoute').val();
+    if(!vid){ toast('Please select a vehicle.', false); return; }
+    if(!rid){ toast('Please select a route.', false);   return; }
+    if(!$('#tcDate').val()){ toast('Please choose a trip date.', false); return; }
+
     post('transport_trip/create', {
-      vehicle_id:         $('#tcVehicle').val(),
-      route_id:           $('#tcRoute').val(),
+      vehicle_id:         vid,
+      route_id:           rid,
       trip_date:          $('#tcDate').val(),
       trip_direction:     $('#tcDirection').val(),
       scheduled_start_at: $('#tcSchedStart').val(),
@@ -1886,7 +2334,7 @@ document.addEventListener('DOMContentLoaded', function(){
     }).done(function(r){
       r = typeof r === 'string' ? JSON.parse(r) : r;
       if(r.status === 'success'){ toast(r.message, true); TRN.closeTripCreate(); TRN.loadTrips(); }
-      else toast(r.message, false);
+      else tripErr(r.message, 'tcGeoWarn');
     });
   };
 
@@ -1902,10 +2350,53 @@ document.addEventListener('DOMContentLoaded', function(){
   TRN.openTripManage = function(id){
     // Fetch trip + events, render checkpoints and roster grid
     tripCurrent = id;
-    getJSON('transport_trip/get?id=' + encodeURIComponent(id)).done(function(r){
+
+    // Show the modal in a loading state FIRST. It used to appear only after two
+    // AJAX calls had returned, so clicking the cog looked like nothing had
+    // happened — and if the request failed it stayed silent forever.
+    $('#tmTitle').text('Trip ' + id);
+    $('#tmMeta').text('Loading…');
+    $('#tmCheckpoints').html('<tr><td colspan="5" style="text-align:center;color:var(--t3)">Loading…</td></tr>');
+    $('#tmRoster').html('<tr><td colspan="3" style="text-align:center;color:var(--t3)">Loading…</td></tr>');
+    $('#tmCancelBtn,#tmCompleteBtn').hide();
+    $('#tmStateNote').hide().text('');
+    $('#tripManageModal').addClass('show');
+
+    getJSON('transport_trip/get?id=' + encodeURIComponent(id)).fail(function(){
+      $('#tmMeta').text('Could not load this trip. Close and try again.');
+      $('#tmCheckpoints,#tmRoster').html('');
+    }).done(function(r){
       r = typeof r === 'string' ? JSON.parse(r) : r;
-      if(r.status !== 'success' || !r.trip){ toast(r.message||'load failed', false); return; }
+      if(r.status !== 'success' || !r.trip){
+        toast(r.message||'load failed', false);
+        $('#tmMeta').text(r.message || 'Could not load this trip.');
+        $('#tmCheckpoints,#tmRoster').html('');
+        return;
+      }
       var t = r.trip;
+
+      // Mirror the service's own transition rules — see the comment on the
+      // buttons in partials/trip_modal.php.
+      var st = t.status || '';
+      var canCancel   = (st === 'Ready' || st === 'InProgress');
+      var canComplete = (st === 'InProgress');
+      $('#tmCancelBtn').toggle(canCancel);
+      $('#tmCompleteBtn').toggle(canComplete);
+      // F14 Phase 2A — the override is offered only where it can apply: an
+      // InProgress Pickup trip, to a manage-level user. Its purpose is the
+      // school-arrival deadlock, so it is deliberately not a general shortcut.
+      var dir = t.trip_direction || ((String(t.tripType||'').toLowerCase() === 'afternoon') ? 'Drop' : 'Pickup');
+      $('#tmOverrideBtn').toggle(canComplete && dir === 'Pickup' && CAN_MANAGE);
+      if(!canCancel && !canComplete){
+        var note = 'This trip is ' + st + '. It is final — no further actions.';
+        if(st === 'Completed' && t.completion_override){
+          note = 'Completed by ADMIN OVERRIDE — school arrival was NOT GPS-verified.'
+               + ' By: ' + (t.override_by || '—')
+               + ' at ' + (t.override_at || '—')
+               + '. Reason: ' + (t.override_reason || '—');
+        }
+        $('#tmStateNote').text(note).show();
+      }
       $('#tmTitle').text('Trip ' + t.id + ' — ' + (t.trip_direction||t.tripType) + ' (' + t.status + ')');
       $('#tmMeta').text('Route: ' + ((t.route_snapshot && t.route_snapshot.name) || t.route_id) + ' | Vehicle: ' + t.vehicleId + ' | Driver: ' + t.driver_staff_id + ' | Date: ' + t.date + ' | Progress: ' + (t.route_progress_pct||0) + '%');
       // Checkpoints
@@ -1920,7 +2411,7 @@ document.addEventListener('DOMContentLoaded', function(){
         cpHtml += '<td>' + escH(cp.reached_at ? String(cp.reached_at).substring(11,19) : '—') + '</td>';
         cpHtml += '<td>';
         if(t.status === 'InProgress' && st === 'Pending'){
-          cpHtml += '<button class="trn-btn trn-btn-sm trn-btn-primary" onclick="TRN.reachCheckpoint(\''+t.id+'\',\''+cp.stop_id+'\')" title="Reached"><i class="fa fa-check"></i></button> ';
+          cpHtml += '<button class="trn-btn trn-btn-sm trn-btn-primary" onclick="TRN.reachCheckpoint(\''+t.id+'\',\''+cp.stop_id+'\')"'+EDIT_ATTR+' title="Reached"><i class="fa fa-check"></i></button> ';
           cpHtml += '<button class="trn-btn trn-btn-sm" onclick="TRN.openSkipCheckpoint(\''+t.id+'\',\''+cp.stop_id+'\')" style="background:var(--bg);border:1px solid var(--border);color:var(--t1)" title="Skip"><i class="fa fa-forward"></i></button>';
         } else if(t.status === 'InProgress' && st === 'Reached' && !cp.left_at){
           cpHtml += '<button class="trn-btn trn-btn-sm" onclick="TRN.leftCheckpoint(\''+t.id+'\',\''+cp.stop_id+'\')" style="background:var(--bg);border:1px solid var(--border);color:var(--t1)" title="Departed"><i class="fa fa-arrow-right"></i></button>';
@@ -1948,14 +2439,14 @@ document.addEventListener('DOMContentLoaded', function(){
           if(t.status === 'InProgress' && st === 'Pending'){
             var actionEndpoint = t.trip_direction === 'Pickup' ? 'board_student' : 'drop_student';
             var actionLabel = t.trip_direction === 'Pickup' ? 'Board' : 'Drop';
-            rHtml += '<button class="trn-btn trn-btn-sm trn-btn-primary" onclick="TRN.boardOrDrop(\''+t.id+'\',\''+sid+'\',\''+actionEndpoint+'\')" title="'+actionLabel+'"><i class="fa fa-check"></i></button> ';
-            rHtml += '<button class="trn-btn trn-btn-sm trn-btn-danger" onclick="TRN.noShow(\''+t.id+'\',\''+sid+'\')" title="No-show"><i class="fa fa-times"></i></button>';
+            rHtml += '<button class="trn-btn trn-btn-sm trn-btn-primary" onclick="TRN.boardOrDrop(\''+t.id+'\',\''+sid+'\',\''+actionEndpoint+'\')"'+EDIT_ATTR+' title="'+actionLabel+'"><i class="fa fa-check"></i></button> ';
+            rHtml += '<button class="trn-btn trn-btn-sm trn-btn-danger" onclick="TRN.noShow(\''+t.id+'\',\''+sid+'\')"'+EDIT_ATTR+' title="No-show"><i class="fa fa-times"></i></button>';
           }
           rHtml += '</td></tr>';
         });
         $('#tmRoster').html(rHtml || '<tr><td colspan="3" style="text-align:center;color:var(--t3)">Empty roster</td></tr>');
       });
-      $('#tripManageModal').addClass('show');
+      // (modal is already shown — opened in the loading state above)
     });
   };
   TRN.closeTripManage = function(){ $('#tripManageModal').removeClass('show'); tripCurrent = null; };
@@ -2029,6 +2520,36 @@ document.addEventListener('DOMContentLoaded', function(){
     });
   };
 
+  // F14 Phase 2A — audited completion override.
+  TRN.openOverrideComplete = function(){
+    if(!tripCurrent){ toast('No trip selected.', false); return; }
+    if(!CAN_MANAGE){ toast('Overriding completion requires Transport · manage.', false); return; }
+    $('#tovId').val(tripCurrent);
+    $('#tovReason,#tovEndOdo,#tovDistance').val('');
+    $('#tripOverrideModal').addClass('show');
+  };
+  TRN.closeOverrideComplete = function(){ $('#tripOverrideModal').removeClass('show'); };
+  TRN.confirmOverrideComplete = function(){
+    var reason = $('#tovReason').val().trim();
+    if(!reason){ toast('A reason is required to override completion.', false); return; }
+    TRN.__busyLabel = 'Overriding…';
+    post('transport_trip/override_complete', {
+      id:           $('#tovId').val(),
+      reason:       reason,
+      end_time:     new Date().toISOString(),
+      end_odometer: $('#tovEndOdo').val() || 0,
+      distance_km:  $('#tovDistance').val() || 0,
+    }).done(function(r){
+      r = typeof r === 'string' ? JSON.parse(r) : r;
+      // Phantom-success guard: an override that the server refused (e.g. a child
+      // still on board) must never report as done.
+      if(r.status === 'success'){
+        toast(r.message, true);
+        TRN.closeOverrideComplete(); TRN.closeTripManage(); TRN.loadTrips();
+      } else toast(r.message, false);
+    });
+  };
+
   TRN.openCancelTrip = function(){
     if(!tripCurrent){ toast('No trip selected.', false); return; }
     $('#tccId').val(tripCurrent); $('#tccReason').val('');
@@ -2070,10 +2591,13 @@ document.addEventListener('DOMContentLoaded', function(){
         html += '<td>' + escH(a.respondedBy||'—') + '</td>';
         html += '<td>';
         if(st === 'active'){
-          html += '<button class="trn-btn trn-btn-sm trn-btn-primary" onclick="TRN.openSosAction(\''+a.id+'\',\'respond\')"><i class="fa fa-check"></i></button> ';
+          // MANAGE, not EDIT: Transport_sos::respond is require_permission(…,'manage').
+          // Gated on EDIT_ATTR an edit-only user saw an enabled button that 403s —
+          // the precise thing this file's convention says these flags exist to prevent.
+          html += '<button class="trn-btn trn-btn-sm trn-btn-primary" onclick="TRN.openSosAction(\''+a.id+'\',\'respond\')"'+MANAGE_ATTR+'><i class="fa fa-check"></i></button> ';
         }
         if(st === 'active' || st === 'responded'){
-          html += '<button class="trn-btn trn-btn-sm trn-btn-primary" onclick="TRN.openSosAction(\''+a.id+'\',\'resolve\')"><i class="fa fa-flag-checkered"></i></button>';
+          html += '<button class="trn-btn trn-btn-sm trn-btn-primary" onclick="TRN.openSosAction(\''+a.id+'\',\'resolve\')"'+MANAGE_ATTR+'><i class="fa fa-flag-checkered"></i></button>';
         }
         html += '</td></tr>';
       });
@@ -2132,7 +2656,267 @@ document.addEventListener('DOMContentLoaded', function(){
     });
   };
 
+  // ══════════════════════════════════════════════════════════════════
+  //  F12.1 M4 — CBSE Safety Compliance
+  //  Server is authoritative: every endpoint re-checks
+  //  require_permission('Transport', <action>, view|edit|manage). CAN_EDIT/CAN_MANAGE
+  //  below are UI affordance only.
+  // ══════════════════════════════════════════════════════════════════
+  var cmpRules = [];
+  function cmpTierBadge(tier){
+    if(!tier) return '<span class="trn-badge">Not assessed</span>';
+    var m = {Compliant:['trn-badge-green','Compliant'],Minor_Gaps:['trn-badge-amber','Minor gaps'],
+             Major_Gaps:['trn-badge-red','Major gaps'],At_Risk:['trn-badge-red','At risk']};
+    var t = m[tier] || ['trn-badge', tier];
+    return '<span class="trn-badge '+t[0]+'">'+escH(t[1])+'</span>';
+  }
+  TRN.loadCompliance = function(){
+    skel('cmpTbody', 7);
+    getJSON('transport_compliance/dashboard').done(function(r){
+      if(r.status!=='success'){
+        $('#cmpTbody').html('<tr><td colspan="7" style="text-align:center;color:var(--rose)">'+escH(r.message||'Failed to load')+'</td></tr>');
+        return;
+      }
+      $('#cmpCompliant').text(r.tiers.Compliant);
+      $('#cmpMinor').text(r.tiers.Minor_Gaps);
+      $('#cmpMajor').text(r.tiers.Major_Gaps);
+      $('#cmpAtRisk').text(r.tiers.At_Risk);
+      $('#cmpMeta').text(r.total+' vehicles · '+r.rule_count+' rules · '+r.unassessed+' never evaluated');
+      var html='';
+      (r.vehicles||[]).forEach(function(v){
+        html += '<tr><td>'+escH(v.number||v.vehicleId)+'</td>'
+              + '<td>'+(v.score===null?'—':v.score)+'</td>'
+              + '<td>'+cmpTierBadge(v.tier)+'</td>'
+              + '<td>'+(v.failing_count||0)+'</td>'
+              + '<td>'+(v.expiring_count||0)+'</td>'
+              + '<td>'+(v.blocks_dispatch?'<span class="trn-badge trn-badge-red">Blocked</span>':'<span class="trn-badge">Allowed</span>')+'</td>'
+              + '<td><button class="trn-btn trn-btn-sm trn-btn-primary" onclick="TRN.cmpOpenVehicle(\''+v.vehicleId+'\')"><i class="fa fa-list-ul"></i> Checklist</button> '
+              + '<button class="trn-btn trn-btn-sm" onclick="TRN.cmpEvaluate(\''+v.vehicleId+'\')"'+EDIT_ATTR+'><i class="fa fa-refresh"></i></button></td></tr>';
+      });
+      $('#cmpTbody').html(html || '<tr><td colspan="7" style="text-align:center;color:var(--t3)">No vehicles</td></tr>');
+    });
+  };
+  TRN.cmpSeedPack = function(){
+    if(!CAN_MANAGE){ toast('Seeding the rule pack needs Transport · manage', false); return; }
+    TRN.__lastBtn = $('#panelCompliance .trn-btn').eq(0);
+    post('transport_compliance/seed_pack',{pack:'CBSE'}).done(function(r){
+      r = typeof r==='string'?JSON.parse(r):r;
+      if(r.status==='success'){ toast(r.message,true); TRN.loadCompliance(); } else toast(r.message,false);
+    });
+  };
+  TRN.cmpRebuild = function(){
+    if(!CAN_MANAGE){ toast('Re-evaluating the fleet needs Transport · manage', false); return; }
+    TRN.__lastBtn = $('#panelCompliance .trn-btn-primary').eq(0);
+    TRN.__busyLabel = 'Re-evaluating…';
+    post('transport_compliance/rebuild',{evaluate:'1'}).done(function(r){
+      r = typeof r==='string'?JSON.parse(r):r;
+      if(r.status==='success'){ toast(r.message,true); TRN.loadCompliance(); } else toast(r.message,false);
+    });
+  };
+  TRN.cmpEvaluate = function(vid){
+    if(!CAN_EDIT){ toast('You do not have edit permission', false); return; }
+    post('transport_compliance/evaluate/'+encodeURIComponent(vid),{}).done(function(r){
+      r = typeof r==='string'?JSON.parse(r):r;
+      if(r.status==='success'){ toast(r.message,true); TRN.loadCompliance(); } else toast(r.message,false);
+    });
+  };
+  TRN.cmpOpenVehicle = function(vid){
+    getJSON('transport_compliance/vehicle/'+encodeURIComponent(vid)).done(function(r){
+      if(r.status!=='success'){ toast(r.message||'Failed to load',false); return; }
+      cmpRules = r.rules||[];
+      var byCode = {}; (r.compliance||[]).forEach(function(c){ byCode[c.rule_code]=c; });
+      $('#cmpVehId').val(vid);
+      $('#cmpModalTitle').text('Compliance — '+(r.vehicle.number||vid));
+      var p = r.posture;
+      $('#cmpPosture').html(p
+        ? 'Score <strong>'+p.score+'</strong> · '+cmpTierBadge(p.tier)+(p.blocks_dispatch?' · <span class="trn-badge trn-badge-red">Dispatch blocked</span>':'')
+        : '<span style="color:var(--t3)">Never evaluated</span>');
+      var html='';
+      cmpRules.forEach(function(rule){
+        var c = byCode[rule.rule_code] || {};
+        var st = c.status || 'Not_Assessed';
+        var stCls = st==='Compliant'?'trn-badge-green':(st==='Expiring_Soon'?'trn-badge-amber':(st==='Waived'?'trn-badge-amber':(st==='Non_Compliant'?'trn-badge-red':'')));
+        html += '<tr><td>'+escH(rule.label)+'<div style="font-size:10px;color:var(--t3);font-family:monospace">'+escH(rule.rule_code)+'</div></td>'
+             +  '<td><span class="trn-badge '+stCls+'">'+escH(st.replace('_',' '))+'</span></td>'
+             +  '<td>'+(rule.blocks_dispatch?'<span class="trn-badge trn-badge-red">Blocks</span>':'')+'</td>'
+             +  '<td>'+escH(c.expires_on||'')+'</td>'
+             +  '<td><button class="trn-btn trn-btn-sm trn-btn-primary" onclick="TRN.cmpAttestOpen(\''+rule.rule_code+'\')"'+EDIT_ATTR+'>Attest</button> '
+             +  '<button class="trn-btn trn-btn-sm" onclick="TRN.cmpWaiveOpen(\''+rule.rule_code+'\')"'+DEL_ATTR+'>Waive</button></td></tr>';
+      });
+      $('#cmpRuleTbody').html(html);
+      $('#cmpModal').addClass('show');
+    });
+  };
+  TRN.cmpCloseModal = function(){ $('#cmpModal').removeClass('show'); };
+  TRN.cmpAttestOpen = function(code){
+    if(!CAN_EDIT){ toast('You do not have edit permission', false); return; }
+    $('#cmpAttestRule').val(code); $('#cmpAttestStatus').val('Compliant');
+    $('#cmpAttestExpiry').val(''); $('#cmpAttestNotes').val('');
+    $('#cmpAttestTitle').text('Attest — '+code);
+    $('#cmpAttestModal').addClass('show');
+  };
+  TRN.cmpCloseAttest = function(){ $('#cmpAttestModal').removeClass('show'); };
+  TRN.cmpAttestSave = function(){
+    if(!CAN_EDIT){ toast('You do not have edit permission', false); return; }
+    TRN.__lastBtn = $('#cmpAttestModal .trn-btn-primary');
+    post('transport_compliance/attest',{
+      vehicle_id:$('#cmpVehId').val(), rule_code:$('#cmpAttestRule').val(),
+      status:$('#cmpAttestStatus').val(), expires_on:$('#cmpAttestExpiry').val(),
+      notes:$('#cmpAttestNotes').val()
+    }).done(function(r){
+      r = typeof r==='string'?JSON.parse(r):r;
+      if(r.status==='success'){ toast(r.message,true); TRN.cmpCloseAttest(); TRN.cmpOpenVehicle($('#cmpVehId').val()); TRN.loadCompliance(); }
+      else toast(r.message,false);
+    });
+  };
+  TRN.cmpWaiveOpen = function(code){
+    if(!CAN_MANAGE){ toast('Waiving a requirement needs Transport · manage', false); return; }
+    $('#cmpWaiveRule').val(code); $('#cmpWaiveReason').val('');
+    $('#cmpWaiveExpiry').val(''); $('#cmpWaiveTitle').text('Waive — '+code);
+    $('#cmpWaiveModal').addClass('show');
+  };
+  TRN.cmpCloseWaive = function(){ $('#cmpWaiveModal').removeClass('show'); };
+  TRN.cmpWaiveSave = function(){
+    if(!CAN_MANAGE){ toast('Waiving a requirement needs Transport · manage', false); return; }
+    TRN.__lastBtn = $('#cmpWaiveModal .trn-btn-primary');
+    post('transport_compliance/waive',{
+      vehicle_id:$('#cmpVehId').val(), rule_code:$('#cmpWaiveRule').val(),
+      reason:$('#cmpWaiveReason').val(), waiver_expires_on:$('#cmpWaiveExpiry').val()
+    }).done(function(r){
+      r = typeof r==='string'?JSON.parse(r):r;
+      if(r.status==='success'){ toast(r.message,true); TRN.cmpCloseWaive(); TRN.cmpOpenVehicle($('#cmpVehId').val()); TRN.loadCompliance(); }
+      else toast(r.message,false);
+    });
+  };
+
+  // ═════════════════════════════════════════════════════════════════════
+  //  F-3 Transport request worklist (2026-08-19)
+  //
+  //  The server side of this shipped long ago and was proved by probe gates
+  //  H1–H12; nothing ever called it, so pending requests piled up somewhere no
+  //  administrator could look. This is the missing surface, not new behaviour:
+  //  every decision (route+stop mandatory on approve, reason mandatory on
+  //  reject, one assignment system) already lives in Transport_service and is
+  //  re-checked there regardless of what these controls allow.
+  // ═════════════════════════════════════════════════════════════════════
+  var reqRows = [];
+
+  TRN.loadRequests = function(){
+    var st = $('#reqStatusFilter').val() || 'pending';
+    getJSON('transport/get_transport_requests?status=' + encodeURIComponent(st)).done(function(r){
+      if(r.status !== 'success') return;
+      reqRows = r.requests || [];
+      var html = '';
+      reqRows.forEach(function(q){
+        var stat = (q.status || '').toLowerCase();
+        var cls  = stat === 'pending' ? 'trn-badge-amber'
+                 : stat === 'approved' ? 'trn-badge-green'
+                 : stat === 'rejected' ? 'trn-badge-red' : 'trn-badge-blue';
+        // Actions exist ONLY for a pending row — an approved request already
+        // produced an assignment, and re-approving it would double-assign.
+        var act = '';
+        if(stat === 'pending'){
+          act = '<button class="trn-btn trn-btn-sm trn-btn-primary" onclick="TRN.openReqApprove(\'' + q.id + '\')"' + MANAGE_ATTR + '><i class="fa fa-check"></i> Approve</button> '
+              + '<button class="trn-btn trn-btn-sm trn-btn-danger" onclick="TRN.openReqReject(\'' + q.id + '\')"' + MANAGE_ATTR + '><i class="fa fa-times"></i> Reject</button>';
+        } else if(q.assignment_id){
+          act = '<span style="font-size:11px;color:var(--t3)">' + escH(q.assignment_id) + '</span>';
+        } else if(q.review_notes){
+          act = '<span style="font-size:11px;color:var(--t3)" title="' + escH(q.review_notes) + '">reason recorded</span>';
+        }
+        html += '<tr>'
+             + '<td>' + escH(q.student_name || q.studentId) + '</td>'
+             + '<td>' + escH(q.student_class) + '</td>'
+             + '<td>' + escH(q.requested_area) + '</td>'
+             + '<td>' + escH(q.requested_stop_hint) + '</td>'
+             + '<td>' + escH(q.requested_type || 'both') + '</td>'
+             + '<td>' + escH(q.source) + '</td>'
+             + '<td>' + escH((q.requested_at || '').slice(0,10)) + '</td>'
+             + '<td><span class="trn-badge ' + cls + '">' + escH(q.status) + '</span></td>'
+             + '<td>' + act + '</td></tr>';
+      });
+      $('#reqTbody').html(html || '<tr><td colspan="9" style="text-align:center;color:var(--t3)">No transport requests</td></tr>');
+    });
+  };
+
+  function reqById(id){ for(var i=0;i<reqRows.length;i++){ if(reqRows[i].id===id) return reqRows[i]; } return null; }
+
+  TRN.openReqApprove = function(id){
+    var q = reqById(id); if(!q) return;
+    $('#raReqId').val(id);
+    $('#raStudent').text((q.student_name || q.studentId) + ' · ' + (q.student_class || '—')
+      + (q.requested_area ? ' · asked for: ' + q.requested_area : ''));
+    // Carry the request's own subscription choice across, so approving does not
+    // silently change what the family asked for.
+    $('#raType').val(q.requested_type || 'both');
+    $('#raFrom').val(''); $('#raTo').val(''); $('#raFee').val(''); $('#raNotes').val('');
+    // routes[] is already loaded by loadRoutes(); reuse it rather than refetch.
+    var opts = '<option value="">-- Select route --</option>';
+    (routes || []).forEach(function(rt){ opts += '<option value="' + rt.id + '">' + escH(rt.name || rt.id) + '</option>'; });
+    $('#raRoute').html(opts);
+    $('#raStop').html('<option value="">-- Select route first --</option>');
+    $('#reqApproveModal').addClass('show');
+  };
+  TRN.closeReqApprove = function(){ $('#reqApproveModal').removeClass('show'); };
+
+  TRN.raLoadStops = function(){
+    var rid = $('#raRoute').val();
+    if(!rid){ $('#raStop').html('<option value="">-- Select route first --</option>'); return; }
+    getJSON('transport/get_stops?route_id=' + encodeURIComponent(rid)).done(function(r){
+      if(r.status !== 'success') return;
+      var o = '<option value="">-- Select stop --</option>';
+      (r.stops || []).forEach(function(s){ o += '<option value="' + s.id + '">' + escH(s.name) + '</option>'; });
+      $('#raStop').html(o);
+    });
+  };
+
+  TRN.submitReqApprove = function(){
+    var rid = $('#raRoute').val(), sid = $('#raStop').val();
+    // Caught here for a fast message; approveTransportRequest() refuses the
+    // same thing server-side and is the real authority.
+    if(!rid || !sid){ toast('Route and stop are both required to approve.', false); return; }
+    post('transport/approve_transport_request', {
+      request_id: $('#raReqId').val(), route_id: rid, stop_id: sid,
+      type: $('#raType').val(), effective_from: $('#raFrom').val(),
+      effective_to: $('#raTo').val(), monthly_fee: $('#raFee').val(), notes: $('#raNotes').val()
+    }).done(function(r){
+      r = typeof r === 'string' ? JSON.parse(r) : r;
+      if(r.status === 'success'){
+        toast(r.message || 'Request approved and student assigned.', true);
+        TRN.closeReqApprove(); TRN.loadRequests(); loadAssignments();
+      } else toast(r.message, false);
+    });
+  };
+
+  TRN.openReqReject = function(id){
+    var q = reqById(id); if(!q) return;
+    $('#rjReqId').val(id); $('#rjReason').val('');
+    $('#rjStudent').text((q.student_name || q.studentId) + ' · ' + (q.student_class || '—'));
+    $('#reqRejectModal').addClass('show');
+  };
+  TRN.closeReqReject = function(){ $('#reqRejectModal').removeClass('show'); };
+
+  TRN.submitReqReject = function(){
+    var reason = $.trim($('#rjReason').val());
+    if(reason === ''){ toast('A reason is required to reject a request.', false); return; }
+    post('transport/reject_transport_request', { request_id: $('#rjReqId').val(), reason: reason })
+      .done(function(r){
+        r = typeof r === 'string' ? JSON.parse(r) : r;
+        if(r.status === 'success'){ toast(r.message, true); TRN.closeReqReject(); TRN.loadRequests(); }
+        else toast(r.message, false);
+      });
+  };
+
   // Init
+  //
+  // F-3 (2026-08-19): when the worklist IS the open tab, request it before the
+  // rest. CI's file session driver serialises these XHRs, so position in this
+  // list is latency: measured from the back of the queue the worklist table took
+  // >9s to fill, while the vendor and vehicle pickers it was waiting behind
+  // belong to tabs the user is not looking at. Ordering only — nothing else
+  // moves, so no other tab's behaviour changes.
+  <?php if ($at === 'requests'): ?>
+  TRN.loadRequests();
+  <?php endif; ?>
   // F1 (2026-07-07): load vendors FIRST so the vendor picker inside the
   // vehicle modal is populated before the first Add-Vehicle click.
   loadVendors();
@@ -2145,7 +2929,9 @@ document.addEventListener('DOMContentLoaded', function(){
   $('#tripDateFilter').val(new Date().toISOString().slice(0,10));
   TRN.loadTrips();
   TRN.loadEvents();
-  setTimeout(function(){loadStops();loadAssignments();loadExpiry();},500);
+  setTimeout(function(){loadStops();loadAssignments();loadExpiry();TRN.loadCompliance();},500);
+  // The F-3 worklist is loaded at the TOP of this Init block, and only when its
+  // own tab is open — see the note there. Every other tab pays nothing for it.
 })();
 });
 </script>

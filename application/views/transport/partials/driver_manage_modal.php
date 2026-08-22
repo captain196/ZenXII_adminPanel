@@ -1,4 +1,12 @@
 <?php defined('BASEPATH') or exit('No direct script access allowed'); ?>
+<?php
+// 2026-08-07 — graded RBAC (TL convention, commit 7ccebc0). Recomputed locally:
+// this partial is loaded via $this->load->view() with no data, so the parent
+// view's flags are NOT in scope. The server remains authoritative — every
+// endpoint re-checks via require_permission('Transport', <action>, <level>).
+$can_edit   = function_exists('has_permission') ? has_permission('Transport','edit')   : true;
+$can_manage = function_exists('has_permission') ? has_permission('Transport','manage') : true;
+?>
 <!--
   transport/partials/driver_manage_modal.php
   F4 Driver Management (2026-07-07)
@@ -42,28 +50,28 @@
     <div class="trn-card">
       <div class="trn-card-title"><span>Transport Driver Meta</span></div>
       <div class="trn-form-row">
-        <div class="trn-form-group"><label>Licence No.</label><input type="text" id="dmLicNo"></div>
-        <div class="trn-form-group"><label>Class</label><select id="dmLicClass"><option value="">--</option><option>LMV</option><option>HMV</option><option>Bus</option><option>Auto</option><option>Multi</option></select></div>
+        <div class="trn-form-group"><label>Licence No.</label><input type="text" id="dmLicNo" <?= $can_manage?'':' disabled title="Requires Transport · manage"' ?>></div>
+        <div class="trn-form-group"><label>Class</label><select id="dmLicClass" <?= $can_manage?'':' disabled title="Requires Transport · manage"' ?>><option value="">--</option><option>LMV</option><option>HMV</option><option>Bus</option><option>Auto</option><option>Multi</option></select></div>
       </div>
       <div class="trn-form-row">
-        <div class="trn-form-group"><label>Licence Issued</label><input type="date" id="dmLicIssued"></div>
-        <div class="trn-form-group"><label>Licence Expires</label><input type="date" id="dmLicExpires"></div>
+        <div class="trn-form-group"><label>Licence Issued</label><input type="date" id="dmLicIssued" <?= $can_manage?'':' disabled title="Requires Transport · manage"' ?>></div>
+        <div class="trn-form-group"><label>Licence Expires</label><input type="date" id="dmLicExpires" <?= $can_manage?'':' disabled title="Requires Transport · manage"' ?>></div>
       </div>
       <div class="trn-form-row">
-        <div class="trn-form-group"><label>Issuing Authority</label><input type="text" id="dmLicAuth"></div>
+        <div class="trn-form-group"><label>Issuing Authority</label><input type="text" id="dmLicAuth" <?= $can_manage?'':' disabled title="Requires Transport · manage"' ?>></div>
         <div class="trn-form-group"><label>Years Experience</label><input type="number" id="dmYearsExp" min="0" value="0"></div>
       </div>
       <div class="trn-form-row">
-        <div class="trn-form-group"><label>Medical Last Check</label><input type="date" id="dmMedLast"></div>
-        <div class="trn-form-group"><label>Medical Expires</label><input type="date" id="dmMedExpires"></div>
+        <div class="trn-form-group"><label>Medical Last Check</label><input type="date" id="dmMedLast" <?= $can_manage?'':' disabled title="Requires Transport · manage"' ?>></div>
+        <div class="trn-form-group"><label>Medical Expires</label><input type="date" id="dmMedExpires" <?= $can_manage?'':' disabled title="Requires Transport · manage"' ?>></div>
       </div>
       <div class="trn-form-row">
-        <div class="trn-form-group"><label>Badge No.</label><input type="text" id="dmBadgeNo"></div>
-        <div class="trn-form-group"><label>Badge Expires</label><input type="date" id="dmBadgeExpires"></div>
+        <div class="trn-form-group"><label>Badge No.</label><input type="text" id="dmBadgeNo" <?= $can_manage?'':' disabled title="Requires Transport · manage"' ?>></div>
+        <div class="trn-form-group"><label>Badge Expires</label><input type="date" id="dmBadgeExpires" <?= $can_manage?'':' disabled title="Requires Transport · manage"' ?>></div>
       </div>
       <div class="trn-form-row">
-        <div class="trn-form-group"><label>Can Drive Types (comma)</label><input type="text" id="dmCanDrive" placeholder="Bus,Van,Auto,Car"></div>
-        <div class="trn-form-group"><label>Operational Status</label><select id="dmOpStatus"><option value="Available">Available</option><option value="Unavailable">Unavailable</option><option value="On_Leave">On Leave</option><option value="Medical_Leave">Medical Leave</option><option value="Training">Training</option><option value="Suspended">Suspended</option></select></div>
+        <div class="trn-form-group"><label>Can Drive Types (comma)</label><input type="text" id="dmCanDrive" placeholder="Bus,Van,Auto,Car" <?= $can_manage?'':' disabled title="Requires Transport · manage"' ?>></div>
+        <div class="trn-form-group"><label>Operational Status</label><select id="dmOpStatus" <?= $can_manage?'':' disabled title="Requires Transport · manage"' ?>><option value="Available">Available</option><option value="Unavailable">Unavailable</option><option value="On_Leave">On Leave</option><option value="Medical_Leave">Medical Leave</option><option value="Training">Training</option><option value="Suspended">Suspended</option></select></div>
       </div>
       <div class="trn-form-row">
         <div class="trn-form-group"><label>Emergency Contact Name</label><input type="text" id="dmEmerName"></div>
@@ -73,7 +81,7 @@
         <label>Replacement Availability</label>
         <select id="dmReplAvail"><option value="0">No</option><option value="1">Yes — willing to cover other vehicles temporarily</option></select>
       </div>
-      <button class="trn-btn trn-btn-primary" onclick="TRN.dmSaveMeta()" style="width:100%">Save Driver Meta</button>
+      <button class="trn-btn trn-btn-primary" onclick="TRN.dmSaveMeta()" <?= $can_edit?'':'disabled' ?> style="width:100%">Save Driver Meta</button>
     </div>
   </div>
 
@@ -101,7 +109,7 @@
         <div class="trn-form-group"><label>Notes</label><input type="text" id="dmRvNotes"></div>
         <div class="trn-form-group"><label>Action Items (comma-separated)</label><input type="text" id="dmRvActions"></div>
         <div style="font-size:11px;color:var(--t3);margin-bottom:8px;font-family:var(--font-b)">Numeric fields (trips, km, incidents, on-time %) auto-populate from activity snapshot for the period.</div>
-        <button class="trn-btn trn-btn-primary" onclick="TRN.dmSaveReview()" style="width:100%">Save Review</button>
+        <button class="trn-btn trn-btn-primary" onclick="TRN.dmSaveReview()" <?= $can_manage?'':'disabled title="Requires Transport · manage"' ?> style="width:100%">Save Review</button>
       </div>
       <table class="trn-table"><thead><tr><th>Period</th><th>Trips</th><th>KM</th><th>Incidents</th><th>Rating</th><th>Reviewer</th></tr></thead><tbody id="dmReviewsTbody"></tbody></table>
     </div>
@@ -119,7 +127,7 @@
         </div>
         <div class="trn-form-group"><label>Reason *</label><input type="text" id="dmTaReason"></div>
         <div class="trn-form-group"><label>Notes</label><input type="text" id="dmTaNotes"></div>
-        <button class="trn-btn trn-btn-primary" onclick="TRN.dmSaveTemp()" style="width:100%">Assign Temporary</button>
+        <button class="trn-btn trn-btn-primary" onclick="TRN.dmSaveTemp()" <?= $can_manage?'':'disabled title="Requires Transport · manage"' ?> style="width:100%">Assign Temporary</button>
       </div>
       <table class="trn-table"><thead><tr><th>Vehicle</th><th>From</th><th>To</th><th>Reason</th><th>Status</th><th>Actions</th></tr></thead><tbody id="dmTempTbody"></tbody></table>
     </div>

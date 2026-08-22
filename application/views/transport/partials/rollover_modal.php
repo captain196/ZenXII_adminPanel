@@ -1,4 +1,12 @@
 <?php defined('BASEPATH') or exit('No direct script access allowed'); ?>
+<?php
+// 2026-08-07 — graded RBAC (TL convention, commit 7ccebc0). Recomputed locally:
+// this partial is loaded via $this->load->view() with no data, so the parent
+// view's flags are NOT in scope. The server remains authoritative — every
+// endpoint re-checks via require_permission('Transport', <action>, <level>).
+$can_edit   = function_exists('has_permission') ? has_permission('Transport','edit')   : true;
+$can_manage = function_exists('has_permission') ? has_permission('Transport','manage') : true;
+?>
 <!--
   transport/partials/rollover_modal.php
   F3 Session Rollover (2026-07-07)
@@ -21,5 +29,5 @@
     <div class="trn-form-group"><label>To Session *</label><input type="text" id="roTo" placeholder="e.g. 2026-27"></div>
   </div>
   <div id="roStatus" style="font-family:var(--font-b);font-size:13px;color:var(--t1);margin-bottom:14px;padding:10px;background:var(--bg);border-radius:6px;display:none"></div>
-  <button class="trn-btn trn-btn-primary" onclick="TRN.startRollover()" style="width:100%" id="roStartBtn">Start Rollover</button>
+  <button class="trn-btn trn-btn-primary" onclick="TRN.startRollover()" <?= $can_edit?'':'disabled' ?> style="width:100%" id="roStartBtn">Start Rollover</button>
 </div></div>

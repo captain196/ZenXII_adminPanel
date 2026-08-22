@@ -1,4 +1,12 @@
 <?php defined('BASEPATH') or exit('No direct script access allowed'); ?>
+<?php
+// 2026-08-07 — graded RBAC (TL convention, commit 7ccebc0). Recomputed locally:
+// this partial is loaded via $this->load->view() with no data, so the parent
+// view's flags are NOT in scope. The server remains authoritative — every
+// endpoint re-checks via require_permission('Transport', <action>, <level>).
+$can_edit   = function_exists('has_permission') ? has_permission('Transport','edit')   : true;
+$can_manage = function_exists('has_permission') ? has_permission('Transport','manage') : true;
+?>
 <!--
   transport/partials/event_modal.php
   F8 Transport Events (LC-23, 2026-07-07)
@@ -65,7 +73,7 @@
     <input type="text" id="ecVehicles" placeholder="VH0001, VH0002">
   </div>
   <div class="trn-form-group"><label>Notes</label><input type="text" id="ecNotes"></div>
-  <button class="trn-btn trn-btn-primary" onclick="TRN.confirmCreateEvent()" style="width:100%">Create Event</button>
+  <button class="trn-btn trn-btn-primary" onclick="TRN.confirmCreateEvent()" <?= $can_manage?'':'disabled title="Requires Transport · manage"' ?> style="width:100%">Create Event</button>
 </div></div>
 
 <!-- Manage Event Modal -->
@@ -87,7 +95,7 @@
       <div id="emAssignForm" style="display:flex;gap:6px;margin-bottom:8px">
         <input type="text" id="emStudentIdInput" placeholder="student_id" style="flex:1;padding:6px 10px;border:1px solid var(--border);border-radius:6px;background:var(--bg);color:var(--t1);font-size:12px;font-family:var(--font-b)">
         <input type="text" id="emVehicleAssignInput" placeholder="vehicle (opt)" style="flex:0.7;padding:6px 10px;border:1px solid var(--border);border-radius:6px;background:var(--bg);color:var(--t1);font-size:12px;font-family:var(--font-b)">
-        <button class="trn-btn trn-btn-sm trn-btn-primary" onclick="TRN.assignStudentToEvent()"><i class="fa fa-plus"></i></button>
+        <button class="trn-btn trn-btn-sm trn-btn-primary" onclick="TRN.assignStudentToEvent()" <?= $can_manage?'':'disabled title="Requires Transport · manage"' ?>><i class="fa fa-plus"></i></button>
       </div>
       <table class="trn-table" style="font-size:12px">
         <thead><tr><th>Student</th><th>Vehicle</th><th>Consent</th><th>Actions</th></tr></thead>
@@ -118,9 +126,9 @@
   </div>
 
   <div style="margin-top:8px;display:flex;gap:8px;justify-content:flex-end">
-    <button id="emScheduleBtn" class="trn-btn trn-btn-primary" onclick="TRN.scheduleEvent()">Schedule</button>
-    <button class="trn-btn trn-btn-primary" onclick="TRN.openCompleteEvent()">Complete</button>
-    <button class="trn-btn trn-btn-danger" onclick="TRN.openCancelEvent()">Cancel Event</button>
+    <button id="emScheduleBtn" class="trn-btn trn-btn-primary" onclick="TRN.scheduleEvent()" <?= $can_manage?'':'disabled title="Requires Transport · manage"' ?>>Schedule</button>
+    <button class="trn-btn trn-btn-primary" onclick="TRN.openCompleteEvent()" <?= $can_edit?'':'disabled' ?>>Complete</button>
+    <button class="trn-btn trn-btn-danger" onclick="TRN.openCancelEvent()" <?= $can_manage?'':'disabled' ?>>Cancel Event</button>
   </div>
 </div></div>
 
@@ -131,6 +139,10 @@
     <button class="trn-modal-close" onclick="TRN.closeDispatchTrip()">&times;</button>
   </div>
   <input type="hidden" id="edtEventId">
+  <!-- UNIT 2B-3 — campus-geofence prerequisite guidance. dispatchEventTrip()
+       reaches the same createTrip() guard, so this second Pickup-creating
+       surface needs the same operator guidance. Populated by tripErr(). -->
+  <div id="edtGeoWarn" style="display:none"></div>
   <div class="trn-form-group"><label>Vehicle * (must be assigned to the event)</label>
     <select id="edtVehicle"></select>
   </div>
@@ -146,7 +158,7 @@
     </div>
   </div>
   <div class="trn-form-group"><label>Scheduled Start (ISO, optional)</label><input type="text" id="edtSchedStart"></div>
-  <button class="trn-btn trn-btn-primary" onclick="TRN.confirmDispatchTrip()" style="width:100%">Dispatch Trip</button>
+  <button class="trn-btn trn-btn-primary" onclick="TRN.confirmDispatchTrip()" <?= $can_edit?'':'disabled' ?> style="width:100%">Dispatch Trip</button>
 </div></div>
 
 <!-- Add Escort Modal -->
@@ -169,7 +181,7 @@
     </select>
   </div>
   <div class="trn-form-group"><label>Notes</label><input type="text" id="eaeNotes"></div>
-  <button class="trn-btn trn-btn-primary" onclick="TRN.confirmAddEscort()" style="width:100%">Add Escort</button>
+  <button class="trn-btn trn-btn-primary" onclick="TRN.confirmAddEscort()" <?= $can_manage?'':'disabled title="Requires Transport · manage"' ?> style="width:100%">Add Escort</button>
 </div></div>
 
 <!-- Complete Event Modal -->
@@ -183,7 +195,7 @@
     All dispatched trips must already be Completed or Cancelled. Budget is informational — over-budget generates a warning, never blocks.
   </div>
   <div class="trn-form-group"><label>Notes</label><input type="text" id="ecplNotes"></div>
-  <button class="trn-btn trn-btn-primary" onclick="TRN.confirmCompleteEvent()" style="width:100%">Complete Event</button>
+  <button class="trn-btn trn-btn-primary" onclick="TRN.confirmCompleteEvent()" <?= $can_manage?'':'disabled title="Requires Transport · manage"' ?> style="width:100%">Complete Event</button>
 </div></div>
 
 <!-- Cancel Event Modal -->
@@ -197,5 +209,5 @@
     Fires URGENT notification to every roster parent (safety-adjacent — never deduped).
   </div>
   <div class="trn-form-group"><label>Reason *</label><input type="text" id="ecclReason"></div>
-  <button class="trn-btn trn-btn-danger" onclick="TRN.confirmCancelEvent()" style="width:100%">Cancel Event</button>
+  <button class="trn-btn trn-btn-danger" onclick="TRN.confirmCancelEvent()" <?= $can_manage?'':'disabled' ?> style="width:100%">Cancel Event</button>
 </div></div>

@@ -143,6 +143,13 @@ class Transport_notifier
         'trip.started',
         'trip.completed',
         'trip.student_no_show',
+        // Student journey — the four canonical F14 events (2026-08-12).
+        // Until F14, a parent was told only when their child did NOT board —
+        // the reassurance case was missing entirely.
+        'student.boarded_at_stop',
+        'student.alighted_at_school',
+        'student.boarded_at_school',
+        'student.alighted_at_stop',
         // Transport Events (F8, 2026-07-07)
         'event.scheduled',
         'event.rescheduled',
@@ -193,6 +200,13 @@ class Transport_notifier
         'trip.started'                    => self::PRIORITY_NORMAL,
         'trip.completed'                  => self::PRIORITY_NORMAL,
         'trip.student_no_show'            => self::PRIORITY_IMPORTANT,
+        // F14 (2026-08-12) — student journey. Important, not Urgent: these are
+        // the routine four-a-day reassurance notices, and marking them Urgent
+        // would train parents to ignore urgent transport alerts.
+        'student.boarded_at_stop'         => self::PRIORITY_IMPORTANT,
+        'student.alighted_at_school'      => self::PRIORITY_IMPORTANT,
+        'student.boarded_at_school'       => self::PRIORITY_IMPORTANT,
+        'student.alighted_at_stop'        => self::PRIORITY_IMPORTANT,
         // F8 (2026-07-07) — Transport Events
         'event.scheduled'                 => self::PRIORITY_IMPORTANT,
         'event.rescheduled'               => self::PRIORITY_IMPORTANT,
@@ -228,6 +242,12 @@ class Transport_notifier
         'trip.started'                    => self::SCOPE_OPS,
         'trip.completed'                  => self::SCOPE_OPS,
         'trip.student_no_show'            => self::SCOPE_PARENTS_OF_STUDENTS,
+        // F14 (2026-08-12) — reaches ONLY the parents of the one student named
+        // in ctx.student_ids, via the existing canonical userId resolver.
+        'student.boarded_at_stop'         => self::SCOPE_PARENTS_OF_STUDENTS,
+        'student.alighted_at_school'      => self::SCOPE_PARENTS_OF_STUDENTS,
+        'student.boarded_at_school'       => self::SCOPE_PARENTS_OF_STUDENTS,
+        'student.alighted_at_stop'        => self::SCOPE_PARENTS_OF_STUDENTS,
         // F8 (2026-07-07) — Transport Events
         'event.scheduled'                 => self::SCOPE_PARENTS_OF_STUDENTS,
         'event.rescheduled'               => self::SCOPE_PARENTS_OF_STUDENTS,
@@ -298,6 +318,16 @@ class Transport_notifier
         'event.trip_dispatched'           => 300,     // 5min guard on double-dispatch UI
         'event.consent_reminder'          => 86400,   // 24h — parent reminder cadence
         'event.completed'                 => 300,
+        // F14 (2026-08-12) — student journey. These MUST be deduped: the
+        // offline scan queue can re-flush the same scan after a retry, and a
+        // parent receiving "your child boarded" twice erodes trust in the
+        // channel. The idempotency key already includes category + trip +
+        // student, so a 6-hour window covers a whole leg plus any retry while
+        // leaving the afternoon events (different category AND trip) free.
+        'student.boarded_at_stop'         => 21600,
+        'student.alighted_at_school'      => 21600,
+        'student.boarded_at_school'       => 21600,
+        'student.alighted_at_stop'        => 21600,
         // trip.student_no_show intentionally OMITTED — never dedupe a
         // per-student no-show notification (Refinement 4 + safety
         // exemption: a repeat no-show for the same student on a fresh
@@ -484,7 +514,7 @@ class Transport_notifier
                 ['domain' => 'notification', 'source' => 'transport_notifier']
             );
         } catch (\Throwable $e) {
-            log_message('warning', 'Transport_notifier audit emit failed: ' . $e->getMessage());
+            log_message('error', 'Transport_notifier audit emit failed: ' . $e->getMessage());
         }
 
         return array_merge($result, [
@@ -774,7 +804,7 @@ class Transport_notifier
                 ], /* merge */ false);
                 $perUser++;
             } catch (\Throwable $e) {
-                log_message('warning', "Transport_notifier ops delivery row failed for role={$role}: " . $e->getMessage());
+                log_message('error', "Transport_notifier ops delivery row failed for role={$role}: " . $e->getMessage());
             }
         }
         return [
@@ -798,7 +828,7 @@ class Transport_notifier
     ): array {
         $routeId = trim((string) ($ctx['route_id'] ?? ''));
         if ($routeId === '') {
-            log_message('warning', "Transport_notifier: parents_of_route fanout for {$category} missing route_id.");
+            log_message('error', "Transport_notifier: parents_of_route fanout for {$category} missing route_id.");
             return ['emitted' => false, 'notice_id' => '', 'per_user_count' => 0, 'dedupe_skipped' => false, 'notified_user_ids' => []];
         }
         $userIds = $this->_resolveParentsOfRoute($routeId);
@@ -928,11 +958,11 @@ class Transport_notifier
                                 'data'     => $dataMap,
                             ]);
                         } catch (\Throwable $pe) {
-                            log_message('warning', "Transport_notifier push to {$uid} failed: " . $pe->getMessage());
+                            log_message('error', "Transport_notifier push to {$uid} failed: " . $pe->getMessage());
                         }
                     }
                 } catch (\Throwable $e) {
-                    log_message('warning', "Transport_notifier notifications write for {$uid} failed: " . $e->getMessage());
+                    log_message('error', "Transport_notifier notifications write for {$uid} failed: " . $e->getMessage());
                 }
             }
         }
@@ -1011,7 +1041,7 @@ class Transport_notifier
     {
         $uid = trim((string) ($stu['userId'] ?? ''));
         if ($uid !== '') { return $uid; }
-        log_message('warning', "Transport_notifier: student {$studentId} has no userId field; falling back to studentId as recipient.");
+        log_message('error', "Transport_notifier: student {$studentId} has no userId field; falling back to studentId as recipient.");
         return $studentId;
     }
 
@@ -1123,7 +1153,7 @@ class Transport_notifier
         try {
             $this->fs->setEntity(self::COL_IDEMPOTENCY, "{$this->schoolId}_{$key}", $doc, /* merge */ false);
         } catch (\Throwable $e) {
-            log_message('warning', "Transport_notifier idempotency claim failed: " . $e->getMessage());
+            log_message('error', "Transport_notifier idempotency claim failed: " . $e->getMessage());
         }
     }
 
@@ -1170,7 +1200,7 @@ class Transport_notifier
         try {
             $this->fs->removeEntity(self::COL_IDEMPOTENCY, "{$this->schoolId}_{$key}");
         } catch (\Throwable $e) {
-            log_message('warning', "Transport_notifier idempotency release failed: " . $e->getMessage());
+            log_message('error', "Transport_notifier idempotency release failed: " . $e->getMessage());
         }
     }
 
@@ -1329,6 +1359,40 @@ class Transport_notifier
                     . "\nOn-time: "   . ((bool) ($ctx['on_time'] ?? false) ? 'yes' : 'no')
                     . "\nBoarded: "   . (int) ($ctx['boarded'] ?? 0)
                     . "\nNo-shows: "  . (int) ($ctx['no_show'] ?? 0),
+                ];
+            // ── F14 student journey (2026-08-12) ─────────────────────────
+            // Written for a parent glancing at a lock screen: the fact first,
+            // then where and when. An alternate bus is named explicitly,
+            // because "boarded" on an unexpected route would otherwise alarm.
+            case 'student.boarded_at_stop':
+                return [
+                    'Your child boarded the school bus',
+                    'Stop: ' . (string) ($ctx['stop_name'] ?? $ctx['stop_id'] ?? 'pickup stop')
+                    . "\nTime: " . (string) ($ctx['event_time'] ?? '')
+                    . "\nRoute: " . (string) ($ctx['route_name'] ?? $ctx['route_id'] ?? '')
+                    . ((string) ($ctx['boarding_mode'] ?? '') === 'alternate_bus'
+                        ? "\n\nThis was an alternate bus — the assigned bus was missed." : ''),
+                ];
+            case 'student.alighted_at_school':
+                return [
+                    'Your child arrived at school',
+                    'Time: ' . (string) ($ctx['event_time'] ?? '')
+                    . "\nRoute: " . (string) ($ctx['route_name'] ?? $ctx['route_id'] ?? '')
+                    . ((string) ($ctx['boarding_mode'] ?? '') === 'alternate_bus'
+                        ? "\n\nYour child travelled on an alternate bus this morning." : ''),
+                ];
+            case 'student.boarded_at_school':
+                return [
+                    'Your child boarded the bus home',
+                    'Time: ' . (string) ($ctx['event_time'] ?? '')
+                    . "\nRoute: " . (string) ($ctx['route_name'] ?? $ctx['route_id'] ?? ''),
+                ];
+            case 'student.alighted_at_stop':
+                return [
+                    'Your child got off the bus',
+                    'Stop: ' . (string) ($ctx['stop_name'] ?? $ctx['stop_id'] ?? 'drop stop')
+                    . "\nTime: " . (string) ($ctx['event_time'] ?? '')
+                    . "\nRoute: " . (string) ($ctx['route_name'] ?? $ctx['route_id'] ?? ''),
                 ];
             case 'trip.student_no_show':
                 return [

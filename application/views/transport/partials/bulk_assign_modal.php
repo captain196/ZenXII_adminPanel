@@ -1,4 +1,12 @@
 <?php defined('BASEPATH') or exit('No direct script access allowed'); ?>
+<?php
+// 2026-08-07 — graded RBAC (TL convention, commit 7ccebc0). Recomputed locally:
+// this partial is loaded via $this->load->view() with no data, so the parent
+// view's flags are NOT in scope. The server remains authoritative — every
+// endpoint re-checks via require_permission('Transport', <action>, <level>).
+$can_edit   = function_exists('has_permission') ? has_permission('Transport','edit')   : true;
+$can_manage = function_exists('has_permission') ? has_permission('Transport','manage') : true;
+?>
 <!--
   transport/partials/bulk_assign_modal.php
   F3 Student Assignment (2026-07-07)
@@ -20,7 +28,7 @@
     <textarea id="baRowsJson" style="width:100%;min-height:220px;padding:10px;font-family:monospace;font-size:12px;border:1px solid var(--border);border-radius:6px;background:var(--bg);color:var(--t1)"
       placeholder='[{"student_id":"STU0001","route_id":"RT0001","stop_id":"STP0001","type":"both","subscription_type":"Permanent","fee_category":"Standard"}]'></textarea>
   </div>
-  <button class="trn-btn trn-btn-primary" onclick="TRN.doBulkAssign()" style="width:100%">Bulk Assign</button>
+  <button class="trn-btn trn-btn-primary" onclick="TRN.doBulkAssign()" <?= $can_manage?'':'disabled title="Requires Transport · manage"' ?> style="width:100%">Bulk Assign</button>
   <div id="baResult" style="margin-top:12px"></div>
 </div></div>
 
@@ -48,7 +56,7 @@
   <div class="trn-form-group" id="acRouteField"><label>New Route *</label><select id="acRouteId" onchange="TRN.acRouteChanged()"></select></div>
   <div class="trn-form-group" id="acStopField"><label>New Stop *</label><select id="acStopId"></select></div>
   <div class="trn-form-group"><label>Reason *</label><input type="text" id="acReason"></div>
-  <button class="trn-btn trn-btn-primary" onclick="TRN.doChange()" style="width:100%">Apply Change</button>
+  <button class="trn-btn trn-btn-primary" onclick="TRN.doChange()" <?= $can_manage?'':'disabled title="Requires Transport · manage"' ?> style="width:100%">Apply Change</button>
 </div></div>
 
 <div class="trn-modal-bg" id="asnSuspendModal"><div class="trn-modal" style="width:480px">
@@ -62,5 +70,5 @@
     <div class="trn-form-group"><label>Until (blank for open-ended)</label><input type="date" id="sasUntil"></div>
   </div>
   <div class="trn-form-group"><label>Reason *</label><input type="text" id="sasReason"></div>
-  <button class="trn-btn trn-btn-primary" onclick="TRN.doSuspendAsn()" style="width:100%">Suspend</button>
+  <button class="trn-btn trn-btn-primary" onclick="TRN.doSuspendAsn()" <?= $can_manage?'':'disabled title="Requires Transport · manage"' ?> style="width:100%">Suspend</button>
 </div></div>

@@ -21,19 +21,11 @@ defined('BASEPATH') or exit('No direct script access allowed');
  */
 class Transport_vendors extends MY_Controller
 {
-    private const MANAGE_ROLES = [
-        'Super Admin', 'School Super Admin', 'Admin', 'Principal', 'Vice Principal',
-        'Operations Manager', 'Transport Manager',
-    ];
-    private const VIEW_ROLES = [
-        'Super Admin', 'School Super Admin', 'Admin', 'Principal', 'Vice Principal',
-        'Operations Manager', 'Transport Manager', 'Accountant',
-    ];
 
     public function __construct()
     {
         parent::__construct();
-        require_permission('Operations');
+        require_permission('Transport');
         $this->load->library('numbering_service', null, 'numbering');
         $this->numbering->init($this->fs, $this->school_name, $this->session_year);
         $this->load->library('transport_service', null, 'transport');
@@ -44,32 +36,17 @@ class Transport_vendors extends MY_Controller
         );
     }
 
-    private function _require_manage(): void
-    {
-        if (!in_array($this->admin_role, self::MANAGE_ROLES, true)) {
-            $this->json_error('Access denied.', 403);
-        }
-    }
-    private function _require_view(): void
-    {
-        if (!in_array($this->admin_role, self::VIEW_ROLES, true)) {
-            $this->json_error('Access denied.', 403);
-        }
-    }
-
     // ─── read endpoints ──────────────────────────────────────────────────
 
     public function get_vendors()
     {
-        $this->_require_role(self::VIEW_ROLES, 'transport_view');
-        $this->_require_view();
+        require_permission('Transport', 'transport_view', 'view');
         $this->json_success(['vendors' => $this->transport->listAllVendors()]);
     }
 
     public function get_active_vendors()
     {
-        $this->_require_role(self::VIEW_ROLES, 'transport_view');
-        $this->_require_view();
+        require_permission('Transport', 'transport_view', 'view');
         $this->json_success(['vendors' => $this->transport->listActiveVendors()]);
     }
 
@@ -77,8 +54,7 @@ class Transport_vendors extends MY_Controller
 
     public function save_vendor()
     {
-        $this->_require_role(self::MANAGE_ROLES, 'save_vendor');
-        $this->_require_manage();
+        require_permission('Transport', 'save_vendor', 'manage');
         try {
             $result = $this->transport->saveVendor([
                 'id'             => trim($this->input->post('id') ?? ''),
@@ -103,8 +79,7 @@ class Transport_vendors extends MY_Controller
 
     public function terminate_vendor()
     {
-        $this->_require_role(self::MANAGE_ROLES, 'terminate_vendor');
-        $this->_require_manage();
+        require_permission('Transport', 'terminate_vendor', 'manage');
         $id     = $this->safe_path_segment(trim($this->input->post('id') ?? ''), 'vendor_id');
         $reason = trim($this->input->post('reason') ?? '');
         try {
@@ -120,8 +95,7 @@ class Transport_vendors extends MY_Controller
 
     public function link_vendor_to_vehicle()
     {
-        $this->_require_role(self::MANAGE_ROLES, 'link_vendor_to_vehicle');
-        $this->_require_manage();
+        require_permission('Transport', 'link_vendor_to_vehicle', 'manage');
         $vendorId  = $this->safe_path_segment(trim($this->input->post('vendor_id')  ?? ''), 'vendor_id');
         $vehicleId = $this->safe_path_segment(trim($this->input->post('vehicle_id') ?? ''), 'vehicle_id');
         $terms = [

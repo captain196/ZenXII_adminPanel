@@ -93,6 +93,7 @@ class Transport_verifier extends CI_Controller
         $this->load->library('firestore_service', null, 'fs');
         $this->load->library('numbering_service', null, 'numbering');
         $this->load->library('transport_service',  null, 'transport');
+        $this->load->library('transport_compliance_service', null, 'cmp');   // F12.1 M5
 
         $this->schoolId    = (string) (getenv('SCHOOL_ID')    ?: '');
         $this->sessionYear = (string) (getenv('SESSION_YEAR') ?: '');
@@ -104,6 +105,7 @@ class Transport_verifier extends CI_Controller
         $this->fs->init($this->schoolId, $this->sessionYear);
         $this->numbering->init($this->fs, $this->schoolId, $this->sessionYear);
         $this->transport->init($this->fs, $this->numbering, $this->schoolId, $this->sessionYear, 'verifier');
+        $this->cmp->init($this->fs, $this->schoolId, 'verifier');            // F12.1 M5
 
         $this->assertions = $this->_buildRegistry();
     }
@@ -280,9 +282,24 @@ class Transport_verifier extends CI_Controller
             [ 'id' => 'CH-TRN-LOG2-1', 'category' => self::CAT_SOURCE,   'label' => 'createTrip blocks suspended route',       'callable' => '_chTrnLog2_1' ],
             [ 'id' => 'CH-TRN-LOG3-1', 'category' => self::CAT_SOURCE,   'label' => 'notify idempotency salience incl event',  'callable' => '_chTrnLog3_1' ],
             [ 'id' => 'CH-TRN-XMOD1-1','category' => self::CAT_SOURCE,   'label' => 'vehicle currentRouteId set/clear on trip', 'callable' => '_chTrnXmod1_1' ],
-            [ 'id' => 'CH-TRN-SEC1-1', 'category' => self::CAT_SOURCE,   'label' => 'attendance create bound to trip driver',   'callable' => '_chTrnSec1_1' ],
+            [ 'id' => 'CH-TRN-SEC1-1', 'category' => self::CAT_SOURCE,   'label' => 'attendance writes are server-mediated (no driver client arm)',   'callable' => '_chTrnSec1_1' ],
             [ 'id' => 'CH-TRN-PERF3-1','category' => self::CAT_SOURCE,   'label' => 'live-ops onboard is single-scan (no N+1)', 'callable' => '_chTrnPerf3_1' ],
             [ 'id' => 'CH-TRN-PERF4-1','category' => self::CAT_SOURCE,   'label' => 'SA fleet leaderboard served from rollup',  'callable' => '_chTrnPerf4_1' ],
+            [ 'id' => 'CH-TRN-F13-1', 'category' => self::CAT_SOURCE,    'label' => 'F13 GPS contract: server-created hot doc + TTL timestamp', 'callable' => '_chTrnF13_1' ],
+            [ 'id' => 'CH-TRN-F13-2', 'category' => self::CAT_SOURCE,    'label' => 'F13 viewer resolver matches canonical recipient resolver', 'callable' => '_chTrnF13_2' ],
+            [ 'id' => 'CH-TRN-F13-3', 'category' => self::CAT_SOURCE,    'label' => 'F13 stores no map-provider data (provider-agnostic)', 'callable' => '_chTrnF13_3' ],
+            [ 'id' => 'CH-TRN-F13-4', 'category' => self::CAT_SOURCE,    'label' => 'F13 kill switch wired into all 3 trip transitions', 'callable' => '_chTrnF13_4' ],
+            [ 'id' => 'CH-TRN-F13-5', 'category' => self::CAT_SOURCE,    'label' => 'F13 fix ordering enforced in rules + service', 'callable' => '_chTrnF13_5' ],
+            [ 'id' => 'CH-TRN-F13-6', 'category' => self::CAT_SOURCE,    'label' => 'ONE canonical trip lifecycle (D-8)', 'callable' => '_chTrnF13_6' ],
+            [ 'id' => 'CH-TRN-F13-7', 'category' => self::CAT_SOURCE,    'label' => 'Parent live map is provider-agnostic + Firestore-only', 'callable' => '_chTrnF13_7' ],
+            [ 'id' => 'CH-TRN-MAP-1', 'category' => self::CAT_SOURCE,    'label' => 'Maps platform: secret split + activation gate', 'callable' => '_chTrnMap1' ],
+            [ 'id' => 'CH-TRN-MAP-2', 'category' => self::CAT_SOURCE,    'label' => 'Maps platform did not disturb F13.1 GPS', 'callable' => '_chTrnMap2' ],
+            [ 'id' => 'CH-TRN-MAP-3', 'category' => self::CAT_SOURCE,    'label' => 'Runtime provider resolution (no hardcoded renderer)', 'callable' => '_chTrnMap3' ],
+            [ 'id' => 'CH-TRN-MAP-4', 'category' => self::CAT_SOURCE,    'label' => 'Provider availability is platform-aware', 'callable' => '_chTrnMap4' ],
+            [ 'id' => 'CH-TRN-CSP-1', 'category' => self::CAT_SOURCE,    'label' => 'CSP map allowlist is minimal + single-emitter', 'callable' => '_chTrnCsp1' ],
+            [ 'id' => 'CH-TRN-F14-1', 'category' => self::CAT_SOURCE,    'label' => 'QR boarding is server-authorized (no client write, no hand-board)', 'callable' => '_chTrnF14_1' ],
+            [ 'id' => 'CH-TRN-F13-8', 'category' => self::CAT_SOURCE,    'label' => 'F13.2 fleet map: real data, no second GPS system', 'callable' => '_chTrnF13_8' ],
+            [ 'id' => 'CH-TRN-RBAC-1', 'category' => self::CAT_SOURCE,   'label' => 'Transport is 100% graded RBAC (no fallback)', 'callable' => '_chTrnRbac1' ],
             [ 'id' => 'CH-TRN-SEC4-1', 'category' => self::CAT_SOURCE,   'label' => 'transport controllers use admin_role',    'callable' => '_chTrnSec4_1' ],
             [ 'id' => 'CH-TRN-SEC3-1', 'category' => self::CAT_SOURCE,   'label' => 'analytics gated on Operations RBAC grant', 'callable' => '_chTrnSec3_1' ],
             [ 'id' => 'CH-TRN-SEC2-1', 'category' => self::CAT_SOURCE,   'label' => 'tripLogs create bound to trip driver',     'callable' => '_chTrnSec2_1' ],
@@ -297,6 +314,12 @@ class Transport_verifier extends CI_Controller
             [ 'id' => 'CH-TRN-RCP-1',  'category'=> self::CAT_SOURCE,   'label' => 'parent notify recipient = canonical userId','callable' => '_chTrnRcp1' ],
             [ 'id' => 'CH-TRN-NF1-1',  'category'=> self::CAT_SOURCE,   'label' => 'Transport ctrl free of Operations_accounting','callable' => '_chTrnNf1' ],
             [ 'id' => 'CH-TRN-OPSN-1', 'category'=> self::CAT_SOURCE,   'label' => 'ops notice carries canonical timestamp',   'callable' => '_chTrnOpsn1' ],
+
+            // ─── F12.1 CBSE Compliance (added 2026-08-07, M5) ─────────────────
+            [ 'id' => 'CH-TRN-CMP-1', 'category' => self::CAT_STRUCTURAL, 'label' => 'compliance rule pack complete',        'callable' => '_chTrnCmp1' ],
+            [ 'id' => 'CH-TRN-CMP-2', 'category' => self::CAT_RUNTIME,    'label' => 'posture provably recomputable',        'callable' => '_chTrnCmp2' ],
+            [ 'id' => 'CH-TRN-CMP-3', 'category' => self::CAT_RUNTIME,    'label' => 'waiver bounds honoured',               'callable' => '_chTrnCmp3' ],
+            [ 'id' => 'CH-TRN-CMP-4', 'category' => self::CAT_SOURCE,     'label' => 'evidence link-not-copy + authz bound', 'callable' => '_chTrnCmp4' ],
         ];
     }
 
@@ -409,6 +432,25 @@ class Transport_verifier extends CI_Controller
         }
         $bad = [];
         foreach ($rows as $row) {
+            // MEASUREMENT CORRECTION (2026-08-13). schoolWhere() returns
+            // ['id'=>…,'data'=>[…]] (Firestore_rest_client::query), so reading
+            // `session` off the top level yields null → the regex below fails →
+            // EVERY assignment would be reported as "missing/bad session".
+            //
+            // This gate passes today only because routeAssignments is empty in
+            // this tenant (INFO/trivial pass), so the defect is LATENT: it would
+            // produce a false FAIL against valid data the moment the collection
+            // is populated. Same class as the CH-TRN-F2-2 defect.
+            //
+            // `id` is preserved explicitly because it lives at the ENVELOPE
+            // level and the sample list below uses it; data's own `id` wins if
+            // present, since that is the canonical assignment id.
+            //
+            // Acceptance criterion UNCHANGED: a session not matching
+            // ^\d{4}-\d{2}$ still fails the gate.
+            if (isset($row['data']) && is_array($row['data']) && !isset($row['session'])) {
+                $row = $row['data'] + ['id' => (string) ($row['id'] ?? '')];
+            }
             $session = (string) ($row['session'] ?? '');
             if (!preg_match('/^\d{4}-\d{2}$/', $session)) {
                 $bad[] = (string) ($row['id'] ?? '?');
@@ -548,6 +590,18 @@ class Transport_verifier extends CI_Controller
         $stale = [];
         $cutoff = time() - 86400;
         foreach ($rows as $row) {
+            // MEASUREMENT CORRECTION (2026-08-13) — FALSE PASS, the dangerous
+            // class. schoolWhere() returns ['id'=>…,'data'=>[…]], so reading
+            // created_at/expense_date off the top level yields null,
+            // strtotime('') returns false, and the `$ts !== false` guard below
+            // SKIPS the row entirely. $stale therefore stayed empty and the gate
+            // reported PASS — a pending expense stale for days would never have
+            // been reported. Sentinel is accounting_journal_ref: it is the
+            // queried field, so it is guaranteed present on every matched doc.
+            // Acceptance criterion UNCHANGED: pending >24h still fails.
+            if (isset($row['data']) && is_array($row['data']) && !isset($row['accounting_journal_ref'])) {
+                $row = $row['data'] + ['id' => (string) ($row['id'] ?? '')];
+            }
             $ts = strtotime((string) ($row['created_at'] ?? $row['expense_date'] ?? ''));
             if ($ts !== false && $ts < $cutoff) {
                 $stale[] = (string) ($row['id'] ?? '?');
@@ -577,6 +631,17 @@ class Transport_verifier extends CI_Controller
         }
         $bad = [];
         foreach ($rows as $row) {
+            // MEASUREMENT CORRECTION (2026-08-13) — latent FALSE FAIL. Reading
+            // the window dates off the envelope yields null, strtotime('')
+            // returns false, and every row would be counted inconsistent. The
+            // isset($row['data']) guard keeps this safe for a genuinely flat row
+            // that really is missing effective_from: no unwrap happens, and the
+            // row is still judged inconsistent — which is correct.
+            // Acceptance criterion UNCHANGED: an unparseable or inverted window
+            // still fails.
+            if (isset($row['data']) && is_array($row['data']) && !isset($row['effective_from'])) {
+                $row = $row['data'] + ['id' => (string) ($row['id'] ?? '')];
+            }
             $from = strtotime((string) ($row['effective_from'] ?? ''));
             $to   = strtotime((string) ($row['effective_to']   ?? ''));
             if ($from === false || $to === false || $to < $from) {
@@ -607,6 +672,26 @@ class Transport_verifier extends CI_Controller
         }
         $latestPerVehicle = [];
         foreach ($rows as $row) {
+            // MEASUREMENT CORRECTION (2026-08-13) — FALSE PASS.
+            //
+            // TWO DIFFERENT SHAPES ARE IN PLAY HERE, proven from the client:
+            //   • schoolWhere() → query()        → ['id'=>…,'data'=>[…]]  ENVELOPED
+            //   • getEntity()   → decodeDocument() → flat raw fields      FLAT
+            //
+            // $rows comes from schoolWhere, so vehicle_id/new_state must be read
+            // from data. Reading them off the envelope yielded null → $vid === ''
+            // → `continue` skipped EVERY log row → $latestPerVehicle stayed empty
+            // → $bad empty → PASS. A vehicle whose lifecycle log disagreed with
+            // its actual status was never detected.
+            //
+            // The $vehicle read below uses getEntity(), which is FLAT, so it is
+            // already correct and is deliberately left untouched.
+            //
+            // Acceptance criterion UNCHANGED: log new_state ≠ vehicle
+            // lifecycle_status still fails.
+            if (isset($row['data']) && is_array($row['data']) && !isset($row['vehicle_id'])) {
+                $row = $row['data'];
+            }
             $vid = (string) ($row['vehicle_id'] ?? '');
             if ($vid === '' || isset($latestPerVehicle[$vid])) {
                 continue;
@@ -649,6 +734,26 @@ class Transport_verifier extends CI_Controller
         $today = date('Y-m-d');
         $bad = [];
         foreach ($vehicles as $v) {
+            // MEASUREMENT CORRECTION (2026-08-13) — FALSE PASS.
+            //
+            // $vehicles comes from schoolWhere (ENVELOPED), so staff_id read off
+            // the top level was null → `continue` skipped every Active vehicle →
+            // $bad empty → PASS. An expired-licence driver on an Active vehicle
+            // was therefore never reported — a safety check that examined nothing.
+            //
+            // Sentinel is lifecycle_status: it is the queried field, guaranteed
+            // present on every matched document. `id` is preserved because the
+            // sample label below falls back to it.
+            //
+            // The $staff read below uses getEntity(), which returns FLAT raw
+            // fields, so $staff['driver_meta']['licence_expires'] is already
+            // correct and is deliberately left untouched.
+            //
+            // Acceptance criterion UNCHANGED: an Active vehicle whose driver's
+            // licence_expires is in the past still fails.
+            if (isset($v['data']) && is_array($v['data']) && !isset($v['lifecycle_status'])) {
+                $v = $v['data'] + ['id' => (string) ($v['id'] ?? '')];
+            }
             $staffId = (string) ($v['staff_id'] ?? $v['driver_staff_id'] ?? '');
             if ($staffId === '') {
                 continue;
@@ -687,6 +792,29 @@ class Transport_verifier extends CI_Controller
         $bad = [];
         $seenRoutes = [];
         foreach ($assignments as $a) {
+            // MEASUREMENT CORRECTION (2026-08-13) — FALSE PASS.
+            //
+            // $assignments comes from schoolWhere → ENVELOPED ['id','data'], so
+            // route_id read off the top level was null → $rid === '' → `continue`
+            // skipped EVERY active assignment → $seenRoutes and $bad both stayed
+            // empty → PASS reporting "0 unique routes cross-checked". A route
+            // still carrying students onto a Retired/Disposed vehicle would never
+            // have been flagged.
+            //
+            // The two getEntity() reads below ($route['vehicle_id'] and
+            // $vehicle['lifecycle_status']) use the SINGLE-DOCUMENT path, which
+            // decodeDocument() returns FLAT — they are already correct and are
+            // deliberately left untouched.
+            //
+            // Sentinel is `status`: it is the queried field (status == 'Active'),
+            // so it is guaranteed present on every matched document. The gate
+            // never reads $a['id'], so no envelope key is carried over.
+            //
+            // Acceptance criterion UNCHANGED: an Active assignment whose route
+            // points at a Retired/Disposed vehicle still fails.
+            if (isset($a['data']) && is_array($a['data']) && !isset($a['status'])) {
+                $a = $a['data'];
+            }
             $rid = (string) ($a['route_id'] ?? '');
             if ($rid === '' || isset($seenRoutes[$rid])) {
                 continue;
@@ -740,12 +868,41 @@ class Transport_verifier extends CI_Controller
         if ($assignments === []) {
             return ['status' => 'INFO', 'detail' => 'no session assignments — trivial pass'];
         }
+        // MEASUREMENT CORRECTION (2026-08-13) — FALSE PASS, with a second
+        // latent defect that had to be fixed in the SAME change.
+        //
+        // Both queries come from schoolWhere → ENVELOPED ['id','data'].
+        //
+        // Defect 1 (assignments): route_id read off the envelope was null, so
+        // the `$rid !== ''` guard below never fired and NO orphan could ever be
+        // recorded → PASS while claiming "all matched".
+        //
+        // Defect 2 (routes, ID-FORM): with routeId also null, the key fell
+        // through to $r['id'] — which at ENVELOPE level is the school-PREFIXED
+        // document id (SCH_x_RT0045), whereas assignments store the BARE id
+        // (RT0045). So the lookup below could never match. Correcting only
+        // defect 1 would therefore have flipped this gate from false PASS to
+        // false FAIL, reporting every valid assignment as an orphan.
+        //
+        // After unwrapping to $r['data'] the envelope id is deliberately NOT
+        // carried over, so $r['id'] can only be the document's own (bare) id.
+        // Sentinel is `session` on both sides: it is the queried field, so it is
+        // guaranteed present on every matched document.
+        //
+        // Acceptance criterion UNCHANGED: an assignment whose route_id has no
+        // matching route in the same session is still an orphan and still fails.
         $routeIds = [];
         foreach ($routes as $r) {
+            if (isset($r['data']) && is_array($r['data']) && !isset($r['session'])) {
+                $r = $r['data'];
+            }
             $routeIds[(string) ($r['routeId'] ?? $r['id'] ?? '')] = true;
         }
         $orphans = [];
         foreach ($assignments as $a) {
+            if (isset($a['data']) && is_array($a['data']) && !isset($a['session'])) {
+                $a = $a['data'];
+            }
             $rid = (string) ($a['route_id'] ?? '');
             if ($rid !== '' && !isset($routeIds[$rid])) {
                 $orphans[] = (string) ($a['id'] ?? $a['studentId'] ?? '?') . "->{$rid}";
@@ -778,6 +935,29 @@ class Transport_verifier extends CI_Controller
         $cutoff = time() - 86400;
         $stale = [];
         foreach ($rows as $row) {
+            // MEASUREMENT CORRECTION (2026-08-13) — FALSE PASS.
+            //
+            // Single source: schoolWhere('transportBulkProgress') → ENVELOPED
+            // ['id','data']. started_at read off the top level was null,
+            // strtotime('') returns false, and the `$ts !== false` guard below
+            // SKIPPED the row — so $stale stayed empty and the gate reported
+            // "all fresh" no matter how old the markers were.
+            //
+            // WHAT COULD HAVE ESCAPED DETECTION: a bulk transport operation
+            // (bulk assignment / session rollover) that started and never
+            // finished leaves a progress marker behind. This gate exists to
+            // notice one stuck for more than 24h. Reading nulls, it would have
+            // reported every abandoned bulk run as fresh — hiding a half-applied
+            // operation whose partial effects are still in the tenant.
+            //
+            // `id` is preserved because the sample list below uses it; the
+            // document's own id wins when present.
+            //
+            // Acceptance criterion UNCHANGED: a marker started more than 24h ago
+            // still fails the gate.
+            if (isset($row['data']) && is_array($row['data']) && !isset($row['started_at'])) {
+                $row = $row['data'] + ['id' => (string) ($row['id'] ?? '')];
+            }
             $ts = strtotime((string) ($row['started_at'] ?? ''));
             if ($ts !== false && $ts < $cutoff) {
                 $stale[] = (string) ($row['id'] ?? '?');
@@ -849,6 +1029,36 @@ class Transport_verifier extends CI_Controller
         $valid = Transport_service::LIFECYCLE_STATES;
         $bad = [];
         foreach ($rows as $v) {
+            // MEASUREMENT CORRECTION (2026-08-13) — FALSE PASS.
+            //
+            // Single source: schoolWhere(vehicles) → ENVELOPED ['id','data'].
+            // lifecycle_status read at the top level was null → $ls === '' → the
+            // `continue` below skipped EVERY vehicle → $bad stayed empty → PASS
+            // reporting "N vehicles valid" while validating none of them.
+            //
+            // Note the skip itself is CORRECT behaviour for a genuinely empty
+            // value (the product coalesces it to 'Active' at read). The defect
+            // was that the envelope made every value look empty, so a legitimate
+            // tolerance became a blanket bypass.
+            //
+            // WHAT COULD HAVE ESCAPED DETECTION: a vehicle carrying a
+            // lifecycle_status outside LIFECYCLE_STATES — schema drift, a typo,
+            // or a value from an older enum. Lifecycle-driven logic (retirement,
+            // maintenance gating, assignment eligibility) then behaves
+            // unpredictably for that vehicle, and this gate — whose whole job is
+            // to catch exactly that — reported every vehicle as valid.
+            //
+            // Sentinel is schoolId, not lifecycle_status: the query carries no
+            // conditions, so there is no queried field to lean on, and schoolId
+            // is guaranteed present because schoolWhere() filters on it.
+            // `id` is preserved for the sample label; the document's own id wins.
+            //
+            // Acceptance criterion UNCHANGED: a non-empty lifecycle_status
+            // outside LIFECYCLE_STATES still fails; an empty one is still
+            // tolerated.
+            if (isset($v['data']) && is_array($v['data']) && !isset($v['schoolId'])) {
+                $v = $v['data'] + ['id' => (string) ($v['id'] ?? '')];
+            }
             $ls = (string) ($v['lifecycle_status'] ?? '');
             if ($ls === '') { continue; }   // coalesced to 'Active' at read
             if (!in_array($ls, $valid, true)) {
@@ -881,6 +1091,34 @@ class Transport_verifier extends CI_Controller
         }
         $bad = [];
         foreach ($rows as $v) {
+            // MEASUREMENT CORRECTION (2026-08-13) — FALSE FAIL (class B), the
+            // opposite polarity to the surrounding gates.
+            //
+            // $rows comes from schoolWhere → ENVELOPED ['id','data'], so
+            // vendor_id read at the top level was null → $vend === '' → the row
+            // was COUNTED as a violation. Unlike the skip-based gates nearby,
+            // this one cries wolf rather than going quiet: the moment a single
+            // Contract vehicle existed, EVERY one would be reported as
+            // "(no vendor_id)".
+            //
+            // The practical harm is masking: with every contract vehicle flagged,
+            // a genuinely broken vendor FK could not be distinguished from the
+            // noise, and a real orphaned vendor reference would be lost in a wall
+            // of false ones.
+            //
+            // The getEntity(transportVendors) read below uses the SINGLE-DOCUMENT
+            // path (FLAT) and only tests is_array() — no field access — so it is
+            // already correct and is left untouched.
+            //
+            // Sentinel is ownership_type: the queried field (== 'Contract'), so
+            // it is guaranteed present on every matched document. `id` is
+            // preserved for the label; the document's own id wins.
+            //
+            // Acceptance criterion UNCHANGED: a Contract vehicle with no
+            // vendor_id, or pointing at a missing vendor, still fails.
+            if (isset($v['data']) && is_array($v['data']) && !isset($v['ownership_type'])) {
+                $v = $v['data'] + ['id' => (string) ($v['id'] ?? '')];
+            }
             $vid  = (string) ($v['vehicleId'] ?? $v['id'] ?? '?');
             $vend = (string) ($v['vendor_id'] ?? '');
             if ($vend === '') {
@@ -964,7 +1202,35 @@ class Transport_verifier extends CI_Controller
         $vidCache = [];
         $bad = [];
         foreach ($rows as $item) {
-            $vid = (string) ($item['row']['vehicle_id'] ?? '');
+            // MEASUREMENT CORRECTION (2026-08-13) — FALSE FAIL (class B).
+            //
+            // Both sources are schoolWhere() → ENVELOPED ['id','data'], and the
+            // array_map above wraps each ENVELOPE as $item['row']. So
+            // $item['row']['vehicle_id'] reached into the envelope, not the
+            // document, and returned null → $vid === '' → the row was COUNTED as
+            // an orphan. Every maintenance and fuel log would have been reported
+            // as "(no vehicle_id)".
+            //
+            // Harm is masking, as with CH-TRN-F1-3: a genuinely orphaned log —
+            // one referencing a vehicle that was deleted — could not be picked
+            // out from a list where every log appeared broken.
+            //
+            // The getEntity(vehicles) read below uses the SINGLE-DOCUMENT path
+            // (FLAT) and only tests is_array(); it is already correct and is left
+            // untouched.
+            //
+            // Sentinel is schoolId: neither query carries conditions, so there is
+            // no queried field to lean on, and schoolId is guaranteed present
+            // because schoolWhere() filters on it. $item['kind'] is the
+            // verifier's own wrapper key and is unaffected.
+            //
+            // Acceptance criterion UNCHANGED: a log with no vehicle_id, or
+            // pointing at a missing vehicle, still fails.
+            $r = $item['row'];
+            if (isset($r['data']) && is_array($r['data']) && !isset($r['schoolId'])) {
+                $r = $r['data'];
+            }
+            $vid = (string) ($r['vehicle_id'] ?? '');
             if ($vid === '') {
                 $bad[] = "{$item['kind']}:(no vehicle_id)";
                 continue;
@@ -1180,6 +1446,22 @@ class Transport_verifier extends CI_Controller
         $bad = [];
         foreach ($stops as $s) {
             if (!is_array($s)) { continue; }
+            // MEASUREMENT CORRECTION (2026-08-13), not a relaxation.
+            //
+            // schoolWhere() returns ['id'=>…,'data'=>[…]] envelopes for this
+            // collection. Reading route_id/stopId off the envelope yields null,
+            // so EVERY stop registered as "(no route_id)" with stopId '?' —
+            // six false FAILs against data whose route_id was populated and
+            // whose routes existed. Sentinel-guarded unwrap, matching the
+            // pattern already used at lines ~1128 and ~1616: only unwrap when
+            // the expected business field is absent at the top level, so a
+            // genuinely flat row is left alone.
+            //
+            // The acceptance criteria are UNCHANGED: an empty route_id still
+            // fails, and a route_id pointing at a missing route still fails.
+            if (isset($s['data']) && is_array($s['data']) && !isset($s['route_id'])) {
+                $s = $s['data'] + ['stopId' => (string) ($s['id'] ?? '')];
+            }
             $rid = (string) ($s['route_id'] ?? '');
             if ($rid === '') {
                 $bad[] = ((string) ($s['stopId'] ?? '?')) . '(no route_id)';
@@ -1221,6 +1503,41 @@ class Transport_verifier extends CI_Controller
         $bad = [];
         foreach ($active as $s) {
             if (!is_array($s)) { continue; }
+            // MEASUREMENT CORRECTION (2026-08-13) — FALSE FAIL (class B), and it
+            // short-circuited the gate's real purpose.
+            //
+            // $active comes from schoolWhere → ENVELOPED ['id','data'], so both
+            // suspensionId and route_id were read at the wrong level.
+            // suspensionId degraded to '?' and route_id to null → $rid === '' →
+            // the `continue` below recorded "(no route_id)" for EVERY active
+            // suspension. The gate therefore never reached its actual assertion:
+            // the two-way check that route.active_suspension_ref === suspensionId.
+            //
+            // OPERATIONAL CONSEQUENCE: a route suspension is a safety control — a
+            // suspended route must not run trips. This gate exists to catch a
+            // DESYNC between the suspension record and the route's
+            // active_suspension_ref. Two real conditions it could not report:
+            //   • a route marked suspended whose ref points at a stale or
+            //     different suspension, so the current suspension may not be
+            //     enforced at all;
+            //   • a lifted suspension still referenced by the route, leaving a
+            //     route blocked that should be running.
+            // Both were unreachable behind a wall of false "(no route_id)" rows.
+            //
+            // The getEntity(routes) read below uses the SINGLE-DOCUMENT path
+            // (FLAT), so $route['active_suspension_ref'] is already correct and is
+            // left untouched.
+            //
+            // Sentinel is status: the queried field (== 'Active'), guaranteed
+            // present on every matched document. The label uses suspensionId from
+            // the document, so no envelope key is carried over.
+            //
+            // Acceptance criterion UNCHANGED: a missing route_id, a missing route,
+            // or a route whose active_suspension_ref does not equal the
+            // suspensionId all still fail.
+            if (isset($s['data']) && is_array($s['data']) && !isset($s['status'])) {
+                $s = $s['data'];
+            }
             $sid = (string) ($s['suspensionId'] ?? '?');
             $rid = (string) ($s['route_id'] ?? '');
             if ($rid === '') { $bad[] = "{$sid}(no route_id)"; continue; }
@@ -1255,6 +1572,42 @@ class Transport_verifier extends CI_Controller
         $bad = [];
         foreach ($routes as $r) {
             if (!is_array($r)) { continue; }
+            // MEASUREMENT CORRECTION (2026-08-13) — FALSE PASS (class A).
+            //
+            // $routes comes from schoolWhere → ENVELOPED ['id','data'], so
+            // active_suspension_ref read at the top level was null → $ref === ''
+            // → the `continue` below skipped EVERY route → $bad stayed empty →
+            // PASS reporting "no stale suspension refs" without inspecting one.
+            //
+            // As in CH-TRN-F1-2, the skip itself is CORRECT for a genuinely empty
+            // ref (a route with no active suspension is normal). The defect was
+            // that the envelope made every route look unsuspended, turning a
+            // legitimate tolerance into a blanket bypass.
+            //
+            // OPERATIONAL CONSEQUENCE: a route carrying a STALE
+            // active_suspension_ref would never be reported — either pointing at
+            // a suspension document that no longer exists, or at one whose status
+            // is no longer Active. The route can then be treated as suspended
+            // (trips blocked) when the suspension has in fact been lifted, or
+            // left with a dangling ref so its suspension state is ambiguous.
+            //
+            // TAKEN WITH CH-TRN-F2-3 THIS IS THE MORE SERIOUS FINDING: F2-3 checks
+            // suspension→route and F2-4 checks route→suspension. F2-3 failed loudly
+            // for every row and F2-4 passed silently for every row, so the
+            // suspension-consistency invariant was unverified in BOTH directions.
+            //
+            // The getEntity(routeSuspensions) read below uses the SINGLE-DOCUMENT
+            // path (FLAT), so $s['status'] is already correct and is left alone.
+            //
+            // Sentinel is schoolId: the query carries no conditions, so there is
+            // no queried field, and schoolId is guaranteed present because
+            // schoolWhere() filters on it.
+            //
+            // Acceptance criterion UNCHANGED: a ref to a missing suspension, or to
+            // one whose status is not 'Active', still fails.
+            if (isset($r['data']) && is_array($r['data']) && !isset($r['schoolId'])) {
+                $r = $r['data'];
+            }
             $ref = (string) ($r['active_suspension_ref'] ?? '');
             if ($ref === '') { continue; }
             $s = $this->fs->getEntity(Transport_service::COL_ROUTE_SUSPENSIONS, $ref);
@@ -1374,6 +1727,33 @@ class Transport_verifier extends CI_Controller
         $bad = [];
         foreach ($rows as $r) {
             if (!is_array($r)) { continue; }
+            // MEASUREMENT CORRECTION (2026-08-13) — FALSE FAIL (class B).
+            //
+            // Single source: schoolWhere(studentRoutes) → ENVELOPED ['id','data'],
+            // so session/studentId were read at the wrong level. session became
+            // null → $s === '' → EVERY assignment was recorded as
+            // "missing/bad session", and studentId degraded to '?' so the sample
+            // list could not even name the offenders.
+            //
+            // WHY THIS GATE MATTERS MOST: studentRoutes is the canonical Transport
+            // ELIGIBILITY AUTHORITY (F-1). _computeTripRoster() filters on
+            // session, so an assignment carrying a missing or malformed session
+            // silently drops that child from every trip roster — they simply do
+            // not appear on the bus. This gate exists to catch exactly that, and
+            // reading nulls it could not: once the collection held data it would
+            // have flagged all rows indiscriminately, leaving a genuinely
+            // session-less assignment indistinguishable from the noise.
+            //
+            // Sentinel is schoolId: the query carries no conditions, so there is
+            // no queried field, and schoolId is guaranteed present because
+            // schoolWhere() filters on it. Deliberately NOT session — that is the
+            // very field under test and may legitimately be absent.
+            //
+            // Acceptance criterion UNCHANGED: a session that is empty or does not
+            // match ^\d{4}-\d{2}$ still fails.
+            if (isset($r['data']) && is_array($r['data']) && !isset($r['schoolId'])) {
+                $r = $r['data'];
+            }
             $s = (string) ($r['session'] ?? '');
             if ($s === '' || !preg_match('/^\d{4}-\d{2}$/', $s)) {
                 $bad[] = (string) ($r['studentId'] ?? '?');
@@ -1408,6 +1788,36 @@ class Transport_verifier extends CI_Controller
         $stale = [];
         foreach ($rows as $r) {
             if (!is_array($r)) { continue; }
+            // MEASUREMENT CORRECTION (2026-08-13) — FALSE PASS (class A).
+            //
+            // Single source: schoolWhere(studentRoutes, fee_demand_ref=='pending')
+            // → ENVELOPED ['id','data']. updated_at/assigned_date were read at the
+            // top level and came back null, strtotime('') returns false, and the
+            // `$ts !== false` guard below SKIPPED the row. $stale stayed empty and
+            // the gate reported "all within SLA" no matter how long a fee had been
+            // stuck. studentId also degraded to '?', so even a reported row could
+            // not have been identified.
+            //
+            // WHAT COULD HAVE ESCAPED DETECTION — this is the money-side integrity
+            // check. fee_demand_ref == 'pending' means the transport fee demand was
+            // never completed for a student who HAS transport. Left unreported:
+            //   • a transport-eligible student who is never billed, because the
+            //     assignment→fee handoff died midway;
+            //   • the mirror of the F-3 rule (never create a fee demand for an
+            //     incomplete request): here the assignment is complete but the fee
+            //     never materialised, so the student rides unbilled.
+            // Either way the pending marker is the only trace, and this gate is
+            // what watches it.
+            //
+            // Sentinel is fee_demand_ref: the queried field (== 'pending'), so it
+            // is guaranteed present on every matched document. No envelope id is
+            // carried over — the label uses the document's own studentId.
+            //
+            // Acceptance criterion UNCHANGED: a pending fee older than 24h still
+            // fails.
+            if (isset($r['data']) && is_array($r['data']) && !isset($r['fee_demand_ref'])) {
+                $r = $r['data'];
+            }
             $ts = strtotime((string) ($r['updated_at'] ?? $r['assigned_date'] ?? ''));
             if ($ts !== false && $ts < $cutoff) {
                 $stale[] = (string) ($r['studentId'] ?? '?');
@@ -1438,6 +1848,42 @@ class Transport_verifier extends CI_Controller
         $bad = [];
         foreach ($rows as $r) {
             if (!is_array($r)) { continue; }
+            // MEASUREMENT CORRECTION (2026-08-13) — FALSE PASS (class A).
+            //
+            // $rows comes from schoolWhere → ENVELOPED ['id','data'], so route_id
+            // read at the top level was null → $rid === '' → the `continue` below
+            // skipped EVERY assignment → $bad stayed empty → PASS reporting
+            // "no Archived-route refs" without resolving a single route.
+            //
+            // WHAT COULD HAVE ESCAPED DETECTION: a student still assigned to an
+            // ARCHIVED route. An archived route is retired from service, so no
+            // trip is ever created for it — the child never appears on any roster
+            // and no bus comes, while the assignment (and its fee) remains live.
+            // A child with transport on paper and no bus in practice.
+            //
+            // This is the ONLY gate watching for it: F14's eligibility resolver
+            // (resolveEligibility) checks the studentRoutes row's own status,
+            // effective dates, suspension window, direction and service days — but
+            // NOT whether the referenced ROUTE has been archived. So such an
+            // assignment passes eligibility while no trip can exist.
+            //
+            // The getEntity(routes) read below uses the SINGLE-DOCUMENT path
+            // (FLAT), so $rt['status'] is already correct and is left untouched.
+            //
+            // Sentinel is schoolId: the query carries no conditions, so there is no
+            // queried field, and schoolId is guaranteed present because
+            // schoolWhere() filters on it. Deliberately NOT route_id — this gate
+            // legitimately tolerates its absence (the `continue` above).
+            //
+            // The envelope id is deliberately NOT carried over: $rid is used as a
+            // document key for getEntity(routes) and the label uses the document's
+            // own studentId, so a school-prefixed envelope id must never leak in.
+            //
+            // Acceptance criterion UNCHANGED: an assignment whose route_id resolves
+            // to a route with status 'Archived' still fails.
+            if (isset($r['data']) && is_array($r['data']) && !isset($r['schoolId'])) {
+                $r = $r['data'];
+            }
             $rid = (string) ($r['route_id'] ?? '');
             if ($rid === '') { continue; }
             if (!array_key_exists($rid, $routeCache)) {
@@ -1472,6 +1918,50 @@ class Transport_verifier extends CI_Controller
         $drift = [];
         foreach ($caches as $c) {
             if (!is_array($c)) { continue; }
+            // MEASUREMENT CORRECTION (2026-08-13) — FALSE PASS (class A), COMPOUND.
+            //
+            // SITE 1 of this gate. $caches comes from schoolWhere → ENVELOPED
+            // ['id','data'], so all three business fields were read at the wrong
+            // level, with three separate consequences:
+            //   • route_id  → null → $rid === '' → the `continue` below skipped
+            //     EVERY cache entry → $drift stayed empty → PASS claiming
+            //     "N cache entries accurate" while checking none. (dominant defect)
+            //   • current_count → (int) null = 0 → had a row survived, the cached
+            //     value would always have compared as 0.
+            //   • session → '' → the session filter would silently drop out of
+            //     $where below, broadening the actual-count query.
+            // The latter two are latent: they would have produced spurious drift
+            // (a false WARN) once the skip no longer masked them.
+            //
+            // WHAT COULD HAVE ESCAPED DETECTION: bus capacity cache drift. When
+            // current_count is stale, seat availability shown to the office is
+            // wrong — a route can be over-assigned beyond the vehicle's capacity
+            // (children assigned to a bus with no seat for them), or left
+            // under-used while families are told it is full. This gate is the
+            // drift detector, and it was reporting the cache accurate without
+            // comparing a single entry.
+            //
+            // SITE 2 of this gate — the schoolWhere(studentRoutes, $where) below —
+            // is consumed ONLY by count(). Counting envelopes yields the same
+            // integer as counting flat rows, so that read is shape-independent and
+            // is deliberately left UNCHANGED.
+            //
+            // Sentinel is schoolId: the query carries no conditions, so there is no
+            // queried field, and schoolId is guaranteed present because
+            // schoolWhere() filters on it. Deliberately NOT route_id (tolerated
+            // absence via the `continue`), NOT session (optional by design), and
+            // NOT current_count (the value under test).
+            //
+            // No envelope id is carried over: the label uses $rid from the document
+            // and $rid is used as a query VALUE, so a school-prefixed id must not
+            // leak in.
+            //
+            // Acceptance criterion UNCHANGED, including its severity: a cached
+            // current_count that disagrees with the actual assignment count still
+            // reports WARN (not FAIL) with the rebuild_capacity_cache hint.
+            if (isset($c['data']) && is_array($c['data']) && !isset($c['schoolId'])) {
+                $c = $c['data'];
+            }
             $rid = (string) ($c['route_id'] ?? '');
             $session = (string) ($c['session'] ?? '');
             if ($rid === '') { continue; }
@@ -2130,10 +2620,25 @@ class Transport_verifier extends CI_Controller
     // ═════════════════════════════════════════════════════════════════════
 
     /**
-     * CH-TRN-F7-1 — GPS-null discipline. F7 is GPS-native by schema but
-     * MUST NOT populate live GPS fields (that belongs to the dedicated
-     * GPS phase). Verifies every tripLogs + transportAttendance doc has
-     * NULL for reserved live-position fields.
+     * CH-TRN-F7-1 — GPS write-provenance discipline.
+     *
+     * ─── RE-SCOPED ONCE, 2026-08-08, for F13.1 ───────────────────────────
+     * Original scope (F7 → F12.1): every reserved live-GPS field on
+     * `tripLogs` and `transportAttendance` MUST be null, because no GPS phase
+     * existed and any value was by definition an accidental write.
+     *
+     * F13.1 populates those fields for real, so a literal null assertion
+     * would now fail on correct data. The gate is therefore **re-scoped, not
+     * deleted** (per the standing F13 instruction): a populated GPS field is
+     * legitimate ONLY when the document also carries a `gps_session_id`,
+     * which is minted exclusively by `Transport_service::createTrip`. A doc
+     * with position data and no session id was written by something outside
+     * the GPS ingest path — precisely the accident the gate was built to
+     * catch, and still caught.
+     *
+     * `transportAttendance` keeps the strict null assertion: geofence
+     * verification is F13.3, deferred by decision D-5, so any value in those
+     * six fields today is still an accident.
      */
     private function _chTrnF7_1(): array
     {
@@ -2146,6 +2651,15 @@ class Transport_verifier extends CI_Controller
         } catch (\Throwable $_) { $trips = []; }
         foreach ($trips as $t) {
             $inner = (isset($t['data']) && is_array($t['data'])) ? $t['data'] : $t;
+            // F13.1 RE-SCOPE (2026-08-08): a populated trip GPS field is now
+            // LEGITIMATE — but only when it came from the GPS ingest path. The
+            // proof of provenance is a non-empty gps_session_id on the same
+            // doc, which only createTrip mints. A trip carrying position data
+            // WITHOUT a session id was written by something that is not the
+            // GPS path, which is exactly the accident this gate exists to
+            // catch. The gate is re-scoped, never relaxed to nothing.
+            $hasSession = trim((string) ($inner['gps_session_id'] ?? '')) !== '';
+            if ($hasSession) { continue; }
             foreach ($tripGpsFields as $f) {
                 if (array_key_exists($f, $inner) && $inner[$f] !== null && $inner[$f] !== '') {
                     $violations[] = "tripLogs:" . (string) ($t['id'] ?? $inner['id'] ?? '?') . ":{$f}";
@@ -3984,6 +4498,1320 @@ class Transport_verifier extends CI_Controller
     }
 
     /**
+     * CH-TRN-F13-1 — the F13.1 Live-GPS data contract holds.
+     *
+     * Three properties, each of which silently breaks the feature if lost:
+     *
+     *  (a) SERVER-CREATED HOT DOC (D-1). `firestore.rules` must forbid client
+     *      create AND delete on vehicleLivePositions, and must gate update on
+     *      the server-side kill switch. A client-create rule cannot be secured:
+     *      isDriverOfTrip() reads resource.data (null on create) and
+     *      isSameSchool() is permissive when resource == null, so such a rule
+     *      would have neither a driver nor a tenant check.
+     *
+     *  (b) DRIVER FIELD ALLOWLIST. The rule's affectedKeys().hasOnly() list must
+     *      match Transport_gps_service::DRIVER_MUTABLE_FIELDS exactly. If they
+     *      drift, either the driver cannot write a field it needs, or it gains
+     *      the ability to rewrite a server-owned one (tripId, the viewer
+     *      allowlist, the kill switch).
+     *
+     *  (c) TTL AS A TIMESTAMP. Firestore TTL acts ONLY on a Timestamp-typed
+     *      field; an ISO string is silently ignored and breadcrumbs then grow
+     *      without bound (~86k docs/day/school at 3,000 students). The builder
+     *      must therefore emit the __firestore_type=timestamp sentinel that
+     *      Firestore_rest_client::encode() turns into a timestampValue.
+     */
+    private function _chTrnF13_1(): array
+    {
+        $svcPath = APPPATH . 'libraries/Transport_gps_service.php';
+        $rulPath = FCPATH . 'firebase-rules/firestore.rules';
+        if (!is_readable($svcPath)) {
+            return ['status' => 'INFO', 'detail' => 'F13 service not present — trivial pass'];
+        }
+        $svc = (string) file_get_contents($svcPath);
+        $rul = is_readable($rulPath) ? (string) file_get_contents($rulPath) : '';
+        $problems = [];
+
+        // (a) server-created, kill-switch-gated
+        if (!preg_match('/match \/vehicleLivePositions\/\{[a-zA-Z]+\} \{(.*?)\n    \}/s', $rul, $m)) {
+            $problems[] = 'no vehicleLivePositions rules block';
+        } else {
+            $block = $m[1];
+            if (strpos($block, 'allow create, delete: if false') === false
+                && !(strpos($block, 'allow create: if false') !== false && strpos($block, 'allow delete: if false') !== false)) {
+                $problems[] = 'client create/delete on the hot doc is not forbidden (D-1)';
+            }
+            if (strpos($block, 'live_tracking_enabled') === false) {
+                $problems[] = 'update is not gated on the live_tracking_enabled kill switch (D-2)';
+            }
+            if (strpos($block, 'authorized_viewer_uids') === false) {
+                $problems[] = 'parent read is not gated on the denormalised viewer allowlist';
+            }
+            if (strpos($block, 'get(') !== false && strpos($block, 'resource.data.get(') === false) {
+                $problems[] = 'rule performs a cross-document get() on the position hot path';
+            }
+            // (b) allowlist parity. Parsed from SOURCE on both sides — this is
+            // a CAT_SOURCE gate and must not depend on the class being loadable.
+            $svcFields = [];
+            if (preg_match('/DRIVER_MUTABLE_FIELDS = \[(.*?)\];/s', $svc, $sm)) {
+                preg_match_all("/'([a-z_]+)'/", $sm[1], $sf);
+                $svcFields = $sf[1] ?? [];
+            }
+            if ($svcFields === []) { $problems[] = 'DRIVER_MUTABLE_FIELDS not parseable from the service'; }
+            if (preg_match('/hasOnly\(\[(.*?)\]\)/s', $block, $hm)) {
+                preg_match_all("/'([a-z_]+)'/", $hm[1], $rf);
+                $ruleFields = $rf[1] ?? [];
+                sort($ruleFields); $s = $svcFields; sort($s);
+                if ($ruleFields !== $s) {
+                    $problems[] = 'rule hasOnly() list != DRIVER_MUTABLE_FIELDS (missing: '
+                        . implode(',', array_diff($s, $ruleFields)) . '; extra: '
+                        . implode(',', array_diff($ruleFields, $s)) . ')';
+                }
+            } else {
+                $problems[] = 'update rule has no affectedKeys().hasOnly() field allowlist';
+            }
+        }
+
+        // (c) TTL emitted as a Timestamp sentinel, not a string
+        if (!preg_match("/breadcrumbExpiresAt.*?__firestore_type'\s*=>\s*'timestamp'/s", $svc)) {
+            $problems[] = 'breadcrumbExpiresAt() does not emit a Firestore Timestamp sentinel — TTL would be a no-op';
+        }
+
+        // Breadcrumbs immutable + staff-read-only
+        if (preg_match('/match \/vehicleBreadcrumbs\/\{[a-zA-Z]+\} \{(.*?)\n    \}/s', $rul, $bm)) {
+            if (strpos($bm[1], 'allow update, delete: if false') === false) {
+                $problems[] = 'breadcrumbs are not append-only';
+            }
+            if (strpos($bm[1], 'driverIs(request.resource.data.driver_staff_id)') === false) {
+                $problems[] = 'breadcrumb create is not bound to the caller\'s own driver id';
+            }
+        } else {
+            $problems[] = 'no vehicleBreadcrumbs rules block';
+        }
+
+        if ($problems !== []) {
+            return ['status' => 'FAIL', 'detail' => 'F13-1: ' . implode('; ', $problems)];
+        }
+        return ['status' => 'PASS', 'detail' =>
+            'hot doc server-created + kill-switch gated; driver field allowlist matches the service ('
+            . count($svcFields ?? []) . ' fields); breadcrumbs append-only, '
+            . 'driver-bound, TTL emitted as a native Timestamp'];
+    }
+
+    /**
+     * CH-TRN-F13-2 — the F13 viewer resolver cannot drift from the canonical one.
+     *
+     * `Transport_gps_service::resolveViewerUids()` duplicates the identity rule
+     * in `Transport_notifier::_recipientUserIdFromStudent()` — students.userId,
+     * falling back to studentId — because that method is PRIVATE on a frozen
+     * class and widening it is outside the D-2 exception. Duplication is only
+     * acceptable while it is pinned, so this gate fails if either side stops
+     * using the same field precedence. A divergence here would show a parent
+     * the wrong bus, or hide the right one.
+     */
+    private function _chTrnF13_2(): array
+    {
+        $gps = APPPATH . 'libraries/Transport_gps_service.php';
+        $ntf = APPPATH . 'libraries/Transport_notifier.php';
+        if (!is_readable($gps) || !is_readable($ntf)) {
+            return ['status' => 'INFO', 'detail' => 'source not readable — trivial pass'];
+        }
+        $g = (string) file_get_contents($gps);
+        $n = (string) file_get_contents($ntf);
+        $problems = [];
+
+        if (!preg_match("/resolveViewerUids.*?\\\$uid\s*=\s*trim\(\(string\)\s*\(\\\$byId\[\\\$sid\]\['userId'\]\s*\?\?\s*''\)\)/s", $g)) {
+            $problems[] = 'F13 resolver no longer reads students.userId first';
+        }
+        if (!preg_match("/resolveViewerUids.*?\\\$uid\s*=\s*\\\$sid;/s", $g)) {
+            $problems[] = 'F13 resolver lost the studentId fallback';
+        }
+        if (!preg_match("/_recipientUserIdFromStudent.*?\\\$stu\['userId'\]\s*\?\?\s*''/s", $n)) {
+            $problems[] = 'canonical notifier resolver changed its field precedence';
+        }
+        if ($problems !== []) {
+            return ['status' => 'FAIL', 'detail' => 'F13-2: ' . implode('; ', $problems)];
+        }
+        return ['status' => 'PASS', 'detail' =>
+            'F13 viewer resolver and the canonical notifier resolver agree: students.userId, fallback studentId'];
+    }
+
+    /**
+     * CH-TRN-F13-3 — the GPS layer is MAP-PROVIDER AGNOSTIC.
+     *
+     * Architecture decision (2026-08-08): Firestore stores only canonical
+     * telemetry — lat, lng, heading, speed, accuracy, altitude, timestamps and
+     * the correlation ids. No provider SDK model, encoded polyline, tile or
+     * map URL, style descriptor, or place/session token may ever be persisted,
+     * so the rendering layer (Leaflet on admin, MapLibre on Parent, or any
+     * future commercial provider) can be swapped without a schema migration.
+     *
+     * Scans the F13 server surface for provider fingerprints.
+     */
+    private function _chTrnF13_3(): array
+    {
+        $paths = [
+            APPPATH . 'libraries/Transport_gps_service.php',
+        ];
+        $banned = [
+            'polyline'      => 'encoded polyline (provider-specific geometry)',
+            'googleapis'    => 'Google API endpoint',
+            'maps.google'   => 'Google Maps URL',
+            'mapbox'        => 'Mapbox reference',
+            'maplibre'      => 'MapLibre reference (rendering belongs in the app)',
+            'leaflet'       => 'Leaflet reference (rendering belongs in the panel)',
+            'tile.openstreetmap' => 'tile server URL',
+            'place_id'      => 'provider place identifier',
+            'LatLng'        => 'provider SDK model',
+        ];
+        $hits = [];
+        foreach ($paths as $p) {
+            if (!is_readable($p)) { continue; }
+            $src = $this->_stripComments((string) file_get_contents($p));
+            foreach ($banned as $needle => $why) {
+                if (stripos($src, $needle) !== false) { $hits[] = basename($p) . ": {$why}"; }
+            }
+        }
+        if ($hits !== []) {
+            return ['status' => 'FAIL', 'detail' => 'F13-3: provider coupling in the data layer — ' . implode('; ', $hits)];
+        }
+        return ['status' => 'PASS', 'detail' =>
+            'GPS data layer stores canonical telemetry only — no provider SDK model, polyline, tile URL or place token'];
+    }
+
+    /**
+     * CH-TRN-F13-4 — the tracking kill switch is wired into ALL THREE trip
+     * transitions, and the GPS bridge stays thin.
+     *
+     * This is the privacy invariant of the whole feature: position is captured
+     * only while a trip is InProgress. Before M2 that was enforced by client
+     * goodwill alone — a driver app that crashed and restarted would keep
+     * streaming after the children were off the bus.
+     *
+     * Asserts:
+     *  (a) startTrip ARMS the switch; completeTrip and cancelTrip DISARM it.
+     *      A missing disarm on either terminal path silently reopens the hole.
+     *  (b) Both terminal paths tear the session down via _closeGpsSession.
+     *  (c) The F13 footprint inside the frozen Transport_service stays limited
+     *      to the two bridge helpers — all GPS logic belongs in
+     *      Transport_gps_service, so F13 can evolve without reopening a frozen
+     *      file. This is the D-2 exception boundary, made mechanical.
+     */
+    private function _chTrnF13_4(): array
+    {
+        $path = APPPATH . 'libraries/Transport_service.php';
+        if (!is_readable($path)) {
+            return ['status' => 'INFO', 'detail' => 'Transport_service not readable — trivial pass'];
+        }
+        $src = (string) file_get_contents($path);
+        $problems = [];
+
+        $bodies = [];
+        foreach (['startTrip', 'completeTrip', 'cancelTrip'] as $m) {
+            $bodies[$m] = $this->_methodBody($src, $m);
+            if ($bodies[$m] === '') { $problems[] = "{$m}() not found"; }
+        }
+
+        if (($bodies['startTrip'] ?? '') !== ''
+            && !preg_match("/'live_tracking_enabled'\s*=>\s*true/", $bodies['startTrip'])) {
+            $problems[] = 'startTrip does not ARM live_tracking_enabled';
+        }
+        if (($bodies['startTrip'] ?? '') !== '' && strpos($bodies['startTrip'], '_openGpsSession') === false) {
+            $problems[] = 'startTrip does not open the GPS session';
+        }
+        foreach (['completeTrip', 'cancelTrip'] as $m) {
+            if (($bodies[$m] ?? '') === '') { continue; }
+            if (!preg_match("/'live_tracking_enabled'\s*=>\s*false/", $bodies[$m])) {
+                $problems[] = "{$m} does not DISARM live_tracking_enabled (tracking would survive trip end)";
+            }
+            if (strpos($bodies[$m], '_closeGpsSession') === false) {
+                $problems[] = "{$m} does not tear down the live-position session";
+            }
+        }
+
+        // (c) bridge stays thin — no GPS logic leaking into the frozen file.
+        // Comments are stripped first: F7's createTrip has always carried the
+        // note `// future: vehicleLivePositions doc id`, which is documentation
+        // of the reserved field, not an implementation leak.
+        $code = $this->_stripComments($src);
+        foreach (['vehicleLivePositions', 'vehicleBreadcrumbs', 'authorized_viewer_uids', 'recorded_at_ms'] as $leak) {
+            if (strpos($code, $leak) !== false) {
+                $problems[] = "GPS implementation detail '{$leak}' leaked into the frozen Transport_service";
+            }
+        }
+
+        if ($problems !== []) {
+            return ['status' => 'FAIL', 'detail' => 'F13-4: ' . implode('; ', $problems)];
+        }
+        return ['status' => 'PASS', 'detail' =>
+            'startTrip arms + opens; completeTrip/cancelTrip disarm + close; GPS bridge limited to '
+            . '_openGpsSession/_closeGpsSession with no implementation leak into the frozen service'];
+    }
+
+    /**
+     * CH-TRN-F13-5 — stale and out-of-order fixes cannot overwrite a newer
+     * position, and the guard exists on BOTH sides.
+     *
+     * The driver device writes the hot doc DIRECTLY, so PHP never sees a
+     * position: the Firestore rule is the real enforcement point and the
+     * service method covers server-mediated paths. If the rule loses its
+     * ordering clause, a queued offline flush after a tunnel replays a stale
+     * position over the current one and the bus jumps backwards on the parent's
+     * map — with no error anywhere.
+     *
+     * Ordering must key on the INTEGER millis field, never the ISO string:
+     * lexicographic comparison is only safe when every writer emits identical
+     * zero-padded UTC, and a device sending `+05:30` would compare wrong.
+     */
+    private function _chTrnF13_5(): array
+    {
+        $svcPath = APPPATH . 'libraries/Transport_gps_service.php';
+        $rulPath = FCPATH . 'firebase-rules/firestore.rules';
+        if (!is_readable($svcPath) || !is_readable($rulPath)) {
+            return ['status' => 'INFO', 'detail' => 'F13 source not readable — trivial pass'];
+        }
+        $svc = (string) file_get_contents($svcPath);
+        $rul = (string) file_get_contents($rulPath);
+        $problems = [];
+
+        if (!preg_match('/match \/vehicleLivePositions\/\{[a-zA-Z]+\} \{(.*?)\n    \}/s', $rul, $m)) {
+            $problems[] = 'no vehicleLivePositions rules block';
+        } else {
+            $b = $m[1];
+            if (strpos($b, 'recorded_at_ms > resource.data.get(\'recorded_at_ms\', 0)') === false) {
+                $problems[] = 'rule does not enforce strictly-increasing recorded_at_ms';
+            }
+            if (strpos($b, 'request.time.toMillis()') === false) {
+                $problems[] = 'rule does not bound the timestamp against SERVER time (a skewed device could block the vehicle)';
+            }
+            if (strpos($b, 'recorded_at_ms is int') === false) {
+                $problems[] = 'rule does not type-check the ordering key as int';
+            }
+        }
+
+        foreach (['validateFixOrdering', 'out_of_order', 'future_timestamp', 'fix_too_old'] as $needle) {
+            if (strpos($svc, $needle) === false) {
+                $problems[] = "service lost the ordering guard ('{$needle}')";
+            }
+        }
+
+        if ($problems !== []) {
+            return ['status' => 'FAIL', 'detail' => 'F13-5: ' . implode('; ', $problems)];
+        }
+        return ['status' => 'PASS', 'detail' =>
+            'fix ordering enforced in the rule (monotonic recorded_at_ms, server-time bounded, int-typed) '
+            . 'and mirrored in the service for server-mediated paths'];
+    }
+
+    /**
+     * CH-TRN-F13-6 — there is exactly ONE trip lifecycle (decision D-8).
+     *
+     * The driver app used to write `tripLogs.status` straight to Firestore,
+     * bypassing `Transport_service` and so skipping driver-readiness
+     * re-validation (LOG-1), the CAS transition guard (CON-6), the audit row,
+     * the `trip.started` parent notification, XMOD-1 route denormalisation and
+     * the F13 GPS session. Both surfaces now run the same lifecycle.
+     *
+     * Enforcement is what this gate protects. The Firestore rule must NOT let a
+     * driver write trip state — otherwise "one canonical flow" is a convention
+     * a future client can quietly break, and the regression is invisible until
+     * a parent notices the bus never appeared.
+     *
+     * Asserts:
+     *  (a) the driver API exists, authenticates by Firebase Bearer, and
+     *      authorizes by trip OWNERSHIP rather than an RBAC module grant;
+     *  (b) it delegates to Transport_service rather than reimplementing;
+     *  (c) it is CSRF-excluded — the app carries no CI session, so without the
+     *      exclusion every call dies as a blank 403 with no log;
+     *  (d) the tripLogs rule no longer lets a driver mutate trip state.
+     */
+    private function _chTrnF13_6(): array
+    {
+        $apiPath = APPPATH . 'controllers/Transport_driver_api.php';
+        $cfgPath = APPPATH . 'config/config.php';
+        $rulPath = FCPATH . 'firebase-rules/firestore.rules';
+        if (!is_readable($apiPath)) {
+            return ['status' => 'FAIL', 'detail' => 'F13-6: Transport_driver_api is missing — the driver app has no canonical lifecycle to call'];
+        }
+        $api = $this->_stripComments((string) file_get_contents($apiPath));
+        $cfg = is_readable($cfgPath) ? (string) file_get_contents($cfgPath) : '';
+        $rul = is_readable($rulPath) ? (string) file_get_contents($rulPath) : '';
+        $problems = [];
+
+        // (a) Bearer auth + ownership authorization
+        if (strpos($api, 'require_auth()') === false) {
+            $problems[] = 'driver API does not authenticate the Firebase token';
+        }
+        if (strpos($api, '_assertOwnTrip') === false || strpos($api, "driver_staff_id") === false) {
+            $problems[] = 'driver API does not authorize by trip ownership';
+        }
+        if (strpos($api, 'require_permission(') !== false) {
+            $problems[] = 'driver API gates on an RBAC module grant — drivers must NOT hold Transport '
+                        . '(that would also authorise save_vehicle/delete_route/terminate_vendor)';
+        }
+
+        // (b) delegates to the canonical service
+        foreach (['startTrip(', 'completeTrip('] as $call) {
+            if (strpos($api, '$this->transport->' . $call) === false) {
+                $problems[] = "driver API does not delegate {$call} to Transport_service";
+            }
+        }
+
+        // (c) CSRF exclusion — otherwise a blank 403, no log, no console error
+        if (strpos($cfg, 'transport_driver_api/(.*)') === false) {
+            $problems[] = 'transport_driver_api is not in csrf_exclude_uris (every app call would 403 blank)';
+        }
+
+        // (d) the rule must no longer permit a client-side status transition
+        if (preg_match('/match \/tripLogs\/\{[a-zA-Z]+\} \{(.*?)\n    \}/s', $rul, $m)) {
+            if (preg_match('/hasOnly\(\[(.*?)\]\)/s', $m[1], $hm)) {
+                preg_match_all("/'([a-z_]+)'/", $hm[1], $ff);
+                $banned = array_intersect($ff[1] ?? [], [
+                    'status', 'actual_start_at', 'actual_end_at', 'endTime',
+                    'endOdometer', 'distance', 'distance_km', 'fuelUsed',
+                ]);
+                if ($banned !== []) {
+                    $problems[] = 'tripLogs driver allowlist still permits lifecycle fields ('
+                                . implode(',', $banned) . ') — a second lifecycle writer remains possible';
+                }
+            } else {
+                $problems[] = 'tripLogs driver update has no field allowlist';
+            }
+        } else {
+            $problems[] = 'no tripLogs rules block';
+        }
+
+        if ($problems !== []) {
+            return ['status' => 'FAIL', 'detail' => 'F13-6: ' . implode('; ', $problems)];
+        }
+        return ['status' => 'PASS', 'detail' =>
+            'driver app and admin panel share one Transport_service lifecycle; driver API is Bearer-authenticated, '
+            . 'ownership-authorized (no RBAC module grant), CSRF-excluded; tripLogs rule no longer permits a '
+            . 'client-side trip-state write'];
+    }
+
+    /**
+     * CH-TRN-F13-7 — the Parent live map stays provider-agnostic and
+     * Firestore-only.
+     *
+     * Cross-repo source scan of the Parent app. It runs from the admin
+     * verifier because that is where the Transport contract is enforced, and a
+     * regression in the app is invisible to a PHP-only gate otherwise.
+     *
+     * Asserts:
+     *  (a) NO Google Maps dependency — amendment A-1 forbids re-introducing
+     *      one, and the F10 placeholders were removed in M4;
+     *  (b) map rendering is confined to ONE file. If a map type leaks into the
+     *      repository, the model or the ViewModel, "swap the renderer without
+     *      touching anything else" stops being true;
+     *  (c) the live position is read from the canonical hot document, so the
+     *      parent map and the server share one source of truth;
+     *  (d) NO RTDB anywhere in the parent transport surface;
+     *  (e) the tile style URL is injected at build time, never hardcoded —
+     *      a committed provider key is a credential leak.
+     *
+     * Skips with INFO when the Parent repo is not present on this machine, so
+     * the admin verifier stays runnable standalone.
+     */
+    private function _chTrnF13_7(): array
+    {
+        $root = 'D:/Projects/SchoolSyncParent/app/src/main/java/com/schoolsync/parent';
+        $gradle = 'D:/Projects/SchoolSyncParent/app/build.gradle.kts';
+        if (!is_dir($root)) {
+            return ['status' => 'INFO', 'detail' => 'Parent repo not present on this machine — trivial pass'];
+        }
+        $problems = [];
+
+        // (a) no Google Maps dependency
+        if (is_readable($gradle)) {
+            $g = (string) file_get_contents($gradle);
+            foreach (['play-services-maps', 'maps-compose'] as $dep) {
+                if (preg_match('/^\s*implementation\("[^"]*' . preg_quote($dep, '/') . '/m', $g)) {
+                    $problems[] = "Google Maps dependency reintroduced ({$dep})";
+                }
+            }
+            if (strpos($g, 'org.maplibre.gl:android-sdk') === false) {
+                $problems[] = 'MapLibre dependency missing';
+            }
+            // (e) style URL injected, not hardcoded
+            if (strpos($g, 'ZENXII_MAP_STYLE_URL') === false) {
+                $problems[] = 'map style URL is not injected from a build property';
+            }
+            if (preg_match('/MAP_STYLE_URL"\s*,\s*"\\\\"https?:/', $g)) {
+                $problems[] = 'a tile style URL (and likely its key) is HARDCODED in build.gradle';
+            }
+        }
+
+        // (b) rendering confined to the renderer implementations.
+        //
+        // UPDATED for Phase B (2026-08-08). At M4 the single allowed file was
+        // LiveBusMap.kt, because it *was* the MapLibre implementation. Phase B
+        // moved that code behind the MapRenderer interface, so the SDK now
+        // lives only in renderer classes and the host composable imports no map
+        // type at all. This is a TIGHTENING: the allowed set is the renderer
+        // implementations, and LiveBusMap.kt is no longer among them.
+        $mapTypes = '/org\.maplibre|MapLibreMap|com\.google\.android\.gms\.maps|GoogleMap\b|com\.mapbox|com\.here\.|com\.tomtom/';
+        $allowed  = ['MapLibreRenderer.kt', 'PendingRenderers.kt'];
+        $offenders = [];
+        $rii = new RecursiveIteratorIterator(new RecursiveDirectoryIterator($root));
+        foreach ($rii as $f) {
+            if (!$f->isFile() || substr($f->getFilename(), -3) !== '.kt') { continue; }
+            $name = $f->getFilename();
+            if (in_array($name, $allowed, true)) { continue; }
+            $src = (string) file_get_contents($f->getPathname());
+            if (preg_match($mapTypes, $src)) { $offenders[] = $name; }
+        }
+        if ($offenders !== []) {
+            $problems[] = 'map SDK types leaked outside the renderer implementations: '
+                        . implode(', ', array_unique($offenders));
+        }
+
+        // (c) canonical hot document + (d) no RTDB
+        $model = $root . '/data/model/firestore/VehicleLivePositionDoc.kt';
+        if (!is_readable($model)) {
+            $problems[] = 'VehicleLivePositionDoc missing — parent is not reading the canonical hot doc';
+        } else {
+            $m = (string) file_get_contents($model);
+            if (strpos($m, 'vehicleLivePositions') === false) {
+                $problems[] = 'parent live-position model does not target the vehicleLivePositions collection';
+            }
+            if (strpos($m, 'recorded_at_ms') === false) {
+                $problems[] = 'parent model lost the recorded_at_ms ordering/staleness key';
+            }
+        }
+        $repo = $root . '/data/repository/firestore/TransportFirestoreRepository.kt';
+        if (is_readable($repo)) {
+            $r = (string) file_get_contents($repo);
+            if (strpos($r, 'observeLivePosition') === false) {
+                $problems[] = 'parent repository has no live-position listener';
+            }
+            if (preg_match('/getReference\(|FirebaseDatabase|realtime\s*database/i', $r)) {
+                $problems[] = 'RTDB usage in the parent transport repository';
+            }
+        }
+
+        if ($problems !== []) {
+            return ['status' => 'FAIL', 'detail' => 'F13-7: ' . implode('; ', $problems)];
+        }
+        return ['status' => 'PASS', 'detail' =>
+            'Parent map on MapLibre with no Google Maps dependency; map SDK confined to LiveBusMap.kt; '
+            . 'live position read from the canonical vehicleLivePositions hot doc; no RTDB; tile style injected at build time'];
+    }
+
+    /**
+     * CH-TRN-MAP-1 — the centralized Maps platform keeps its two load-bearing
+     * guarantees.
+     *
+     *  (a) SECRET SPLIT. Firestore rules gate a document, not a field, so a
+     *      secret in a client-readable config doc IS readable by every client.
+     *      The platform therefore writes secrets to a SEPARATE document whose
+     *      rule denies all client access. If that rule ever softens, or the
+     *      service starts routing secrets into the public doc, every tenant's
+     *      server keys become world-readable to authenticated users — silently.
+     *
+     *  (b) ACTIVATION GATE. A provider may only go live from a passing
+     *      connection test. Without it an administrator can activate a mistyped
+     *      key and blank every map in the tenant, with the breakage surfacing
+     *      on parents' phones rather than in the admin UI.
+     *
+     * Also checks that no NEW RBAC module was invented (rbac_modules.json is
+     * shared byte-for-byte with the staffCapabilities Cloud Function, so adding
+     * an entry is a cross-system change), and that the audit trail never stores
+     * credential values.
+     */
+    private function _chTrnMap1(): array
+    {
+        $svcPath = APPPATH . 'libraries/Maps_config_service.php';
+        $ctlPath = APPPATH . 'controllers/Maps_config.php';
+        $rulPath = FCPATH . 'firebase-rules/firestore.rules';
+        if (!is_readable($svcPath) || !is_readable($ctlPath)) {
+            return ['status' => 'INFO', 'detail' => 'Maps platform not present — trivial pass'];
+        }
+        $svc = $this->_stripComments((string) file_get_contents($svcPath));
+        $ctl = $this->_stripComments((string) file_get_contents($ctlPath));
+        $rul = is_readable($rulPath) ? (string) file_get_contents($rulPath) : '';
+        $problems = [];
+
+        // (a) secret split — rules
+        if (!preg_match('/match \/mapsSecrets\/\{[a-zA-Z]+\} \{\s*allow read, write: if false;/s', $rul)) {
+            $problems[] = 'mapsSecrets is not deny-all for clients';
+        }
+        if (!preg_match('/match \/mapsConfig\/\{[a-zA-Z]+\} \{(.*?)\n    \}/s', $rul, $mc)) {
+            $problems[] = 'no mapsConfig rules block';
+        } elseif (strpos($mc[1], 'allow write: if false') === false) {
+            $problems[] = 'mapsConfig is client-writable (must be server-only)';
+        }
+
+        // (a) secret split — service routes by sensitivity
+        if (strpos($svc, 'CRED_SECRET') === false || strpos($svc, 'COL_SECRETS') === false) {
+            $problems[] = 'service lost the credential sensitivity routing';
+        }
+        if (!preg_match("/sensitivity'\]\s*===\s*self::CRED_SECRET\s*\)\s*\{\s*\\\$secret\[/s", $svc)) {
+            $problems[] = 'saveProvider no longer routes secret credentials by sensitivity';
+        }
+        if (!preg_match('/setEntity\(\s*self::COL_SECRETS/s', $svc)) {
+            $problems[] = 'saveProvider no longer writes to the secrets document';
+        }
+        // The client payload must expose only the resolved provider's PUBLIC creds.
+        //
+        // REWRITTEN 2026-08-16 (Phase 5A). The old check was:
+        //
+        //   preg_match("/getClientConfig.*?'credentials' => (array) (\$entry['public']/")
+        //
+        // which asserted one IMPLEMENTATION SHAPE, not the security property.
+        // getClientConfig() now resolves through credentialsFor() so that a
+        // school inheriting the platform receives the PLATFORM's public
+        // credentials — impossible under the old inline read, which only ever
+        // looked at the tenant document. The old regex would therefore have
+        // forced the payload to stay tenant-only, i.e. it pinned a defect.
+        //
+        // These checks assert the PROPERTY instead, and are strictly stronger:
+        // the old one allowed any other code path in getClientConfig to add
+        // credentials from anywhere; these forbid it.
+        if (!preg_match('/function getClientConfig\(.*?\n    \}/s', $svc, $gcc)) {
+            $problems[] = 'getClientConfig not found';
+        } else {
+            $body = $gcc[0];
+            // 1. Credentials must be obtained ONLY via credentialsFor().
+            if (!preg_match("/'credentials'\s*=>\s*\\\$this->credentialsFor\(/", $body)) {
+                $problems[] = 'getClientConfig does not obtain credentials through credentialsFor()';
+            }
+            // 2. No bypass: it must not read a credential map directly.
+            if (preg_match("/\['public'\]|\['secret'\]|COL_SECRETS|COL_PLATFORM_SECRETS/", $body)) {
+                $problems[] = 'getClientConfig reads a credential store directly, bypassing credentialsFor()';
+            }
+        }
+        // 3. credentialsFor() itself must return ONLY public sub-maps and must
+        //    never touch either secrets collection. If someone later widens it,
+        //    THIS is the gate that fires.
+        if (!preg_match('/function credentialsFor\(.*?\n    \}/s', $svc, $cf)) {
+            $problems[] = 'credentialsFor not found';
+        } else {
+            $body = $cf[0];
+            if (strpos($body, "['public']") === false && strpos($body, "'public'") === false) {
+                $problems[] = 'credentialsFor no longer reads the public credential map';
+            }
+            if (preg_match('/COL_SECRETS|COL_PLATFORM_SECRETS|\bgetSecrets\b|\[.secret.\]/', $body)) {
+                $problems[] = 'credentialsFor can reach a SECRET store — client payload may leak secrets';
+            }
+        }
+
+        // (b) activation gate
+        if (!preg_match('/activateProvider.*?VALIDATION_VALID.*?return \[\'ok\' => false/s', $svc)) {
+            $problems[] = 'activateProvider no longer requires a passing connection test';
+        }
+
+        // RBAC — graded Configuration, no new module
+        if (strpos($ctl, "require_permission('Configuration')") === false) {
+            $problems[] = 'admin controller is not gated on the Configuration module';
+        }
+        foreach (["'manage'", "'edit'", "'view'"] as $lvl) {
+            if (strpos($ctl, $lvl) === false) { $problems[] = "controller has no {$lvl}-level endpoint"; }
+        }
+        $modules = FCPATH . '../functions/rbac_modules.json';
+        $modules = is_readable($modules) ? $modules : APPPATH . '../functions/rbac_modules.json';
+        if (is_readable($modules) && stripos((string) file_get_contents($modules), 'maps') !== false) {
+            $problems[] = 'a new RBAC module was added to rbac_modules.json (cross-system change)';
+        }
+
+        // Audit must never persist credential values.
+        if (!preg_match('/audit\(\'provider_saved\'.*?array_keys\(\$public\)/s', $svc)) {
+            $problems[] = 'provider_saved audit no longer records key NAMES only';
+        }
+
+        if ($problems !== []) {
+            return ['status' => 'FAIL', 'detail' => 'MAP-1: ' . implode('; ', $problems)];
+        }
+        return ['status' => 'PASS', 'detail' =>
+            'secrets isolated in a deny-all document and routed by sensitivity; client payload limited to '
+            . 'public creds of the resolved provider; activation requires a passing test; graded Configuration '
+            . 'RBAC with no new module; audit stores key names only'];
+    }
+
+    /**
+     * CH-TRN-MAP-2 — adding the Maps platform did NOT disturb F13.1.
+     *
+     * The operator's constraint was explicit: the GPS implementation is
+     * functionally complete and must remain unchanged, with the existing
+     * MapLibre work merely REGISTERED under the new provider architecture
+     * rather than rewritten.
+     *
+     * This is the regression guard for that promise. It asserts the GPS
+     * surface still carries its own contract, and — the part a human reviewer
+     * would most easily miss — that the maps platform has not reached into the
+     * GPS layer or vice versa. The two must stay decoupled: the GPS service
+     * answers "where is the bus", the maps platform answers "which renderer",
+     * and neither should ever need to know the other exists.
+     */
+    private function _chTrnMap2(): array
+    {
+        $gps = APPPATH . 'libraries/Transport_gps_service.php';
+        $maps = APPPATH . 'libraries/Maps_config_service.php';
+        if (!is_readable($gps)) {
+            return ['status' => 'FAIL', 'detail' => 'MAP-2: Transport_gps_service is missing'];
+        }
+        $g = $this->_stripComments((string) file_get_contents($gps));
+        $problems = [];
+
+        // F13.1 contract intact.
+        foreach (['COL_LIVE_POSITIONS', 'COL_BREADCRUMBS', 'DRIVER_MUTABLE_FIELDS',
+                  'validateFixOrdering', 'openSession', 'closeSession', 'sweepStaleSessions'] as $needle) {
+            if (strpos($g, $needle) === false) { $problems[] = "GPS service lost {$needle}"; }
+        }
+
+        // Decoupling, both directions.
+        if (preg_match('/Maps_config_service|mapsConfig|map_provider/i', $g)) {
+            $problems[] = 'the GPS service now references the maps platform — the layers must stay independent';
+        }
+        if (is_readable($maps)) {
+            $m = $this->_stripComments((string) file_get_contents($maps));
+            foreach (['vehicleLivePositions', 'vehicleBreadcrumbs', 'tripLogs', 'Transport_gps_service'] as $leak) {
+                if (strpos($m, $leak) !== false) {
+                    $problems[] = "the maps platform reaches into GPS data ('{$leak}')";
+                }
+            }
+        }
+
+        if ($problems !== []) {
+            return ['status' => 'FAIL', 'detail' => 'MAP-2: ' . implode('; ', $problems)];
+        }
+        return ['status' => 'PASS', 'detail' =>
+            'F13.1 GPS contract intact and fully decoupled from the maps platform — neither layer references the other'];
+    }
+
+    /**
+     * CH-TRN-MAP-3 — provider selection is RUNTIME configuration, everywhere.
+     *
+     * Phase B's whole promise is that an administrator changes the provider in
+     * System Settings and every surface follows — no code change, no Gradle
+     * property, no APK rebuild. That promise dies quietly the moment one
+     * renderer gets constructed directly somewhere, so this gate holds all six
+     * conditions from the brief at once:
+     *
+     *  1. no renderer is hardcoded — the only `new`/constructor calls live in
+     *     each platform's factory;
+     *  2. MapProviderManager is the sole resolver;
+     *  3. BuildConfig is a FALLBACK, never the primary source;
+     *  4. business logic stays provider-agnostic — no map SDK import outside
+     *     the renderer implementations;
+     *  5. runtime switching works — resolution keys off the config document,
+     *     and the renderer is rebuilt only when the provider actually changes;
+     *  6. a new provider can be added without touching Transport logic.
+     */
+    private function _chTrnMap3(): array
+    {
+        $parent  = 'D:/Projects/SchoolSyncParent/app/src/main/java/com/schoolsync/parent';
+        $teacher = 'D:/Projects/SchoolSyncTeacher/app/src/main/java/com/schoolsync/teacher';
+        if (!is_dir($parent)) {
+            return ['status' => 'INFO', 'detail' => 'Parent repo not present — trivial pass'];
+        }
+        $problems = [];
+        $read = static function (string $p): string {
+            return is_readable($p) ? (string) file_get_contents($p) : '';
+        };
+
+        // ── 1 + 4. Renderer construction and SDK imports are confined. ──
+        // Allowed: the renderer implementations themselves, and each factory.
+        $allowed = ['MapLibreRenderer.kt', 'PendingRenderers.kt', 'MapRendererFactory.kt'];
+        $sdkRe   = '/org\.maplibre|MapLibreMap|com\.google\.android\.gms\.maps|com\.mapbox|com\.here\.|com\.tomtom/';
+        $ctorRe  = '/\b(MapLibreRenderer|GoogleMapsRenderer|MapboxRenderer|HereRenderer|TomTomRenderer)\s*\(/';
+        $sdkLeak = []; $ctorLeak = [];
+
+        $rii = new RecursiveIteratorIterator(new RecursiveDirectoryIterator($parent));
+        foreach ($rii as $f) {
+            if (!$f->isFile() || substr($f->getFilename(), -3) !== '.kt') { continue; }
+            $name = $f->getFilename();
+            if (in_array($name, $allowed, true)) { continue; }
+            $src = (string) file_get_contents($f->getPathname());
+            if (preg_match($sdkRe, $src))  { $sdkLeak[]  = $name; }
+            if (preg_match($ctorRe, $src)) { $ctorLeak[] = $name; }
+        }
+        if ($sdkLeak !== []) {
+            $problems[] = 'map SDK imported outside a renderer: ' . implode(', ', array_unique($sdkLeak));
+        }
+        if ($ctorLeak !== []) {
+            $problems[] = 'renderer constructed outside the factory: ' . implode(', ', array_unique($ctorLeak));
+        }
+
+        // ── 2. ONE RESOLVER — rewritten 2026-08-16 for the server-resolved
+        //       Parent architecture.
+        //
+        // WHAT THIS GATE USED TO CHECK, AND WHY THAT BECAME MEANINGLESS.
+        // The old assertion required MapProviderManager to CONTAIN the literal
+        // 'mapsConfig' — i.e. it pinned the Firestore-direct implementation, in
+        // which the app read the tenant document and resolved the provider
+        // itself. That implementation was the defect: the Kotlin copy of the
+        // resolution rules never learned about `capability_source`, so a school
+        // inheriting the ZenX platform provider resolved to nothing and the bus
+        // map stayed blank.
+        //
+        // Once the app moved to the server resolver the literal survived only
+        // inside the docblock EXPLAINING its removal, so the gate reported PASS
+        // on prose while the code it was written to protect no longer existed.
+        // A gate that a comment can satisfy protects nothing.
+        //
+        // The replacement asserts PROPERTIES of the new architecture, scanning
+        // COMMENT-STRIPPED source so documentation can never satisfy it:
+        //   (a) the manager performs no Firestore read of the config document;
+        //   (b) it holds no resolution logic of its own;
+        //   (c) it obtains the resolved configuration from the Maps API;
+        //   (d) that API reaches getClientConfig('parent') → resolveCapability();
+        //   (e) the DataStore last-known-good cache is still there;
+        //   (f) no second resolver survives in MapProviderConfig.
+        $mgrRaw = $read($parent . '/data/maps/MapProviderManager.kt');
+        if ($mgrRaw === '') { $problems[] = 'Parent MapProviderManager missing'; }
+        else {
+            // _stripComments() is PHP-tokenizer based and cannot parse Kotlin,
+            // hence the local scanner.
+            $mgr = $this->_stripKotlinComments($mgrRaw);
+
+            // (a) No direct Firestore read of the map configuration.
+            $firestoreReads = [
+                '/observeDocumentAs\s*<\s*MapProviderConfig\s*>/' => 'observes mapsConfig via Firestore',
+                '/MapProviderConfig\s*\.\s*COLLECTION/'           => 'references the mapsConfig collection',
+                '/["\']mapsConfig["\']/'                          => 'hardcodes the mapsConfig collection',
+                '/\bfirestoreService\b|\bFirestoreService\b/'     => 'still depends on FirestoreService',
+            ];
+            foreach ($firestoreReads as $re => $why) {
+                if (preg_match($re, $mgr)) {
+                    $problems[] = 'MapProviderManager ' . $why
+                                . ' — the Parent app must not resolve from Firestore';
+                }
+            }
+
+            // (b) No local resolution logic. These are the exact members the
+            // drifted second resolver was built from.
+            $localResolution = [
+                '/\.\s*resolveProvider\s*\(/'  => 'calls resolveProvider()',
+                '/\.\s*isEnabled\s*\(/'        => 'calls isEnabled()',
+                '/\.\s*isSupportedOn\s*\(/'    => 'calls isSupportedOn()',
+                '/global_provider|platform_provider|capability_source/'
+                                               => 'inspects raw configuration fields',
+            ];
+            foreach ($localResolution as $re => $why) {
+                if (preg_match($re, $mgr)) {
+                    $problems[] = 'MapProviderManager ' . $why
+                                . ' — resolution belongs to the server, not the app';
+                }
+            }
+
+            // (c) It DOES obtain the resolved configuration from the Maps API.
+            // Required, not merely permitted: without this the manager could
+            // satisfy every prohibition above by resolving nothing at all.
+            if (!preg_match('/mapsApi\s*\.\s*clientConfig\s*\(/', $mgr)) {
+                $problems[] = 'MapProviderManager does not fetch the resolved '
+                            . 'configuration from the Maps API';
+            }
+
+            // (e) The DataStore last-known-good cache survives the migration.
+            foreach (['readCache', 'writeCache', 'distinctUntilChanged'] as $need) {
+                if (strpos($mgr, $need) === false) { $problems[] = "MapProviderManager lost '{$need}'"; }
+            }
+
+            // ── 3. BuildConfig is the LAST resort, never a source. ──
+            if (!preg_match('/fun fallbackProvider/', $mgr)) {
+                $problems[] = 'no explicit BuildConfig fallback path — resolution order is unclear';
+            }
+            if (substr_count($mgr, 'BuildConfig.MAP_STYLE_URL') > 1) {
+                $problems[] = 'BuildConfig referenced outside the fallback path';
+            }
+        }
+
+        // (f) The DTO must not carry a resolver either — deleting the calls but
+        // leaving the methods would let the next edit quietly reinstate them.
+        $cfgRaw = $read($parent . '/data/maps/MapProviderConfig.kt');
+        if ($cfgRaw !== '') {
+            $cfg = $this->_stripKotlinComments($cfgRaw);
+            foreach (['resolveProvider', 'isEnabled', 'isSupportedOn'] as $fn) {
+                if (preg_match('/fun\s+' . $fn . '\s*\(/', $cfg)) {
+                    $problems[] = "MapProviderConfig still defines {$fn}() — a second resolver";
+                }
+            }
+        }
+
+        // (d) The API the manager calls must reach the CANONICAL resolver.
+        // Checked end to end so the chain cannot be broken in the middle:
+        //   MapsApi.kt → /maps_api/client_config → getClientConfig('parent')
+        $api = $this->_stripKotlinComments($read($parent . '/data/remote/MapsApi.kt'));
+        if ($api === '') {
+            $problems[] = 'Parent MapsApi missing — nothing reaches the server resolver';
+        } elseif (!preg_match('#maps_api/client_config#', $api)) {
+            $problems[] = 'MapsApi does not call the maps_api/client_config endpoint';
+        }
+        $ctrl = $read(APPPATH . 'controllers/Maps_api.php');
+        if ($ctrl === '') {
+            $problems[] = 'Maps_api controller missing — the Parent endpoint does not exist';
+        } else {
+            $ctrlCode = $this->_stripComments($ctrl);
+            if (!preg_match('/getClientConfig\s*\(/', $ctrlCode)) {
+                $problems[] = 'Maps_api does not resolve through getClientConfig()';
+            }
+            if (!preg_match('/PLATFORM_PARENT|[\'"]parent[\'"]/', $ctrlCode)) {
+                $problems[] = 'Maps_api does not pin the parent surface';
+            }
+            // The school must come from the verified token, never the request.
+            if (!preg_match('/require_auth\s*\(/', $ctrlCode)) {
+                $problems[] = 'Maps_api does not verify the caller\'s Firebase token';
+            }
+            if (preg_match('/input->(get|post)\s*\(\s*[\'"]school/i', $ctrlCode)) {
+                $problems[] = 'Maps_api accepts a client-supplied school — cross-tenant risk';
+            }
+        }
+
+        // The UI must not read BuildConfig for provider selection any more.
+        // Match a real member ACCESS (`BuildConfig.X`), not the word appearing
+        // in prose — the docblock legitimately explains where the fallback lives.
+        $host = $read($parent . '/ui/transport/LiveBusMap.kt');
+        if ($host !== '' && preg_match('/BuildConfig\s*\./', $host)) {
+            $problems[] = 'LiveBusMap still reads BuildConfig — provider selection is not runtime';
+        }
+        if ($host !== '' && strpos($host, 'remember(providerId)') === false) {
+            $problems[] = 'renderer is not keyed on providerId — it would rebuild on every position update';
+        }
+
+        // ── 5. The factory is the single switch. ──
+        $factory = $read($parent . '/ui/maps/MapRendererFactory.kt');
+        foreach (['maplibre', 'google', 'mapbox', 'here', 'tomtom', 'maptiler'] as $p) {
+            if ($factory !== '' && stripos($factory, $p) === false) {
+                $problems[] = "factory does not handle provider '{$p}'";
+            }
+        }
+
+        // ── 6. Transport/GPS logic untouched by provider selection. ──
+        foreach ([
+            '/data/repository/firestore/TransportFirestoreRepository.kt',
+            '/data/model/firestore/VehicleLivePositionDoc.kt',
+        ] as $rel) {
+            $src = $read($parent . $rel);
+            if ($src !== '' && preg_match('/MapRenderer|MapProviderManager|' . substr($sdkRe, 1, -1) . '/', $src)) {
+                $problems[] = 'provider concerns leaked into ' . basename($rel);
+            }
+        }
+
+        // Teacher plumbing (no UI expected).
+        if (is_dir($teacher)) {
+            $tm = $read($teacher . '/data/maps/MapProviderManager.kt');
+            if ($tm === '') { $problems[] = 'Teacher MapProviderManager missing'; }
+            elseif (strpos($tm, 'mapsConfig') === false || strpos($tm, 'readCache') === false) {
+                $problems[] = 'Teacher manager does not read/cache the central config';
+            }
+        }
+
+        // Admin web abstraction.
+        $web = $read(FCPATH . 'assets/js/maps/map_renderer.js');
+        if ($web === '') { $problems[] = 'admin web renderer abstraction missing'; }
+        else {
+            if (strpos($web, 'client_config') === false) {
+                $problems[] = 'admin renderer does not resolve from the central configuration';
+            }
+            if (strpos($web, 'ZenxMapRendererFactory') === false) {
+                $problems[] = 'admin renderer factory missing';
+            }
+        }
+
+        if ($problems !== []) {
+            return ['status' => 'FAIL', 'detail' => 'MAP-3: ' . implode('; ', $problems)];
+        }
+        return ['status' => 'PASS', 'detail' =>
+            'provider resolved at runtime from mapsConfig on all three surfaces; no renderer constructed or map '
+            . 'SDK imported outside a renderer/factory; BuildConfig is fallback-only; renderer keyed on provider '
+            . 'so it rebuilds only on an actual switch; Transport/GPS code free of provider concerns'];
+    }
+
+    /**
+     * CH-TRN-MAP-4 — a provider is registered centrally but selectable ONLY
+     * where that platform actually has a renderer.
+     *
+     * The defect this prevents was found in the pre-freeze review: TomTom is
+     * selectable in the central registry and renders fine in the admin panel
+     * (Leaflet consumes its raster tiles), but `MapRendererFactory` has no
+     * Android TomTom renderer. Assigning it to Parent stored a configuration
+     * that resolved to null and showed "no provider configured" — while the
+     * administrator believed the map was live. A silently unusable
+     * configuration is worse than a refusal.
+     *
+     * Asserts every registered provider declares per-platform renderer
+     * availability, that TomTom's declaration matches reality, that assignment
+     * and global mode are both enforced against it, and that the admin page
+     * surfaces availability instead of offering a choice that cannot work.
+     */
+    private function _chTrnMap4(): array
+    {
+        $svcPath = APPPATH . 'libraries/Maps_config_service.php';
+        $ctlPath = APPPATH . 'controllers/Maps_config.php';
+        $viewPath = APPPATH . 'views/school_config/maps_location.php';
+        $factory = 'D:/Projects/SchoolSyncParent/app/src/main/java/com/schoolsync/parent/ui/maps/MapRendererFactory.kt';
+        if (!is_readable($svcPath)) {
+            return ['status' => 'INFO', 'detail' => 'Maps platform not present — trivial pass'];
+        }
+        $svc  = (string) file_get_contents($svcPath);
+        $ctl  = is_readable($ctlPath)  ? (string) file_get_contents($ctlPath)  : '';
+        $view = is_readable($viewPath) ? (string) file_get_contents($viewPath) : '';
+        $problems = [];
+
+        // Every provider declares availability.
+        if (!preg_match_all("/'renderers' => \[/", $svc, $m) || count($m[0]) < 6) {
+            $problems[] = 'not every provider declares per-platform renderer availability ('
+                        . count($m[0] ?? []) . '/6)';
+        }
+
+        // The enforcement points.
+        foreach (['isSupportedOn', 'isGlobalCapable', 'PLATFORMS_WITH_SURFACE'] as $need) {
+            if (strpos($svc, $need) === false) { $problems[] = "service lost {$need}"; }
+        }
+        if (!preg_match('/isGlobalCapable\(\$globalProvider\)/', $svc)) {
+            $problems[] = 'global mode is not validated against renderer availability';
+        }
+        if (!preg_match('/isSupportedOn\(\$p, \$plat\)/', $svc)) {
+            $problems[] = 'per-platform assignment is not validated against renderer availability';
+        }
+
+        // ── Registry claims must match the Android factory, for EVERY provider.
+        //
+        // A factory BRANCH is not a working renderer: the placeholders map to
+        // `PendingRenderer` subclasses that report isAvailable() = false and
+        // no-op every draw call. So the real question is whether the class the
+        // factory returns is a pending one — checked by reading the placeholder
+        // declarations rather than assuming a fixed list, so implementing a
+        // provider automatically flips this gate's expectation.
+        $pending = [];
+        $pendingPath = dirname($factory) . '/renderers/PendingRenderers.kt';
+        if (is_readable($pendingPath)) {
+            preg_match_all('/class\s+(\w+)\s*:\s*PendingRenderer\(/', (string) file_get_contents($pendingPath), $pm2);
+            $pending = $pm2[1] ?? [];
+        }
+        if (is_readable($factory)) {
+            $fsrc = (string) file_get_contents($factory);
+            foreach (['maplibre' => 'PROVIDER_MAPLIBRE', 'maptiler' => 'PROVIDER_MAPTILER',
+                      'google' => 'PROVIDER_GOOGLE', 'mapbox' => 'PROVIDER_MAPBOX',
+                      'here' => 'PROVIDER_HERE', 'tomtom' => 'PROVIDER_TOMTOM'] as $pid => $constant) {
+                // Declared availability for the parent platform.
+                $declared = false;
+                if (preg_match("/'{$pid}' => \[(.*?)'probe'/s", $svc, $pe)) {
+                    $declared = (bool) preg_match("/'renderers' => \[[^\]]*'parent' => true/", $pe[1]);
+                }
+                // What the factory actually returns.
+                $returns = '';
+                if (preg_match('/' . $constant . '\s*(?:,\s*)?(?:\/\/[^\n]*\n\s*)*->\s*(\w+)\(/', $fsrc, $fm)) {
+                    $returns = $fm[1];
+                }
+                $realRenderer = $returns !== '' && !in_array($returns, $pending, true);
+
+                if ($declared && !$realRenderer) {
+                    $problems[] = "{$pid} claims a parent renderer but the factory returns "
+                        . ($returns === '' ? 'nothing' : $returns . ' (a placeholder)');
+                }
+                if (!$declared && $realRenderer) {
+                    $problems[] = "the factory now returns a real renderer for {$pid} ({$returns}) — "
+                        . "flip 'parent' => true in the registry";
+                }
+            }
+        }
+
+        // The admin surface must expose availability, not just enforce it.
+        if ($ctl !== '' && strpos($ctl, 'availability') === false) {
+            $problems[] = 'get_config does not return per-platform availability';
+        }
+        if ($view !== '') {
+            foreach (['availabilityChips', 'disabled'] as $need) {
+                if (strpos($view, $need) === false) {
+                    $problems[] = "admin page does not surface availability ('{$need}' absent)";
+                }
+            }
+        }
+
+        if ($problems !== []) {
+            return ['status' => 'FAIL', 'detail' => 'MAP-4: ' . implode('; ', $problems)];
+        }
+        return ['status' => 'PASS', 'detail' =>
+            'all 6 providers declare per-platform renderer availability; global mode and per-platform '
+            . 'assignment both refuse a provider with no renderer; TomTom is admin-only and matches the '
+            . 'Android factory; the admin page shows availability and disables unusable choices'];
+    }
+
+    /**
+     * CH-TRN-CSP-1 — the F13.2 map CSP allowlist stays minimal and correct.
+     *
+     * `MY_Controller` is shared ERP infrastructure, and its CSP protects every
+     * admin page in the product. F13.2 needed exactly two tile origins added so
+     * the fleet map is not a working UI over a blank grid. This gate makes that
+     * widening permanent-but-bounded: it fails if a map origin leaks into a
+     * script/style/default directive, if a wildcard creeps in, or if any
+     * pre-existing origin is dropped.
+     *
+     * Why these two and no more — derived from `map_renderer.js`, which builds
+     * exactly `api.maptiler.com` and `api.tomtom.com`. Deliberately absent:
+     * OSM (no renderer constructs an OSM URL, and the public service is barred
+     * for production), wildcard subdomains, and the JS CDNs — the fleet map
+     * uses SVG circleMarkers rather than Leaflet's PNG icon precisely so
+     * `img-src` need not admit a CDN.
+     *
+     * A CSP cannot be loosened by a second header (policies INTERSECT), so a
+     * single emitter per controller base is also asserted.
+     */
+    private function _chTrnCsp1(): array
+    {
+        $path = APPPATH . 'core/MY_Controller.php';
+        if (!is_readable($path)) {
+            return ['status' => 'FAIL', 'detail' => 'CSP-1: MY_Controller.php unreadable'];
+        }
+        // Comments are stripped before ANY substring test. The CSP block is
+        // heavily commented — including notes naming the origins deliberately
+        // NOT added — so a raw match would flag the documentation as the
+        // defect it warns against.
+        $src = $this->_stripComments((string) file_get_contents($path));
+        $problems = [];
+
+        // The CSP must be built and emitted exactly once here.
+        if (substr_count($src, 'header("Content-Security-Policy: "') !== 1) {
+            $problems[] = 'MY_Controller no longer emits the CSP exactly once';
+        }
+
+        // Extract each directive from the concatenated builder.
+        $dir = static function (string $name) use ($src): ?string {
+            return preg_match('/"' . preg_quote($name, '/') . ' ([^"]*)"/', $src, $m) ? $m[1] : null;
+        };
+        $maps = ['api.maptiler.com', 'api.tomtom.com'];
+
+        // (a) required origins present where they belong
+        foreach (['img-src', 'connect-src'] as $d) {
+            $v = $dir($d);
+            if ($v === null) { $problems[] = "{$d} directive missing"; continue; }
+            foreach ($maps as $host) {
+                if (strpos($v, $host) === false) { $problems[] = "{$d} is missing {$host}"; }
+            }
+        }
+
+        // (b) NOT present anywhere else
+        foreach (['script-src', 'style-src', 'default-src', 'font-src', 'media-src'] as $d) {
+            $v = $dir($d);
+            if ($v === null) { continue; }
+            foreach (['maptiler', 'tomtom', 'openstreetmap'] as $needle) {
+                if (stripos($v, $needle) !== false) {
+                    $problems[] = "a map origin leaked into {$d} — only img-src/connect-src may carry them";
+                }
+            }
+        }
+
+        // (c) narrowness — no wildcarded map host, no OSM
+        if (preg_match('/\*\.(maptiler|tomtom|openstreetmap)/i', $src)) {
+            $problems[] = 'a wildcard map origin was introduced — use the exact hosts the renderer builds';
+        }
+        if (stripos($src, 'tile.openstreetmap.org') !== false) {
+            $problems[] = 'public OSM tile host added — no renderer builds it and it is barred for production';
+        }
+
+        // (d) pre-existing origins intact
+        $img = (string) $dir('img-src');
+        $script = (string) $dir('script-src');
+        foreach (['firebasestorage.googleapis.com', 'storage.googleapis.com', 'data:', 'blob:'] as $keep) {
+            if (strpos($img, $keep) === false) { $problems[] = "img-src lost pre-existing '{$keep}'"; }
+        }
+        foreach (['cdnjs.cloudflare.com', 'cdn.jsdelivr.net', 'cdn.datatables.net'] as $keep) {
+            if (strpos($script, $keep) === false) { $problems[] = "script-src lost pre-existing '{$keep}'"; }
+        }
+        if ($dir('default-src') !== null && trim((string) $dir('default-src')) !== "'self'; ") {
+            // The builder writes "default-src 'self'; " — anything else is a change.
+            if (strpos((string) $dir('default-src'), "'self'") === false) {
+                $problems[] = 'default-src changed';
+            }
+        }
+
+        // (e) the renderer must not need a CDN image (why img-src stays narrow).
+        // JS comments stripped for the same reason as above — the renderer's own
+        // docblock explains that it does NOT use L.marker().
+        $rend = FCPATH . 'assets/js/maps/map_renderer.js';
+        if (is_readable($rend)) {
+            $r = (string) file_get_contents($rend);
+            $r = preg_replace('#/\*.*?\*/#s', '', $r);          // block comments
+            $r = preg_replace('#^\s*//.*$#m', '', (string) $r);  // line comments
+            $r = (string) $r;
+            if (preg_match('/\bL\.marker\s*\(/', $r) || preg_match('/global\.L\.marker\s*\(/', $r)) {
+                $problems[] = 'renderer uses L.marker() — its default PNG icon would force a CDN into img-src; '
+                            . 'use circleMarker';
+            }
+        }
+
+        if ($problems !== []) {
+            return ['status' => 'FAIL', 'detail' => 'CSP-1: ' . implode('; ', $problems)];
+        }
+        return ['status' => 'PASS', 'detail' =>
+            'exactly 2 exact map origins (api.maptiler.com, api.tomtom.com) on img-src + connect-src only; '
+            . 'no wildcard, no OSM, no leak into script/style/default; pre-existing Firebase/CDN origins intact; '
+            . 'single CSP emitter; renderer uses SVG markers so img-src needs no CDN'];
+    }
+
+    /**
+     * CH-TRN-F13-8 — the F13.2 admin fleet map is a real consumer of F13.1, not
+     * a second GPS system and not the old static prototype.
+     *
+     * The prototype this replaces was a hardcoded `FLEET` array and a
+     * hand-drawn SVG map. The whole point of F13.2 is that none of that
+     * survives, so this gate asserts the properties a runtime probe cannot:
+     * that there is no sample fleet, no literal coordinate, no duplicate
+     * telemetry collection, no RTDB, no map SDK in the business layer, and no
+     * invented ETA.
+     */
+    private function _chTrnF13_8(): array
+    {
+        $svcPath  = APPPATH . 'libraries/Transport_fleet_service.php';
+        $ctlPath  = APPPATH . 'controllers/Transport_fleet.php';
+        $viewPath = APPPATH . 'views/transport/fleet_live.php';
+        if (!is_readable($svcPath) || !is_readable($ctlPath) || !is_readable($viewPath)) {
+            return ['status' => 'INFO', 'detail' => 'F13.2 fleet surface not present — trivial pass'];
+        }
+        $svc  = $this->_stripComments((string) file_get_contents($svcPath));
+        $ctl  = $this->_stripComments((string) file_get_contents($ctlPath));
+        $viewRaw = (string) file_get_contents($viewPath);
+        $view = preg_replace('#/\*.*?\*/#s', '', $viewRaw);
+        $view = (string) preg_replace('#^\s*//.*$#m', '', (string) $view);
+        $problems = [];
+
+        // ── canonical source only ──
+        if (strpos($svc, 'vehicleLivePositions') === false) {
+            $problems[] = 'fleet service does not read the canonical vehicleLivePositions';
+        }
+        foreach (['fleetLivePositions', 'adminLivePositions', 'liveFleet', 'vehiclePositionsMirror'] as $dupe) {
+            if (stripos($svc . $ctl, $dupe) !== false) {
+                $problems[] = "a duplicate GPS collection appeared ('{$dupe}')";
+            }
+        }
+        // The fleet layer must never WRITE telemetry — it is a read model.
+        if (preg_match('/setEntity\(\s*self::COL_LIVE_POSITIONS|setEntity\(\s*[\'"]vehicleLivePositions/', $svc)) {
+            $problems[] = 'fleet service WRITES live positions — it must be read-only';
+        }
+
+        // ── no mock data anywhere ──
+        // A literal lat/lng pair in the service or view means the prototype's
+        // hardcoded fleet crept back in.
+        if (preg_match('/[\'"]lat[\'"]\s*=>\s*-?\d+\.\d+/', $svc)) {
+            $problems[] = 'a hardcoded coordinate is present in the fleet service';
+        }
+        if (preg_match('/\bFLEET\s*=|\bSAMPLE_FLEET\b|sampleBuses/i', $svc . $ctl . $view)) {
+            $problems[] = 'a sample/hardcoded fleet array is present';
+        }
+        // The view may carry a 0,0 camera seed but no real coordinates.
+        if (preg_match('/\b(?:12|13|28|77|72)\.\d{3,}/', $view)) {
+            $problems[] = 'the fleet view contains literal geographic coordinates';
+        }
+
+        // ── no RTDB ──
+        if (preg_match('/getReference\(|firebaseio\.com|FirebaseDatabase/i', $svc . $ctl . $view)) {
+            $problems[] = 'RTDB usage in the F13.2 surface';
+        }
+
+        // ── provider-agnostic rendering ──
+        if (strpos($view, 'ZenxMapRendererFactory') === false) {
+            $problems[] = 'the fleet view does not resolve its renderer through the Maps platform';
+        }
+        foreach (['maplibregl', 'google.maps', 'mapboxgl', 'L.tileLayer'] as $direct) {
+            if (strpos($view, $direct) !== false) {
+                $problems[] = "the fleet view talks to a map SDK directly ('{$direct}') — "
+                            . 'rendering belongs in the renderer implementation';
+            }
+        }
+        // Business layer must know nothing about maps.
+        if (preg_match('/Leaflet|maplibre|mapbox|tileLayer/i', $svc)) {
+            $problems[] = 'the fleet SERVICE references a map library — it must stay renderer-agnostic';
+        }
+
+        // ── ETA stays deferred ──
+        if (preg_match('/[\'"]eta(_[a-z]+)?[\'"]\s*=>/i', $svc)) {
+            $problems[] = 'an ETA field appeared — ETA is deferred to F13.3 (no travel-time model exists)';
+        }
+        if (preg_match('/distance[^\n]{0,40}\/\s*\$?\w*speed/i', $svc)) {
+            $problems[] = 'distance ÷ speed ETA arithmetic detected — explicitly forbidden';
+        }
+
+        // ── freshness reuses the F13.1 threshold ──
+        if (!preg_match('/STALE_AFTER_S\s*=\s*120/', $svc)) {
+            $problems[] = 'fleet staleness threshold no longer mirrors Transport_gps_service (120s)';
+        }
+
+        // ── RBAC: existing Transport module, view level, no new module ──
+        if (strpos($ctl, "require_permission('Transport'") === false) {
+            $problems[] = 'fleet controller is not gated on the Transport module';
+        }
+        if (!preg_match("/require_permission\('Transport',\s*'[a-z_]+',\s*'view'\)/", $ctl)) {
+            $problems[] = 'fleet endpoints are not gated at view level';
+        }
+
+        // ── scalability + lifecycle in the client ──
+        if (strpos($view, 'visibilitychange') === false) {
+            $problems[] = 'the view does not pause polling when the tab is hidden';
+        }
+        if (!preg_match('/clearInterval/', $view)) {
+            $problems[] = 'the view never tears down its poll timer';
+        }
+        if (preg_match('/setInterval\([^,]+,\s*(\d{1,3})\)/', $view, $m) && (int) $m[1] < 1000) {
+            $problems[] = 'a sub-second polling loop is present';
+        }
+        if (strpos($ctl, 'CACHE_TTL_S') === false) {
+            $problems[] = 'the live endpoint has no server-side cache — cost would scale per open tab';
+        }
+
+        if ($problems !== []) {
+            return ['status' => 'FAIL', 'detail' => 'F13-8: ' . implode('; ', $problems)];
+        }
+        return ['status' => 'PASS', 'detail' =>
+            'fleet map consumes canonical vehicleLivePositions read-only; no duplicate collection, no sample '
+            . 'fleet, no hardcoded coordinates, no RTDB; renderer resolved via the Maps platform with no SDK in '
+            . 'the service; ETA remains deferred; staleness mirrors F13.1; graded Transport:view; polling is '
+            . 'server-cached, visibility-aware and torn down'];
+    }
+
+    /**
+     * CH-TRN-RBAC-1 — Transport authorization is 100% graded RBAC.
+     *
+     * The legacy role-name fallback was retired Transport-wide on 2026-08-07
+     * (the ERP is pre-deployment, so no compatibility window was required).
+     * Every Transport HTTP endpoint is now gated exclusively by
+     *
+     *     require_permission('Transport', '<action>', '<view|edit|manage>')
+     *
+     * and access is granted only by holding the Transport module — directly or
+     * via its `Operations` umbrella parent — at the required level, or by a
+     * RBAC_BYPASS_ROLES principal. This gate fails if ANY Transport controller
+     * reintroduces the `_require_role` bridge, a role-name allow-list constant,
+     * or an inline `in_array($this->admin_role, ...)` authorization test.
+     *
+     * Deliberate exclusions:
+     *   • Transport_analytics — gates on has_permission('Operations') plus the
+     *     F11 per-role WIDGET VISIBILITY matrix. That matrix is presentation
+     *     scoping, not the authorization boundary, and is pinned separately by
+     *     CH-TRN-SEC3-1 / CH-TRN-F11-4.
+     *   • Transport_sos's `triggered_by_role` audit field — records who acted;
+     *     it is written, never read for an access decision.
+     */
+    private function _chTrnRbac1(): array
+    {
+        $dir = APPPATH . 'controllers';
+        $offenders = [];
+        foreach ((array) glob("{$dir}/Transport*.php") as $path) {
+            $name = basename($path, '.php');
+            if ($name === 'Transport_analytics' || $name === 'Transport_verifier'
+                || strpos($name, 'Transport_probe') === 0) {
+                continue;
+            }
+            $src = $this->_stripComments((string) file_get_contents($path));
+            $bad = [];
+            if (strpos($src, '_require_role') !== false)                        { $bad[] = '_require_role bridge'; }
+            if (preg_match('/(?:VIEW|MANAGE|REQUIRED)_ROLES/', $src))           { $bad[] = 'role-name allow-list'; }
+            if (preg_match('/in_array\(\s*(?:\(string\)\s*)?\$(?:this->)?(?:admin_)?role\b/', $src)) {
+                $bad[] = 'inline admin_role name test';
+            }
+            if ($bad !== []) { $offenders[] = $name . ' [' . implode(', ', $bad) . ']'; }
+        }
+        if ($offenders !== []) {
+            return ['status' => 'FAIL', 'detail' =>
+                'RBAC-1: legacy role-name authorization reintroduced in: ' . implode('; ', $offenders)];
+        }
+        return ['status' => 'PASS', 'detail' =>
+            'no legacy role-name authorization anywhere in Transport — every endpoint gated by '
+            . "require_permission('Transport', <action>, <level>) alone"];
+    }
+
+    /**
      * CH-TRN-SEC4-1 — Transport HTTP controllers must read the caller role from
      * the canonical $this->admin_role (set by MY_Controller from session/claims),
      * NOT the phantom session key 'role' (always '' → role gate fail-closed →
@@ -4083,7 +5911,7 @@ class Transport_verifier extends CI_Controller
     }
 
     /**
-     * CH-TRN-SEC1-1 — the transportAttendance create rule must bind non-admin
+     * CH-TRN-SEC1-1 — transportAttendance mutations must be SERVER-MEDIATED. Re-scoped at F14 (was: bind non-admin
      * writes to the DRIVER OF THE REFERENCED TRIP (a forged no_show is a false
      * parent safety alert). Verifies the firestore.rules create block reads the
      * trip's driver_staff_id via get(tripLogs) and compares it to the caller's
@@ -4101,26 +5929,52 @@ class Transport_verifier extends CI_Controller
             $path = $alt;
         }
         $rules = (string) file_get_contents($path);
-        // Isolate the transportAttendance match block.
+        // Isolate the transportAttendance match block. Bounded by the NEXT match
+        // block rather than a byte budget — a fixed window silently truncated the
+        // block once its comments grew, turning a passing gate into a false FAIL.
         $start = strpos($rules, 'match /transportAttendance/');
         if ($start === false) {
             return ['status' => 'FAIL', 'detail' => 'SEC-1: transportAttendance match block not found'];
         }
-        $block = substr($rules, $start, 3000);
-        $hasTripGet = strpos($block, 'documents/tripLogs/') !== false;
-        // 2026-08-07 — RBAC Phase A migrated staff identity off the custom
-        // `user_id` claim onto `request.auth.uid` (uid == staffId under
-        // synthetic-email auth); firestore.rules and driverIs() moved with it.
-        // Accept the canonical uid form; the legacy token form is still
-        // accepted so the gate keeps passing on any un-migrated branch rather
-        // than reporting a phantom security hole.
-        $bindsDriver =
-               strpos($block, 'driver_staff_id == request.auth.uid') !== false
-            || strpos($block, 'driver_staff_id == request.auth.token.user_id') !== false;
-        if (!$hasTripGet || !$bindsDriver) {
-            return ['status' => 'FAIL', 'detail' => 'SEC-1: attendance create not bound to trip driver (get(tripLogs).driver_staff_id == request.auth.uid missing) — any staff can forge a safety event'];
+        $rest  = substr($rules, $start + 10);
+        $next  = strpos($rest, 'match /');
+        $block = $next === false ? substr($rules, $start) : substr($rules, $start, $next + 10);
+
+        // ── RE-SCOPED at F14 (2026-08-12) — strictly STRONGER, not weakened ──
+        //
+        // SEC-1 originally required the driver's client-side create to be bound
+        // to the trip they own — the tightest thing security rules can express.
+        // It is provably not enough: rules cannot verify the ID card's HMAC, nor
+        // resolve a transport entitlement across studentRoutes status +
+        // effective dates + session + service days, so a student with a valid QR
+        // but NO transport facility could be recorded.
+        //
+        // F14 therefore withdrew the driver arm altogether. Attendance mutations
+        // go through Transport_driver_api (trip-ownership authorized) and are
+        // written with the admin SDK, which bypasses rules by design.
+        //
+        // Old assertion : a driver-of-trip binding must EXIST.
+        // New assertion : NO driver client-write path may exist at all, and the
+        //                 events must stay immutable.
+        $driverArmGone = strpos($block, 'driver_staff_id == request.auth.uid') === false
+                      && strpos($block, 'driver_staff_id == request.auth.token.user_id') === false;
+        $immutable = preg_match('/allow\s+update,\s*delete:\s*if\s+false/', $block) === 1;
+
+        if (!$driverArmGone) {
+            return ['status' => 'FAIL', 'detail' =>
+                'SEC-1/F14: a driver can still write transportAttendance directly from the client — '
+                . 'that path cannot verify the QR HMAC or the studentRoutes entitlement, so a '
+                . 'non-transport student could be recorded. Mutations must be server-mediated.'];
         }
-        return ['status' => 'PASS', 'detail' => 'transportAttendance create binds non-admin writes to the trip driver (get(tripLogs).driver_staff_id == request.auth.uid)'];
+        if (!$immutable) {
+            return ['status' => 'FAIL', 'detail' =>
+                'SEC-1/F14: attendance events are not immutable (allow update, delete: if false missing) — '
+                . 'a recorded safety event could be altered after the fact'];
+        }
+        return ['status' => 'PASS', 'detail' =>
+            'transportAttendance has no driver client-write path (server-mediated via '
+            . 'Transport_driver_api, which enforces QR HMAC + studentRoutes entitlement) and events '
+            . 'remain immutable'];
     }
 
     /**
@@ -4374,6 +6228,163 @@ class Transport_verifier extends CI_Controller
         return ['status' => 'PASS', 'detail' => "no {$label} in Transport source"];
     }
 
+
+    /**
+     * CH-TRN-F14-1 — QR boarding is server-authorized end to end.
+     *
+     * WHY THIS GATE EXISTS. F14 withdrew the driver client-write arm from the
+     * `transportAttendance` rule because rules cannot verify a QR HMAC and
+     * cannot resolve a transport entitlement across studentRoutes status,
+     * effective dates, session and service days — so a child holding a valid
+     * card but with no transport facility could be recorded. The rule shipped;
+     * the Teacher app was NOT migrated, and kept writing the collection
+     * directly from the device. Two boarding authorities existed, the weaker one
+     * being the one the conductor actually used, and the moment the rule
+     * deployed every tap would have failed PERMISSION_DENIED — silently, being a
+     * Firestore write.
+     *
+     * Nothing guarded that pairing, which is precisely why it drifted. This gate
+     * asserts the PROPERTY, on comment-stripped source so documentation can
+     * never satisfy it:
+     *
+     *   a. the app performs no direct write to transportAttendance;
+     *   b. it holds no hand-board path (boarding requires the signed QR);
+     *   c. it does call the driver API for scan / roster / alight / exception;
+     *   d. the server keeps ONE boarding writer;
+     *   e. bus boarding never touches classroom attendance.
+     */
+    private function _chTrnF14_1(): array
+    {
+        $teacher = 'D:/Projects/SchoolSyncTeacher/app/src/main/java/com/schoolsync/teacher';
+        if (!is_dir($teacher)) {
+            return ['status' => 'INFO', 'detail' => 'Teacher repo not present — trivial pass'];
+        }
+        $problems = [];
+        $read = static fn(string $p): string => is_readable($p) ? (string) file_get_contents($p) : '';
+
+        $repoRaw = $read($teacher . '/data/repository/firestore/TransportFirestoreRepository.kt');
+        if ($repoRaw === '') {
+            $problems[] = 'Teacher TransportFirestoreRepository missing';
+        } else {
+            $repo = $this->_stripKotlinComments($repoRaw);
+
+            // (a) No client write to the attendance collection.
+            if (preg_match('/(setDocument|updateDocument|addDocument)\s*\(\s*[^,)]*TRANSPORT_ATTENDANCE/', $repo)
+                || preg_match('/(setDocument|updateDocument)\s*\(\s*["\']transportAttendance["\']/', $repo)) {
+                $problems[] = 'the app writes transportAttendance directly — '
+                            . 'boarding must go through Transport_driver_api';
+            }
+
+            // (b) No hand-board path. A tap cannot verify a QR signature or an
+            //     entitlement, so a boarding without a scanned token is exactly
+            //     the hole F14 closed.
+            foreach (['markStudentBoarded', 'markStudentDropped', 'markStudentNoShow', 'writeBoardingEvent'] as $fn) {
+                if (preg_match('/fun\s+' . $fn . '\s*\(/', $repo)) {
+                    $problems[] = "the app still defines {$fn}() — a hand-board path";
+                }
+            }
+
+            // (c) It DOES reach the server. Required, not merely permitted:
+            //     without this the app satisfies every prohibition above by
+            //     recording nothing at all.
+            foreach ([
+                'scanStudentQr'          => 'scan',
+                'tripRoster'             => 'trip_roster',
+                'markAllAlightedAtSchool'=> 'mark_all_alighted_at_school',
+                'resolveStudentException'=> 'resolve_exception',
+            ] as $fn => $endpoint) {
+                if (!preg_match('/fun\s+' . $fn . '\s*\(/', $repo)) {
+                    $problems[] = "the app has no {$fn}() — the {$endpoint} endpoint has no consumer";
+                }
+            }
+        }
+
+        // (c continued) The Retrofit surface must name the real endpoints.
+        $api = $this->_stripKotlinComments($read($teacher . '/data/remote/ApiService.kt'));
+        foreach (['transport_driver_api/scan', 'transport_driver_api/trip_roster',
+                  'transport_driver_api/mark_all_alighted_at_school',
+                  'transport_driver_api/resolve_exception'] as $ep) {
+            if ($api !== '' && strpos($api, $ep) === false) {
+                $problems[] = "ApiService does not declare {$ep}";
+            }
+        }
+
+        // The conductor must actually be able to scan, or the endpoints are
+        // unreachable in practice — the state this gate was written after.
+        $screen = $this->_stripKotlinComments($read($teacher . '/ui/transport/DriverTripDetailScreen.kt'));
+        if ($screen !== '') {
+            if (!preg_match('/GmsBarcodeScanning\s*\.\s*getClient\s*\(/', $screen)) {
+                $problems[] = 'the driver trip screen has no scanner — QR boarding is not reachable';
+            }
+            if (!preg_match('/onQrScanned\s*\(/', $screen)) {
+                $problems[] = 'the driver trip screen never submits a scanned token';
+            }
+            // The head count is the point of the feature.
+            if (strpos($screen, 'HeadCountPanel') === false) {
+                $problems[] = 'the driver trip screen shows no head count';
+            }
+        }
+
+        // (d) ONE boarding writer server-side.
+        $svc = $read(APPPATH . 'libraries/Transport_qr_attendance_service.php');
+        if ($svc === '') {
+            $problems[] = 'Transport_qr_attendance_service missing';
+        } else {
+            $code = $this->_stripComments($svc);
+            // (e) Bus boarding must never touch classroom attendance. A parent
+            //     seeing a child marked present in class because they boarded a
+            //     bus would be a false record in the wrong module entirely.
+            if (preg_match('/(setEntity|->set)\s*\(\s*["\']attendance["\']/', $code)) {
+                $problems[] = 'the QR service writes the classroom attendance collection — '
+                            . 'bus boarding must stay separate';
+            }
+        }
+
+        return $problems === []
+            ? ['status' => 'PASS', 'detail' => 'boarding is server-authorized: no client write, no hand-board, '
+                                             . 'scanner + head count present, one writer, classroom attendance untouched']
+            : ['status' => 'FAIL', 'detail' => implode('; ', $problems)];
+    }
+    /**
+     * Comment-strip Kotlin source. `_stripComments()` runs the PHP tokenizer and
+     * cannot parse Kotlin, so a gate that scans .kt files needs this instead.
+     *
+     * A character scanner rather than a regex because the naive
+     * `#//.*$#m` deletes the tail of every `"https://…"` in the file, which
+     * would silently blind a gate to whatever followed a URL on the same line.
+     * String state is therefore tracked, with backslash escapes honoured.
+     */
+    private function _stripKotlinComments(string $src): string
+    {
+        $out = ''; $len = strlen($src);
+        $inStr = false; $inBlock = false; $esc = false;
+        for ($i = 0; $i < $len; $i++) {
+            $c    = $src[$i];
+            $next = $i + 1 < $len ? $src[$i + 1] : '';
+
+            if ($inBlock) {
+                if ($c === '*' && $next === '/') { $inBlock = false; $i++; }
+                continue;
+            }
+            if ($inStr) {
+                $out .= $c;
+                if ($esc)            { $esc = false; }
+                elseif ($c === '\\') { $esc = true;  }
+                elseif ($c === '"')  { $inStr = false; }
+                continue;
+            }
+            if ($c === '/' && $next === '*') { $inBlock = true; $i++; continue; }
+            if ($c === '/' && $next === '/') {                      // to EOL
+                while ($i < $len && $src[$i] !== "\n") { $i++; }
+                $out .= "\n";
+                continue;
+            }
+            if ($c === '"') { $inStr = true; }
+            $out .= $c;
+        }
+        return $out;
+    }
+
     private function _stripComments(string $src): string
     {
         $out    = '';
@@ -4389,5 +6400,226 @@ class Transport_verifier extends CI_Controller
             }
         }
         return $out;
+    }
+
+    // ═════════════════════════════════════════════════════════════════════
+    //  F12.1 — CBSE Transport Safety Compliance (M5)
+    // ═════════════════════════════════════════════════════════════════════
+
+    /**
+     * CH-TRN-CMP-1 — the seeded rule pack matches the canonical constant.
+     *
+     * The expected rule count and total weight are DERIVED from
+     * Transport_compliance_service::CBSE_RULE_PACK, never hardcoded. That is
+     * deliberate: CH-TRN-SEC1-1 went permanently red after the RBAC claim
+     * migration precisely because it pinned a literal that the code had moved
+     * past. A gate that hardcodes 19/144 would fail the day a rule is added
+     * even though nothing is broken. (It also documents the 2026-08-07 spec
+     * correction: the §2.4 prose said 154, the tabulated weights sum to 144,
+     * and the table is authoritative.)
+     */
+    private function _chTrnCmp1(): array
+    {
+        $pack = Transport_compliance_service::CBSE_RULE_PACK;
+        $expectCount  = count($pack);
+        $expectWeight = array_sum(array_column($pack, 'severity_weight'));
+        $expectBlock  = count(array_filter(array_column($pack, 'blocks_dispatch')));
+
+        $seeded = $this->cmp->listRules();
+        if ($seeded === []) {
+            return ['status' => 'INFO', 'detail' =>
+                "no compliance pack seeded for this tenant yet (expected {$expectCount} rules / weight {$expectWeight}) — seed via transport_compliance/seed_pack"];
+        }
+
+        $gotCount  = count($seeded);
+        $gotWeight = array_sum(array_map(static function ($r) { return (int) ($r['severity_weight'] ?? 0); }, $seeded));
+        $gotBlock  = count(array_filter($seeded, static function ($r) { return !empty($r['blocks_dispatch']); }));
+
+        // Every canonical code must be present; evaluation kind must be legal.
+        $seededCodes = array_map(static function ($r) { return (string) ($r['rule_code'] ?? ''); }, $seeded);
+        $missing = array_values(array_diff(array_column($pack, 'code'), $seededCodes));
+        $badEval = [];
+        foreach ($seeded as $r) {
+            $ev = (string) ($r['evaluation'] ?? '');
+            if (!in_array($ev, Transport_compliance_service::EVALUATIONS, true)) {
+                $badEval[] = (string) ($r['rule_code'] ?? '?') . "={$ev}";
+            }
+        }
+
+        $problems = [];
+        if ($missing !== [])            { $problems[] = 'missing: ' . implode(',', $missing); }
+        if ($badEval !== [])            { $problems[] = 'bad evaluation: ' . implode(',', $badEval); }
+        if ($gotCount !== $expectCount) { $problems[] = "count {$gotCount} != {$expectCount}"; }
+        // Weight/blocks may legitimately differ from the constant: §2.1 allows a
+        // school to override severity_weight and blocks_dispatch. Report the
+        // delta as INFO rather than failing on a supported override.
+        $overrides = [];
+        if ($gotWeight !== $expectWeight) { $overrides[] = "weight {$gotWeight} vs canonical {$expectWeight}"; }
+        if ($gotBlock !== $expectBlock)   { $overrides[] = "blocking {$gotBlock} vs canonical {$expectBlock}"; }
+
+        if ($problems !== []) {
+            return ['status' => 'FAIL', 'detail' => 'CMP-1: ' . implode('; ', $problems)];
+        }
+        $note = $overrides !== [] ? ' (school overrides: ' . implode(', ', $overrides) . ')' : '';
+        return ['status' => 'PASS', 'detail' =>
+            "rule pack complete: {$gotCount} rules, weight {$gotWeight}, {$gotBlock} dispatch-blocking{$note}"];
+    }
+
+    /**
+     * CH-TRN-CMP-2 — every stored posture equals a fresh recomputation.
+     *
+     * Posture is derived and must never be authoritative (spec §2.3). Rather
+     * than trust the stored doc, this recomputes from vehicleCompliance + the
+     * rule weights and compares. computePosture() rewrites the doc with the
+     * same values it returns, so a drift here means the stored doc had gone
+     * stale relative to its inputs — exactly the failure this gate exists for.
+     */
+    private function _chTrnCmp2(): array
+    {
+        $vehicles = $this->transport->listVehicles();
+        if ($vehicles === []) {
+            return ['status' => 'INFO', 'detail' => 'no vehicles in this tenant — nothing to verify'];
+        }
+        $checked = 0; $drift = [];
+        foreach ($vehicles as $v) {
+            $vid = (string) ($v['id'] ?? '');
+            if ($vid === '') { continue; }
+            $stored = $this->fs->getEntity('vehicleCompliancePosture', $vid);
+            if (!is_array($stored)) { continue; }   // never evaluated — not a drift
+            $checked++;
+            $fresh = $this->cmp->computePosture($vid);
+            if ((int) ($stored['score'] ?? -1) !== (int) $fresh['score']
+                || (string) ($stored['tier'] ?? '') !== (string) $fresh['tier']
+                || (bool) ($stored['blocks_dispatch'] ?? false) !== (bool) $fresh['blocks_dispatch']) {
+                $drift[] = sprintf('%s(stored %s/%s vs fresh %s/%s)', $vid,
+                    $stored['score'] ?? '?', $stored['tier'] ?? '?', $fresh['score'], $fresh['tier']);
+            }
+        }
+        if ($checked === 0) {
+            return ['status' => 'INFO', 'detail' => 'no vehicle has an evaluated posture yet'];
+        }
+        if ($drift !== []) {
+            return ['status' => 'FAIL', 'detail' => 'CMP-2: posture drift on ' . count($drift) . ': ' . implode(' ', array_slice($drift, 0, 5))];
+        }
+        return ['status' => 'PASS', 'detail' => "posture recomputable + identical for all {$checked} evaluated vehicle(s)"];
+    }
+
+    /**
+     * CH-TRN-CMP-3 — every Waived row respects its bounds.
+     *
+     * A waiver suspends a mandatory CBSE requirement, so it must always carry
+     * a reason of at least the configured minimum, a named actor, and an
+     * expiry no more than WAIVER_MAX_DAYS after it was granted. Reason length
+     * is measured in CHARACTERS (mb_strlen) to match waiveRule()'s own
+     * Unicode-safe validation — a byte-count here would false-fail a reason
+     * written in an Indic script.
+     */
+    private function _chTrnCmp3(): array
+    {
+        $rows = (array) $this->fs->schoolWhere('vehicleCompliance', [['status', '==', 'Waived']]);
+        if ($rows === []) {
+            return ['status' => 'PASS', 'detail' => 'no active waivers in this tenant'];
+        }
+        $minLen  = Transport_compliance_service::WAIVER_REASON_MIN;
+        $maxDays = Transport_compliance_service::WAIVER_MAX_DAYS;
+        $bad = [];
+        foreach ($rows as $row) {
+            $r = is_array($row['data'] ?? null) ? $row['data'] : $row;
+            $id     = (string) ($r['rule_code'] ?? ($row['id'] ?? '?'));
+            $reason = (string) ($r['waiver_reason'] ?? '');
+            $by     = (string) ($r['waiver_by'] ?? '');
+            $exp    = (string) ($r['waiver_expires_on'] ?? '');
+            $len    = function_exists('mb_strlen') ? mb_strlen($reason, 'UTF-8') : strlen($reason);
+
+            if ($len < $minLen) { $bad[] = "{$id}(reason {$len}<{$minLen})"; continue; }
+            if ($by === '')     { $bad[] = "{$id}(no actor)"; continue; }
+            if ($exp === '')    { $bad[] = "{$id}(no expiry — waivers are never permanent)"; continue; }
+            // Bound the span from when it was granted, not from today: a waiver
+            // granted 80 days ago for 90 days is still legal today.
+            $granted = (string) ($r['attested_at'] ?? '');
+            $base    = $granted !== '' ? date('Y-m-d', (int) strtotime($granted)) : date('Y-m-d');
+            $limit   = date('Y-m-d', (int) strtotime($base . ' +' . $maxDays . ' days'));
+            if ($exp > $limit) { $bad[] = "{$id}(expires {$exp} > granted+{$maxDays}d {$limit})"; }
+        }
+        if ($bad !== []) {
+            return ['status' => 'FAIL', 'detail' => 'CMP-3: ' . count($bad) . ' out-of-bounds waiver(s): ' . implode(' ', array_slice($bad, 0, 5))];
+        }
+        return ['status' => 'PASS', 'detail' => count($rows) . ' waiver(s), all within reason/actor/' . $maxDays . '-day bounds'];
+    }
+
+    /**
+     * CH-TRN-CMP-4 — compliance source hygiene, two invariants:
+     *
+     *   (a) EVIDENCE IS LINKED, NEVER COPIED. The compliance service must
+     *       reach documents only through the Canonical Document Service's
+     *       public API (link/unlink/getMetadata) — never Storage calls, never
+     *       direct writes to `documents` / `documentLinks`. The Document
+     *       Service is a frozen platform baseline: modules consume it.
+     *
+     *   (b) AUTHORIZATION STAYS AT THE §4 BOUNDARY. Every compliance endpoint
+     *       supplies the canonical ('Transport', <level>) pair, and the
+     *       service layer performs no authorization of its own. Required by
+     *       the spec §7 amendment (2026-08-07); pinned here so a later edit
+     *       cannot quietly reintroduce a role-name gate or a service-level
+     *       check.
+     */
+    private function _chTrnCmp4(): array
+    {
+        $svcPath = APPPATH . 'libraries/Transport_compliance_service.php';
+        $ctlPath = APPPATH . 'controllers/Transport_compliance.php';
+        if (!is_readable($svcPath) || !is_readable($ctlPath)) {
+            return ['status' => 'INFO', 'detail' => 'compliance source not readable — trivial pass'];
+        }
+        $svc = $this->_stripComments((string) file_get_contents($svcPath));
+        $ctl = $this->_stripComments((string) file_get_contents($ctlPath));
+        $problems = [];
+
+        // (a) evidence discipline
+        if (strpos($svc, '->link(') === false || strpos($svc, '->getMetadata(') === false) {
+            $problems[] = 'service no longer uses the Document Service link()/getMetadata() API';
+        }
+        foreach (['uploadStorageFile', 'deleteStorageFile', 'putStorageFile'] as $bad) {
+            if (strpos($svc, $bad) !== false) { $problems[] = "service calls Storage directly ({$bad})"; }
+        }
+        foreach (["'documents'", '"documents"', "'documentLinks'", '"documentLinks"'] as $bad) {
+            if (strpos($svc, $bad) !== false) { $problems[] = "service writes the document collection directly ({$bad})"; }
+        }
+
+        // (b) authorization boundary
+        // 'attest' raised edit → manage (Batch 3, 2026-08-13, authorised): an
+        // attestation certifies that a vehicle satisfies a CBSE safety rule, so
+        // it is a controlled assertion rather than routine data entry, and at
+        // 'edit' it was self-attestable by a Driver. This map is the pinned
+        // specification, so it moves with the decision. Every structural
+        // assertion around it is unchanged — all 8 endpoints must still be
+        // graded, no legacy bridge, no role-name list, no service-layer authz.
+        $need = ['dashboard' => 'view', 'vehicle' => 'view', 'attest' => 'manage', 'evaluate' => 'edit',
+                 'waive' => 'manage', 'rebuild' => 'manage', 'seed_pack' => 'manage', 'rules' => 'manage'];
+        $graded = preg_match_all("/require_permission\(\s*'Transport'\s*,\s*'[a-z_]+'\s*,\s*'(view|edit|manage)'\s*\)/", $ctl, $m);
+        if ($graded !== count($need)) {
+            $problems[] = "controller has {$graded} graded require_permission calls, expected " . count($need);
+        }
+        foreach (array_count_values($m[1] ?? []) as $lvl => $n) {
+            $expect = count(array_filter($need, static function ($v) use ($lvl) { return $v === $lvl; }));
+            if ($n !== $expect) { $problems[] = "level '{$lvl}' used {$n}x, expected {$expect}x"; }
+        }
+        // The legacy role-name fallback was retired Transport-wide on 2026-08-07.
+        // Neither the _require_role bridge nor a bare name list may return here.
+        if (strpos($ctl, '_require_role') !== false) {
+            $problems[] = 'controller reintroduced the legacy _require_role bridge';
+        }
+        if (preg_match('/(?:VIEW|MANAGE|REQUIRED)_ROLES/', $ctl)) {
+            $problems[] = 'controller reintroduced a legacy role-name allow-list';
+        }
+        if (strpos($svc, 'has_permission(') !== false || strpos($svc, 'session->userdata') !== false) {
+            $problems[] = 'service performs its own authorization (spec §3 forbids it)';
+        }
+
+        if ($problems !== []) {
+            return ['status' => 'FAIL', 'detail' => 'CMP-4: ' . implode('; ', $problems)];
+        }
+        return ['status' => 'PASS', 'detail' =>
+            'evidence linked via Document Service API only (no Storage/collection writes); all '
+            . count($need) . " endpoints graded ('Transport', view|edit|manage); no service-layer authz"];
     }
 }

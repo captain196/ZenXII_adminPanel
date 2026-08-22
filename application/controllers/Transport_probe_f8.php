@@ -42,7 +42,19 @@ class Transport_probe_f8 extends CI_Controller
         $this->load->library('transport_service', null, 'transport');
     }
 
+    /**
+     * UNIT 2B — exception-safe wrapper. _runBody() restores the tenant policy
+     * inline on the normal path (before its exit(), which bypasses finally);
+     * this finally covers an exception escaping between the fence seed and
+     * that inline restore. _restoreSchoolArrival() is idempotent.
+     */
     public function run(): void
+    {
+        try { $this->_runBody(); }
+        finally { $this->_restoreSchoolArrival(); }
+    }
+
+    private function _runBody(): void
     {
         $sid  = (string) (getenv('SCHOOL_ID')    ?: '');
         $sess = (string) (getenv('SESSION_YEAR') ?: '');
@@ -52,6 +64,7 @@ class Transport_probe_f8 extends CI_Controller
         }
         try {
             $this->fs->init($sid, $sess);
+            $this->fixSchoolId = $sid;
             $this->numbering->init($this->fs, $sid, $sess);
             $this->transport->init($this->fs, $this->numbering, $sid, $sess, 'transport_probe_f8');
         } catch (\Throwable $e) {
@@ -65,6 +78,11 @@ class Transport_probe_f8 extends CI_Controller
         echo " F8 Transport Events Runtime Probe\n";
         echo " tenant=$sid session=$sess\n";
         echo "==================================================\n";
+
+        // UNIT 2B — createTrip() refuses a Pickup trip with no valid campus
+        // geofence, and Step 4 creates one before _seedSchoolArrival() ran
+        // (Step 5). Seed here with the SAME snapshot/restore used below.
+        $this->_ensureCampusFence();
 
         // Provision fixtures
         [$vehicleId, $staffId] = $this->_provisionFixtures($sid);
@@ -172,6 +190,30 @@ class Transport_probe_f8 extends CI_Controller
         try {
             if ($tripId === '') { throw new \RuntimeException('no trip from step 4'); }
             $this->transport->startTrip($tripId);
+            // F14 Part A (2026-08-12): a Pickup trip completes only when F13.1
+            // telemetry places the bus inside the school geofence. This step
+            // asserts successful completion, so it stages the arrival it
+            // asserts — the guard is not relaxed. Restored in teardown.
+            $this->_seedSchoolArrival($vehicleId);
+            // The guard's second half: every EXPECTED morning student must reach
+            // a resolved state. This event trip's rostered student never boards,
+            // so resolve them as a no-show — which is what actually happened —
+            // rather than relaxing the guard.
+            try {
+                $this->transport->markStudentNoShow($tripId, $studentId, 'F8 probe: did not travel');
+                // Register the attendance row for teardown, or the trip is deleted
+                // and the event survives as an orphan (caught by CH-TRN-F7-3).
+                //
+                // NOTE the id shape: _writeBoardingEvent() builds
+                // "{schoolId}_{tripId}_{studentId}_{eventType}" and then writes it
+                // through setEntity(), which prefixes the school id AGAIN — so the
+                // stored doc is {schoolId}_{schoolId}_{tripId}_… . removeEntity()
+                // prefixes once, so the entity id handed to it must itself still
+                // carry one schoolId. Documented rather than "fixed" here: the
+                // convention is a production data question, not a fixture one.
+                $this->createdFixtures[] = ['transportAttendance',
+                    $this->fixSchoolId . '_' . $tripId . '_' . $studentId . '_no_show'];
+            } catch (\Throwable $e) { echo '  fixture WARN: ' . $e->getMessage() . "\n"; }
             $this->transport->completeTrip($tripId, [
                 'end_time' => date('c'), 'end_odometer' => 10, 'distance_km' => 10,
             ]);
@@ -238,6 +280,8 @@ class Transport_probe_f8 extends CI_Controller
         // Teardown — trips FIRST (to preserve F8-4 FK invariant), then
         // roster, then event doc
         // ------------------------------------------------------------
+        $this->_restoreSchoolArrival();
+
         echo "\n[TEARDOWN] Removing ephemeral fixtures\n";
         foreach ($this->createdEvents as $eid) {
             try {
@@ -345,5 +389,76 @@ class Transport_probe_f8 extends CI_Controller
         $this->createdFixtures[] = ['vehicles', $vehicleId];
 
         return [$vehicleId, $escortStaffId];
+    }
+
+    // ── F14 Part A test fixtures (same rationale as Transport_probe_f7) ──
+    private $priorPolicy = null;
+    private bool $policySeeded = false;
+    private string $fixSchoolId = '';
+    private const FIX_LAT = 12.9716;
+    private const FIX_LNG = 77.5946;
+
+    /**
+     * UNIT 2B — guarantee a valid campus fence BEFORE any Pickup trip is
+     * created. Extracted from the fence half of _seedSchoolArrival() so there
+     * is exactly ONE geofence fixture mechanism: seeds ONLY when no fence
+     * exists, snapshots the whole attendancePolicy first, and leaves
+     * _restoreSchoolArrival() to put the original back verbatim.
+     */
+    private function _ensureCampusFence(): void
+    {
+        if ($this->policySeeded) { return; }
+        try {
+            $school = $this->fs->get('schools', $this->fixSchoolId);
+            $school = is_array($school) ? ($school['data'] ?? $school) : [];
+            $pol    = (array) ($school['attendancePolicy'] ?? []);
+            if ((array) (($pol['gps'] ?? [])['geofences'] ?? []) !== []) {
+                echo "  fixture: campus fence already present — preserved, not overwritten\n";
+                return;
+            }
+            $this->priorPolicy = $pol;
+            $gps = (array) ($pol['gps'] ?? []);
+            $gps['geofences'] = [[
+                'id' => 'PROBE_F8_CAMPUS', 'name' => 'Probe Campus',
+                'centerLat' => self::FIX_LAT, 'centerLng' => self::FIX_LNG, 'radius' => 300,
+            ]];
+            if (!isset($gps['maxAccuracyMeters'])) { $gps['maxAccuracyMeters'] = 100; }
+            $pol['gps'] = $gps;
+            $this->fs->update('schools', $this->fixSchoolId, ['attendancePolicy' => $pol]);
+            $this->policySeeded = true;
+            echo "  fixture: temporary campus fence seeded (restored at teardown)\n";
+        } catch (\Throwable $e) {
+            echo '  fixture WARN (_ensureCampusFence): ' . $e->getMessage() . "\n";
+        }
+    }
+
+    private function _seedSchoolArrival(string $vehicleId): void
+    {
+        try {
+            // Fence half delegated — same snapshot/restore discipline, one place.
+            $this->_ensureCampusFence();
+            $this->fs->setEntity('vehicleLivePositions', $vehicleId, [
+                'schoolId' => $this->fixSchoolId, 'vehicleId' => $vehicleId,
+                'lat' => self::FIX_LAT, 'lng' => self::FIX_LNG, 'accuracy_m' => 12.0,
+                'recorded_at' => date('c'),
+                'recorded_at_ms' => (int) round(microtime(true) * 1000),
+                'source' => 'probe_fixture',
+            ], true);
+            $this->createdFixtures[] = ['vehicleLivePositions', $vehicleId];
+        } catch (\Throwable $e) {
+            echo '  fixture WARN: ' . $e->getMessage() . "\n";
+        }
+    }
+
+    private function _restoreSchoolArrival(): void
+    {
+        if (!$this->policySeeded) { return; }
+        // Idempotent — see the run() wrapper: the normal path restores inline
+        // before exit(), the finally covers the exceptional path.
+        $this->policySeeded = false;
+        try {
+            $this->fs->update('schools', $this->fixSchoolId,
+                ['attendancePolicy' => $this->priorPolicy ?? []]);
+        } catch (\Throwable $_) {}
     }
 }

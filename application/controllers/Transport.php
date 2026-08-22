@@ -16,15 +16,14 @@ defined('BASEPATH') or exit('No direct script access allowed');
  */
 class Transport extends MY_Controller
 {
-    /** Roles for transport management */
-    private const MANAGE_ROLES = ['Super Admin', 'School Super Admin', 'Admin', 'Principal', 'Vice Principal', 'Operations Manager', 'Transport Manager'];
-
-    /** Roles that may view transport data */
-    private const VIEW_ROLES   = ['Super Admin', 'School Super Admin', 'Admin', 'Principal', 'Vice Principal', 'Operations Manager', 'Transport Manager', 'Academic Coordinator', 'Accountant', 'Class Teacher', 'Teacher'];
-
-    const OPS_ADMIN_ROLES  = ['Super Admin', 'School Super Admin', 'Admin', 'Principal', 'Vice Principal'];
-    const TRN_MANAGE_ROLES = ['Super Admin', 'School Super Admin', 'Admin', 'Principal', 'Vice Principal', 'Operations Manager', 'Transport Manager'];
-    const TRN_VIEW_ROLES   = ['Super Admin', 'School Super Admin', 'Admin', 'Principal', 'Vice Principal', 'Operations Manager', 'Transport Manager', 'Accountant', 'Teacher'];
+    // Authorization is 100% graded RBAC (2026-08-07). Every endpoint calls
+    // require_permission('Transport', <action>, <view|edit|manage>); the legacy
+    // role-name allow-lists (VIEW_ROLES / TRN_VIEW_ROLES / TRN_MANAGE_ROLES /
+    // OPS_ADMIN_ROLES) and the _require_view()/_require_manage() predicates they
+    // backed have been deleted. Access is granted only by holding the Transport
+    // module (directly, or via its Operations umbrella parent) at the required
+    // level — or by a RBAC_BYPASS_ROLES principal. Do not reintroduce a
+    // role-name list here.
 
     // Firestore collections (apps already subscribe to these)
     const COL_VEHICLES    = 'vehicles';
@@ -35,7 +34,7 @@ class Transport extends MY_Controller
     public function __construct()
     {
         parent::__construct();
-        require_permission('Operations');
+        require_permission('Transport');
         // TMS F3 (2026-07-07): Operations_accounting load removed —
         // F1 migrated vehicle allocation, F2 migrated route/stop, F3
         // migrates assignments. No Transport code path uses
@@ -54,19 +53,6 @@ class Transport extends MY_Controller
         );
     }
 
-    private function _require_manage()
-    {
-        if (has_permission('Transport', 'manage')) return;
-        if (!in_array($this->admin_role, self::TRN_MANAGE_ROLES, true))
-            $this->json_error('Access denied.', 403);
-    }
-    private function _require_view()
-    {
-        if (has_permission('Transport', 'view')) return;
-        if (!in_array($this->admin_role, self::TRN_VIEW_ROLES, true))
-            $this->json_error('Access denied.', 403);
-    }
-
     /** Counter path passed to operations_accounting::next_id — stays as string key,
      * operations_accounting converts it into a Firestore opsCounters doc id. */
     private function _counters(string $type): string
@@ -80,7 +66,7 @@ class Transport extends MY_Controller
 
     public function index()
     {
-        $this->_require_role(self::VIEW_ROLES, 'transport_view', 'Transport', 'view');
+        require_permission('Transport', 'transport_view', 'view');
         $tab = $this->uri->segment(2, 'vehicles');
         $data = ['active_tab' => $tab];
         $this->load->view('include/header', $data);
@@ -94,16 +80,14 @@ class Transport extends MY_Controller
 
     public function get_vehicles()
     {
-        $this->_require_role(self::VIEW_ROLES, 'transport_view', 'Transport', 'view');
-        $this->_require_view();
+        require_permission('Transport', 'transport_view', 'view');
         // TMS F1 (2026-07-07): delegate to Transport_service.
         $this->json_success(['vehicles' => $this->transport->listVehicles()]);
     }
 
     public function save_vehicle()
     {
-        $this->_require_role(self::MANAGE_ROLES, 'save_vehicle', 'Transport', 'edit');
-        $this->_require_manage();
+        require_permission('Transport', 'save_vehicle', 'manage');
 
         // TMS F1 (2026-07-07): full input payload extended with LC-1 fields
         // (lifecycle_status defaults are handled service-side; ownership_type
@@ -153,8 +137,7 @@ class Transport extends MY_Controller
 
     public function delete_vehicle()
     {
-        $this->_require_role(self::MANAGE_ROLES, 'delete_vehicle', 'Transport', 'manage');
-        $this->_require_manage();
+        require_permission('Transport', 'delete_vehicle', 'manage');
         $id = $this->safe_path_segment(trim($this->input->post('id') ?? ''), 'vehicle_id');
 
         try {
@@ -181,8 +164,7 @@ class Transport extends MY_Controller
      */
     public function transition_vehicle_lifecycle()
     {
-        $this->_require_role(self::MANAGE_ROLES, 'transition_vehicle_lifecycle');
-        $this->_require_manage();
+        require_permission('Transport', 'transition_vehicle_lifecycle', 'manage');
         $vid    = $this->safe_path_segment(trim($this->input->post('id') ?? ''), 'vehicle_id');
         $to     = trim($this->input->post('to_state') ?? '');
         $reason = trim($this->input->post('reason') ?? '');
@@ -202,8 +184,7 @@ class Transport extends MY_Controller
      */
     public function get_lifecycle_log()
     {
-        $this->_require_role(self::VIEW_ROLES, 'transport_view');
-        $this->_require_view();
+        require_permission('Transport', 'transport_view', 'view');
         $vid = $this->safe_path_segment(trim($this->input->get('vehicle_id') ?? ''), 'vehicle_id');
         if ($vid === '') { $this->json_success(['events' => []]); }
         $rows = (array) $this->fs->schoolWhere(
@@ -232,8 +213,7 @@ class Transport extends MY_Controller
      */
     public function upload_vehicle_document()
     {
-        $this->_require_role(self::MANAGE_ROLES, 'upload_vehicle_document');
-        $this->_require_manage();
+        require_permission('Transport', 'upload_vehicle_document', 'edit');
         $vid  = $this->safe_path_segment(trim($this->input->post('vehicle_id') ?? ''), 'vehicle_id');
         $type = trim($this->input->post('doc_type') ?? '');
         if ($vid === '' || $type === '') {
@@ -267,7 +247,10 @@ class Transport extends MY_Controller
                 'expiry_date' => trim($this->input->post('expiry_date') ?? ''),
                 'file_path'   => $filePath,
                 'notes'       => trim($this->input->post('notes')       ?? ''),
-            ]);
+            // Second arg = anyVehicle. Manage may upload against any vehicle;
+            // an edit-level caller is scoped to the vehicle they drive. Read
+            // from the existing Graded RBAC resolver — no RBAC change.
+            ], function_exists('has_permission') ? has_permission('Transport', 'manage') : false);
         } catch (\InvalidArgumentException $e) {
             $this->json_error($e->getMessage());
         } catch (\Throwable $e) {
@@ -280,8 +263,7 @@ class Transport extends MY_Controller
     /** POST /transport/delete_vehicle_document — id */
     public function delete_vehicle_document()
     {
-        $this->_require_role(self::MANAGE_ROLES, 'delete_vehicle_document');
-        $this->_require_manage();
+        require_permission('Transport', 'delete_vehicle_document', 'manage');
         $id = $this->safe_path_segment(trim($this->input->post('id') ?? ''), 'document_id');
         try {
             $this->transport->deleteVehicleDocument($id);
@@ -297,8 +279,7 @@ class Transport extends MY_Controller
     /** GET /transport/get_vehicle_documents?vehicle_id=VH0007 */
     public function get_vehicle_documents()
     {
-        $this->_require_role(self::VIEW_ROLES, 'transport_view');
-        $this->_require_view();
+        require_permission('Transport', 'transport_view', 'view');
         $vid = $this->safe_path_segment(trim($this->input->get('vehicle_id') ?? ''), 'vehicle_id');
         $this->json_success(['documents' => $this->transport->listVehicleDocuments($vid)]);
     }
@@ -306,8 +287,7 @@ class Transport extends MY_Controller
     /** GET /transport/get_expiring_documents?days=30 */
     public function get_expiring_documents()
     {
-        $this->_require_role(self::VIEW_ROLES, 'transport_view');
-        $this->_require_view();
+        require_permission('Transport', 'transport_view', 'view');
         $days = max(1, (int) ($this->input->get('days') ?? 30));
         $this->json_success(['documents' => $this->transport->listExpiringDocuments($days)]);
     }
@@ -320,8 +300,7 @@ class Transport extends MY_Controller
      */
     public function record_replacement()
     {
-        $this->_require_role(self::MANAGE_ROLES, 'record_replacement');
-        $this->_require_manage();
+        require_permission('Transport', 'record_replacement', 'manage');
         $routeIds = (array) ($this->input->post('route_ids') ?? []);
         try {
             $result = $this->transport->recordReplacement([
@@ -353,8 +332,7 @@ class Transport extends MY_Controller
      */
     public function transfer_vehicle_between_routes()
     {
-        $this->_require_role(self::MANAGE_ROLES, 'transfer_vehicle_between_routes');
-        $this->_require_manage();
+        require_permission('Transport', 'transfer_vehicle_between_routes', 'manage');
         try {
             $result = $this->transport->transferVehicleBetweenRoutes(
                 $this->safe_path_segment(trim($this->input->post('vehicle_id') ?? ''), 'vehicle_id'),
@@ -377,8 +355,7 @@ class Transport extends MY_Controller
 
     public function get_routes()
     {
-        $this->_require_role(self::VIEW_ROLES, 'transport_view', 'Transport', 'view');
-        $this->_require_view();
+        require_permission('Transport', 'transport_view', 'view');
         // TMS F2 (2026-07-07): delegate to Transport_service. Includes soft-
         // delete filter (Archived excluded by default) + ?include_archived=1
         // for admin recovery views.
@@ -388,8 +365,7 @@ class Transport extends MY_Controller
 
     public function save_route()
     {
-        $this->_require_role(self::MANAGE_ROLES, 'save_route', 'Transport', 'edit');
-        $this->_require_manage();
+        require_permission('Transport', 'save_route', 'manage');
         // TMS F2 (2026-07-07): delegate to Transport_service. Numbering
         // migrated from Operations_accounting to Numbering_service::next
         // ('trn_route') via the F1-proven self-heal path (see [[transport_
@@ -436,8 +412,7 @@ class Transport extends MY_Controller
      */
     public function delete_route()
     {
-        $this->_require_role(self::MANAGE_ROLES, 'delete_route', 'Transport', 'manage');
-        $this->_require_manage();
+        require_permission('Transport', 'delete_route', 'manage');
         $id     = $this->safe_path_segment(trim($this->input->post('id') ?? ''), 'route_id');
         $hard   = ((string) ($this->input->post('hard') ?? '')) === '1';
         $reason = trim($this->input->post('reason') ?? 'Archived via delete endpoint');
@@ -463,8 +438,7 @@ class Transport extends MY_Controller
     /** POST /transport/unarchive_route — id, to_status (Active|Inactive) */
     public function unarchive_route()
     {
-        $this->_require_role(self::MANAGE_ROLES, 'unarchive_route');
-        $this->_require_manage();
+        require_permission('Transport', 'unarchive_route', 'manage');
         $id  = $this->safe_path_segment(trim($this->input->post('id') ?? ''), 'route_id');
         $to  = trim($this->input->post('to_status') ?? 'Active');
         try {
@@ -485,8 +459,7 @@ class Transport extends MY_Controller
     /** GET — Stops for a route. ?route_id=RT0001 */
     public function get_stops()
     {
-        $this->_require_role(self::VIEW_ROLES, 'transport_view', 'Transport', 'view');
-        $this->_require_view();
+        require_permission('Transport', 'transport_view', 'view');
         // TMS F2 (2026-07-07): delegate to Transport_service.
         $routeId = trim($this->input->get('route_id') ?? '');
         $this->json_success(['stops' => $this->transport->listStops($routeId)]);
@@ -494,8 +467,7 @@ class Transport extends MY_Controller
 
     public function save_stop()
     {
-        $this->_require_role(self::MANAGE_ROLES, 'save_stop', 'Transport', 'edit');
-        $this->_require_manage();
+        require_permission('Transport', 'save_stop', 'manage');
         // TMS F2 (2026-07-07): delegate to Transport_service. Numbering
         // migrated to Numbering_service::next('trn_stop').
         $input = [
@@ -525,8 +497,7 @@ class Transport extends MY_Controller
 
     public function delete_stop()
     {
-        $this->_require_role(self::MANAGE_ROLES, 'delete_stop', 'Transport', 'manage');
-        $this->_require_manage();
+        require_permission('Transport', 'delete_stop', 'manage');
         $id = $this->safe_path_segment(trim($this->input->post('id') ?? ''), 'stop_id');
         try {
             $this->transport->deleteStop($id);
@@ -555,8 +526,7 @@ class Transport extends MY_Controller
      */
     public function suspend_route()
     {
-        $this->_require_role(self::MANAGE_ROLES, 'suspend_route');
-        $this->_require_manage();
+        require_permission('Transport', 'suspend_route', 'manage');
         $input = [
             'route_id'        => $this->safe_path_segment(trim($this->input->post('route_id') ?? ''), 'route_id'),
             'reason_category' => trim($this->input->post('reason_category') ?? ''),
@@ -587,8 +557,7 @@ class Transport extends MY_Controller
     /** POST /transport/resume_route — suspension_id, notes */
     public function resume_route()
     {
-        $this->_require_role(self::MANAGE_ROLES, 'resume_route');
-        $this->_require_manage();
+        require_permission('Transport', 'resume_route', 'manage');
         $sid   = $this->safe_path_segment(trim($this->input->post('suspension_id') ?? ''), 'suspension_id');
         $notes = trim($this->input->post('notes') ?? '');
         try {
@@ -605,16 +574,14 @@ class Transport extends MY_Controller
     /** GET /transport/get_active_suspensions */
     public function get_active_suspensions()
     {
-        $this->_require_role(self::VIEW_ROLES, 'transport_view');
-        $this->_require_view();
+        require_permission('Transport', 'transport_view', 'view');
         $this->json_success(['suspensions' => $this->transport->listActiveSuspensions()]);
     }
 
     /** GET /transport/get_route_suspensions?route_id=RT0001&include_resolved=1 */
     public function get_route_suspensions()
     {
-        $this->_require_role(self::VIEW_ROLES, 'transport_view');
-        $this->_require_view();
+        require_permission('Transport', 'transport_view', 'view');
         $routeId = $this->safe_path_segment(trim($this->input->get('route_id') ?? ''), 'route_id');
         $inc     = ((string) ($this->input->get('include_resolved') ?? '1')) !== '0';
         $this->json_success(['suspensions' => $this->transport->listSuspensionsForRoute($routeId, $inc)]);
@@ -623,8 +590,7 @@ class Transport extends MY_Controller
     /** GET /transport/get_suspension_config — returns reason categories + defaults for UI seeding */
     public function get_suspension_config()
     {
-        $this->_require_role(self::VIEW_ROLES, 'transport_view');
-        $this->_require_view();
+        require_permission('Transport', 'transport_view', 'view');
         $this->json_success([
             'reason_categories' => Transport_service::SUSPENSION_REASON_CATEGORIES,
             // The parent-notification default map is intentionally kept
@@ -637,8 +603,7 @@ class Transport extends MY_Controller
     /** GET /transport/preview_suspension_notify?reason_category=Weather — hint for UI checkbox default */
     public function preview_suspension_notify()
     {
-        $this->_require_role(self::VIEW_ROLES, 'transport_view');
-        $this->_require_view();
+        require_permission('Transport', 'transport_view', 'view');
         $cat = trim($this->input->get('reason_category') ?? '');
         // Ask the service via a probe: this uses the same category default
         // map — the service is the single source of truth.
@@ -660,8 +625,7 @@ class Transport extends MY_Controller
 
     public function get_assignments()
     {
-        $this->_require_role(self::VIEW_ROLES, 'transport_view', 'Transport', 'view');
-        $this->_require_view();
+        require_permission('Transport', 'transport_view', 'view');
         // TMS F3 (2026-07-07): delegate to Transport_service. Filters:
         // ?route_id, ?class, ?status, ?subscription_type, ?fee_category.
         $filters = [
@@ -675,10 +639,127 @@ class Transport extends MY_Controller
         $this->json_success(['assignments' => $this->transport->listAssignments($sessionFilter, $filters)]);
     }
 
+    // ─────────────────────────────────────────────────────────────────────
+    //  F14 Phase 1g — Transport REQUEST worklist (hybrid F-3)
+    //
+    //  A declaration ("we want transport") is a request, not an entitlement.
+    //  These endpoints are the review surface that converts one into a real
+    //  studentRoutes assignment. Graded RBAC throughout, same as the rest of
+    //  the module: viewing needs Transport:view, acting needs Transport:edit.
+    // ─────────────────────────────────────────────────────────────────────
+
+    /** GET transport/get_transport_requests?status=pending|approved|rejected|all */
+    public function get_transport_requests()
+    {
+        require_permission('Transport', 'transport_view', 'view');
+        $status = trim((string) ($this->input->get('status') ?? 'pending'));
+        try {
+            $rows = $this->transport->listTransportRequests($status === '' ? 'pending' : $status);
+        } catch (\InvalidArgumentException $e) {
+            return $this->json_error($e->getMessage());
+        }
+        $this->json_success(['requests' => $rows]);
+    }
+
+    /**
+     * POST transport/request_transport — mid-session activation entry point.
+     *
+     * Identical logic to the admission path: route + stop supplied ⇒ assign
+     * immediately; otherwise ⇒ a pending worklist row. One workflow, so a
+     * mid-session request cannot behave differently from an admission one.
+     */
+    public function request_transport()
+    {
+        require_permission('Transport', 'request_transport', 'edit');
+        $studentId = trim((string) ($this->input->post('student_id') ?? ''));
+        if ($studentId === '') { return $this->json_error('Student is required.'); }
+        $sd = $this->input->post('service_days');
+        $sd = is_array($sd) ? $sd : (is_string($sd) && $sd !== '' ? explode(',', $sd) : []);
+        try {
+            $res = $this->transport->requestTransport([
+                'studentId'      => $this->safe_path_segment($studentId, 'student_id'),
+                'student_name'   => (string) ($this->input->post('student_name')  ?? ''),
+                'student_class'  => (string) ($this->input->post('student_class') ?? ''),
+                // MODEL A: no route_id/stop_id here. A request is descriptive
+                // (requested_area / stop_hint); management selects the canonical
+                // route and stop at approve_transport_request. Canonical IDs are
+                // deliberately NOT mapped into the free-text hint fields — the
+                // semantic distinction is preserved.
+                'type'           => (string) ($this->input->post('type')     ?? 'both'),
+                'service_days'   => array_map('trim', $sd),
+                'effective_from' => (string) ($this->input->post('effective_from') ?? ''),
+                'requested_area' => (string) ($this->input->post('requested_area') ?? ''),
+                'stop_hint'      => (string) ($this->input->post('stop_hint') ?? ''),
+            // Always a pending worklist row. The manage flag that used to be
+            // passed here gated a direct-assignment shortcut that was removed
+            // (2026-08-15) — it never worked, and it threw for manage callers
+            // only. Canonical assignment now goes through
+            // approve_transport_request or save_assignment, both manage-gated.
+            ], 'mid_session');
+        } catch (\InvalidArgumentException $e) {
+            return $this->json_error($e->getMessage());
+        } catch (\Throwable $e) {
+            log_message('error', 'Transport::request_transport failed: ' . $e->getMessage());
+            return $this->json_error('Could not record the transport request.');
+        }
+        $this->json_success($res);
+    }
+
+    /**
+     * POST transport/approve_transport_request — request → real assignment.
+     * Route AND stop are mandatory; approving without them would recreate the
+     * incomplete-assignment problem the worklist exists to prevent.
+     */
+    public function approve_transport_request()
+    {
+        require_permission('Transport', 'approve_transport_request', 'manage');
+        $requestId = trim((string) ($this->input->post('request_id') ?? ''));
+        if ($requestId === '') { return $this->json_error('request_id is required.'); }
+        $sd = $this->input->post('service_days');
+        $sd = is_array($sd) ? $sd : (is_string($sd) && $sd !== '' ? explode(',', $sd) : []);
+        try {
+            $res = $this->transport->approveTransportRequest(
+                $this->safe_path_segment($requestId, 'request_id'), [
+                    'route_id'       => (string) ($this->input->post('route_id') ?? ''),
+                    'stop_id'        => (string) ($this->input->post('stop_id')  ?? ''),
+                    'type'           => (string) ($this->input->post('type')     ?? 'both'),
+                    'service_days'   => array_map('trim', $sd),
+                    'effective_from' => (string) ($this->input->post('effective_from') ?? ''),
+                    'effective_to'   => (string) ($this->input->post('effective_to')   ?? ''),
+                    'monthly_fee'    => $this->input->post('monthly_fee'),
+                    'notes'          => (string) ($this->input->post('notes') ?? ''),
+                ]);
+        } catch (\InvalidArgumentException $e) {
+            return $this->json_error($e->getMessage());
+        } catch (\Throwable $e) {
+            log_message('error', 'Transport::approve_transport_request failed: ' . $e->getMessage());
+            return $this->json_error('Could not approve the transport request.');
+        }
+        $this->json_success($res);
+    }
+
+    /** POST transport/reject_transport_request — reason required, no assignment. */
+    public function reject_transport_request()
+    {
+        require_permission('Transport', 'reject_transport_request', 'manage');
+        $requestId = trim((string) ($this->input->post('request_id') ?? ''));
+        $reason    = trim((string) ($this->input->post('reason') ?? ''));
+        if ($requestId === '') { return $this->json_error('request_id is required.'); }
+        try {
+            $this->transport->rejectTransportRequest(
+                $this->safe_path_segment($requestId, 'request_id'), $reason);
+        } catch (\InvalidArgumentException $e) {
+            return $this->json_error($e->getMessage());
+        } catch (\Throwable $e) {
+            log_message('error', 'Transport::reject_transport_request failed: ' . $e->getMessage());
+            return $this->json_error('Could not reject the transport request.');
+        }
+        $this->json_success(['message' => 'Transport request rejected.']);
+    }
+
     public function save_assignment()
     {
-        $this->_require_role(self::MANAGE_ROLES, 'save_assignment', 'Transport', 'edit');
-        $this->_require_manage();
+        require_permission('Transport', 'save_assignment', 'manage');
         // TMS F3 (2026-07-07): delegate to Transport_service::assignStudent
         // with pre-write validation (student active in SIS, route
         // operational, stop belongs to route, vehicle Active).
@@ -724,8 +805,7 @@ class Transport extends MY_Controller
 
     public function delete_assignment()
     {
-        $this->_require_role(self::MANAGE_ROLES, 'delete_assignment', 'Transport', 'manage');
-        $this->_require_manage();
+        require_permission('Transport', 'delete_assignment', 'manage');
         $studentId = $this->safe_path_segment(trim($this->input->post('student_id') ?? ''), 'student_id');
         $reason    = trim($this->input->post('reason') ?? 'unassigned via admin');
         try {
@@ -746,8 +826,7 @@ class Transport extends MY_Controller
     /** POST /transport/suspend_assignment — student_id, from, until, reason */
     public function suspend_assignment()
     {
-        $this->_require_role(self::MANAGE_ROLES, 'suspend_assignment');
-        $this->_require_manage();
+        require_permission('Transport', 'suspend_assignment', 'manage');
         try {
             $this->transport->suspendAssignment(
                 $this->safe_path_segment(trim($this->input->post('student_id') ?? ''), 'student_id'),
@@ -767,8 +846,7 @@ class Transport extends MY_Controller
     /** POST /transport/resume_assignment — student_id, reason */
     public function resume_assignment()
     {
-        $this->_require_role(self::MANAGE_ROLES, 'resume_assignment');
-        $this->_require_manage();
+        require_permission('Transport', 'resume_assignment', 'manage');
         try {
             $this->transport->resumeAssignment(
                 $this->safe_path_segment(trim($this->input->post('student_id') ?? ''), 'student_id'),
@@ -786,8 +864,7 @@ class Transport extends MY_Controller
     /** POST /transport/change_stop — student_id, new_stop_id, reason */
     public function change_stop()
     {
-        $this->_require_role(self::MANAGE_ROLES, 'change_stop');
-        $this->_require_manage();
+        require_permission('Transport', 'change_stop', 'manage');
         try {
             $this->transport->changeStop(
                 $this->safe_path_segment(trim($this->input->post('student_id') ?? ''), 'student_id'),
@@ -806,8 +883,7 @@ class Transport extends MY_Controller
     /** POST /transport/change_route — student_id, new_route_id, new_stop_id, reason */
     public function change_route()
     {
-        $this->_require_role(self::MANAGE_ROLES, 'change_route');
-        $this->_require_manage();
+        require_permission('Transport', 'change_route', 'manage');
         try {
             $this->transport->changeRoute(
                 $this->safe_path_segment(trim($this->input->post('student_id') ?? ''), 'student_id'),
@@ -829,8 +905,7 @@ class Transport extends MY_Controller
     /** POST /transport/change_subscription — student_id, new_type, params, reason */
     public function change_subscription()
     {
-        $this->_require_role(self::MANAGE_ROLES, 'change_subscription');
-        $this->_require_manage();
+        require_permission('Transport', 'change_subscription', 'manage');
         $params = [
             'effective_from' => trim($this->input->post('effective_from') ?? ''),
             'effective_to'   => trim($this->input->post('effective_to')   ?? ''),
@@ -861,8 +936,7 @@ class Transport extends MY_Controller
      */
     public function bulk_assign()
     {
-        $this->_require_role(self::MANAGE_ROLES, 'bulk_assign');
-        $this->_require_manage();
+        require_permission('Transport', 'bulk_assign', 'manage');
         $raw  = trim($this->input->post('rows_json') ?? '');
         if ($raw === '') {
             $this->json_error('rows_json is required.');
@@ -892,8 +966,7 @@ class Transport extends MY_Controller
     /** GET /transport/get_assignment_history?student_id=STU0007 */
     public function get_assignment_history()
     {
-        $this->_require_role(self::VIEW_ROLES, 'transport_view');
-        $this->_require_view();
+        require_permission('Transport', 'transport_view', 'view');
         $sid = $this->safe_path_segment(trim($this->input->get('student_id') ?? ''), 'student_id');
         $this->json_success(['history' => $this->transport->getAssignmentHistory($sid)]);
     }
@@ -901,8 +974,7 @@ class Transport extends MY_Controller
     /** GET /transport/get_student_assignment?student_id=STU0007 — Student 360 (read-only) */
     public function get_student_assignment()
     {
-        $this->_require_role(self::VIEW_ROLES, 'transport_view');
-        $this->_require_view();
+        require_permission('Transport', 'transport_view', 'view');
         $sid = $this->safe_path_segment(trim($this->input->get('student_id') ?? ''), 'student_id');
         $this->json_success(['assignment' => $this->transport->getStudentAssignment($sid)]);
     }
@@ -910,8 +982,7 @@ class Transport extends MY_Controller
     /** POST /transport/reconcile_pending_fees — admin trigger */
     public function reconcile_pending_fees()
     {
-        $this->_require_role(self::MANAGE_ROLES, 'reconcile_pending_fees');
-        $this->_require_manage();
+        require_permission('Transport', 'reconcile_pending_fees', 'manage');
         try {
             $r = $this->transport->reconcilePendingFees();
         } catch (\Throwable $e) {
@@ -928,8 +999,7 @@ class Transport extends MY_Controller
     /** POST /transport/rebuild_capacity_cache — admin trigger (Refinement #2) */
     public function rebuild_capacity_cache()
     {
-        $this->_require_role(self::MANAGE_ROLES, 'rebuild_capacity_cache');
-        $this->_require_manage();
+        require_permission('Transport', 'rebuild_capacity_cache', 'manage');
         $routeId = trim($this->input->post('route_id') ?? '');
         try {
             $r = $this->transport->rebuildCapacityCache($routeId);
@@ -946,8 +1016,7 @@ class Transport extends MY_Controller
     /** GET — Search students for assignment. ?q=name */
     public function search_students()
     {
-        $this->_require_role(self::VIEW_ROLES, 'transport_view', 'Transport', 'view');
-        $this->_require_view();
+        require_permission('Transport', 'transport_view', 'view');
         $q = trim($this->input->get('q') ?? '');
         if (strlen($q) < 2) {
             $this->json_success(['students' => []]);

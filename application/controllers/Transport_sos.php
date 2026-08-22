@@ -20,7 +20,6 @@ defined('BASEPATH') or exit('No direct script access allowed');
  */
 class Transport_sos extends MY_Controller
 {
-    private const REQUIRED_ROLES = ['Admin', 'Super Admin', 'Transport Manager'];
 
     public function __construct()
     {
@@ -37,11 +36,7 @@ class Transport_sos extends MY_Controller
             $this->_json(['status' => 'error', 'message' => 'Session missing school/session context.']);
             exit;
         }
-        $role = (string) ($this->admin_role ?? '');
-        if (!in_array($role, self::REQUIRED_ROLES, true)) {
-            $this->_json(['status' => 'error', 'message' => 'Access denied.']);
-            exit;
-        }
+        require_permission('Transport', 'transport_sos', 'view');
         $this->fs->init($sid, $sess);
         $this->numbering->init($this->fs, $sid, $sess);
         $this->transport->init($this->fs, $this->numbering, $sid, $sess, $uid);
@@ -50,6 +45,7 @@ class Transport_sos extends MY_Controller
 
     public function raise(): void
     {
+        require_permission('Transport', 'sos_raise', 'edit');
         try {
             $r = $this->transportNotifier->raiseSos([
                 'triggered_by'      => (string) $this->session->userdata('user_id'),
@@ -69,6 +65,7 @@ class Transport_sos extends MY_Controller
 
     public function respond(): void
     {
+        require_permission('Transport', 'sos_respond', 'manage');
         try {
             $r = $this->transportNotifier->respondSos(
                 (string) $this->input->post('sos_id'),
@@ -82,6 +79,7 @@ class Transport_sos extends MY_Controller
 
     public function resolve(): void
     {
+        require_permission('Transport', 'sos_resolve', 'manage');
         try {
             $r = $this->transportNotifier->resolveSos(
                 (string) $this->input->post('sos_id'),

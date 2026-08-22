@@ -1,4 +1,12 @@
 <?php defined('BASEPATH') or exit('No direct script access allowed'); ?>
+<?php
+// 2026-08-07 — graded RBAC (TL convention, commit 7ccebc0). Recomputed locally:
+// this partial is loaded via $this->load->view() with no data, so the parent
+// view's flags are NOT in scope. The server remains authoritative — every
+// endpoint re-checks via require_permission('Transport', <action>, <level>).
+$can_edit   = function_exists('has_permission') ? has_permission('Transport','edit')   : true;
+$can_manage = function_exists('has_permission') ? has_permission('Transport','manage') : true;
+?>
 <!--
   transport/partials/expense_modal.php
   F5 Transport Expenses + Accounting (2026-07-07)
@@ -73,7 +81,7 @@
     <label><input type="checkbox" id="expForcePost"> Force Post to Accounting Now</label>
   </div>
 
-  <button class="trn-btn trn-btn-primary" onclick="TRN.saveExpense()" style="width:100%">Save Expense</button>
+  <button class="trn-btn trn-btn-primary" onclick="TRN.saveExpense()" <?= $can_edit?'':'disabled' ?> style="width:100%">Save Expense</button>
 </div></div>
 
 <!-- Void Expense Modal -->
@@ -84,5 +92,5 @@
   </div>
   <input type="hidden" id="expVoidId">
   <div class="trn-form-group"><label>Reason *</label><input type="text" id="expVoidReason" placeholder="e.g. Duplicate entry"></div>
-  <button class="trn-btn trn-btn-danger" onclick="TRN.confirmVoidExpense()" style="width:100%">Void</button>
+  <button class="trn-btn trn-btn-danger" onclick="TRN.confirmVoidExpense()" <?= $can_manage?'':'disabled' ?> style="width:100%">Void</button>
 </div></div>

@@ -36,6 +36,7 @@ class Transport_expiry_cron extends CI_Controller
         $this->load->library('firestore_service', null, 'fs');
         $this->load->library('numbering_service', null, 'numbering');
         $this->load->library('transport_service', null, 'transport');
+        $this->load->library('transport_compliance_service', null, 'cmp');
     }
 
     public function run(): void
@@ -46,10 +47,20 @@ class Transport_expiry_cron extends CI_Controller
             fwrite(STDERR, "ERROR: SCHOOL_ID and SESSION_YEAR env vars are required.\n");
             exit(1);
         }
+
+        // ── LIFECYCLE GUARD ─────────────────────────────────────────────
+        // class = notification. Document-expiry reminders are outbound
+        // messages to school staff; they stop for a suspended or closed
+        // tenant and continue through CLOSING (a closing school still has
+        // vehicles on the road with documents that must stay valid).
+        $this->load->helper('lifecycle_guard');
+        lifecycle_guard_or_skip($this->firebase, $schoolId, Lifecycle_resolver::JOB_NOTIFICATION, 'transport_expiry_cron');
+
         try {
             $this->fs->init($schoolId, $sessionYear);
             $this->numbering->init($this->fs, $schoolId, $sessionYear);
             $this->transport->init($this->fs, $this->numbering, $schoolId, $sessionYear, 'transport_expiry_cron');
+            $this->cmp->init($this->fs, $schoolId, 'transport_expiry_cron');
         } catch (\Throwable $e) {
             fwrite(STDERR, "ERROR: init failed — " . $e->getMessage() . "\n");
             exit(1);
@@ -72,20 +83,52 @@ class Transport_expiry_cron extends CI_Controller
             $tr = $this->transport->autoResolveExpiredTempAssignments();
             $tempResolved = (int) ($tr['resolved'] ?? 0);
         } catch (\Throwable $e) {
-            log_message('warning', 'transport_expiry_cron auto-resolve temp assignments failed: ' . $e->getMessage());
+            log_message('error', 'transport_expiry_cron auto-resolve temp assignments failed: ' . $e->getMessage());
+        }
+
+        // F12.1 M5 (2026-08-07) — nightly CBSE compliance re-evaluation, folded
+        // into this same cron rather than added as a new controller (spec
+        // §10-M5, and the F4 precedent directly above: one nightly Transport
+        // cron, not three).
+        //
+        // Why it belongs here: several compliance rules are `document_expiry`
+        // evaluations over the very fields this cron already scans, so posture
+        // must be recomputed on the same clock — otherwise a certificate that
+        // lapsed overnight shows in the expiry dashboard while the compliance
+        // tier still reads Compliant until someone clicks Re-evaluate.
+        //
+        // Non-fatal by design, exactly like the F4 block: a compliance failure
+        // must never stop the fleet-expiry cron from reporting, and
+        // rebuildFleetPosture() is itself per-vehicle isolated internally.
+        $cmpOk = 0; $cmpTotal = 0; $cmpFailed = 0;
+        try {
+            $cr        = $this->cmp->rebuildFleetPosture(/* evaluate */ true);
+            $cmpTotal  = (int) ($cr['total'] ?? 0);
+            $cmpOk     = (int) ($cr['ok'] ?? 0);
+            $cmpFailed = count((array) ($cr['failed'] ?? []));
+            if ($cmpFailed > 0) {
+                log_message('error', "transport_expiry_cron compliance rebuild: {$cmpFailed} vehicle(s) failed — "
+                    . json_encode(array_slice((array) $cr['failed'], 0, 5)));
+            }
+        } catch (\Throwable $e) {
+            log_message('error', 'transport_expiry_cron compliance rebuild failed: ' . $e->getMessage());
         }
 
         $duration = (int) round((microtime(true) - $started) * 1000);
         echo sprintf(
             "transport_expiry_cron tenant=%s session=%s "
             . "expiring_7d=%d expiring_15d=%d expiring_30d=%d "
-            . "temp_assignments_auto_resolved=%d duration_ms=%d\n",
+            . "temp_assignments_auto_resolved=%d "
+            . "compliance_evaluated=%d/%d compliance_failed=%d duration_ms=%d\n",
             $schoolId,
             $sessionYear,
             (int) ($summary['count_7_days']  ?? 0),
             (int) ($summary['count_15_days'] ?? 0),
             (int) ($summary['count_30_days'] ?? 0),
             $tempResolved,
+            $cmpOk,
+            $cmpTotal,
+            $cmpFailed,
             $duration
         );
         exit(0);

@@ -1,4 +1,12 @@
 <?php defined('BASEPATH') or exit('No direct script access allowed'); ?>
+<?php
+// 2026-08-07 — graded RBAC (TL convention, commit 7ccebc0). Recomputed locally:
+// this partial is loaded via $this->load->view() with no data, so the parent
+// view's flags are NOT in scope. The server remains authoritative — every
+// endpoint re-checks via require_permission('Transport', <action>, <level>).
+$can_edit   = function_exists('has_permission') ? has_permission('Transport','edit')   : true;
+$can_manage = function_exists('has_permission') ? has_permission('Transport','manage') : true;
+?>
 <!--
   transport/partials/vehicle_manage_modal.php
   F1 Fleet Management (2026-07-07)
@@ -39,7 +47,7 @@
           <input type="text" id="vmReason" placeholder="e.g. Sent to workshop for annual service">
         </div>
       </div>
-      <button class="trn-btn trn-btn-primary" onclick="TRN.vmTransition()">Apply Transition</button>
+      <button class="trn-btn trn-btn-primary" onclick="TRN.vmTransition()" <?= $can_edit?'':'disabled' ?>>Apply Transition</button>
     </div>
     <div class="trn-card">
       <div class="trn-card-title"><span>Timeline</span></div>
@@ -68,7 +76,7 @@
       </div>
       <div class="trn-form-group"><label>File *</label><input type="file" id="vmDocFile"></div>
       <div class="trn-form-group"><label>Notes</label><input type="text" id="vmDocNotes"></div>
-      <button class="trn-btn trn-btn-primary" onclick="TRN.vmUploadDoc()">Upload</button>
+      <button class="trn-btn trn-btn-primary" onclick="TRN.vmUploadDoc()" <?= $can_edit?'':'disabled' ?>>Upload</button>
     </div>
     <div class="trn-card">
       <div class="trn-card-title"><span>Attached Documents</span></div>
@@ -97,7 +105,7 @@
       </div>
       <div class="trn-form-group"><label>Parts Replaced (comma-separated)</label><input type="text" id="vmMaintParts"></div>
       <div class="trn-form-group"><label>Notes</label><input type="text" id="vmMaintNotes"></div>
-      <button class="trn-btn trn-btn-primary" onclick="TRN.vmSaveMaint()">Save Maintenance</button>
+      <button class="trn-btn trn-btn-primary" onclick="TRN.vmSaveMaint()" <?= $can_edit?'':'disabled' ?>>Save Maintenance</button>
     </div>
     <div class="trn-card">
       <div class="trn-card-title"><span>Maintenance History</span></div>
@@ -123,7 +131,7 @@
         <div class="trn-form-group"><label>Station</label><input type="text" id="vmFuelStation"></div>
       </div>
       <div class="trn-form-group"><label>Notes</label><input type="text" id="vmFuelNotes"></div>
-      <button class="trn-btn trn-btn-primary" onclick="TRN.vmSaveFuel()">Save Fuel</button>
+      <button class="trn-btn trn-btn-primary" onclick="TRN.vmSaveFuel()" <?= $can_edit?'':'disabled' ?>>Save Fuel</button>
       <div id="vmFuelKmpl" style="margin-top:12px;font-family:var(--font-b);color:var(--gold)"></div>
     </div>
     <div class="trn-card">
@@ -151,7 +159,7 @@
       </div>
       <div class="trn-form-group"><label>Reason *</label><input type="text" id="vmReplReason"></div>
       <div class="trn-form-group"><label>Notes</label><input type="text" id="vmReplNotes"></div>
-      <button class="trn-btn trn-btn-primary" onclick="TRN.vmRecordReplacement()">Record Replacement</button>
+      <button class="trn-btn trn-btn-primary" onclick="TRN.vmRecordReplacement()" <?= $can_edit?'':'disabled' ?>>Record Replacement</button>
     </div>
     <div class="trn-card">
       <div class="trn-card-title"><span>Transfer Between Routes</span></div>
@@ -164,7 +172,7 @@
         </div>
       </div>
       <div class="trn-form-group"><label>Reason *</label><input type="text" id="vmXferReason"></div>
-      <button class="trn-btn trn-btn-primary" onclick="TRN.vmTransfer()">Transfer Vehicle</button>
+      <button class="trn-btn trn-btn-primary" onclick="TRN.vmTransfer()" <?= $can_manage?'':'disabled title="Requires Transport · manage"' ?>>Transfer Vehicle</button>
     </div>
   </div>
 </div></div>

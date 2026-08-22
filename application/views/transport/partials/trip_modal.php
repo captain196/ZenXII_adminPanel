@@ -1,4 +1,12 @@
 <?php defined('BASEPATH') or exit('No direct script access allowed'); ?>
+<?php
+// 2026-08-07 — graded RBAC (TL convention, commit 7ccebc0). Recomputed locally:
+// this partial is loaded via $this->load->view() with no data, so the parent
+// view's flags are NOT in scope. The server remains authoritative — every
+// endpoint re-checks via require_permission('Transport', <action>, <level>).
+$can_edit   = function_exists('has_permission') ? has_permission('Transport','edit')   : true;
+$can_manage = function_exists('has_permission') ? has_permission('Transport','manage') : true;
+?>
 <!--
   transport/partials/trip_modal.php
   F7 Trip Logs + Transport Attendance (LC-17, LC-18, 2026-07-07)
@@ -27,6 +35,12 @@
     Trips are created in <b>Ready</b> state (dispatch preparation). Roster and checkpoints are snapshot at create time. Start the trip separately from the Trip Monitor row action.
   </div>
 
+  <!-- UNIT 2B-3 — campus-geofence prerequisite guidance. Populated by
+       tripErr() in transport/index.php ONLY when the server refuses a Pickup
+       trip for a missing campus arrival geofence. Empty and hidden otherwise;
+       a Drop trip can never trigger it because the server guard is Pickup-only. -->
+  <div id="tcGeoWarn" style="display:none"></div>
+
   <div class="trn-form-row">
     <div class="trn-form-group"><label>Trip Date *</label><input type="date" id="tcDate"></div>
     <div class="trn-form-group"><label>Direction *</label>
@@ -51,7 +65,7 @@
   </div>
   <div class="trn-form-group"><label>Notes</label><input type="text" id="tcNotes"></div>
 
-  <button class="trn-btn trn-btn-primary" onclick="TRN.confirmCreateTrip()" style="width:100%">Create Trip</button>
+  <button class="trn-btn trn-btn-primary" onclick="TRN.confirmCreateTrip()" <?= $can_manage?'':'disabled title="Requires Transport · manage"' ?> style="width:100%">Create Trip</button>
 </div></div>
 
 <!-- Trip Manage Modal -->
@@ -84,9 +98,26 @@
     </div>
   </div>
 
-  <div style="margin-top:16px;display:flex;gap:8px;justify-content:flex-end">
-    <button class="trn-btn trn-btn-danger" onclick="TRN.openCancelTrip()">Cancel Trip</button>
-    <button class="trn-btn trn-btn-primary" onclick="TRN.openCompleteTrip()">Complete Trip</button>
+  <!--
+    Lifecycle actions. Shown/hidden per trip status by TRN.openTripManage() to
+    mirror what the service actually permits:
+        Cancel   → Ready | InProgress   (TRIP_ACTIVE_STATUSES)
+        Complete → InProgress only
+    A Completed/Cancelled trip is terminal and gets #tmStateNote instead. These
+    used to render unconditionally, so re-opening a cancelled trip still offered
+    "Cancel Trip" — the action then failed server-side with a state error.
+  -->
+  <div style="margin-top:16px;display:flex;gap:8px;justify-content:flex-end;align-items:center">
+    <span id="tmStateNote" style="display:none;margin-right:auto;font-size:12.5px;color:var(--t3)"></span>
+    <button id="tmCancelBtn" class="trn-btn trn-btn-danger" onclick="TRN.openCancelTrip()" <?= $can_manage?'':'disabled' ?>>Cancel Trip</button>
+    <!--
+      F14 Phase 2A — audited override for the school-arrival deadlock: the bus IS
+      at school but GPS cannot prove it (no fix, stale fix, or outside the
+      geofence). Requires Transport · manage. It does NOT bypass unresolved
+      students or students still on board.
+    -->
+    <button id="tmOverrideBtn" class="trn-btn" style="display:none;background:#b45309;border-color:#b45309;color:#fff" onclick="TRN.openOverrideComplete()" <?= $can_manage?'':'disabled title="Requires Transport · manage"' ?>>Override Complete…</button>
+    <button id="tmCompleteBtn" class="trn-btn trn-btn-primary" onclick="TRN.openCompleteTrip()" <?= $can_edit?'':'disabled' ?>>Complete Trip</button>
   </div>
 </div></div>
 
@@ -109,7 +140,43 @@
     <div class="trn-form-group"><label>Fuel Used (L, optional)</label><input type="number" id="tcplFuel" min="0" step="0.1"></div>
   </div>
   <div class="trn-form-group"><label>Notes</label><input type="text" id="tcplNotes"></div>
-  <button class="trn-btn trn-btn-primary" onclick="TRN.confirmCompleteTrip()" style="width:100%">Complete Trip</button>
+  <button class="trn-btn trn-btn-primary" onclick="TRN.confirmCompleteTrip()" <?= $can_edit?'':'disabled' ?> style="width:100%">Complete Trip</button>
+</div></div>
+
+<!-- Override Complete Modal (F14 Phase 2A) -->
+<div class="trn-modal-bg" id="tripOverrideModal"><div class="trn-modal" style="width:540px">
+  <div class="trn-modal-title">
+    <span>Override Trip Completion</span>
+    <button class="trn-modal-close" onclick="TRN.closeOverrideComplete()">&times;</button>
+  </div>
+  <input type="hidden" id="tovId">
+  <div style="background:rgba(180,83,9,.10);border-left:3px solid #b45309;padding:10px 12px;border-radius:4px;font-size:12px;color:var(--t1);font-family:var(--font-b);margin-bottom:14px">
+    <strong>Use only when the bus has genuinely reached school</strong> but tracking cannot prove it —
+    no GPS fix, a stale fix, or the bus sitting outside the campus geofence.
+    <br><br>
+    This records a permanent, audited note that arrival was <strong>not GPS-verified</strong>.
+    It does <strong>not</strong> bypass student safety: unresolved students and students still marked
+    on board will still block completion, and you must resolve them first.
+  </div>
+  <div class="trn-form-group">
+    <label>Reason (required, recorded permanently)</label>
+    <input type="text" id="tovReason" placeholder="e.g. Bus reached school; driver phone lost GPS signal in the basement bay">
+  </div>
+  <div class="trn-form-row">
+    <div class="trn-form-group"><label>End Odometer (km, optional)</label><input type="number" id="tovEndOdo" min="0" step="0.1"></div>
+    <div class="trn-form-group"><label>Distance (km, optional)</label><input type="number" id="tovDistance" min="0" step="0.1"></div>
+  </div>
+  <!--
+    trn-btn-danger is REQUIRED, not decorative: index.php's busy-button handler
+    binds on '.trn-modal-bg .trn-btn-primary, .trn-modal-bg .trn-btn-danger'
+    (mousedown), and post() reads that captured button to apply the spinner,
+    the disabled state and the trn-busy duplicate-submit block. Styled with
+    class-only amber before, this button matched neither selector, so a
+    manage-level destructive action had NO duplicate-submit guard — and trip
+    writes here can take >10s. The inline background still overrides the
+    danger-red, so the amber treatment is unchanged. Found in UAT 2026-08-13.
+  -->
+  <button class="trn-btn trn-btn-danger" style="width:100%;background:#b45309;border-color:#b45309;color:#fff" onclick="TRN.confirmOverrideComplete()" <?= $can_manage?'':'disabled' ?>>Override &amp; Complete Trip</button>
 </div></div>
 
 <!-- Cancel Trip Modal -->
@@ -120,7 +187,7 @@
   </div>
   <input type="hidden" id="tccId">
   <div class="trn-form-group"><label>Reason *</label><input type="text" id="tccReason"></div>
-  <button class="trn-btn trn-btn-danger" onclick="TRN.confirmCancelTrip()" style="width:100%">Cancel Trip</button>
+  <button class="trn-btn trn-btn-danger" onclick="TRN.confirmCancelTrip()" <?= $can_manage?'':'disabled' ?> style="width:100%">Cancel Trip</button>
 </div></div>
 
 <!-- Skip Checkpoint Modal -->
@@ -132,5 +199,5 @@
   <input type="hidden" id="cskTripId">
   <input type="hidden" id="cskStopId">
   <div class="trn-form-group"><label>Reason *</label><input type="text" id="cskReason" placeholder="e.g. no students at this stop"></div>
-  <button class="trn-btn trn-btn-primary" onclick="TRN.confirmCheckpointSkip()" style="width:100%">Skip Checkpoint</button>
+  <button class="trn-btn trn-btn-primary" onclick="TRN.confirmCheckpointSkip()" <?= $can_edit?'':'disabled' ?> style="width:100%">Skip Checkpoint</button>
 </div></div>

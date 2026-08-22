@@ -350,6 +350,12 @@ class Transport_service
             'trn_driver_incident', 'trn_driver_review', 'trn_temp_driver_assign',
             'trn_event', 'trn_event_assign',
             'trn_audit',
+            // F12.1 M5 (2026-08-07) — CBSE compliance waiver reference.
+            // Registered so CH-TRN-7 tracks its pad-width utilisation with the
+            // rest of the Transport counters. See the M5 certification: the
+            // kind is registered per spec §10-M5 but has no writer yet, because
+            // spec §2.2 defines no field on vehicleCompliance to carry it.
+            'trn_compliance_waiver',
         ];
     }
 
@@ -527,6 +533,36 @@ class Transport_service
         if (!in_array($fuelType, self::FUEL_TYPES, true)) {
             $fuelType = 'Diesel';
         }
+        // F12.1 (M1, 2026-08-07) — CBSE compliance fields. Additive only; not
+        // one of RESERVED_GPS_FIELDS. No existing caller populates these yet
+        // (the compliance tab lands at M4), so every field PRESERVES the
+        // existing value when the input omits it — identical discipline to
+        // staff_id/ownership_type above — so today's Add/Edit Vehicle form
+        // cannot silently wipe compliance data a later milestone writes.
+        // New vehicles start at the Not_Assessed baseline (false/0/'').
+        $cctvInstalled     = $isNew ? false : (bool) ($existing['cctv_installed'] ?? false);
+        if (array_key_exists('cctv_installed', $input)) { $cctvInstalled = ((string) $input['cctv_installed']) === '1' || $input['cctv_installed'] === true; }
+        $cctvWorking       = $isNew ? false : (bool) ($existing['cctv_working'] ?? false);
+        if (array_key_exists('cctv_working', $input)) { $cctvWorking = ((string) $input['cctv_working']) === '1' || $input['cctv_working'] === true; }
+        $cctvLastChecked   = trim((string) ($input['cctv_last_checked'] ?? ($existing['cctv_last_checked'] ?? '')));
+        $sgFitted          = $isNew ? false : (bool) ($existing['speed_governor_fitted'] ?? false);
+        if (array_key_exists('speed_governor_fitted', $input)) { $sgFitted = ((string) $input['speed_governor_fitted']) === '1' || $input['speed_governor_fitted'] === true; }
+        $sgLimitKmph       = max(0, (int) ($input['speed_governor_limit_kmph'] ?? ($existing['speed_governor_limit_kmph'] ?? 0)));
+        $ladyAttendantSid  = trim((string) ($input['lady_attendant_staff_id'] ?? ($existing['lady_attendant_staff_id'] ?? '')));
+        $firstAidKit       = $isNew ? false : (bool) ($existing['first_aid_kit'] ?? false);
+        if (array_key_exists('first_aid_kit', $input)) { $firstAidKit = ((string) $input['first_aid_kit']) === '1' || $input['first_aid_kit'] === true; }
+        $fireExtinguisher  = $isNew ? false : (bool) ($existing['fire_extinguisher'] ?? false);
+        if (array_key_exists('fire_extinguisher', $input)) { $fireExtinguisher = ((string) $input['fire_extinguisher']) === '1' || $input['fire_extinguisher'] === true; }
+        $fireExtExpiry     = trim((string) ($input['fire_ext_expiry'] ?? ($existing['fire_ext_expiry'] ?? '')));
+        $alarmBell         = $isNew ? false : (bool) ($existing['alarm_bell'] ?? false);
+        if (array_key_exists('alarm_bell', $input)) { $alarmBell = ((string) $input['alarm_bell']) === '1' || $input['alarm_bell'] === true; }
+        $windowGrills      = $isNew ? false : (bool) ($existing['window_grills'] ?? false);
+        if (array_key_exists('window_grills', $input)) { $windowGrills = ((string) $input['window_grills']) === '1' || $input['window_grills'] === true; }
+        $doorLockVerified  = $isNew ? false : (bool) ($existing['door_lock_verified'] ?? false);
+        if (array_key_exists('door_lock_verified', $input)) { $doorLockVerified = ((string) $input['door_lock_verified']) === '1' || $input['door_lock_verified'] === true; }
+        $emergencyPhoneNo  = trim((string) ($input['emergency_phone_no'] ?? ($existing['emergency_phone_no'] ?? '')));
+        $seatingUnder12    = max(0, (int) ($input['seating_capacity_under12'] ?? ($existing['seating_capacity_under12'] ?? 0)));
+
         $avgKmpl           = (float) ($input['average_kmpl'] ?? ($existing['average_kmpl'] ?? 0));
         $svcKmInterval     = max(0, (int) ($input['service_km_interval'] ?? ($existing['service_km_interval'] ?? 10000)));
         $lastSvcKm         = max(0, (int) ($input['last_service_km'] ?? ($existing['last_service_km'] ?? 0)));
@@ -609,6 +645,21 @@ class Transport_service
             'contract_terms_path'   => $ownership === 'Contract' ? $contractTermsPath : '',
             'lifecycle_status'      => $lifecycleStatus,
             'status'                => $legacyStatus,
+            // F12.1 (M1) — CBSE compliance fields, additive.
+            'cctv_installed'            => $cctvInstalled,
+            'cctv_working'              => $cctvWorking,
+            'cctv_last_checked'         => $cctvLastChecked,
+            'speed_governor_fitted'     => $sgFitted,
+            'speed_governor_limit_kmph' => $sgLimitKmph,
+            'lady_attendant_staff_id'   => $ladyAttendantSid,
+            'first_aid_kit'             => $firstAidKit,
+            'fire_extinguisher'         => $fireExtinguisher,
+            'fire_ext_expiry'           => $fireExtExpiry,
+            'alarm_bell'                => $alarmBell,
+            'window_grills'             => $windowGrills,
+            'door_lock_verified'        => $doorLockVerified,
+            'emergency_phone_no'        => $emergencyPhoneNo,
+            'seating_capacity_under12'  => $seatingUnder12,
             'updated_at'            => $now,
         ];
         if ($isNew) {
@@ -713,11 +764,37 @@ class Transport_service
      * } $input
      * @return array{id:string, data:array<string,mixed>}
      */
-    public function uploadVehicleDocument(array $input): array
+    /**
+     * @param bool $anyVehicle TRUE only when the caller has established
+     *        Transport · manage. FALSE restricts the upload to the vehicle the
+     *        actor is canonically the effective driver of.
+     */
+    public function uploadVehicleDocument(array $input, bool $anyVehicle = false): array
     {
         $this->_assertReady();
         $vehicleId = trim((string) ($input['vehicle_id'] ?? ''));
         $docType   = trim((string) ($input['doc_type']   ?? ''));
+
+        // ── Category-E actor scope (own vehicle only) ────────────────────────
+        // Uploading compliance evidence is a legitimate driver errand, so this
+        // endpoint stays at Transport:edit. But it took vehicle_id straight from
+        // the request, so an edit-level caller could attach a document to ANY
+        // vehicle. Scope it to the vehicle the actor actually drives.
+        //
+        // The relationship is the EXISTING canonical one — getEffectiveDriver()
+        // (permanent vehicles.staff_id, overlaid by an active temporary
+        // assignment covering today). No new identity mechanism is introduced.
+        // $anyVehicle is a SEPARATE ARGUMENT, never an $input key, because
+        // $input is built from client POST data.
+        unset($input['_any_vehicle'], $input['any_vehicle']);
+        if (!$anyVehicle && $vehicleId !== '') {
+            $effective = (string) ($this->getEffectiveDriver($vehicleId) ?? '');
+            if ($effective === '' || $effective !== (string) $this->adminId) {
+                throw new \InvalidArgumentException(
+                    'You may only upload documents for the vehicle assigned to you. '
+                    . 'Uploading against another vehicle requires Transport · manage.');
+            }
+        }
         $filePath  = trim((string) ($input['file_path']  ?? ''));
         if ($vehicleId === '') {
             throw new \InvalidArgumentException('vehicle_id is required.');
@@ -2112,6 +2189,51 @@ class Transport_service
 
         $order = max(0, (int) ($input['order'] ?? ($existing['order'] ?? 0)));
 
+        // ── Stop georeference (2026-08-16) ───────────────────────────────
+        // Three states, deliberately distinct — collapsing them is how every
+        // stop ended up at 0,0 in the first place:
+        //
+        //   UNSET   both blank  -> store 0/0, meaning "not georeferenced yet"
+        //   INVALID out of range, non-numeric, or exactly 0,0 -> REJECT loudly
+        //   VALID   in range    -> store as given
+        //
+        // createTrip() freezes these into every checkpoint as stop_location,
+        // so a silently-coerced 0 would put a checkpoint in the Gulf of Guinea
+        // and stay there for the life of the trip. Legacy stops created before
+        // this feature keep working: they simply remain UNSET, and an edit that
+        // leaves both boxes blank does not invent a coordinate for them.
+        $latRaw = $input['latitude']  ?? '';
+        $lngRaw = $input['longitude'] ?? '';
+        $latStr = is_string($latRaw) ? trim($latRaw) : (string) $latRaw;
+        $lngStr = is_string($lngRaw) ? trim($lngRaw) : (string) $lngRaw;
+        $latSet = ($latStr !== '' && $latStr !== '0');
+        $lngSet = ($lngStr !== '' && $lngStr !== '0');
+
+        $latitude = 0.0; $longitude = 0.0;
+        if ($latSet || $lngSet) {
+            if (!$latSet || !$lngSet) {
+                throw new \InvalidArgumentException(
+                    'A stop needs BOTH latitude and longitude, or neither. '
+                    . 'A half-placed stop looks georeferenced but is not.');
+            }
+            if (!is_numeric($latStr) || !is_numeric($lngStr)) {
+                throw new \InvalidArgumentException('Latitude and longitude must be numbers.');
+            }
+            $latitude  = (float) $latStr;
+            $longitude = (float) $lngStr;
+            if ($latitude < -90 || $latitude > 90) {
+                throw new \InvalidArgumentException("Latitude must be between -90 and 90 (got {$latitude}).");
+            }
+            if ($longitude < -180 || $longitude > 180) {
+                throw new \InvalidArgumentException("Longitude must be between -180 and 180 (got {$longitude}).");
+            }
+        } elseif (!$isNew) {
+            // Edit with both boxes blank: keep whatever the stop already had
+            // rather than silently un-georeferencing it.
+            $latitude  = (float) ($existing['latitude']  ?? 0);
+            $longitude = (float) ($existing['longitude'] ?? 0);
+        }
+
         $now  = date('c');
         $data = [
             'stopId'      => $id,
@@ -2123,8 +2245,8 @@ class Transport_service
             'order'       => $order,
             'address'     => trim((string) ($input['address']  ?? '')),
             'landmark'    => trim((string) ($input['landmark'] ?? '')),
-            'latitude'    => (float) ($input['latitude']  ?? 0),
-            'longitude'   => (float) ($input['longitude'] ?? 0),
+            'latitude'    => $latitude,
+            'longitude'   => $longitude,
             'status'      => trim((string) ($input['status'] ?? ($existing['status'] ?? 'Active'))),
             'updated_at'  => $now,
         ];
@@ -2601,21 +2723,46 @@ class Transport_service
         $feeStatus = 'pending';
         try {
             $this->ci->load->library('Fee_lifecycle', null, 'feeLifecycle');
-            if ($isUpdate) {
+            if ($this->_isSuspended($data)) {
+                // G1 follow-up fix (2026-08-08): an edit to a currently-suspended
+                // assignment (fee category / subscription / etc.) must not
+                // silently restore full billing — createModuleFee always writes
+                // the FULL amount. Leave the already-prorated demand alone;
+                // resumeAssignment() is the only path that restores it.
+                $this->fs->setEntity(self::COL_STUDENT_ROUTES_LEGACY, $studentId, ['fee_demand_ref' => 'suspended'], /* merge */ true);
+                $feeStatus = 'suspended';
+            } else {
+                $demandRef = $this->ci->feeLifecycle->createModuleFee($studentId, 'Transport', [
+                    'route_id'   => $routeId,
+                    'route_name' => (string) ($route['name'] ?? ''),
+                    'amount'     => $monthlyFee,
+                    // G2 fix (2026-08-07): this is the single per-session demand
+                    // (one doc per student per session — see periodKey in
+                    // createModuleFee), so it must be tagged 'Annual' for
+                    // proRateFees() to act on it. Left at the implicit default
+                    // ('Monthly'), proRateFees's own guard treats it as
+                    // "already per-period, nothing to scale" and silently
+                    // no-ops — the root cause of G1/G2.
+                    'frequency'  => 'Annual',
+                    'period'     => 'Monthly',
+                    'start_date' => date('Y-m-d'),
+                    'end_date'   => (string) ($data['effective_to'] ?? ''),
+                    'context'    => ['subscription_type' => $subscription, 'fee_category' => $feeCategory],
+                ]);
+                $ref = is_string($demandRef) && $demandRef !== '' ? $demandRef : 'ok';
+                $this->fs->setEntity(self::COL_STUDENT_ROUTES_LEGACY, $studentId, ['fee_demand_ref' => $ref], /* merge */ true);
+                // G2 completeness fix (2026-08-08): createModuleFee always
+                // (re)writes grossAmount/netAmount to the FULL amount, so a
+                // proRateFees() call made BEFORE it (the original ordering
+                // here) was clobbered on every single invocation — dead code,
+                // removed above. Prorating a mid-session join/edit to the
+                // remaining academic months only actually sticks when it runs
+                // AFTER the demand write, same as every other call site in
+                // this file (suspend/unassign/route-change all prorate as
+                // their LAST fee-affecting step).
                 $this->ci->feeLifecycle->proRateFees($studentId, date('Y-m-d'), 'Transport');
+                $feeStatus = 'ok';
             }
-            $demandRef = $this->ci->feeLifecycle->createModuleFee($studentId, 'Transport', [
-                'route_id'   => $routeId,
-                'route_name' => (string) ($route['name'] ?? ''),
-                'amount'     => $monthlyFee,
-                'period'     => 'Monthly',
-                'start_date' => date('Y-m-d'),
-                'end_date'   => (string) ($data['effective_to'] ?? ''),
-                'context'    => ['subscription_type' => $subscription, 'fee_category' => $feeCategory],
-            ]);
-            $ref = is_string($demandRef) && $demandRef !== '' ? $demandRef : 'ok';
-            $this->fs->setEntity(self::COL_STUDENT_ROUTES_LEGACY, $studentId, ['fee_demand_ref' => $ref], /* merge */ true);
-            $feeStatus = 'ok';
         } catch (\Throwable $e) {
             log_message('error', 'F3 assignStudent Fee_lifecycle failure for ' . $studentId . ': ' . $e->getMessage());
             // Assignment doc stays with fee_demand_ref='pending'; reconciler retries.
@@ -2647,7 +2794,7 @@ class Transport_service
             $this->ci->load->library('Fee_lifecycle', null, 'feeLifecycle');
             $this->ci->feeLifecycle->proRateFees($studentId, date('Y-m-d'), 'Transport');
         } catch (\Throwable $e) {
-            log_message('warning', 'F3 unassignStudent proRateFees failed for ' . $studentId . ': ' . $e->getMessage());
+            log_message('error', 'F3 unassignStudent proRateFees failed for ' . $studentId . ': ' . $e->getMessage());
         }
 
         $this->fs->remove(self::COL_STUDENT_ROUTES_LEGACY, $this->fs->docId($studentId));
@@ -2663,6 +2810,21 @@ class Transport_service
             $existing, null,
             ['domain' => self::DOMAIN_ASSIGNMENT, 'source' => $source, 'batch_id' => $batchId, 'reason' => $reason]
         );
+    }
+
+    /**
+     * G1 follow-up fix (2026-08-08): true when this Transport assignment is
+     * currently suspended. suspended_from/suspended_until have no automated
+     * expiry anywhere in this file — resumeAssignment() is the only path
+     * back to billed. Every other call site that can (re)write this
+     * student's Transport demand via Fee_lifecycle::createModuleFee() (which
+     * always writes the FULL amount) must check this first, or it silently
+     * restores billing the operator explicitly turned off while
+     * suspended_from stays set — a self-contradicting state.
+     */
+    private function _isSuspended(array $assignmentDoc): bool
+    {
+        return (string) ($assignmentDoc['suspended_from'] ?? '') !== '';
     }
 
     /**
@@ -2701,6 +2863,20 @@ class Transport_service
             null, $update,
             ['domain' => self::DOMAIN_ASSIGNMENT, 'source' => 'manual', 'reason' => $reason]
         );
+
+        // G1 fix (2026-08-07): suspending an assignment never touched billing —
+        // families kept being billed for a service they'd explicitly suspended.
+        // Shrink the outstanding balance down to "owed through $from" using the
+        // same proRateFees mechanism already wired into unassignStudent/
+        // changeRoute (now functional per the G2 fix above). Best-effort,
+        // pending-then-retry pattern matching every other Fee_lifecycle call in
+        // this file — a failure here must not roll back the suspension itself.
+        try {
+            $this->ci->load->library('Fee_lifecycle', null, 'feeLifecycle');
+            $this->ci->feeLifecycle->proRateFees($studentId, $from, 'Transport');
+        } catch (\Throwable $e) {
+            log_message('error', 'F3 suspendAssignment proRateFees failed for ' . $studentId . ': ' . $e->getMessage());
+        }
     }
 
     public function resumeAssignment(string $studentId, string $reason = ''): void
@@ -2732,6 +2908,36 @@ class Transport_service
             null, $update,
             ['domain' => self::DOMAIN_ASSIGNMENT, 'source' => 'manual', 'reason' => $reason]
         );
+
+        // G1 fix (2026-08-07): restore full billing on resume. createModuleFee
+        // is idempotent on this student's Transport demandId (FIN-1: preserves
+        // paidAmount, recomputes balance against the newly-written full amount)
+        // and — per the supporting fix above — resets the prorated/prorateFactor
+        // flags left by the suspend-time proRateFees call. Best-effort, matching
+        // every other Fee_lifecycle call in this file.
+        try {
+            $this->ci->load->library('Fee_lifecycle', null, 'feeLifecycle');
+            $demandRef = $this->ci->feeLifecycle->createModuleFee($studentId, 'Transport', [
+                'route_id'   => (string) ($existing['route_id'] ?? ''),
+                'route_name' => (string) ($existing['route_name'] ?? ''),
+                'amount'     => (float) ($existing['monthly_fee'] ?? 0),
+                'frequency'  => 'Annual',
+                'period'     => 'Monthly',
+                'start_date' => date('Y-m-d'),
+            ]);
+            // G1 follow-up fix (2026-08-08): an edit/route-change/rollover that
+            // happened WHILE suspended now stamps fee_demand_ref='suspended'
+            // (see the guards above/elsewhere in this file) instead of a real
+            // demand id. Clear it back on resume — otherwise the assignment
+            // doc keeps showing 'suspended' even though billing is active
+            // again. The demandId itself is deterministic per student+module
+            // (route-independent), so this is always the same doc already
+            // referenced by any earlier successful create.
+            $ref = is_string($demandRef) && $demandRef !== '' ? $demandRef : 'ok';
+            $this->fs->setEntity(self::COL_STUDENT_ROUTES_LEGACY, $studentId, ['fee_demand_ref' => $ref], /* merge */ true);
+        } catch (\Throwable $e) {
+            log_message('error', 'F3 resumeAssignment createModuleFee failed for ' . $studentId . ': ' . $e->getMessage());
+        }
     }
 
     public function changeStop(string $studentId, string $newStopId, string $reason): void
@@ -2822,13 +3028,9 @@ class Transport_service
             $existing
         );
 
-        // Fee_lifecycle: pro-rate old route to today
-        try {
-            $this->ci->load->library('Fee_lifecycle', null, 'feeLifecycle');
-            $this->ci->feeLifecycle->proRateFees($studentId, date('Y-m-d'), 'Transport');
-        } catch (\Throwable $e) {
-            log_message('warning', 'F3 changeRoute proRateFees failed for ' . $studentId . ': ' . $e->getMessage());
-        }
+        // G1 follow-up fix (2026-08-08): a route change on a currently-
+        // suspended assignment must not silently restore full billing below.
+        $suspended = $this->_isSuspended($existing);
 
         $update = [
             'route_id'      => $newRouteId,
@@ -2836,7 +3038,7 @@ class Transport_service
             'stop_id'       => $newStopId,
             'stop_name'     => is_array($newStop) ? (string) ($newStop['name'] ?? '') : '',
             'monthly_fee'   => $newFee,
-            'fee_demand_ref' => 'pending',
+            'fee_demand_ref' => $suspended ? 'suspended' : 'pending',
             'updated_at'    => date('c'),
         ];
         $this->fs->setEntity(self::COL_STUDENT_ROUTES_LEGACY, $studentId, $update, /* merge */ true);
@@ -2856,17 +3058,31 @@ class Transport_service
              'prev_route_id' => $prevRouteId, 'new_route_id' => $newRouteId]
         );
 
-        // Fee_lifecycle: create new demand
+        // Fee_lifecycle: create new demand (skipped while suspended — see fix above)
         try {
+            if ($suspended) {
+                return;
+            }
+            $this->ci->load->library('Fee_lifecycle', null, 'feeLifecycle');
             $demandRef = $this->ci->feeLifecycle->createModuleFee($studentId, 'Transport', [
                 'route_id'   => $newRouteId,
                 'route_name' => (string) ($newRoute['name'] ?? ''),
                 'amount'     => $newFee,
+                'frequency'  => 'Annual',   // G2 fix (2026-08-07) — see assignStudent for rationale
                 'period'     => 'Monthly',
                 'start_date' => date('Y-m-d'),
             ]);
             $ref = is_string($demandRef) && $demandRef !== '' ? $demandRef : 'ok';
             $this->fs->setEntity(self::COL_STUDENT_ROUTES_LEGACY, $studentId, ['fee_demand_ref' => $ref], /* merge */ true);
+            // G2 completeness fix (2026-08-08): proRateFees used to run BEFORE
+            // this createModuleFee call, targeting the very same demand doc
+            // (the Transport demandId is route-independent — see createModuleFee
+            // in Fee_lifecycle.php) — so its shrink was unconditionally
+            // clobbered by this call's full-amount rewrite, every time. Moved
+            // to run after, so a mid-session route change actually prorates
+            // the new route's fee to the remaining academic months, same as
+            // suspend/unassign already do.
+            $this->ci->feeLifecycle->proRateFees($studentId, date('Y-m-d'), 'Transport');
         } catch (\Throwable $e) {
             log_message('error', 'F3 changeRoute createModuleFee failed: ' . $e->getMessage());
         }
@@ -2896,10 +3112,21 @@ class Transport_service
             array_merge($existing, $params)
         );
 
+        // G1/G2 follow-up fix (2026-08-08): this function changes the billed
+        // amount (subscription type drives the OneWay/Both fee multiplier)
+        // but, unlike assignStudent/changeRoute, never used to call
+        // Fee_lifecycle at all — it only stamped fee_demand_ref='pending' and
+        // left the existing demand at its OLD amount indefinitely.
+        // reconcilePendingFees() is manual-trigger-only (Transport.php:913,
+        // no cron), so a stale demand could sit indefinitely until an
+        // operator happened to run it. Mirror changeRoute's pattern instead:
+        // regenerate synchronously, guarded by suspension.
+        $suspended = $this->_isSuspended($existing);
+
         $update = array_merge([
             'subscription_type' => $newType,
             'monthly_fee'       => $newFee,
-            'fee_demand_ref'    => 'pending',
+            'fee_demand_ref'    => $suspended ? 'suspended' : 'pending',
             'updated_at'        => date('c'),
         ], array_intersect_key($params, array_flip([
             'effective_from', 'effective_to', 'season_start', 'season_end', 'direction',
@@ -2918,6 +3145,29 @@ class Transport_service
             null, $update,
             ['domain' => self::DOMAIN_ASSIGNMENT, 'source' => 'manual', 'reason' => $reason]
         );
+
+        if ($suspended) {
+            return;
+        }
+        try {
+            $this->ci->load->library('Fee_lifecycle', null, 'feeLifecycle');
+            $demandRef = $this->ci->feeLifecycle->createModuleFee($studentId, 'Transport', [
+                'route_id'   => (string) ($existing['route_id'] ?? ''),
+                'route_name' => (string) ($existing['route_name'] ?? ''),
+                'amount'     => $newFee,
+                'frequency'  => 'Annual',   // G2 fix (2026-08-07) — see assignStudent for rationale
+                'period'     => 'Monthly',
+                'start_date' => date('Y-m-d'),
+            ]);
+            $ref = is_string($demandRef) && $demandRef !== '' ? $demandRef : 'ok';
+            $this->fs->setEntity(self::COL_STUDENT_ROUTES_LEGACY, $studentId, ['fee_demand_ref' => $ref], /* merge */ true);
+            // G2 completeness fix (2026-08-08) — prorate the new rate to the
+            // remaining academic months, same reasoning as assignStudent/
+            // changeRoute (must run AFTER createModuleFee, not before).
+            $this->ci->feeLifecycle->proRateFees($studentId, date('Y-m-d'), 'Transport');
+        } catch (\Throwable $e) {
+            log_message('error', 'F3 changeSubscription createModuleFee failed for ' . $studentId . ': ' . $e->getMessage());
+        }
     }
 
     /**
@@ -3133,30 +3383,47 @@ class Transport_service
                         if (method_exists($this->ci->feeLifecycle, 'cancelSessionDemands')) {
                             $this->ci->feeLifecycle->cancelSessionDemands($sid, $fromSession, 'Transport');
                         }
-                        $rolloverRef = $this->ci->feeLifecycle->createModuleFee($sid, 'Transport', [
-                            'route_id'   => (string) ($row['route_id'] ?? ''),
-                            'route_name' => (string) ($row['route_name'] ?? ''),
-                            'amount'     => (float) ($row['monthly_fee'] ?? 0),
-                            'period'     => 'Monthly',
-                            'start_date' => date('Y-m-d'),
-                        ]);
-                        // CON-4: only on a confirmed create do we point
-                        // fee_demand_ref at the real demand (so the reconciler
-                        // skips it). Any failure — throw here, or createModuleFee
-                        // returning null — leaves the 'pending' marker set above
-                        // for reconcilePendingFees to retry.
-                        if (is_string($rolloverRef) && $rolloverRef !== '') {
-                            // Include session => $toSession explicitly: setEntity
-                            // auto-injects the SERVICE session when 'session' is
-                            // absent, which would silently undo the flip to
-                            // $toSession we just wrote above.
+                        // G1 follow-up fix (2026-08-08): rollover previously
+                        // carried suspended_from/suspended_until forward (never
+                        // touched them) but ALWAYS created a fresh full-amount
+                        // new-session demand regardless — a suspended assignment
+                        // would silently start being billed again on session
+                        // rollover with zero operator action. Skip demand
+                        // creation for a currently-suspended assignment; the
+                        // suspension state already carried forward, and
+                        // resumeAssignment() is the only path that (re)bills.
+                        if ($this->_isSuspended($row)) {
                             $this->fs->setEntity(self::COL_STUDENT_ROUTES_LEGACY, $sid, [
-                                'fee_demand_ref' => $rolloverRef,
+                                'fee_demand_ref' => 'suspended',
                                 'session'        => $toSession,
                             ], /* merge */ true);
+                        } else {
+                            $rolloverRef = $this->ci->feeLifecycle->createModuleFee($sid, 'Transport', [
+                                'route_id'   => (string) ($row['route_id'] ?? ''),
+                                'route_name' => (string) ($row['route_name'] ?? ''),
+                                'amount'     => (float) ($row['monthly_fee'] ?? 0),
+                                'frequency'  => 'Annual',   // G2 fix (2026-08-07) — see assignStudent for rationale
+                                'period'     => 'Monthly',
+                                'start_date' => date('Y-m-d'),
+                            ]);
+                            // CON-4: only on a confirmed create do we point
+                            // fee_demand_ref at the real demand (so the reconciler
+                            // skips it). Any failure — throw here, or createModuleFee
+                            // returning null — leaves the 'pending' marker set above
+                            // for reconcilePendingFees to retry.
+                            if (is_string($rolloverRef) && $rolloverRef !== '') {
+                                // Include session => $toSession explicitly: setEntity
+                                // auto-injects the SERVICE session when 'session' is
+                                // absent, which would silently undo the flip to
+                                // $toSession we just wrote above.
+                                $this->fs->setEntity(self::COL_STUDENT_ROUTES_LEGACY, $sid, [
+                                    'fee_demand_ref' => $rolloverRef,
+                                    'session'        => $toSession,
+                                ], /* merge */ true);
+                            }
                         }
                     } catch (\Throwable $e) {
-                        log_message('warning', 'F3 rollover fee ops failed for ' . $sid . ': ' . $e->getMessage());
+                        log_message('error', 'F3 rollover fee ops failed for ' . $sid . ': ' . $e->getMessage());
                     }
 
                     $processed++;
@@ -3253,12 +3520,22 @@ class Transport_service
             $d   = (isset($r['data']) && is_array($r['data'])) ? $r['data'] : $r;
             $sid = (string) ($d['studentId'] ?? '');
             if ($sid === '') { continue; }
+            // G1 follow-up fix (2026-08-08): a record can in principle be both
+            // 'pending' (from a failed create) and suspended (operator action
+            // in between) before this runs. Defensive, same as the other 4
+            // createModuleFee call sites — never restore full billing here.
+            if ($this->_isSuspended($d)) {
+                $this->fs->setEntity(self::COL_STUDENT_ROUTES_LEGACY, $sid,
+                    ['fee_demand_ref' => 'suspended'], /* merge */ true);
+                continue;
+            }
             try {
                 $this->ci->load->library('Fee_lifecycle', null, 'feeLifecycle');
                 $demandRef = $this->ci->feeLifecycle->createModuleFee($sid, 'Transport', [
                     'route_id'   => (string) ($d['route_id'] ?? ''),
                     'route_name' => (string) ($d['route_name'] ?? ''),
                     'amount'     => (float) ($d['monthly_fee'] ?? 0),
+                    'frequency'  => 'Annual',   // G2 fix (2026-08-07) — see assignStudent for rationale
                     'period'     => 'Monthly',
                     'start_date' => date('Y-m-d'),
                 ]);
@@ -3268,7 +3545,7 @@ class Transport_service
                 $retried++;
             } catch (\Throwable $e) {
                 $stillPending++;
-                log_message('warning', 'F3 reconcile pending fee failed for ' . $sid . ': ' . $e->getMessage());
+                log_message('error', 'F3 reconcile pending fee failed for ' . $sid . ': ' . $e->getMessage());
             }
         }
         return ['retried' => $retried, 'still_pending' => $stillPending];
@@ -3316,6 +3593,11 @@ class Transport_service
                     'class'   => (string) ($s['className'] ?? ''),
                     'section' => (string) ($s['section'] ?? ''),
                     'user_id' => $id,
+                    // Phase 11.3 — SR Number, from the document already read to
+                    // build this cached index: ZERO extra Firestore reads.
+                    // Assigning a student to a route is a genuine office workflow
+                    // where the school quotes its own register number.
+                    'srNo'    => (string) ($s['srNo'] ?? ''),
                 ];
             }
             try { $this->ci->cache->save($cacheKey, $index, 300); } catch (\Throwable $_) {}
@@ -3323,8 +3605,12 @@ class Transport_service
 
         $results = [];
         foreach ($index as $s) {
+            // Phase 11.3 — match on SR Number too. `?? ''` keeps cache entries
+            // written before this change (which lack the key) working until they
+            // expire on the existing 300s TTL.
             if (strpos(strtolower((string) $s['name']), $q) !== false
-                || strpos(strtolower((string) $s['id']), $q) !== false) {
+                || strpos(strtolower((string) $s['id']), $q) !== false
+                || ((string) ($s['srNo'] ?? '') !== '' && strtolower((string) $s['srNo']) === $q)) {
                 $results[] = $s;
                 if (count($results) >= $limit) { break; }
             }
@@ -3499,6 +3785,32 @@ class Transport_service
         'driver_meta', 'updated_at',
     ];
 
+    /**
+     * Batch 3 field partition for driver_meta.
+     *
+     * SENSITIVE — credential / fitness / management fields. Four of these are
+     * read by _validateDriverReadiness() before every dispatch
+     * (licence_expires, medical_expires, badge_expires, operational_status), and
+     * blanking badge_no disables the badge check entirely. Writing any of them
+     * additionally requires Transport:manage.
+     *
+     * BENIGN — legitimate driver self-service. Writable at Transport:edit, but
+     * only on the actor's OWN record.
+     *
+     * Public so the endpoint and the service share one definition; a field added
+     * to the form but to neither list is rejected rather than silently written.
+     */
+    public const DRIVER_META_SENSITIVE_FIELDS = [
+        'licence_no', 'licence_class', 'licence_issued', 'licence_expires',
+        'licence_authority', 'medical_check_last', 'medical_expires',
+        'badge_no', 'badge_expires', 'operational_status', 'can_drive_types',
+    ];
+
+    public const DRIVER_META_BENIGN_FIELDS = [
+        'years_experience', 'emergency_contact_name',
+        'emergency_contact_phone', 'replacement_availability',
+    ];
+
     // ─── Driver identity + meta ────────────────────────────────────────
 
     /**
@@ -3561,8 +3873,39 @@ class Transport_service
         if (!is_array($staff)) {
             throw new \InvalidArgumentException('Staff not found: ' . $staffId);
         }
-        // Normalise + validate driver_meta fields
-        $clean = [];
+        $prev = (array) ($staff['driver_meta'] ?? []);
+
+        // ── Batch 3 invariants, enforced HERE so they bind every caller ──────
+        //
+        // Unknown keys are rejected outright — a field added to a form but to
+        // neither partition list must never be written blind.
+        $known = array_merge(self::DRIVER_META_SENSITIVE_FIELDS, self::DRIVER_META_BENIGN_FIELDS);
+        $unknown = array_diff(array_keys($meta), $known);
+        if ($unknown !== []) {
+            throw new \InvalidArgumentException(
+                'Unrecognised driver_meta field(s): ' . implode(', ', $unknown));
+        }
+        // Sensitive writes require Transport:manage, evaluated through the
+        // existing Graded RBAC resolver — a READ of it, never a modification.
+        // Fails CLOSED when the helper is unavailable (e.g. CLI), because a
+        // context that cannot prove manage must not write credentials.
+        $touchesSensitive = array_intersect(array_keys($meta), self::DRIVER_META_SENSITIVE_FIELDS) !== [];
+        if ($touchesSensitive) {
+            $ok = function_exists('has_permission') && has_permission('Transport', 'manage');
+            if (!$ok) {
+                throw new \InvalidArgumentException(
+                    'Driver credential and fitness fields require Transport · manage.');
+            }
+        } elseif ((string) $staffId !== (string) $this->adminId) {
+            // Benign-only writes are self-service and stay on the actor's record.
+            throw new \InvalidArgumentException(
+                'You may only update your own driver details.');
+        }
+
+        // Normalise + validate driver_meta fields. MERGED over the stored map:
+        // the endpoint now sends only the submitted keys, and driver_meta is a
+        // nested map — writing a partial map would erase every unsubmitted field.
+        $clean = $prev;
         foreach ($meta as $k => $v) {
             $clean[$k] = is_string($v) ? trim($v) : $v;
         }
@@ -3746,12 +4089,54 @@ class Transport_service
 
     // ─── Driver Incidents ──────────────────────────────────────────────
 
-    public function recordDriverIncident(array $input): array
+    /**
+     * @param bool $anySubject TRUE only when the caller has established
+     *        Transport · manage. FALSE restricts the subject to the actor
+     *        themselves, or to a trip the actor canonically owns.
+     */
+    public function recordDriverIncident(array $input, bool $anySubject = false): array
     {
         $this->_assertReady();
         $staffId = trim((string) ($input['staff_id'] ?? ''));
         $type    = trim((string) ($input['incident_type'] ?? ''));
         $sev     = trim((string) ($input['severity'] ?? 'Minor'));
+
+        // ── Category-E actor scope (self or own trip) ────────────────────────
+        // Reporting an incident is first-hand knowledge, so this stays at
+        // Transport:edit. But staff_id came straight from the request, so an
+        // edit-level caller could file a Critical incident naming a colleague.
+        //
+        // Both sides of the comparison are STAFF IDS — verified, not assumed:
+        //   • actor  — session('admin_id') is the login id, and the admin roster
+        //     derives a staff-sourced admin's id from $d['staffId'] ?? $d['id']
+        //     (admin_roster_helper::_admin_roster_norm_staff).
+        //   • trip   — tripLogs.driver_staff_id is set from getEffectiveDriver(),
+        //     which returns vehicles.staff_id.
+        // No Firebase-token/session equivalence is assumed: this path is the
+        // Admin Panel only. A legacy admins-collection account (ADM id, not a
+        // staff id) simply never matches and is denied — it fails CLOSED.
+        //
+        // $anySubject is a SEPARATE ARGUMENT, never an $input key.
+        unset($input['_any_subject'], $input['any_subject']);
+        if (!$anySubject) {
+            $actor  = (string) $this->adminId;
+            $isSelf = $actor !== '' && $staffId === $actor;
+            $ownsTrip = false;
+            $tripId = trim((string) ($input['related_trip_id'] ?? ''));
+            if (!$isSelf && $tripId !== '' && $actor !== '') {
+                $trip = $this->fs->getEntity(self::COL_TRIP_LOGS, $tripId);
+                if (is_array($trip)) {
+                    $trip = $this->_unwrapNestedRow($trip, 'vehicleId');
+                    $ownsTrip = (string) ($trip['driver_staff_id'] ?? '') === $actor;
+                }
+            }
+            if (!$isSelf && !$ownsTrip) {
+                throw new \InvalidArgumentException(
+                    'You may only record an incident for yourself, or against a trip you '
+                    . 'operated. Recording an incident for another person requires '
+                    . 'Transport · manage.');
+            }
+        }
         $desc    = trim((string) ($input['description'] ?? ''));
         if ($staffId === '' || $desc === '') {
             throw new \InvalidArgumentException('staff_id and description are required.');
@@ -3824,6 +4209,16 @@ class Transport_service
         if ((string) ($existing['resolved_at'] ?? '') !== '') {
             throw new \InvalidArgumentException('Incident is already resolved.');
         }
+        // ── Batch 3 invariant: nobody closes their own incident ──────────────
+        // Resolution is an independent managerial decision. Enforced after the
+        // one-way guard above (which is preserved) and before any write, so a
+        // self-resolution attempt changes nothing. Applies even at manage.
+        if ((string) ($existing['staff_id'] ?? '') !== ''
+            && (string) ($existing['staff_id'] ?? '') === (string) $this->adminId) {
+            throw new \InvalidArgumentException(
+                'You cannot resolve an incident recorded against yourself. Another '
+                . 'authorised manager must review and close it.');
+        }
         $now = date('c');
         $update = [
             'resolution'   => trim($resolution),
@@ -3885,6 +4280,14 @@ class Transport_service
         if ($end < $start) {
             throw new \InvalidArgumentException('review_period_end must be on or after review_period_start.');
         }
+        // ── Batch 3 invariant: nobody reviews themselves ─────────────────────
+        // Applies even at Transport:manage — a manager who also drives must not
+        // author their own performance review.
+        if ($staffId === (string) $this->adminId) {
+            throw new \InvalidArgumentException(
+                'You cannot record a performance review for yourself. Another authorised '
+                . 'reviewer must complete it.');
+        }
         $rating = max(1, min(5, (int) ($input['rating'] ?? 3)));
 
         // Auto-populate numeric fields from activity snapshot if not supplied
@@ -3913,7 +4316,12 @@ class Transport_service
             'complaints_count'      => (int)   ($input['complaints_count']  ?? $snap['complaints_count']),
             'positive_recognitions' => (int)   ($input['positive_recognitions'] ?? $snap['positive_recognitions']),
             'rating'                => $rating,
-            'reviewer_staff_id'     => trim((string) ($input['reviewer_staff_id'] ?? $this->adminId)),
+            // Batch 3: SERVER-DERIVED, and a client-supplied reviewer_staff_id is
+            // ignored outright. It was previously honoured when present, so any
+            // authorised caller could attribute a review to somebody else —
+            // forged provenance on an HR record. The authenticated actor is the
+            // only reviewer identity this field may ever carry.
+            'reviewer_staff_id'     => (string) $this->adminId,
             'notes'                 => trim((string) ($input['notes'] ?? '')),
             'action_items'          => array_values(array_filter(array_map(
                 'strval', (array) ($input['action_items'] ?? [])
@@ -4047,6 +4455,18 @@ class Transport_service
         }
         if ($to < $from) {
             throw new \InvalidArgumentException('effective_to must be on or after effective_from.');
+        }
+        // ── Batch 3 invariant: no self-assignment ────────────────────────────
+        // getEffectiveDriver() PREFERS an active temp assignment covering the
+        // trip date over the vehicle's permanent driver, so assigning oneself is
+        // a self-service route onto a vehicle's dispatch. Enforced HERE, in the
+        // service, so it binds every caller and cannot be bypassed by a future
+        // endpoint. Additive only — the Graded RBAC check at the endpoint remains
+        // the first authorization boundary.
+        if ($coveringStaffId !== '' && $coveringStaffId === (string) $this->adminId) {
+            throw new \InvalidArgumentException(
+                'You cannot assign yourself as the temporary driver. Another authorised '
+                . 'manager must record this assignment.');
         }
         $vehicle = $this->fs->getEntity(self::COL_VEHICLES, $vehicleId);
         if (!is_array($vehicle)) {
@@ -4401,7 +4821,11 @@ class Transport_service
      * supports receipts + invoices + quotations + workshop estimates +
      * warranty documents + approval letters without schema changes.
      */
-    public function saveExpense(array $input): array
+    /**
+     * @param bool $postingAuthorized TRUE only when the caller has established
+     *        Transport · manage. Gates journal creation, never expense recording.
+     */
+    public function saveExpense(array $input, bool $postingAuthorized = false): array
     {
         $this->_assertReady();
         $id      = trim((string) ($input['id'] ?? ''));
@@ -4417,8 +4841,31 @@ class Transport_service
             ]);
         }
 
-        // Posting mode: force_post overrides; else schoolControl setting
-        $forcePost   = !empty($input['force_post']);
+        // ── FINANCE SEGREGATION (maker/checker) ──────────────────────────────
+        // Recording an expense is 'edit'. CREATING THE ACCOUNTING JOURNAL is a
+        // 'manage' act — post_expense_now / retry_expense_post / reconcile are
+        // all manage-gated, and this method is the ONLY other path that reaches
+        // _postToAccounting(). Left ungated it re-opened that boundary two ways:
+        // a client-supplied force_post=1, and a tenant configured to auto-post.
+        //
+        // $postingAuthorized is a SEPARATE ARGUMENT, never an $input key: $input
+        // is built from client POST data, so an authorization flag living there
+        // could be set by anyone who can reach the endpoint. Only a caller that
+        // has itself established manage may pass true.
+        //
+        // Defence in depth — strip any authorization-shaped keys a caller may
+        // have folded into $input.
+        unset($input['_posting_authorized'], $input['posting_authorized']);
+
+        $forcePost = !empty($input['force_post']);
+        if ($forcePost && !$postingAuthorized) {
+            throw new \InvalidArgumentException(
+                'Posting an expense to Accounting requires Transport · manage. '
+                . 'The expense can be recorded and posted later by an authorised manager.');
+        }
+        // Auto-posting tenants: an unauthorised caller still RECORDS the expense,
+        // it simply lands 'pending' for a manager to post. No capability is lost
+        // and no journal is created — that is the maker/checker split.
         $postingMode = $forcePost ? 'auto' : $this->_getExpensePostingMode();
 
         // Normalise attachments — accept legacy 'receipt_path' as an implicit
@@ -4440,7 +4887,7 @@ class Transport_service
         // To correct a posted expense, void it (which reverses the journal —
         // FIN-4) and create a new one.
         $existingRef = $isNew ? '' : (string) ($existing['accounting_journal_ref'] ?? '');
-        $isPosted    = ($existingRef !== '' && $existingRef !== 'pending' && $existingRef !== 'failed');
+        $isPosted    = $this->_isPostedRef($existingRef);
         if (!$isNew && $isPosted) {
             $newDate = trim((string) ($input['expense_date'] ?? date('Y-m-d')));
             $financialChanged =
@@ -4508,7 +4955,7 @@ class Transport_service
         // FIN-3: an already-posted expense is never re-posted (the sourceRef
         // would dedup) — its ref is preserved above and reported as-is.
         $postResult = ['status' => $isPosted ? 'posted' : ($postingMode === 'auto' ? 'pending' : 'manual'), 'journal_ref' => $existingRef];
-        if ($postingMode === 'auto' && !$isPosted) {
+        if ($postingMode === 'auto' && !$isPosted && $postingAuthorized) {
             $postResult = $this->_postToAccounting($id, $data);
         }
         return ['id' => $id, 'isNew' => $isNew, 'data' => $data, 'posting' => $postResult];
@@ -4523,6 +4970,26 @@ class Transport_service
     }
 
     /** Void (soft-delete) an expense. Only Active expenses may be voided. */
+    /**
+     * Does this accounting_journal_ref denote a REAL posted journal?
+     *
+     * The field carries four sentinels plus a real reference:
+     *   ''        — manual mode, never queued
+     *   'pending' — queued for the nightly reconciler
+     *   'failed'  — retries exhausted
+     *   'voided'  — the expense was voided before any post succeeded (FIN-5)
+     *   <ref>     — an actual journal exists
+     *
+     * One definition, because this predicate was written out by hand at three
+     * call sites. Adding the 'voided' sentinel to those copies independently
+     * would have made a voided expense look POSTED to two of them — reversible
+     * and reportable as though a journal existed.
+     */
+    private function _isPostedRef(string $ref): bool
+    {
+        return $ref !== '' && !in_array($ref, ['pending', 'failed', 'voided'], true);
+    }
+
     public function voidExpense(string $expenseId, string $reason): void
     {
         $this->_assertReady();
@@ -4538,7 +5005,7 @@ class Transport_service
         }
         $now = date('c');
         $ref = (string) ($existing['accounting_journal_ref'] ?? '');
-        $isPosted = ($ref !== '' && $ref !== 'pending' && $ref !== 'failed');
+        $isPosted = $this->_isPostedRef($ref);
         $update = [
             'status'      => 'Voided',
             'voided_at'   => $now,
@@ -4563,6 +5030,17 @@ class Transport_service
             }
             $update['accounting_reversal_ref'] = $reversalRef;
             $update['accounting_reversed_at']  = $now;
+        } elseif ($ref === 'pending' || $ref === 'failed') {
+            // FIN-5 (2026-08-19): settle a void that beat the post.
+            //
+            // There is no journal to reverse here — the post never succeeded —
+            // but leaving the ref at 'pending' kept the record in the nightly
+            // reconciler's queue, where it would eventually be posted (a journal
+            // for a voided expense) and, until then, fire the stale-pending alarm
+            // every single night with no action that could ever clear it.
+            // 'voided' is a terminal state in the same lowercase vocabulary as
+            // 'pending' and 'failed'.
+            $update['accounting_journal_ref'] = 'voided';
         }
         $this->fs->setEntity(self::COL_TRANSPORT_EXPENSES, $expenseId, $update, /* merge */ true);
         $this->emitAudit(
@@ -4690,8 +5168,8 @@ class Transport_service
                 [['accounting_journal_ref', '==', 'pending']],
                 null, 'ASC', $maxRetriesPerCall
             );
-        } catch (\Throwable $_) { return ['retried' => 0, 'posted' => 0, 'failed' => 0]; }
-        $retried = 0; $posted = 0; $failed = 0;
+        } catch (\Throwable $_) { return ['retried' => 0, 'posted' => 0, 'failed' => 0, 'voided' => 0]; }
+        $retried = 0; $posted = 0; $failed = 0; $voided = 0;
         foreach ($rows as $r) {
             $r = $this->_unwrapNestedRow($r, 'expense_type');
             if (!is_array($r)) { continue; }
@@ -4701,8 +5179,12 @@ class Transport_service
             $res = $this->_postToAccounting($id, $r);
             if ($res['status'] === 'posted') { $posted++; }
             elseif ($res['status'] === 'failed') { $failed++; }
+            // FIN-5: a voided expense is settled, not posted and not a failure.
+            // Counted so a nightly run that drains stale records reports what it
+            // did rather than looking like it silently skipped work.
+            elseif ($res['status'] === 'voided') { $voided++; }
         }
-        return ['retried' => $retried, 'posted' => $posted, 'failed' => $failed];
+        return ['retried' => $retried, 'posted' => $posted, 'failed' => $failed, 'voided' => $voided];
     }
 
     /** Retry a single expense's pending post. */
@@ -4728,8 +5210,18 @@ class Transport_service
             throw new \InvalidArgumentException('Expense not found: ' . $expenseId);
         }
         $ref = (string) ($existing['accounting_journal_ref'] ?? '');
-        if ($ref !== '' && $ref !== 'pending' && $ref !== 'failed') {
+        if ($this->_isPostedRef($ref)) {
             throw new \InvalidArgumentException('Expense already posted to Accounting: ' . $ref);
+        }
+        // FIN-5: refuse a voided expense HERE rather than letting it fall through.
+        // _postToAccounting() would also refuse it, but only after this method had
+        // already written the ref back to 'pending' — briefly re-queueing a record
+        // that must never be posted, and telling the admin nothing useful.
+        $status = (string) ($existing['status'] ?? 'Active');
+        if ($status !== 'Active') {
+            throw new \InvalidArgumentException(
+                "This expense is {$status} and cannot be posted to Accounting."
+            );
         }
         // Mark as pending, then attempt post
         $this->fs->setEntity(self::COL_TRANSPORT_EXPENSES, $expenseId, [
@@ -5697,6 +6189,37 @@ class Transport_service
      */
     private function _postToAccounting(string $expenseId, array $expense): array
     {
+        // ── FIN-5 (2026-08-19): NEVER post a journal for a non-Active expense.
+        //
+        // A void that happened BEFORE the post succeeded left the record at
+        // accounting_journal_ref='pending', because voidExpense()'s $isPosted
+        // test excludes 'pending' and so had nothing to reverse. The nightly
+        // reconciler queries pending with no status filter, so the next cron run
+        // would post a real journal for an expense the school had explicitly
+        // voided — debiting the GL with nothing to offset it, and no second void
+        // to trigger a reversal. Three such records were found stale in the test
+        // tenant, each one a wrong journal waiting to happen.
+        //
+        // The guard lives HERE because all four posting paths funnel through this
+        // method — the reconciler, retryExpensePost(), postExpenseNow() and
+        // saveExpense()'s auto-post — so one check closes all of them. It also
+        // SETTLES the record (see the write below) so a voided expense leaves the
+        // pending queue instead of re-alarming every night forever; an alarm that
+        // can never be cleared is an alarm operators learn to ignore.
+        $status = (string) ($expense['status'] ?? 'Active');
+        if ($status !== 'Active') {
+            $this->fs->setEntity(self::COL_TRANSPORT_EXPENSES, $expenseId, [
+                'accounting_journal_ref' => 'voided',
+                'accounting_last_error'  => '',
+                'updated_at'             => date('c'),
+            ], /* merge */ true);
+            return [
+                'status'      => 'voided',
+                'journal_ref' => 'voided',
+                'error'       => "Expense is {$status}; no accounting journal was created.",
+            ];
+        }
+
         $ledgerCode = $this->_ledgerCodeFor((string) ($expense['expense_type'] ?? 'Other'));
         try {
             // PayrollAccountingService lives in application/services/ (not
@@ -5879,11 +6402,45 @@ class Transport_service
     public const CHECKPOINT_STATES = ['Pending', 'Reached', 'Skipped'];
 
     // Boarding event types — enum for transportAttendance.event_type
+    //
+    // F14 added the four CANONICAL journey events. The legacy four stay in the
+    // enum because historical rows carry them and are never rewritten;
+    // Transport_qr_attendance_service::canonicalEvent() maps old → new at READ
+    // time. 'no_show' is a resolution rather than a journey event and has no
+    // canonical replacement.
     public const BOARDING_EVENT_TYPES = [
+        // ── legacy (still written by pre-F14 callers, still readable) ──
         'boarded_pickup',      // student got on the pickup trip
         'dropped_home',        // student was dropped at end-of-drop-trip
         'no_show',             // student expected but did not board
         'alternate_pickup',    // student boarded at a non-planned stop
+        // ── F14 canonical four ──
+        'boarded_at_stop',     // morning  — boarded at their pickup stop
+        'alighted_at_school',  // morning  — stepped off at school
+        'boarded_at_school',   // afternoon— boarded at school
+        'alighted_at_stop',    // afternoon— stepped off at their stop
+    ];
+
+    // ── ONE classification of "got on" vs "got off" (2026-08-16) ────────────
+    //
+    // Every consumer that counts heads must agree on which of the eight event
+    // types means a child boarded and which means a child left the bus. They
+    // did not: the trip tallies below and Transport_analytics_service each
+    // hardcoded only the LEGACY four, so a trip boarded by QR scan counted as
+    // ZERO students — in the trip modal and on the operations dashboard alike.
+    // The office would have lost its head count at exactly the moment a
+    // conductor started scanning.
+    //
+    // Derive from these constants rather than retyping a list; adding a ninth
+    // event type then cannot silently skip a counter. 'no_show' appears in
+    // neither set on purpose — it is a resolution, not a journey event.
+    public const BOARDING_ON_EVENTS = [
+        'boarded_pickup', 'alternate_pickup',    // legacy
+        'boarded_at_stop', 'boarded_at_school',  // F14 canonical
+    ];
+    public const BOARDING_OFF_EVENTS = [
+        'dropped_home',                                 // legacy
+        'alighted_at_school', 'alighted_at_stop',       // F14 canonical
     ];
 
     // Collection name for the per-student boarding-event log
@@ -5945,6 +6502,42 @@ class Transport_service
         }
         if (!preg_match('/^\d{4}-\d{2}-\d{2}$/', $tripDate)) {
             throw new \InvalidArgumentException("Invalid trip_date: '{$tripDate}'. Expected YYYY-MM-DD.");
+        }
+
+        // ── UNIT 2B — CAMPUS GEOFENCE PREREQUISITE (2026-08-15) ──────────────
+        //
+        // A Pickup trip ends at school, and Part A refuses to complete one until
+        // arrival is GPS-proven against the campus geofence. With no fence
+        // configured, such a trip is STRUCTURALLY UNCOMPLETABLE the moment it is
+        // created — the office can only ever close it by admin override. Refuse
+        // at creation instead of stranding it.
+        //
+        // PICKUP ONLY. The afternoon leg ends at the stops, not at school, so a
+        // Drop trip needs no campus fence and is deliberately unaffected.
+        //
+        // Reads the SAME canonical store as verifyBusAtSchool()
+        // (schools.attendancePolicy.gps.geofences[]) through the SAME service —
+        // no second geofence system, no duplicated maths.
+        if ($direction === 'Pickup') {
+            $CI =& get_instance();
+            if (!isset($CI->f14_completion_guard)) {
+                $CI->load->library('transport_qr_attendance_service', null, 'f14_completion_guard');
+            }
+            $CI->f14_completion_guard->init(
+                $this->fs, $this, $this->schoolId, $this->sessionYear, $this->adminId);
+            if (!$CI->f14_completion_guard->campusGeofenceConfigured()) {
+                // UNIT 2B-3 (2026-08-15) — the destination named here used to be
+                // "School Config → GPS / Attendance Policy", a page that does
+                // not exist; the campus fence is written by Attendance →
+                // Settings → GPS Attendance (/attendance/settings). Corrected
+                // at the canonical source rather than relying on one client to
+                // rewrite a wrong server message. The leading sentence is
+                // unchanged — the admin UI keys its guidance panel on it.
+                throw new \InvalidArgumentException(
+                    'Campus arrival geofence is not configured, so a Pickup trip could never be '
+                    . 'completed. Configure the campus location in Attendance → Settings → '
+                    . 'GPS Attendance, then create the trip. (Drop trips are unaffected.)');
+            }
         }
 
         $vehicle = $this->fs->getEntity(self::COL_VEHICLES, $vehicleId);
@@ -6170,9 +6763,21 @@ class Transport_service
                     'actual_start_at' => $now,
                     'startTime'       => (($trip['startTime'] ?? '') !== '') ? $trip['startTime'] : $now,
                     'updated_at'      => $now,
+                    // F13.1 M2 (D-2) — arm the server-side tracking kill switch.
+                    // Rides THIS CAS write rather than adding a second one, so
+                    // CON-6's single-atomic-transition property is preserved.
+                    'live_tracking_enabled' => true,
+                    'gps_start_at'          => $now,
                 ];
             });
         $this->_assertTripTransition($res, $tripId, $abort);
+
+        // F13.1 M2 (D-2) — open the live-position session. Best-effort, exactly
+        // like _setVehicleCurrentRoute below: the trip lifecycle is the business
+        // truth and must not fail because telemetry could not be set up. If this
+        // fails the trip still runs; tracking is simply unavailable, and the
+        // sweeper will find nothing to close.
+        $this->_openGpsSession($before, $tripId);
 
         $update = ['status' => 'InProgress', 'actual_start_at' => $now];
         $this->emitAudit('trip', $tripId, 'started', $before, array_merge($before, $update),
@@ -6251,6 +6856,352 @@ class Transport_service
      * Mark a student boarded on a Pickup trip. Idempotent via deterministic
      * doc-id; validates eligibility from the frozen roster snapshot.
      */
+    // ─────────────────────────────────────────────────────────────────────
+    //  F14 Phase 1g — Transport REQUEST worklist (hybrid F-3)
+    //
+    //  A family declaring "we want transport" is a REQUEST, not an
+    //  entitlement. Turning that declaration straight into a studentRoutes
+    //  assignment would be wrong twice over: the school usually does not know
+    //  the route or stop yet, so the student would be "eligible" but
+    //  unroutable — and assignStudent() creates a transport FEE, so a bare
+    //  declaration would start billing a family for a service not yet arranged.
+    //
+    //  Therefore:
+    //    route + stop known  → canonical assignStudent() immediately
+    //    otherwise           → a pending transportRequests row for admin review
+    //
+    //  studentRoutes remains the ONLY eligibility authority. This worklist is
+    //  an inbox in front of it, never a parallel entitlement store, and it is
+    //  never consulted by the eligibility resolver.
+    // ─────────────────────────────────────────────────────────────────────
+
+    public const COL_TRANSPORT_REQUESTS = 'transportRequests';
+
+    public const REQUEST_STATUSES = ['pending', 'approved', 'rejected', 'cancelled'];
+    public const REQUEST_SOURCES  = ['admission', 'mid_session', 'parent_app', 'manual'];
+
+    /**
+     * Record a transport request, or — when route AND stop are both supplied —
+     * skip the worklist and create the canonical assignment straight away.
+     *
+     * Idempotent on {schoolId}_{studentId}_{session}: one open request per
+     * student per session. A repeat while one is already pending is a no-op, so
+     * a double-submitted admission form cannot produce two worklist entries.
+     *
+     * @return array{outcome:string, requestId:string, assignmentId:string, message:string}
+     *         outcome ∈ assigned | pending | already_pending | already_assigned
+     */
+    public function requestTransport(array $input, string $source = 'manual'): array
+    {
+        $this->_assertReady();
+        $studentId = trim((string) ($input['studentId'] ?? ''));
+        if ($studentId === '') {
+            throw new \InvalidArgumentException('studentId is required.');
+        }
+        if (!in_array($source, self::REQUEST_SOURCES, true)) { $source = 'manual'; }
+
+        $now = date('c');
+
+        // Already entitled? Then there is nothing to request. Checked against
+        // the canonical authority, not against this worklist.
+        $existing = $this->_activeAssignmentFor($studentId);
+        if ($existing !== []) {
+            return ['outcome' => 'already_assigned',
+                    'requestId' => '', 'assignmentId' => (string) ($existing['id'] ?? ''),
+                    'message' => 'Student already has an active transport assignment.'];
+        }
+
+        // ── ALWAYS a pending worklist row. NO assignment, NO fee. ──
+        //
+        // A direct-assignment shortcut used to live here: given route_id +
+        // stop_id it called assignStudent() and skipped the worklist. It was
+        // removed (2026-08-15) because it never worked — it passed 'studentId'
+        // while assignStudent() reads 'student_id', so every entry threw
+        // "student_id and route_id are required." Runtime-proven, not inferred.
+        //
+        // Worse than dead: the only caller able to reach it was the controller
+        // passing has_permission('Transport','manage'), so the exception hit
+        // MANAGE users only, while edit users got a clean pending request.
+        // Removing it makes every caller behave identically.
+        //
+        // Canonical assignment now has exactly two manage-gated routes:
+        //     approve_transport_request -> approveTransportRequest() -> assignStudent()
+        //     save_assignment                                        -> assignStudent()
+        // requestTransport() deliberately no longer calls assignStudent() at all.
+        // Entity id WITHOUT the school prefix — getEntity()/setEntity() add the
+        // single `{schoolId}_` themselves (RC-3 convention). Embedding it here
+        // and then using setEntity() would write {schoolId}_{schoolId}_… while a
+        // raw get() looked elsewhere, so the row could never be found again.
+        $docId = "{$studentId}_{$this->sessionYear}";
+        $prior = $this->fs->getEntity(self::COL_TRANSPORT_REQUESTS, $docId);
+        $prior = is_array($prior) ? $this->_unwrapNestedRow($prior, 'studentId') : [];
+        if (($prior['status'] ?? '') === 'pending') {
+            return ['outcome' => 'already_pending', 'requestId' => $docId, 'assignmentId' => '',
+                    'message' => 'A transport request is already pending for this student.'];
+        }
+
+        // A re-request after a rejection keeps the earlier outcome in history
+        // rather than erasing it — the audit trail of what the school decided
+        // and when must survive.
+        $history = (array) ($prior['history'] ?? []);
+        if (($prior['status'] ?? '') !== '') {
+            $history[] = [
+                'status'      => (string) $prior['status'],
+                'reviewed_at' => (string) ($prior['reviewed_at'] ?? ''),
+                'reviewed_by' => (string) ($prior['reviewed_by'] ?? ''),
+                'notes'       => (string) ($prior['review_notes'] ?? ''),
+            ];
+        }
+
+        $data = [
+            'id'              => $docId,
+            'schoolId'        => $this->schoolId,
+            'session'         => $this->sessionYear,
+            'studentId'       => $studentId,
+            'student_name'    => trim((string) ($input['student_name']  ?? '')),
+            'student_class'   => trim((string) ($input['student_class'] ?? '')),
+            'requested_area'  => substr(trim((string) ($input['requested_area'] ?? '')), 0, 120),
+            'requested_type'  => (string) ($input['type'] ?? ''),
+            'requested_stop_hint' => substr(trim((string) ($input['stop_hint'] ?? '')), 0, 120),
+            'status'          => 'pending',
+            'source'          => $source,
+            'requested_at'    => $now,
+            'requested_by'    => $this->adminId,
+            'reviewed_at'     => '',
+            'reviewed_by'     => '',
+            'review_notes'    => '',
+            'assignment_id'   => '',
+            'history'         => $history,
+            'created_at'      => (string) ($prior['created_at'] ?? $now),
+            'updated_at'      => $now,
+        ];
+        $this->fs->setEntity(self::COL_TRANSPORT_REQUESTS, $docId, $data, /* merge */ true);
+        $this->emitAudit('transportRequest', $docId, 'requested', $prior ?: null, $data,
+            ['domain' => self::DOMAIN_ASSIGNMENT]);
+
+        return ['outcome' => 'pending', 'requestId' => $docId, 'assignmentId' => '',
+                'message' => 'Transport request recorded for review.'];
+    }
+
+    /**
+     * F14 Part A — refuse to complete a Pickup trip that has not provably
+     * reached school, or that still has unaccounted children.
+     *
+     * Delegates to Transport_qr_attendance_service::completionBlockers(), which
+     * owns the geofence + reconciliation logic. That service takes THIS instance
+     * as its writer, so constructing it here is safe: it never constructs a
+     * Transport_service back, so there is no recursion.
+     *
+     * Fails CLOSED on an unexpected error — if arrival cannot be confirmed, the
+     * trip stays open. An open trip is visible and recoverable; a wrongly
+     * completed one silently discards the fact that a child was unaccounted for.
+     *
+     * @throws \InvalidArgumentException with a driver-readable reason
+     */
+    private function _assertSchoolArrivalBeforeComplete(string $tripId, bool $arrivalOverride = false): void
+    {
+        $trip = $this->fs->getEntity(self::COL_TRIP_LOGS, $tripId);
+        if (!is_array($trip)) { return; }              // load failure surfaces later
+        $trip = $this->_unwrapNestedRow($trip, 'vehicleId');
+
+        // Direction gate. Pickup (morning) only; older trips carry only tripType.
+        $direction = (string) ($trip['trip_direction'] ?? '');
+        if ($direction === '') {
+            $direction = strtolower((string) ($trip['tripType'] ?? '')) === 'afternoon' ? 'Drop' : 'Pickup';
+        }
+        if ($direction !== 'Pickup') { return; }
+
+        // Nothing to guard on a trip that never started.
+        if ((string) ($trip['status'] ?? '') !== 'InProgress') { return; }
+
+        try {
+            $CI =& get_instance();
+            if (!isset($CI->f14_completion_guard)) {
+                $CI->load->library('transport_qr_attendance_service', null, 'f14_completion_guard');
+            }
+            $CI->f14_completion_guard->init(
+                $this->fs, $this, $this->schoolId, $this->sessionYear, $this->adminId);
+            $blockers = $CI->f14_completion_guard->completionBlockers($tripId, $arrivalOverride);
+        } catch (\InvalidArgumentException $e) {
+            throw $e;
+        } catch (\Throwable $e) {
+            // Fails CLOSED even under an admin override, deliberately. This path
+            // means the roster itself could not be evaluated, so whether any
+            // child is unresolved or still aboard is UNKNOWN — and an override is
+            // authorised to excuse missing GPS, never to excuse an unknown child.
+            // A genuine no-GPS condition does not land here: it is a normal
+            // `school_not_reached` verdict, which the override does suppress.
+            log_message('error',
+                "F14 completion guard failed for {$tripId}: " . $e->getMessage());
+            throw new \InvalidArgumentException(
+                'Could not confirm the bus has reached school, so the trip cannot be completed yet. '
+                . 'Check that tracking is running and try again.');
+        }
+
+        if (!empty($blockers['blocked'])) {
+            $names = [];
+            foreach ((array) ($blockers['students'] ?? []) as $s) {
+                $n = trim((string) ($s['name'] ?? $s['student_id'] ?? ''));
+                if ($n !== '') { $names[] = $n; }
+            }
+            $detail = $names !== [] ? ' (' . implode(', ', array_slice($names, 0, 8)) . ')' : '';
+            throw new \InvalidArgumentException((string) $blockers['message'] . $detail);
+        }
+    }
+
+    /** Active studentRoutes row for a student in this session, or []. */
+    private function _activeAssignmentFor(string $studentId): array
+    {
+        try {
+            $rows = (array) $this->fs->schoolWhere(self::COL_STUDENT_ROUTES_LEGACY,
+                [['studentId', '==', $studentId], ['status', '==', 'Active']], null, 'ASC', 20);
+        } catch (\Throwable $e) {
+            log_message('error', 'F14 request: assignment lookup failed: ' . $e->getMessage());
+            return [];
+        }
+        foreach ($rows as $r) {
+            $a = $this->_unwrapNestedRow($r, 'studentId');
+            if (($a['session'] ?? '') === $this->sessionYear) { return $a; }
+        }
+        return [];
+    }
+
+    /** Worklist for the admin screen. */
+    public function listTransportRequests(string $status = 'pending', int $limit = 200): array
+    {
+        $this->_assertReady();
+        // session FIRST, status second — deliberately. That ordering lets ONE
+        // composite index (schoolId + session + status) serve both the filtered
+        // worklist and the unfiltered "all" view, because schoolId + session is
+        // a prefix of it. Reversed, the "all" case would need a second index.
+        $cond = [['session', '==', $this->sessionYear]];
+        if ($status !== '' && $status !== 'all') {
+            if (!in_array($status, self::REQUEST_STATUSES, true)) {
+                throw new \InvalidArgumentException('Invalid status filter.');
+            }
+            $cond[] = ['status', '==', $status];
+        }
+        $rows = (array) $this->fs->schoolWhere(self::COL_TRANSPORT_REQUESTS, $cond, null, 'ASC', $limit);
+        $out = [];
+        foreach ($rows as $r) {
+            $d = $this->_unwrapNestedRow($r, 'studentId');
+            if ($d !== []) { $out[] = $d; }
+        }
+        return $out;
+    }
+
+    /**
+     * Approve a pending request by creating the REAL assignment.
+     *
+     * Conversion goes through the canonical assignStudent(), so the request
+     * inherits every existing behaviour — validation, fee creation, audit,
+     * history — rather than reimplementing any of it. Route AND stop are
+     * mandatory here: approving without them would recreate exactly the
+     * incomplete-assignment problem the worklist exists to prevent.
+     */
+    public function approveTransportRequest(string $requestId, array $assignment): array
+    {
+        $this->_assertReady();
+        $req = $this->fs->getEntity(self::COL_TRANSPORT_REQUESTS, $requestId);
+        $req = is_array($req) ? $this->_unwrapNestedRow($req, 'studentId') : [];
+        if ($req === []) { throw new \InvalidArgumentException('Transport request not found.'); }
+        if ((string) ($req['schoolId'] ?? '') !== $this->schoolId) {
+            log_message('error', "F14 cross-tenant request approve school={$this->schoolId} req={$requestId}");
+            throw new \InvalidArgumentException('Transport request not found.');
+        }
+        if ((string) ($req['status'] ?? '') !== 'pending') {
+            throw new \InvalidArgumentException(
+                'Only a pending request can be approved (current: ' . (string) ($req['status'] ?? '?') . ').');
+        }
+        $routeId = trim((string) ($assignment['route_id'] ?? ''));
+        $stopId  = trim((string) ($assignment['stop_id']  ?? ''));
+        if ($routeId === '' || $stopId === '') {
+            throw new \InvalidArgumentException('A route and a stop are required to approve a transport request.');
+        }
+
+        $res = $this->assignStudent([
+            // assignStudent() reads $input['student_id'] — the key was 'studentId'
+            // here, so approval always threw "student_id and route_id are
+            // required." before reaching any write. Caller-side correction only:
+            // the shared contract is unchanged and no alias was introduced.
+            'student_id'     => (string) $req['studentId'],
+            'route_id'       => $routeId,
+            'stop_id'        => $stopId,
+            'type'           => (string) ($assignment['type'] ?? $req['requested_type'] ?? 'both'),
+            'service_days'   => (array)  ($assignment['service_days']   ?? []),
+            'effective_from' => (string) ($assignment['effective_from'] ?? date('Y-m-d')),
+            'effective_to'   => (string) ($assignment['effective_to']   ?? ''),
+            'monthly_fee'    => $assignment['monthly_fee'] ?? null,
+        ], 'request_approval');
+
+        $assignmentId = (string) ($res['assignmentId'] ?? $res['id'] ?? '');
+        $update = [
+            'status'        => 'approved',
+            'reviewed_at'   => date('c'),
+            'reviewed_by'   => $this->adminId,
+            'review_notes'  => trim((string) ($assignment['notes'] ?? '')),
+            'assignment_id' => $assignmentId,
+            'updated_at'    => date('c'),
+        ];
+        $this->fs->setEntity(self::COL_TRANSPORT_REQUESTS, $requestId, $update, /* merge */ true);
+        $this->emitAudit('transportRequest', $requestId, 'approved', $req, array_merge($req, $update),
+            ['domain' => self::DOMAIN_ASSIGNMENT]);
+
+        return ['requestId' => $requestId, 'assignmentId' => $assignmentId,
+                'studentId' => (string) $req['studentId'], 'message' => 'Transport request approved and assigned.'];
+    }
+
+    /** Reject a pending request. Creates no assignment and no fee. */
+    public function rejectTransportRequest(string $requestId, string $reason): void
+    {
+        $this->_assertReady();
+        if (trim($reason) === '') {
+            throw new \InvalidArgumentException('A reason is required to reject a transport request.');
+        }
+        $req = $this->fs->getEntity(self::COL_TRANSPORT_REQUESTS, $requestId);
+        $req = is_array($req) ? $this->_unwrapNestedRow($req, 'studentId') : [];
+        if ($req === []) { throw new \InvalidArgumentException('Transport request not found.'); }
+        if ((string) ($req['schoolId'] ?? '') !== $this->schoolId) {
+            throw new \InvalidArgumentException('Transport request not found.');
+        }
+        if ((string) ($req['status'] ?? '') !== 'pending') {
+            throw new \InvalidArgumentException('Only a pending request can be rejected.');
+        }
+        $update = [
+            'status' => 'rejected', 'reviewed_at' => date('c'), 'reviewed_by' => $this->adminId,
+            'review_notes' => trim($reason), 'updated_at' => date('c'),
+        ];
+        $this->fs->setEntity(self::COL_TRANSPORT_REQUESTS, $requestId, $update, /* merge */ true);
+        $this->emitAudit('transportRequest', $requestId, 'rejected', $req, array_merge($req, $update),
+            ['domain' => self::DOMAIN_ASSIGNMENT]);
+    }
+
+    /**
+     * ── F14 canonical four ───────────────────────────────────────────────
+     * Thin, explicit entry points. Each one names exactly one leg of one
+     * journey, so a caller cannot accidentally record a morning event on an
+     * afternoon trip — _writeBoardingEvent() enforces the leg as well.
+     */
+    public function markBoardedAtStop(string $tripId, string $studentId, ?string $actualStopId = null, string $notes = '', array $opts = []): array
+    {
+        return $this->_writeBoardingEvent($tripId, $studentId, 'boarded_at_stop', $actualStopId, $notes, $opts);
+    }
+
+    public function markAlightedAtSchool(string $tripId, string $studentId, string $notes = '', array $opts = []): array
+    {
+        return $this->_writeBoardingEvent($tripId, $studentId, 'alighted_at_school', null, $notes, $opts);
+    }
+
+    public function markBoardedAtSchool(string $tripId, string $studentId, string $notes = '', array $opts = []): array
+    {
+        return $this->_writeBoardingEvent($tripId, $studentId, 'boarded_at_school', null, $notes, $opts);
+    }
+
+    public function markAlightedAtStop(string $tripId, string $studentId, ?string $actualStopId = null, string $notes = '', array $opts = []): array
+    {
+        return $this->_writeBoardingEvent($tripId, $studentId, 'alighted_at_stop', $actualStopId, $notes, $opts);
+    }
+
     public function markStudentBoarded(string $tripId, string $studentId, ?string $actualStopId = null, string $notes = ''): array
     {
         return $this->_writeBoardingEvent($tripId, $studentId, 'boarded_pickup', $actualStopId, $notes);
@@ -6263,9 +7214,10 @@ class Transport_service
     }
 
     /** Record a no-show. Fires trip.student_no_show (Important) to the parent. */
-    public function markStudentNoShow(string $tripId, string $studentId, string $notes = ''): array
+    /** @param array $opts F14 additive (resolution_state/reason, driver role). */
+    public function markStudentNoShow(string $tripId, string $studentId, string $notes = '', array $opts = []): array
     {
-        $ret = $this->_writeBoardingEvent($tripId, $studentId, 'no_show', null, $notes);
+        $ret = $this->_writeBoardingEvent($tripId, $studentId, 'no_show', null, $notes, $opts);
 
         // Fire parent notification (F6-Refined categories; only no-show
         // fires at F7 per operator Refinement 1 — boarded/dropped
@@ -6288,10 +7240,65 @@ class Transport_service
      * Skipped (Refinement 4). Computes trip summary (distance, duration,
      * on_time, students_boarded_count, no_show_count). Fires trip.completed.
      */
-    public function completeTrip(string $tripId, array $input = []): array
+    /**
+     * @param array $override F14 Phase 2A — audited admin completion override.
+     *        DELIBERATELY a separate argument, not a key inside $input: $input is
+     *        populated straight from client POST data, so an override flag living
+     *        there could be set by anyone who can reach the ordinary completion
+     *        endpoint. Only an authorised server-side path can pass this.
+     *        Shape: ['reason' => non-empty string, 'by' => staff id].
+     */
+    public function completeTrip(string $tripId, array $input = [], array $override = []): array
     {
         $this->_assertReady();
         if ($tripId === '') { throw new \InvalidArgumentException('tripId required.'); }
+
+        // ── F14 Phase 2A — OVERRIDE INTAKE ───────────────────────────────────
+        // Strip any override-shaped keys a caller may have folded into $input.
+        // Defence in depth: even if a future endpoint forwards raw POST data,
+        // the client cannot smuggle an override or forge its provenance fields.
+        unset($input['_override'], $input['completion_override'],
+              $input['override_by'], $input['override_at'], $input['override_reason']);
+
+        $ovReason = '';
+        if ($override !== []) {
+            $ovReason = trim((string) ($override['reason'] ?? ''));
+            if ($ovReason === '') {
+                throw new \InvalidArgumentException(
+                    'A written reason is required to override trip completion.');
+            }
+        }
+        $ovActive = $ovReason !== '';
+        $ovBy     = $ovActive
+            ? (trim((string) ($override['by'] ?? '')) ?: (string) $this->adminId)
+            : '';
+
+        // ── F14 Part A — SCHOOL-ARRIVAL COMPLETION GUARD (2026-08-12) ────────
+        //
+        // Audited 2026-08-12: this method previously enforced only (a) status ==
+        // InProgress and (b) no Pending checkpoint. A school-bound Pickup trip
+        // could therefore be completed from anywhere — outside the geofence,
+        // with a stale fix, with no GPS at all, and with children still
+        // unaccounted for. Pressing a button is not arrival.
+        //
+        // Enforced HERE, in the service, rather than in the driver API, because
+        // the invariant must hold for EVERY caller — including the admin panel.
+        // The check runs BEFORE the CAS transaction: it performs several reads,
+        // which do not belong inside a compare-and-set mutator.
+        //
+        // Pickup ONLY. The afternoon leg ends at the stops, and applying a
+        // school-arrival rule to it would be simply wrong.
+        //
+        // Reuses F13.1 `vehicleLivePositions` and the shared campus geofence
+        // (schools.attendancePolicy.gps) via Transport_qr_attendance_service —
+        // no second GPS system, no duplicated geofence maths, and F13.1's own
+        // freshness/accuracy ceilings are untouched.
+        //
+        // An override suppresses ONLY the geofence arrival check inside this
+        // guard. `unresolved_students` and `still_on_board` remain fatal — see
+        // Transport_qr_attendance_service::completionBlockers().
+        $this->_assertSchoolArrivalBeforeComplete($tripId, $ovActive);
+
         $now     = date('c');
         $before  = [];
         $abort   = '';
@@ -6302,10 +7309,27 @@ class Transport_service
         // checkpoint write (CON-2) cannot slip a Pending stop past completion,
         // and two completes cannot both fire audit/notify.
         $res = $this->fs->casUpdateEntity(self::COL_TRIP_LOGS, $tripId,
-            function (array $trip) use (&$before, &$abort, &$summary, $tripId, $input, $now) {
+            function (array $trip) use (&$before, &$abort, &$summary, $tripId, $input, $now,
+                                        $ovActive, $ovReason, $ovBy) {
                 if (($trip['status'] ?? '') !== 'InProgress') {
                     $abort = "Trip {$tripId} not InProgress.";
                     return null;
+                }
+                // F14 Phase 2A — the override exists solely to excuse an
+                // unprovable SCHOOL ARRIVAL, which only the Pickup leg has. On a
+                // Drop trip it would excuse nothing and merely stamp a misleading
+                // "overridden" marker on an ordinary completion. Refuse it.
+                if ($ovActive) {
+                    $dir = (string) ($trip['trip_direction'] ?? '');
+                    if ($dir === '') {
+                        $dir = strtolower((string) ($trip['tripType'] ?? '')) === 'afternoon'
+                            ? 'Drop' : 'Pickup';
+                    }
+                    if ($dir !== 'Pickup') {
+                        $abort = 'Completion override applies to Pickup trips only — a '
+                            . $dir . ' trip does not require school-arrival verification.';
+                        return null;
+                    }
                 }
                 $checkpoints = (array) ($trip['checkpoints'] ?? []);
                 foreach ($checkpoints as $cp) {
@@ -6349,13 +7373,37 @@ class Transport_service
                     'dropped_count'      => (int) ($tally['dropped'] ?? 0),
                     'no_show_count'      => (int) ($tally['no_show'] ?? 0),
                     'updated_at'         => $now,
+                    // F13.1 M2 (D-2) — disarm the tracking kill switch. From
+                    // this write on, the Firestore rule refuses every further
+                    // driver position update for this trip, regardless of what
+                    // the driver app believes or whether it has crashed.
+                    'live_tracking_enabled' => false,
+                    'gps_end_at'            => $now,
                 ];
+                // F14 Phase 2A — override provenance, written INSIDE the CAS
+                // mutator so it can never be persisted without the accompanying
+                // Completed transition. If this CAS attempt loses the race the
+                // whole map is discarded together, leaving no partial override.
+                if ($ovActive) {
+                    $summary['completion_override'] = true;
+                    $summary['override_by']         = $ovBy;
+                    $summary['override_at']         = $now;
+                    $summary['override_reason']     = $ovReason;
+                }
                 return $summary;
             });
         $this->_assertTripTransition($res, $tripId, $abort);
 
-        $this->emitAudit('trip', $tripId, 'completed', $before, array_merge($before, $summary),
-            ['domain' => self::DOMAIN_TRIP]);
+        // F13.1 M2 (D-2) — tear down the live-position session so no parent can
+        // see a position after the children are off the bus. Best-effort: if the
+        // delete fails the kill switch above has already stopped new fixes, so
+        // the position can only go stale, never keep moving.
+        $this->_closeGpsSession((string) ($before['vehicleId'] ?? ''), $tripId);
+
+        // F14 Phase 2A — an overridden completion is a distinct audited action,
+        // never filed as an ordinary one. Canonical audit path, no new mechanism.
+        $this->emitAudit('trip', $tripId, $ovActive ? 'completed_override' : 'completed',
+            $before, array_merge($before, $summary), ['domain' => self::DOMAIN_TRIP]);
         $this->_notify('trip.completed', [
             'trip_id'         => $tripId,
             'route_id'        => (string) ($before['route_id'] ?? ''),
@@ -6400,9 +7448,16 @@ class Transport_service
                     'cancel_reason' => $reason,
                     'cancelled_by'  => $this->adminId,
                     'updated_at'    => $now,
+                    // F13.1 M2 (D-2) — same disarm as completeTrip. A cancelled
+                    // trip is just as terminal for tracking as a completed one.
+                    'live_tracking_enabled' => false,
+                    'gps_end_at'            => $now,
                 ];
             });
         $this->_assertTripTransition($res, $tripId, $abort);
+
+        // F13.1 M2 (D-2) — tear down the live-position session.
+        $this->_closeGpsSession((string) ($before['vehicleId'] ?? ''), $tripId);
 
         $update = ['status' => 'Cancelled', 'actual_end_at' => $now, 'cancel_reason' => $reason, 'cancelled_by' => $this->adminId];
         $this->emitAudit('trip', $tripId, 'cancelled', $before, array_merge($before, $update),
@@ -6410,6 +7465,53 @@ class Transport_service
         // XMOD-1: cancelled — release the vehicle's denormalised route.
         $this->_clearVehicleCurrentRoute((string) ($before['vehicleId'] ?? ''), (string) ($before['route_id'] ?? ''));
         return ['tripId' => $tripId, 'status' => 'Cancelled'];
+    }
+
+    // ─────────────────────────────────────────────────────────────────────
+    //  F13.1 M2 — GPS session lifecycle bridge (approved exception D-2)
+    //
+    //  These two helpers are the ENTIRE F13 footprint inside this frozen file.
+    //  They deliberately contain no GPS logic: everything — the viewer
+    //  allowlist, the document shape, validation, sweeping — lives in
+    //  Transport_gps_service, so F13 can evolve without reopening
+    //  Transport_service. Both are best-effort and mirror
+    //  _setVehicleCurrentRoute's contract: a telemetry failure is logged and
+    //  never propagates into the trip lifecycle, which is the business truth.
+    // ─────────────────────────────────────────────────────────────────────
+
+    /** Open the live-position session for a trip that has just gone InProgress. */
+    private function _openGpsSession(array $trip, string $tripId): void
+    {
+        try {
+            $CI = get_instance();
+            $CI->load->library('transport_gps_service', null, 'trnGpsSvc');
+            $res = $CI->trnGpsSvc
+                ->init($this->fs, $this->schoolId, $this->adminId)
+                ->openSession($trip, $tripId);
+            if (empty($res['ok'])) {
+                log_message('error', "F13 openGpsSession skipped for {$tripId}: " . (string) ($res['reason'] ?? '?'));
+            }
+        } catch (\Throwable $e) {
+            log_message('error', "F13 openGpsSession failed for {$tripId}: " . $e->getMessage());
+        }
+    }
+
+    /** Close the live-position session on trip completion or cancellation. */
+    private function _closeGpsSession(string $vehicleId, string $tripId): void
+    {
+        if ($vehicleId === '') { return; }
+        try {
+            $CI = get_instance();
+            $CI->load->library('transport_gps_service', null, 'trnGpsSvc');
+            $res = $CI->trnGpsSvc
+                ->init($this->fs, $this->schoolId, $this->adminId)
+                ->closeSession($vehicleId);
+            if (empty($res['ok'])) {
+                log_message('error', "F13 closeGpsSession for {$tripId}/{$vehicleId}: " . (string) ($res['reason'] ?? '?'));
+            }
+        } catch (\Throwable $e) {
+            log_message('error', "F13 closeGpsSession failed for {$tripId}/{$vehicleId}: " . $e->getMessage());
+        }
     }
 
     /**
@@ -6607,7 +7709,25 @@ class Transport_service
      * Write a boarding event to transportAttendance. Deterministic doc-id
      * = idempotent on repeat driver taps (F7-4 verifier gate).
      */
-    private function _writeBoardingEvent(string $tripId, string $studentId, string $eventType, ?string $actualStopId, string $notes): array
+    /**
+     * THE single attendance writer. F14 kept it that way deliberately — a
+     * second writer would mean a second place to forget the roster gate.
+     *
+     * @param array $opts F14 additive options. Every key is optional and every
+     *   default reproduces pre-F14 behaviour byte-for-byte, so existing callers
+     *   are unaffected:
+     *     marked_by_role     'admin'|'driver'   — who recorded it
+     *     scan_source        qr_scan|manual|bulk_school_arrival
+     *     allow_off_roster   bool  — ONLY the authorised alternate-bus path
+     *     boarding_mode      assigned|alternate_bus|operational_exception
+     *     assigned_*         route/vehicle/trip/stop from studentRoutes
+     *     actual_*           route/vehicle for THIS trip
+     *     client_event_id    offline-queue idempotency key
+     *     client_event_at    device clock (server keeps event_at authoritative)
+     *     event_lat/lng/accuracy_m  GPS-at-scan (from F13.1 telemetry)
+     *     resolution_state / resolution_reason
+     */
+    private function _writeBoardingEvent(string $tripId, string $studentId, string $eventType, ?string $actualStopId, string $notes, array $opts = []): array
     {
         $this->_assertReady();
         if (!in_array($eventType, self::BOARDING_EVENT_TYPES, true)) {
@@ -6623,7 +7743,12 @@ class Transport_service
         // markStudentNoShow(anyId) fire a safety-exempt trip.student_no_show to
         // an unrelated parent + inflate the tally. A no_show is by definition a
         // student who was expected (on the frozen roster) but did not board.
-        if (!in_array($studentId, $roster, true)) {
+        // F14: the ONLY sanctioned off-roster write is an explicitly authorised
+        // alternate-bus boarding, where the caller has already proved the
+        // student holds an active studentRoutes entitlement for another route.
+        // Default false keeps the gate exactly as strict as before.
+        $allowOffRoster = !empty($opts['allow_off_roster']);
+        if (!in_array($studentId, $roster, true) && !$allowOffRoster) {
             throw new \InvalidArgumentException("Student {$studentId} is not on the frozen roster for trip {$tripId}.");
         }
         // Direction guard
@@ -6634,11 +7759,47 @@ class Transport_service
         if ($eventType === 'dropped_home' && $direction !== 'Drop') {
             throw new \InvalidArgumentException("Cannot drop on a Pickup trip; use boarded_pickup instead.");
         }
+        // F14 canonical events carry the same guard, expressed once via the
+        // leg map so morning and afternoon can never be mixed on one trip.
+        $legOf = [
+            'boarded_at_stop'    => 'Pickup', 'alighted_at_school' => 'Pickup',
+            'boarded_at_school'  => 'Drop',   'alighted_at_stop'   => 'Drop',
+        ];
+        if (isset($legOf[$eventType]) && $direction !== '' && $legOf[$eventType] !== $direction) {
+            throw new \InvalidArgumentException(
+                "Event {$eventType} belongs to the {$legOf[$eventType]} journey, but trip {$tripId} is {$direction}.");
+        }
 
         // Look up planned stop from assignment (may be null if no_show)
         $plannedStopId = $this->_lookupPlannedStop($studentId, (string) ($trip['route_id'] ?? ''));
 
-        // Deterministic doc-id → idempotent repeat taps
+        // Deterministic doc-id → idempotent repeat taps.
+        //
+        // ⚠ DO NOT "FIX" THE DOUBLED SCHOOL PREFIX. Reviewed and deliberately
+        // KEPT (operator decision, 2026-08-12).
+        //
+        // This id already contains {schoolId}, and setEntity() below adds
+        // another one via docId(), so every stored document is
+        //     {schoolId}_{schoolId}_{tripId}_{studentId}_{eventType}
+        // e.g. SCH_202512_SCH_202512_TRP000080_STU0159_no_show
+        //
+        // Why it stays:
+        //   • ALL existing documents use this shape — it is consistent.
+        //   • NOTHING reads attendance by document id. All six read paths are
+        //     field queries (tripId / studentId / trip_date), the parent rule
+        //     matches resource.data.studentId, and notification dedupe treats
+        //     the id as an opaque string. Idempotency needs the id to be
+        //     DETERMINISTIC, not to have any particular shape.
+        //   • Correcting the writer alone would leave TWO id shapes in one
+        //     collection — strictly worse than one consistent shape — and
+        //     correcting the data would mean migrating live attendance records
+        //     for zero functional gain.
+        //
+        // The one real hazard: a stored id must NEVER be handed back to
+        // getEntity()/setEntity()/removeEntity(), which would prefix it a THIRD
+        // time. When deleting, pass "{schoolId}_{tripId}_{studentId}_{type}" —
+        // one prefix short of the stored id — and let the helper add the last
+        // one. (Transport_probe_f8 documents this at its teardown registration.)
         $docId = "{$this->schoolId}_{$tripId}_{$studentId}_{$eventType}";
         $correlationId = substr(sha1($docId), 0, 24);
         $now = date('c');
@@ -6657,7 +7818,11 @@ class Transport_service
             'event_type'            => $eventType,
             'event_at'              => $now,
             'marked_by_staff_id'    => $this->adminId,
-            'marked_by_role'        => 'admin',
+            // F14: a driver-recorded event must be attributable as such. The
+            // Firestore rule for transportAttendance already switches on this
+            // value, so defaulting to 'admin' preserves every legacy caller.
+            'marked_by_role'        => in_array((string) ($opts['marked_by_role'] ?? ''), ['admin', 'driver'], true)
+                                        ? (string) $opts['marked_by_role'] : 'admin',
             'checkpoint_sequence'   => $this->_currentCheckpointSequence($trip, $actualStopId ?: $plannedStopId),
             'notes'                 => trim($notes),
             // GPS-native placeholders — NULL at F7, populated by GPS phase
@@ -6673,6 +7838,49 @@ class Transport_service
             'geofence_verified'     => null,
             'created_at'            => $now,
         ];
+
+        // ── F14 additive block ───────────────────────────────────────────
+        // ASSIGNED vs ACTUAL. The student's permanent studentRoutes assignment
+        // is NEVER modified by an attendance event; when a child travels on a
+        // bus that is not theirs, both facts are recorded side by side. Parent
+        // history, driver reconciliation, admin audit and any later safety
+        // investigation all depend on keeping the two distinguishable.
+        if ($opts !== []) {
+            $str = static fn($k) => isset($opts[$k]) ? (string) $opts[$k] : '';
+            $mode = $str('boarding_mode');
+            $data['boarding_mode'] = in_array($mode, ['assigned', 'alternate_bus', 'operational_exception'], true)
+                ? $mode : 'assigned';
+            $data['assigned_route_id']   = $str('assigned_route_id');
+            $data['assigned_vehicle_id'] = $str('assigned_vehicle_id');
+            $data['assigned_trip_id']    = $str('assigned_trip_id');
+            $data['assigned_stop_id']    = $str('assigned_stop_id');
+            $data['actual_route_id']     = $str('actual_route_id')   ?: (string) ($trip['route_id']  ?? '');
+            $data['actual_vehicle_id']   = $str('actual_vehicle_id') ?: (string) ($trip['vehicleId'] ?? '');
+            $data['actual_trip_id']      = $tripId;
+            $data['alternate_reason']    = $str('alternate_reason');
+            $data['scan_source']         = in_array($str('scan_source'), ['qr_scan', 'manual', 'bulk_school_arrival'], true)
+                ? $str('scan_source') : 'manual';
+            // Offline replay key. The deterministic doc id already makes a
+            // repeat of the SAME event idempotent; this records which queued
+            // client event produced the row, so a flush can be audited.
+            if ($str('client_event_id') !== '') { $data['client_event_id'] = $str('client_event_id'); }
+            // Device clock, kept SEPARATE from event_at. The server's clock stays
+            // authoritative for ordering and security; the device time is
+            // evidence of when the scan physically happened.
+            if ($str('client_event_at') !== '') { $data['client_event_at'] = $str('client_event_at'); }
+            if ($str('resolution_state')  !== '') { $data['resolution_state']  = $str('resolution_state'); }
+            if ($str('resolution_reason') !== '') { $data['resolution_reason'] = $str('resolution_reason'); }
+            // GPS-at-scan. Sourced from F13.1 telemetry — F14 creates no GPS
+            // system and never trusts a client-typed coordinate.
+            foreach (['event_lat', 'event_lng'] as $k) {
+                if (array_key_exists($k, $opts) && $opts[$k] !== null && is_numeric($opts[$k])) {
+                    $data[$k] = (float) $opts[$k];
+                }
+            }
+            if (array_key_exists('event_at_gps', $opts) && $opts['event_at_gps'] !== null) {
+                $data['event_at_gps'] = (string) $opts['event_at_gps'];
+            }
+        }
         $this->fs->setEntity(self::COL_TRANSPORT_ATTENDANCE, $docId, $data, /* merge */ true);
 
         // Update trip's per-checkpoint boarding tally
@@ -6729,9 +7937,20 @@ class Transport_service
         if ($tripDirection === 'Pickup' && !in_array($type, ['pickup', 'both'], true)) { return false; }
         if ($tripDirection === 'Drop'   && !in_array($type, ['drop',   'both'], true)) { return false; }
 
-        // Service-days gate (allow missing = all days for backward compat)
+        // Service-days gate (allow missing = all days for backward compat).
+        //
+        // Compared on the 3-letter stem, NOT strict equality. $dayName comes
+        // from date('l') ⇒ "Tuesday", while real assignments store "Tue" — a
+        // strict in_array() dropped every such student from every roster, so
+        // trips were created with roster_size 0 and no parent could see the
+        // bus. It went unnoticed because the probe fixtures happen to write
+        // full day names. Stem matching accepts Monday / Mon / mon / MONDAY
+        // without needing the stored data to be migrated.
         $days = (array) ($assignment['service_days'] ?? []);
-        if ($days !== [] && !in_array($dayName, $days, true)) { return false; }
+        if ($days !== []) {
+            $stem = static fn($d) => strtolower(substr(trim((string) $d), 0, 3));
+            if (!in_array($stem($dayName), array_map($stem, $days), true)) { return false; }
+        }
         return true;
     }
 
@@ -6810,7 +8029,11 @@ class Transport_service
                 if ($stop === '') { continue; }
                 $t = (string) ($inner['event_type'] ?? '');
                 if (!isset($byStop[$stop])) { $byStop[$stop] = ['boarded' => 0, 'no_show' => 0]; }
-                if ($t === 'boarded_pickup' || $t === 'dropped_home' || $t === 'alternate_pickup') {
+                // "Boarded" at a stop means the child was accounted for there —
+                // getting on in the morning or getting off in the afternoon both
+                // happen AT the stop, which is why both sets count here.
+                if (in_array($t, self::BOARDING_ON_EVENTS, true)
+                    || in_array($t, self::BOARDING_OFF_EVENTS, true)) {
                     $byStop[$stop]['boarded']++;
                 } elseif ($t === 'no_show') {
                     $byStop[$stop]['no_show']++;
@@ -6830,9 +8053,9 @@ class Transport_service
                 $inner = $this->_unwrapNestedRow($r, 'tripId');
                 if (!is_array($inner)) { continue; }
                 $t = (string) ($inner['event_type'] ?? '');
-                if ($t === 'boarded_pickup' || $t === 'alternate_pickup') { $tally['boarded']++; }
-                elseif ($t === 'dropped_home') { $tally['dropped']++; }
-                elseif ($t === 'no_show')      { $tally['no_show']++; }
+                if (in_array($t, self::BOARDING_ON_EVENTS, true))       { $tally['boarded']++; }
+                elseif (in_array($t, self::BOARDING_OFF_EVENTS, true))  { $tally['dropped']++; }
+                elseif ($t === 'no_show')                               { $tally['no_show']++; }
             }
         } catch (\Throwable $_) {}
         return $tally;
@@ -7663,7 +8886,7 @@ class Transport_service
             }
             return $this->ci->transportNotifier ?? null;
         } catch (\Throwable $e) {
-            log_message('warning', 'Transport_notifier load failed: ' . $e->getMessage());
+            log_message('error', 'Transport_notifier load failed: ' . $e->getMessage());
             return null;
         }
     }
@@ -7678,13 +8901,13 @@ class Transport_service
     {
         $n = $this->_notifier();
         if ($n === null || !method_exists($n, 'notify')) {
-            log_message('warning', "Transport_notifier unavailable for {$category}");
+            log_message('error', "Transport_notifier unavailable for {$category}");
             return;
         }
         try {
             $n->notify($category, $ctx, $overrides);
         } catch (\Throwable $e) {
-            log_message('warning', "Transport_notifier {$category} failed: " . $e->getMessage());
+            log_message('error', "Transport_notifier {$category} failed: " . $e->getMessage());
         }
     }
 
@@ -7730,7 +8953,7 @@ class Transport_service
      *      is already covering another vehicle at the same window
      *
      * Throws \InvalidArgumentException on hard failure. Soft warnings
-     * are logged (log_message('warning', ...)) — schools rolling out
+     * are logged (log_message('error', ...)) — schools rolling out
      * driver_meta gradually still get useful validation on the fields
      * they HAVE captured.
      */
@@ -7812,12 +9035,22 @@ class Transport_service
         } catch (\InvalidArgumentException $e) { throw $e; }
         catch (\Throwable $_) { /* query unavailable — trust caller */ }
 
-        // Soft warnings — log missing licence/medical data for admin visibility
+        // Soft warnings — log missing licence/medical data for admin visibility.
+        //
+        // Level is 'error', NOT 'warning': CI3's Log::write_log() knows only
+        // ERROR/DEBUG/INFO/ALL, so 'warning' indexes $_levels['WARNING'] which
+        // does not exist. On PHP 8.1 that raises "Undefined array key" and, with
+        // display_errors on, prints HTML *before* the JSON of whatever AJAX call
+        // is in flight — corrupting the response so the caller's JSON.parse
+        // throws even though the operation succeeded. Observed on trip creation
+        // 2026-08-11 (both lines fire for a driver with no licence/medical
+        // dates). 'error' is also always logged at threshold=1, so these stay
+        // visible instead of being silently dropped.
         if ($licenceExp === '') {
-            log_message('warning', "F4 driver readiness: {$staffId} has no licence_expires date (soft-check)");
+            log_message('error', "F4 driver readiness: {$staffId} has no licence_expires date (soft-check)");
         }
         if ($medicalExp === '') {
-            log_message('warning', "F4 driver readiness: {$staffId} has no medical_expires date (soft-check)");
+            log_message('error', "F4 driver readiness: {$staffId} has no medical_expires date (soft-check)");
         }
     }
 
