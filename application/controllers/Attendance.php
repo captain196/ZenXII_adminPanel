@@ -120,6 +120,24 @@ class Attendance extends MY_Controller
         // shortcut. Strict sites still fall through to the legacy name-gate and
         // are NOT reachable by a mere module holder.
         $strict = ($module === 'strict');
+
+        // ── LIFECYCLE GATE (added 2026-08-23) ───────────────────────────
+        // This MUST run before the early returns below. The base gate carries
+        // the institution/commercial lifecycle clause, but it sits behind
+        // `if ($module !== null)` and this override returns straight out on a
+        // module hit — and delegates the strict branch with NO module — so the
+        // gate never ran for ANY Attendance endpoint. A CLOSED tenant
+        // (allowRead true, allowWrite false) could still mark attendance,
+        // rewrite policy, rotate device API keys and approve regularizations
+        // that land on payroll.
+        //
+        // Deny-only, and it duplicates no permission logic: it answers "may
+        // anyone act on this school right now", never "may this actor". The
+        // non-strict branch below delegates with the module, so the base
+        // evaluates the same verdict again — idempotent, and cheap because the
+        // verdict resolves once per request.
+        $this->_lifecycle_gate_or_deny($action, $strict ? 'manage' : $level);
+
         if (!$strict && has_permission('Attendance', $level)) {
             return;
         }
@@ -140,6 +158,46 @@ class Attendance extends MY_Controller
         } else {
             parent::_require_role($allowed, $action, 'Attendance', $level);
         }
+    }
+
+    /**
+     * Deny the request outright when the tenant's lifecycle state forbids it.
+     *
+     * Mirrors the clause in MY_Controller::_require_role — same helper, same
+     * fail-open on an unreadable tenant state, same 403 shape — kept HERE rather
+     * than extracted into the base so that restoring the gate for Attendance
+     * cannot alter behaviour for the other 44 controllers.
+     *
+     * Deny-only by construction: it can refuse an operation, never grant one.
+     *
+     * @param string $action the audited action name, for the denial log
+     * @param string $level  view | edit | manage — decides read vs write caps
+     */
+    private function _lifecycle_gate_or_deny(string $action, string $level): void
+    {
+        if (!function_exists('lifecycle_allows_operation')) {
+            @include_once APPPATH . 'helpers/lifecycle_guard_helper.php';
+        }
+        if (!function_exists('lifecycle_allows_operation')) {
+            return;   // helper absent → today's behaviour, never a hard failure
+        }
+
+        $lc = lifecycle_allows_operation('Attendance', $level, $action);
+        if (!empty($lc['allowed'])) {
+            return;
+        }
+
+        log_message('error',
+            'LIFECYCLE_DENIED (attendance) module=[Attendance] level=[' . $level . ']'
+            . ' action=[' . $action . '] code=[' . ($lc['code'] ?? '') . ']'
+            . ' admin=[' . ($this->admin_id ?? '') . '] school=[' . ($this->school_id ?? '') . ']'
+        );
+
+        if ($this->input->is_ajax_request()) {
+            $this->json_error($lc['message'], 403);   // exits
+            return;
+        }
+        show_error($lc['message'], 403, 'School unavailable');
     }
 
     /** Month names → numbers */

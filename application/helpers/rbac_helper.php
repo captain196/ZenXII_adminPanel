@@ -285,6 +285,47 @@ function rbac_denied_url(?string $module = null, string $level = 'view'): string
 
 function require_permission(string $module, string $action = '', string $level = 'view'): void
 {
+    // ── INSTITUTION / COMMERCIAL LIFECYCLE GATE (defect N1) ──────────────
+    //
+    // Runs BEFORE the RBAC check, and is ANDed with it — it can only ever
+    // DENY. RBAC remains the sole authority on "may THIS actor do it"; this
+    // answers the prior question "may ANYONE do it on this school, right
+    // now". Placed here because all 247 require_permission() call sites
+    // across 66 controllers inherit it with no per-controller edits, and
+    // because Superadmin controllers deliberately do NOT use this helper —
+    // the SA must keep acting on suspended and closed tenants.
+    //
+    // Checked first so the operator gets the meaningful message ("this
+    // school has closed") rather than a misleading "you don't have access
+    // to the Fees module".
+    if (!function_exists('lifecycle_allows_operation')) {
+        @include_once APPPATH . 'helpers/lifecycle_guard_helper.php';
+    }
+    if (function_exists('lifecycle_allows_operation')) {
+        $lc = lifecycle_allows_operation($module, $level, $action);
+        if (empty($lc['allowed'])) {
+            $CI =& get_instance();
+            log_message('error',
+                'LIFECYCLE_DENIED module=[' . $module . '] level=[' . $level . ']'
+                . ' code=[' . $lc['code'] . ']'
+                . ' admin=[' . ($CI->session->userdata('admin_id') ?? '') . ']'
+                . ' school=[' . ($CI->session->userdata('school_id') ?? '') . ']'
+            );
+            if ($CI->input->is_ajax_request()) {
+                header('Content-Type: application/json');
+                http_response_code(403);
+                echo json_encode([
+                    'status'     => 'error',
+                    'code'       => $lc['code'],
+                    'message'    => $lc['message'],
+                    'csrf_token' => $CI->security->get_csrf_hash(),
+                ]);
+                exit;
+            }
+            show_error($lc['message'], 403, 'School unavailable');
+        }
+    }
+
     if (has_permission($module, $level)) {
         return;
     }

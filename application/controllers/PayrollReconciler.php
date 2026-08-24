@@ -95,6 +95,14 @@ class PayrollReconciler extends CI_Controller
 
     public function run(): void
     {
+        // ── LIFECYCLE GUARD ─────────────────────────────────────────────
+        // class = money. Payroll journals must not be posted for a tenant
+        // that is commercially suspended or institutionally closed. Pending
+        // journals are preserved and re-detected on the next run — this job
+        // is a repair pass, so skipping never loses work.
+        $this->load->helper('lifecycle_guard');
+        lifecycle_guard_or_skip($this->firebase, $this->schoolFs, Lifecycle_resolver::JOB_MONEY, 'payroll_reconciler');
+
         $found = 0; $reposted = 0; $flipped = 0; $skipped = 0; $failed = 0;
 
         require_once APPPATH . 'services/PayrollAccountingService.php';

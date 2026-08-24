@@ -598,10 +598,29 @@ class Superadmin_schools extends MY_Superadmin_Controller
     {
         $school_name = trim($this->input->post('school_uid', TRUE) ?? '');
         $new_status  = trim($this->input->post('status',     TRUE) ?? '');
+        $reason      = trim($this->input->post('reason',     TRUE) ?? '');
 
         if (empty($school_name) || !in_array($new_status, ['active', 'inactive', 'suspended'])) {
             $this->json_error('Invalid request.');
             return;
+        }
+
+        // ── REASON REQUIRED FOR ACCESS-REVOKING TRANSITIONS (G8) ─────────
+        // Suspending or deactivating a school blocks every parent, teacher
+        // and admin in it and halts its money/notification jobs. Enforced
+        // server-side, not just in the UI — a hidden field or a direct POST
+        // must not be able to skip it. Reactivation is deliberately exempt:
+        // restoring access is never the dangerous direction, and requiring
+        // ceremony to UN-break a school would be a bad trade.
+        if ($new_status !== 'active') {
+            if (mb_strlen($reason) < 5) {
+                $this->json_error('A reason of at least 5 characters is required to ' .
+                    ($new_status === 'suspended' ? 'suspend' : 'deactivate') . ' a school.');
+                return;
+            }
+            if (mb_strlen($reason) > 500) {
+                $reason = mb_substr($reason, 0, 500);
+            }
         }
         // [FIX-3] Validate school_name before use in Firebase path
         if (!preg_match("/^[A-Za-z0-9 ',_\-]+$/u", $school_name)) {
@@ -612,9 +631,13 @@ class Superadmin_schools extends MY_Superadmin_Controller
         $svc = $this->_b23c_registry();
         $tenant = $svc->get_tenant_detail($school_name);
         if (!is_array($tenant)) { $this->json_error('School not found.'); return; }
-        $ok = $svc->set_admin_disabled($school_name, $new_status, (string) ($this->sa_id ?? ''));
-        if (!$ok) { $this->json_error('Failed to update school status.'); return; }
-        $this->sa_log('school_status_changed', $school_name, ['new_status' => $new_status]);
+        $ok = $svc->set_admin_disabled($school_name, $new_status, (string) ($this->sa_id ?? ''), $reason);
+        if (!$ok) {
+            $this->json_error('Failed to update school status. If another administrator is '
+                . 'changing this school at the same time, reload and try again.');
+            return;
+        }
+        $this->sa_log('school_status_changed', $school_name, ['new_status' => $new_status, 'reason' => $reason]);
         $this->json_success(['message' => "School status updated to '{$new_status}'."]);
     }
 
@@ -1207,5 +1230,215 @@ class Superadmin_schools extends MY_Superadmin_Controller
                 "LOGO-1 promote (legacy): threw for school={$schoolId}: " . $e->getMessage());
             return $tempUrl;
         }
+    }
+
+    // ═════════════════════════════════════════════════════════════════
+    //  INSTITUTION LIFECYCLE CONSOLE
+    //
+    //  Superadmin-only. Reads are cheap and safe; the single write endpoint
+    //  routes through Institution_lifecycle, which owns validation, CAS,
+    //  idempotency, two-person control and the append-only audit trail.
+    //  This controller performs NO state logic of its own — it is a
+    //  transport layer, so the console and any future caller cannot drift
+    //  from the library's rules.
+    //
+    //  CSRF: `superadmin/schools(.*)` is already in csrf_exclude_uris, so
+    //  these POSTs need no config change.
+    // ═════════════════════════════════════════════════════════════════
+
+    /** @return Institution_lifecycle */
+    private function _lifecycle()
+    {
+        $this->load->library('institution_lifecycle');
+        return $this->institution_lifecycle->init($this->firebase);
+    }
+
+    private function _valid_school_id(string $id): bool
+    {
+        return $id !== '' && preg_match('/^SCH_[A-Za-z0-9]{4,32}$/', $id) === 1;
+    }
+
+    /**
+     * GET superadmin/schools/lifecycle_status/{schoolId}
+     *
+     * Everything the console needs to render the header: both axes, the
+     * academic session, the legal next moves and the recent history.
+     */
+    public function lifecycle_status($schoolId = '')
+    {
+        $schoolId = trim((string) $schoolId);
+        if (!$this->_valid_school_id($schoolId)) { $this->json_error('Invalid school id.'); return; }
+
+        $lc  = $this->_lifecycle();
+        $cur = $lc->current_state($schoolId);
+
+        $this->load->library('lifecycle_resolver');
+        $verdict = (new Lifecycle_resolver())->init($this->firebase)->resolve($schoolId);
+
+        $school  = (array) ($this->firebase->firestoreGet('schools', $schoolId) ?? []);
+
+        $next = [];
+        foreach (Institution_lifecycle::next_states($cur['state']) as $to) {
+            $next[] = [
+                'state'     => $to,
+                'twoPerson' => Institution_lifecycle::requires_two_person($cur['state'], $to),
+            ];
+        }
+
+        $this->json_success([
+            'schoolId'    => $schoolId,
+            'institution' => [
+                'state'         => $cur['state'],
+                'explicit'      => (bool) $cur['explicit'],
+                'since'         => $cur['since'],
+                'effectiveDate' => $cur['effectiveDate'],
+                'reason'        => $cur['reason'],
+            ],
+            'commercial'  => [
+                'state'         => $verdict['commercial'],
+                'adminDisabled' => !empty($school['adminDisabled']['value']),
+            ],
+            'session'     => [
+                'current'  => (string) ($school['currentSession'] ?? ''),
+                'archived' => is_array($school['archivedSessions'] ?? null) ? $school['archivedSessions'] : [],
+            ],
+            'effective'   => ['code' => $verdict['code'], 'message' => $verdict['message'], 'caps' => $verdict['caps']],
+            'nextStates'  => $next,
+            'history'     => $lc->history($schoolId, 25),
+        ]);
+    }
+
+    /** GET superadmin/schools/lifecycle_readiness/{schoolId} */
+    public function lifecycle_readiness($schoolId = '')
+    {
+        $schoolId = trim((string) $schoolId);
+        if (!$this->_valid_school_id($schoolId)) { $this->json_error('Invalid school id.'); return; }
+
+        $this->load->library('institution_readiness');
+        $this->json_success(['readiness' =>
+            $this->institution_readiness->init($this->firebase)->evaluate($schoolId)]);
+    }
+
+    /** GET superadmin/schools/lifecycle_closure_check/{schoolId} */
+    public function lifecycle_closure_check($schoolId = '')
+    {
+        $schoolId = trim((string) $schoolId);
+        if (!$this->_valid_school_id($schoolId)) { $this->json_error('Invalid school id.'); return; }
+
+        $this->load->library('institution_closure');
+        $school  = (array) ($this->firebase->firestoreGet('schools', $schoolId) ?? []);
+        $session = (string) ($school['currentSession'] ?? '');
+
+        $this->json_success(['closure' =>
+            $this->institution_closure->init($this->firebase)->checklist($schoolId, $session)]);
+    }
+
+    /**
+     * POST superadmin/schools/lifecycle_transition
+     *
+     * Fields: school_uid, to_state, reason, effective_date, approver_id,
+     *         override (only honoured for CLOSING → CLOSED).
+     */
+    public function lifecycle_transition()
+    {
+        $schoolId  = trim((string) ($this->input->post('school_uid', TRUE) ?? ''));
+        $toState   = strtoupper(trim((string) ($this->input->post('to_state', TRUE) ?? '')));
+        $reason    = trim((string) ($this->input->post('reason', TRUE) ?? ''));
+        $effective = trim((string) ($this->input->post('effective_date', TRUE) ?? ''));
+        $approver  = trim((string) ($this->input->post('approver_id', TRUE) ?? ''));
+        $override  = (int) ($this->input->post('override', TRUE) ?? 0) === 1;
+
+        if (!$this->_valid_school_id($schoolId)) { $this->json_error('Invalid school id.'); return; }
+        if (mb_strlen($reason) < 5) {
+            $this->json_error('A reason of at least 5 characters is required for every lifecycle change.');
+            return;
+        }
+        if (mb_strlen($reason) > 500) $reason = mb_substr($reason, 0, 500);
+
+        $lc  = $this->_lifecycle();
+        $cur = $lc->current_state($schoolId);
+
+        // Pre-flight: refuse an illegal move here so the operator gets a clear
+        // message. The library re-checks against fresh state regardless — this
+        // is UX, not the security boundary.
+        $can = Institution_lifecycle::can_transition($cur['state'], $toState);
+        if (empty($can['allowed']) && empty($can['idempotent'])) {
+            $this->json_error("A school cannot move from {$cur['state']} to {$toState}.");
+            return;
+        }
+
+        // Closing a school is gated on the computed checklist, not on the
+        // operator's confidence. An override is permitted — schools do close
+        // with loose ends — but it is recorded in the lifecycle event forever.
+        $evidence = [];
+        if ($toState === Lifecycle_resolver::INST_CLOSED) {
+            $this->load->library('institution_closure');
+            $school   = (array) ($this->firebase->firestoreGet('schools', $schoolId) ?? []);
+            $check    = $this->institution_closure->init($this->firebase)
+                             ->checklist($schoolId, (string) ($school['currentSession'] ?? ''));
+            $evidence = [
+                'closure' => [
+                    'blocking' => $check['blocking'],
+                    'warnings' => $check['warnings'],
+                    'unknown'  => $check['unknown'],
+                    'items'    => array_values(array_filter($check['items'], function ($i) {
+                        return $i['status'] !== 'CLEAR';
+                    })),
+                ],
+                'overridden' => $override,
+            ];
+            if (!$check['closeAllowed'] && !$override) {
+                $this->json_error(
+                    'This school has ' . $check['blocking'] . ' blocking item(s) and '
+                    . $check['unknown'] . ' unverifiable item(s). Resolve them, or re-submit '
+                    . 'with an explicit override — the override is recorded permanently.', 409);
+                return;
+            }
+        }
+
+        if ($toState === Lifecycle_resolver::INST_ACTIVE
+            && $cur['state'] === Lifecycle_resolver::INST_ONBOARDING) {
+            // Go-live is gated on readiness, recomputed at the moment of the
+            // decision rather than trusted from a cached score.
+            $this->load->library('institution_readiness');
+            $rd = $this->institution_readiness->init($this->firebase)->evaluate($schoolId);
+            $evidence = ['readiness' => [
+                'score' => $rd['score'], 'blocking' => $rd['blocking'], 'warnings' => $rd['warnings'],
+            ], 'overridden' => $override];
+            if (!$rd['goLiveAllowed'] && !$override) {
+                $this->json_error('This school has ' . $rd['blocking'] . ' blocking readiness '
+                    . 'issue(s). Resolve them, or re-submit with an explicit override.', 409);
+                return;
+            }
+        }
+
+        $res = $lc->transition($schoolId, $toState, [
+            'reason'        => $reason,
+            'actorId'       => (string) ($this->sa_id ?? ''),
+            'actorRole'     => 'superadmin',
+            'actorSurface'  => 'sa_console',
+            'effectiveDate' => $effective,
+            'approverId'    => $approver,
+            'evidence'      => $evidence,
+        ]);
+
+        if (empty($res['success'])) {
+            $this->json_error($res['message'], $res['error'] === 'cas_failed' ? 409 : 400);
+            return;
+        }
+
+        $this->sa_log('school_lifecycle_transition', $schoolId, [
+            'from' => $res['from'], 'to' => $res['to'],
+            'reason' => $reason, 'eventId' => $res['eventId'],
+            'idempotent' => (bool) $res['idempotent'],
+        ]);
+
+        $this->json_success([
+            'message'    => $res['message'],
+            'from'       => $res['from'],
+            'to'         => $res['to'],
+            'eventId'    => $res['eventId'],
+            'idempotent' => (bool) $res['idempotent'],
+        ]);
     }
 }

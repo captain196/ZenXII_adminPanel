@@ -96,6 +96,14 @@ class FeeWorker extends CI_Controller
     {
         $this->_out("FeeWorker run @ " . date('c') . " school={$this->schoolFs} session={$this->sessionYear}");
 
+        // ── LIFECYCLE GUARD ─────────────────────────────────────────────
+        // class = money. A tenant that is commercially suspended/expired, or
+        // institutionally closed/archived, must not have fee allocation work
+        // performed against it. Queued jobs are NOT lost — they stay queued
+        // and are picked up on the next run once the tenant is restored.
+        $this->load->helper('lifecycle_guard');
+        lifecycle_guard_or_skip($this->firebase, $this->schoolFs, Lifecycle_resolver::JOB_MONEY, 'fee_worker');
+
         // Phase 7F — heartbeat write FIRST so the admin "worker is down"
         // banner clears as soon as the task runs, even if no jobs are
         // queued. The dashboard uses `lastRunAt` age to decide whether

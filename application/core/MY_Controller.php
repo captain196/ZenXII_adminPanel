@@ -1177,6 +1177,49 @@ class MY_Controller extends CI_Controller
 
     protected function _require_role(array $allowed, string $action = '', ?string $module = null, string $level = 'view'): void
     {
+        // ── INSTITUTION / COMMERCIAL LIFECYCLE GATE ─────────────────────
+        //
+        // The SECOND authorization entry point in this codebase. 926 call
+        // sites across 45 controllers reach authorization through here
+        // rather than through require_permission(), so gating only that
+        // helper would have left Fees, SIS, HR, Communication and
+        // Configuration completely ungated by lifecycle — the gate would
+        // have covered 247 of 1,173 sites and the "per-operation
+        // authorization" claim would have been false.
+        //
+        // This changes NO permission semantics. _require_role() keeps its
+        // graded-RBAC bridge exactly as written (has_permission() first,
+        // graded-authoritative on a held module, legacy name list only for
+        // unmigrated users). This clause runs BEFORE all of that and can
+        // only ever DENY — it answers "may anyone act on this school right
+        // now", never "may this actor".
+        //
+        // Deliberately NO role exemption, not even School Super Admin: the
+        // institution's state is a fact about the SCHOOL, not about the
+        // actor. Platform Superadmins perform lifecycle work through the
+        // Superadmin console, which uses neither authorization helper and
+        // is therefore unaffected.
+        if ($module !== null) {
+            if (!function_exists('lifecycle_allows_operation')) {
+                @include_once APPPATH . 'helpers/lifecycle_guard_helper.php';
+            }
+            if (function_exists('lifecycle_allows_operation')) {
+                $lc = lifecycle_allows_operation($module, $level, $action);
+                if (empty($lc['allowed'])) {
+                    log_message('error',
+                        'LIFECYCLE_DENIED (role-gate) module=[' . $module . '] level=[' . $level . ']'
+                        . ' action=[' . $action . '] code=[' . $lc['code'] . ']'
+                        . ' admin=[' . ($this->admin_id ?? '') . '] school=[' . ($this->school_id ?? '') . ']'
+                    );
+                    if ($this->input->is_ajax_request()) {
+                        $this->json_error($lc['message'], 403);
+                        return;
+                    }
+                    show_error($lc['message'], 403, 'School unavailable');
+                }
+            }
+        }
+
         $role = $this->admin_role ?? '';
 
         // Super Admin and School Super Admin always pass

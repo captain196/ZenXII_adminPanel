@@ -259,6 +259,124 @@ $cache      = $school['stats_cache']  ?? [];
             </div>
         </div>
 
+        <!-- ══ INSTITUTION LIFECYCLE CONSOLE ══════════════════════════
+             Separate from Access Control above ON PURPOSE. That panel is the
+             COMMERCIAL axis ("has this customer paid?"); this one is the
+             INSTITUTION axis ("does this school still operate?"). Showing
+             them as one control is what made "closed" and "unpaid"
+             indistinguishable in the first place. -->
+        <div class="box box-primary" id="saLifecycleBox">
+            <div class="box-header">
+                <i class="fa fa-university" style="color:var(--sa3);margin-right:8px;"></i>
+                <span class="box-title">Institution Lifecycle</span>
+                <button type="button" class="btn btn-xs btn-default pull-right" id="saLcRefresh">
+                    <i class="fa fa-refresh"></i> Refresh
+                </button>
+            </div>
+            <div class="box-body" style="padding:12px 14px 14px;">
+                <p style="font-size:12.5px;color:var(--t2);margin:0 0 12px;">
+                    The real-world operating status of the institution. This is <strong>not</strong> the
+                    billing status — a school can be fully paid up and closed, or unpaid and still teaching.
+                </p>
+
+                <div id="saLcLoading" style="font-size:12px;color:var(--t3);padding:8px 0;">
+                    <i class="fa fa-spinner fa-spin"></i> Loading lifecycle…
+                </div>
+
+                <div id="saLcBody" style="display:none;">
+                    <!-- State strip -->
+                    <div style="display:flex;gap:10px;flex-wrap:wrap;margin-bottom:14px;">
+                        <div style="flex:1;min-width:150px;border:1px solid var(--border);border-radius:8px;padding:10px;background:var(--bg3);">
+                            <div style="font-size:10px;text-transform:uppercase;letter-spacing:.5px;color:var(--t3);">Institution</div>
+                            <div id="saLcState" style="font-size:16px;font-weight:700;margin-top:3px;">—</div>
+                            <div id="saLcStateNote" style="font-size:11px;color:var(--t3);margin-top:2px;"></div>
+                        </div>
+                        <div style="flex:1;min-width:150px;border:1px solid var(--border);border-radius:8px;padding:10px;background:var(--bg3);">
+                            <div style="font-size:10px;text-transform:uppercase;letter-spacing:.5px;color:var(--t3);">Commercial</div>
+                            <div id="saLcCommercial" style="font-size:16px;font-weight:700;margin-top:3px;">—</div>
+                            <div id="saLcCommercialNote" style="font-size:11px;color:var(--t3);margin-top:2px;"></div>
+                        </div>
+                        <div style="flex:1;min-width:150px;border:1px solid var(--border);border-radius:8px;padding:10px;background:var(--bg3);">
+                            <div style="font-size:10px;text-transform:uppercase;letter-spacing:.5px;color:var(--t3);">Academic session</div>
+                            <div id="saLcSession" style="font-size:16px;font-weight:700;margin-top:3px;">—</div>
+                            <div style="font-size:11px;color:var(--t3);margin-top:2px;">Independent of both axes</div>
+                        </div>
+                    </div>
+
+                    <!-- Effective verdict -->
+                    <div id="saLcVerdict" style="display:none;font-size:12.5px;padding:9px 11px;border-radius:8px;margin-bottom:14px;"></div>
+
+                    <!-- Readiness -->
+                    <div style="margin-bottom:14px;">
+                        <div style="display:flex;align-items:center;justify-content:space-between;margin-bottom:6px;">
+                            <span style="font-size:12px;font-weight:600;">Operational readiness</span>
+                            <span id="saLcScore" style="font-size:12px;color:var(--t3);">—</span>
+                        </div>
+                        <div style="height:7px;background:var(--bg3);border-radius:4px;overflow:hidden;">
+                            <div id="saLcScoreBar" style="height:100%;width:0;background:#22c55e;transition:width .3s;"></div>
+                        </div>
+                        <div id="saLcChecks" style="margin-top:9px;"></div>
+                    </div>
+
+                    <!-- Closure checklist (only shown while CLOSING) -->
+                    <div id="saLcClosureWrap" style="display:none;margin-bottom:14px;">
+                        <div style="font-size:12px;font-weight:600;margin-bottom:6px;">Closure checklist</div>
+                        <div id="saLcClosure"></div>
+                    </div>
+
+                    <!-- Next permitted transitions -->
+                    <div style="font-size:12px;font-weight:600;margin-bottom:6px;">Next permitted transitions</div>
+                    <div id="saLcNext" style="display:flex;gap:8px;flex-wrap:wrap;margin-bottom:14px;"></div>
+
+                    <!-- History -->
+                    <div style="font-size:12px;font-weight:600;margin-bottom:6px;">Lifecycle history</div>
+                    <div id="saLcHistory" style="font-size:11.5px;"></div>
+                </div>
+            </div>
+        </div>
+
+        <!-- Lifecycle transition modal -->
+        <div class="modal fade" id="saLcModal" tabindex="-1" role="dialog">
+          <div class="modal-dialog" role="document">
+            <div class="modal-content">
+              <div class="modal-header">
+                <button type="button" class="close" data-dismiss="modal">&times;</button>
+                <h4 class="modal-title">Change institution state</h4>
+              </div>
+              <div class="modal-body">
+                <p id="saLcModalIntro" style="font-size:13px;"></p>
+                <div id="saLcImpact" style="font-size:12px;border:1px solid var(--border);border-radius:8px;padding:10px;background:var(--bg3);margin-bottom:12px;"></div>
+
+                <div class="form-group">
+                  <label style="font-size:12px;">Reason <span style="color:#ef4444;">*</span></label>
+                  <textarea id="saLcReason" class="form-control" rows="2"
+                            placeholder="Recorded permanently in the audit trail"></textarea>
+                </div>
+                <div class="form-group">
+                  <label style="font-size:12px;">Effective date</label>
+                  <input type="date" id="saLcEffective" class="form-control">
+                  <span style="font-size:11px;color:var(--t3);">Closures are usually announced ahead of time. Defaults to today.</span>
+                </div>
+                <div class="form-group" id="saLcApproverWrap" style="display:none;">
+                  <label style="font-size:12px;">Second authorizer (Superadmin ID) <span style="color:#ef4444;">*</span></label>
+                  <input type="text" id="saLcApprover" class="form-control" placeholder="e.g. SA0002">
+                  <span style="font-size:11px;color:var(--t3);">This transition requires two people. Must not be you.</span>
+                </div>
+                <div class="checkbox" id="saLcOverrideWrap" style="display:none;">
+                  <label style="font-size:12px;">
+                    <input type="checkbox" id="saLcOverride"> Override the blocking items (recorded permanently)
+                  </label>
+                </div>
+                <div id="saLcModalErr" style="display:none;font-size:12px;color:#ef4444;margin-top:6px;"></div>
+              </div>
+              <div class="modal-footer">
+                <button type="button" class="btn btn-default btn-sm" data-dismiss="modal">Cancel</button>
+                <button type="button" class="btn btn-primary btn-sm" id="saLcConfirm">Apply change</button>
+              </div>
+            </div>
+          </div>
+        </div>
+
         <!-- School Super Admins -->
         <div class="box">
             <div class="box-header">
@@ -475,7 +593,28 @@ $(function(){
         var label  = String($btn.data('label') || status);
         var verb   = {active:'activate', inactive:'deactivate', suspended:'suspend'}[status] || 'change';
         var gerund = {active:'Activating', inactive:'Deactivating', suspended:'Suspending'}[status] || 'Updating';
-        if(!confirm('Are you sure you want to '+verb+' this school?')) return;
+        // Reason capture (G8). Suspending or deactivating a school revokes
+        // access for every parent, teacher and admin in it. That act is now
+        // recorded with WHO did it and WHY, and the server refuses it
+        // without a reason — so this prompt is a real gate, not a courtesy.
+        // Reactivation stays a one-click confirm: restoring access is not
+        // the dangerous direction.
+        var reason = '';
+        if (status === 'suspended' || status === 'inactive') {
+            reason = window.prompt(
+                'You are about to ' + verb + ' this school.\n\n'
+                + 'All parent, teacher and staff access will be blocked, and fee/accounting '
+                + 'background jobs will stop for this tenant.\n\n'
+                + 'Enter the reason (recorded permanently in the audit trail):', '');
+            if (reason === null) return;            // cancelled
+            reason = String(reason).trim();
+            if (reason.length < 5) {
+                saToast('A reason of at least 5 characters is required.', 'error');
+                return;
+            }
+        } else if(!confirm('Are you sure you want to '+verb+' this school?')) {
+            return;
+        }
 
         // Lock the whole row so the sibling buttons aren't clickable.
         var $row    = $('#saStatusBtnRow');
@@ -490,7 +629,7 @@ $(function(){
         }
 
         $.ajax({ url: BASE_URL+'superadmin/schools/toggle_status', type:'POST',
-            data:{ school_uid:'<?= addslashes($school_uid) ?>', status:status },
+            data:{ school_uid:'<?= addslashes($school_uid) ?>', status:status, reason:reason },
             success:function(r){
                 saToast(r.message, r.status);
                 if(r.status === 'success'){
@@ -505,6 +644,232 @@ $(function(){
             error:function(){ saToast('Server error.','error'); restore(); }
         });
     });
+
+    // ══ INSTITUTION LIFECYCLE CONSOLE ══════════════════════════════
+    (function(){
+        var SID = '<?= addslashes($school_uid) ?>';
+        var state = { current: null, target: null, twoPerson: false, blocking: 0 };
+
+        function esc(s){ return escHtml(s); }
+
+        // Every panel here checks BOTH r.ok and r.status before rendering
+        // success. A denied lifecycle action that painted as "done" would be
+        // the worst possible failure mode for this console.
+        function getJson(url){
+            return $.ajax({ url: url, type: 'GET', dataType: 'json' })
+                .then(function(r){
+                    if (!r || r.status !== 'success') {
+                        return $.Deferred().reject(r && r.message ? r.message : 'Request failed').promise();
+                    }
+                    return r;
+                });
+        }
+
+        var STATE_NOTE = {
+            PROSPECT:   'Record exists; nothing configured yet.',
+            ONBOARDING: 'Being configured. Not open for day-to-day use.',
+            ACTIVE:     'Operating normally.',
+            CLOSING:    'Closure announced. No new admissions; everything else continues.',
+            CLOSED:     'Operations ended. Records remain readable.',
+            ARCHIVED:   'Retention only. Access is administrator-mediated.'
+        };
+        var STATE_COLOR = {
+            PROSPECT:'#94a3b8', ONBOARDING:'#f59e0b', ACTIVE:'#22c55e',
+            CLOSING:'#f97316', CLOSED:'#ef4444', ARCHIVED:'#64748b'
+        };
+
+        function badge(text, color){
+            return '<span style="display:inline-block;padding:2px 8px;border-radius:10px;font-size:10.5px;'
+                 + 'font-weight:600;color:#fff;background:' + color + ';">' + esc(text) + '</span>';
+        }
+
+        function renderStatus(d){
+            var inst = d.institution.state;
+            state.current = inst;
+
+            $('#saLcState').html('<span style="color:' + (STATE_COLOR[inst]||'#64748b') + ';">' + esc(inst) + '</span>');
+            $('#saLcStateNote').text(
+                STATE_NOTE[inst] + (d.institution.explicit ? '' : ' (never explicitly set — defaults to ACTIVE)')
+            );
+
+            $('#saLcCommercial').text(d.commercial.state || 'unknown');
+            $('#saLcCommercialNote').text(
+                d.commercial.adminDisabled ? 'Operator toggle: DISABLED' : 'Billing/subscription axis'
+            );
+            $('#saLcSession').text(d.session.current || '—');
+
+            if (d.effective && d.effective.code && d.effective.code !== 'OK') {
+                $('#saLcVerdict').show()
+                    .css({background:'#fef3c7', color:'#92400e', border:'1px solid #fde68a'})
+                    .html('<i class="fa fa-info-circle"></i> ' + esc(d.effective.message));
+            } else { $('#saLcVerdict').hide(); }
+
+            var $n = $('#saLcNext').empty();
+            if (!d.nextStates.length) {
+                $n.html('<span style="font-size:12px;color:var(--t3);">No transitions available from ' + esc(inst) + '.</span>');
+            }
+            d.nextStates.forEach(function(ns){
+                $('<button class="btn btn-sm btn-default"/>')
+                    .html('<i class="fa fa-arrow-right"></i> ' + esc(ns.state)
+                        + (ns.twoPerson ? ' <span style="font-size:9.5px;opacity:.75;">(2-person)</span>' : ''))
+                    .on('click', function(){ openModal(ns.state, ns.twoPerson); })
+                    .appendTo($n);
+            });
+
+            var $h = $('#saLcHistory').empty();
+            if (!d.history || !d.history.length) {
+                $h.html('<span style="color:var(--t3);">No lifecycle changes recorded yet.</span>');
+            } else {
+                d.history.forEach(function(e){
+                    var when = (e.ts || '').replace('T',' ').substring(0,16);
+                    $h.append(
+                        '<div style="padding:7px 0;border-bottom:1px solid var(--border);">'
+                        + badge(e.fromState + ' → ' + e.toState, '#475569')
+                        + ' <span style="color:var(--t3);">' + esc(when) + '</span><br>'
+                        + '<span style="color:var(--t2);">by ' + esc(e.actorId || '—')
+                        + (e.approverId ? ' · approved by ' + esc(e.approverId) : '')
+                        + (e.effectiveDate ? ' · effective ' + esc(e.effectiveDate) : '')
+                        + (e.outcome && e.outcome !== 'applied' ? ' · ' + badge(e.outcome, '#ef4444') : '')
+                        + '</span><br><em style="color:var(--t3);">' + esc(e.reason || '') + '</em></div>'
+                    );
+                });
+            }
+
+            if (inst === 'CLOSING') { $('#saLcClosureWrap').show(); loadClosure(); }
+            else { $('#saLcClosureWrap').hide(); }
+        }
+
+        function renderReadiness(rd){
+            state.blocking = rd.blocking;
+            var color = rd.blocking > 0 ? '#ef4444' : (rd.warnings > 0 ? '#f59e0b' : '#22c55e');
+            $('#saLcScore').html(rd.score + '% · ' + rd.blocking + ' blocking · ' + rd.warnings + ' warning(s)');
+            $('#saLcScoreBar').css({ width: rd.score + '%', background: color });
+
+            var $c = $('#saLcChecks').empty();
+            rd.checks.forEach(function(c){
+                if (c.status === 'PASS' || c.status === 'NOT_APPLICABLE') return;
+                var col = c.status === 'BLOCKING' ? '#ef4444' : '#f59e0b';
+                $c.append(
+                    '<div style="padding:6px 0;border-bottom:1px dashed var(--border);">'
+                    + badge(c.status, col) + ' <strong>' + esc(c.label) + '</strong>'
+                    + '<div style="color:var(--t2);margin-top:2px;">' + esc(c.what) + '</div>'
+                    + '<div style="color:var(--t3);font-size:11px;">Why: ' + esc(c.why) + '</div>'
+                    + (c.fix ? '<div style="font-size:11px;">Fix: ' + esc(c.fix)
+                        + (c.url ? ' <a href="' + BASE_URL + esc(c.url) + '" target="_blank">Open</a>' : '')
+                        + '</div>' : '')
+                    + '</div>'
+                );
+            });
+            if (!$c.children().length) {
+                $c.html('<span style="font-size:12px;color:#22c55e;">Everything applicable is configured.</span>');
+            }
+        }
+
+        function renderClosure(cl){
+            var $c = $('#saLcClosure').empty();
+            cl.items.forEach(function(i){
+                if (i.status === 'CLEAR') return;
+                var col = i.status === 'BLOCKING' ? '#ef4444'
+                        : (i.status === 'UNKNOWN' ? '#7c3aed' : '#f59e0b');
+                $c.append(
+                    '<div style="padding:6px 0;border-bottom:1px dashed var(--border);font-size:11.5px;">'
+                    + badge(i.status, col) + ' <strong>' + esc(i.label) + '</strong>'
+                    + (i.count > 0 ? ' <span style="color:var(--t3);">(' + i.count + ')</span>' : '')
+                    + '<div style="color:var(--t2);margin-top:2px;">' + esc(i.what) + '</div>'
+                    + (i.fix ? '<div style="font-size:11px;">Fix: ' + esc(i.fix) + '</div>' : '')
+                    + '</div>'
+                );
+            });
+            if (!$c.children().length) {
+                $c.html('<span style="font-size:12px;color:#22c55e;">Nothing outstanding — this school can be closed.</span>');
+            }
+        }
+
+        function loadClosure(){
+            getJson(BASE_URL + 'superadmin/schools/lifecycle_closure_check/' + SID)
+                .then(function(r){ renderClosure(r.closure); })
+                .fail(function(m){ $('#saLcClosure').html('<span style="color:#ef4444;">' + esc(m) + '</span>'); });
+        }
+
+        function loadAll(){
+            $('#saLcLoading').show(); $('#saLcBody').hide();
+            $.when(
+                getJson(BASE_URL + 'superadmin/schools/lifecycle_status/' + SID),
+                getJson(BASE_URL + 'superadmin/schools/lifecycle_readiness/' + SID)
+            ).done(function(s, rd){
+                renderStatus(s[0] !== undefined ? s[0] : s);
+                var rdData = (rd[0] !== undefined ? rd[0] : rd);
+                renderReadiness(rdData.readiness);
+                $('#saLcLoading').hide(); $('#saLcBody').show();
+            }).fail(function(m){
+                $('#saLcLoading').html('<span style="color:#ef4444;">Could not load lifecycle: '
+                    + esc(typeof m === 'string' ? m : 'request failed') + '</span>');
+            });
+        }
+
+        function openModal(target, twoPerson){
+            state.target = target; state.twoPerson = twoPerson;
+            $('#saLcReason').val(''); $('#saLcApprover').val('');
+            $('#saLcOverride').prop('checked', false);
+            $('#saLcModalErr').hide().text('');
+            $('#saLcEffective').val(new Date().toISOString().substring(0,10));
+            $('#saLcApproverWrap').toggle(!!twoPerson);
+
+            // Impact preview: say plainly what changes, before it changes.
+            var impact = {
+                ONBOARDING: 'Admin configuration continues. Parents and teachers cannot log in.',
+                ACTIVE:     'Normal school operations resume for everyone.',
+                CLOSING:    '<strong>New admissions stop immediately.</strong> Everything else — exams, results, '
+                          + 'fee settlement, transport, certificates — continues until the effective date.',
+                CLOSED:     '<strong>All operational writes stop.</strong> Records stay readable, and certificates '
+                          + 'can still be issued. Scheduled jobs stop except retention. Nothing is deleted.',
+                ARCHIVED:   '<strong>Client access ends entirely.</strong> Data is retained and reachable only '
+                          + 'through a platform administrator. Nothing is deleted.'
+            };
+            $('#saLcModalIntro').html('Move this school from <strong>' + esc(state.current)
+                + '</strong> to <strong>' + esc(target) + '</strong>.');
+            $('#saLcImpact').html('<strong>What this does:</strong><br>' + (impact[target] || ''));
+
+            $('#saLcOverrideWrap').toggle(target === 'CLOSED' || (target === 'ACTIVE' && state.current === 'ONBOARDING'));
+            $('#saLcModal').modal('show');
+        }
+
+        $('#saLcConfirm').on('click', function(){
+            var $btn = $(this).prop('disabled', true).text('Applying…');
+            $('#saLcModalErr').hide();
+            $.ajax({
+                url: BASE_URL + 'superadmin/schools/lifecycle_transition',
+                type: 'POST',
+                data: {
+                    school_uid: SID,
+                    to_state: state.target,
+                    reason: $('#saLcReason').val(),
+                    effective_date: $('#saLcEffective').val(),
+                    approver_id: $('#saLcApprover').val(),
+                    override: $('#saLcOverride').is(':checked') ? 1 : 0
+                },
+                dataType: 'json'
+            }).done(function(r){
+                // Phantom-success guard: a 200 with status:'error' is a denial.
+                if (!r || r.status !== 'success') {
+                    $('#saLcModalErr').show().text((r && r.message) ? r.message : 'The change was refused.');
+                    return;
+                }
+                $('#saLcModal').modal('hide');
+                saToast(r.message, 'success');
+                loadAll();
+            }).fail(function(xhr){
+                var msg = 'The change was refused.';
+                try { var j = JSON.parse(xhr.responseText); if (j && j.message) msg = j.message; } catch(e){}
+                $('#saLcModalErr').show().text(msg);
+            }).always(function(){
+                $btn.prop('disabled', false).text('Apply change');
+            });
+        });
+
+        $('#saLcRefresh').on('click', loadAll);
+        loadAll();
+    })();
 
     // SSA reset — open modal
     $('.sa-ssa-reset').on('click', function(){

@@ -143,6 +143,15 @@ class AccountingReconciler extends CI_Controller
     {
         $this->_out("AccountingReconciler run @ " . date('c') . " school={$this->schoolFs} session={$this->sessionYear}");
 
+        // ── LIFECYCLE GUARD ─────────────────────────────────────────────
+        // class = money. Reconciliation writes to the ledger, so it stops on
+        // a suspended/closed tenant. It is fully idempotent and self-healing,
+        // so a skipped cycle is recovered by the next run — no drift is
+        // introduced by skipping, whereas posting into a closed period would
+        // be a genuine integrity problem.
+        $this->load->helper('lifecycle_guard');
+        lifecycle_guard_or_skip($this->firebase, $this->schoolFs, Lifecycle_resolver::JOB_MONEY, 'accounting_reconciler');
+
         // Phase 8C (R2) — soft concurrent-run guard. If another instance
         // checked in less than 120 s ago and is still in any in-progress
         // stage (never flipped to run_finished), assume it's still

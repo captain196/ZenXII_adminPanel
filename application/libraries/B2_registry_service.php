@@ -735,7 +735,7 @@ class B2_registry_service
      * atomically and appends a tenantAudit row. Used by expire_check + manual
      * status flips. Returns true on success.
      */
-    public function write_lifecycle_state(string $schoolId, string $newState, string $reason = ''): bool
+    public function write_lifecycle_state(string $schoolId, string $newState, string $reason = '', array $actorMeta = []): bool
     {
         if (!$this->ready || $schoolId === '') return false;
         if (!in_array($newState, [
@@ -779,7 +779,19 @@ class B2_registry_service
                     'entityType' => 'school',
                     'entityId'   => $schoolId,
                     'schoolId'   => $schoolId,
-                    'actor'      => ['role' => 'sa', 'uid' => 'service'],
+                    // ACTOR ATTRIBUTION (defect N2): this row previously
+                    // hard-coded uid='service', so a manual suspension — an
+                    // act that revokes access for an entire school — could
+                    // not be attributed to the person who performed it. The
+                    // caller now passes the real actor; automated callers
+                    // (expire_check, the lifecycle job) legitimately have no
+                    // human actor and still record 'service', which is now a
+                    // TRUE statement rather than a default.
+                    'actor'      => [
+                        'role'    => (string) ($actorMeta['role']    ?? 'sa'),
+                        'uid'     => (string) ($actorMeta['uid']     ?? 'service'),
+                        'surface' => (string) ($actorMeta['surface'] ?? 'system'),
+                    ],
                     'metadata'   => ['newState' => $newState, 'reason' => $reason],
                     'ts'         => $nowIso,
                 ], false);
@@ -1141,13 +1153,22 @@ class B2_registry_service
      *
      * Returns true on success. Audit row appended; audit failure non-fatal.
      */
-    public function set_admin_disabled(string $schoolId, string $newStatus, string $actor = ''): bool
+    public function set_admin_disabled(string $schoolId, string $newStatus, string $actor = '', string $operatorReason = ''): bool
     {
         if (!$this->ready || $schoolId === '') return false;
         if (!in_array($newStatus, ['active', 'inactive', 'suspended'], true)) return false;
         $disabled = ($newStatus !== 'active');
-        $reason   = ($newStatus === 'active') ? ''
-                  : (($newStatus === 'inactive') ? 'manual_inactive' : 'manual_suspended');
+
+        // Canned code + the operator's own words. The code keeps every
+        // existing consumer working unchanged; the free text is what makes
+        // the act auditable a year later (defect G8).
+        $reasonCode = ($newStatus === 'active') ? 'manual_reactivate'
+                    : (($newStatus === 'inactive') ? 'manual_inactive' : 'manual_suspended');
+        $operatorReason = trim($operatorReason);
+        $reason = ($operatorReason !== '') ? ($reasonCode . ': ' . $operatorReason) : $reasonCode;
+        if ($newStatus === 'active' && $operatorReason === '') {
+            $reason = ''; // preserve the historical empty-reason shape on plain reactivation
+        }
         $nowIso   = date('c');
 
         $schPatch = [
@@ -1160,11 +1181,44 @@ class B2_registry_service
             'updatedAt' => $nowIso,
         ];
 
-        try {
-            $this->firebase->firestoreUpdate('schools', $schoolId, $schPatch);
-        } catch (\Throwable $e) {
-            log_message('error', 'B2_registry_service::set_admin_disabled schools update failed: ' . $e->getMessage());
-            return false;
+        // ── CAS via the canonical primitive (defect N3) ─────────────────
+        // This was a blind firestoreUpdate: two Superadmins toggling the same
+        // tenant concurrently could lose one another's update, and the paired
+        // write_lifecycle_state() below made the pair non-atomic.
+        //
+        // Uses Firestore_rest_client::casUpdateEntity — NOT a hand-rolled
+        // read-then-precondition loop. firestoreGet() serves `schools` from a
+        // 300-second config-file cache plus a request memo, and the cached
+        // payload carries `__updateTime`; a precondition built from it can be
+        // stale, which has already produced false "Another administrator
+        // updated…" 409s in this codebase. casUpdateEntity reads through
+        // _getDocumentUncached, re-runs the mutator on every conflict, and
+        // fails closed rather than falling back to an unguarded write.
+        //
+        // Degrades to the previous single blind update ONLY if the primitive
+        // is unavailable, so no deployment can be left unable to suspend a
+        // tenant.
+        $mutator = function (array $fresh) use ($schPatch) { return $schPatch; };
+        $applied = false;
+        $client  = method_exists($this->firebase, 'getFirestoreDb') ? $this->firebase->getFirestoreDb() : null;
+
+        if ($client !== null && method_exists($client, 'casUpdateEntity')) {
+            $res = $client->casUpdateEntity('schools', $schoolId, $mutator);
+            $applied = !empty($res['ok']);
+            if (!$applied) {
+                log_message('error', 'B2_ADMIN_TOGGLE_CAS_FAILED school=' . $schoolId
+                    . ' actor=' . $actor . ' status=' . $newStatus
+                    . ' reason=' . (string) ($res['reason'] ?? 'unknown'));
+                return false;
+            }
+        } else {
+            try {
+                $applied = (bool) $this->firebase->firestoreUpdate('schools', $schoolId, $schPatch);
+            } catch (\Throwable $e) {
+                log_message('error', 'B2_registry_service::set_admin_disabled schools update failed: ' . $e->getMessage());
+                return false;
+            }
+            if (!$applied) return false;
         }
 
         // H-LIFECYCLE H1.5 — fan out adminDisabled.value to the
@@ -1190,11 +1244,12 @@ class B2_registry_service
         // reads lifecycle.state would drift relative to adminDisabled
         // after a suspend → reactivate cycle (the suspend writes
         // lifecycle='suspended', but the reactivate left it suspended).
+        $actorMeta = ['role' => 'sa', 'uid' => $actor !== '' ? $actor : 'service', 'surface' => 'sa_console'];
         if ($newStatus === 'suspended') {
-            try { $this->write_lifecycle_state($schoolId, 'suspended', 'manual_admin_action'); }
+            try { $this->write_lifecycle_state($schoolId, 'suspended', $reason !== '' ? $reason : 'manual_admin_action', $actorMeta); }
             catch (\Throwable $e) { /* logged inside write_lifecycle_state */ }
         } elseif ($newStatus === 'active') {
-            try { $this->write_lifecycle_state($schoolId, 'active', 'manual_admin_reactivate'); }
+            try { $this->write_lifecycle_state($schoolId, 'active', $reason !== '' ? $reason : 'manual_admin_reactivate', $actorMeta); }
             catch (\Throwable $e) { /* logged inside write_lifecycle_state */ }
         }
         // 'inactive' is a deactivation that doesn't touch lifecycle.state —
