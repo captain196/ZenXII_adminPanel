@@ -1,0 +1,156 @@
+/* ══════════════════════════════════════════════════════════════════════════
+   Support Desk — shared styles for views/support/{index,mine,thread}.php
+
+   Every class is `sd-` prefixed on purpose. Unprefixed names like .grid, .card
+   or .row collide with the panel's card-grid utilities, which is the
+   documented cause of tables whose header and body drift out of alignment.
+   Do not add an unprefixed class to this file.
+
+   Colours come from the panel's own tokens (--gold, --bg, --t1 …) so this
+   inherits the Burnt Clay theme and both light and dark automatically.
+   ══════════════════════════════════════════════════════════════════════════ */
+
+.sd-wrap   { padding: 18px 22px 40px; font-family: var(--font-b, 'Plus Jakarta Sans', sans-serif); color: var(--t1); }
+.sd-head   { display: flex; flex-wrap: wrap; align-items: baseline; gap: 12px; margin-bottom: 4px; }
+.sd-title  { font-size: 21px; font-weight: 700; letter-spacing: -.01em; margin: 0; }
+.sd-sub    { color: var(--t3); font-size: 13px; margin: 0 0 18px; }
+
+/* ── toolbar ─────────────────────────────────────────────────────────── */
+.sd-bar    { display: flex; flex-wrap: wrap; gap: 10px; align-items: center; margin-bottom: 14px; }
+.sd-tabs   { display: flex; flex-wrap: wrap; gap: 6px; }
+.sd-spacer { flex: 1 1 auto; }
+
+.sd-tab {
+  border: 1px solid var(--border); background: var(--bg2); color: var(--t2);
+  padding: 6px 13px; border-radius: 999px; font-size: 12.5px; font-weight: 600;
+  cursor: pointer; font-family: inherit; transition: var(--ease, all .2s ease);
+}
+.sd-tab:hover { border-color: var(--gold); color: var(--t1); }
+.sd-tab[aria-selected="true"] { background: var(--gold); border-color: var(--gold); color: #fff; }
+.sd-tab:focus-visible { outline: 2px solid var(--gold); outline-offset: 2px; }
+
+.sd-btn {
+  border: 1px solid var(--border); background: var(--bg2); color: var(--t1);
+  padding: 7px 13px; border-radius: 8px; font-size: 12.5px; font-weight: 600;
+  cursor: pointer; font-family: inherit;
+}
+.sd-btn:hover { border-color: var(--gold); }
+.sd-btn:focus-visible { outline: 2px solid var(--gold); outline-offset: 2px; }
+.sd-toggle[aria-pressed="true"] { background: var(--gold); border-color: var(--gold); color: #fff; }
+
+.sd-search { display: flex; gap: 6px; }
+.sd-search input {
+  border: 1px solid var(--border); background: var(--bg2); color: var(--t1);
+  padding: 7px 11px; border-radius: 8px; font-size: 13px; min-width: 210px; font-family: inherit;
+}
+.sd-search input:focus { outline: 2px solid var(--gold); outline-offset: 1px; }
+
+/* ── table ───────────────────────────────────────────────────────────── */
+.sd-tablewrap { border: 1px solid var(--border); border-radius: 10px; background: var(--bg2); overflow-x: auto; }
+.sd-table     { width: 100%; border-collapse: collapse; font-size: 13.5px; min-width: 860px; }
+.sd-table thead th {
+  text-align: left; font-size: 10.5px; letter-spacing: .09em; text-transform: uppercase;
+  color: var(--t3); font-weight: 700; padding: 11px 14px;
+  border-bottom: 1px solid var(--border); background: var(--bg3); white-space: nowrap;
+}
+.sd-table tbody td { padding: 12px 14px; border-bottom: 1px solid var(--border); color: var(--t2); vertical-align: top; }
+.sd-table tbody tr:last-child td { border-bottom: none; }
+.sd-table tbody tr:hover { background: var(--bg3); }
+
+.sd-no    { font-family: var(--font-m, monospace); font-size: 12px; color: var(--t3); white-space: nowrap; }
+.sd-subj  { color: var(--t1); font-weight: 600; text-decoration: none; display: block; }
+.sd-subj:hover { color: var(--gold); }
+.sd-meta  { color: var(--t3); font-size: 12px; margin-top: 2px; }
+
+/* ── status pills ────────────────────────────────────────────────────── */
+.sd-pill {
+  display: inline-block; padding: 3px 9px; border-radius: 999px; font-size: 10.5px;
+  font-weight: 700; letter-spacing: .05em; text-transform: uppercase; white-space: nowrap;
+}
+.sd-open     { background: rgba(217,119,6,.12); color: #d97706; }
+.sd-assigned { background: rgba(37,99,235,.12); color: #2563eb; }
+.sd-reopened { background: rgba(188,90,60,.12); color: #BC5A3C; }
+.sd-resolved { background: rgba(22,163,74,.12);  color: #16a34a; }
+.sd-closed   { background: rgba(120,120,120,.14); color: var(--t3); }
+.sd-await    { background: rgba(220,38,38,.12); color: #dc2626; margin-left: 6px; }
+
+/* ── empty vs error states ───────────────────────────────────────────── */
+.sd-state   { padding: 44px 20px; text-align: center; color: var(--t3); font-size: 13.5px; }
+.sd-state b { display: block; color: var(--t1); font-size: 15px; margin-bottom: 5px; font-weight: 600; }
+/* An error is visually distinct from "nothing here" on purpose: an empty queue
+   looks like good news, so a failure that renders as empty is a silent lie. */
+.sd-err     { border-left: 3px solid #dc2626; text-align: left; padding-left: 18px; }
+.sd-err b   { color: #dc2626; }
+.sd-more    { display: flex; justify-content: center; padding: 14px; }
+
+/* ── thread view ─────────────────────────────────────────────────────── */
+.sd-thread   { display: grid; grid-template-columns: minmax(0, 1fr) 300px; gap: 18px; align-items: start; }
+.sd-panel    { border: 1px solid var(--border); border-radius: 10px; background: var(--bg2); padding: 18px 20px; }
+.sd-panel h2 { font-size: 12px; letter-spacing: .09em; text-transform: uppercase; color: var(--t3); margin: 0 0 12px; font-weight: 700; }
+
+.sd-msg      { border-bottom: 1px solid var(--border); padding: 14px 0; }
+.sd-msg:last-child { border-bottom: none; }
+.sd-msg-hd   { display: flex; flex-wrap: wrap; gap: 8px; align-items: baseline; margin-bottom: 5px; }
+.sd-who      { font-weight: 600; color: var(--t1); font-size: 13.5px; }
+.sd-side     { font-size: 10.5px; text-transform: uppercase; letter-spacing: .06em; font-weight: 700; padding: 2px 7px; border-radius: 999px; }
+.sd-parent   { background: rgba(37,99,235,.12); color: #2563eb; }
+.sd-staff    { background: rgba(22,163,74,.12); color: #16a34a; }
+.sd-system   { background: rgba(120,120,120,.14); color: var(--t3); }
+.sd-time     { color: var(--t3); font-size: 12px; margin-left: auto; }
+.sd-body     { color: var(--t2); font-size: 13.5px; line-height: 1.6; white-space: pre-wrap; word-break: break-word; }
+
+/* Internal notes are visually unmistakable. A staff note rendered like a reply
+   is how someone answers the parent with "check with accounts first". */
+.sd-note     { background: rgba(217,119,6,.07); border-left: 3px solid #d97706; padding: 12px 14px; border-radius: 0 8px 8px 0; margin-bottom: 10px; }
+.sd-note .sd-body { color: var(--t2); }
+
+.sd-facts    { list-style: none; margin: 0; padding: 0; display: flex; flex-direction: column; gap: 11px; }
+.sd-facts dt { font-size: 10.5px; letter-spacing: .07em; text-transform: uppercase; color: var(--t3); font-weight: 700; }
+.sd-facts dd { margin: 2px 0 0; color: var(--t1); font-size: 13.5px; }
+
+/* ── write controls (P2) ─────────────────────────────────────────────── */
+.sd-compose textarea {
+  width: 100%; box-sizing: border-box; resize: vertical; min-height: 74px;
+  border: 1px solid var(--border); background: var(--bg3); color: var(--t1);
+  border-radius: 8px; padding: 10px 12px; font: inherit; font-size: 13.5px; line-height: 1.55;
+}
+.sd-compose textarea:focus { outline: 2px solid var(--gold); outline-offset: 1px; }
+.sd-actions { display: flex; flex-wrap: wrap; gap: 8px; margin-top: 10px; }
+
+.sd-primary { background: var(--gold); border-color: var(--gold); color: #fff; }
+.sd-primary:hover { filter: brightness(1.06); }
+.sd-danger  { color: #dc2626; border-color: rgba(220,38,38,.35); }
+.sd-danger:hover { background: rgba(220,38,38,.08); border-color: #dc2626; }
+.sd-full    { width: 100%; margin-top: 8px; }
+.sd-btn[disabled] { opacity: .55; cursor: not-allowed; }
+
+.sd-lbl {
+  display: block; font-size: 10.5px; letter-spacing: .07em; text-transform: uppercase;
+  color: var(--t3); font-weight: 700; margin-bottom: 5px;
+}
+.sd-select {
+  width: 100%; box-sizing: border-box; border: 1px solid var(--border);
+  background: var(--bg3); color: var(--t1); border-radius: 8px;
+  padding: 8px 10px; font: inherit; font-size: 13px;
+}
+.sd-select:focus { outline: 2px solid var(--gold); outline-offset: 1px; }
+
+/* Result banner. Success auto-dismisses; an error does NOT — a refused write
+   that fades away is how someone believes an action succeeded. */
+.sd-flash {
+  border-radius: 8px; padding: 11px 14px; margin-bottom: 16px;
+  font-size: 13.5px; font-weight: 600; border: 1px solid transparent;
+}
+.sd-flash-ok  { background: rgba(22,163,74,.10); border-color: rgba(22,163,74,.30); color: #16a34a; }
+.sd-flash-err { background: rgba(220,38,38,.10); border-color: rgba(220,38,38,.32); color: #dc2626; }
+
+/* Attachments. Fixed-size tiles so one portrait photo cannot stretch the row. */
+.sd-attach { display: flex; flex-wrap: wrap; gap: 10px; }
+.sd-thumb  { display: block; width: 104px; height: 104px; border-radius: 10px;
+             overflow: hidden; border: 1px solid var(--border); background: var(--bg3); }
+.sd-thumb img { width: 100%; height: 100%; object-fit: cover; display: block; }
+.sd-thumb:hover { border-color: var(--gold); }
+.sd-thumb:focus-visible { outline: 2px solid var(--gold); outline-offset: 2px; }
+
+@media (max-width: 900px) { .sd-thread { grid-template-columns: minmax(0, 1fr); } }
+@media (max-width: 720px) { .sd-wrap { padding: 14px 12px 32px; } .sd-search input { min-width: 140px; } }

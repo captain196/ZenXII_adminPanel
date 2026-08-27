@@ -52,7 +52,7 @@ try {
     'Certificates', 'HR', 'Events', 'Communication', 'Operations', 'Library',
     'Transport', 'Hostel', 'Inventory', 'Assets', 'Academic', 'Reports',
     'Configuration', 'Admin Users', 'Stories', 'Homework', 'Red Flags',
-    'Device Management', 'Message Monitor',
+    'Device Management', 'Message Monitor', 'Support',
   ];
 }
 const MODULE_SET = new Set(RBAC_MODULES);

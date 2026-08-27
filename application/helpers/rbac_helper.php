@@ -44,7 +44,7 @@ if (!function_exists('rbac_modules_list')) {
             'LMS','Certificates','HR','Events','Communication','Operations',
             'Library','Transport','Hostel','Inventory','Assets',
             'Academic','Reports','Configuration','Admin Users','Stories','Homework',
-            'Red Flags','Device Management','Message Monitor',
+            'Red Flags','Device Management','Message Monitor','Support',
         ];
     }
 }
@@ -96,6 +96,14 @@ define('RBAC_MODULE_META', [
     'Admin Users'      => ['System',           'web'],
     'Device Management'=> ['System',           'web'],
     'Message Monitor'  => ['System',           'web'],
+    // Support Desk (2026-08-25): parent-raised tickets. WEB-ONLY by design --
+    // the staff side is entirely panel; neither app ships a ticket screen.
+    // NOTE: this module gates the QUEUE, not the work. A staff member with no
+    // Support grant can still read, reply to, resolve and return tickets
+    // ASSIGNED to them, via Support::mine(), which is identity-gated (the same
+    // principle as Staff_attendance::me()). Gating that behind the module is
+    // what let an admin assign a ticket to someone who then could not see it.
+    'Support'          => ['Engagement',      'web'],
 ]);
 
 if (!function_exists('rbac_module_surface')) {

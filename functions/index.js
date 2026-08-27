@@ -111,6 +111,39 @@ const MARK_REGISTRY = {
   FEE_PAID:            { audience: AUDIENCE.USERS, idField: 'studentId', type: 'fee_payment_confirmed', fTitle: 'Payment Received', fBody: 'Your fee payment has been received', dataKeys: ['amount', 'receiptId'] },
   FEE_DUE:             { audience: AUDIENCE.USERS, idField: 'studentId', type: 'fee_reminder', fTitle: 'Fee Reminder', fBody: 'You have a pending fee payment', dataKeys: ['amount', 'dueDate'] },
   BIRTHDAY:            { audience: AUDIENCE.USERS, idField: 'studentId', type: 'birthday_wish', fTitle: 'Happy Birthday!', fBody: 'Wishing you a wonderful day!', dataKeys: [] },
+  // ── Support Desk (P5, 2026-08-26) ─────────────────────────────────
+  // Producers: functions/supportDesk.js (parent side) and
+  // Support.php::_push() (staff side). One mark, one producer per direction.
+  TICKET_RAISED: {
+    audience: AUDIENCE.USERS, idField: 'recipientStaffIds', type: 'support_ticket',
+    notify: (d) => ({
+      title: `New ticket${d.categoryLabel ? ' · ' + String(d.categoryLabel).slice(0, 40) : ''}`,
+      body:  String(d.subject || 'A parent raised a support ticket').slice(0, 180),
+    }),
+    data: (d) => ({ ticketId: String(d.ticketId || ''), category: String(d.category || '') }),
+  },
+  TICKET_ASSIGNED: {
+    audience: AUDIENCE.USERS, idField: 'recipientStaffIds', type: 'support_assigned',
+    fTitle: 'Ticket assigned to you', fBody: 'Tap to open it', dataKeys: ['ticketId', 'category'],
+  },
+  // Direction is chosen by the PRODUCER, not the registry: the panel addresses
+  // recipientIds at the parent, the CF addresses it at the assignee.
+  TICKET_REPLIED: {
+    audience: AUDIENCE.USERS, idField: 'recipientIds', type: 'support_reply',
+    notify: (d) => ({
+      title: String(d.senderName || 'School').slice(0, 80),
+      body:  String(d.preview || '').slice(0, 180),
+    }),
+    data: (d) => ({ ticketId: String(d.ticketId || '') }),
+  },
+  TICKET_RESOLVED: {
+    audience: AUDIENCE.USERS, idField: 'recipientIds', type: 'support_resolved',
+    fTitle: 'Ticket resolved', fBody: 'Tap to view the response', dataKeys: ['ticketId'],
+  },
+  TICKET_REOPENED: {
+    audience: AUDIENCE.USERS, idField: 'recipientStaffIds', type: 'support_reopened',
+    fTitle: 'Ticket reopened', fBody: 'A parent reopened a resolved ticket', dataKeys: ['ticketId'],
+  },
   SALARY_PROCESSED:    { audience: AUDIENCE.USERS, idField: 'staffId',   type: 'salary_processed', fTitle: 'Salary Processed', fBody: 'Your salary has been processed', dataKeys: ['amount', 'month'] },
 };
 
@@ -561,3 +594,27 @@ exports.feeOpsSweep = opsSweep.feeOpsSweep;
 const recoveryContact = require("./recoveryContact");
 exports.getRecoveryContact = recoveryContact.getRecoveryContact;
 
+
+// ─── studentAssistant (ZenXii Student AI) ──────────────────────────
+// Authenticated Gen-2 callable. Answers a student's questions about
+// THEIR OWN records (attendance, homework, fees, timetable, results)
+// and files helpdesk tickets. Identity is taken from the verified ID
+// token and never from model output; every query is scoped by schoolId
+// AND session, failing closed when currentSession is blank. Gated per
+// school by schools/{id}.ai_assistant_enabled. Needs the
+// ANTHROPIC_API_KEY secret. See ./studentAssistant.js.
+const studentAssistant = require("./studentAssistant");
+exports.studentAssistant = studentAssistant.studentAssistant;
+
+// ─────────────────────────────────────────────────────────────────────
+//  Support Desk (P5) — parent→school ticketing
+//
+//  ticketNo assignment, the reopen transition (which is what lets the
+//  parent have `allow update: if false` on supportTickets), the openCount
+//  the rules cap reads, and the stale-resolved sweep.
+// ─────────────────────────────────────────────────────────────────────
+const supportDesk = require('./supportDesk');
+exports.onSupportTicketCreated       = supportDesk.onSupportTicketCreated;
+exports.onSupportMessageCreated      = supportDesk.onSupportMessageCreated;
+exports.onSupportTicketStatusChanged = supportDesk.onSupportTicketStatusChanged;
+exports.closeStaleTickets            = supportDesk.closeStaleTickets;

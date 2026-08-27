@@ -3348,6 +3348,189 @@
           "order": "ASCENDING"
         }
       ]
+    },
+    {
+      "_comment": "Support Desk P0 (2026-08-25) - parent to school ticketing. DEPLOY-PENDING, not yet deployed. 1/8 The triage queue. `lane` leads deliberately (defect C-10): every normal-queue read filters lane=='normal', so confidential tickets are excluded at the INDEX rather than filtered out in PHP afterwards. A forgotten where() then returns nothing instead of leaking the grievance queue - it fails closed.",
+      "collectionGroup": "supportTickets",
+      "queryScope": "COLLECTION",
+      "fields": [
+        {
+          "fieldPath": "schoolId",
+          "order": "ASCENDING"
+        },
+        {
+          "fieldPath": "lane",
+          "order": "ASCENDING"
+        },
+        {
+          "fieldPath": "status",
+          "order": "ASCENDING"
+        },
+        {
+          "fieldPath": "lastMessageAt",
+          "order": "DESCENDING"
+        }
+      ]
+    },
+    {
+      "_comment": "Support Desk P0 (2026-08-25) - parent to school ticketing. DEPLOY-PENDING, not yet deployed. 2/8 The parent's own ticket list in the Parent app.",
+      "collectionGroup": "supportTickets",
+      "queryScope": "COLLECTION",
+      "fields": [
+        {
+          "fieldPath": "schoolId",
+          "order": "ASCENDING"
+        },
+        {
+          "fieldPath": "reporterId",
+          "order": "ASCENDING"
+        },
+        {
+          "fieldPath": "createdAt",
+          "order": "DESCENDING"
+        }
+      ]
+    },
+    {
+      "_comment": "Support Desk P0 (2026-08-25) - parent to school ticketing. DEPLOY-PENDING, not yet deployed. 3/8 'My Tickets', the identity-gated staff view. Any staff member can be assigned a ticket without holding the Support module, so this view must work without it.",
+      "collectionGroup": "supportTickets",
+      "queryScope": "COLLECTION",
+      "fields": [
+        {
+          "fieldPath": "schoolId",
+          "order": "ASCENDING"
+        },
+        {
+          "fieldPath": "assignedTo",
+          "order": "ASCENDING"
+        },
+        {
+          "fieldPath": "status",
+          "order": "ASCENDING"
+        },
+        {
+          "fieldPath": "lastMessageAt",
+          "order": "DESCENDING"
+        }
+      ]
+    },
+    {
+      "_comment": "Support Desk P0 (2026-08-25) - parent to school ticketing. DEPLOY-PENDING, not yet deployed. 4/8 The message thread ordered by createdAt. Messages use Firestore auto-ids because a client cannot safely allocate a sequence number without a read-then-write race.",
+      "collectionGroup": "supportMessages",
+      "queryScope": "COLLECTION",
+      "fields": [
+        {
+          "fieldPath": "schoolId",
+          "order": "ASCENDING"
+        },
+        {
+          "fieldPath": "ticketId",
+          "order": "ASCENDING"
+        },
+        {
+          "fieldPath": "createdAt",
+          "order": "ASCENDING"
+        }
+      ]
+    },
+    {
+      "_comment": "Support Desk P0 (2026-08-25) - parent to school ticketing. DEPLOY-PENDING, not yet deployed. 5/8 closeStaleTickets scheduled CF: status=='resolved' AND reopenableUntil < now (defect C-11). Its absence is SILENT - that sweep emits no push by design, so a missing index presents as a function that has never once succeeded.",
+      "collectionGroup": "supportTickets",
+      "queryScope": "COLLECTION",
+      "fields": [
+        {
+          "fieldPath": "schoolId",
+          "order": "ASCENDING"
+        },
+        {
+          "fieldPath": "status",
+          "order": "ASCENDING"
+        },
+        {
+          "fieldPath": "reopenableUntil",
+          "order": "ASCENDING"
+        }
+      ]
+    },
+    {
+      "_comment": "Support Desk P0 (2026-08-25) - parent to school ticketing. DEPLOY-PENDING, not yet deployed. 6/8 The awaiting-reply view, the one a triager actually lives in: lastParentReplyAt later than lastStaffReplyAt means the parent is waiting on us.",
+      "collectionGroup": "supportTickets",
+      "queryScope": "COLLECTION",
+      "fields": [
+        {
+          "fieldPath": "schoolId",
+          "order": "ASCENDING"
+        },
+        {
+          "fieldPath": "lane",
+          "order": "ASCENDING"
+        },
+        {
+          "fieldPath": "status",
+          "order": "ASCENDING"
+        },
+        {
+          "fieldPath": "lastParentReplyAt",
+          "order": "DESCENDING"
+        }
+      ]
+    },
+    {
+      "_comment": "Support Desk P0 (2026-08-25) - parent to school ticketing. DEPLOY-PENDING, not yet deployed. 7/8 Search. keywords[] is normalised at WRITE time from subject + student name + ticketNo, because Firestore cannot substring-search. Retrofitting it means rewriting every document, which is why it ships in P0 rather than when search is built.",
+      "collectionGroup": "supportTickets",
+      "queryScope": "COLLECTION",
+      "fields": [
+        {
+          "fieldPath": "schoolId",
+          "order": "ASCENDING"
+        },
+        {
+          "fieldPath": "keywords",
+          "arrayConfig": "CONTAINS"
+        },
+        {
+          "fieldPath": "lastMessageAt",
+          "order": "DESCENDING"
+        }
+      ]
+    },
+    {
+      "_comment": "Support Desk P0 (2026-08-25) - parent to school ticketing. DEPLOY-PENDING, not yet deployed. 8/8 RESERVED for team/department routing; teamId stays null throughout v1. Index composition is the most expensive thing to change later and the cheapest to get right on day zero.",
+      "collectionGroup": "supportTickets",
+      "queryScope": "COLLECTION",
+      "fields": [
+        {
+          "fieldPath": "schoolId",
+          "order": "ASCENDING"
+        },
+        {
+          "fieldPath": "teamId",
+          "order": "ASCENDING"
+        },
+        {
+          "fieldPath": "status",
+          "order": "ASCENDING"
+        },
+        {
+          "fieldPath": "lastMessageAt",
+          "order": "DESCENDING"
+        }
+      ]
+    },
+    {
+      "_comment": "Support Desk P5 (2026-08-26) 9/9 - DEPLOY-PENDING. supportDesk.js deskRecipients(): which staff should be told a new ticket landed. Reads staffCapabilities, the server-maintained RBAC mirror the security rules also consult, rather than a role-name list. WITHOUT THIS INDEX the query throws FAILED_PRECONDITION and the desk is never notified - silently, because a push that is never emitted logs nothing on the client side.",
+      "collectionGroup": "staffCapabilities",
+      "queryScope": "COLLECTION",
+      "fields": [
+        {
+          "fieldPath": "schoolId",
+          "order": "ASCENDING"
+        },
+        {
+          "fieldPath": "modules",
+          "arrayConfig": "CONTAINS"
+        }
+      ]
     }
   ],
   "fieldOverrides": [

@@ -753,6 +753,17 @@
             <li class="sidebar-single"><a href="<?= base_url('red_flags') ?>"><i class="fa fa-flag"></i><span>Red Flags</span></a></li>
             <?php endif; ?>
 
+            <?php /* Support Desk. TWO entries, deliberately gated differently.
+                     "Support" is the queue and needs the module.
+                     "My Tickets" is UNGATED: any of a school's staff can be
+                     assigned a ticket, so hiding this behind the module is
+                     exactly what made an assignee unable to see their own work.
+                     See Support::mine() and rbac_helper RBAC_MODULE_META. */ ?>
+            <?php if ($can('Support')): ?>
+            <li class="sidebar-single"><a href="<?= base_url('support') ?>"><i class="fa fa-life-ring"></i><span>Support</span></a></li>
+            <?php endif; ?>
+            <li class="sidebar-single"><a href="<?= base_url('support/mine') ?>"><i class="fa fa-inbox"></i><span>My Tickets</span></a></li>
+
             <!-- ═══════════════════════════════════════════════════════════
                  FINANCE — fees, accounts, accounting
                  ═══════════════════════════════════════════════════════════ -->
