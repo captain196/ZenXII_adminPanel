@@ -463,10 +463,47 @@ service cloud.firestore {
     // credentials live in staffPrivate below — see audit C1.
     match /staff/{docId} {
       allow read: if isSameSchool();
-      // SEC-3 wave3: server-only. No client writes staff (both apps READ-ONLY, census-verified).
-      // PHP backend + Cloud Functions use the Admin SDK and bypass rules,
-      // so denying clients removes an authorization nothing exercises.
+      // SEC-3 wave3: server-only. Blanket client write denied (both apps are
+      // otherwise READ-ONLY here, census-verified). PHP backend + Cloud
+      // Functions use the Admin SDK and bypass rules, so denying clients
+      // removes an authorization nothing exercises.
       allow write: if false;
+
+      // …with ONE narrow self-service exception, exactly as the `students`
+      // block above keeps its own: "blanket admin write denied; the two
+      // self-service `allow update` clauses below remain and are the ONLY
+      // client write path."
+      //
+      // RE-APPLIED 2026-08-28. This clause was committed in 3525484 and then
+      // dropped by the 33a2487 reconciliation, which took production's staff
+      // block wholesale — production had never received the clause, because it
+      // was `undeployed`. The loss was silent in the file and loud only in
+      // staff_preflang.test.js, where all six "→ allowed" cases failed while
+      // every "denied" case passed trivially. SEC-3's intent is to remove
+      // blanket writes, NOT to remove a two-field self-service clause; the
+      // students block is the precedent that settles it.
+      //
+      // Language preference — mirrored from the ZenXii Teacher app so push can
+      // be composed in the staff member's own language and a reinstall or
+      // device switch can restore it. The app renders from a device-local
+      // preference, so this write is best-effort; this is the SERVER's copy.
+      //
+      // The allowlist must stay byte-narrow: `staff` holds role, staff_roles,
+      // department and status — the RBAC grant itself — so hasOnly() is the
+      // only thing making a self-service clause safe here.
+      //
+      // OWNER PREDICATE IS THE docId, NOT resource.data.staffId. The merge-only
+      // writers (AdminUsers::create_admin, Staff_access) never set staffId, so
+      // a field check silently denies those accounts. Mutation-tested: swapping
+      // in staffId fails exactly the "staff doc with no staffId field" case and
+      // nothing else. Do not "simplify" this back.
+      allow update: if isSameSchool()
+                    && docId == (request.auth.token.school_id + '_' + request.auth.uid)
+                    && request.resource.data.diff(resource.data)
+                          .affectedKeys()
+                          .hasOnly(['prefLang', 'updatedAt'])
+                    && request.resource.data.prefLang is string
+                    && request.resource.data.prefLang.size() <= 8;
     }
 
     // ── Staff Private (audit C1) ─────────────────────────────────
