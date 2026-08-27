@@ -181,9 +181,75 @@ class Doc_templates extends MY_Controller
     //  every endpoint below inherits them.
     // ═══════════════════════════════════════════════════════════════════
 
+    /**
+     * The document-type catalogue for THIS school. P1.8/P1.9 — no longer a stub.
+     *
+     * Config-driven plus ONE keyed read of the school doc. No composite query,
+     * so this endpoint is not blocked by P1.2 (indexes withdrawn) or P1.3
+     * (rules unwritten) the way the template reads are.
+     *
+     * Returns unavailable types too, each with a reason — see
+     * Doc_contract::catalogue(). Silently omitting them reads as "your state is
+     * unsupported", which is both wrong and unactionable.
+     *
+     * NOTE: the SPA still runs on its own copy of this catalogue in
+     * `designer.js`. The two are held identical by
+     * `tests/Unit/DocContractParityTest`; switching the client to consume this
+     * endpoint is a later step and is not implied by shipping it.
+     */
     public function get_types(): void
     {
-        $this->json_success(['data' => ['types' => [], 'pending' => 'P1.1']]);
+        $school = $this->_school_context();
+
+        try {
+            $contract = $this->_contract();
+        } catch (Throwable $e) {
+            // A missing or half-loaded contract must not render as "no document
+            // types are available", which looks like a configured product with
+            // nothing switched on. Fail loudly instead.
+            log_message('error', 'Doc_templates::get_types — ' . $e->getMessage());
+            $this->_deny('The document catalogue is not configured. Contact support.', 500);
+            return;
+        }
+
+        $this->json_success(['data' => [
+            'school' => $school,
+            'types'  => $contract->catalogue($school['state']),
+        ]]);
+    }
+
+    /**
+     * School context the catalogue and compliance stack are resolved against.
+     *
+     * `state` gates the state-specific certificates (Kerala Form 5A / r.22A,
+     * A.P. Study Certificate); `board` selects the compliance layer.
+     *
+     * A school with no `state` set gets the state-gated types marked
+     * unavailable with a reason that says so, rather than being quietly given
+     * or quietly denied them.
+     */
+    private function _school_context(): array
+    {
+        $doc = $this->fs->get('schools', $this->fs->schoolId());
+        if (!is_array($doc)) {
+            $doc = [];
+        }
+
+        return [
+            'name'  => (string) ($doc['name'] ?? $this->school_display_name ?? ''),
+            'state' => (string) ($doc['state'] ?? ''),
+            'board' => (string) ($doc['affiliationBoard'] ?? $doc['board'] ?? ''),
+            'stage' => (string) ($doc['stage'] ?? 'both'),
+        ];
+    }
+
+    /** Lazily loaded contract service (P1.9). */
+    private function _contract(): Doc_contract
+    {
+        if (!isset($this->doccontract)) {
+            $this->load->library('doc_contract', null, 'doccontract');
+        }
+        return $this->doccontract;
     }
 
     public function get_templates(): void

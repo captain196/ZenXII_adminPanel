@@ -590,11 +590,83 @@
 .zxdt .rail{flex-basis:198px}
 .zxdt .insp{flex-basis:280px}
 }
+/* ── Narrow viewports — drawers, never display:none ──────────────────────
+   Browser zoom shrinks the CSS viewport, so a clerk at 150% on a 1440 laptop
+   lands here. Hiding a panel outright removed the ONLY route to Insert /
+   Fields / Blocks / Layers / Content and to every object property, with no
+   control anywhere to bring it back. The panels now slide over the desk
+   instead. The tabstrip is deliberately never hidden — it is always the way
+   back into the rail. */
+.zxdt .dz{position:relative}
+
 @media (max-width:1020px){
-.zxdt .rail{display:none}
+.zxdt .rail{
+  position:absolute;left:52px;top:0;bottom:0;z-index:60;
+  flex-basis:auto;width:min(288px,calc(100vw - 68px));
+  box-shadow:12px 0 34px rgba(0,0,0,.22);
+  transform:translateX(-102%);visibility:hidden;
+  /* visibility must NOT be interpolated: it is a discrete property, so putting
+     it in the same transition as the transform leaves the panel stuck at
+     `hidden` even after `.is-open` lands. Flip it instantly on open, and delay
+     it to the end of the slide on close so the panel is not focusable while
+     off-screen. */
+  transition:transform var(--ease),visibility 0s .22s;
+}
+.zxdt .rail.is-open{transform:none;visibility:visible;transition:transform var(--ease),visibility 0s 0s}
 .zxdt .desk{padding:78px 20px 60px}
 }
+
 @media (max-width:760px){
-.zxdt .insp{display:none}
+.zxdt .insp{
+  position:absolute;right:0;top:0;bottom:0;z-index:60;
+  flex-basis:auto;width:min(310px,calc(100vw - 52px));
+  box-shadow:-12px 0 34px rgba(0,0,0,.22);
+  transform:translateX(102%);visibility:hidden;
+  transition:transform var(--ease),visibility 0s .22s;   /* see the rail — discrete property */
+}
+.zxdt .insp.is-open{transform:none;visibility:visible;transition:transform var(--ease),visibility 0s 0s}
 .zxdt .crumb{display:none}
 }
+
+/* the inspector toggle only exists where the inspector is a drawer */
+.zxdt #inspBtn{display:none}
+@media (max-width:760px){ .zxdt #inspBtn{display:grid} }
+
+/* ── Topbar under pressure ───────────────────────────────────────────────
+   The designer's topbar carries ~847px of controls (two segmented controls,
+   undo/redo, History, Proof, Publish) plus brand and icon buttons. Below
+   ~900px they were pushed clean off the right edge — Publish included, with
+   no scroll to reach them. Shed DECORATION first, and make what remains
+   scrollable so a control is never merely unreachable. */
+@media (max-width:1020px){
+.zxdt .topbar{gap:7px;padding:0 8px}
+.zxdt .brand span:not(.brand__mark){display:none}   /* keep the mark, drop the wordmark */
+.zxdt .btn__hint{display:none}                      /* "~2s" is a nicety */
+.zxdt #topActions{min-width:0;overflow-x:auto;scrollbar-width:none}
+.zxdt #topActions::-webkit-scrollbar{display:none}
+.zxdt #topActions > *{flex:0 0 auto}                /* scroll, never squash */
+}
+@media (max-width:900px){
+/* translation coverage is informational and repeated in the Proof dialog and
+   the compliance panel — it is the one thing here safe to drop */
+.zxdt #topActions .chip.mono{display:none}
+}
+
+/* a drawer sits over the desk; tapping the desk dismisses it */
+.zxdt .drawer-scrim{
+  position:absolute;inset:0;z-index:55;background:rgba(0,0,0,.18);
+  opacity:0;pointer-events:none;transition:opacity var(--ease);
+}
+.zxdt .drawer-scrim.is-on{opacity:1;pointer-events:auto}
+
+/* The status bar is a single nowrap row ~1022px wide. Below that it used to
+   clip its right-hand segments — including the unsaved/lockVersion readout —
+   with no way to see them. Let it scroll instead of truncating. */
+.zxdt .statusbar{overflow-x:auto;overflow-y:hidden;scrollbar-width:none}
+.zxdt .statusbar::-webkit-scrollbar{display:none}
+/* ── Content pane (design/TEXT_EDITING_PROPOSAL.md) ─────────────────────── */
+.zxdt #contentList [contenteditable]:focus{border-color:var(--clay);background:var(--panel)}
+.zxdt #contentList [contenteditable]:empty::before{
+  content:attr(data-empty);color:var(--ink4);font-style:italic;pointer-events:none;
+}
+.zxdt #contentList [contenteditable] .mf{cursor:default}

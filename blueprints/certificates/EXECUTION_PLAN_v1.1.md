@@ -312,15 +312,15 @@ only purpose is to find out whether the architecture survives contact with the d
 
 | # | Task | Depends | Files | Accept |
 |---|---|---|---|---|
-| P1.1 | Collection shapes: `documentTypes`, `documentTemplates` (head), `documentTemplateVersions`, `reusableBlocks`, `mergeFieldContracts` | G0 | — | Shapes documented and reviewed against ADR key convention `{schoolId}_{entityId}` |
-| P1.2 | **Declare 7 composite indexes and deploy them first** | P1.1 | `firestore.indexes.json` | Indexes **built and live** before any query code exists. Verified with `aegis indexes`. |
+| P1.1 | ✅ **DONE — and unmarked until 2026-08-27.** `COLLECTION_SHAPES.md`, 423 lines, covers all five: `documentTypes` §2 · `documentTemplates` §3 · `documentTemplateVersions` §4 · `mergeFieldContracts` §6 · `reusableBlocks` §7, plus the compliance stack §5. | G0 | `COLLECTION_SHAPES.md` | ✅ Keys follow `{schoolId}_{entityId}`; §0 records the twice-scoping rule (`schoolId` **and** session). |
+| P1.2 | ⛔ **WITHDRAWN ON OPERATOR INSTRUCTION (2026-08-19) — re-verified 2026-08-27 and the withdrawal STANDS.** The 7 indexes are specified in `COLLECTION_SHAPES.md` §8 and **declared nowhere**. Do not add them to `firestore.indexes.json` until the file is reconciled to live. | P1.1 | *(deliberately none)* | ⛔ Blocked by a repo-wide hazard, not by this module. See §8. |
 | P1.3 | Firestore rules: one `match` block per collection; published versions **create-only**; head mutable only by capability | P1.1 | `firestore.rules` | `aegis rules status` run **before** editing; diff reviewed; rules tests pass |
-| P1.4 | Register numbering kinds `doc_template`, `doc_block` (INTERNAL) | — | `config/numbering.php` | `numbering->next('doc_template')` returns `TPL0001`; `gaplessClass` documented as **not yet enforced** |
+| P1.4 | ✅ **DONE — was already done and the status did not say so (verified at source 2026-08-27).** `config/numbering.php:130-142` registers `doc_template` (`TPL`, padWidth 4 ⇒ `TPL0001`) and `doc_block` (`BLK`), both `gaplessClass INTERNAL`, both `enabled` in `_kindFlags`. | — | `config/numbering.php` | ✅ Matches the acceptance criterion exactly. `gaplessClass` remains **decorative — nothing enforces it**; that is recorded, not fixed. |
 | P1.5 | `Doc_renderer` — clean mPDF path. **Never** `Pdf_generator::render()`. Paper from template. | G0.1, G0.2 | `libraries/Doc_renderer.php` | Renders a fixture with **zero** report-card CSS inherited and correct paper size |
 | P1.6 | ✅ **DONE.** `Doc_templates` controller + 17 routes + CSRF (no exclusions) + `_remap` capability map | G0.7 | `controllers/Doc_templates.php`, `config/routes.php` | ✅ Verified live: unauth GET → 307 to login; POST without token → **403**; POST with token → 303 to login (CSRF passed, auth took over). Endpoint missing from `CAPABILITIES` is refused — fails closed. |
 | P1.7 | ✅ **DONE — simplified.** No `Doc_audit` library is needed: `application/helpers/audit_helper.php` already provides `log_audit($module,$action,$entityId,$description)` writing to `auditLogs` with a settled schema and non-blocking failure semantics. The controller calls it directly with module `DocTemplates`. | — | *(none — existing helper)* | ✅ Events land in the **existing** Audit Logs viewer. One fewer class, zero fragmentation. |
-| P1.8 | `mergeFieldContracts` seed for TC / Bonafide / Character, incl. `maxLen` and **p95-realistic** samples | G0.8 | `config/doc_types.php` | Every `requiredKey` in the CBSE profile resolves against the contract |
-| P1.9 | `Doc_contract` service — `get`, `validateBundle`, `diff` | P1.8 | `libraries/Doc_contract.php` | `diff(v3,v4)` produces an impact report; unknown key → hard error |
+| P1.8 | ✅ **DONE 2026-08-27 — and wider than the row asked for.** `config/doc_types.php`: **30 merge fields · 6 per-type contracts · 8 document types** (all six enabled types, not only TC/Bonafide/Character). Every field carries `label`, `sample`, `maxLen`, and `p95` where a worst case exists. | G0.8 | `config/doc_types.php` | ✅ **Guarded by `tests/Unit/DocContractParityTest` (7 tests, 179 assertions), which parses `designer.js` and fails if the two copies drift.** Negative-tested: a dropped contract key and an undersized `maxLen` were both caught. |
+| P1.9 | ✅ **DONE 2026-08-27.** `libraries/Doc_contract.php` — `get`, `keysFor`, `typesForState`, `typeAvailable`, `validateBundle`, `diff`, `sampleBundle($type,$p95)`. Constructor takes optional injected params so the class is unit-testable with **no CI3 bootstrap**; production passes nothing. | P1.8 | `libraries/Doc_contract.php` | ✅ `diff` returns `{added,removed,unchanged,breaking,impact}` and **throws on an undeclared key**. **20 behavioural tests** in `DocContractServiceTest`. |
 
 ---
 
@@ -497,5 +497,156 @@ Halt and re-plan if any occurs:
 
 ## 16. Status
 
-**Nothing implemented.** No files changed, no rules edited, no indexes declared, no deploy.
-Plan for review.
+Gate 0 complete. Committed so far: `Doc_renderer` (`1dada83`), `Doc_templates` controller
+(`eb44518`), SPA shell (`00e39df`), scoped CSS (`e223caf`).
+
+**Uncommitted / deploy-pending:** the UI port's Content pane (UX_SPEC §5A.4b), the responsive pass of
+2026-08-25, the P1.8/P1.9 contract layer of 2026-08-27, and the two fixes below.
+**No rules edited, no indexes declared, nothing deployed.**
+
+### Responsive pass 2026-08-25 — was never recorded here
+
+`[VERIFIED — re-run independently 2026-08-27, not inherited from the prior session]` The session that
+did this work was killed mid-verification, so its result was recovered from the run artifact and then
+**re-derived from scratch against the current tree**.
+
+- Drawers fixed (`transform:none`, `visibility:visible`, both close again).
+- The layout audit itself was **over-reporting** and was corrected: a status bar that *scrolls* is not
+  clipped. An audit that cries wolf gets ignored, so the check was made honest before the last defect
+  was chased.
+- **760 px topbar overflow fixed** — 847 px of controls in a 760 px viewport, resolved by dropping
+  decoration and making the remainder scrollable, plus an `#inspBtn` drawer toggle.
+  **No control was removed**; that was the constraint the fix had to satisfy.
+- Layout audit **clean at 1000 / 900 / 760**.
+- **E2E re-run 2026-08-27: 102 / 102 passed, 0 failures, 0 page errors** — the tabstrip click-handler
+  change caused no regression.
+
+### P1.8 + P1.9 — the contract layer, 2026-08-27
+
+The client state machine was complete and green while **every endpoint in `Doc_templates.php` was
+still a stub returning `pending P1.x`**. The gap closed first is the one that fails silently.
+
+`designer.js` already held the contract (`CONTRACT`, `CONTRACTS`, `TYPES`). Seeding a server copy
+*independently* is precisely how the two drift, so the server file was derived from the client's and
+**pinned to it by a test** rather than by a comment:
+
+- **`config/doc_types.php`** — 30 fields, 6 contracts, 8 types.
+- **`libraries/Doc_contract.php`** — the only sanctioned server reader of it.
+- **`tests/Unit/DocContractParityTest`** — parses `designer.js` and fails the build if either side
+  moves. Each parser asserts it found something first, so a broken parser cannot make the suite pass
+  vacuously.
+- **`tests/Unit/DocContractServiceTest`** — 20 behavioural tests.
+
+**The severity boundary this layer establishes, and it is the part most likely to be broken later:**
+an **unresolved** field is an **ERROR** (a blank on a statutory document is a defective document),
+while an **over-length** field is only a **WARNING** — `maxLen` is our own **Level D** rendering
+estimate, so blocking on it would reject lawful data. Over-length is handed to the **P2.7 overflow
+gate**, which measures the actually-rendered block. Collapsing those two severities breaks the module
+in one direction or the other.
+
+`[FACT|OBSERVED]` Unit suite after this work: **243 tests, 4 failures, 27 skipped** — the repo's
+standing baseline, unchanged. The 4 failures and 27 skips are pre-existing and were not touched.
+
+### P1.1 / P1.2 / first live endpoint — 2026-08-27, continued
+
+**P1.1 was already done and unmarked.** `COLLECTION_SHAPES.md` covers all five collections.
+
+**P1.2 stays WITHDRAWN, and that was re-verified rather than assumed.** Recomputed from the cached
+live snapshot using Aegis's own canonical index key: **284 live · 193 declared in the working tree ·
+183 in both · 101 live-only · 10 declared-only.** A desired-state deploy would still offer to delete
+101 indexes covering Transport, CRM, campus access and visitor passes. **Zero indexes exist — live or
+declared — for any of the six Document Engine collections**, so P1.2 is genuinely undone rather than
+half-done. Full working in `COLLECTION_SHAPES.md` §8.1.
+
+> 🔴 **AND THE TOOL THAT WAS MEANT TO CHECK THIS IS GONE.** `aegis/` now contains only `.state/` and
+> `.reports/` — **`aegis/cli.js` does not exist**, while the repo `CLAUDE.md` still instructs
+> `node aegis/cli.js indexes` (and `rules status`) as the verification step. The figures above come
+> from a **cached snapshot dated 2026-08-15 — twelve days stale.** That is *why* this drift number
+> keeps being quoted instead of re-measured, and quoting it is how a stale number becomes a fact.
+> **Restoring Aegis is a prerequisite for closing P1.2 and for P1.3, not an unrelated chore.**
+
+**First endpoint off the stubs: `get_types`.** It is config-driven plus **one keyed read** of the
+school doc — no composite query — so it is not blocked by P1.2 or P1.3 the way the template reads
+are. It returns the school context and **the full catalogue, including types this school cannot use,
+each with a reason** (`Doc_contract::catalogue()`); a type that silently disappears reads as "this
+product does not support my state", which is wrong and unactionable. A missing contract fails loudly
+rather than rendering as an empty catalogue.
+
+`[FACT|OBSERVED]` Unauthenticated `GET /doc_templates/get_types` → **HTTP 307** to login: the G0.7
+capability gate still holds after the change. No route added, no entry added to `CAPABILITIES`, so
+the fail-closed property is untouched. Unit suite: **250 tests, 4 failures, 27 skipped** — baseline.
+
+⚠️ **The SPA still runs on its own copy of the catalogue.** Shipping this endpoint does not switch the
+client over; that is a later step. Until then `DocContractParityTest` is the only thing keeping the
+two identical.
+
+**Next, in order:** restore Aegis → reconcile `firestore.indexes.json` to live (a repo-wide hazard,
+not this module's) → P1.2 declare → P1.3 rules, `rules status` **before** any edit → then
+`get_templates` / `get_template`, which are the first genuinely Firestore-backed reads and the point
+at which the SPA can stop running on seeded in-memory data.
+
+### Port defect found 2026-08-23 — `assets/js/doctemplates/assets.js` deleted
+
+The UI port committed in `00e39df` created `assets.js` as a second script alongside `designer.js`.
+Three faults, each hiding the next:
+
+1. A comment block had lost its opening `/*`, so the file was a **syntax error** and never
+   executed. That masked the other two.
+2. **Every** top-level declaration in it (`OK_TYPES`, `readAsset`, `applyAsset`, `openSignaturePad`,
+   `pickFile`, `TOOLKEY`, `modal`, `openProof`, `openPublish`, `openHistory`, `openConflict`, …)
+   was a **byte-identical duplicate** of a region already present in `designer.js`. Nothing in the
+   file was unique.
+3. The view loads `assets.js` **before** `designer.js`, so once it parsed it threw
+   `OK_TYPES has already been declared` — which **kills `designer.js` entirely**. It also called
+   `$()` at load, before `designer.js` defines it.
+
+Net effect: on the real page the Certificate Designer would have been **completely dead**, and only
+the syntax error was preventing it. Fixed by deleting `assets.js` and its two `<script>` tags
+(`application/views/doc_templates/index.php`, local harness). `designer.js` is self-contained.
+
+**Rule for the rest of the port: one script, `designer.js`.** Do not split it without removing the
+original copy, and syntax-check every ported file (`node --check`) — a parse error presents as a
+silently missing feature, not as an error anyone sees.
+
+### End-to-end client suite 2026-08-23 — 102 tests, all passing
+
+`_zxdt_e2e.js` (untracked, in the webroot) drives hub → type → gallery → classic starter **and**
+blank canvas → design → validate → proof → publish → activate → history, for every enabled document
+type in every state that gates one. Run it headlessly with no dependencies:
+
+```bash
+php -S localhost:8080                        # from the repo root
+"/Applications/Google Chrome.app/Contents/MacOS/Google Chrome" \
+  --headless=new --disable-gpu --virtual-time-budget=180000 \
+  --dump-dom http://localhost:8080/_zxdt_e2e_run.html
+```
+
+Groups: boot/hub (6) · gallery (9) · creation (8) · editing (13) · **validation matrix (15)** ·
+proof (2) · **publish (10)** · activation (7) · history/compare/conflict (4) · cross-cutting (6) ·
+**full lifecycle per certificate type (10)** · compliance stack (8) · page/tools (4).
+Result: **102 passed, 0 failed, 0 page errors.**
+
+*Scope limit:* every endpoint in `Doc_templates.php` is still a stub returning `pending P1.x`, so
+the suite asserts the client state machine only. Nothing about persistence is proven yet.
+
+**Three defects it found, all fixed:**
+
+1. **Form 5A was permanently unpublishable.** `boundKeys()` scanned *every* language present on an
+   object, not just those the template declares. The Kerala Form 5A starter declares `en` only and
+   rewrites its English run to `sec.outcome`, but the inherited Hindi run still bound
+   `tc.reasonForLeaving` — a key the 5A contract does not declare. The template therefore blocked
+   publish with an `offContract` error naming a field that **could not be seen or removed from the
+   UI**, in a language the template did not have. Fixed at the root (`boundKeys()` now ignores
+   undeclared languages) plus `pruneLanguages()`, applied to every starter on the way out so the
+   dead runs never survive the build. Two more starters (`sec_ker`, `conduct`) carried the same
+   stale Hindi runs and are now clean. Guarded by K91/K92.
+2. **The publish button lied.** It read *"Publish and set active"* while the handler deliberately
+   does not activate — §9.2c is explicit that publish ≠ activate, and the very next modal asks for
+   activation separately. On a legally consequential action the label promised something it did not
+   do. Now reads `Publish v{n}`.
+3. **The blank-canvas card over-promised.** *"required objects pre-placed"* — but the filter keeps
+   only objects carrying `region` or `requiredKey`, which drops the particulars table, the
+   declaration, all three prescribed signatures, the seal and the duplicate mark, leaving 14 of 19
+   required fields unbound. Copy corrected to *"letterhead and page furniture only"*. The behaviour
+   is right — a blank canvas should be blank, and the publish gate blocks and names every gap
+   (verified by H5b/K90) — the copy was the part that was wrong.

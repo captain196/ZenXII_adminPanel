@@ -229,9 +229,9 @@ that panel and the approver of the document; a tab would let it be out of sight 
 matters. Both sections are collapsible; compliance is open by default and its header carries a
 live badge (`3 blocking` / `Clear`).
 
-### 5.1 Left rail — three panes, not a toolbar
+### 5.1 Left rail — panes, not a toolbar
 
-`Insert · Fields · Blocks`.
+`Layers · Insert · Fields · Blocks · Content`.
 
 - **Insert** — six object tiles (`text · table · image · shape · qr · pageNumber`), each with a
   one-line mono subtitle naming its behaviour (`rich · auto-grow`, `storage ref`, `footer only`).
@@ -244,6 +244,8 @@ live badge (`3 blocking` / `Clear`).
   Clicking inserts an atomic chip at the cursor of the selected text object.
 - **Blocks** — reusable letterhead / signature / seal blocks with usage counts
   (`4 objects · used by 3 templates`), because editing one propagates.
+- **Content** — the document read as a document: every object in reading order, prose editable
+  in place, nothing movable. See §5A.4b. This is the pane the office clerk lives in.
 
 ### 5.2 The desk and the page
 
@@ -483,8 +485,10 @@ highest-frequency text action.
 
 ### 5A.4 Text editing
 
-- **Double-click** a text object, or press **Enter** with it selected, or use ✎ in the toolbar or
-  inspector. Four routes because this is the most-used action in the tool.
+- **Double-click** a text object, or press **Enter** with it selected, or use ✎ in the toolbar.
+  The inspector's ✎ was **removed** — it duplicated the toolbar button, sat far from the object,
+  and was the least discoverable of the four. It now reads *"¶ Edit in Content"* and opens §5A.4b
+  instead, which is the better answer to what that button was for.
 - The object becomes editable in place, at its real size and position on the page. No side pane,
   no modal.
 - **Esc commits.** Clicking anything else commits. Switching language commits. Leaving the screen
@@ -499,6 +503,50 @@ while the object node is built, not applied afterwards — or the next re-render
 and the user's keystrokes vanish into a dead node. Equally, any render while editing must harvest
 the live DOM back into the model first, and restore the caret by character offset afterwards.
 Both were real bugs in this prototype before they were rules.
+
+### 5A.4b The Content pane — editing a certificate as a document
+
+Canvas editing is right for a *designer*. It is wrong for the person the personas call P1 — the
+office clerk fixing a typo in a declaration sentence. To change one word they had to find a 9.5 pt
+target on a zoomable canvas, hit it precisely, enter a mode, edit, and leave the mode — and the
+most likely misfire, **dragging the object instead of editing it**, silently moves a piece of a
+legally-formatted document. A certificate is not a poster: it is read top to bottom, as prose and
+labelled fields. The tool offered only the canvas view of it; it now also offers the document view.
+
+- Lists **every** object in **reading order** — region (`header → body → footer`), then resolved Y,
+  then X. Not z-order, not creation order. Reading order is the only order a clerk thinks in.
+- **Always editable. No mode, no ✎, no double-click.** Click a line and type.
+- **Nothing here can move, resize, reorder or delete.** Content only — so proofreading can no
+  longer break the layout.
+- Merge fields render as the **same chips** as on canvas, atomic and `contenteditable="false"`,
+  inserted only from the Fields pane (§5A.5 stays the contract).
+- Required objects carry the **seal marker (✦)** here too — compliance is visible while
+  proofreading, which is exactly when it matters.
+- Non-text objects (image, shape, rule, qr) appear as **greyed, non-editable rows**, preserving
+  reading order without pretending they are text. Clicking one selects it on canvas.
+- Selecting a row selects the object on the canvas, and the canvas keeps updating as you type —
+  the two views are one selection with one live preview.
+- **Edit all / Read** toggle. *Read* is a continuous-text proofreading view with region headings
+  and no editable nodes at all, so a final check before publish cannot become an accidental edit.
+
+**Commit model — this is the load-bearing part.** The model is updated on **every keystroke**
+(`input`), not on blur. Two reasons, both learned the hard way:
+
+1. *No edit can be lost.* Blur is not guaranteed — switching window, closing the tab, or any
+   programmatic focus change can skip it. Chrome does not even dispatch `focus`/`blur` when the
+   document lacks OS focus. Committing on `input` makes the model never lag the screen.
+2. *It defuses the §5A.4 bug class.* Because the model is already current, a re-render that
+   destroys the focused node can no longer take the keystrokes with it.
+
+Undo must not follow suit: one entry per character is useless. The baseline snapshot is armed once
+at the **start** of a typing burst (from `focus` *and* from the first `input`, since focus is
+unreliable) and a **single** undo entry is pushed on blur, comparing against that baseline — not
+against the model as it stood a moment earlier, which is always identical by then and would push
+nothing at all.
+
+The pane additionally **refuses to repaint underneath a live edit**: `paintContent()` harvests the
+focused row into the model, sets a deferred flag, and returns; the repaint runs when the edit is
+released. Rebuilding the list mid-keystroke is precisely the dead-node failure §5A.4 records.
 
 ### 5A.4a The contract is per document type
 
@@ -726,6 +774,26 @@ Two controls, deliberately separate:
 
 The boundary holds: a school may exclude a layer, it may not rewrite one. Authority definitions stay
 platform-super-admin-only.
+
+### 7.3a A prescribed form can dictate language
+
+Kerala's Form 5 is **printed bilingually — English and Malayalam, every label**. So a layer may
+declare `bilingual`, and the panel states whether the template actually carries those languages.
+This is the first case where the multilingual requirement is *statutory* rather than an operator
+preference, and it is why language modes (§8) are not a nicety.
+
+Where we hold the form but not the script — Kerala's Malayalam is stored in the source PDF in a
+legacy non-Unicode encoding — the starter declares the language and leaves it **untranslated**.
+The coverage indicator then reads honestly (`2/7 translated`) instead of implying a bilingual
+document we cannot produce.
+
+### 7.3b Sensitive fields the form itself prescribes
+
+Form 5 requires **Religion** and **SC / ST / OBC status** on the certificate. The rule mandates the
+field; it says nothing about who may retain a copy, for how long, or where it is stored — and the
+printed document travels to another school. Fields carrying a `pii` flag raise an advisory in the
+compliance panel, phrased as a decision for whoever owns the register rather than a default the
+tool quietly makes.
 
 ### 7.4a Routing — when the rule changes which document you issue
 

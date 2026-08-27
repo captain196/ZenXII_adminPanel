@@ -394,7 +394,45 @@ template using it, and nobody finds out until an audit compares a printed TC aga
 | `complianceAuthorities` | `scope.board` ASC, `tier` ASC |
 
 ⚠ **Deploy these BEFORE any query code exists.** Index builds take time, and this project already
-carries drift (284 live vs 183 declared). Verify with `node aegis/cli.js indexes`.
+carries drift (284 live vs 183 declared).
+
+### 8.1 Re-verified 2026-08-27 — **the withdrawal stands, and the tooling that was supposed to check it is gone**
+
+`[FACT|OBSERVED]` Recomputed from `aegis/.state/live-indexes-graderadmin.json` using Aegis's own
+canonical index key, diffed against both `HEAD` and the working tree:
+
+| | Count |
+|---|---|
+| Live (cached snapshot) | **284**, all `READY` |
+| Declared at `HEAD` | **184** |
+| Declared in working tree | **193** (+9 uncommitted, from other work — not this module) |
+| In both | **183** |
+| **Live-only — a desired-state deploy would offer to DELETE these** | **101** |
+| Declared-only — would be built on deploy | **10** |
+
+Live-only, by collection: `tripLogs` 10 · `crmApplications` 9 · `vehicles` 6 · `transportExpenses` 6 ·
+`studentRoutes` 5 · `routeAssignments` 4 · `routes` 4 · `visitPasses` 4 · `driverIncidents` 3 ·
+`campusAccessRequests` 3 · `temporaryDriverAssignments` 3 · `transportAuditLog` 2 · and the tail.
+**Transport and CRM would take the worst of it.** The earlier figure of 105 is now **101** — nine new
+declarations have landed since, four of which matched a live-only index. **The hazard has narrowed by
+four and is otherwise unchanged.**
+
+`[FACT|OBSERVED]` **Zero indexes exist, live or declared, for any of the six Document Engine
+collections** (`documentTemplates`, `documentTemplateVersions`, `reusableBlocks`,
+`complianceAuthorities`, `documentTypes`, `mergeFieldContracts`). P1.2 is genuinely undone, not
+half-done.
+
+> ⚠️ **TWO CAVEATS ON THE NUMBERS ABOVE, both of which weaken them:**
+> 1. **The snapshot is from 2026-08-15 07:36 UTC — twelve days stale.** Anything deployed since is
+>    invisible to it. These figures describe a *cached* state, not production right now.
+> 2. **`aegis/cli.js` NO LONGER EXISTS.** `~/Desktop/Zennxii_adminPanel/aegis/` contains only
+>    `.state/` and `.reports/`; the tool source is gone. **The repo `CLAUDE.md` still instructs
+>    `node aegis/cli.js indexes` as the way to verify this, and that command cannot run.** A live
+>    re-read needs the tool restored or the Firestore Admin API called directly.
+>
+> **This is why the drift figure keeps being quoted rather than re-measured** — and quoting it is
+> exactly how a stale number becomes a fact. Restoring Aegis is a prerequisite for closing P1.2,
+> not an unrelated chore.
 
 `documentTypes` and `mergeFieldContracts` are small platform collections fetched by key or scanned
 whole — no composite index needed.

@@ -1,6 +1,776 @@
-/* ZenXii Certificate Designer — ported from blueprints/certificates/design/prototype.html
-   No bundler (UX_SPEC §14). Plain <script> include. Do not add build steps. */
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<link href="https://fonts.googleapis.com/css2?family=Syne:wght@700;800&family=Plus+Jakarta+Sans:wght@400;600;700&family=JetBrains+Mono:wght@400;600;700&display=swap" rel="stylesheet">
+</head>
+<body>
+<title>ZenXii Certificate Designer</title>
+<style>
+/* ============================================================================
+   ZenXii Certificate Designer — interactive design prototype  v2
+   Tokens from the live panel (tools/css/header-inline.css).
+   --seal is new: a statutory red kept off-clay so "legally load-bearing"
+   never reads as "brand accent".
+   Interaction model per design/REFERENCE_RESEARCH.md — Figma's five regions,
+   tool shortcuts, space-drag pan and measured guides; Canva's context toolbar
+   and double-click-to-edit; PandaDoc/DocuSign's atomic merge tokens.
+   ========================================================================= */
+:root{
+  --paper:#F7F2ED; --desk:#E5D8CE; --panel:#FFFFFF; --raised:#FBF7F4; --sunk:#F1E8E1;
+  --line:rgba(188,90,60,.18); --line2:rgba(188,90,60,.34); --line3:rgba(42,28,20,.08);
+  --ink1:#2A1C14; --ink2:#6B5346; --ink3:#9E8578; --ink4:#C2A89A;
+  --clay:#BC5A3C; --clay-d:#9E4830; --clay-l:#D4725C;
+  --clay-dim:rgba(188,90,60,.10); --clay-ring:rgba(188,90,60,.28);
+  --seal:#A8322A; --seal-dim:rgba(168,50,42,.09); --seal-ring:rgba(168,50,42,.30);
+  --ok:#15803D; --ok-dim:rgba(21,128,61,.10);
+  --warn:#B45309; --warn-dim:rgba(180,83,9,.10);
+  --info:#2563EB; --info-dim:rgba(37,99,235,.09);
+  --measure:#C2185B;
+  --page:#FFFFFF; --page-ink:#14100D;
+  --page-sh:0 1px 2px rgba(42,28,20,.10),0 18px 44px rgba(42,28,20,.22);
+  --sh1:0 1px 2px rgba(42,28,20,.05),0 2px 10px rgba(42,28,20,.05);
+  --sh2:0 20px 60px rgba(42,28,20,.20);
+  --r:12px; --r-sm:8px; --r-xs:5px;
+  --ease:.22s cubic-bezier(.4,0,.2,1);
+  --font-d:'Syne','Space Grotesk',ui-sans-serif,system-ui,sans-serif;
+  --font-b:'Plus Jakarta Sans',ui-sans-serif,system-ui,-apple-system,sans-serif;
+  --font-m:'JetBrains Mono',ui-monospace,SFMono-Regular,Menlo,monospace;
+}
+@media (prefers-color-scheme:dark){
+  :root:not([data-theme="light"]){
+    --paper:#17100C; --desk:#0E0A07; --panel:#201711; --raised:#271A14; --sunk:#1A120D;
+    --line:rgba(188,90,60,.20); --line2:rgba(188,90,60,.38); --line3:rgba(255,255,255,.06);
+    --ink1:#F4E9E2; --ink2:#C9B3A8; --ink3:#9E8578; --ink4:#6E5B50;
+    --clay:#D4725C; --clay-d:#BC5A3C; --clay-l:#E29079;
+    --clay-dim:rgba(212,114,92,.13); --clay-ring:rgba(212,114,92,.32);
+    --seal:#E4695E; --seal-dim:rgba(228,105,94,.12); --seal-ring:rgba(228,105,94,.34);
+    --ok:#4ADE80; --ok-dim:rgba(74,222,128,.12);
+    --warn:#F0A44A; --warn-dim:rgba(240,164,74,.12);
+    --info:#7DA7FF; --info-dim:rgba(125,167,255,.12);
+    --measure:#FF6E9C;
+    --sh1:0 1px 2px rgba(0,0,0,.4),0 2px 12px rgba(0,0,0,.30);
+    --sh2:0 24px 70px rgba(0,0,0,.60);
+    --page-sh:0 1px 2px rgba(0,0,0,.5),0 22px 54px rgba(0,0,0,.55);
+  }
+}
+:root[data-theme="dark"]{
+  --paper:#17100C; --desk:#0E0A07; --panel:#201711; --raised:#271A14; --sunk:#1A120D;
+  --line:rgba(188,90,60,.20); --line2:rgba(188,90,60,.38); --line3:rgba(255,255,255,.06);
+  --ink1:#F4E9E2; --ink2:#C9B3A8; --ink3:#9E8578; --ink4:#6E5B50;
+  --clay:#D4725C; --clay-d:#BC5A3C; --clay-l:#E29079;
+  --clay-dim:rgba(212,114,92,.13); --clay-ring:rgba(212,114,92,.32);
+  --seal:#E4695E; --seal-dim:rgba(228,105,94,.12); --seal-ring:rgba(228,105,94,.34);
+  --ok:#4ADE80; --ok-dim:rgba(74,222,128,.12);
+  --warn:#F0A44A; --warn-dim:rgba(240,164,74,.12);
+  --info:#7DA7FF; --info-dim:rgba(125,167,255,.12);
+  --measure:#FF6E9C;
+  --sh1:0 1px 2px rgba(0,0,0,.4),0 2px 12px rgba(0,0,0,.30);
+  --sh2:0 24px 70px rgba(0,0,0,.60);
+  --page-sh:0 1px 2px rgba(0,0,0,.5),0 22px 54px rgba(0,0,0,.55);
+}
+*{box-sizing:border-box}
+body{
+  margin:0;background:var(--paper);color:var(--ink1);
+  font-family:var(--font-b);font-size:13.5px;line-height:1.5;-webkit-font-smoothing:antialiased;
+  overflow:hidden;
+}
+button,input,select,textarea{font:inherit;color:inherit}
+button{cursor:pointer;background:none;border:0;padding:0}
+:focus-visible{outline:2px solid var(--clay);outline-offset:2px;border-radius:4px}
+@media (prefers-reduced-motion:reduce){*{animation-duration:.01ms !important;transition-duration:.01ms !important}}
+.mono{font-family:var(--font-m);font-variant-numeric:tabular-nums}
+.spacer{flex:1 1 auto;min-width:6px}
 
+/* ── shell ──────────────────────────────────────────────────────────────── */
+.app{display:flex;flex-direction:column;height:100vh;min-height:520px}
+.topbar{
+  flex:0 0 auto;display:flex;align-items:center;gap:10px;height:52px;padding:0 12px;
+  background:var(--panel);border-bottom:1px solid var(--line);box-shadow:var(--sh1);z-index:40;
+}
+.brand{display:flex;align-items:center;gap:8px;font-family:var(--font-d);font-weight:700;letter-spacing:-.02em}
+.brand__mark{
+  width:25px;height:25px;border-radius:7px;display:grid;place-items:center;flex:0 0 auto;
+  background:linear-gradient(150deg,var(--clay),var(--clay-d));color:#fff;font-size:12px;
+}
+.crumb{display:flex;align-items:center;gap:6px;color:var(--ink3);font-size:12.5px;min-width:0}
+.crumb button{color:var(--clay);font-weight:600}
+.crumb button:hover{text-decoration:underline}
+.crumb__sep{opacity:.5}
+.crumb__now{
+  color:var(--ink1);font-weight:600;white-space:nowrap;padding:2px 5px;border-radius:5px;
+  border:1px solid transparent;
+}
+.crumb__now[contenteditable="true"]:hover{border-color:var(--line2);background:var(--raised)}
+.crumb__now:focus{border-color:var(--clay);background:var(--panel);outline:none}
+
+.btn{
+  display:inline-flex;align-items:center;gap:6px;height:31px;padding:0 11px;border-radius:var(--r-sm);
+  font-size:12.5px;font-weight:600;border:1px solid var(--line2);color:var(--ink1);background:var(--panel);
+  transition:background var(--ease),border-color var(--ease),transform var(--ease);white-space:nowrap;
+}
+.btn:hover{background:var(--clay-dim);border-color:var(--clay)}
+.btn:active{transform:translateY(1px)}
+.btn--primary{background:var(--clay);border-color:var(--clay);color:#fff}
+.btn--primary:hover{background:var(--clay-d);border-color:var(--clay-d)}
+.btn--ghost{border-color:transparent;background:transparent;color:var(--ink2)}
+.btn--ghost:hover{background:var(--clay-dim);color:var(--ink1)}
+.btn--sm{height:27px;padding:0 9px;font-size:11.5px}
+.btn--ico{width:31px;padding:0;justify-content:center}
+.btn[disabled]{opacity:.42;pointer-events:none}
+.btn__hint{font-family:var(--font-m);font-size:10px;opacity:.55;font-weight:400}
+
+.chip{
+  display:inline-flex;align-items:center;gap:5px;height:21px;padding:0 8px;border-radius:999px;
+  font-size:10.5px;font-weight:700;letter-spacing:.03em;text-transform:uppercase;
+  background:var(--sunk);color:var(--ink2);border:1px solid var(--line);white-space:nowrap;
+}
+.chip--draft{background:var(--warn-dim);color:var(--warn);border-color:transparent}
+.chip--published{background:var(--info-dim);color:var(--info);border-color:transparent}
+.chip--active{background:var(--ok-dim);color:var(--ok);border-color:transparent}
+.chip--statutory{background:var(--seal-dim);color:var(--seal);border-color:transparent}
+.dot{width:7px;height:7px;border-radius:50%;background:currentColor;flex:0 0 auto}
+.seg{display:flex;border:1px solid var(--line2);border-radius:var(--r-xs);overflow:hidden;background:var(--raised);flex:0 0 auto}
+.seg button{
+  flex:1 0 auto;height:27px;padding:0 10px;font-size:11px;font-weight:600;color:var(--ink3);
+  white-space:nowrap;transition:background var(--ease),color var(--ease);
+}
+.seg--fill button{flex:1 1 0}
+.seg button.is-on{background:var(--clay);color:#fff}
+
+/* ── screens ────────────────────────────────────────────────────────────── */
+.screen{display:none;flex:1 1 auto;min-height:0}
+.screen.is-on{display:flex}
+.doc-scroll{flex:1 1 auto;overflow:auto;padding:26px 22px 60px}
+.wrap{max-width:1080px;margin:0 auto}
+.page-head{margin-bottom:20px}
+.page-head h1{font-family:var(--font-d);font-size:26px;font-weight:800;letter-spacing:-.03em;margin:0 0 5px;text-wrap:balance}
+.page-head p{margin:0;color:var(--ink2);max-width:62ch}
+.eyebrow{font-family:var(--font-m);font-size:10.5px;letter-spacing:.13em;text-transform:uppercase;color:var(--clay);font-weight:600;margin-bottom:7px}
+.sec-label{
+  display:flex;align-items:baseline;gap:9px;margin:24px 0 11px;
+  font-family:var(--font-m);font-size:10.5px;letter-spacing:.13em;text-transform:uppercase;color:var(--ink3);
+}
+.sec-label::after{content:"";flex:1;height:1px;background:var(--line)}
+.note{border-left:2px solid var(--clay);padding:2px 0 2px 11px;margin:14px 0;font-size:11.5px;color:var(--ink2);line-height:1.55}
+.note b{color:var(--ink1)}
+
+.type-grid{display:grid;grid-template-columns:repeat(auto-fill,minmax(268px,1fr));gap:14px}
+.type-card{
+  text-align:left;background:var(--panel);border:1px solid var(--line);border-radius:var(--r);
+  padding:16px;box-shadow:var(--sh1);transition:border-color var(--ease),transform var(--ease),box-shadow var(--ease);
+  display:flex;flex-direction:column;gap:11px;
+}
+.type-card:hover{border-color:var(--clay);transform:translateY(-2px);box-shadow:var(--sh2)}
+.type-card--off{opacity:.55}
+.type-card__top{display:flex;align-items:flex-start;justify-content:space-between;gap:10px}
+.type-card__name{font-family:var(--font-d);font-size:16px;font-weight:700;letter-spacing:-.02em}
+.type-card__sub{font-size:11.5px;color:var(--ink3);margin-top:2px}
+.type-card__meta{display:flex;flex-direction:column;gap:5px;font-size:11.5px;color:var(--ink2)}
+.type-card__row{display:flex;justify-content:space-between;gap:10px}
+.type-card__row b{font-weight:600;color:var(--ink1)}
+.glyph{width:36px;height:44px;border-radius:4px;border:1.5px solid var(--line2);background:var(--raised);position:relative;flex:0 0 auto;overflow:hidden}
+.glyph i{position:absolute;background:var(--ink4);border-radius:1px;display:block}
+
+.gal-grid{display:grid;grid-template-columns:repeat(auto-fill,minmax(212px,1fr));gap:14px}
+.tpl-card{
+  text-align:left;background:var(--panel);border:1px solid var(--line);border-radius:var(--r);
+  overflow:hidden;box-shadow:var(--sh1);transition:border-color var(--ease),transform var(--ease),box-shadow var(--ease);
+  display:flex;flex-direction:column;
+}
+.tpl-card:hover{border-color:var(--clay);transform:translateY(-2px);box-shadow:var(--sh2)}
+.tpl-card__thumb{aspect-ratio:210/297;background:var(--page);position:relative;border-bottom:1px solid var(--line);overflow:hidden}
+.tpl-card__thumb i{position:absolute;display:block;background:rgba(42,28,20,.16);border-radius:1px}
+.tpl-card__thumb i.req{background:var(--seal);opacity:.45}
+.tpl-card__thumb i.rule{background:rgba(42,28,20,.30)}
+.tpl-card__body{padding:11px 12px;display:flex;flex-direction:column;gap:7px;flex:1}
+.tpl-card__name{font-weight:700;font-size:13px;letter-spacing:-.01em}
+.tpl-card__meta{font-size:11px;color:var(--ink3);font-family:var(--font-m)}
+.tpl-card--new .tpl-card__thumb{
+  background:repeating-linear-gradient(45deg,var(--sunk),var(--sunk) 8px,transparent 8px,transparent 16px);
+  display:grid;place-items:center;color:var(--ink3);font-size:26px;
+}
+
+/* ── designer shell ─────────────────────────────────────────────────────── */
+#screen-designer{flex-direction:column}
+.dz{flex:1 1 auto;display:flex;min-height:0}
+
+/* vertical tab strip — Figma's navigation bar */
+.tabstrip{
+  flex:0 0 52px;background:var(--panel);border-right:1px solid var(--line);
+  display:flex;flex-direction:column;align-items:center;padding:8px 0;gap:4px;
+}
+.tabstrip button{
+  width:38px;height:40px;border-radius:var(--r-sm);display:flex;flex-direction:column;
+  align-items:center;justify-content:center;gap:2px;color:var(--ink3);
+  transition:background var(--ease),color var(--ease);
+}
+.tabstrip button:hover{background:var(--clay-dim);color:var(--ink1)}
+.tabstrip button.is-on{background:var(--clay-dim);color:var(--clay)}
+.tabstrip button i{font-style:normal;font-size:14px;line-height:1}
+.tabstrip button span{font-size:8px;font-family:var(--font-m);letter-spacing:.02em}
+
+.rail{flex:0 0 228px;background:var(--panel);border-right:1px solid var(--line);display:flex;flex-direction:column;min-height:0}
+.rail__head{
+  flex:0 0 auto;padding:11px 12px 8px;font-family:var(--font-m);font-size:10px;letter-spacing:.13em;
+  text-transform:uppercase;color:var(--ink3);border-bottom:1px solid var(--line);display:flex;align-items:center;gap:8px;
+}
+.rail__body{flex:1 1 auto;overflow:auto;padding:11px}
+.rail__pane{display:none}
+.rail__pane.is-on{display:block}
+.rail h4{font-family:var(--font-m);font-size:10px;letter-spacing:.13em;text-transform:uppercase;color:var(--ink3);margin:15px 0 8px;font-weight:600}
+.rail h4:first-child{margin-top:0}
+.hintline{font-size:10.5px;color:var(--ink3);margin:-2px 0 9px;line-height:1.45}
+.hintline b{color:var(--ink2)}
+
+.tool-grid{display:grid;grid-template-columns:1fr 1fr;gap:7px}
+.tool{display:flex;flex-direction:column;align-items:flex-start;gap:2px;padding:9px 10px;border-radius:var(--r-sm);border:1px solid var(--line);background:var(--raised);transition:border-color var(--ease),background var(--ease)}
+.tool:hover{border-color:var(--clay);background:var(--clay-dim)}
+.tool b{font-size:12px;font-weight:700;display:flex;align-items:center;gap:5px;width:100%}
+.tool b em{margin-left:auto;font-style:normal;font-family:var(--font-m);font-size:9px;color:var(--ink3);font-weight:400}
+.tool span{font-size:10px;color:var(--ink3);font-family:var(--font-m)}
+
+/* layers list */
+.layer{
+  width:100%;display:flex;align-items:center;gap:7px;padding:5px 7px;border-radius:var(--r-xs);
+  border:1px solid transparent;text-align:left;transition:background var(--ease);
+}
+.layer:hover{background:var(--clay-dim)}
+.layer.is-sel{background:var(--clay-dim);border-color:var(--clay-ring)}
+.layer__ic{width:15px;text-align:center;font-size:11px;color:var(--ink3);flex:0 0 auto;font-style:normal}
+.layer__nm{flex:1;min-width:0;font-size:11.5px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+.layer.is-req .layer__nm{color:var(--seal)}
+.layer__tag{font-family:var(--font-m);font-size:8.5px;color:var(--ink3);flex:0 0 auto}
+.layer__btn{width:17px;height:17px;border-radius:3px;color:var(--ink4);font-size:10px;display:grid;place-items:center;flex:0 0 auto}
+.layer__btn:hover{background:var(--sunk);color:var(--ink1)}
+.layer__grp{font-family:var(--font-m);font-size:9px;letter-spacing:.1em;text-transform:uppercase;color:var(--ink4);margin:11px 0 4px;padding-left:2px}
+
+.field{width:100%;display:flex;align-items:center;gap:7px;padding:6px 8px;border-radius:var(--r-xs);border:1px solid transparent;text-align:left;transition:background var(--ease),border-color var(--ease)}
+.field:hover{background:var(--clay-dim);border-color:var(--clay-ring)}
+.field__key{font-family:var(--font-m);font-size:10.5px;color:var(--ink2);flex:1;min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+.field__tag{font-family:var(--font-m);font-size:9px;padding:1px 4px;border-radius:3px;background:var(--sunk);color:var(--ink3);flex:0 0 auto}
+.field__tag--calc{background:var(--info-dim);color:var(--info)}
+.field__tag--req{background:var(--seal-dim);color:var(--seal)}
+.field__lbl{font-size:11.5px;font-weight:600;display:block}
+.field__col{flex:1;min-width:0}
+
+.blocklist{display:flex;flex-direction:column;gap:7px}
+.blockitem{display:flex;align-items:center;gap:9px;padding:8px 9px;border-radius:var(--r-sm);border:1px solid var(--line);background:var(--raised);text-align:left;width:100%}
+.blockitem:hover{border-color:var(--clay)}
+.blockitem__ic{width:26px;height:26px;border-radius:6px;background:var(--clay-dim);color:var(--clay);display:grid;place-items:center;font-size:13px;flex:0 0 auto}
+.blockitem b{font-size:12px;display:block}
+.blockitem span{font-size:10.5px;color:var(--ink3)}
+
+/* ── desk + toolbar ─────────────────────────────────────────────────────── */
+.deskwrap{flex:1 1 auto;min-width:0;position:relative;display:flex;flex-direction:column}
+.toolbar{
+  position:absolute;top:10px;left:50%;transform:translateX(-50%);z-index:20;
+  display:flex;align-items:center;gap:2px;padding:4px;border-radius:10px;
+  background:var(--panel);border:1px solid var(--line2);box-shadow:var(--sh2);
+}
+.toolbar button{
+  width:32px;height:30px;border-radius:7px;display:grid;place-items:center;color:var(--ink2);
+  font-size:13px;transition:background var(--ease),color var(--ease);position:relative;
+}
+.toolbar button:hover{background:var(--clay-dim);color:var(--ink1)}
+.toolbar button.is-on{background:var(--clay);color:#fff}
+.toolbar .div{width:1px;height:20px;background:var(--line);margin:0 3px}
+
+.desk{flex:1 1 auto;background:var(--desk);position:relative;overflow:auto;padding:78px 40px 70px}
+.desk.is-pan{cursor:grab}
+.desk.is-panning{cursor:grabbing}
+.desk.is-place{cursor:crosshair}
+.stage{position:relative;margin:0 auto;flex:0 0 auto}
+.ruler{position:absolute;background:var(--panel);color:var(--ink3);font-family:var(--font-m);font-size:8px;z-index:5}
+.ruler--h{left:0;top:-19px;height:18px;border:1px solid var(--line);border-radius:3px 3px 0 0}
+.ruler--v{top:0;left:-19px;width:18px;border:1px solid var(--line);border-radius:3px 0 0 3px}
+.ruler i{position:absolute;background:var(--line2)}
+.ruler b{position:absolute;font-weight:500;opacity:.85}
+.page{position:relative;background:var(--page);color:var(--page-ink);box-shadow:var(--page-sh);border-radius:2px;overflow:hidden}
+.page__grid{position:absolute;inset:0;pointer-events:none;opacity:0;transition:opacity var(--ease)}
+.page__grid.is-on{opacity:1}
+.page__margins{position:absolute;pointer-events:none;border:1px dashed rgba(188,90,60,.42)}
+.band{position:absolute;left:0;right:0;pointer-events:none;background:rgba(188,90,60,.045)}
+.band--head{top:0;border-bottom:1px dashed rgba(188,90,60,.30)}
+.band--foot{bottom:0;border-top:1px dashed rgba(188,90,60,.30)}
+.band__tag{position:absolute;right:4px;font-family:var(--font-m);font-size:8px;letter-spacing:.1em;text-transform:uppercase;color:rgba(188,90,60,.75)}
+.band--head .band__tag{bottom:2px}
+.band--foot .band__tag{top:2px}
+
+.obj{position:absolute;user-select:none}
+.obj__in{width:100%;height:100%;overflow:hidden;position:relative}
+.obj__hit{position:absolute;inset:-2px;border:1px solid transparent;border-radius:2px;pointer-events:none}
+.obj:hover .obj__hit{border-color:var(--clay-ring)}
+.obj.is-sel .obj__hit{border-color:var(--clay);border-width:1.5px}
+.obj.is-req::before{content:"";position:absolute;left:-6px;top:0;bottom:0;width:2px;border-radius:2px;background:var(--seal);opacity:.62}
+.obj.is-locked{cursor:not-allowed}
+.obj.is-hidden{opacity:.18}
+.obj.is-over .obj__hit{border-color:var(--warn);border-width:1.5px}
+.obj.is-edit{cursor:text;z-index:30 !important}
+.obj.is-edit .obj__in{
+  overflow:visible;outline:1.5px solid var(--clay);outline-offset:2px;border-radius:2px;
+  background:rgba(255,255,255,.6);
+}
+.obj__nm{
+  position:absolute;left:0;top:-15px;font-family:var(--font-m);font-size:8.5px;color:var(--clay);
+  white-space:nowrap;pointer-events:none;opacity:0;transition:opacity var(--ease);
+}
+.obj:hover .obj__nm{opacity:.6}
+.obj.is-sel .obj__nm{opacity:1}
+/* combined bounds of a multi-selection (Figma shows one box, not N boxes) */
+.selbox{position:absolute;border:1.5px dashed var(--clay);border-radius:2px;pointer-events:none;z-index:5}
+/* ruler guides — dragged out of a ruler, snapped to, dragged back to remove */
+.rguide{position:absolute;z-index:6;pointer-events:auto}
+.rguide--v{top:0;height:100%;width:9px;margin-left:-4px;cursor:ew-resize}
+.rguide--h{left:0;width:100%;height:9px;margin-top:-4px;cursor:ns-resize}
+.rguide i{position:absolute;display:block;background:var(--info);opacity:.7}
+.rguide--v i{left:4px;top:0;width:1px;height:100%}
+.rguide--h i{top:4px;left:0;height:1px;width:100%}
+.rguide:hover i{opacity:1;box-shadow:0 0 0 1px var(--info-dim)}
+.ruler{cursor:crosshair}
+.ruler--h:hover,.ruler--v:hover{background:var(--raised)}
+.h{position:absolute;width:8px;height:8px;background:var(--panel);border:1.5px solid var(--clay);border-radius:2px;z-index:3}
+.h.nw{left:-5px;top:-5px;cursor:nwse-resize} .h.ne{right:-5px;top:-5px;cursor:nesw-resize}
+.h.sw{left:-5px;bottom:-5px;cursor:nesw-resize} .h.se{right:-5px;bottom:-5px;cursor:nwse-resize}
+.h.n{left:50%;top:-5px;margin-left:-4px;cursor:ns-resize} .h.s{left:50%;bottom:-5px;margin-left:-4px;cursor:ns-resize}
+.h.w{left:-5px;top:50%;margin-top:-4px;cursor:ew-resize} .h.e{right:-5px;top:50%;margin-top:-4px;cursor:ew-resize}
+
+.guide{position:absolute;background:var(--clay);z-index:6;pointer-events:none;opacity:.9}
+.guide__lbl{
+  position:absolute;background:var(--clay);color:#fff;font-family:var(--font-m);font-size:8.5px;
+  padding:1px 4px;border-radius:3px;white-space:nowrap;z-index:7;pointer-events:none;
+}
+.meas{position:absolute;background:var(--measure);z-index:8;pointer-events:none}
+.meas__lbl{
+  position:absolute;background:var(--measure);color:#fff;font-family:var(--font-m);font-size:8.5px;
+  padding:1px 4px;border-radius:3px;white-space:nowrap;z-index:9;pointer-events:none;
+}
+.marquee{position:absolute;border:1px solid var(--clay);background:var(--clay-dim);z-index:7;pointer-events:none}
+.anchorline{position:absolute;z-index:4;pointer-events:none;border-left:1.5px dotted var(--info);opacity:.85}
+.badge-grow,.badge-over{position:absolute;top:-9px;right:-4px;font-family:var(--font-m);font-size:8px;font-weight:700;padding:1px 4px;border-radius:3px;letter-spacing:.04em;z-index:4}
+.badge-grow{background:var(--info);color:#fff}
+.badge-over{background:var(--warn);color:#fff}
+.badge-clamp{position:absolute;top:-9px;right:-4px;font-family:var(--font-m);font-size:8px;font-weight:700;
+  padding:1px 4px;border-radius:3px;letter-spacing:.04em;z-index:4;background:var(--seal);color:#fff}
+.badge-if{position:absolute;top:-9px;left:-4px;font-family:var(--font-m);font-size:8px;font-weight:700;
+  padding:1px 4px;border-radius:3px;letter-spacing:.04em;z-index:4;background:var(--info-dim);
+  color:var(--info);border:1px solid var(--info)}
+.obj.is-cond .obj__in{outline:1px dashed var(--info);outline-offset:2px}
+.obj.is-cond-off{opacity:.42}
+.upd{display:flex;align-items:center;gap:7px;margin-top:7px;padding:7px 8px;border-radius:var(--r-xs);
+  background:var(--info-dim);border:1px solid var(--info);font-size:10.5px;color:var(--info);font-weight:600}
+.upd button{margin-left:auto;font-size:10.5px;font-weight:700;color:var(--info);text-decoration:underline}
+.cmp{display:flex;gap:14px}
+.cmp__col{flex:1;min-width:0}
+.cmp__col h5{margin:0 0 6px;font-family:var(--font-m);font-size:9.5px;letter-spacing:.1em;
+  text-transform:uppercase;color:var(--ink3);font-weight:600}
+.cmp__paper{aspect-ratio:210/297;background:var(--page);border:1px solid var(--line);border-radius:3px;
+  position:relative;overflow:hidden;box-shadow:var(--sh1)}
+.cmp__paper i{position:absolute;display:block;background:rgba(42,28,20,.14);border-radius:1px}
+.cmp__paper i.req{background:var(--seal);opacity:.4}
+.cmp__paper i.chg{background:var(--clay);opacity:.85;outline:1px solid var(--clay)}
+.cmp__paper i.add{background:var(--ok);opacity:.8}
+.cmp__paper i.del{background:var(--warn);opacity:.55}
+.cmp__key{display:flex;gap:12px;flex-wrap:wrap;margin-top:9px;font-size:10.5px;color:var(--ink3)}
+.cmp__key span{display:flex;align-items:center;gap:5px}
+.cmp__key b{width:9px;height:9px;border-radius:2px;display:block}
+
+/* content inside the page */
+.mf{
+  background:rgba(188,90,60,.14);border-bottom:1px solid rgba(188,90,60,.45);border-radius:3px;
+  padding:0 2px;font-family:var(--font-m);font-size:.84em;white-space:nowrap;
+}
+.mf--live{background:transparent;border-bottom:1px solid rgba(42,28,20,.20);font-family:inherit;font-size:1em;white-space:normal}
+.mf--stress{background:rgba(180,83,9,.16);border-bottom-color:rgba(180,83,9,.5)}
+.tblrow{display:flex;gap:4px;align-items:baseline}
+.tblrow__n{opacity:.55;flex:0 0 auto}
+.tblrow__l{flex:0 0 46%}
+.tblrow__v{flex:1;border-bottom:1px dotted rgba(42,28,20,.35);min-height:1em}
+.ph--drop{border-color:var(--clay);background:rgba(188,90,60,.10);color:var(--clay)}
+.asset-img{width:100%;height:100%;object-fit:contain;display:block}
+.obj.is-drop .obj__hit{border-color:var(--clay);border-width:2px;background:rgba(188,90,60,.10)}
+.desk.is-dropping::after{content:"Drop to place — image, signature or seal";position:absolute;
+  inset:12px;border:2px dashed var(--clay);border-radius:var(--r);pointer-events:none;
+  display:grid;place-items:center;font-weight:700;color:var(--clay);
+  background:rgba(188,90,60,.07);font-size:13px;z-index:30}
+.dpi{display:flex;align-items:center;gap:6px;font-family:var(--font-m);font-size:10px;margin-top:4px}
+.dpi__dot{width:7px;height:7px;border-radius:50%;flex:0 0 auto}
+.assetbox{border:1px solid var(--line2);border-radius:var(--r-sm);padding:9px 10px;background:var(--raised)}
+.assetbox__prev{height:56px;border-radius:var(--r-xs);background:var(--panel);border:1px solid var(--line);
+  display:grid;place-items:center;overflow:hidden;margin-bottom:7px}
+.assetbox__prev img{max-width:100%;max-height:100%;object-fit:contain}
+.sigpad{border:1px solid var(--line2);border-radius:var(--r-sm);background:#fff;
+  touch-action:none;cursor:crosshair;display:block;width:100%}
+.sigpad__row{display:flex;align-items:center;gap:9px;margin-top:9px}
+.sigpad__hint{font-size:11px;color:var(--ink3);flex:1}
+.assetbox__prev--empty{color:var(--ink4);font-size:10.5px;font-family:var(--font-m);text-align:center;padding:0 8px}
+.ph{border:1px dashed rgba(42,28,20,.30);border-radius:3px;width:100%;height:100%;display:grid;place-items:center;color:rgba(42,28,20,.45);font-family:var(--font-m);font-size:8px;text-align:center;letter-spacing:.06em;text-transform:uppercase}
+
+/* ── floating context toolbar (Canva pattern) ───────────────────────────── */
+.ctxbar{
+  position:fixed;z-index:60;display:none;align-items:center;gap:3px;padding:4px;
+  background:var(--panel);border:1px solid var(--line2);border-radius:9px;box-shadow:var(--sh2);
+}
+.ctxbar.is-on{display:flex}
+.ctxbar button{height:26px;min-width:26px;padding:0 7px;border-radius:6px;font-size:12px;color:var(--ink2);display:grid;place-items:center;transition:background var(--ease),color var(--ease)}
+.ctxbar button:hover{background:var(--clay-dim);color:var(--ink1)}
+.ctxbar button.is-on{background:var(--clay);color:#fff}
+.ctxbar .div{width:1px;height:18px;background:var(--line);margin:0 2px}
+.ctxbar select,.ctxbar input{
+  height:26px;border-radius:6px;border:1px solid var(--line2);background:var(--raised);
+  padding:0 5px;font-size:11.5px;font-family:var(--font-m);
+}
+.ctxbar input{width:46px;text-align:center}
+.ctxbar .cbtn{font-weight:700;font-size:12.5px}
+.ctxbar .cbtn--field{
+  background:var(--clay-dim);color:var(--clay);font-family:var(--font-m);font-size:11px;
+  font-weight:700;padding:0 9px;
+}
+.ctxbar .cbtn--field:hover{background:var(--clay);color:#fff}
+.swatch{width:15px;height:15px;border-radius:4px;border:1px solid var(--line2)}
+
+/* ── context menu ───────────────────────────────────────────────────────── */
+.ctxmenu{
+  position:fixed;z-index:70;display:none;min-width:196px;padding:5px;
+  background:var(--panel);border:1px solid var(--line2);border-radius:9px;box-shadow:var(--sh2);
+}
+.ctxmenu.is-on{display:block}
+.ctxmenu button{
+  width:100%;display:flex;align-items:center;gap:9px;padding:6px 9px;border-radius:6px;
+  font-size:12px;text-align:left;color:var(--ink1);
+}
+.ctxmenu button:hover{background:var(--clay-dim)}
+.ctxmenu button[disabled]{opacity:.4;pointer-events:none}
+.ctxmenu button em{margin-left:auto;font-style:normal;font-family:var(--font-m);font-size:10px;color:var(--ink3)}
+.ctxmenu .div{height:1px;background:var(--line);margin:4px 2px}
+.ctxmenu .danger{color:var(--seal)}
+
+/* ── inspector ──────────────────────────────────────────────────────────── */
+.insp{flex:0 0 310px;background:var(--panel);border-left:1px solid var(--line);display:flex;flex-direction:column;min-height:0}
+.insp__scroll{flex:1 1 auto;overflow:auto}
+.sect{border-bottom:1px solid var(--line)}
+.sect__head{
+  width:100%;display:flex;align-items:center;gap:8px;padding:10px 12px;text-align:left;
+  font-family:var(--font-m);font-size:10px;letter-spacing:.13em;text-transform:uppercase;color:var(--ink3);font-weight:600;
+}
+.sect__head:hover{color:var(--ink1)}
+.sect__body{padding:0 12px 14px;display:none}
+.sect.is-open .sect__body{display:block}
+.sect__caret{transition:transform var(--ease);font-size:9px}
+.sect.is-open .sect__caret{transform:rotate(90deg)}
+
+.alignrow{display:flex;gap:3px;margin-bottom:11px}
+.alignrow button{
+  flex:1;height:28px;border-radius:6px;border:1px solid var(--line);background:var(--raised);
+  font-size:11px;color:var(--ink2);display:grid;place-items:center;
+}
+.alignrow button:hover{border-color:var(--clay);background:var(--clay-dim);color:var(--clay)}
+
+.row{display:grid;grid-template-columns:1fr 1fr;gap:8px;margin-bottom:8px}
+.row--3{grid-template-columns:1fr 1fr 1fr}
+.row--1{grid-template-columns:1fr}
+.inp{display:flex;flex-direction:column;gap:3px;min-width:0}
+.inp label{font-family:var(--font-m);font-size:9.5px;letter-spacing:.08em;text-transform:uppercase;color:var(--ink3)}
+.inp input,.inp select{height:29px;border-radius:var(--r-xs);border:1px solid var(--line2);background:var(--raised);padding:0 7px;font-size:12px;font-family:var(--font-m);width:100%;min-width:0}
+.inp input:focus,.inp select:focus{border-color:var(--clay);outline:none;background:var(--panel)}
+.inp--bad input{border-color:var(--seal);background:var(--seal-dim)}
+.inp__err{font-size:10px;color:var(--seal);font-weight:600}
+.subhead{font-family:var(--font-m);font-size:9.5px;letter-spacing:.1em;text-transform:uppercase;color:var(--ink3);margin:13px 0 7px}
+.empty-insp{padding:22px 16px;text-align:center;color:var(--ink3)}
+.empty-insp__ic{font-size:20px;opacity:.5;margin-bottom:8px}
+.empty-insp p{font-size:11.5px;margin:0;line-height:1.6}
+.kbd{font-family:var(--font-m);font-size:10px;border:1px solid var(--line2);border-bottom-width:2px;border-radius:4px;padding:1px 4px;background:var(--raised);color:var(--ink2)}
+
+.rowlist{display:flex;flex-direction:column;gap:5px;margin-bottom:8px}
+.rowitem{display:flex;align-items:center;gap:6px}
+.rowitem select{flex:1;height:26px;border-radius:var(--r-xs);border:1px solid var(--line2);background:var(--raised);font-size:11px;font-family:var(--font-m);min-width:0}
+.rowitem button{width:22px;height:22px;border-radius:4px;color:var(--ink3);font-size:12px;display:grid;place-items:center}
+.rowitem button:hover{background:var(--seal-dim);color:var(--seal)}
+
+/* compliance */
+.comp__head{padding:11px 12px;border-bottom:1px solid var(--line);display:flex;align-items:center;gap:9px;background:var(--raised)}
+.comp__ring{width:34px;height:34px;border-radius:50%;flex:0 0 auto;display:grid;place-items:center;font-family:var(--font-m);font-size:9.5px;font-weight:700;position:relative}
+.comp__ring b{position:relative;z-index:1}
+.comp__title{font-weight:700;font-size:12.5px;line-height:1.2}
+.comp__auth{font-size:10.5px;color:var(--ink3);line-height:1.35;margin-top:2px}
+.lvl{font-family:var(--font-m);font-size:9px;font-weight:700;padding:1px 4px;border-radius:3px;border:1px solid currentColor;letter-spacing:.06em}
+.lvl--A{color:var(--seal);background:var(--seal-dim)}
+.lvl--B{color:var(--warn);background:var(--warn-dim)}
+.lvl--C{color:var(--ink3);background:var(--sunk)}
+.lvl--D{color:var(--ink3);background:transparent;border-style:dashed}
+.rules{display:flex;flex-direction:column}
+.rule{display:flex;gap:9px;padding:9px 12px;border-bottom:1px solid var(--line3);text-align:left;width:100%;transition:background var(--ease);align-items:flex-start}
+.rule:hover{background:var(--clay-dim)}
+.rule__ic{width:15px;flex:0 0 auto;text-align:center;font-size:11px;margin-top:1px}
+.rule--ok .rule__ic{color:var(--ok)}
+.rule--bad .rule__ic{color:var(--seal)}
+.rule--warn .rule__ic{color:var(--warn)}
+.rule__main{flex:1;min-width:0}
+.rule__label{font-size:12px;font-weight:600;line-height:1.3;display:block}
+.rule__key{display:block;font-family:var(--font-m);font-size:9.5px;color:var(--ink3);margin-top:2px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+.rule--bad .rule__label{color:var(--seal)}
+.rule__meta{display:flex;align-items:center;gap:5px;margin-top:4px}
+.basis{padding:10px 12px;border-bottom:1px solid var(--line);background:var(--raised);
+  display:flex;align-items:center;gap:8px;flex-wrap:wrap}
+.basis__t{font-size:11.5px;font-weight:700;line-height:1.3}
+.basis__s{font-family:var(--font-m);font-size:10px;color:var(--ink3);margin-top:2px}
+.lyr{border-bottom:1px solid var(--line)}
+.lyr__head{display:flex;gap:8px;padding:9px 12px;align-items:flex-start}
+.lyr__head:hover{background:var(--clay-dim)}
+.lyr.is-off{opacity:.5}
+.lyr__t{flex:1;min-width:0}
+.lyr__n{font-size:12px;font-weight:700;line-height:1.25}
+.lyr__a{font-size:10.5px;color:var(--ink3);line-height:1.35;margin-top:2px}
+.lyr__m{display:flex;align-items:center;gap:5px;margin-top:5px;flex-wrap:wrap}
+.tier{font-family:var(--font-m);font-size:8.5px;font-weight:700;letter-spacing:.08em;
+  text-transform:uppercase;padding:1px 5px;border-radius:3px;flex:0 0 auto}
+.tier--national{background:var(--info-dim);color:var(--info)}
+.tier--board{background:var(--seal-dim);color:var(--seal)}
+.tier--state{background:var(--warn-dim);color:var(--warn)}
+.tier--none{background:var(--sunk);color:var(--ink3)}
+.lyr__sw{flex:0 0 auto;width:30px;height:17px;border-radius:999px;background:var(--sunk);
+  border:1px solid var(--line2);position:relative;transition:background var(--ease)}
+.lyr__sw::after{content:"";position:absolute;top:1px;left:1px;width:13px;height:13px;border-radius:50%;
+  background:var(--panel);box-shadow:var(--sh1);transition:transform var(--ease)}
+.lyr__sw.is-on{background:var(--ok)}
+.lyr__sw.is-on::after{transform:translateX(13px)}
+.cons{display:flex;gap:9px;padding:8px 12px 8px 14px;border-top:1px solid var(--line3);
+  font-size:11px;line-height:1.5;color:var(--ink2)}
+.cons__ic{flex:0 0 auto;color:var(--ink4);font-size:11px;margin-top:1px}
+.cons b{color:var(--ink1)}
+.route{margin:9px 12px;padding:10px 11px;border-radius:var(--r-sm);border:1px solid var(--seal-ring);
+  background:var(--seal-dim)}
+.route b{display:block;font-size:11.5px;color:var(--seal);margin-bottom:3px}
+.route p{margin:0 0 6px;font-size:11px;line-height:1.5;color:var(--ink2)}
+.route .mono{font-size:10px;color:var(--ink3)}
+.route.is-fired{border-width:2px}
+.notice{margin:12px;padding:11px 12px;border-radius:var(--r-sm);border:1px solid;font-size:11.5px;line-height:1.5}
+.notice--generic{border-color:var(--line2);background:var(--sunk);color:var(--ink2)}
+.notice--stale{border-color:var(--warn);background:var(--warn-dim);color:var(--warn)}
+.notice b{display:block;font-size:12px;margin-bottom:3px;color:var(--ink1)}
+.notice--stale b{color:var(--warn)}
+
+/* status bar */
+.statusbar{
+  flex:0 0 auto;height:30px;display:flex;align-items:center;gap:13px;padding:0 12px;
+  background:var(--panel);border-top:1px solid var(--line);font-family:var(--font-m);font-size:10.5px;color:var(--ink3);
+}
+.statusbar .sb{display:flex;align-items:center;gap:5px;white-space:nowrap}
+.statusbar b{color:var(--ink1);font-weight:600}
+.sb--warn{color:var(--warn)}
+.sb--ok{color:var(--ok)}
+.zoombtn{padding:0 5px;border-radius:3px}
+.zoombtn:hover{background:var(--clay-dim);color:var(--clay)}
+
+/* modals + toast */
+.scrim{position:fixed;inset:0;background:rgba(23,16,12,.55);backdrop-filter:blur(3px);z-index:80;display:none;align-items:center;justify-content:center;padding:24px}
+.scrim.is-on{display:flex;animation:fade .18s ease}
+@keyframes fade{from{opacity:0}to{opacity:1}}
+.modal{background:var(--panel);border:1px solid var(--line2);border-radius:var(--r);box-shadow:var(--sh2);width:min(720px,100%);max-height:calc(100vh - 48px);display:flex;flex-direction:column;overflow:hidden}
+.modal--sm{width:min(470px,100%)}
+.modal__head{padding:15px 18px;border-bottom:1px solid var(--line);display:flex;align-items:center;gap:11px}
+.modal__head h3{font-family:var(--font-d);font-size:16px;font-weight:800;letter-spacing:-.02em;margin:0}
+.modal__head p{margin:2px 0 0;font-size:11.5px;color:var(--ink3)}
+.modal__body{padding:16px 18px;overflow:auto;flex:1 1 auto}
+.modal__foot{padding:12px 18px;border-top:1px solid var(--line);display:flex;align-items:center;gap:9px;background:var(--raised);flex:0 0 auto}
+.x{margin-left:auto;width:28px;height:28px;border-radius:6px;color:var(--ink3);display:grid;place-items:center;font-size:15px}
+.x:hover{background:var(--sunk);color:var(--ink1)}
+.gate{display:flex;flex-direction:column;gap:1px;border:1px solid var(--line);border-radius:var(--r-sm);overflow:hidden}
+.gate__row{display:flex;align-items:flex-start;gap:10px;padding:11px 12px;background:var(--raised)}
+.gate__ic{width:17px;flex:0 0 auto;text-align:center;margin-top:1px}
+.gate__row b{display:block;font-size:12.5px}
+.gate__row span{font-size:11px;color:var(--ink3);line-height:1.45;display:block;margin-top:2px}
+.gate--pass .gate__ic{color:var(--ok)} .gate--fail .gate__ic{color:var(--seal)} .gate--warn .gate__ic{color:var(--warn)}
+.proof{display:flex;gap:14px;align-items:flex-start}
+.proof__paper{flex:0 0 176px;aspect-ratio:210/297;background:var(--page);border:1px solid var(--line);border-radius:3px;position:relative;overflow:hidden;box-shadow:var(--sh1)}
+.proof__paper i{position:absolute;display:block;background:rgba(42,28,20,.18);border-radius:1px}
+.proof__paper i.req{background:var(--seal);opacity:.5}
+.proof__side{flex:1;min-width:0}
+.kv{display:flex;justify-content:space-between;gap:12px;padding:6px 0;border-bottom:1px solid var(--line3);font-size:11.5px}
+.kv span{color:var(--ink3)}
+.kv b{font-family:var(--font-m);font-weight:600;font-size:11px;text-align:right;word-break:break-all}
+.bar{height:5px;border-radius:3px;background:var(--sunk);overflow:hidden;margin:10px 0 6px}
+.bar i{display:block;height:100%;background:var(--clay);width:0;transition:width .5s linear}
+.langtabs{display:flex;gap:6px;margin-bottom:12px}
+.langtab{padding:5px 11px;border-radius:999px;border:1px solid var(--line2);font-size:11.5px;font-weight:600;color:var(--ink2)}
+.langtab.is-on{background:var(--clay);border-color:var(--clay);color:#fff}
+.cite{font-size:11.5px;line-height:1.55;color:var(--ink2)}
+.cite dl{display:grid;grid-template-columns:auto 1fr;gap:5px 12px;margin:11px 0 0}
+.cite dt{font-family:var(--font-m);font-size:9.5px;letter-spacing:.08em;text-transform:uppercase;color:var(--ink3);padding-top:2px}
+.cite dd{margin:0;font-size:11.5px}
+.tl{list-style:none;margin:0;padding:0;display:flex;flex-direction:column}
+.tl li{display:flex;gap:11px;padding:9px 0;border-bottom:1px solid var(--line3)}
+.tl__v{font-family:var(--font-m);font-size:11px;font-weight:700;color:var(--clay);flex:0 0 34px}
+.tl__m{flex:1;min-width:0;font-size:11.5px}
+.tl__m span{display:block;color:var(--ink3);font-size:10.5px;margin-top:2px}
+.keys{display:grid;grid-template-columns:1fr 1fr;gap:5px 18px;font-size:11.5px}
+.keys div{display:flex;align-items:center;gap:8px;padding:3px 0;border-bottom:1px solid var(--line3)}
+.keys div span{color:var(--ink2);flex:1}
+
+.toast{
+  position:fixed;left:50%;bottom:44px;transform:translateX(-50%) translateY(14px);z-index:90;
+  background:var(--ink1);color:var(--paper);padding:9px 15px;border-radius:999px;font-size:12px;font-weight:600;
+  box-shadow:var(--sh2);opacity:0;pointer-events:none;transition:opacity var(--ease),transform var(--ease);
+  display:flex;align-items:center;gap:8px;max-width:min(560px,90vw);
+}
+.toast.is-on{opacity:1;transform:translateX(-50%) translateY(0)}
+.toast--seal{background:var(--seal);color:#fff}
+
+@media (max-width:1240px){ .rail{flex-basis:198px} .insp{flex-basis:280px} }
+@media (max-width:1020px){ .rail{display:none} .desk{padding:78px 20px 60px} }
+@media (max-width:760px){ .insp{display:none} .crumb{display:none} }
+</style>
+
+<div class="app">
+  <header class="topbar">
+    <div class="brand"><span class="brand__mark">Z</span><span>ZenXii</span></div>
+    <nav class="crumb" id="crumb"></nav>
+    <div class="spacer"></div>
+    <div id="topActions" style="display:flex;align-items:center;gap:7px"></div>
+    <button class="btn btn--ghost btn--ico" id="themeBtn" title="Day / night">◐</button>
+  </header>
+
+  <!-- screen 1 — document types -->
+  <section class="screen is-on" id="screen-hub">
+    <div class="doc-scroll"><div class="wrap">
+      <div class="page-head">
+        <div class="eyebrow">Certificates</div>
+        <h1>Document types</h1>
+        <p>Design the certificate once. Every place that prints it — the office, the Teacher app, a parent's download — resolves the template you activate here.</p>
+      </div>
+      <div class="type-grid" id="typeGrid"></div>
+      <div class="sec-label">Not enabled for this school</div>
+      <div class="type-grid" id="typeGridOff"></div>
+      <p class="note"><b>v1 ships three types.</b> The research corpus holds 281 document types; enabling more is data, not code. A school with no hostel never sees a hostel certificate.</p>
+    </div></div>
+  </section>
+
+  <!-- screen 2 — gallery -->
+  <section class="screen" id="screen-gallery">
+    <div class="doc-scroll"><div class="wrap">
+      <div class="page-head">
+        <div class="eyebrow" id="galEyebrow">Transfer Certificate</div>
+        <h1>Templates</h1>
+        <p id="galSub"></p>
+      </div>
+      <div class="sec-label">Your templates</div>
+      <div class="gal-grid" id="mineGrid"></div>
+      <div class="sec-label">Starters — cloned into your school, never linked</div>
+      <div class="gal-grid" id="starterGrid"></div>
+      <p class="note"><b>Why these previews are schematic.</b> A real thumbnail means PDF&nbsp;→&nbsp;PNG, which needs imagick/ghostscript — unverified on the Ohio box. The card draws the object rectangles straight from the saved template instead: honest, instant, and required objects (red) are visible at a glance.</p>
+    </div></div>
+  </section>
+
+  <!-- screen 3 — designer -->
+  <section class="screen" id="screen-designer">
+    <div class="dz">
+      <nav class="tabstrip" id="tabstrip">
+        <button data-pane="layers"  class="is-on" title="Layers"><i>▤</i><span>Layers</span></button>
+        <button data-pane="insert"  title="Insert"><i>＋</i><span>Insert</span></button>
+        <button data-pane="fields"  title="Merge fields"><i>❰❱</i><span>Fields</span></button>
+        <button data-pane="blocks"  title="Reusable blocks"><i>◫</i><span>Blocks</span></button>
+      </nav>
+
+      <aside class="rail">
+        <div class="rail__head" id="railHead">Layers</div>
+        <div class="rail__body">
+          <div class="rail__pane is-on" data-pane="layers"><div id="layerList"></div></div>
+          <div class="rail__pane" data-pane="insert">
+            <h4>Objects</h4>
+            <div class="tool-grid">
+              <button class="tool" data-add="text"><b>Text <em>T</em></b><span>rich · auto-grow</span></button>
+              <button class="tool" data-add="table"><b>Table <em>B</em></b><span>label / value</span></button>
+              <button class="tool" data-add="image"><b>Image <em>I</em></b><span>storage ref</span></button>
+              <button class="tool" data-add="shape"><b>Rule <em>L</em></b><span>line · box</span></button>
+              <button class="tool" data-add="qr"><b>QR <em>Q</em></b><span>verify slot</span></button>
+              <button class="tool" data-add="pageNumber"><b>Page no.</b><span>footer only</span></button>
+            </div>
+            <h4>View</h4>
+            <div class="tool-grid">
+              <button class="tool" id="gridBtn"><b>Grid</b><span>5 mm</span></button>
+              <button class="tool" id="anchorBtn"><b>Anchors</b><span>show chains</span></button>
+            </div>
+            <p class="note" style="margin-top:15px">Pick a tool, then drag on the page to place it. <span class="kbd">V</span> returns to move. Hold <span class="kbd">space</span> to pan, <span class="kbd">⌘</span>+scroll to zoom.</p>
+          </div>
+          <div class="rail__pane" data-pane="fields">
+            <div class="hintline">Only the fields <b id="ctName">this document type</b> declares — <b id="ctCount">—</b> in its contract. There is no free-typed token: a placeholder resolving to nothing is a forgery vector, so <b>the picker is the contract</b>.</div>
+            <div id="fieldList"></div>
+          </div>
+          <div class="rail__pane" data-pane="blocks">
+            <div class="blocklist" id="blockList"></div>
+            <p class="note" style="margin-top:15px">A block edit reaches a <b>draft</b> immediately. A template that is <b>published and active</b> is never changed underneath you — it is <b>offered</b> the update, and accepting it creates a new draft version. The published snapshot is the legal record of what produced a certificate.</p>
+            <button class="btn btn--sm" style="width:100%;margin-top:4px" id="simEdit">Simulate a letterhead edit</button>
+          </div>
+        </div>
+      </aside>
+
+      <div class="deskwrap">
+        <div class="toolbar" id="toolbar">
+          <button data-tool="move" class="is-on" title="Move — V">✥</button>
+          <button data-tool="hand" title="Hand — H">✋</button>
+          <span class="div"></span>
+          <button data-tool="text" title="Text — T">T</button>
+          <button data-tool="table" title="Table — B">▦</button>
+          <button data-tool="image" title="Image — I">▣</button>
+          <button data-tool="shape" title="Rule — L">━</button>
+          <button data-tool="qr" title="QR — Q">▩</button>
+        </div>
+        <div class="desk" id="desk">
+          <div class="stage" id="stage">
+            <div class="ruler ruler--h" id="rulerH"></div>
+            <div class="ruler ruler--v" id="rulerV"></div>
+            <div class="page" id="page"></div>
+          </div>
+        </div>
+      </div>
+
+      <aside class="insp">
+        <div class="insp__scroll">
+          <div class="sect is-open" id="sectObj">
+            <button class="sect__head" data-sect="sectObj"><span class="sect__caret">▶</span><span>Object</span><span class="spacer"></span><span id="objBadge"></span></button>
+            <div class="sect__body" id="objBody"></div>
+          </div>
+          <div class="sect" id="sectPage">
+            <button class="sect__head" data-sect="sectPage"><span class="sect__caret">▶</span><span>Page</span></button>
+            <div class="sect__body" id="pageBody"></div>
+          </div>
+          <div class="sect is-open" id="sectComp">
+            <button class="sect__head" data-sect="sectComp"><span class="sect__caret">▶</span><span>Compliance</span><span class="spacer"></span><span id="compBadge"></span></button>
+            <div class="sect__body" style="padding:0" id="compBody"></div>
+          </div>
+        </div>
+      </aside>
+    </div>
+
+    <div class="statusbar">
+      <span class="sb">Zoom
+        <button class="zoombtn" id="zoomOut">−</button><b id="zoomVal">70%</b>
+        <button class="zoombtn" id="zoomIn">+</button><button class="zoombtn" id="zoomFit">fit</button>
+      </span>
+      <span class="sb" id="sbSel">No selection</span>
+      <span class="spacer"></span>
+      <span class="sb">Issue as <button class="zoombtn" id="dupToggle"></button></span>
+      <span class="sb" id="sbData"></span>
+      <span class="sb" id="sbWarn"></span>
+      <button class="zoombtn" id="keysBtn">⌨ shortcuts</button>
+      <span class="sb" id="sbSave"></span>
+    </div>
+  </section>
+</div>
+
+<div class="ctxbar" id="ctxbar"></div>
+<div class="ctxmenu" id="ctxmenu"></div>
+<div class="scrim" id="scrim">
+  <div class="modal" id="modal">
+    <div class="modal__head"><div><h3 id="mTitle"></h3><p id="mSub"></p></div><button class="x" data-close>✕</button></div>
+    <div class="modal__body" id="mBody"></div>
+    <div class="modal__foot" id="mFoot"></div>
+  </div>
+</div>
+<div class="toast" id="toast"></div>
+
+<script>
 "use strict";
 /* ==========================================================================
    1 · MODEL — mirrors blueprints/certificates/COLLECTION_SHAPES.md §3
@@ -39,7 +809,24 @@ const CONTRACT = [
   {key:"student.removedFromRolls", label:"Removed from the rolls",  sample:"No",  p95:"Yes", type:"enum"},
   {key:"student.photo",            label:"Student photograph",      sample:"[photo]", type:"image"},
   {key:"doc.verifyQr",             label:"Verification QR",         sample:"[qr]",    type:"image"},
-  {key:"doc.isDuplicate",          label:"Issued as a duplicate",   sample:"No",      type:"flag"}
+  {key:"doc.isDuplicate",          label:"Issued as a duplicate",   sample:"No",      type:"flag"},
+  /* transcribed from Kerala Education Rules, Form 5 [See rule VI-17(1)] */
+  {key:"school.recognitionType",   label:"Government / Aided / Recognised", sample:"Aided"},
+  {key:"student.guardianRelation", label:"Relationship to the guardian",    sample:"Father"},
+  {key:"student.identificationMarks", label:"Identification marks",         sample:"Mole on the left cheek",
+     p95:"Mole on the left cheek; scar approximately 2 cm above the right eyebrow"},
+  {key:"student.nationality",      label:"Nationality",             sample:"Indian"},
+  {key:"student.religion",         label:"Religion",                sample:"Hindu", pii:true},
+  {key:"student.socialCategory",   label:"SC / ST / OBC status",    sample:"OBC", pii:true},
+  {key:"tc.standardAdmittedOn",    label:"Date of admission or promotion to that standard", sample:"01/06/2025"},
+  {key:"tc.allFeesPaid",           label:"All fees due paid",       sample:"Yes"},
+  {key:"tc.feeConcession",         label:"In receipt of fee concession", sample:"No"},
+  {key:"tc.lastAttendanceDate",    label:"Date of last attendance", sample:"28/03/2026"},
+  {key:"tc.removedFromRollsDate",  label:"Date name removed from rolls", sample:"31/03/2026"},
+  {key:"tc.applicationDate",       label:"Date of application for the certificate", sample:"02/04/2026"},
+  {key:"tc.schoolProceedingTo",    label:"School the pupil intends proceeding to",
+     sample:"Govt. H.S.S., Kozhikode"},
+  {key:"health.lastVaccination",   label:"Date of last successful vaccination", sample:"12/07/2019"}
 ];
 const FIELD = Object.fromEntries(CONTRACT.map(f=>[f.key,f]));
 
@@ -49,11 +836,16 @@ const FIELD = Object.fromEntries(CONTRACT.map(f=>[f.key,f]));
    "The picker is the contract" only means something if the contract is scoped. */
 const CONTRACTS = {
   transfer_certificate:["doc.isDuplicate","school.name","school.address","school.affiliationNo","doc.bookNo","doc.slNo",
+    "school.recognitionType","student.guardianRelation","student.identificationMarks","student.nationality",
+    "student.religion","student.socialCategory","tc.standardAdmittedOn","tc.allFeesPaid","tc.feeConcession",
+    "tc.lastAttendanceDate","tc.removedFromRollsDate","tc.applicationDate","tc.schoolProceedingTo",
+    "health.lastVaccination",
     "student.admissionNumber","student.fullName","student.fatherName","student.motherName",
     "student.dob","student.dobWords","tc.dateOfFirstAdmission","tc.lastClassStudied",
     "attendance.workingDays","attendance.daysPresent","result.promotionEligible",
     "tc.reasonForLeaving","tc.conductRemark","tc.duesPaidUpto","tc.dateOfLeaving","doc.issueDate"],
-  leaving_certificate_5a:["doc.isDuplicate","school.name","school.address","school.affiliationNo","student.admissionNumber","student.fullName",
+  leaving_certificate_5a:["doc.isDuplicate","school.name","school.address","school.affiliationNo",
+    "tc.standardAdmittedOn","tc.removedFromRollsDate","doc.station","student.admissionNumber","student.fullName",
     "student.fatherName","student.motherName","student.dob","student.dobWords",
     "tc.dateOfFirstAdmission","tc.lastClassStudied","student.ageAtLeaving","student.removedFromRolls",
     "sec.outcome","tc.dateOfLeaving","doc.issueDate","doc.station"],
@@ -107,7 +899,7 @@ const PROFILES = {
     requiredKeys:[], requiredSignatures:[], sealRequired:false
   }
 };
-const LANGS = {en:{native:"English"}, hi:{native:"हिन्दी"}};
+const LANGS = {en:{native:"English"}, hi:{native:"हिन्दी"}, ml:{native:"മലയാളം"}};
 
 /* ==========================================================================
    1b · COMPLIANCE AUTHORITIES — a STACK, not one profile
@@ -187,7 +979,20 @@ const AUTHORITIES = [
     scopeNote:"Binds schools in Kerala, alongside any board affiliation.",
     docs:{
       transfer_certificate:{
-        form:"Form 5", requiredKeys:[], fieldListVerified:false,
+        form:"Form 5",
+        /* transcribed 2026-08-23 from the official forms appendix,
+           education.kerala.gov.in/wp-content/uploads/2019/11/Forms.pdf */
+        requiredKeys:["school.name","school.recognitionType","student.fullName","student.fatherName",
+          "student.guardianRelation","student.identificationMarks","student.nationality",
+          "student.religion","student.socialCategory","student.dobWords","tc.lastClassStudied",
+          "tc.standardAdmittedOn","result.promotionEligible","tc.allFeesPaid","tc.feeConcession",
+          "tc.lastAttendanceDate","tc.removedFromRollsDate","tc.applicationDate","doc.issueDate",
+          "tc.reasonForLeaving","tc.schoolProceedingTo","health.lastVaccination",
+          "attendance.workingDays","attendance.daysPresent"],
+        fieldListVerified:true,
+        requiredSignatures:["principal_headmaster"], sealRequired:true,
+        bilingual:{languages:["en","ml"],
+          note:"Form 5 is printed bilingually — every label appears in English and Malayalam. A Kerala TC template that ships English-only does not reproduce the prescribed form."},
         constraints:[
           "r.17(1) — the transfer certificate is issued in FORM 5, by the Headmaster, during the summer vacation or at other times for sufficient reason; at any time for pupils who have sat a public examination.",
           "r.17(2) — \"No transfer certificate shall be issued to a pupil from whom there are any dues to the school.\" ⚖ Read down by the courts: Kerala HC 2025:KER:69076 refused to let a dues rule justify withholding; Madras HC (DB) 22.07.2024 held a TC \"is not a tool for the schools to collect arrear fees\". Never default-on, and impossible for classes I–VIII.",
@@ -198,7 +1003,7 @@ const AUTHORITIES = [
         ],
         duplicateMark:{required:true, text:"Duplicate", citation:"KER r.22",
           quote:"Duplicate certificate issued should be clearly marked 'Duplicate'."},
-        note:"Form 5's own field list is printed in an appendix we have not retrieved. Nothing is enforced here beyond the constraints above.",
+        note:"Form 5 prescribes 23 particulars, a Principal/Headmaster/Headmistress signature, and two notes — fee-concession history and, for higher standards, details of the courses of study.",
         /* the first rule that changes WHICH document you are issuing, not what
            it must contain. Compliance as routing, not just validation. */
         routesTo:[{
@@ -215,12 +1020,16 @@ const AUTHORITIES = [
         }]
       },
       leaving_certificate_5a:{
-        form:"Form 5A", requiredKeys:[], fieldListVerified:false,
+        form:"Form 5A",
+        requiredKeys:["student.fullName","school.name","tc.lastClassStudied","tc.standardAdmittedOn",
+          "tc.removedFromRollsDate","student.dobWords","doc.station","doc.issueDate"],
+        fieldListVerified:true,
+        requiredSignatures:["headmaster"], sealRequired:true,
         constraints:[
           "r.17(3) — issued in place of a transfer certificate to a pupil removed from the rolls who is over 20. It is a distinct statutory instrument, not a renamed TC.",
           "Because it is issued where a TC may NOT be, aliasing the two would collapse two different legal documents into one."
         ],
-        note:"Form 5A's field list is in the same unretrieved appendix as Form 5. Nothing is enforced beyond the constraints above."
+        note:"Form 5A is a prose certificate, not a particulars table — a different shape from Form 5, which is another reason the two must not be aliased. The rule adds: all certificates are to be sealed with the school seal before issue."
       },
       school_education_certificate:{
         form:"r.22A", requiredKeys:["student.fullName","student.fatherName","sec.fromDate","sec.toDate",
@@ -631,58 +1440,122 @@ function starterTCplain(){
   return t;
 }
 
-function starterForm5A(){
-  const t=starterTC();
-  t.templateId="TPL0061"; t.docType="leaving_certificate_5a";
-  t.name="Leaving Certificate — Form 5A"; t.version=1;
-  t.publishedVersion=null; t.activeVersion=null; t.languages=["en"];
-  /* a TC's promotion and attendance block does not belong on a Form 5A: it is
-     issued to a pupil removed from the rolls, not one being promoted onward */
-  t.objects=t.objects.filter(o=>!["t_book"].includes(o.id));
-  t.objects.forEach(o=>{
-    if(o.id==="t_title") o.content.i18n.en=T({t:"LEAVING CERTIFICATE"});
-    if(o.id==="t_table") o.content.rows=[
-      {key:"student.admissionNumber"},{key:"student.fullName"},{key:"student.fatherName"},
-      {key:"student.dob"},{key:"student.dobWords"},{key:"tc.dateOfFirstAdmission"},
-      {key:"tc.lastClassStudied"},{key:"student.ageAtLeaving"},{key:"tc.dateOfLeaving"}];
-    if(o.id==="t_reason"){
-      o.requiredKey=null;
-      o.content.i18n.en=T({t:"Reason for removal from the rolls: "},{f:"sec.outcome"});
-    }
-    if(o.id==="t_declare") o.content.i18n.en=T({t:"Issued under Rule 17(3) of the Kerala Education Rules 1959 in place of a transfer certificate, the pupil having been removed from the rolls while over twenty years of age."});
-  });
-  return t;
+/* Kerala Education Rules, FORM 5 [See rule VI-17(1)] — 23 prescribed
+   particulars in the printed order, with the Principal/Headmaster signature.
+   The source form is bilingual English + Malayalam; see the note in §ml below. */
+function starterKeralaForm5(){
+  const rows=["school.recognitionType","student.fullName","student.fatherName",
+    "student.guardianRelation","student.identificationMarks","student.nationality",
+    "student.religion","student.socialCategory","student.dobWords","tc.lastClassStudied",
+    "tc.standardAdmittedOn","result.promotionEligible","tc.allFeesPaid","tc.feeConcession",
+    "tc.lastAttendanceDate","tc.removedFromRollsDate","tc.applicationDate","doc.issueDate",
+    "tc.reasonForLeaving","tc.schoolProceedingTo","health.lastVaccination",
+    "attendance.workingDays","attendance.daysPresent"];
+  return {
+    templateId:"TPL0071", schoolId:"SCH_D94FE8F7AD", docType:"transfer_certificate",
+    name:"Transfer Certificate — Kerala Form 5", status:"draft", version:1,
+    publishedVersion:null, activeVersion:null, lockVersion:1,
+    contractRef:"transfer_certificate_v3",
+    languages:["en","ml"], defaultLanguage:"en", languageFallback:"block",
+    page:{size:"A4", orientation:"portrait", marginsMm:{t:40,r:15,b:16,l:15}, pageMode:"single"},
+    objects:[...hdr(),
+      {id:"t_title", name:"Title", type:"text", xMm:15,yMm:44,wMm:180,hMm:8, z:3, height:"auto",
+       style:{sizePt:13, lineHeight:1.3, weight:700, align:"center", colour:"#14100D", track:".12em"},
+       content:{i18n:{en:T({t:"TRANSFER CERTIFICATE"}), ml:{runs:[]}}}},
+      {id:"t_rule", name:"Rule reference", type:"text", xMm:15,yMm:54,wMm:180,hMm:5, z:3, height:"auto",
+       style:{sizePt:8, lineHeight:1.3, weight:400, align:"center", colour:"#6B5346"},
+       content:{i18n:{en:T({t:"FORM 5  [See rule VI-17(1)]"}), ml:{runs:[]}}}},
+      {id:"t_table", name:"Prescribed particulars", type:"table", xMm:15,yMm:62,wMm:180,hMm:150, z:3,
+       height:"auto", style:{sizePt:8.5, lineHeight:1.5, colour:"#14100D"},
+       content:{rows:rows.map(k=>({key:k}))}},
+      {id:"t_dup", name:"Duplicate mark", type:"text", xMm:130,yMm:36,wMm:65,hMm:8, z:8,
+       height:"auto", showWhen:"doc.isDuplicate", isDuplicateMark:true,
+       style:{sizePt:15, lineHeight:1.2, weight:700, align:"right", colour:"#C0392B", track:".22em"},
+       content:{i18n:{en:T({t:"DUPLICATE"}), ml:{runs:[]}}}},
+      {id:"t_nb", name:"Notes", type:"text", xMm:15,yMm:222,wMm:180,hMm:12, z:3, height:"auto",
+       anchorTo:"t_table", anchorGapMm:6,
+       style:{sizePt:7.5, lineHeight:1.5, weight:400, align:"left", colour:"#6B5346"},
+       content:{i18n:{en:T({t:"N.B. 1. Fee concession / scholarship history of the pupil may be entered below when necessary.  2. In the case of pupils of higher standards, details of the courses of study should be furnished below."}), ml:{runs:[]}}}},
+      {id:"o_seal", name:"School seal", type:"shape", xMm:20,yMm:250,wMm:30,hMm:30, z:2,
+       height:"fixed", content:{shape:"seal"}, style:{}},
+      {id:"sig_pr", sigRole:"principal_headmaster", name:"Sig · Principal / Headmaster",
+       type:"text", xMm:120,yMm:262,wMm:75,hMm:9, z:3, height:"fixed",
+       style:{sizePt:8.5, lineHeight:1.35, weight:600, align:"center", colour:"#14100D", topRule:true},
+       content:{i18n:{en:T({t:"Principal / Headmaster / Headmistress"}), ml:{runs:[]}}}},
+      ...ftr()]
+  };
 }
 
-/* A starter that narrows `languages` inherits its objects from a broader one,
-   so the runs of the dropped languages linger as dead data. They cannot render
-   — but they used to still bind the merge contract, which made Form 5A
-   permanently unpublishable over a Hindi run it did not declare and the UI
-   could not show. Every starter is therefore normalised on the way out. */
-function pruneLanguages(t){
-  if(!t || !t.languages) return t;
-  t.objects.forEach(o=>{
-    if(!o.content || !o.content.i18n) return;
-    Object.keys(o.content.i18n).forEach(L=>{
-      if(!t.languages.includes(L)) delete o.content.i18n[L];
-    });
-  });
-  return t;
+/* FORM 5A [See Rule VI-17(3)] — the rule prints this as running prose, not a
+   particulars table. That difference of SHAPE is a further reason Form 5 and
+   Form 5A must not be aliased onto one another. */
+function starterForm5A(){
+  return {
+    templateId:"TPL0061", schoolId:"SCH_D94FE8F7AD", docType:"leaving_certificate_5a",
+    name:"Leaving Certificate — Form 5A", status:"draft", version:1,
+    publishedVersion:null, activeVersion:null, lockVersion:1,
+    contractRef:"leaving_certificate_5a_v1",
+    languages:["en"], defaultLanguage:"en", languageFallback:"block",
+    page:{size:"A4", orientation:"portrait", marginsMm:{t:42,r:18,b:16,l:18}, pageMode:"single"},
+    objects:[...hdr(),
+      {id:"t_title", name:"Title", type:"text", xMm:18,yMm:48,wMm:174,hMm:10, z:3, height:"auto",
+       style:{sizePt:12, lineHeight:1.35, weight:700, align:"center", colour:"#14100D", track:".08em"},
+       content:{i18n:{en:T({t:"LEAVING CERTIFICATE ISSUED TO OVER AGED PUPILS REMOVED FROM THE ROLLS OF SCHOOLS"})}}},
+      {id:"t_rule", name:"Rule reference", type:"text", xMm:18,yMm:62,wMm:174,hMm:5, z:3, height:"auto",
+       style:{sizePt:8, lineHeight:1.3, weight:400, align:"center", colour:"#6B5346"},
+       content:{i18n:{en:T({t:"FORM 5A  [See Rule VI-17(3)]"})}}},
+      {id:"t_body", name:"Certifying paragraph", type:"text", xMm:18,yMm:76,wMm:174,hMm:22, z:3,
+       height:"auto", maxHMm:48, requiredKey:"student.fullName",
+       style:{sizePt:10.5, lineHeight:2.0, weight:400, align:"left", colour:"#14100D"},
+       content:{i18n:{en:T(
+         {t:"This is to certify that "},{f:"student.fullName"},
+         {t:" was a pupil of the "},{f:"school.name"},
+         {t:" school. He/She was admitted/promoted to standard "},{f:"tc.lastClassStudied"},
+         {t:" (in words) on "},{f:"tc.standardAdmittedOn"},
+         {t:". He/She left the school on "},{f:"tc.removedFromRollsDate"},
+         {t:" while he/she was reading in "},{f:"tc.lastClassStudied"},
+         {t:" (in words). His/her date of birth according to the school admission register is "},
+         {f:"student.dobWords"},{t:" (in words)."})}}},
+      {id:"t_dup", name:"Duplicate mark", type:"text", xMm:127,yMm:38,wMm:65,hMm:8, z:8,
+       height:"auto", showWhen:"doc.isDuplicate", isDuplicateMark:true,
+       style:{sizePt:15, lineHeight:1.2, weight:700, align:"right", colour:"#C0392B", track:".22em"},
+       content:{i18n:{en:T({t:"DUPLICATE"})}}},
+      {id:"t_station", name:"Station", type:"text", xMm:18,yMm:150,wMm:70,hMm:7, z:3, height:"auto",
+       requiredKey:"doc.station",
+       style:{sizePt:10, lineHeight:1.8, weight:400, align:"left", colour:"#14100D"},
+       content:{i18n:{en:T({t:"Station: "},{f:"doc.station"})}}},
+      {id:"t_date", name:"Date", type:"text", xMm:18,yMm:158,wMm:70,hMm:7, z:3, height:"auto",
+       requiredKey:"doc.issueDate",
+       style:{sizePt:10, lineHeight:1.8, weight:400, align:"left", colour:"#14100D"},
+       content:{i18n:{en:T({t:"Date: "},{f:"doc.issueDate"})}}},
+      {id:"o_seal", name:"School seal", type:"shape", xMm:96,yMm:146,wMm:28,hMm:28, z:2,
+       height:"fixed", content:{shape:"seal"}, style:{}},
+      {id:"sig_hm", sigRole:"headmaster", name:"Sig · Headmaster", type:"text",
+       xMm:132,yMm:166,wMm:60,hMm:8, z:3, height:"fixed",
+       style:{sizePt:9.5, lineHeight:1.4, weight:600, align:"center", colour:"#14100D", topRule:true},
+       content:{i18n:{en:T({t:"Headmaster"})}}},
+      {id:"t_note", name:"Sealing note", type:"text", xMm:18,yMm:192,wMm:174,hMm:7, z:3, height:"auto",
+       style:{sizePt:7.5, lineHeight:1.5, weight:400, align:"left", colour:"#6B5346"},
+       content:{i18n:{en:T({t:"Note: All certificates to be sealed with the school seal before issue."})}}},
+      ...ftr()]
+  };
 }
 
 const STARTERS = [
+  {id:"tc_ker5", docType:"transfer_certificate", name:"Kerala Form 5",
+   meta:"KER r.VI-17(1) · 23 particulars · Level A", states:["Kerala"], build:starterKeralaForm5},
   {id:"lc_5a", docType:"leaving_certificate_5a", name:"Leaving Certificate — Form 5A",
-   meta:"Kerala · r.17(3) · field list not retrieved", states:["Kerala"], build:()=>pruneLanguages(starterForm5A())},
+   meta:"KER r.VI-17(3) · prose form · Level A", states:["Kerala"], build:starterForm5A},
   {id:"tc_cbse",   docType:"transfer_certificate", name:"Annexure-I form",
-   meta:"CBSE · 22 fields · Level A", boards:["CBSE"], build:()=>pruneLanguages(starterTC())},
+   meta:"CBSE · 22 fields · Level A", boards:["CBSE"], build:starterTC},
   {id:"tc_plain",  docType:"transfer_certificate", name:"Plain letterhead",
-   meta:"any board · prose form", boards:null, build:()=>pruneLanguages(starterTCplain())},
+   meta:"any board · prose form", boards:null, build:starterTCplain},
   {id:"sec_ker",   docType:"school_education_certificate", name:"Certificate of School Education",
-   meta:"Kerala · r.22A · field list Level A", states:["Kerala"], build:()=>pruneLanguages(starterKeralaSEC())},
+   meta:"Kerala · r.22A · field list Level A", states:["Kerala"], build:starterKeralaSEC},
   {id:"bonafide",  docType:"bonafide", name:"Classic bonafide",
-   meta:"no statutory basis found · free format", boards:null, build:()=>pruneLanguages(starterBonafide())},
+   meta:"no statutory basis found · free format", boards:null, build:starterBonafide},
   {id:"conduct",   docType:"character", name:"Conduct and character",
-   meta:"TNER r.34 / App. 5-B shape", boards:null, build:()=>pruneLanguages(starterConduct())}
+   meta:"TNER r.34 / App. 5-B shape", boards:null, build:starterConduct}
 ];
 function startersFor(docType){
   const sc=S.school;
@@ -700,8 +1573,7 @@ const S = {
   tool:"move", editing:null, clipboard:null,
   undo:[], redo:[], proofed:null, dirty:false, measured:{}, hidden:{},
   clamped:{}, blockRefs:{BLK0001:3}, blockIgnored:{}, baseline:null, issuance:{duplicate:false},
-  school:null, layerOff:{}, overrideReason:{}, lib:null, active:null,
-  cmode:"edit"   // Content pane: "edit" (all fields) | "read" (proofread)
+  school:null, layerOff:{}, overrideReason:{}, lib:null, active:null
 };
 
 const TYPES = [
@@ -776,21 +1648,11 @@ function fieldValue(key){
 }
 function boundKeys(){
   const set=new Set();
-  /* Only languages the template DECLARES can bind the contract. A run in a
-     language that was dropped never renders, so it is dead data — but it used
-     to still count as "bound", which made Form 5A permanently unpublishable:
-     the starter declares en only and rewrites the English run, while a
-     leftover Hindi run kept binding tc.reasonForLeaving, a key the 5A contract
-     does not declare. The result was an offContract error naming a field the
-     UI could not show, in a language the template did not have. */
-  const langs=(S.tpl && S.tpl.languages) || null;
   for(const o of S.tpl.objects){
     if(o.type==="table") o.content.rows.forEach(r=>set.add(r.key));
     else if(o.content&&o.content.i18n)
-      for(const L of Object.keys(o.content.i18n)){
-        if(langs && !langs.includes(L)) continue;
+      for(const L of Object.keys(o.content.i18n))
         o.content.i18n[L].runs.forEach(r=>{ if(r.f) set.add(r.f); });
-      }
   }
   return set;
 }
@@ -1285,7 +2147,7 @@ function paintGallery(){
   const blank=el("button","tpl-card tpl-card--new");
   blank.innerHTML=`<div class="tpl-card__thumb">＋</div><div class="tpl-card__body">
     <div class="tpl-card__name">Blank canvas</div>
-    <div class="tpl-card__meta">A4 portrait · letterhead and page furniture only</div></div>`;
+    <div class="tpl-card__meta">A4 portrait · required objects pre-placed</div></div>`;
   blank.onclick=()=>{
     const base=starters[0]||STARTERS.find(x=>x.docType===S.docType)||STARTERS[0];
     const tt=base.build(); tt.name="Untitled template"; tt.version=1;
@@ -1553,195 +2415,6 @@ function openFieldPicker(){
    8 · LAYERS  (Figma's list — and the keyboard path to selection)
    ========================================================================== */
 const TYPEICON={text:"T",table:"▦",image:"▣",shape:"━",qr:"▩",pageNumber:"#"};
-
-/* ==========================================================================
-   CONTENT PANE — the document view
-   --------------------------------------------------------------------------
-   A certificate is read top-to-bottom as prose and labelled fields, but the
-   canvas only offers the shape view of it. Editing one word there means
-   finding a 9.5pt target on a zoomable page, entering a mode, and leaving it
-   again — and the likeliest misfire is DRAGGING the object instead of editing
-   it, silently moving part of a statutory layout.
-
-   This pane is the document view. Two modes:
-     edit  every text object in reading order, always editable, no mode switch
-     read  the whole certificate as continuous prose, for proofreading
-
-   It edits CONTENT ONLY. Nothing here can move, resize, reorder or delete an
-   object. See design/TEXT_EDITING_PROPOSAL.md.
-   ========================================================================== */
-
-/* Reading order: resolved top, then left. Not z-order, not creation order —
-   reading order is the only order a clerk thinks in. */
-function contentOrder(){
-  const rank = {header:0, body:1, footer:2};
-  return [...S.tpl.objects].sort((a,b)=>
-      (rank[a.region||"body"] - rank[b.region||"body"])
-   || ((a.yMm||0) - (b.yMm||0))
-   || ((a.xMm||0) - (b.xMm||0)));
-}
-
-function contentPlain(o){
-  const d = o.content && o.content.i18n && o.content.i18n[langOf(o)];
-  if(!d || !d.runs) return "";
-  return d.runs.map(r=> r.f!=null ? ("{"+(FIELD[r.f]?FIELD[r.f].label:r.f)+"}") : (r.t||"")).join("");
-}
-
-/* Harvest one editable row into the model.
-   Returns true if the model actually changed. Deliberately does NOT push undo
-   and does NOT repaint the pane — the input/blur split below owns both, so that
-   a burst of keystrokes is one undo entry rather than one per character. */
-function commitContentRow(ed){
-  if(!ed || !ed.dataset) return false;
-  const o=obj(ed.dataset.cid);
-  if(!o || o.type!=="text") return false;
-  const runs=parseRuns(ed);
-  if(!o.content) o.content={};
-  if(!o.content.i18n) o.content.i18n={};
-  const cur=o.content.i18n[langOf(o)];
-  if(cur && JSON.stringify(cur.runs)===JSON.stringify(runs)) return false;
-  o.content.i18n[langOf(o)]={runs};
-  return true;
-}
-
-/* The row the user is typing in right now, or null. */
-function liveContentRow(){
-  const wrap=$("#contentList"), a=document.activeElement;
-  return (wrap && a && a.isContentEditable && wrap.contains(a)) ? a : null;
-}
-
-function paintContent(){
-  const wrap=$("#contentList"); if(!wrap) return;
-  const hint=$("#contentHint");
-
-  /* Never rebuild underneath a live edit. innerHTML="" would destroy the
-     focused node mid-keystroke and the edit would vanish into a detached
-     element — the exact failure UX_SPEC §5A.4 records. Harvest what is on
-     screen so the model stays true, then defer the repaint until the edit is
-     released (see the blur handler). */
-  const live=liveContentRow();
-  if(live){ commitContentRow(live); wrap._deferred=true; return; }
-  wrap._deferred=false;
-
-  wrap.innerHTML="";
-
-  if(S.cmode==="read"){
-    hint.innerHTML="Proofreading view — the whole document as continuous text. <b>Read only.</b>";
-    const box=el("div","");
-    box.style.cssText="font-size:12px;line-height:1.65;white-space:pre-wrap;"
-      +"padding:10px;border:1px solid var(--line);border-radius:var(--r-sm);background:var(--raised)";
-    let last=null, out="";
-    contentOrder().forEach(o=>{
-      if(o.type!=="text") return;
-      const reg=o.region||"body";
-      if(reg!==last){ out += (out?"\n\n":"") + "— "+reg.toUpperCase()+" —\n"; last=reg; }
-      const t=contentPlain(o).trim();
-      if(t) out += t + "\n";
-    });
-    box.textContent = out.trim() || "This template has no text yet.";
-    wrap.appendChild(box);
-    return;
-  }
-
-  hint.innerHTML="Click any line and type. Fields come from the <b>Fields</b> pane. "
-                +"Nothing here can move or resize an object.";
-
-  let lastRegion=null;
-  contentOrder().forEach(o=>{
-    const reg=o.region||"body";
-    if(reg!==lastRegion){
-      wrap.appendChild(el("div","layer__grp",esc(reg==="body"?"Body":reg[0].toUpperCase()+reg.slice(1)+" region")));
-      lastRegion=reg;
-    }
-
-    const row=el("div","");
-    row.style.cssText="margin-bottom:9px";
-
-    const lab=el("div","");
-    lab.style.cssText="display:flex;align-items:center;gap:5px;margin-bottom:3px;"
-      +"font-family:var(--font-m);font-size:9px;letter-spacing:.06em;color:var(--ink3)";
-    lab.innerHTML=`<i style="font-style:normal">${TYPEICON[o.type]||"◻"}</i>`
-      +`<span>${esc(o.name||o.id)}</span>`
-      +(o.requiredKey?' <span style="color:var(--seal)" title="required by the active compliance stack">✦</span>':"")
-      +(o.locked?' <span title="position locked">🔒</span>':"");
-    row.appendChild(lab);
-
-    if(o.type!=="text"){
-      const na=el("div","", esc(o.type)+" — not text");
-      na.style.cssText="font-size:11px;color:var(--ink4);padding:5px 7px;border:1px dashed var(--line);"
-        +"border-radius:var(--r-xs);background:var(--sunk)";
-      na.onclick=()=>{ S.sel=[o.id]; render(); };
-      row.appendChild(na);
-      wrap.appendChild(row); return;
-    }
-
-    const d=o.content && o.content.i18n && o.content.i18n[langOf(o)];
-    const ed=el("div","");
-    ed.contentEditable="true";
-    ed.spellcheck=true;
-    ed.dataset.cid=o.id;
-    ed.style.cssText="font-size:12px;line-height:1.5;padding:6px 8px;border-radius:var(--r-xs);"
-      +"border:1px solid "+(S.sel.includes(o.id)?"var(--clay)":"var(--line2)")+";"
-      +"background:var(--panel);min-height:26px;outline:none";
-    ed.innerHTML = (d && d.runs && d.runs.length) ? runsHTML(d.runs,false) : "";
-
-    if(!(d && d.runs && d.runs.length)){
-      ed.dataset.empty = langExplicit(o) ? "Not translated for this language" : "Empty";
-    }
-
-    /* Capture the undo baseline once per editing burst. Armed from focus AND
-       from the first input: focus events are not dispatched at all while the
-       window lacks OS focus, so focus alone is not a reliable arming point. */
-    const arm=()=>{ if(ed._before==null) ed._before=snapshot(); };
-
-    ed.addEventListener("focus", ()=>{
-      if(S.sel.length!==1 || S.sel[0]!==o.id){ S.sel=[o.id]; paintLayers(); paintInspector(); paintCtxbar(); }
-      arm();
-    });
-
-    /* Commit on every keystroke so the model is never behind the screen — an
-       edit cannot be lost by switching window, closing the tab, or any other
-       path where blur never arrives. Undo is NOT pushed here (that would be one
-       entry per character) and the pane is NOT repainted (that would destroy
-       this node); the canvas repaints so it stays a live preview. */
-    ed.addEventListener("input", ()=>{
-      arm();
-      if(!commitContentRow(ed)) return;
-      S.dirty=true;
-      layoutPage(); paintStatus();
-    });
-
-    /* Blur ends the burst: one undo entry for the whole thing, then the full
-       repaint that was deferred while this node was live. */
-    ed.addEventListener("blur", ()=>{
-      const before=ed._before; ed._before=null;
-      commitContentRow(ed);
-      /* Compare against the baseline armed at the START of the burst, not
-         against the model as it stood a moment ago: `input` has already
-         committed every keystroke, so a blur-time diff is always empty and
-         the undo entry would never be pushed. */
-      const after=snapshot();
-      const changed = before!=null && before!==after;
-      if(changed) push("Edit text — "+(o.name||o.id), before, after);
-      const wrap=$("#contentList");
-      if(changed || (wrap && wrap._deferred)) render();
-    });
-    /* Enter commits rather than inserting a paragraph: these are single fields
-       in a form, not a word processor. Shift+Enter still breaks a line. */
-    ed.addEventListener("keydown", e=>{
-      if(e.key==="Enter" && !e.shiftKey){ e.preventDefault(); ed.blur(); }
-      if(e.key==="Escape"){ e.preventDefault(); ed.blur(); }
-    });
-
-    row.appendChild(ed);
-    wrap.appendChild(row);
-  });
-
-  if(!wrap.children.length){
-    wrap.appendChild(el("div","hintline","This template has no objects yet."));
-  }
-}
-
 function paintLayers(){
   const L=$("#layerList"); L.innerHTML="";
   const groups=[["header","Header region"],["body","Body"],["footer","Footer region"]];
@@ -1851,7 +2524,7 @@ function paintInspector(){
     <button class="btn btn--sm" data-act="addrow">+ Add row</button>`:""}
 
     ${o.type==="text"?`<div class="row row--1" style="margin-top:10px">
-      <button class="btn btn--sm" data-act="content">¶ Edit in Content <span class="btn__hint">no mode</span></button></div>`:""}
+      <button class="btn btn--sm" data-act="edit">✎ Edit text <span class="btn__hint">Enter</span></button></div>`:""}
 
     ${o.type==="image"?`
     <div class="subhead">Asset</div>
@@ -2127,6 +2800,13 @@ function paintCompliance(){
         w.appendChild(el("div","cons",
           `<span class="cons__ic">${isCourt?"⚖":"§"}</span><span>${esc(c)}</span>`));
       });
+      if(l.rule.bilingual){
+        const langs=l.rule.bilingual.languages.map(x=>(LANGS[x]||{native:x}).native).join(" + ");
+        const has=l.rule.bilingual.languages.every(x=>(S.tpl.languages||[]).includes(x));
+        w.appendChild(el("div","cons",
+          `<span class="cons__ic">§</span><span>${esc(l.rule.bilingual.note)}
+           <b>${has?"This template carries "+esc(langs)+".":"This template does not carry "+esc(langs)+"."}</b></span>`));
+      }
       (l.rule.routesTo||[]).forEach(r=>{
         let fired=false; try{ fired=!!r.test(); }catch(e){}
         const other=TYPES.find(t=>t.id===r.toType);
@@ -2213,6 +2893,16 @@ function paintCompliance(){
       else openCite(k); };
     L.appendChild(b);
   });
+  const piiBound=[...bound].filter(k=>(FIELD[k]||{}).pii);
+  if(piiBound.length){
+    const d=el("div","cons"); d.style.borderTop="1px solid var(--line)";
+    d.innerHTML=`<span class="cons__ic">⚖</span><span><b>Sensitive personal data on this certificate.</b>
+      ${esc(piiBound.map(k=>(FIELD[k]||{}).label).join(", "))} —
+      prescribed by the form, and printed on a document that travels to another school. The rule
+      requires the field; it does not decide who may keep a copy, how long, or where it is stored.
+      Worth a decision by whoever owns the register rather than a default.</span>`;
+    L.appendChild(d);
+  }
   v.warnings.forEach(w=>{
     const b=el("button","rule rule--warn");
     const nm=id=>{ const o=obj(id); return o?(o.name||o.id):id; };
@@ -2391,7 +3081,7 @@ function paintStatus(){
 }
 function render(){
   paintCrumb(); paintTopActions(); layoutPage(); paintRulers();
-  paintLayers(); paintFieldList(); paintBlocks(); paintContent(); paintInspector(); paintPagePanel();
+  paintLayers(); paintFieldList(); paintBlocks(); paintInspector(); paintPagePanel();
   paintCompliance(); paintStatus(); paintCtxbar();
 }
 
@@ -2949,10 +3639,6 @@ window.addEventListener("keydown", e=>{
   /* Escape is staged: never destroys work, always reaches a neutral state */
   if(e.key==="Escape"){
     if($("#scrim").classList.contains("is-on")) return closeModal();
-    /* an open drawer is the frontmost thing on screen, so Esc dismisses it
-       before it touches the selection underneath */
-    if($(".rail").classList.contains("is-open") || $(".insp").classList.contains("is-open"))
-      return closeDrawers();
     if(S.editing){ commitEdit(); return; }          // 1 · commit, stay selected
     if(S.sel.length){ S.sel=[]; hideCtxbar(); render(); return; }   // 2 · deselect
     setTool("move"); return;                        // 3 · back to the move tool
@@ -3070,7 +3756,6 @@ cm.addEventListener("click", e=>{
   cm.classList.remove("is-on");
   const o=S.sel.length===1?obj(S.sel[0]):null, a=b.dataset.cm;
   if(a==="edit"&&o) return enterEdit(o.id);
-  if(a==="content"&&o) return openContentFor(o.id);
   if(a==="dup") return duplicateSel();
   if(a==="copy"){ S.clipboard=S.sel.map(obj).map(x=>JSON.parse(JSON.stringify(x))); return toast("Copied "+S.clipboard.length); }
   if(a==="fwd") return zOrder(1);
@@ -3095,80 +3780,12 @@ cm.addEventListener("click", e=>{
 /* ==========================================================================
    15 · PANEL WIRING
    ========================================================================== */
-/* ── narrow-viewport drawers ──────────────────────────────────────────────
-   Below 1020px the rail, and below 760px the inspector, slide over the desk
-   instead of being hidden outright. Media queries own the layout; JS only
-   toggles `is-open`, so the two can never disagree about which mode is live. */
-const railIsDrawer = ()=>matchMedia("(max-width:1020px)").matches;
-const inspIsDrawer = ()=>matchMedia("(max-width:760px)").matches;
-
-function drawerScrim(){
-  let s=$(".zxdt .drawer-scrim") || $(".drawer-scrim");
-  if(!s){ s=el("div","drawer-scrim"); $(".dz").appendChild(s);
-    s.addEventListener("click", ()=>closeDrawers()); }
-  return s;
-}
-function syncScrim(){
-  const open = $(".rail").classList.contains("is-open") || $(".insp").classList.contains("is-open");
-  drawerScrim().classList.toggle("is-on", open);
-}
-function closeDrawers(){
-  $(".rail").classList.remove("is-open");
-  $(".insp").classList.remove("is-open");
-  syncScrim();
-}
-function openRailDrawer(){
-  if(!railIsDrawer()) return;
-  $(".insp").classList.remove("is-open");
-  $(".rail").classList.add("is-open");
-  syncScrim();
-}
-/* Leaving drawer mode must not strand an `is-open` class on a panel that is
-   once again a normal flex child — harmless visually, but it would leave the
-   scrim up over a desk nobody can click. */
-matchMedia("(max-width:1020px)").addEventListener("change", closeDrawers);
-matchMedia("(max-width:760px)").addEventListener("change", closeDrawers);
-
 $("#tabstrip").addEventListener("click", e=>{
   const b=e.target.closest("button"); if(!b) return;
-  const alreadyShowing = b.classList.contains("is-on") && $(".rail").classList.contains("is-open");
   $$("#tabstrip button").forEach(t=>t.classList.toggle("is-on", t===b));
   $$(".rail__pane").forEach(p=>p.classList.toggle("is-on", p.dataset.pane===b.dataset.pane));
-  $("#railHead").textContent={layers:"Layers",insert:"Insert",fields:"Merge fields",blocks:"Reusable blocks",content:"Content"}[b.dataset.pane];
-  /* in drawer mode the tabstrip is the only way back in, so it must open —
-     and tapping the tab of the pane already showing closes it again */
-  if(railIsDrawer()){ alreadyShowing ? closeDrawers() : openRailDrawer(); }
+  $("#railHead").textContent={layers:"Layers",insert:"Insert",fields:"Merge fields",blocks:"Reusable blocks"}[b.dataset.pane];
 });
-
-$("#inspBtn").addEventListener("click", ()=>{
-  const insp=$(".insp");
-  if(insp.classList.contains("is-open")) return closeDrawers();
-  $(".rail").classList.remove("is-open");
-  insp.classList.add("is-open");
-  syncScrim();
-});
-/* Content pane: Edit all / Read toggle. Read is proofreading — deliberately
-   read-only, so a final check cannot become an accidental edit. */
-/* Inspector's "Edit in Content" — the old ✎ here duplicated the context-toolbar
-   button, sat far from the object, and was the least discoverable of four doors
-   into the same mode. It now opens the mode-free route instead. */
-function openContentFor(id){
-  const tab=$('#tabstrip button[data-pane="content"]'); if(tab) tab.click();
-  S.cmode="edit";
-  $$("#contentMode button").forEach(t=>t.classList.toggle("is-on", t.dataset.cmode==="edit"));
-  paintContent();
-  const box=$(`#contentList [data-cid="${id}"]`);
-  if(box){ box.scrollIntoView({block:"center"}); box.focus(); }
-  else toast("That object has no editable text");
-}
-
-$("#contentMode").addEventListener("click", e=>{
-  const b=e.target.closest("button[data-cmode]"); if(!b) return;
-  S.cmode=b.dataset.cmode;
-  $$("#contentMode button").forEach(t=>t.classList.toggle("is-on", t===b));
-  paintContent();
-});
-
 $(".rail").addEventListener("click", e=>{
   const b=e.target.closest("button"); if(!b) return;
   if(b.dataset.add) addObject(b.dataset.add);
@@ -3499,11 +4116,7 @@ function openPublish(){
      — create-only, never updated or deleted, by anyone. It records the font manifest and the mPDF version too,
      so a re-render years from now is explainable rather than mysterious.</p>`,
     `<button class="btn" data-close>Cancel</button><span class="spacer"></span>
-     <button class="btn btn--primary" id="pubGo" ${blocked?"disabled":""}>Publish v${S.tpl.version}</button>`);
-  /* NOT "Publish and set active" — publishing freezes a snapshot and stops.
-     Activation is a separate decision with its own blast radius (§9.2c), and
-     the very next modal asks for it. A label promising activation here would
-     be a lie about a legally consequential action. */
+     <button class="btn btn--primary" id="pubGo" ${blocked?"disabled":""}>Publish and set active</button>`);
   const g=$("#pubGo"); if(g) g.onclick=()=>{
     S.tpl.publishedVersion=S.tpl.version; S.tpl.version++; S.dirty=false;
     /* publishing freezes a snapshot. It does NOT make it the one that prints —
@@ -3583,3 +4196,7 @@ S.lib=JSON.parse(JSON.stringify(LIB));
 S.active=Object.assign({}, ACTIVE);
 S.tpl=starterTC();
 paintHub(); go("hub");
+</script>
+
+</body>
+</html>

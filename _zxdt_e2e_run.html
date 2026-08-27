@@ -1,42 +1,14 @@
-<?php defined('BASEPATH') or exit('No direct script access allowed'); ?>
-<?php
-/**
- * Certificate Designer — SPA shell.
- *
- * Ported from blueprints/certificates/design/prototype.html. Screens D0 (types),
- * D1 (gallery) and D2 (designer) all live here and are switched client-side;
- * the breadcrumb is the only back-navigation (UX_SPEC §2). The controller's
- * index/gallery/design actions all render this same view.
- *
- * EVERYTHING is wrapped in .zxdt. assets/css/doctemplates.css is scoped under
- * that class, because this ships a page of absolutely positioned divs into a
- * panel full of layout utilities and the .att-grid collision is the precedent
- * (UX_SPEC §14).
- *
- * No bundler — plain script includes, per the Chart.js precedent.
- *
- * Expects from the controller: $active_tab, $doc_type, $template_id,
- * $school_name, $session_year, $can_edit, $can_manage.
- */
-$zxdtBoot = [
-    'screen'      => $active_tab   ?? 'gallery',
-    'docType'     => $doc_type     ?? '',
-    'templateId'  => $template_id  ?? '',
-    'schoolName'  => $school_name  ?? '',
-    'sessionYear' => $session_year ?? '',
-    'canEdit'     => (bool) ($can_edit   ?? false),
-    'canManage'   => (bool) ($can_manage ?? false),
-    'csrfName'    => $this->security->get_csrf_token_name(),
-    'csrfHash'    => $this->security->get_csrf_hash(),
-    'base'        => rtrim(base_url(), '/') . '/doc_templates',
-];
-?>
-<link rel="stylesheet" href="<?= base_url('assets/css/doctemplates.css') ?>">
+<!doctype html><meta charset="utf-8"><title>zxdt harness</title>
+<!-- GENERATED from application/views/doc_templates/index.php — do not hand-edit.
+     Kept identical to the real view so the harness cannot drift from production. -->
+
+
+<link rel="stylesheet" href="/assets/css/doctemplates.css">
 
 <!-- Boot payload. The designer reads this instead of hardcoding anything.
      csrfHash travels here so api.js can attach the token to every POST — the
      routes are NOT in csrf_exclude_uris, and must not be (gate G0.7). -->
-<script type="application/json" id="zxdt-boot"><?= json_encode($zxdtBoot, JSON_UNESCAPED_SLASHES | JSON_UNESCAPED_UNICODE) ?></script>
+
 
 <div class="zxdt" id="zxdt-root">
   <div class="app">
@@ -204,4 +176,8 @@ $zxdtBoot = [
   <div class="toast" id="toast"></div>
 </div><!-- /.zxdt -->
 
-<script src="<?= base_url('assets/js/doctemplates/designer.js') ?>"></script>
+<pre id="E2E_OUT">PENDING</pre>
+<script>window.__ERRS=[];window.addEventListener("error",e=>__ERRS.push(e.message));window.addEventListener("unhandledrejection",e=>__ERRS.push("REJECT: "+e.reason));</script>
+<script src="/assets/js/doctemplates/designer.js"></script>
+<script src="/_zxdt_e2e.js"></script>
+<script>(async()=>{const o=document.getElementById("E2E_OUT");try{const r=await ZXDT_E2E();r.pageErrors=window.__ERRS;o.textContent="E2E_JSON:"+JSON.stringify(r);}catch(e){o.textContent="SUITE_THREW: "+(e&&e.stack||e);}})();</script>
