@@ -21,6 +21,19 @@ application/cache/ops_students_*
 application/cache/firebase_auth/
 application/cache/dashboard/
 
+# Aegis local state — HOLDS LIVE CREDENTIALS. `aegis/.state/token-*.json` each
+# carry a Google OAuth access token (`ya29.…`) and the absolute path of the
+# service-account JSON. These are machine-local and must never reach the remote.
+# `.reports/` is generated output. The Aegis TOOL itself lives on the `aegis`
+# branch; only this untracked state directory is ignored here.
+aegis/.state/
+aegis/.reports/
+
+# Firebase emulator/CLI debug output — regenerated on every run.
+firebase-rules/firebase-debug.log
+firebase-debug.log
+
+
 # Log files
 application/logs/*.php
 application/logs/.debug_enabled
