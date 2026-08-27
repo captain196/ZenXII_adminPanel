@@ -368,7 +368,12 @@ template using it, and nobody finds out until an audit compares a printed TC aga
 
 ---
 
-## 8. Indexes (P1.2) — **NOT declared, NOT deployed** *(withdrawn 2026-08-19)*
+## 8. Indexes (P1.2) — **DECLARED 2026-08-27, NOT deployed** *(withdrawal reversed — see §8.2)*
+
+> **The 2026-08-19 withdrawal was reasoned from a hazard that does not exist.** All seven are now in
+> `firebase-rules/firestore.indexes.json`. Aegis reports them as `mine 7 · dropped 0`. **Deploying is
+> still a separate, permissioned step.** The original withdrawal text is kept below unedited, because
+> the reasoning error is worth being able to re-read.
 
 > **Withdrawn from `firestore.indexes.json` on operator instruction.** The table below records what
 > the Document Engine will need; nothing is declared in the repo and nothing exists in Firestore.
@@ -433,6 +438,53 @@ half-done.
 > **This is why the drift figure keeps being quoted rather than re-measured** — and quoting it is
 > exactly how a stale number becomes a fact. Restoring Aegis is a prerequisite for closing P1.2,
 > not an unrelated chore.
+
+### 8.2 ⚠️ CORRECTION — Aegis restored 2026-08-27, and the LIVE read refutes §8.1 on the point that mattered
+
+`[FACT|OBSERVED — `node cli.js indexes status --fresh`, live against `graderadmin`, 2026-08-27]`
+Aegis was reinstated as a **git worktree of the `aegis` branch** at `~/Desktop/zenxii-aegis`, and the
+live board replaces every cached figure above.
+
+| | Cached (2026-08-15) | **LIVE (2026-08-27)** |
+|---|---|---|
+| Composite indexes in production | 284 | **296** |
+| Declared (disk = HEAD = origin) | 193 | **193** |
+| Clean | 183 | **192** |
+| Live-only | 101 | **104** |
+| **Committed but NOT deployed** | *not measured* | **1** |
+
+> ## 🔴 THE CORRECTION: AN INDEX DEPLOY DOES NOT DELETE ANYTHING.
+> §8's whole framing — *"deploying the file as desired state would offer to **delete** those 105"* —
+> **is wrong, and this document has repeated it since 2026-08-19.** Aegis states it plainly:
+> **"an index deploy only creates, it does not delete undeclared ones."**
+> The 104 live-only indexes are **not a deploy hazard at all.** Their defect is **reproducibility**: a
+> staging or restored project built from `firestore.indexes.json` comes up missing them, and those
+> queries fail there. Recover with `node cli.js indexes pull`.
+>
+> **The cost of that error was not theoretical.** It is why P1.2 was withdrawn on 2026-08-19, why the
+> Document Engine has had no indexes for eight days, and why the Support Desk staged its work. The
+> withdrawal was reasoned from a hazard that does not exist.
+>
+> ⚠️ **And the severity runs the OTHER WAY.** For indexes the emergency is a **committed index that is
+> not deployed** — its query is failing *now*. A live index in no commit is untidy, not an outage.
+
+**THE ONE REAL FINDING, and §8.1 could not have seen it:**
+
+```
+✖ NOT DEPLOYED   staffCapabilities [COLLECTION]   schoolId ↑, modules CONTAINS
+    Support Desk P5 (2026-08-26) — supportDesk.js deskRecipients():
+    which staff should be told a new ticket landed.
+```
+
+**Eight of the nine Support Desk indexes are already live; this one is not.** `deskRecipients()` will
+fail with `FAILED_PRECONDITION` the moment `supportDesk.js` is deployed — so **this index must be
+deployed BEFORE the Cloud Function**, which is the ordering `DEPLOY_RUNBOOK.md` already mandates
+(backfills → indexes → rules + code).
+
+**P1.2 SHOULD BE RECONSIDERED.** The reason it was withdrawn does not hold. The seven Document Engine
+indexes can be declared and deployed; a deploy will create them and touch nothing else.
+
+---
 
 `documentTypes` and `mergeFieldContracts` are small platform collections fetched by key or scanned
 whole — no composite index needed.

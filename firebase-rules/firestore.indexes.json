@@ -3531,6 +3531,71 @@
           "arrayConfig": "CONTAINS"
         }
       ]
+    },
+    {
+      "_comment": "Document Engine (P1.2) — gallery listing: templates for a school and doc type, filtered by lifecycle status.",
+      "collectionGroup": "documentTemplates",
+      "queryScope": "COLLECTION",
+      "fields": [
+        { "fieldPath": "schoolId", "order": "ASCENDING" },
+        { "fieldPath": "docType", "order": "ASCENDING" },
+        { "fieldPath": "status", "order": "ASCENDING" }
+      ]
+    },
+    {
+      "_comment": "Document Engine (P1.2) — resolve the ACTIVE template for a school and doc type. This is the query every future print point calls.",
+      "collectionGroup": "documentTemplates",
+      "queryScope": "COLLECTION",
+      "fields": [
+        { "fieldPath": "schoolId", "order": "ASCENDING" },
+        { "fieldPath": "docType", "order": "ASCENDING" },
+        { "fieldPath": "activeVersion", "order": "ASCENDING" }
+      ]
+    },
+    {
+      "_comment": "Document Engine (P1.2) — gallery ordering, most recently edited first.",
+      "collectionGroup": "documentTemplates",
+      "queryScope": "COLLECTION",
+      "fields": [
+        { "fieldPath": "schoolId", "order": "ASCENDING" },
+        { "fieldPath": "updatedAt", "order": "DESCENDING" }
+      ]
+    },
+    {
+      "_comment": "Document Engine (P1.2) — version history for one template, newest first. Snapshots are create-only. templateId is {schoolId}_TPL0007, so an equality on it is already tenant-scoped.",
+      "collectionGroup": "documentTemplateVersions",
+      "queryScope": "COLLECTION",
+      "fields": [
+        { "fieldPath": "templateId", "order": "ASCENDING" },
+        { "fieldPath": "version", "order": "DESCENDING" }
+      ]
+    },
+    {
+      "_comment": "Document Engine (P1.2) — reusable blocks for a school by type (letterhead/signature/seal).",
+      "collectionGroup": "reusableBlocks",
+      "queryScope": "COLLECTION",
+      "fields": [
+        { "fieldPath": "schoolId", "order": "ASCENDING" },
+        { "fieldPath": "blockType", "order": "ASCENDING" }
+      ]
+    },
+    {
+      "_comment": "Document Engine (P1.2) — compliance stack by STATE layer, ordered by tier. Platform collection, not school-scoped: authorities are shared across tenants.",
+      "collectionGroup": "complianceAuthorities",
+      "queryScope": "COLLECTION",
+      "fields": [
+        { "fieldPath": "scope.state", "order": "ASCENDING" },
+        { "fieldPath": "tier", "order": "ASCENDING" }
+      ]
+    },
+    {
+      "_comment": "Document Engine (P1.2) — compliance stack by BOARD layer (CBSE/CISCE), ordered by tier. Platform collection, see above.",
+      "collectionGroup": "complianceAuthorities",
+      "queryScope": "COLLECTION",
+      "fields": [
+        { "fieldPath": "scope.board", "order": "ASCENDING" },
+        { "fieldPath": "tier", "order": "ASCENDING" }
+      ]
     }
   ],
   "fieldOverrides": [
