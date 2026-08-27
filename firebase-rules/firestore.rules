@@ -374,6 +374,31 @@ service cloud.firestore {
     match /staff/{docId} {
       allow read: if isSameSchool();
       allow write: if isAdmin();
+      // Language preference — self-service, mirrored from the ZenXii Teacher
+      // app so push can be composed in the staff member's own language and a
+      // reinstall or device switch can restore it. The app renders from a
+      // device-local preference, so this write is best-effort; this is the
+      // SERVER's copy. Mirrors the students/prefLang clause above.
+      //
+      // A SEPARATE clause on purpose: the `allow write: if isAdmin()` above is
+      // left untouched, and this affectedKeys allowlist must stay byte-narrow —
+      // folding prefLang into another clause would let a caller send prefLang
+      // together with fields that clause permits, in a single write.
+      //
+      // OWNER PREDICATE is the docId, not a data field. This block carried no
+      // owner check of its own, so the identity idiom is taken from the sibling
+      // staffPrivate block below, which has the same `{schoolId}_{staffId}` key
+      // shape and where uid == the SIS staff id under synthetic-email auth.
+      // Preferred over `resource.data.staffId` because the merge-only staff
+      // writers (AdminUsers::create_admin, Staff_access) do not set staffId, so
+      // a field check would silently deny those accounts.
+      allow update: if isSameSchool()
+                    && docId == (request.auth.token.school_id + '_' + request.auth.uid)
+                    && request.resource.data.diff(resource.data)
+                          .affectedKeys()
+                          .hasOnly(['prefLang', 'updatedAt'])
+                    && request.resource.data.prefLang is string
+                    && request.resource.data.prefLang.size() <= 8;
     }
 
     // ── Staff Private (audit C1) ─────────────────────────────────
