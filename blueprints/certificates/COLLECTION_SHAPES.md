@@ -491,7 +491,29 @@ whole — no composite index needed.
 
 ---
 
-## 9. Rules obligations (P1.3) — not yet written
+## 9. Rules obligations (P1.3) — ✅ **WRITTEN 2026-08-27, UNDEPLOYED**
+
+> Six `match` blocks added to `firestore.rules` immediately before the catch-all, under an Aegis
+> lease. `blocks 176 → 182 · mine 6 · conflict 0 · theirs 55 unchanged` — no new conflict introduced.
+> Tests: `tests/document_engine.test.js`, **45 cases**; whole suite **307 green across 11 suites**.
+> **Mutation-tested:** downgrading the activation gate to `edit`, and making frozen versions
+> updatable, each fail the suite — so it is not vacuous.
+>
+> ⚠️ **One deliberate deviation from the list below:** the platform collections take
+> `allow write: if false`, **not** "platform super-admin only". Super-admin edits reach them through
+> the panel's Admin SDK, which bypasses rules, so a client write arm would grant a path nothing uses
+> — on the documents that decide which statutory fields exist and which rules apply. Flagged here
+> rather than applied silently.
+>
+> ⚠️ **A caught defect worth keeping:** the first draft of the activation tests wrote
+> `activeVersion: 2` onto a head already holding 2. The rule correctly allows a no-op, so the
+> *editor* case failed and the *manager* case **passed without ever exercising the gate**. Setting a
+> field to the value it already holds proves nothing about who may change it.
+>
+> **DEPLOY-PENDING and NOT safe to deploy as-is** — 55 blocks in production are newer than this
+> branch. See §8.2 and the rules protocol below.
+
+### The obligations, as originally specified
 
 - `documentTypes`, `mergeFieldContracts`, `platformTemplates` — read: any authenticated school
   user; **write: platform super-admin only.** A school must not edit its way out of a requirement.

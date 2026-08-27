@@ -2651,6 +2651,115 @@ service cloud.firestore {
     match /documents/{docId}        { allow read, write: if false; }
     match /documentLinks/{linkId}   { allow read, write: if false; }
 
+
+    // ── Document Engine — Certificate Designer (P1.3) ─────────────
+    // COLLECTION_SHAPES.md §9. NOT the "documents"/"documentLinks" pair above:
+    // that is the Canonical Document Service (file metadata). Adjacent names,
+    // unrelated subsystems — do not fold them together.
+    //
+    // TODAY NO CLIENT WRITES ANY OF THESE. The panel writes through the Admin
+    // SDK, which bypasses rules entirely, and neither app reads documents until
+    // a later phase. These rules therefore do two jobs: they replace the
+    // catch-all deny with an explicit, reviewable intent, and they are the
+    // boundary already in place when the apps do arrive.
+
+    // ---- PLATFORM collections: shared across tenants, NOT school-scoped ----
+    // isSameSchool() CANNOT be used here: it requires resource.data.schoolId to
+    // match the claim, and these documents carry no schoolId, so it would deny
+    // every read. Compose isAuth() + tenantActive() directly instead.
+    //
+    // Writes are `if false`, which is TIGHTER THAN §9's "platform super-admin
+    // only" — a deliberate deviation, flagged for review. Super-admin edits
+    // reach these through the panel's Admin SDK, which bypasses rules, so a
+    // client write arm would grant a path nothing uses. These documents are the
+    // legal backbone: mergeFieldContracts decides which statutory fields exist,
+    // and complianceAuthorities decides which rules apply. A mistaken or stolen
+    // super-admin client token must not be able to rewrite either.
+    match /documentTypes/{typeId} {
+      allow read: if isAuth() && tenantActive(request.auth.token.school_id);
+      allow write: if false;
+    }
+    match /mergeFieldContracts/{contractId} {
+      allow read: if isAuth() && tenantActive(request.auth.token.school_id);
+      allow write: if false;
+    }
+    match /complianceAuthorities/{authorityId} {
+      allow read: if isAuth() && tenantActive(request.auth.token.school_id);
+      allow write: if false;
+    }
+
+    // ---- SCHOOL collections ----
+    // Template heads. RBAC module is 'Certificates' — the same catalogue entry
+    // Doc_templates.php gates on, so the panel and the rules read one catalogue.
+    // hasCapabilityLevel() FAILS OPEN while caps are un-backfilled (rollout-safe).
+    match /documentTemplates/{docId} {
+      allow read: if isSameSchool();
+
+      allow create: if isStaff() && isSameSchoolWrite()
+                    && hasCapabilityLevel('Certificates', 'edit')
+                    && request.resource.data.status == 'draft';
+
+      // A PUBLISHED head is nearly frozen: §9 permits only activeVersion,
+      // status->archived and lockVersion to move. Everything else must go
+      // through a new draft version, because the published snapshot in
+      // documentTemplateVersions is what a certificate was actually rendered
+      // from and must stay reconcilable with its head.
+      //
+      // ACTIVATION needs 'manage', not 'edit'. activeVersion is the pointer
+      // every print point resolves, so changing it changes what the school
+      // legally issues — that is a different act from editing a draft, and
+      // Doc_templates.php grades it the same way.
+      allow update: if isStaff() && isSameSchool() && isSameSchoolWrite()
+                    && hasCapabilityLevel('Certificates', 'edit')
+                    && request.resource.data.templateId == resource.data.templateId
+                    && request.resource.data.docType == resource.data.docType
+                    && (
+                         request.resource.data.activeVersion == resource.data.activeVersion
+                         || hasCapabilityLevel('Certificates', 'manage')
+                       )
+                    && (
+                         resource.data.status != 'published'
+                         || (
+                              request.resource.data.diff(resource.data).affectedKeys()
+                                .hasOnly(['activeVersion', 'status', 'lockVersion',
+                                          'updatedAt', 'updatedBy'])
+                              && (
+                                   request.resource.data.status == resource.data.status
+                                   || request.resource.data.status == 'archived'
+                                 )
+                            )
+                       );
+
+      // No delete, ever. Retiring a template is status -> archived, so the
+      // versions that reference it keep a resolvable head.
+      allow delete: if false;
+    }
+
+    // Frozen publish snapshots. CREATE-ONLY, and the create arm is graded
+    // 'manage' because writing one IS publishing.
+    // No update, no delete — not by a school admin, not by a platform admin,
+    // not by a Cloud Function. This is the answer to "show me the exact
+    // template that produced this certificate" years later; if it can be
+    // edited it answers nothing.
+    match /documentTemplateVersions/{docId} {
+      allow read: if isSameSchool();
+      allow create: if isStaff() && isSameSchoolWrite()
+                    && hasCapabilityLevel('Certificates', 'manage');
+      allow update, delete: if false;
+    }
+
+    // Reusable blocks (letterhead / signature / seal). School-scoped.
+    // A block imposes its bound keys on every contract that uses it, so
+    // editing one is content work ('edit') and removing one can invalidate
+    // templates that reference it ('manage').
+    match /reusableBlocks/{docId} {
+      allow read: if isSameSchool();
+      allow create, update: if isStaff() && isSameSchoolWrite()
+                            && hasCapabilityLevel('Certificates', 'edit');
+      allow delete: if isStaff() && isSameSchool()
+                    && hasCapabilityLevel('Certificates', 'manage');
+    }
+
     // ── Deny everything else (catch-all) ─────────────────────────
     match /{document=**} {
       allow read, write: if false;
