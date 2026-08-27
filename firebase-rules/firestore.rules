@@ -17,7 +17,7 @@ service cloud.firestore {
       return request.auth != null;
     }
 
-    // ─────────────────────────────────────────────────────────────
+    // ─────────��───────────────────────────────────────────────────
     // H-LIFECYCLE H1 — server-side tenant access gate.
     //
     // Double-gates client access on (a) schoolControl.lifecycle.state
@@ -59,6 +59,22 @@ service cloud.firestore {
           sch == null
           || !('adminDisabled' in sch.data)
           || sch.data.adminDisabled.value != true
+        )
+        // ── INSTITUTION AXIS (Institution Lifecycle, 2026-08-21) ──────
+        // Third gate, composed most-restrictive-wins with the two above.
+        // ABSENT ⇒ ALLOWED: a tenant with no `institution` block behaves
+        // exactly as before, so the axis is INERT until a state is written.
+        // Denied here: ARCHIVED (retention only), PROSPECT and ONBOARDING
+        // (no parent/teacher users exist yet). NOT denied here: CLOSED — a
+        // closed school stays client-READABLE so parents can reach records
+        // and certificates; its writes are stopped by institutionAllowsWrite().
+        // Cost: ZERO extra reads — `sch` is already fetched above.
+        && (
+          sch == null
+          || !('institution' in sch.data)
+          || !(sch.data.institution is map)
+          || !('state' in sch.data.institution)
+          || sch.data.institution.state in ['ACTIVE', 'CLOSING', 'CLOSED']
         );
     }
 
@@ -130,9 +146,61 @@ service cloud.firestore {
     // preserved via the `||` clause: a write carrying schoolCode
     // (and no schoolId) would still fail the new non-empty guard, but
     // such writes do not exist in the current canonicalized client code.
+    // Write-side institution gate. tenantActive() admits CLOSED so a closed
+    // school's records stay readable; writing is a different question, and
+    // that distinction lives here — on the one helper every client write
+    // path funnels through. ABSENT ⇒ ALLOWED, identically to tenantActive().
+    // Targets the SAME document tenantActive() already fetched, and
+    // Firestore caches get() per request, so the pair costs one read.
+    function institutionAllowsWrite(schoolId) {
+      let sch = get(/databases/$(database)/documents/schools/$(schoolId));
+      return sch == null
+        || !('institution' in sch.data)
+        || !(sch.data.institution is map)
+        || !('state' in sch.data.institution)
+        || sch.data.institution.state in ['ACTIVE', 'CLOSING'];
+    }
+
+    // Actor predicate for the safety channel. Byte-identical to isStaff()
+    // EXCEPT that it omits tenantActive() — isStaff() and isAdmin() BOTH
+    // call tenantActive(), so using either here would silently re-introduce
+    // the commercial gate the SOS carve-out exists to remove. Role semantics
+    // unchanged: anyone who is not a student, parent or guardian.
+    function isStaffForSafety() {
+      return isAuth()
+        && !(request.auth.token.role in ['Student', 'student', 'Parent', 'parent', 'Guardian', 'guardian']);
+    }
+
+    // Emergency-channel write. Identical to isSameSchoolWrite() EXCEPT that
+    // it does not consult tenantActive(), i.e. it is independent of the
+    // COMMERCIAL axis.
+    //
+    // WHY: B2_lifecycle_job / Superadmin_plans::expire_check flip a tenant to
+    // `suspended` automatically when grace lapses. That job is unattended and
+    // date-driven, so it can fire while a bus is mid-route with children
+    // aboard. The Teacher app raises SOS by writing sosAlerts DIRECTLY to
+    // Firestore (no PHP fallback), so without this a billing job would
+    // silently disable a school bus emergency channel. In India a panic /
+    // emergency button in a public service vehicle — school buses explicitly
+    // included — is regulated under AIS 140 (MoRTH), not a product feature.
+    //
+    // SCOPE, deliberately minimal: CREATE only (reads still require
+    // tenantActive(), so a suspended tenant cannot read alerts back); still
+    // bound to the caller's own school; still gated on the INSTITUTION axis
+    // so a CLOSED or ARCHIVED school gets nothing; used by exactly ONE match
+    // block (sosAlerts) and not a general-purpose helper.
+    function isSameSchoolSafetyWrite() {
+      return isAuth()
+        && institutionAllowsWrite(request.auth.token.school_id)
+        && request.resource.data.schoolId is string
+        && request.resource.data.schoolId.size() > 0
+        && request.resource.data.schoolId == request.auth.token.school_id;
+    }
+
     function isSameSchoolWrite() {
       return isAuth()
         && tenantActive(request.auth.token.school_id)
+        && institutionAllowsWrite(request.auth.token.school_id)
         && request.resource.data.schoolId is string
         && request.resource.data.schoolId.size() > 0
         // D7 (2026-07-12): schoolCode write-arm removed — every current
@@ -301,7 +369,21 @@ service cloud.firestore {
     // calling `get()` on a doc that doesn't exist — Firestore evaluates
     // the rule against `null`, and we shouldn't punish a missing read.
     function isStaffOrOwnStudent() {
-      return isStaff() || (isSameSchool() && isOwnStudent());
+      // SEC-4 (2026-08-21). Was `isStaff() || (isSameSchool() && isOwnStudent())`.
+      // `||` short-circuits, so for ANY staff caller the tenant comparison in
+      // the second disjunct was never reached — a staff account of any tenant
+      // could read every tenant's feeDemands, feeReceipts, marks and results.
+      //
+      // Re-composed with `&&`. Not a new restriction: `submissions` and
+      // `teacherMarks` already use `isSameSchoolStrict() && (isStaff() ||
+      // isOwnStudent())`, and `attendance` the `&&` equivalent — all three
+      // measurably refuse the cross-tenant staff read today.
+      //
+      // `isSameSchool()` (not the Strict variant) is deliberate: Strict would
+      // turn a read of a NON-EXISTENT document from empty into
+      // PERMISSION_DENIED, a behavioural change with a wider blast radius than
+      // the finding. A missing document has no data to disclose.
+      return isSameSchool() && (isStaff() || isOwnStudent());
     }
 
     // ── Schools (read-only for apps; SA-only client write) ──────
@@ -328,13 +410,21 @@ service cloud.firestore {
     // ── Sections ─────────────────────────────────────────────────
     match /sections/{docId} {
       allow read: if isSameSchool();
-      allow write: if isAdmin();
+      // SEC-3 wave4: server-only. Class sections. No client writes.
+      // PHP backend + Cloud Functions use the Admin SDK and bypass rules,
+      // so denying clients removes an authorization nothing exercises.
+      allow write: if false;
     }
 
     // ── Students ─────────────────────────────────────────────────
     match /students/{docId} {
       allow read: if isSameSchool();
-      allow write: if isAdmin();
+      // SEC-3 wave3: server-only. Blanket admin write denied; the two self-service `allow update`
+      // clauses below remain and are the ONLY client write path.
+      // Parent app writes {mustChangePassword, updatedAt} on its own doc.
+      // PHP backend + Cloud Functions use the Admin SDK and bypass rules,
+      // so denying clients removes an authorization nothing exercises.
+      allow write: if false;
       // Phase A — students can clear their own mustChangePassword flag
       // after their first password change. Restricted to two fields so
       // a student can't escalate (e.g. change Class, Section, Status).
@@ -373,32 +463,10 @@ service cloud.firestore {
     // credentials live in staffPrivate below — see audit C1.
     match /staff/{docId} {
       allow read: if isSameSchool();
-      allow write: if isAdmin();
-      // Language preference — self-service, mirrored from the ZenXii Teacher
-      // app so push can be composed in the staff member's own language and a
-      // reinstall or device switch can restore it. The app renders from a
-      // device-local preference, so this write is best-effort; this is the
-      // SERVER's copy. Mirrors the students/prefLang clause above.
-      //
-      // A SEPARATE clause on purpose: the `allow write: if isAdmin()` above is
-      // left untouched, and this affectedKeys allowlist must stay byte-narrow —
-      // folding prefLang into another clause would let a caller send prefLang
-      // together with fields that clause permits, in a single write.
-      //
-      // OWNER PREDICATE is the docId, not a data field. This block carried no
-      // owner check of its own, so the identity idiom is taken from the sibling
-      // staffPrivate block below, which has the same `{schoolId}_{staffId}` key
-      // shape and where uid == the SIS staff id under synthetic-email auth.
-      // Preferred over `resource.data.staffId` because the merge-only staff
-      // writers (AdminUsers::create_admin, Staff_access) do not set staffId, so
-      // a field check would silently deny those accounts.
-      allow update: if isSameSchool()
-                    && docId == (request.auth.token.school_id + '_' + request.auth.uid)
-                    && request.resource.data.diff(resource.data)
-                          .affectedKeys()
-                          .hasOnly(['prefLang', 'updatedAt'])
-                    && request.resource.data.prefLang is string
-                    && request.resource.data.prefLang.size() <= 8;
+      // SEC-3 wave3: server-only. No client writes staff (both apps READ-ONLY, census-verified).
+      // PHP backend + Cloud Functions use the Admin SDK and bypass rules,
+      // so denying clients removes an authorization nothing exercises.
+      allow write: if false;
     }
 
     // ── Staff Private (audit C1) ─────────────────────────────────
@@ -441,13 +509,19 @@ service cloud.firestore {
     // ── Subjects ─────────────────────────────────────────────────
     match /subjects/{docId} {
       allow read: if isSameSchool();
-      allow write: if isAdmin();
+      // SEC-3 wave4: server-only. Subject catalogue. No client writes.
+      // PHP backend + Cloud Functions use the Admin SDK and bypass rules,
+      // so denying clients removes an authorization nothing exercises.
+      allow write: if false;
     }
 
     // ── Subject Assignments (canonical: who teaches what to which class/section) ──
     match /subjectAssignments/{docId} {
       allow read: if isSameSchool();
-      allow write: if isAdmin();
+      // SEC-3 wave4: server-only. Teacher-subject mapping — drives Teacher app scoping. No client writes.
+      // PHP backend + Cloud Functions use the Admin SDK and bypass rules,
+      // so denying clients removes an authorization nothing exercises.
+      allow write: if false;
     }
 
     // ── Attendance (Phase 3 — clients READ ONLY; backend writes via service account)
@@ -515,7 +589,68 @@ service cloud.firestore {
                     // Blocks a modified client from self-requesting Holiday/Leave/
                     // Weekly-off/Extra-pay marks that carry payroll value.
                     && request.resource.data.requestedStatus in ['P', 'M'];
-      allow update, delete: if false;   // PHP service account applies decisions
+      // ── R-X1 (2026-08-23) — owner may re-file, nothing more ──────
+      // The app writes a deterministic id ({school}_{staff}_{date}) with
+      // merge, so a re-submit is an UPDATE. With update closed outright, a
+      // REJECTED day could never be re-filed, a mistyped time could never be
+      // corrected, and — because submit is one atomic WriteBatch — a single
+      // already-filed date failed every other date in the same request.
+      //
+      // Exactly one transition is opened: (pending | rejected) -> pending, by
+      // the owner, with identity, subject and date frozen and no ability to
+      // write a decision trail. An APPROVED record stays immutable: its day is
+      // already stamped on the register, and reversing that is an admin act.
+      // Mirrors the owner-update pattern used by leaveApplications below.
+      allow update: if isStaff()
+                    && isSameSchool()
+                    && resource.data.staffId == request.auth.uid
+                    // identity, subject and date are frozen across the update
+                    && request.resource.data.schoolId   == resource.data.schoolId
+                    && request.resource.data.staffId    == resource.data.staffId
+                    && request.resource.data.date       == resource.data.date
+                    && request.resource.data.personType == resource.data.personType
+                    // a client can never name an approver or pre-set the mark
+                    && request.resource.data.get('reviewedBy', '') == ''
+                    && request.resource.data.get('appliedMark', '') == ''
+                    && (
+                         // (a) RE-FILE — an undecided, refused or WITHDRAWN request goes back to
+                         //     pending. An APPROVED record stays immutable: its day is
+                         //     already stamped on the register, and reversing that is an
+                         //     admin act.
+                         ( resource.data.status in ['pending', 'rejected', 'cancelled']
+                           && request.resource.data.status == 'pending'
+                           // same self-request ceiling as the create arm
+                           && request.resource.data.requestedStatus in ['P', 'M'] )
+                         // (b) WITHDRAW — the owner cancels a request that has not been
+                         //     decided. Pending only: greytHR documents exactly this
+                         //     boundary — withdraw is offered on the Pending tab, and
+                         //     "once the manager approves attendance regularization
+                         //     requests of employees, it cannot be canceled".
+                         || ( resource.data.status == 'pending'
+                              && request.resource.data.status == 'cancelled' )
+                       );
+
+      allow delete: if false;           // PHP service account applies decisions
+    }
+
+    // ── F&F settlements (FNF-6) ───────────────────────────────────
+    //
+    // A leaver may read their OWN settlement; same-school admins may read any.
+    // Clients NEVER write: every transition passes Fnf_state_machine's guards
+    // on the server (separation of duties, clearance, one-open-slot), and a
+    // client-writable settlement would let a leaver approve their own.
+    //
+    // Same idiom as attendanceRegularizations above. The amounts are not here —
+    // they live on the payroll slip under its own rules; this document carries
+    // lifecycle, policy version and payment references.
+    //
+    // NOTE: rejectNote / cancelledReason are administrator commentary and become
+    // readable by the employee through the owner arm. That is a deliberate
+    // choice — see patches/fnf_settlement_visibility.js.
+    match /staffSettlements/{docId} {
+      allow read:  if (isAdmin() && isSameSchool())
+                   || (isStaff() && isSameSchool() && resource.data.staffId == request.auth.uid);
+      allow write: if false;   // PHP service account applies every transition
     }
 
     // ── Audit Log (Phase 3 — admin only; never writable by clients) ─
@@ -755,7 +890,19 @@ service cloud.firestore {
     // SDK; teacher app doesn't write summaries directly).
     match /subjectPlanProgress/{docId} {
       allow read:  if isSameSchool();
-      allow write: if isStaff() && (isSameSchoolWrite() || isSameSchool());
+      // SEC-5 shape D (2026-08-21): was
+      //   isStaff() && (isSameSchoolWrite() || isSameSchool())
+      // On CREATE `resource` is always null, so isSameSchool()'s leading
+      // `resource == null ||` is unconditionally true and the tenant check
+      // evaporated — leaving bare isStaff(). Measured: a teacher of School A
+      // could create a School B document.
+      //
+      // Arms split so each inspects the object that exists for it:
+      // create/update read request.resource, delete reads resource.
+      allow create, update: if isStaff() && isSameSchoolWrite();
+      allow delete: if isStaff()
+        && resource != null
+        && resource.data.schoolId == request.auth.token.school_id;
     }
 
     // ── Daily Teacher Monitoring (Phase 8 — admin oversight only) ─
@@ -763,13 +910,38 @@ service cloud.firestore {
     // parents shouldn't browse across all staff.
     match /dailyTeacherMonitoring/{docId} {
       allow read:  if isStaff() && isSameSchool();
-      allow write: if isStaff() && (isSameSchoolWrite() || isSameSchool());
+      // SEC-5 shape D (2026-08-21): was
+      //   isStaff() && (isSameSchoolWrite() || isSameSchool())
+      // On CREATE `resource` is always null, so isSameSchool()'s leading
+      // `resource == null ||` is unconditionally true and the tenant check
+      // evaporated — leaving bare isStaff(). Measured: a teacher of School A
+      // could create a School B document.
+      //
+      // Arms split so each inspects the object that exists for it:
+      // create/update read request.resource, delete reads resource.
+      allow create, update: if isStaff() && isSameSchoolWrite();
+      allow delete: if isStaff()
+        && resource != null
+        && resource.data.schoolId == request.auth.token.school_id;
     }
 
     // ── Academic Audit Log (admin-only) ──────────────────────────
     match /academicAuditLog/{docId} {
       allow read:  if isAdmin() && isSameSchool();
-      allow write: if isStaff() && isSameSchoolWrite();
+      // SEC-8 / B-022 (2026-08-21). Same split, same reasoning.
+      //
+      // Audit_log_service.php describes itself as a "write-only audit trail" and
+      // exposes only log() — there is no delete anywhere in the service. Delete
+      // was already refused via a null dereference on `request.resource`; this
+      // makes the denial intentional so a future author "fixing" the broken
+      // predicate cannot accidentally open it.
+      //
+      // UPDATE is deliberately left as-is: denying it would be a real tightening
+      // beyond this accident and belongs in its own change.
+      //
+      // BEHAVIOURAL CHANGE: ZERO.
+      allow create, update: if isStaff() && isSameSchoolWrite();
+      allow delete: if false;
     }
 
     // 2026-05-15 Phase 3 — legacy permissive /curriculum block removed.
@@ -791,9 +963,16 @@ service cloud.firestore {
     // exam reads via Exam_read are unaffected. tenantActive isolation
     // is inherited through isStaff()/isSameSchool().
     match /exams/{docId} {
-      allow read: if isStaff()
-                  || (isSameSchool() && resource.data.status in ['Published', 'Completed']);
-      allow write: if isAdmin();
+      // SEC-5 shape B (2026-08-21): was `isStaff() || (isSameSchool() && ...)`.
+      // The staff disjunct carried no tenant check, so a teacher of any school
+      // could read any school's exams — including Draft ones. Parent gating is
+      // unchanged; only the staff branch gains the tenant comparison.
+      allow read: if isSameSchool()
+                  && (isStaff() || resource.data.status in ['Published', 'Completed']);
+      // SEC-3 wave4: server-only. Exam definitions. No client writes.
+      // PHP backend + Cloud Functions use the Admin SDK and bypass rules,
+      // so denying clients removes an authorization nothing exercises.
+      allow write: if false;
     }
 
     // examVisible — inherit a schedule's visibility from its PARENT exam's
@@ -821,9 +1000,14 @@ service cloud.firestore {
     // passingMarks only). examSchedule docs reliably carry schoolId+examId.
     // Backend (Admin SDK) bypasses rules → Exam_read server reads unaffected.
     match /examSchedule/{docId} {
-      allow read: if isStaff()
-                  || (isSameSchool() && examVisible(resource.data.schoolId, resource.data.examId));
-      allow write: if isAdmin();
+      // SEC-5 shape B (2026-08-21): same short-circuit as /exams above.
+      // examVisible() gating for parents is unchanged.
+      allow read: if isSameSchool()
+                  && (isStaff() || examVisible(resource.data.schoolId, resource.data.examId));
+      // SEC-3 wave4: server-only. Datesheet. No client writes.
+      // PHP backend + Cloud Functions use the Admin SDK and bypass rules,
+      // so denying clients removes an authorization nothing exercises.
+      allow write: if false;
     }
 
     // ── Marks ────────────────────────────────────────────────────
@@ -840,7 +1024,23 @@ service cloud.firestore {
     // to the caller's claim while keeping legitimate teacher writes working.
     match /marks/{docId} {
       allow read: if isStaffOrOwnStudent();
-      allow write: if isStaff() && isSameSchoolWrite() && hasCapability('Results');
+      // SEC-8 / B-022 (2026-08-21). Arms split so each inspects the object that
+      // exists for it, and delete denied EXPLICITLY.
+      //
+      // The previous single `allow write` covered delete through a predicate
+      // that dereferences the NULL `request.resource`, so delete was already
+      // refused — by accident, via an evaluation error. This states the intent.
+      //
+      // Client deletion of marks is not part of the ZenX model: neither app
+      // deletes marks, the Teacher app corrects them with setDocument(merge) and
+      // a `status: "draft"` field, the admin panel deletes exams/examSchedule but
+      // never marks, and `marksAudit` is an append-only change trail. A
+      // back-office correction path remains available through the Admin SDK,
+      // which bypasses these rules.
+      //
+      // BEHAVIOURAL CHANGE: ZERO. Delete was refused before and is refused now.
+      allow create, update: if isStaff() && isSameSchoolWrite() && hasCapability('Results');
+      allow delete: if false;
     }
 
     // ── Results ──────────────────────────────────────────────────
@@ -883,7 +1083,10 @@ service cloud.firestore {
     // ── Fee Structures ───────────────────────────────────────────
     match /feeStructures/{docId} {
       allow read: if isSameSchool();
-      allow write: if isAdmin();
+      // SEC-3 wave3: server-only. The fee chart — pricing authority. Both apps READ-ONLY.
+      // PHP backend + Cloud Functions use the Admin SDK and bypass rules,
+      // so denying clients removes an authorization nothing exercises.
+      allow write: if false;
     }
 
     // ── Fee Demands ──────────────────────────────────────────────
@@ -908,7 +1111,10 @@ service cloud.firestore {
     // ── Fee Receipt Allocations (per-demand breakdown of each receipt) ─
     match /feeReceiptAllocations/{docId} {
       allow read: if isStaffOrOwnStudent();
-      allow write: if isAdmin();
+      allow create, update: if isAdmin() && isSameSchoolWrite();
+      allow delete: if isAdmin()
+        && resource != null
+        && resource.data.schoolId == request.auth.token.school_id;
     }
 
     // ── Fee Defaulters (per-student dues snapshot) ───────────────
@@ -916,7 +1122,10 @@ service cloud.firestore {
     // their own child's snapshot (drives the dashboard dues banner).
     match /feeDefaulters/{docId} {
       allow read: if isStaffOrOwnStudent();
-      allow write: if isAdmin();
+      allow create, update: if isAdmin() && isSameSchoolWrite();
+      allow delete: if isAdmin()
+        && resource != null
+        && resource.data.schoolId == request.auth.token.school_id;
     }
 
     // ── Fee Reminder Log (Phase 8) ───────────────────────────────
@@ -925,7 +1134,10 @@ service cloud.firestore {
     // on Defaulter rows; parent app reads its own child's history.
     match /feeReminderLog/{docId} {
       allow read: if isStaffOrOwnStudent();
-      allow write: if isAdmin();
+      allow create, update: if isAdmin() && isSameSchoolWrite();
+      allow delete: if isAdmin()
+        && resource != null
+        && resource.data.schoolId == request.auth.token.school_id;
     }
 
     // ── Fee Generation Jobs (Phase 10) ───────────────────────────
@@ -933,8 +1145,15 @@ service cloud.firestore {
     // writes progress updates back to the same doc. Only admins read
     // or write — parents/teachers have no business here.
     match /fee_generation_jobs/{docId} {
-      allow read:  if isAdmin();
-      allow write: if isAdmin();
+      // SEC-6 (2026-08-21): was bare `isAdmin()`. The WRITE arm of this block is
+      // SEC-1's; this edit touches the READ arm only. Both must be present in
+      // whichever artifact is rebuilt last — see the overlap table in
+      // SEC6_DEPLOYMENT_PACKET.md.
+      allow read:  if isAdmin() && isSameSchool();
+      allow create, update: if isAdmin() && isSameSchoolWrite();
+      allow delete: if isAdmin()
+        && resource != null
+        && resource.data.schoolId == request.auth.token.school_id;
     }
 
     // Student advance (wallet) balances — removed in Phase 9.
@@ -945,13 +1164,19 @@ service cloud.firestore {
     // ── Student discounts ────────────────────────────────────────
     match /studentDiscounts/{docId} {
       allow read: if isStaffOrOwnStudent();
-      allow write: if isAdmin();
+      allow create, update: if isAdmin() && isSameSchoolWrite();
+      allow delete: if isAdmin()
+        && resource != null
+        && resource.data.schoolId == request.auth.token.school_id;
     }
 
     // ── Scholarship awards ───────────────────────────────────────
     match /scholarshipAwards/{docId} {
       allow read: if isStaffOrOwnStudent();
-      allow write: if isAdmin();
+      allow create, update: if isAdmin() && isSameSchoolWrite();
+      allow delete: if isAdmin()
+        && resource != null
+        && resource.data.schoolId == request.auth.token.school_id;
     }
 
     // ── Fee online orders (Razorpay/mock order lifecycle) ────────
@@ -979,7 +1204,20 @@ service cloud.firestore {
       // (non-secret) fee settings remain readable within the tenant.
       allow read: if isSameSchool()
                   && resource.data.get('type', '') != 'gateway';
-      allow write: if isAdmin();
+      // SEC-3 wave3: server-only. Holds PLAINTEXT gateway api_secret/webhook_secret. Zero client refs.
+      // PHP backend + Cloud Functions use the Admin SDK and bypass rules,
+      // so denying clients removes an authorization nothing exercises.
+      allow write: if false;
+    }
+
+    // ── Payment providers (P9) — SERVER-ONLY, NO EXCEPTIONS ──────
+    // Every document holds a school api_key / api_secret / webhook_secret.
+    // There is no legitimate client read, so no predicate is needed. All
+    // legitimate access is server-side via the PHP service account, which
+    // bypasses rules. The write arm is denied so a compromised admin token
+    // cannot point a school at an attacker-controlled provider.
+    match /paymentProviders/{docId} {
+      allow read, write: if false;
     }
 
     // ── Fee audit logs (admin-readable, server-write-only) ───────
@@ -989,7 +1227,10 @@ service cloud.firestore {
     // compromised admin token from rewriting the financial trail.
     // (Phase 1 hardening — 2026-05-07.)
     match /feeAuditLogs/{docId} {
-      allow read:  if isAdmin();
+      // SEC-6 (2026-08-21): was bare `isAdmin()` — no document-school check, so
+      // an admin of ANY school could read EVERY school's fee audit trail.
+      // `isAdmin()` is not a platform role; it admits ordinary school admins.
+      allow read:  if isAdmin() && isSameSchool();
       allow write: if false;
     }
 
@@ -1028,7 +1269,7 @@ service cloud.firestore {
     match /superAdmins/{docId}       { allow read, write: if false; }
     match /saIpRateLimit/{docId}     { allow read, write: if false; }
 
-    // ── Fees Exemption v2 (Phase 0) — server-only ────────────────
+    // ── Fees Exemption v2 (Phase 0) — server-only ────────���───────
     // studentServiceEnrollments: per-student opt-in to optional services
     // (transport/hostel/meals) with effective-date windows. Drives
     // enrollment-aware service-fee generation from Phase 3.
@@ -1061,6 +1302,20 @@ service cloud.firestore {
     match /studentEntitlements/{docId}       { allow read, write: if false; }
     match /studentFeeCredits/{docId}         { allow read, write: if false; }
 
+    // entitlementAllocations (P4): the durable ledger explaining WHY a demand
+    // carries the discount it carries — one row per (demand, entitlement).
+    //
+    // DENY-ALL, byte-identically to studentEntitlements above. Written and read
+    // exclusively by the PHP backend through the service account, which bypasses
+    // rules. Neither app reads allocations: Parent and Teacher already see the
+    // EFFECT through the existing feeDemands fields, which is why P4 needs no
+    // Parent or Teacher contract change. A client reaching this collection
+    // directly is a bug; fail closed.
+    //
+    // Deployed BEFORE the first row can ever exist, so the boundary is closed
+    // in advance rather than retrofitted.
+    match /entitlementAllocations/{docId}    { allow read, write: if false; }
+
     // ── Fee carry-forward (Phase 9 wallet replacement) ───────────
     // Per-student doc carrying accumulated unpaid dues across
     // session boundaries. Read by Parent (FeeFirestoreRepository)
@@ -1069,7 +1324,10 @@ service cloud.firestore {
     // so reads silently failed under default-deny. (2026-05-07.)
     match /feeCarryForward/{docId} {
       allow read:  if isStaffOrOwnStudent();
-      allow write: if isAdmin();
+      allow create, update: if isAdmin() && isSameSchoolWrite();
+      allow delete: if isAdmin()
+        && resource != null
+        && resource.data.schoolId == request.auth.token.school_id;
     }
 
     // ── Server-only denormalized summaries ───────────────────────
@@ -1114,7 +1372,10 @@ service cloud.firestore {
       allow delete: if isAdmin() && isSameSchool();
     }
     match /feeRefundAudit/{docId} {
-      allow read: if isAdmin();
+      // SEC-6 (2026-08-21): was bare `isAdmin()`. Its create/update/delete arms
+      // were already tenant-scoped — only the READ arm leaked, which is exactly
+      // the per-operation asymmetry a whole-arm review misses.
+      allow read: if isAdmin() && isSameSchool();
       allow create, update: if isAdmin() && isSameSchoolWrite();
       allow delete: if isAdmin() && isSameSchool();
     }
@@ -1140,7 +1401,13 @@ service cloud.firestore {
         isAdmin()
         || (isStaff() && resource.data.get('authorId', '') == request.auth.uid)
       );
-      allow delete: if isAdmin();
+      // SEC-3 wave5: tenant-scoped delete. create/update already tenant + author scoped.
+      // Strict on purpose — NOT isSameSchool(), which carries the legacy
+      // spoofable schoolCode arm (removed from writes by D7) and fails OPEN
+      // on a missing document via its leading `resource == null ||`.
+      allow delete: if isAdmin()
+        && resource != null
+        && resource.data.schoolId == request.auth.token.school_id;
     }
 
     // Notices collection — admin Notice Board writes here; Parent + Teacher
@@ -1153,7 +1420,13 @@ service cloud.firestore {
         isAdmin()
         || (isStaff() && resource.data.get('authorId', '') == request.auth.uid)
       );
-      allow delete: if isAdmin();
+      // SEC-3 wave5: tenant-scoped delete. create/update already tenant + author scoped.
+      // Strict on purpose — NOT isSameSchool(), which carries the legacy
+      // spoofable schoolCode arm (removed from writes by D7) and fails OPEN
+      // on a missing document via its leading `resource == null ||`.
+      allow delete: if isAdmin()
+        && resource != null
+        && resource.data.schoolId == request.auth.token.school_id;
     }
 
     // ── Circular Reads / Acks ────────────────────────────────────
@@ -1164,9 +1437,16 @@ service cloud.firestore {
     // tenantActive + schoolId == claim). Docs carry {circularId, userId,
     // schoolId, readAt}. Staff may read all (admin read-receipt dashboards).
     match /circularReads/{docId} {
-      allow read: if isAuth() && (
-        resource == null
-        || resource.data.get('userId', '') == request.auth.uid
+      // SEC-5 shape F (2026-08-21). Two defects in one arm:
+      //   1. `isStaff()` was a bare disjunct with NO document-school
+      //      comparison — the SEC-4 short-circuit written out inline, which
+      //      fixing isStaffOrOwnStudent() does NOT reach.
+      //   2. `resource == null ||` let any authenticated user of any tenant
+      //      read any non-existent receipt id.
+      // Create/update are already `isAuth() && isSameSchoolWrite() && userId ==
+      // uid` and are untouched.
+      allow read: if isSameSchool() && (
+        resource.data.get('userId', '') == request.auth.uid
         || isStaff()
       );
       allow create, update: if isAuth()
@@ -1185,10 +1465,19 @@ service cloud.firestore {
       allow delete: if false;
     }
 
-    // ── Notifications ────────────────────────────────────────────
+    // ── Notifications ─��──────────────────────────────────────────
     match /notifications/{docId} {
       allow read: if isSameSchool();
-      allow write: if isStaff();
+      // SEC-3 wave5: tenant-scoped, arms modelled separately. Both apps UPDATE (markNotificationRead -> {read:true}); neither
+      // creates or deletes. Actor stays isStaff() — see
+      // SEC3_NOTIFICATIONS_PARENT_GAP in the wave-5 packet for the
+      // separate finding that parents are blocked by isStaff() today.
+      // create/update read request.resource; delete reads resource — a single
+      // `allow write` with isSameSchoolWrite() would deny every delete.
+      allow create, update: if isStaff() && isSameSchoolWrite();
+      allow delete: if isStaff()
+        && resource != null
+        && resource.data.schoolId == request.auth.token.school_id;
     }
 
     // ── Events ───────────────────────────────────────────────────
@@ -1199,7 +1488,13 @@ service cloud.firestore {
       // schoolId is re-bound to the caller's claim (was isSameSchool()-only,
       // which validated the existing doc but not the incoming schoolId).
       allow update: if isStaff() && isSameSchool() && isSameSchoolWrite();
-      allow delete: if isAdmin();
+      // SEC-3 wave5: tenant-scoped delete. create/update already tenant scoped.
+      // Strict on purpose — NOT isSameSchool(), which carries the legacy
+      // spoofable schoolCode arm (removed from writes by D7) and fails OPEN
+      // on a missing document via its leading `resource == null ||`.
+      allow delete: if isAdmin()
+        && resource != null
+        && resource.data.schoolId == request.auth.token.school_id;
     }
 
     // ── PTM Events (admin-managed, school-scoped read) ───────────
@@ -1207,7 +1502,13 @@ service cloud.firestore {
       allow read: if isSameSchool();
       allow create: if isStaff() && isSameSchoolWrite();
       allow update: if isStaff() && isSameSchool();
-      allow delete: if isAdmin();
+      // SEC-3 wave5: tenant-scoped delete. create/update already tenant scoped.
+      // Strict on purpose — NOT isSameSchool(), which carries the legacy
+      // spoofable schoolCode arm (removed from writes by D7) and fails OPEN
+      // on a missing document via its leading `resource == null ||`.
+      allow delete: if isAdmin()
+        && resource != null
+        && resource.data.schoolId == request.auth.token.school_id;
     }
 
     // ── PTM RSVPs (Phase D — section-wise, lifecycle-aware) ───────
@@ -1319,7 +1620,19 @@ service cloud.firestore {
             && request.resource.data.diff(resource.data).changedKeys()
                  .hasOnly(["status","markedBy","markedAt","deliveredAt","updatedAt","note"]);
 
-      allow delete: if isAdmin();
+      // SEC-3 wave5: tenant-scoped delete. create/update already owner scoped (parent AND teacher arms).
+
+      // Strict on purpose — NOT isSameSchool(), which carries the legacy
+
+      // spoofable schoolCode arm (removed from writes by D7) and fails OPEN
+
+      // on a missing document via its leading `resource == null ||`.
+
+      allow delete: if isAdmin()
+
+        && resource != null
+
+        && resource.data.schoolId == request.auth.token.school_id;
     }
 
     // ── PTM Counters (Phase D — apply-transaction queue allocator) ─
@@ -1343,7 +1656,13 @@ service cloud.firestore {
             && request.resource.data.schoolId == request.auth.token.school_id
             && request.resource.data.nextQueue is int
             && request.resource.data.nextQueue >= 1;
-      allow delete: if isAdmin();
+      // SEC-3 wave5: tenant-scoped delete. create/update already tenant scoped.
+      // Strict on purpose — NOT isSameSchool(), which carries the legacy
+      // spoofable schoolCode arm (removed from writes by D7) and fails OPEN
+      // on a missing document via its leading `resource == null ||`.
+      allow delete: if isAdmin()
+        && resource != null
+        && resource.data.schoolId == request.auth.token.school_id;
     }
 
     // ── Gallery ──────────────────────────────────────────────────
@@ -1557,19 +1876,38 @@ service cloud.firestore {
     // ── Timetables ───────────────────────────────────────────────
     match /timetables/{docId} {
       allow read: if isSameSchool();
-      allow write: if isStaff();
+      // SEC-3 wave4: server-only. Was `isStaff()` — any staff of any tenant could rewrite any
+      // timetable. Both apps only READ (verified: the two raw
+      // .collection() sites are .get() / queryDocumentsAs).
+      // PHP backend + Cloud Functions use the Admin SDK and bypass rules,
+      // so denying clients removes an authorization nothing exercises.
+      allow write: if false;
     }
 
     // ── Timetable Settings ──────────────────────────────────────
     match /timetableSettings/{docId} {
-      allow read: if isAuth();
-      allow write: if isAdmin();
+      // SEC-5 shape C (2026-08-21): was bare `isAuth()`.
+      // Neither app currently references this collection, but absence of a
+      // caller is NOT evidence that it is intentionally server-only, so it is
+      // tenant-scoped rather than denied.
+      allow read: if isSameSchool();
+      allow create, update: if isAdmin() && isSameSchoolWrite();
+      allow delete: if isAdmin()
+        && resource != null
+        && resource.data.schoolId == request.auth.token.school_id;
     }
 
     // ── Substitutes ─────────────────────────────────────────────
     match /substitutes/{docId} {
-      allow read: if isAuth();
-      allow write: if isAdmin();
+      // SEC-5 shape C (2026-08-21): was bare `isAuth()` — ANY authenticated
+      // user of ANY tenant could read this, parents included. Tenant scoping is
+      // the minimum change; a role requirement would be a second, undeclared
+      // behavioural change and both apps legitimately read this collection.
+      allow read: if isSameSchool();
+      allow create, update: if isAdmin() && isSameSchoolWrite();
+      allow delete: if isAdmin()
+        && resource != null
+        && resource.data.schoolId == request.auth.token.school_id;
     }
 
     // ── Staff Attendance ────────────────────────────────────────
@@ -1613,10 +1951,13 @@ service cloud.firestore {
     // ── Calendar Events ─────────────────────────────────────────
     match /calendarEvents/{docId} {
       allow read: if isSameSchool();
-      allow write: if isAdmin();
+      // SEC-3 wave4: server-only. Academic calendar. No client writes.
+      // PHP backend + Cloud Functions use the Admin SDK and bypass rules,
+      // so denying clients removes an authorization nothing exercises.
+      allow write: if false;
     }
 
-    // ── Curriculum ──────────────────────────────────────────────
+    // ── Curriculum ────────────────────────────────────────────���─
     // Phase 0 hardening:
     //   • Read: same-school staff or admin (parents can't see syllabus
     //     directly — that path will route through curriculumProgress in
@@ -1747,7 +2088,20 @@ service cloud.firestore {
                               && request.resource.data.status == 'cancelled' )
                        );
 
-      allow delete: if isAdmin();
+      // SEC-3 wave4: tenant-scoped delete. create/update are already tenant + ownership scoped and BOTH apps
+      // write them — only the delete arm lacked tenant scoping.
+
+      // Strict on purpose — NOT isSameSchool(), which carries the legacy
+
+      // spoofable schoolCode arm (removed from writes by D7) and fails OPEN
+
+      // on a missing document via its leading `resource == null ||`.
+
+      allow delete: if isAdmin()
+
+        && resource != null
+
+        && resource.data.schoolId == request.auth.token.school_id;
     }
 
     // ── Transport (TMS Phase 0 foundation, 2026-07-06) ───────────
@@ -1782,17 +2136,26 @@ service cloud.firestore {
     // ── Transport: pre-existing (unchanged for Phase 0) ──────────
     match /routes/{docId} {
       allow read: if isSameSchool();
-      allow write: if isAdmin();
+      // SEC-3 wave5: server-only. Transport routes. No client writes (driver app writes trip data, not routes).
+      // PHP backend + Cloud Functions use the Admin SDK and bypass rules,
+      // so denying clients removes an authorization nothing exercises.
+      allow write: if false;
     }
 
     match /vehicles/{docId} {
       allow read: if isSameSchool();
-      allow write: if isAdmin();
+      // SEC-3 wave5: server-only. Fleet register. No client writes.
+      // PHP backend + Cloud Functions use the Admin SDK and bypass rules,
+      // so denying clients removes an authorization nothing exercises.
+      allow write: if false;
     }
 
     match /studentRoutes/{docId} {
       allow read: if isSameSchool();
-      allow write: if isAdmin();
+      // SEC-3 wave5: server-only. Student-route assignment. No client writes.
+      // PHP backend + Cloud Functions use the Admin SDK and bypass rules,
+      // so denying clients removes an authorization nothing exercises.
+      allow write: if false;
     }
 
     // ── Transport: gap-close (previously uncovered by rules) ─────
@@ -1811,8 +2174,14 @@ service cloud.firestore {
       // diagnostic metadata required on driver-fired writes (staff),
       // exempted for admin PHP writes (bypass rules).
       allow read: if isSameSchool();
-      allow create: if isSameSchoolWrite()
-        && (isAdmin() || isStaff())
+      // SAFETY CARVE-OUT (2026-08-21): isSameSchoolSafetyWrite() +
+      // isStaffForSafety() instead of isSameSchoolWrite() + (isAdmin() ||
+      // isStaff()) — all three of those embed tenantActive(). The ONLY
+      // behavioural difference is that raising an alert no longer depends on
+      // the COMMERCIAL axis. Every other condition is unchanged, and
+      // read/update/delete are untouched.
+      allow create: if isSameSchoolSafetyWrite()
+        && isStaffForSafety()
         && request.resource.data.get('alertType', '') in ['emergency', 'breakdown', 'accident', 'medical', 'other']
         && request.resource.data.get('severity', 'High') in ['Low', 'Medium', 'High', 'Critical']
         && (isAdmin() || hasClientMetadata());
@@ -2234,7 +2603,7 @@ service cloud.firestore {
         );
     }
 
-    // ── Transport: denormalised caches (server-only writes) ──────
+    // ── Transport: denormalised caches (server-only writes) ───���──
     match /busCapacityCache/{docId} {
       allow read: if isSameSchool();
       allow write: if false;
@@ -2263,12 +2632,23 @@ service cloud.firestore {
     // ── Library ──────────────────────────────────────────────────
     match /libraryBooks/{docId} {
       allow read: if isSameSchool();
-      allow write: if isStaff();
+      // SEC-3 wave5: server-only. Catalogue. Was `isStaff()`; both apps READ-ONLY.
+      // PHP backend + Cloud Functions use the Admin SDK and bypass rules,
+      // so denying clients removes an authorization nothing exercises.
+      allow write: if false;
     }
 
     match /libraryIssues/{docId} {
       allow read: if isSameSchool();
-      allow write: if isStaff();
+      // SEC-3 wave5: tenant-scoped, arms modelled separately. Teacher app creates (issueBook — payload carries schoolId) and
+      // updates (returnBook). On update request.resource.data is the
+      // MERGED post-write document, so schoolId is present there too.
+      // create/update read request.resource; delete reads resource — a single
+      // `allow write` with isSameSchoolWrite() would deny every delete.
+      allow create, update: if isStaff() && isSameSchoolWrite();
+      allow delete: if isStaff()
+        && resource != null
+        && resource.data.schoolId == request.auth.token.school_id;
     }
 
     // Outstanding fines — read by parent / teacher / admin; written by staff.
@@ -2276,7 +2656,13 @@ service cloud.firestore {
       allow read: if isSameSchool();
       allow create: if isStaff() && isSameSchoolWrite();
       allow update: if isStaff() && isSameSchool();
-      allow delete: if isAdmin();
+      // SEC-3 wave5: tenant-scoped delete. create/update already tenant scoped.
+      // Strict on purpose — NOT isSameSchool(), which carries the legacy
+      // spoofable schoolCode arm (removed from writes by D7) and fails OPEN
+      // on a missing document via its leading `resource == null ||`.
+      allow delete: if isAdmin()
+        && resource != null
+        && resource.data.schoolId == request.auth.token.school_id;
     }
 
     // ── Messaging (canonical Firestore schema) ───────────────────
@@ -2287,14 +2673,26 @@ service cloud.firestore {
       allow read: if isSameSchool();
       allow create: if isAuth() && isSameSchoolWrite();
       allow update: if isAuth() && isSameSchool();
-      allow delete: if isAdmin();
+      // SEC-3 wave5: tenant-scoped delete. create/update already tenant scoped.
+      // Strict on purpose — NOT isSameSchool(), which carries the legacy
+      // spoofable schoolCode arm (removed from writes by D7) and fails OPEN
+      // on a missing document via its leading `resource == null ||`.
+      allow delete: if isAdmin()
+        && resource != null
+        && resource.data.schoolId == request.auth.token.school_id;
     }
 
     match /messages/{docId} {
       allow read: if isSameSchool();
       allow create: if isAuth() && isSameSchoolWrite();
       allow update: if isAuth() && isSameSchool();
-      allow delete: if isAdmin();
+      // SEC-3 wave5: tenant-scoped delete. create/update already tenant scoped.
+      // Strict on purpose — NOT isSameSchool(), which carries the legacy
+      // spoofable schoolCode arm (removed from writes by D7) and fails OPEN
+      // on a missing document via its leading `resource == null ||`.
+      allow delete: if isAdmin()
+        && resource != null
+        && resource.data.schoolId == request.auth.token.school_id;
     }
 
     // Inbox stubs are per-user but kept in one collection. Each doc id
@@ -2314,7 +2712,10 @@ service cloud.firestore {
       // Admins read all via the panel (Admin SDK, bypasses rules).
       // Was isSameSchool() — leaked every staff payslip to any same-school token incl parents/students.
       allow read: if resource.data.staffId == request.auth.uid || (isAdmin() && isSameSchool());
-      allow write: if isAdmin();
+      // SEC-3 wave3: server-only. Payroll. Teacher app reads own payslip only; no client writes.
+      // PHP backend + Cloud Functions use the Admin SDK and bypass rules,
+      // so denying clients removes an authorization nothing exercises.
+      allow write: if false;
     }
 
     // ── Push Requests (teacher / admin → push pipeline) ────────
@@ -2332,17 +2733,32 @@ service cloud.firestore {
       // fan a spoofed school-wide push. Staff-only closes that.
       allow create: if isStaff() && isSameSchoolWrite();
       allow update: if isStaff() && isSameSchool();
-      allow delete: if isStaff();
+      // SEC-3 wave5: tenant-scoped delete. Actor stays isStaff() — this tightens TENANCY only and does not
+      // re-grade who may delete.
+      // Strict on purpose — NOT isSameSchool(), which carries the legacy
+      // spoofable schoolCode arm (removed from writes by D7) and fails OPEN
+      // on a missing document via its leading `resource == null ||`.
+      allow delete: if isStaff()
+        && resource != null
+        && resource.data.schoolId == request.auth.token.school_id;
     }
 
     // ── User Devices (FCM token registry) ────────────────────
     // Any authenticated user can register their device. Admin
     // reads all for push delivery.
     match /userDevices/{docId} {
-      allow read: if isAuth();
-      allow create: if isAuth();
-      allow update: if isAuth();
-      allow delete: if isAdmin();
+      // SEC-2: ownership, not merely tenancy. userDevices is the sole
+      // canonical FCM token store; a token is a delivery address, so
+      // reading one enables targeted push spoofing and overwriting one
+      // redirects another user's notifications. Proven contract: docId is
+      // {userId}_{deviceId} and userId == request.auth.uid for parents and
+      // staff (functions/index.js:224). Neither app READS this collection.
+      allow read: if isAuth() && resource.data.get('userId', '') == request.auth.uid;
+      allow create, update: if isAuth()
+        && request.resource.data.userId == request.auth.uid
+        && request.resource.data.schoolId == request.auth.token.school_id;
+      allow delete: if isAdmin()
+        && resource.data.get('schoolId', '') == request.auth.token.school_id;
     }
 
     // ── Attendance Events Fired (push dedup) ─────────────────
@@ -2384,13 +2800,19 @@ service cloud.firestore {
       // Admins read all via the panel (Admin SDK, bypasses rules).
       // Was isSameSchool() — leaked every staff appraisal to any same-school token.
       allow read: if resource.data.staffId == request.auth.uid || (isAdmin() && isSameSchool());
-      allow write: if isAdmin();
+      // SEC-3 wave4: server-only. Staff appraisals. Teacher app reads own only; no client writes.
+      // PHP backend + Cloud Functions use the Admin SDK and bypass rules,
+      // so denying clients removes an authorization nothing exercises.
+      allow write: if false;
     }
 
-    // ── RBAC Roles ──────────────────────────────────────────────
+    // ── RBAC Roles ───────────────────────────���──────────────────
     match /rbacRoles/{docId} {
       allow read: if isSameSchool();
-      allow write: if isAdmin();
+      // SEC-3 wave3: server-only. Role catalogue — a cross-tenant write here is privilege escalation.
+      // PHP backend + Cloud Functions use the Admin SDK and bypass rules,
+      // so denying clients removes an authorization nothing exercises.
+      allow write: if false;
     }
 
     // ── Staff Capabilities (unified RBAC entitlement index) ──────
@@ -2620,6 +3042,11 @@ service cloud.firestore {
     match /revenueByPeriod/{docId}  { allow read, write: if false; }
     match /schoolSsa/{docId}        { allow read, write: if false; }
     match /tenantAudit/{docId}      { allow read, write: if false; }
+    // schoolLifecycleEvents — append-only institution-lifecycle history.
+    // Server-only BOTH ways: clients never read it (it names the acting
+    // administrator and carries closure evidence) and can never write it
+    // (an audit trail a client can forge is not an audit trail).
+    match /schoolLifecycleEvents/{docId} { allow read, write: if false; }
     match /schoolCodeIndex/{docId}  { allow read, write: if false; }
     match /schoolNameIndex/{docId}  { allow read, write: if false; }
     match /billingClaims/{docId}    { allow read, write: if false; }
@@ -2650,7 +3077,6 @@ service cloud.firestore {
     // access so one school can never read another's document metadata.
     match /documents/{docId}        { allow read, write: if false; }
     match /documentLinks/{linkId}   { allow read, write: if false; }
-
 
     // ── Document Engine — Certificate Designer (P1.3) ─────────────
     // COLLECTION_SHAPES.md §9. NOT the "documents"/"documentLinks" pair above:
@@ -2759,6 +3185,95 @@ service cloud.firestore {
       allow delete: if isStaff() && isSameSchool()
                     && hasCapabilityLevel('Certificates', 'manage');
     }
+
+    // ── Support Desk — parent→school ticketing ──────────────────
+    // ── Support Desk (v1: parent-raised only) ────────────────────────
+    // Staff NEVER read this from a client. The panel uses the Admin SDK,
+    // which bypasses rules by design, so these rules describe the parent
+    // and only the parent. That is also why the confidential lane cannot
+    // leak through a rules mistake: there is no client path to leak through.
+    match /supportTickets/{docId} {
+      // Three fallbacks for studentId ownership, in preferred order --
+      // COPIED FROM the live studentFlags block rather than invented, because
+      // arm 3 is the one THIS install actually uses:
+      //   1. `student_ids` array claim  (canonical multi-child setup)
+      //   2. `student_id` single claim  (legacy)
+      //   3. `request.auth.uid`         (this install logs students in with
+      //      their studentId as the Auth UID, so the doc's studentId equals
+      //      auth.uid and no extra claim is minted)
+      //
+      // Omitting arm 3 denies EVERY create on this deployment. The Parent
+      // app's User model carries no children list at all -- userId IS the
+      // student id -- so arms 1 and 2 are both absent from the token here.
+      function ownsStudent(sid) {
+        return sid in request.auth.token.student_ids
+            || sid == request.auth.token.student_id
+            || sid == request.auth.uid;
+      }
+      // C-06: a real gate, evaluated BEFORE the write lands. Cap is 5 open
+      // per parent across all their children; counter maintained by the CF.
+      function underCap() {
+        let k = /databases/$(database)/documents/supportCounters/$(request.resource.data.schoolId + '_' + request.auth.uid);
+        return !exists(k) || get(k).data.openCount < 5;
+      }
+
+      allow read: if isAuth()
+        && tenantActive(request.auth.token.school_id)
+        && resource != null
+        && resource.data.schoolId   == request.auth.token.school_id
+        && resource.data.reporterId == request.auth.uid;
+
+      allow create: if isAuth()
+        && tenantActive(request.auth.token.school_id)
+        && request.resource.data.schoolId   == request.auth.token.school_id
+        && request.resource.data.reporterId == request.auth.uid
+        && ownsStudent(request.resource.data.studentId)
+        && request.resource.data.status == 'open'
+        && request.resource.data.lane   == 'normal'
+        && !('assignedTo' in request.resource.data)
+        && !('ticketNo'   in request.resource.data)
+        // C-02: no client-chosen timestamps, anywhere, ever.
+        && request.resource.data.createdAt     == request.time
+        && request.resource.data.lastMessageAt == request.time
+        // C-04: guard the missing field, or the rule denies a photo-less ticket.
+        // C-03: entries are FILENAMES; the full path is derived server-side.
+        && (!('attachments' in request.resource.data)
+            || request.resource.data.attachments.size() <= 3)
+        && underCap();
+
+      // C-01 + C-02: the parent has no update path. Reopen happens in
+      // onSupportMessageCreated, which already reads the ticket and already
+      // emits the push, so this costs nothing and removes a whole class of bug.
+      allow update, delete: if false;
+    }
+
+    match /supportMessages/{docId} {
+      // C-05: reporterId is denormalised onto every message, so the READ arm
+      // needs no get(). Zero extra reads, zero exposure to the Stories bug.
+      allow read: if isAuth()
+        && resource != null
+        && resource.data.schoolId   == request.auth.token.school_id
+        && resource.data.reporterId == request.auth.uid;
+
+      // The get() STAYS on create -- one per message and load-bearing: without
+      // it a parent forges a message into another family's thread, invisible in
+      // the victim's app and fully visible in the panel.
+      allow create: if isAuth()
+        && request.resource.data.schoolId   == request.auth.token.school_id
+        && request.resource.data.senderType == 'parent'
+        && request.resource.data.senderId   == request.auth.uid
+        && request.resource.data.reporterId == request.auth.uid
+        && request.resource.data.createdAt  == request.time
+        && exists(/databases/$(database)/documents/supportTickets/$(request.resource.data.schoolId + '_' + request.resource.data.ticketId))
+        && get(/databases/$(database)/documents/supportTickets/$(request.resource.data.schoolId + '_' + request.resource.data.ticketId)).data.reporterId == request.auth.uid;
+
+      allow update, delete: if false;   // messages are immutable
+    }
+
+    // Server-only. Named so nobody re-invents them as ad-hoc collections.
+    match /supportCounters/{docId}         { allow read, write: if false; }
+    match /supportNotes/{docId}            { allow read, write: if false; }
+    match /supportReporterIdentity/{docId} { allow read, write: if false; }
 
     // ── Deny everything else (catch-all) ─────────────────────────
     match /{document=**} {
