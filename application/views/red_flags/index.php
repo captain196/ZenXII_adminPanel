@@ -2087,7 +2087,11 @@ function __rfInitRedFlags() {
         /* ── Delete flag ── */
         deleteFlag: function(classKey, sectionKey, studentId, flagId) {
             if (!rbacGuard('manage')) return;
-            showConfirm('Delete Flag', 'This action cannot be undone. Are you sure?',
+            // BUG-003 (2026-08-17): the old copy read "This action cannot be
+            // undone", which is false — delete is a SOFT delete and restore_flag
+            // brings it back (verified at runtime). The panel was contradicting
+            // its own Restore button.
+            showConfirm('Delete Flag', 'The flag will be hidden from teachers and parents. An admin can restore it later.',
                 '<i class="fa fa-trash" style="color:var(--rf-red)"></i>', 'danger',
                 function() {
                     return ajax('delete_flag', {

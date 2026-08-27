@@ -39,7 +39,19 @@ class Red_flags extends MY_Controller
      * `ZenXII_Teacher StudentRepository.INACTIVE_STATUSES` (F9) — keep in sync
      * or the panel and the app will offer different rosters for one class.
      */
-    private const INACTIVE_STUDENT_STATUSES = ['tc', 'withdrawn', 'inactive', 'suspended'];
+    private const INACTIVE_STUDENT_STATUSES = [
+        'tc', 'withdrawn', 'inactive', 'suspended',
+        // BUG-001 (2026-08-17): 'deleted' was missing. Observed at runtime — a
+        // student carrying status="Deleted" (STU0013) was offered in the
+        // create-flag roster. This was a REGRESSION introduced by F9: the old
+        // query required status == 'Active' exactly, which excluded "Deleted"
+        // as a side effect; replacing it with an exclusion list fixed the
+        // blank-status case but opened this one.
+        // ONLY 'deleted' is added. A production census of all 150 student docs
+        // found exactly two statuses in use — "Active" (148) and "Deleted" (2)
+        // — so any further value would be invented rather than evidenced.
+        'deleted',
+    ];
 
     public function __construct()
     {
@@ -89,6 +101,50 @@ class Red_flags extends MY_Controller
         }
 
         return false;
+    }
+
+    /**
+     * Lazily load + initialise the security-telemetry library, returning it only
+     * when it is genuinely ready to emit. Returns null otherwise.
+     *
+     * BUG-005 (2026-08-17): every CROSS_TENANT_PROBE call site here was guarded
+     * by `isset($this->sec_telem) && $this->sec_telem->isReady()`, on the belief
+     * — stated in a comment in Homework.php — that MY_Controller::_require_role
+     * auto-initialises it. It does not: MY_Controller contains ZERO references
+     * to telemetry. The library was never loaded, so `isset()` was always false
+     * and all four call sites were dead code.
+     *
+     * Proven empirically: two real cross-tenant write attempts were made and
+     * correctly blocked, and today's log — 271 lines, 36 red_flags entries —
+     * contains no STAFF_SECURITY and no CROSS_TENANT record whatsoever. Not even
+     * the library's own "[STAFF_SECURITY] dropped … not_initialised" line, which
+     * proves emit() was never reached at all.
+     *
+     * Mirrors the working pattern in Schools.php::_deletemedia_reject_cross_tenant.
+     * Deliberately scoped to this controller: the same latent gap exists in
+     * Homework, Attendance, Fee_management, Admin_login and School_config, but
+     * the shared fix belongs in MY_Controller and is out of scope for this
+     * module's certification (recorded in 99-out-of-scope.md).
+     */
+    private function _telemetry()
+    {
+        static $tel = null;
+        if ($tel !== null) return $tel ?: null;
+        try {
+            $this->load->library('security_telemetry', null, 'sec_telem');
+            if (!isset($this->sec_telem)) { $tel = false; return null; }
+            $this->sec_telem->init(
+                $this->firebase,
+                (string) $this->school_id,
+                ['uid' => $this->admin_id, 'role' => $this->admin_role]
+            );
+            $tel = $this->sec_telem->isReady() ? $this->sec_telem : false;
+        } catch (\Exception $e) {
+            // Telemetry must never break the security response it observes.
+            log_message('error', 'Red_flags telemetry init failed: ' . $e->getMessage());
+            $tel = false;
+        }
+        return $tel ?: null;
     }
 
     /**
@@ -821,8 +877,8 @@ class Red_flags extends MY_Controller
         if (($existing['schoolId']   ?? '') !== $this->school_id
             && ($existing['schoolCode'] ?? '') !== $this->school_id) {
             // BUG-035: tenant-boundary security telemetry (Phase 6+ scope; mirror Homework BUG-014 + Attendance BUG-034)
-            if (isset($this->sec_telem) && $this->sec_telem->isReady()) {
-                $this->sec_telem->emit('CROSS_TENANT_PROBE', 'warning', [
+            if (($tel = $this->_telemetry()) !== null) {
+                $tel->emit('CROSS_TENANT_PROBE', 'warning', [
                     'endpoint'        => __FUNCTION__,
                     'flag_id'         => $flagId,
                     'existing_schoolId'   => (string) ($existing['schoolId']   ?? ''),
@@ -1018,8 +1074,8 @@ class Red_flags extends MY_Controller
         if (($existing['schoolId']   ?? '') !== $this->school_id
             && ($existing['schoolCode'] ?? '') !== $this->school_id) {
             // BUG-035: tenant-boundary security telemetry (Phase 6+ scope; mirror Homework BUG-014 + Attendance BUG-034)
-            if (isset($this->sec_telem) && $this->sec_telem->isReady()) {
-                $this->sec_telem->emit('CROSS_TENANT_PROBE', 'warning', [
+            if (($tel = $this->_telemetry()) !== null) {
+                $tel->emit('CROSS_TENANT_PROBE', 'warning', [
                     'endpoint'        => __FUNCTION__,
                     'flag_id'         => $flagId,
                     'existing_schoolId'   => (string) ($existing['schoolId']   ?? ''),
@@ -1037,8 +1093,19 @@ class Red_flags extends MY_Controller
 
         $nowMs = (int) round(microtime(true) * 1000);
 
+        // BUG-002 (2026-08-17): remember what the flag was BEFORE the delete.
+        // restore_flag used to hardcode 'active', so deleting and restoring a
+        // RESOLVED flag silently re-opened a closed safeguarding concern and
+        // inflated the active count. Captured here because this is the only
+        // moment the pre-delete status is still known.
+        $priorStatus = strtolower((string) ($existing['status'] ?? 'active'));
+        if (!in_array($priorStatus, ['active', 'resolved'], true)) {
+            $priorStatus = 'active';
+        }
+
         $ok = $this->fs->update('studentFlags', $docId, [
-            'status'      => 'deleted',
+            'status'            => 'deleted',
+            'statusBeforeDelete' => $priorStatus,
             'deletedAtMs' => $nowMs,
             'deletedBy'   => $this->admin_id,
         ]);
@@ -1076,8 +1143,8 @@ class Red_flags extends MY_Controller
         if (($existing['schoolId']   ?? '') !== $this->school_id
             && ($existing['schoolCode'] ?? '') !== $this->school_id) {
             // BUG-035: tenant-boundary security telemetry (Phase 6+ scope)
-            if (isset($this->sec_telem) && $this->sec_telem->isReady()) {
-                $this->sec_telem->emit('CROSS_TENANT_PROBE', 'warning', [
+            if (($tel = $this->_telemetry()) !== null) {
+                $tel->emit('CROSS_TENANT_PROBE', 'warning', [
                     'endpoint'        => __FUNCTION__,
                     'flag_id'         => $flagId,
                     'existing_schoolId'   => (string) ($existing['schoolId']   ?? ''),
@@ -1096,11 +1163,37 @@ class Red_flags extends MY_Controller
         // Restore to 'active' and clear delete metadata. The Firestore
         // immutability rules on severity/type/message/subject still
         // apply, so we only touch the status + delete fields.
-        $ok = $this->fs->update('studentFlags', $docId, [
-            'status'      => 'active',
+        // BUG-002 (2026-08-17): restore to the status the flag held BEFORE the
+        // delete, not unconditionally to 'active'. Verified at runtime that
+        // create → resolve → delete → restore produced status='active' while
+        // resolvedBy/resolvedAtMs were still populated: an impossible state
+        // that re-opened a closed concern and inflated the Active KPI.
+        // Legacy docs deleted before this field existed have no
+        // statusBeforeDelete — they fall back to 'active', preserving the old
+        // behaviour for them rather than guessing.
+        $restoreTo = strtolower((string) ($existing['statusBeforeDelete'] ?? 'active'));
+        if (!in_array($restoreTo, ['active', 'resolved'], true)) {
+            $restoreTo = 'active';
+        }
+
+        $restoreFields = [
+            'status'      => $restoreTo,
+            // Consumed — clear it so a later delete/restore cycle cannot read a
+            // stale value from a previous one.
+            'statusBeforeDelete' => null,
             'deletedAtMs' => null,
             'deletedBy'   => null,
-        ]);
+        ];
+        // Restoring to 'active' must not leave resolution metadata behind, or
+        // the doc reads "open" while still carrying who closed it and when.
+        // Reachable for legacy docs deleted before statusBeforeDelete existed
+        // (they fall back to 'active' even if they were resolved).
+        if ($restoreTo === 'active') {
+            $restoreFields['resolvedAtMs'] = null;
+            $restoreFields['resolvedBy']   = null;
+        }
+
+        $ok = $this->fs->update('studentFlags', $docId, $restoreFields);
         if (!$ok) {
             $this->json_error('Failed to restore flag.', 500);
         }
@@ -1158,8 +1251,8 @@ class Red_flags extends MY_Controller
             if (($existing['schoolId']   ?? '') !== $this->school_id
                 && ($existing['schoolCode'] ?? '') !== $this->school_id) {
                 // BUG-035: tenant-boundary security telemetry (Phase 6+ scope; bulk iterator pattern)
-                if (isset($this->sec_telem) && $this->sec_telem->isReady()) {
-                    $this->sec_telem->emit('CROSS_TENANT_PROBE', 'warning', [
+                if (($tel = $this->_telemetry()) !== null) {
+                    $tel->emit('CROSS_TENANT_PROBE', 'warning', [
                         'endpoint'        => __FUNCTION__,
                         'item_index'      => $i,
                         'flag_id'         => $fid,
