@@ -256,6 +256,58 @@ class Support extends MY_Controller
      * both shapes on purpose, matching the idiom already used in
      * Firestore_service.php:551.
      */
+    /**
+     * Staff who should hear about a ticket landing back in the queue.
+     *
+     * Mirrors deskRecipients() in functions/supportDesk.js — the same capability
+     * query, so both producers of TICKET_RAISED address the same set: everyone
+     * holding the Support module, resolved from staffCapabilities.
+     *
+     * ON THE INDEX, because an assertion here would be worthless: this query
+     * needs [schoolId, modules CONTAINS], and firestore.indexes.json still
+     * labels that block "DEPLOY-PENDING" (a stale comment). Executed against
+     * LIVE on 2026-08-30 it SERVES and resolved 2 staff. That matters because
+     * Firestore_service::where() swallows FAILED_PRECONDITION and returns [] —
+     * so a missing index would not error here, it would silently produce an
+     * empty recipient list and reinstate the very bug this method fixes.
+     * Re-verify with the Index Sentinel before trusting it on another tenant.
+     *
+     * NOTE the cap. The Cloud Function's copy stops at 50 with no signal, so a
+     * school granting Support to more than 50 staff silently drops recipients 51+
+     * from every new-ticket alert. This copy uses a higher bound AND logs when it
+     * is reached, so the same failure is at least visible here. The CF's cap is
+     * tracked separately as R5.
+     *
+     * Returns document ids: staffCapabilities is keyed by staff id.
+     */
+    private function _desk_recipients(): array
+    {
+        $cap  = 200;
+        $rows = $this->fs->schoolWhere(
+            'staffCapabilities',
+            [['modules', 'array-contains', 'Support']],
+            null,
+            'ASC',
+            $cap
+        );
+        if (!is_array($rows)) return [];
+
+        $ids = [];
+        foreach ($rows as $r) {
+            // The document ID is the staff id, so this reads the WRAPPER, not
+            // the flattened data — _flatten() would discard exactly what we need.
+            $id = is_array($r) ? (string) ($r['id'] ?? '') : '';
+            if ($id !== '') $ids[] = $id;
+        }
+
+        if (count($ids) >= $cap) {
+            log_message('error',
+                'Support::_desk_recipients hit the ' . $cap . ' cap for school '
+                . $this->school_id . ' — recipients beyond it were NOT notified.');
+        }
+        return $ids;
+    }
+
     private function _flatten($rows): array
     {
         if (!is_array($rows)) return [];
@@ -1008,7 +1060,14 @@ class Support extends MY_Controller
         ]);
 
         // Back to the desk, not to nobody.
+        // recipientStaffIds is REQUIRED: TICKET_RAISED declares it as its idField
+        // (functions/index.js MARK_REGISTRY). Without it the dispatcher resolves
+        // zero recipients and the push goes nowhere — so "back to the desk" went
+        // to nobody, silently, every time an assignee handed a ticket back.
+        // The desk is whoever holds the Support module, same set the Cloud
+        // Function notifies when a ticket is first raised.
         $this->_push('TICKET_RAISED', 'sup_ret_' . $ticketId . '_' . time(), [
+            'recipientStaffIds' => $this->_desk_recipients(),
             'ticketId' => $ticketId,
             'subject'  => (string) ($t['subject'] ?? ''),
             'category' => (string) ($t['category'] ?? ''),
