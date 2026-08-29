@@ -1,7 +1,7 @@
 {
   "indexes": [
     {
-      "_comment": "Universal push (2026-07-11) — onStoryCreated CF resolves scoped-story recipients: storyAudience where schoolId== AND classKeys array-contains-any [story audience keys]. Required for class/section-scoped story push fan-out.",
+      "_comment": "Universal push (2026-07-11) \u2014 onStoryCreated CF resolves scoped-story recipients: storyAudience where schoolId== AND classKeys array-contains-any [story audience keys]. Required for class/section-scoped story push fan-out.",
       "collectionGroup": "storyAudience",
       "queryScope": "COLLECTION",
       "fields": [
@@ -3537,69 +3537,2076 @@
       ]
     },
     {
-      "_comment": "Document Engine (P1.2) — gallery listing: templates for a school and doc type, filtered by lifecycle status.",
+      "_comment": "Document Engine (P1.2) \u2014 gallery listing: templates for a school and doc type, filtered by lifecycle status.",
       "collectionGroup": "documentTemplates",
       "queryScope": "COLLECTION",
       "fields": [
-        { "fieldPath": "schoolId", "order": "ASCENDING" },
-        { "fieldPath": "docType", "order": "ASCENDING" },
-        { "fieldPath": "status", "order": "ASCENDING" }
+        {
+          "fieldPath": "schoolId",
+          "order": "ASCENDING"
+        },
+        {
+          "fieldPath": "docType",
+          "order": "ASCENDING"
+        },
+        {
+          "fieldPath": "status",
+          "order": "ASCENDING"
+        }
       ]
     },
     {
-      "_comment": "Document Engine (P1.2) — resolve the ACTIVE template for a school and doc type. This is the query every future print point calls.",
+      "_comment": "Document Engine (P1.2) \u2014 resolve the ACTIVE template for a school and doc type. This is the query every future print point calls.",
       "collectionGroup": "documentTemplates",
       "queryScope": "COLLECTION",
       "fields": [
-        { "fieldPath": "schoolId", "order": "ASCENDING" },
-        { "fieldPath": "docType", "order": "ASCENDING" },
-        { "fieldPath": "activeVersion", "order": "ASCENDING" }
+        {
+          "fieldPath": "schoolId",
+          "order": "ASCENDING"
+        },
+        {
+          "fieldPath": "docType",
+          "order": "ASCENDING"
+        },
+        {
+          "fieldPath": "activeVersion",
+          "order": "ASCENDING"
+        }
       ]
     },
     {
-      "_comment": "Document Engine (P1.2) — gallery ordering, most recently edited first.",
+      "_comment": "Document Engine (P1.2) \u2014 gallery ordering, most recently edited first.",
       "collectionGroup": "documentTemplates",
       "queryScope": "COLLECTION",
       "fields": [
-        { "fieldPath": "schoolId", "order": "ASCENDING" },
-        { "fieldPath": "updatedAt", "order": "DESCENDING" }
+        {
+          "fieldPath": "schoolId",
+          "order": "ASCENDING"
+        },
+        {
+          "fieldPath": "updatedAt",
+          "order": "DESCENDING"
+        }
       ]
     },
     {
-      "_comment": "Document Engine (P1.2) — version history for one template, newest first. Snapshots are create-only. templateId is {schoolId}_TPL0007, so an equality on it is already tenant-scoped.",
+      "_comment": "Document Engine (P1.2) \u2014 version history for one template, newest first. Snapshots are create-only. templateId is {schoolId}_TPL0007, so an equality on it is already tenant-scoped.",
       "collectionGroup": "documentTemplateVersions",
       "queryScope": "COLLECTION",
       "fields": [
-        { "fieldPath": "templateId", "order": "ASCENDING" },
-        { "fieldPath": "version", "order": "DESCENDING" }
+        {
+          "fieldPath": "templateId",
+          "order": "ASCENDING"
+        },
+        {
+          "fieldPath": "version",
+          "order": "DESCENDING"
+        }
       ]
     },
     {
-      "_comment": "Document Engine (P1.2) — reusable blocks for a school by type (letterhead/signature/seal).",
+      "_comment": "Document Engine (P1.2) \u2014 reusable blocks for a school by type (letterhead/signature/seal).",
       "collectionGroup": "reusableBlocks",
       "queryScope": "COLLECTION",
       "fields": [
-        { "fieldPath": "schoolId", "order": "ASCENDING" },
-        { "fieldPath": "blockType", "order": "ASCENDING" }
+        {
+          "fieldPath": "schoolId",
+          "order": "ASCENDING"
+        },
+        {
+          "fieldPath": "blockType",
+          "order": "ASCENDING"
+        }
       ]
     },
     {
-      "_comment": "Document Engine (P1.2) — compliance stack by STATE layer, ordered by tier. Platform collection, not school-scoped: authorities are shared across tenants.",
+      "_comment": "Document Engine (P1.2) \u2014 compliance stack by STATE layer, ordered by tier. Platform collection, not school-scoped: authorities are shared across tenants.",
       "collectionGroup": "complianceAuthorities",
       "queryScope": "COLLECTION",
       "fields": [
-        { "fieldPath": "scope.state", "order": "ASCENDING" },
-        { "fieldPath": "tier", "order": "ASCENDING" }
+        {
+          "fieldPath": "scope.state",
+          "order": "ASCENDING"
+        },
+        {
+          "fieldPath": "tier",
+          "order": "ASCENDING"
+        }
       ]
     },
     {
-      "_comment": "Document Engine (P1.2) — compliance stack by BOARD layer (CBSE/CISCE), ordered by tier. Platform collection, see above.",
+      "_comment": "Document Engine (P1.2) \u2014 compliance stack by BOARD layer (CBSE/CISCE), ordered by tier. Platform collection, see above.",
       "collectionGroup": "complianceAuthorities",
       "queryScope": "COLLECTION",
       "fields": [
-        { "fieldPath": "scope.board", "order": "ASCENDING" },
-        { "fieldPath": "tier", "order": "ASCENDING" }
+        {
+          "fieldPath": "scope.board",
+          "order": "ASCENDING"
+        },
+        {
+          "fieldPath": "tier",
+          "order": "ASCENDING"
+        }
       ]
+    },
+    {
+      "collectionGroup": "auditArchive",
+      "queryScope": "COLLECTION",
+      "fields": [
+        {
+          "fieldPath": "schoolId",
+          "order": "ASCENDING"
+        },
+        {
+          "fieldPath": "appId",
+          "order": "ASCENDING"
+        },
+        {
+          "fieldPath": "timestampMs",
+          "order": "DESCENDING"
+        }
+      ],
+      "_comment": "Captured from production 2026-08-29 \u2014 was live but declared nowhere. Recorded so git can rebuild this database; not authored here."
+    },
+    {
+      "collectionGroup": "auditLogs",
+      "queryScope": "COLLECTION",
+      "fields": [
+        {
+          "fieldPath": "schoolId",
+          "order": "ASCENDING"
+        },
+        {
+          "fieldPath": "appId",
+          "order": "ASCENDING"
+        },
+        {
+          "fieldPath": "timestampMs",
+          "order": "DESCENDING"
+        }
+      ],
+      "_comment": "Captured from production 2026-08-29 \u2014 was live but declared nowhere. Recorded so git can rebuild this database; not authored here."
+    },
+    {
+      "collectionGroup": "campusAccessEvents",
+      "queryScope": "COLLECTION",
+      "fields": [
+        {
+          "fieldPath": "schoolId",
+          "order": "ASCENDING"
+        },
+        {
+          "fieldPath": "timestamp",
+          "order": "DESCENDING"
+        }
+      ],
+      "_comment": "Captured from production 2026-08-29 \u2014 was live but declared nowhere. Recorded so git can rebuild this database; not authored here."
+    },
+    {
+      "collectionGroup": "campusAccessRequests",
+      "queryScope": "COLLECTION",
+      "fields": [
+        {
+          "fieldPath": "schoolId",
+          "order": "ASCENDING"
+        },
+        {
+          "fieldPath": "status",
+          "order": "ASCENDING"
+        },
+        {
+          "fieldPath": "updatedAt",
+          "order": "ASCENDING"
+        }
+      ],
+      "_comment": "Captured from production 2026-08-29 \u2014 was live but declared nowhere. Recorded so git can rebuild this database; not authored here."
+    },
+    {
+      "collectionGroup": "campusAccessRequests",
+      "queryScope": "COLLECTION",
+      "fields": [
+        {
+          "fieldPath": "schoolId",
+          "order": "ASCENDING"
+        },
+        {
+          "fieldPath": "status",
+          "order": "ASCENDING"
+        },
+        {
+          "fieldPath": "updatedAt",
+          "order": "DESCENDING"
+        }
+      ],
+      "_comment": "Captured from production 2026-08-29 \u2014 was live but declared nowhere. Recorded so git can rebuild this database; not authored here."
+    },
+    {
+      "collectionGroup": "campusAccessRequests",
+      "queryScope": "COLLECTION",
+      "fields": [
+        {
+          "fieldPath": "schoolId",
+          "order": "ASCENDING"
+        },
+        {
+          "fieldPath": "updatedAt",
+          "order": "DESCENDING"
+        }
+      ],
+      "_comment": "Captured from production 2026-08-29 \u2014 was live but declared nowhere. Recorded so git can rebuild this database; not authored here."
+    },
+    {
+      "collectionGroup": "crmApplications",
+      "queryScope": "COLLECTION",
+      "fields": [
+        {
+          "fieldPath": "schoolId",
+          "order": "ASCENDING"
+        },
+        {
+          "fieldPath": "session",
+          "order": "ASCENDING"
+        },
+        {
+          "fieldPath": "class",
+          "order": "ASCENDING"
+        },
+        {
+          "fieldPath": "created_at",
+          "order": "DESCENDING"
+        }
+      ],
+      "_comment": "Captured from production 2026-08-29 \u2014 was live but declared nowhere. Recorded so git can rebuild this database; not authored here."
+    },
+    {
+      "collectionGroup": "crmApplications",
+      "queryScope": "COLLECTION",
+      "fields": [
+        {
+          "fieldPath": "schoolId",
+          "order": "ASCENDING"
+        },
+        {
+          "fieldPath": "session",
+          "order": "ASCENDING"
+        },
+        {
+          "fieldPath": "created_at",
+          "order": "DESCENDING"
+        }
+      ],
+      "_comment": "Captured from production 2026-08-29 \u2014 was live but declared nowhere. Recorded so git can rebuild this database; not authored here."
+    },
+    {
+      "collectionGroup": "crmApplications",
+      "queryScope": "COLLECTION",
+      "fields": [
+        {
+          "fieldPath": "schoolId",
+          "order": "ASCENDING"
+        },
+        {
+          "fieldPath": "session",
+          "order": "ASCENDING"
+        },
+        {
+          "fieldPath": "searchTokens",
+          "arrayConfig": "CONTAINS"
+        },
+        {
+          "fieldPath": "created_at",
+          "order": "DESCENDING"
+        }
+      ],
+      "_comment": "Captured from production 2026-08-29 \u2014 was live but declared nowhere. Recorded so git can rebuild this database; not authored here."
+    },
+    {
+      "collectionGroup": "crmApplications",
+      "queryScope": "COLLECTION",
+      "fields": [
+        {
+          "fieldPath": "schoolId",
+          "order": "ASCENDING"
+        },
+        {
+          "fieldPath": "session",
+          "order": "ASCENDING"
+        },
+        {
+          "fieldPath": "source",
+          "order": "ASCENDING"
+        },
+        {
+          "fieldPath": "created_at",
+          "order": "DESCENDING"
+        }
+      ],
+      "_comment": "Captured from production 2026-08-29 \u2014 was live but declared nowhere. Recorded so git can rebuild this database; not authored here."
+    },
+    {
+      "collectionGroup": "crmApplications",
+      "queryScope": "COLLECTION",
+      "fields": [
+        {
+          "fieldPath": "schoolId",
+          "order": "ASCENDING"
+        },
+        {
+          "fieldPath": "session",
+          "order": "ASCENDING"
+        },
+        {
+          "fieldPath": "stage",
+          "order": "ASCENDING"
+        },
+        {
+          "fieldPath": "class",
+          "order": "ASCENDING"
+        },
+        {
+          "fieldPath": "created_at",
+          "order": "DESCENDING"
+        }
+      ],
+      "_comment": "Captured from production 2026-08-29 \u2014 was live but declared nowhere. Recorded so git can rebuild this database; not authored here."
+    },
+    {
+      "collectionGroup": "crmApplications",
+      "queryScope": "COLLECTION",
+      "fields": [
+        {
+          "fieldPath": "schoolId",
+          "order": "ASCENDING"
+        },
+        {
+          "fieldPath": "session",
+          "order": "ASCENDING"
+        },
+        {
+          "fieldPath": "stage",
+          "order": "ASCENDING"
+        },
+        {
+          "fieldPath": "created_at",
+          "order": "DESCENDING"
+        }
+      ],
+      "_comment": "Captured from production 2026-08-29 \u2014 was live but declared nowhere. Recorded so git can rebuild this database; not authored here."
+    },
+    {
+      "collectionGroup": "crmApplications",
+      "queryScope": "COLLECTION",
+      "fields": [
+        {
+          "fieldPath": "schoolId",
+          "order": "ASCENDING"
+        },
+        {
+          "fieldPath": "session",
+          "order": "ASCENDING"
+        },
+        {
+          "fieldPath": "status",
+          "order": "ASCENDING"
+        },
+        {
+          "fieldPath": "class",
+          "order": "ASCENDING"
+        },
+        {
+          "fieldPath": "created_at",
+          "order": "DESCENDING"
+        }
+      ],
+      "_comment": "Captured from production 2026-08-29 \u2014 was live but declared nowhere. Recorded so git can rebuild this database; not authored here."
+    },
+    {
+      "collectionGroup": "crmApplications",
+      "queryScope": "COLLECTION",
+      "fields": [
+        {
+          "fieldPath": "schoolId",
+          "order": "ASCENDING"
+        },
+        {
+          "fieldPath": "session",
+          "order": "ASCENDING"
+        },
+        {
+          "fieldPath": "status",
+          "order": "ASCENDING"
+        },
+        {
+          "fieldPath": "created_at",
+          "order": "DESCENDING"
+        }
+      ],
+      "_comment": "Captured from production 2026-08-29 \u2014 was live but declared nowhere. Recorded so git can rebuild this database; not authored here."
+    },
+    {
+      "collectionGroup": "crmApplications",
+      "queryScope": "COLLECTION",
+      "fields": [
+        {
+          "fieldPath": "schoolId",
+          "order": "ASCENDING"
+        },
+        {
+          "fieldPath": "session",
+          "order": "ASCENDING"
+        },
+        {
+          "fieldPath": "status",
+          "order": "ASCENDING"
+        },
+        {
+          "fieldPath": "source",
+          "order": "ASCENDING"
+        },
+        {
+          "fieldPath": "created_at",
+          "order": "DESCENDING"
+        }
+      ],
+      "_comment": "Captured from production 2026-08-29 \u2014 was live but declared nowhere. Recorded so git can rebuild this database; not authored here."
+    },
+    {
+      "collectionGroup": "driverActivitySummary",
+      "queryScope": "COLLECTION",
+      "fields": [
+        {
+          "fieldPath": "schoolId",
+          "order": "ASCENDING"
+        },
+        {
+          "fieldPath": "period_year_month",
+          "order": "DESCENDING"
+        }
+      ],
+      "_comment": "Captured from production 2026-08-29 \u2014 was live but declared nowhere. Recorded so git can rebuild this database; not authored here."
+    },
+    {
+      "collectionGroup": "driverIncidents",
+      "queryScope": "COLLECTION",
+      "fields": [
+        {
+          "fieldPath": "schoolId",
+          "order": "ASCENDING"
+        },
+        {
+          "fieldPath": "incident_date",
+          "order": "DESCENDING"
+        }
+      ],
+      "_comment": "Captured from production 2026-08-29 \u2014 was live but declared nowhere. Recorded so git can rebuild this database; not authored here."
+    },
+    {
+      "collectionGroup": "driverIncidents",
+      "queryScope": "COLLECTION",
+      "fields": [
+        {
+          "fieldPath": "schoolId",
+          "order": "ASCENDING"
+        },
+        {
+          "fieldPath": "severity",
+          "order": "ASCENDING"
+        },
+        {
+          "fieldPath": "incident_date",
+          "order": "DESCENDING"
+        }
+      ],
+      "_comment": "Captured from production 2026-08-29 \u2014 was live but declared nowhere. Recorded so git can rebuild this database; not authored here."
+    },
+    {
+      "collectionGroup": "driverIncidents",
+      "queryScope": "COLLECTION",
+      "fields": [
+        {
+          "fieldPath": "schoolId",
+          "order": "ASCENDING"
+        },
+        {
+          "fieldPath": "staff_id",
+          "order": "ASCENDING"
+        },
+        {
+          "fieldPath": "incident_date",
+          "order": "DESCENDING"
+        }
+      ],
+      "_comment": "Captured from production 2026-08-29 \u2014 was live but declared nowhere. Recorded so git can rebuild this database; not authored here."
+    },
+    {
+      "collectionGroup": "driverPerformanceReviews",
+      "queryScope": "COLLECTION",
+      "fields": [
+        {
+          "fieldPath": "schoolId",
+          "order": "ASCENDING"
+        },
+        {
+          "fieldPath": "staff_id",
+          "order": "ASCENDING"
+        },
+        {
+          "fieldPath": "review_period_end",
+          "order": "DESCENDING"
+        }
+      ],
+      "_comment": "Captured from production 2026-08-29 \u2014 was live but declared nowhere. Recorded so git can rebuild this database; not authored here."
+    },
+    {
+      "collectionGroup": "entitlementAllocations",
+      "queryScope": "COLLECTION",
+      "fields": [
+        {
+          "fieldPath": "schoolId",
+          "order": "ASCENDING"
+        },
+        {
+          "fieldPath": "demandId",
+          "order": "ASCENDING"
+        },
+        {
+          "fieldPath": "status",
+          "order": "ASCENDING"
+        }
+      ],
+      "_comment": "Captured from production 2026-08-29 \u2014 was live but declared nowhere. Recorded so git can rebuild this database; not authored here."
+    },
+    {
+      "collectionGroup": "entitlementAllocations",
+      "queryScope": "COLLECTION",
+      "fields": [
+        {
+          "fieldPath": "schoolId",
+          "order": "ASCENDING"
+        },
+        {
+          "fieldPath": "entitlementId",
+          "order": "ASCENDING"
+        },
+        {
+          "fieldPath": "status",
+          "order": "ASCENDING"
+        }
+      ],
+      "_comment": "Captured from production 2026-08-29 \u2014 was live but declared nowhere. Recorded so git can rebuild this database; not authored here."
+    },
+    {
+      "collectionGroup": "entitlementAllocations",
+      "queryScope": "COLLECTION",
+      "fields": [
+        {
+          "fieldPath": "schoolId",
+          "order": "ASCENDING"
+        },
+        {
+          "fieldPath": "studentId",
+          "order": "ASCENDING"
+        },
+        {
+          "fieldPath": "session",
+          "order": "ASCENDING"
+        },
+        {
+          "fieldPath": "status",
+          "order": "ASCENDING"
+        }
+      ],
+      "_comment": "Captured from production 2026-08-29 \u2014 was live but declared nowhere. Recorded so git can rebuild this database; not authored here."
+    },
+    {
+      "collectionGroup": "eventTripAssignments",
+      "queryScope": "COLLECTION",
+      "fields": [
+        {
+          "fieldPath": "schoolId",
+          "order": "ASCENDING"
+        },
+        {
+          "fieldPath": "event_id",
+          "order": "ASCENDING"
+        },
+        {
+          "fieldPath": "studentId",
+          "order": "ASCENDING"
+        }
+      ],
+      "_comment": "Captured from production 2026-08-29 \u2014 was live but declared nowhere. Recorded so git can rebuild this database; not authored here."
+    },
+    {
+      "collectionGroup": "eventTripAssignments",
+      "queryScope": "COLLECTION",
+      "fields": [
+        {
+          "fieldPath": "schoolId",
+          "order": "ASCENDING"
+        },
+        {
+          "fieldPath": "studentId",
+          "order": "ASCENDING"
+        },
+        {
+          "fieldPath": "event_id",
+          "order": "ASCENDING"
+        }
+      ],
+      "_comment": "Captured from production 2026-08-29 \u2014 was live but declared nowhere. Recorded so git can rebuild this database; not authored here."
+    },
+    {
+      "collectionGroup": "fleetMonthlyExpenseSummary",
+      "queryScope": "COLLECTION",
+      "fields": [
+        {
+          "fieldPath": "schoolId",
+          "order": "ASCENDING"
+        },
+        {
+          "fieldPath": "period_year_month",
+          "order": "DESCENDING"
+        }
+      ],
+      "_comment": "Captured from production 2026-08-29 \u2014 was live but declared nowhere. Recorded so git can rebuild this database; not authored here."
+    },
+    {
+      "collectionGroup": "fuelLogs",
+      "queryScope": "COLLECTION",
+      "fields": [
+        {
+          "fieldPath": "schoolId",
+          "order": "ASCENDING"
+        },
+        {
+          "fieldPath": "vehicle_id",
+          "order": "ASCENDING"
+        },
+        {
+          "fieldPath": "fuel_date",
+          "order": "DESCENDING"
+        }
+      ],
+      "_comment": "Captured from production 2026-08-29 \u2014 was live but declared nowhere. Recorded so git can rebuild this database; not authored here."
+    },
+    {
+      "collectionGroup": "galleryMedia",
+      "queryScope": "COLLECTION",
+      "fields": [
+        {
+          "fieldPath": "albumId",
+          "order": "ASCENDING"
+        },
+        {
+          "fieldPath": "isArchived",
+          "order": "ASCENDING"
+        },
+        {
+          "fieldPath": "uploadedAt",
+          "order": "DESCENDING"
+        }
+      ],
+      "_comment": "Captured from production 2026-08-29 \u2014 was live but declared nowhere. Recorded so git can rebuild this database; not authored here."
+    },
+    {
+      "collectionGroup": "leaveApplications",
+      "queryScope": "COLLECTION",
+      "fields": [
+        {
+          "fieldPath": "schoolId",
+          "order": "ASCENDING"
+        },
+        {
+          "fieldPath": "studentId",
+          "order": "ASCENDING"
+        },
+        {
+          "fieldPath": "createdAt",
+          "order": "DESCENDING"
+        }
+      ],
+      "_comment": "Captured from production 2026-08-29 \u2014 was live but declared nowhere. Recorded so git can rebuild this database; not authored here."
+    },
+    {
+      "collectionGroup": "maintenanceLogs",
+      "queryScope": "COLLECTION",
+      "fields": [
+        {
+          "fieldPath": "schoolId",
+          "order": "ASCENDING"
+        },
+        {
+          "fieldPath": "vehicle_id",
+          "order": "ASCENDING"
+        },
+        {
+          "fieldPath": "service_date",
+          "order": "DESCENDING"
+        }
+      ],
+      "_comment": "Captured from production 2026-08-29 \u2014 was live but declared nowhere. Recorded so git can rebuild this database; not authored here."
+    },
+    {
+      "collectionGroup": "payments",
+      "queryScope": "COLLECTION",
+      "fields": [
+        {
+          "fieldPath": "status",
+          "order": "ASCENDING"
+        },
+        {
+          "fieldPath": "paid_date",
+          "order": "DESCENDING"
+        }
+      ],
+      "_comment": "Captured from production 2026-08-29 \u2014 was live but declared nowhere. Recorded so git can rebuild this database; not authored here."
+    },
+    {
+      "collectionGroup": "routeAssignmentHistory",
+      "queryScope": "COLLECTION",
+      "fields": [
+        {
+          "fieldPath": "schoolId",
+          "order": "ASCENDING"
+        },
+        {
+          "fieldPath": "session",
+          "order": "ASCENDING"
+        },
+        {
+          "fieldPath": "event_at",
+          "order": "DESCENDING"
+        }
+      ],
+      "_comment": "Captured from production 2026-08-29 \u2014 was live but declared nowhere. Recorded so git can rebuild this database; not authored here."
+    },
+    {
+      "collectionGroup": "routeAssignmentHistory",
+      "queryScope": "COLLECTION",
+      "fields": [
+        {
+          "fieldPath": "schoolId",
+          "order": "ASCENDING"
+        },
+        {
+          "fieldPath": "studentId",
+          "order": "ASCENDING"
+        },
+        {
+          "fieldPath": "event_at",
+          "order": "DESCENDING"
+        }
+      ],
+      "_comment": "Captured from production 2026-08-29 \u2014 was live but declared nowhere. Recorded so git can rebuild this database; not authored here."
+    },
+    {
+      "collectionGroup": "routeAssignments",
+      "queryScope": "COLLECTION",
+      "fields": [
+        {
+          "fieldPath": "schoolId",
+          "order": "ASCENDING"
+        },
+        {
+          "fieldPath": "session",
+          "order": "ASCENDING"
+        },
+        {
+          "fieldPath": "route_id",
+          "order": "ASCENDING"
+        }
+      ],
+      "_comment": "Captured from production 2026-08-29 \u2014 was live but declared nowhere. Recorded so git can rebuild this database; not authored here."
+    },
+    {
+      "collectionGroup": "routeAssignments",
+      "queryScope": "COLLECTION",
+      "fields": [
+        {
+          "fieldPath": "schoolId",
+          "order": "ASCENDING"
+        },
+        {
+          "fieldPath": "session",
+          "order": "ASCENDING"
+        },
+        {
+          "fieldPath": "status",
+          "order": "ASCENDING"
+        }
+      ],
+      "_comment": "Captured from production 2026-08-29 \u2014 was live but declared nowhere. Recorded so git can rebuild this database; not authored here."
+    },
+    {
+      "collectionGroup": "routeAssignments",
+      "queryScope": "COLLECTION",
+      "fields": [
+        {
+          "fieldPath": "schoolId",
+          "order": "ASCENDING"
+        },
+        {
+          "fieldPath": "session",
+          "order": "ASCENDING"
+        },
+        {
+          "fieldPath": "student_class",
+          "order": "ASCENDING"
+        }
+      ],
+      "_comment": "Captured from production 2026-08-29 \u2014 was live but declared nowhere. Recorded so git can rebuild this database; not authored here."
+    },
+    {
+      "collectionGroup": "routeAssignments",
+      "queryScope": "COLLECTION",
+      "fields": [
+        {
+          "fieldPath": "schoolId",
+          "order": "ASCENDING"
+        },
+        {
+          "fieldPath": "studentId",
+          "order": "ASCENDING"
+        },
+        {
+          "fieldPath": "session",
+          "order": "ASCENDING"
+        }
+      ],
+      "_comment": "Captured from production 2026-08-29 \u2014 was live but declared nowhere. Recorded so git can rebuild this database; not authored here."
+    },
+    {
+      "collectionGroup": "routeSuspensions",
+      "queryScope": "COLLECTION",
+      "fields": [
+        {
+          "fieldPath": "schoolId",
+          "order": "ASCENDING"
+        },
+        {
+          "fieldPath": "route_id",
+          "order": "ASCENDING"
+        },
+        {
+          "fieldPath": "status",
+          "order": "ASCENDING"
+        },
+        {
+          "fieldPath": "suspended_from",
+          "order": "DESCENDING"
+        }
+      ],
+      "_comment": "Captured from production 2026-08-29 \u2014 was live but declared nowhere. Recorded so git can rebuild this database; not authored here."
+    },
+    {
+      "collectionGroup": "routeSuspensions",
+      "queryScope": "COLLECTION",
+      "fields": [
+        {
+          "fieldPath": "schoolId",
+          "order": "ASCENDING"
+        },
+        {
+          "fieldPath": "status",
+          "order": "ASCENDING"
+        },
+        {
+          "fieldPath": "suspended_from",
+          "order": "DESCENDING"
+        }
+      ],
+      "_comment": "Captured from production 2026-08-29 \u2014 was live but declared nowhere. Recorded so git can rebuild this database; not authored here."
+    },
+    {
+      "collectionGroup": "routes",
+      "queryScope": "COLLECTION",
+      "fields": [
+        {
+          "fieldPath": "schoolId",
+          "order": "ASCENDING"
+        },
+        {
+          "fieldPath": "name",
+          "order": "ASCENDING"
+        }
+      ],
+      "_comment": "Captured from production 2026-08-29 \u2014 was live but declared nowhere. Recorded so git can rebuild this database; not authored here."
+    },
+    {
+      "collectionGroup": "routes",
+      "queryScope": "COLLECTION",
+      "fields": [
+        {
+          "fieldPath": "schoolId",
+          "order": "ASCENDING"
+        },
+        {
+          "fieldPath": "session",
+          "order": "ASCENDING"
+        },
+        {
+          "fieldPath": "name",
+          "order": "ASCENDING"
+        }
+      ],
+      "_comment": "Captured from production 2026-08-29 \u2014 was live but declared nowhere. Recorded so git can rebuild this database; not authored here."
+    },
+    {
+      "collectionGroup": "routes",
+      "queryScope": "COLLECTION",
+      "fields": [
+        {
+          "fieldPath": "schoolId",
+          "order": "ASCENDING"
+        },
+        {
+          "fieldPath": "session",
+          "order": "ASCENDING"
+        },
+        {
+          "fieldPath": "status",
+          "order": "ASCENDING"
+        }
+      ],
+      "_comment": "Captured from production 2026-08-29 \u2014 was live but declared nowhere. Recorded so git can rebuild this database; not authored here."
+    },
+    {
+      "collectionGroup": "routes",
+      "queryScope": "COLLECTION",
+      "fields": [
+        {
+          "fieldPath": "schoolId",
+          "order": "ASCENDING"
+        },
+        {
+          "fieldPath": "vehicle_id",
+          "order": "ASCENDING"
+        },
+        {
+          "fieldPath": "status",
+          "order": "ASCENDING"
+        }
+      ],
+      "_comment": "Captured from production 2026-08-29 \u2014 was live but declared nowhere. Recorded so git can rebuild this database; not authored here."
+    },
+    {
+      "collectionGroup": "sosAlerts",
+      "queryScope": "COLLECTION",
+      "fields": [
+        {
+          "fieldPath": "schoolId",
+          "order": "ASCENDING"
+        },
+        {
+          "fieldPath": "active",
+          "order": "ASCENDING"
+        },
+        {
+          "fieldPath": "createdAt",
+          "order": "DESCENDING"
+        }
+      ],
+      "_comment": "Captured from production 2026-08-29 \u2014 was live but declared nowhere. Recorded so git can rebuild this database; not authored here."
+    },
+    {
+      "collectionGroup": "sosAlerts",
+      "queryScope": "COLLECTION",
+      "fields": [
+        {
+          "fieldPath": "schoolId",
+          "order": "ASCENDING"
+        },
+        {
+          "fieldPath": "status",
+          "order": "ASCENDING"
+        },
+        {
+          "fieldPath": "createdAt",
+          "order": "DESCENDING"
+        }
+      ],
+      "_comment": "Captured from production 2026-08-29 \u2014 was live but declared nowhere. Recorded so git can rebuild this database; not authored here."
+    },
+    {
+      "collectionGroup": "studentEntitlements",
+      "queryScope": "COLLECTION",
+      "fields": [
+        {
+          "fieldPath": "schoolId",
+          "order": "ASCENDING"
+        },
+        {
+          "fieldPath": "status",
+          "order": "ASCENDING"
+        },
+        {
+          "fieldPath": "requestedAt",
+          "order": "ASCENDING"
+        }
+      ],
+      "_comment": "Captured from production 2026-08-29 \u2014 was live but declared nowhere. Recorded so git can rebuild this database; not authored here."
+    },
+    {
+      "collectionGroup": "studentRoutes",
+      "queryScope": "COLLECTION",
+      "fields": [
+        {
+          "fieldPath": "schoolId",
+          "order": "ASCENDING"
+        },
+        {
+          "fieldPath": "fee_demand_ref",
+          "order": "ASCENDING"
+        }
+      ],
+      "_comment": "Captured from production 2026-08-29 \u2014 was live but declared nowhere. Recorded so git can rebuild this database; not authored here."
+    },
+    {
+      "collectionGroup": "studentRoutes",
+      "queryScope": "COLLECTION",
+      "fields": [
+        {
+          "fieldPath": "schoolId",
+          "order": "ASCENDING"
+        },
+        {
+          "fieldPath": "session",
+          "order": "ASCENDING"
+        },
+        {
+          "fieldPath": "route_id",
+          "order": "ASCENDING"
+        },
+        {
+          "fieldPath": "student_name",
+          "order": "ASCENDING"
+        }
+      ],
+      "_comment": "Captured from production 2026-08-29 \u2014 was live but declared nowhere. Recorded so git can rebuild this database; not authored here."
+    },
+    {
+      "collectionGroup": "studentRoutes",
+      "queryScope": "COLLECTION",
+      "fields": [
+        {
+          "fieldPath": "schoolId",
+          "order": "ASCENDING"
+        },
+        {
+          "fieldPath": "session",
+          "order": "ASCENDING"
+        },
+        {
+          "fieldPath": "route_id",
+          "order": "ASCENDING"
+        }
+      ],
+      "_comment": "Captured from production 2026-08-29 \u2014 was live but declared nowhere. Recorded so git can rebuild this database; not authored here."
+    },
+    {
+      "collectionGroup": "studentRoutes",
+      "queryScope": "COLLECTION",
+      "fields": [
+        {
+          "fieldPath": "schoolId",
+          "order": "ASCENDING"
+        },
+        {
+          "fieldPath": "session",
+          "order": "ASCENDING"
+        },
+        {
+          "fieldPath": "student_class",
+          "order": "ASCENDING"
+        }
+      ],
+      "_comment": "Captured from production 2026-08-29 \u2014 was live but declared nowhere. Recorded so git can rebuild this database; not authored here."
+    },
+    {
+      "collectionGroup": "studentRoutes",
+      "queryScope": "COLLECTION",
+      "fields": [
+        {
+          "fieldPath": "schoolId",
+          "order": "ASCENDING"
+        },
+        {
+          "fieldPath": "session",
+          "order": "ASCENDING"
+        },
+        {
+          "fieldPath": "student_name",
+          "order": "ASCENDING"
+        }
+      ],
+      "_comment": "Captured from production 2026-08-29 \u2014 was live but declared nowhere. Recorded so git can rebuild this database; not authored here."
+    },
+    {
+      "collectionGroup": "students",
+      "queryScope": "COLLECTION",
+      "fields": [
+        {
+          "fieldPath": "schoolId",
+          "order": "ASCENDING"
+        },
+        {
+          "fieldPath": "studentId",
+          "order": "ASCENDING"
+        }
+      ],
+      "_comment": "Captured from production 2026-08-29 \u2014 was live but declared nowhere. Recorded so git can rebuild this database; not authored here."
+    },
+    {
+      "collectionGroup": "supportMessages",
+      "queryScope": "COLLECTION",
+      "fields": [
+        {
+          "fieldPath": "schoolId",
+          "order": "ASCENDING"
+        },
+        {
+          "fieldPath": "ticketId",
+          "order": "ASCENDING"
+        },
+        {
+          "fieldPath": "createdAt",
+          "order": "ASCENDING"
+        }
+      ],
+      "_comment": "Captured from production 2026-08-29 \u2014 was live but declared nowhere. Recorded so git can rebuild this database; not authored here."
+    },
+    {
+      "collectionGroup": "temporaryDriverAssignments",
+      "queryScope": "COLLECTION",
+      "fields": [
+        {
+          "fieldPath": "schoolId",
+          "order": "ASCENDING"
+        },
+        {
+          "fieldPath": "effective_from",
+          "order": "ASCENDING"
+        },
+        {
+          "fieldPath": "effective_to",
+          "order": "ASCENDING"
+        }
+      ],
+      "_comment": "Captured from production 2026-08-29 \u2014 was live but declared nowhere. Recorded so git can rebuild this database; not authored here."
+    },
+    {
+      "collectionGroup": "temporaryDriverAssignments",
+      "queryScope": "COLLECTION",
+      "fields": [
+        {
+          "fieldPath": "schoolId",
+          "order": "ASCENDING"
+        },
+        {
+          "fieldPath": "effective_from",
+          "order": "DESCENDING"
+        }
+      ],
+      "_comment": "Captured from production 2026-08-29 \u2014 was live but declared nowhere. Recorded so git can rebuild this database; not authored here."
+    },
+    {
+      "collectionGroup": "temporaryDriverAssignments",
+      "queryScope": "COLLECTION",
+      "fields": [
+        {
+          "fieldPath": "schoolId",
+          "order": "ASCENDING"
+        },
+        {
+          "fieldPath": "vehicle_id",
+          "order": "ASCENDING"
+        },
+        {
+          "fieldPath": "effective_from",
+          "order": "DESCENDING"
+        }
+      ],
+      "_comment": "Captured from production 2026-08-29 \u2014 was live but declared nowhere. Recorded so git can rebuild this database; not authored here."
+    },
+    {
+      "collectionGroup": "transportAttendance",
+      "queryScope": "COLLECTION",
+      "fields": [
+        {
+          "fieldPath": "schoolId",
+          "order": "ASCENDING"
+        },
+        {
+          "fieldPath": "studentId",
+          "order": "ASCENDING"
+        },
+        {
+          "fieldPath": "trip_date",
+          "order": "DESCENDING"
+        }
+      ],
+      "_comment": "Captured from production 2026-08-29 \u2014 was live but declared nowhere. Recorded so git can rebuild this database; not authored here."
+    },
+    {
+      "collectionGroup": "transportAttendance",
+      "queryScope": "COLLECTION",
+      "fields": [
+        {
+          "fieldPath": "schoolId",
+          "order": "ASCENDING"
+        },
+        {
+          "fieldPath": "tripId",
+          "order": "ASCENDING"
+        },
+        {
+          "fieldPath": "event_at",
+          "order": "ASCENDING"
+        }
+      ],
+      "_comment": "Captured from production 2026-08-29 \u2014 was live but declared nowhere. Recorded so git can rebuild this database; not authored here."
+    },
+    {
+      "collectionGroup": "transportAuditLog",
+      "queryScope": "COLLECTION",
+      "fields": [
+        {
+          "fieldPath": "schoolId",
+          "order": "ASCENDING"
+        },
+        {
+          "fieldPath": "entity_type",
+          "order": "ASCENDING"
+        },
+        {
+          "fieldPath": "event_at",
+          "order": "DESCENDING"
+        }
+      ],
+      "_comment": "Captured from production 2026-08-29 \u2014 was live but declared nowhere. Recorded so git can rebuild this database; not authored here."
+    },
+    {
+      "collectionGroup": "transportAuditLog",
+      "queryScope": "COLLECTION",
+      "fields": [
+        {
+          "fieldPath": "schoolId",
+          "order": "ASCENDING"
+        },
+        {
+          "fieldPath": "event_at",
+          "order": "DESCENDING"
+        }
+      ],
+      "_comment": "Captured from production 2026-08-29 \u2014 was live but declared nowhere. Recorded so git can rebuild this database; not authored here."
+    },
+    {
+      "collectionGroup": "transportEvents",
+      "queryScope": "COLLECTION",
+      "fields": [
+        {
+          "fieldPath": "schoolId",
+          "order": "ASCENDING"
+        },
+        {
+          "fieldPath": "event_type",
+          "order": "ASCENDING"
+        },
+        {
+          "fieldPath": "event_date",
+          "order": "DESCENDING"
+        }
+      ],
+      "_comment": "Captured from production 2026-08-29 \u2014 was live but declared nowhere. Recorded so git can rebuild this database; not authored here."
+    },
+    {
+      "collectionGroup": "transportEvents",
+      "queryScope": "COLLECTION",
+      "fields": [
+        {
+          "fieldPath": "schoolId",
+          "order": "ASCENDING"
+        },
+        {
+          "fieldPath": "status",
+          "order": "ASCENDING"
+        },
+        {
+          "fieldPath": "event_date",
+          "order": "DESCENDING"
+        }
+      ],
+      "_comment": "Captured from production 2026-08-29 \u2014 was live but declared nowhere. Recorded so git can rebuild this database; not authored here."
+    },
+    {
+      "collectionGroup": "transportExpenses",
+      "queryScope": "COLLECTION",
+      "fields": [
+        {
+          "fieldPath": "schoolId",
+          "order": "ASCENDING"
+        },
+        {
+          "fieldPath": "accounting_journal_ref",
+          "order": "ASCENDING"
+        }
+      ],
+      "_comment": "Captured from production 2026-08-29 \u2014 was live but declared nowhere. Recorded so git can rebuild this database; not authored here."
+    },
+    {
+      "collectionGroup": "transportExpenses",
+      "queryScope": "COLLECTION",
+      "fields": [
+        {
+          "fieldPath": "schoolId",
+          "order": "ASCENDING"
+        },
+        {
+          "fieldPath": "expense_date",
+          "order": "DESCENDING"
+        }
+      ],
+      "_comment": "Captured from production 2026-08-29 \u2014 was live but declared nowhere. Recorded so git can rebuild this database; not authored here."
+    },
+    {
+      "collectionGroup": "transportExpenses",
+      "queryScope": "COLLECTION",
+      "fields": [
+        {
+          "fieldPath": "schoolId",
+          "order": "ASCENDING"
+        },
+        {
+          "fieldPath": "expense_type",
+          "order": "ASCENDING"
+        },
+        {
+          "fieldPath": "expense_date",
+          "order": "DESCENDING"
+        }
+      ],
+      "_comment": "Captured from production 2026-08-29 \u2014 was live but declared nowhere. Recorded so git can rebuild this database; not authored here."
+    },
+    {
+      "collectionGroup": "transportExpenses",
+      "queryScope": "COLLECTION",
+      "fields": [
+        {
+          "fieldPath": "schoolId",
+          "order": "ASCENDING"
+        },
+        {
+          "fieldPath": "related_event_id",
+          "order": "ASCENDING"
+        },
+        {
+          "fieldPath": "status",
+          "order": "ASCENDING"
+        }
+      ],
+      "_comment": "Captured from production 2026-08-29 \u2014 was live but declared nowhere. Recorded so git can rebuild this database; not authored here."
+    },
+    {
+      "collectionGroup": "transportExpenses",
+      "queryScope": "COLLECTION",
+      "fields": [
+        {
+          "fieldPath": "schoolId",
+          "order": "ASCENDING"
+        },
+        {
+          "fieldPath": "status",
+          "order": "ASCENDING"
+        },
+        {
+          "fieldPath": "expense_date",
+          "order": "DESCENDING"
+        }
+      ],
+      "_comment": "Captured from production 2026-08-29 \u2014 was live but declared nowhere. Recorded so git can rebuild this database; not authored here."
+    },
+    {
+      "collectionGroup": "transportExpenses",
+      "queryScope": "COLLECTION",
+      "fields": [
+        {
+          "fieldPath": "schoolId",
+          "order": "ASCENDING"
+        },
+        {
+          "fieldPath": "vehicle_id",
+          "order": "ASCENDING"
+        },
+        {
+          "fieldPath": "expense_date",
+          "order": "DESCENDING"
+        }
+      ],
+      "_comment": "Captured from production 2026-08-29 \u2014 was live but declared nowhere. Recorded so git can rebuild this database; not authored here."
+    },
+    {
+      "collectionGroup": "transportNoticeIdempotency",
+      "queryScope": "COLLECTION",
+      "fields": [
+        {
+          "fieldPath": "schoolId",
+          "order": "ASCENDING"
+        },
+        {
+          "fieldPath": "expiresAt",
+          "order": "ASCENDING"
+        }
+      ],
+      "_comment": "Captured from production 2026-08-29 \u2014 was live but declared nowhere. Recorded so git can rebuild this database; not authored here."
+    },
+    {
+      "collectionGroup": "transportStops",
+      "queryScope": "COLLECTION",
+      "fields": [
+        {
+          "fieldPath": "schoolId",
+          "order": "ASCENDING"
+        },
+        {
+          "fieldPath": "route_id",
+          "order": "ASCENDING"
+        },
+        {
+          "fieldPath": "order",
+          "order": "ASCENDING"
+        }
+      ],
+      "_comment": "Captured from production 2026-08-29 \u2014 was live but declared nowhere. Recorded so git can rebuild this database; not authored here."
+    },
+    {
+      "collectionGroup": "transportVendors",
+      "queryScope": "COLLECTION",
+      "fields": [
+        {
+          "fieldPath": "schoolId",
+          "order": "ASCENDING"
+        },
+        {
+          "fieldPath": "status",
+          "order": "ASCENDING"
+        },
+        {
+          "fieldPath": "vendor_name",
+          "order": "ASCENDING"
+        }
+      ],
+      "_comment": "Captured from production 2026-08-29 \u2014 was live but declared nowhere. Recorded so git can rebuild this database; not authored here."
+    },
+    {
+      "collectionGroup": "transportVendors",
+      "queryScope": "COLLECTION",
+      "fields": [
+        {
+          "fieldPath": "schoolId",
+          "order": "ASCENDING"
+        },
+        {
+          "fieldPath": "vendor_name",
+          "order": "ASCENDING"
+        }
+      ],
+      "_comment": "Captured from production 2026-08-29 \u2014 was live but declared nowhere. Recorded so git can rebuild this database; not authored here."
+    },
+    {
+      "collectionGroup": "tripLogs",
+      "queryScope": "COLLECTION",
+      "fields": [
+        {
+          "fieldPath": "schoolId",
+          "order": "ASCENDING"
+        },
+        {
+          "fieldPath": "date",
+          "order": "DESCENDING"
+        }
+      ],
+      "_comment": "Captured from production 2026-08-29 \u2014 was live but declared nowhere. Recorded so git can rebuild this database; not authored here."
+    },
+    {
+      "collectionGroup": "tripLogs",
+      "queryScope": "COLLECTION",
+      "fields": [
+        {
+          "fieldPath": "schoolId",
+          "order": "ASCENDING"
+        },
+        {
+          "fieldPath": "driver_staff_id",
+          "order": "ASCENDING"
+        },
+        {
+          "fieldPath": "date",
+          "order": "DESCENDING"
+        }
+      ],
+      "_comment": "Captured from production 2026-08-29 \u2014 was live but declared nowhere. Recorded so git can rebuild this database; not authored here."
+    },
+    {
+      "collectionGroup": "tripLogs",
+      "queryScope": "COLLECTION",
+      "fields": [
+        {
+          "fieldPath": "schoolId",
+          "order": "ASCENDING"
+        },
+        {
+          "fieldPath": "driver_staff_id",
+          "order": "ASCENDING"
+        },
+        {
+          "fieldPath": "status",
+          "order": "ASCENDING"
+        },
+        {
+          "fieldPath": "date",
+          "order": "DESCENDING"
+        }
+      ],
+      "_comment": "Captured from production 2026-08-29 \u2014 was live but declared nowhere. Recorded so git can rebuild this database; not authored here."
+    },
+    {
+      "collectionGroup": "tripLogs",
+      "queryScope": "COLLECTION",
+      "fields": [
+        {
+          "fieldPath": "schoolId",
+          "order": "ASCENDING"
+        },
+        {
+          "fieldPath": "driver_staff_id",
+          "order": "ASCENDING"
+        },
+        {
+          "fieldPath": "trip_date",
+          "order": "DESCENDING"
+        }
+      ],
+      "_comment": "Captured from production 2026-08-29 \u2014 was live but declared nowhere. Recorded so git can rebuild this database; not authored here."
+    },
+    {
+      "collectionGroup": "tripLogs",
+      "queryScope": "COLLECTION",
+      "fields": [
+        {
+          "fieldPath": "schoolId",
+          "order": "ASCENDING"
+        },
+        {
+          "fieldPath": "event_id",
+          "order": "ASCENDING"
+        },
+        {
+          "fieldPath": "date",
+          "order": "ASCENDING"
+        }
+      ],
+      "_comment": "Captured from production 2026-08-29 \u2014 was live but declared nowhere. Recorded so git can rebuild this database; not authored here."
+    },
+    {
+      "collectionGroup": "tripLogs",
+      "queryScope": "COLLECTION",
+      "fields": [
+        {
+          "fieldPath": "schoolId",
+          "order": "ASCENDING"
+        },
+        {
+          "fieldPath": "route_id",
+          "order": "ASCENDING"
+        },
+        {
+          "fieldPath": "date",
+          "order": "DESCENDING"
+        }
+      ],
+      "_comment": "Captured from production 2026-08-29 \u2014 was live but declared nowhere. Recorded so git can rebuild this database; not authored here."
+    },
+    {
+      "collectionGroup": "tripLogs",
+      "queryScope": "COLLECTION",
+      "fields": [
+        {
+          "fieldPath": "schoolId",
+          "order": "ASCENDING"
+        },
+        {
+          "fieldPath": "route_id",
+          "order": "ASCENDING"
+        },
+        {
+          "fieldPath": "roster_student_ids",
+          "arrayConfig": "CONTAINS"
+        },
+        {
+          "fieldPath": "date",
+          "order": "DESCENDING"
+        }
+      ],
+      "_comment": "Captured from production 2026-08-29 \u2014 was live but declared nowhere. Recorded so git can rebuild this database; not authored here."
+    },
+    {
+      "collectionGroup": "tripLogs",
+      "queryScope": "COLLECTION",
+      "fields": [
+        {
+          "fieldPath": "schoolId",
+          "order": "ASCENDING"
+        },
+        {
+          "fieldPath": "route_id",
+          "order": "ASCENDING"
+        },
+        {
+          "fieldPath": "trip_date",
+          "order": "DESCENDING"
+        }
+      ],
+      "_comment": "Captured from production 2026-08-29 \u2014 was live but declared nowhere. Recorded so git can rebuild this database; not authored here."
+    },
+    {
+      "collectionGroup": "tripLogs",
+      "queryScope": "COLLECTION",
+      "fields": [
+        {
+          "fieldPath": "schoolId",
+          "order": "ASCENDING"
+        },
+        {
+          "fieldPath": "status",
+          "order": "ASCENDING"
+        },
+        {
+          "fieldPath": "date",
+          "order": "DESCENDING"
+        }
+      ],
+      "_comment": "Captured from production 2026-08-29 \u2014 was live but declared nowhere. Recorded so git can rebuild this database; not authored here."
+    },
+    {
+      "collectionGroup": "tripLogs",
+      "queryScope": "COLLECTION",
+      "fields": [
+        {
+          "fieldPath": "schoolId",
+          "order": "ASCENDING"
+        },
+        {
+          "fieldPath": "trip_date",
+          "order": "DESCENDING"
+        }
+      ],
+      "_comment": "Captured from production 2026-08-29 \u2014 was live but declared nowhere. Recorded so git can rebuild this database; not authored here."
+    },
+    {
+      "collectionGroup": "vehicleBreadcrumbs",
+      "queryScope": "COLLECTION",
+      "fields": [
+        {
+          "fieldPath": "schoolId",
+          "order": "ASCENDING"
+        },
+        {
+          "fieldPath": "expires_at",
+          "order": "ASCENDING"
+        }
+      ],
+      "_comment": "Captured from production 2026-08-29 \u2014 was live but declared nowhere. Recorded so git can rebuild this database; not authored here."
+    },
+    {
+      "collectionGroup": "vehicleBreadcrumbs",
+      "queryScope": "COLLECTION",
+      "fields": [
+        {
+          "fieldPath": "schoolId",
+          "order": "ASCENDING"
+        },
+        {
+          "fieldPath": "gps_session_id",
+          "order": "ASCENDING"
+        },
+        {
+          "fieldPath": "recorded_at",
+          "order": "ASCENDING"
+        }
+      ],
+      "_comment": "Captured from production 2026-08-29 \u2014 was live but declared nowhere. Recorded so git can rebuild this database; not authored here."
+    },
+    {
+      "collectionGroup": "vehicleCompliance",
+      "queryScope": "COLLECTION",
+      "fields": [
+        {
+          "fieldPath": "schoolId",
+          "order": "ASCENDING"
+        },
+        {
+          "fieldPath": "status",
+          "order": "ASCENDING"
+        },
+        {
+          "fieldPath": "expires_on",
+          "order": "ASCENDING"
+        }
+      ],
+      "_comment": "Captured from production 2026-08-29 \u2014 was live but declared nowhere. Recorded so git can rebuild this database; not authored here."
+    },
+    {
+      "collectionGroup": "vehicleCompliance",
+      "queryScope": "COLLECTION",
+      "fields": [
+        {
+          "fieldPath": "schoolId",
+          "order": "ASCENDING"
+        },
+        {
+          "fieldPath": "vehicleId",
+          "order": "ASCENDING"
+        },
+        {
+          "fieldPath": "rule_code",
+          "order": "ASCENDING"
+        }
+      ],
+      "_comment": "Captured from production 2026-08-29 \u2014 was live but declared nowhere. Recorded so git can rebuild this database; not authored here."
+    },
+    {
+      "collectionGroup": "vehicleCompliancePosture",
+      "queryScope": "COLLECTION",
+      "fields": [
+        {
+          "fieldPath": "schoolId",
+          "order": "ASCENDING"
+        },
+        {
+          "fieldPath": "tier",
+          "order": "ASCENDING"
+        },
+        {
+          "fieldPath": "score",
+          "order": "ASCENDING"
+        }
+      ],
+      "_comment": "Captured from production 2026-08-29 \u2014 was live but declared nowhere. Recorded so git can rebuild this database; not authored here."
+    },
+    {
+      "collectionGroup": "vehicleDocuments",
+      "queryScope": "COLLECTION",
+      "fields": [
+        {
+          "fieldPath": "schoolId",
+          "order": "ASCENDING"
+        },
+        {
+          "fieldPath": "vehicle_id",
+          "order": "ASCENDING"
+        },
+        {
+          "fieldPath": "uploaded_at",
+          "order": "DESCENDING"
+        }
+      ],
+      "_comment": "Captured from production 2026-08-29 \u2014 was live but declared nowhere. Recorded so git can rebuild this database; not authored here."
+    },
+    {
+      "collectionGroup": "vehicleLifecycleLog",
+      "queryScope": "COLLECTION",
+      "fields": [
+        {
+          "fieldPath": "schoolId",
+          "order": "ASCENDING"
+        },
+        {
+          "fieldPath": "vehicle_id",
+          "order": "ASCENDING"
+        },
+        {
+          "fieldPath": "event_at",
+          "order": "DESCENDING"
+        }
+      ],
+      "_comment": "Captured from production 2026-08-29 \u2014 was live but declared nowhere. Recorded so git can rebuild this database; not authored here."
+    },
+    {
+      "collectionGroup": "vehicleLivePositions",
+      "queryScope": "COLLECTION",
+      "fields": [
+        {
+          "fieldPath": "schoolId",
+          "order": "ASCENDING"
+        },
+        {
+          "fieldPath": "live_tracking_enabled",
+          "order": "ASCENDING"
+        },
+        {
+          "fieldPath": "recorded_at",
+          "order": "ASCENDING"
+        }
+      ],
+      "_comment": "Captured from production 2026-08-29 \u2014 was live but declared nowhere. Recorded so git can rebuild this database; not authored here."
+    },
+    {
+      "collectionGroup": "vehicleLivePositions",
+      "queryScope": "COLLECTION",
+      "fields": [
+        {
+          "fieldPath": "schoolId",
+          "order": "ASCENDING"
+        },
+        {
+          "fieldPath": "tripId",
+          "order": "ASCENDING"
+        }
+      ],
+      "_comment": "Captured from production 2026-08-29 \u2014 was live but declared nowhere. Recorded so git can rebuild this database; not authored here."
+    },
+    {
+      "collectionGroup": "vehicleReplacementHistory",
+      "queryScope": "COLLECTION",
+      "fields": [
+        {
+          "fieldPath": "schoolId",
+          "order": "ASCENDING"
+        },
+        {
+          "fieldPath": "original_vehicle_id",
+          "order": "ASCENDING"
+        },
+        {
+          "fieldPath": "effective_from",
+          "order": "DESCENDING"
+        }
+      ],
+      "_comment": "Captured from production 2026-08-29 \u2014 was live but declared nowhere. Recorded so git can rebuild this database; not authored here."
+    },
+    {
+      "collectionGroup": "vehicleRouteTransferHistory",
+      "queryScope": "COLLECTION",
+      "fields": [
+        {
+          "fieldPath": "schoolId",
+          "order": "ASCENDING"
+        },
+        {
+          "fieldPath": "vehicle_id",
+          "order": "ASCENDING"
+        },
+        {
+          "fieldPath": "effective_from",
+          "order": "DESCENDING"
+        }
+      ],
+      "_comment": "Captured from production 2026-08-29 \u2014 was live but declared nowhere. Recorded so git can rebuild this database; not authored here."
+    },
+    {
+      "collectionGroup": "vehicles",
+      "queryScope": "COLLECTION",
+      "fields": [
+        {
+          "fieldPath": "schoolId",
+          "order": "ASCENDING"
+        },
+        {
+          "fieldPath": "insurance_expiry",
+          "order": "ASCENDING"
+        }
+      ],
+      "_comment": "Captured from production 2026-08-29 \u2014 was live but declared nowhere. Recorded so git can rebuild this database; not authored here."
+    },
+    {
+      "collectionGroup": "vehicles",
+      "queryScope": "COLLECTION",
+      "fields": [
+        {
+          "fieldPath": "schoolId",
+          "order": "ASCENDING"
+        },
+        {
+          "fieldPath": "lifecycle_status",
+          "order": "ASCENDING"
+        },
+        {
+          "fieldPath": "updated_at",
+          "order": "DESCENDING"
+        }
+      ],
+      "_comment": "Captured from production 2026-08-29 \u2014 was live but declared nowhere. Recorded so git can rebuild this database; not authored here."
+    },
+    {
+      "collectionGroup": "vehicles",
+      "queryScope": "COLLECTION",
+      "fields": [
+        {
+          "fieldPath": "schoolId",
+          "order": "ASCENDING"
+        },
+        {
+          "fieldPath": "number",
+          "order": "ASCENDING"
+        }
+      ],
+      "_comment": "Captured from production 2026-08-29 \u2014 was live but declared nowhere. Recorded so git can rebuild this database; not authored here."
+    },
+    {
+      "collectionGroup": "vehicles",
+      "queryScope": "COLLECTION",
+      "fields": [
+        {
+          "fieldPath": "schoolId",
+          "order": "ASCENDING"
+        },
+        {
+          "fieldPath": "ownership_type",
+          "order": "ASCENDING"
+        },
+        {
+          "fieldPath": "vendor_id",
+          "order": "ASCENDING"
+        }
+      ],
+      "_comment": "Captured from production 2026-08-29 \u2014 was live but declared nowhere. Recorded so git can rebuild this database; not authored here."
+    },
+    {
+      "collectionGroup": "vehicles",
+      "queryScope": "COLLECTION",
+      "fields": [
+        {
+          "fieldPath": "schoolId",
+          "order": "ASCENDING"
+        },
+        {
+          "fieldPath": "permit_expiry",
+          "order": "ASCENDING"
+        }
+      ],
+      "_comment": "Captured from production 2026-08-29 \u2014 was live but declared nowhere. Recorded so git can rebuild this database; not authored here."
+    },
+    {
+      "collectionGroup": "vehicles",
+      "queryScope": "COLLECTION",
+      "fields": [
+        {
+          "fieldPath": "schoolId",
+          "order": "ASCENDING"
+        },
+        {
+          "fieldPath": "status",
+          "order": "ASCENDING"
+        },
+        {
+          "fieldPath": "number",
+          "order": "ASCENDING"
+        }
+      ],
+      "_comment": "Captured from production 2026-08-29 \u2014 was live but declared nowhere. Recorded so git can rebuild this database; not authored here."
+    },
+    {
+      "collectionGroup": "visitPasses",
+      "queryScope": "COLLECTION",
+      "fields": [
+        {
+          "fieldPath": "schoolId",
+          "order": "ASCENDING"
+        },
+        {
+          "fieldPath": "purpose",
+          "order": "ASCENDING"
+        },
+        {
+          "fieldPath": "requestedAt",
+          "order": "ASCENDING"
+        }
+      ],
+      "_comment": "Captured from production 2026-08-29 \u2014 was live but declared nowhere. Recorded so git can rebuild this database; not authored here."
+    },
+    {
+      "collectionGroup": "visitPasses",
+      "queryScope": "COLLECTION",
+      "fields": [
+        {
+          "fieldPath": "schoolId",
+          "order": "ASCENDING"
+        },
+        {
+          "fieldPath": "requestedAt",
+          "order": "DESCENDING"
+        }
+      ],
+      "_comment": "Captured from production 2026-08-29 \u2014 was live but declared nowhere. Recorded so git can rebuild this database; not authored here."
+    },
+    {
+      "collectionGroup": "visitPasses",
+      "queryScope": "COLLECTION",
+      "fields": [
+        {
+          "fieldPath": "schoolId",
+          "order": "ASCENDING"
+        },
+        {
+          "fieldPath": "status",
+          "order": "ASCENDING"
+        },
+        {
+          "fieldPath": "checkInAt",
+          "order": "DESCENDING"
+        }
+      ],
+      "_comment": "Captured from production 2026-08-29 \u2014 was live but declared nowhere. Recorded so git can rebuild this database; not authored here."
+    },
+    {
+      "collectionGroup": "visitPasses",
+      "queryScope": "COLLECTION",
+      "fields": [
+        {
+          "fieldPath": "schoolId",
+          "order": "ASCENDING"
+        },
+        {
+          "fieldPath": "status",
+          "order": "ASCENDING"
+        },
+        {
+          "fieldPath": "requestedAt",
+          "order": "ASCENDING"
+        }
+      ],
+      "_comment": "Captured from production 2026-08-29 \u2014 was live but declared nowhere. Recorded so git can rebuild this database; not authored here."
+    },
+    {
+      "collectionGroup": "visitorWatchlist",
+      "queryScope": "COLLECTION",
+      "fields": [
+        {
+          "fieldPath": "schoolId",
+          "order": "ASCENDING"
+        },
+        {
+          "fieldPath": "addedAt",
+          "order": "DESCENDING"
+        }
+      ],
+      "_comment": "Captured from production 2026-08-29 \u2014 was live but declared nowhere. Recorded so git can rebuild this database; not authored here."
+    },
+    {
+      "collectionGroup": "visitors",
+      "queryScope": "COLLECTION",
+      "fields": [
+        {
+          "fieldPath": "schoolId",
+          "order": "ASCENDING"
+        },
+        {
+          "fieldPath": "name",
+          "order": "ASCENDING"
+        }
+      ],
+      "_comment": "Captured from production 2026-08-29 \u2014 was live but declared nowhere. Recorded so git can rebuild this database; not authored here."
     }
   ],
   "fieldOverrides": [
