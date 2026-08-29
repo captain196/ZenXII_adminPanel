@@ -243,6 +243,31 @@ class Support extends MY_Controller
      * Firestore permits this combination: `status IN [...]` is not a range, so
      * the single range field is the orderBy field, which is legal.
      */
+    /**
+     * Firestore_service::where() (and therefore schoolWhere()) returns rows
+     * WRAPPED as ['id' => docId, 'data' => [...]] — see its @return at
+     * Firestore_service.php:425. get() returns the document FLAT. Reading a
+     * wrapped row as if it were flat yields no keys at all, so every field
+     * falls through to its default: the queue rendered a real ticket with a
+     * blank number, blank category and blank student, and only `status`/`lane`
+     * looked right because those two defaults happen to match.
+     *
+     * Found on device UAT 2026-08-28 with the first real ticket (#1). Tolerates
+     * both shapes on purpose, matching the idiom already used in
+     * Firestore_service.php:551.
+     */
+    private function _flatten($rows): array
+    {
+        if (!is_array($rows)) return [];
+        $out = [];
+        foreach ($rows as $r) {
+            if (!is_array($r)) continue;
+            $d = isset($r['data']) && is_array($r['data']) ? $r['data'] : $r;
+            if ($d !== []) $out[] = $d;
+        }
+        return $out;
+    }
+
     private function _query_tickets(array $statuses, ?int $cursor, int $limit, string $orderBy = 'lastMessageAt'): array
     {
         $conds = [
@@ -262,7 +287,7 @@ class Support extends MY_Controller
         }
 
         $rows = $this->fs->schoolWhere('supportTickets', $conds, $orderBy, 'DESC', $limit);
-        return is_array($rows) ? $rows : [];
+        return $this->_flatten($rows);
     }
 
     /**
@@ -451,7 +476,7 @@ class Support extends MY_Controller
         }
 
         $docs = $this->fs->schoolWhere('supportTickets', $conds, 'lastMessageAt', 'DESC', $limit);
-        $page = $this->_page(is_array($docs) ? $docs : [], $limit);
+        $page = $this->_page($this->_flatten($docs), $limit);
         $this->json_success($page + ['scope' => 'mine']);
     }
 
@@ -488,7 +513,7 @@ class Support extends MY_Controller
 
         $anon = !empty($ticket['isAnonymous']);
         $messages = [];
-        foreach ((is_array($msgs) ? $msgs : []) as $m) {
+        foreach ($this->_flatten($msgs) as $m) {
             if (!is_array($m)) continue;
             $isParent = ((string) ($m['senderType'] ?? '')) === 'parent';
             $messages[] = [
@@ -514,7 +539,7 @@ class Support extends MY_Controller
                 'ASC',
                 self::MAX_LIMIT
             );
-            foreach ((is_array($raw) ? $raw : []) as $n) {
+            foreach ($this->_flatten($raw) as $n) {
                 if (!is_array($n)) continue;
                 $notes[] = [
                     'authorName' => (string) ($n['authorName'] ?? ''),
@@ -582,7 +607,7 @@ class Support extends MY_Controller
             $limit
         );
 
-        $page = $this->_page(is_array($docs) ? $docs : [], $limit);
+        $page = $this->_page($this->_flatten($docs), $limit);
         $this->json_success($page + ['q' => $q, 'token' => $token]);
     }
 
@@ -1162,18 +1187,28 @@ class Support extends MY_Controller
     {
         require_permission('Support', 'support_assign', 'manage');
 
-        $rows = $this->fs->schoolWhere('staff', [], 'name', 'ASC', 500);
+        // _flatten() is load-bearing here, not cosmetic. Reading the WRAPPED rows
+        // as flat produced three faults at once on device UAT 2026-08-28:
+        //   1. `status` fell through to its 'Active' default, so EVERY staff row
+        //      passed the active filter — including deactivated staff.
+        //   2. `staffId` was absent but the wrapper's `id` was not, so the option
+        //      value became the DOC id (SCH_..._STA0025) instead of STA0025.
+        //      _is_assignee() compares against admin_id (STA0025), so an assigned
+        //      ticket would never have matched its assignee and My Tickets would
+        //      have stayed empty for the person actually holding the ticket.
+        //   3. `name` fell back to that same id, so the picker listed raw ids.
+        $rows = $this->_flatten($this->fs->schoolWhere('staff', [], 'name', 'ASC', 500));
         $out  = [];
-        foreach ((is_array($rows) ? $rows : []) as $s) {
+        foreach ($rows as $s) {
             if (!is_array($s)) continue;
             $status = (string) ($s['status'] ?? $s['Status'] ?? 'Active');
             if (strcasecmp(trim($status), 'Active') !== 0) continue;
-            $id = (string) ($s['staffId'] ?? $s['id'] ?? '');
+            $id = (string) ($s['staffId'] ?? '');
             if ($id === '') continue;
             $out[] = [
                 'staffId'    => $id,
                 'name'       => (string) ($s['name'] ?? $s['Name'] ?? $id),
-                'department' => (string) ($s['department'] ?? ''),
+                'department' => (string) ($s['department'] ?? $s['Department'] ?? ''),
             ];
         }
         $this->json_success(['staff' => $out, 'count' => count($out)]);
