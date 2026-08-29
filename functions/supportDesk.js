@@ -313,13 +313,21 @@ exports.onSupportMessageCreated = onDocumentCreated(
 
     const { t, reopened } = after;
 
-    // Reopening restores the parent's open-ticket slot; leaving it decremented
-    // would let a parent accumulate invisible headroom by reopening.
-    if (reopened && t.reporterId) {
-      await openRef(schoolId, String(t.reporterId))
-        .set({ openCount: FieldValue.increment(1) }, { merge: true })
-        .catch((e) => logger.error('[support] reopen openCount failed', { error: e.message }));
-    }
+    // openCount is NOT adjusted here, deliberately.
+    //
+    // The reopen above writes `status` (resolved -> assigned|reopened), which
+    // fires onSupportTicketStatusChanged; that trigger sees inactive -> active
+    // and increments by one. Incrementing here as well made a single reopen
+    // count TWICE, so every resolve->reopen cycle netted +1 permanently and the
+    // counter ratcheted upward — the exact failure this file's header says the
+    // status trigger exists to prevent. The rules cap reads openCount < 5
+    // (C-06), so a parent would eventually be locked out of raising any ticket
+    // at all, silently, through a rules denial they cannot diagnose.
+    //
+    // One denormal, one owner: onSupportTicketStatusChanged owns openCount for
+    // every status transition; this trigger owns the parent-message denormals.
+    // Caught on device UAT 2026-08-29 — create +1, resolve -1, reopen +2,
+    // close -1 left the counter at 1 where it should have been 0.
 
     const assignee = String(t.assignedTo || '');
     if (reopened) {
