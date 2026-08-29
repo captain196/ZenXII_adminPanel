@@ -329,16 +329,23 @@ exports.onSupportMessageCreated = onDocumentCreated(
     // Caught on device UAT 2026-08-29 — create +1, resolve -1, reopen +2,
     // close -1 left the counter at 1 where it should have been 0.
 
+    // The dedupe keys below derive from snap.id, the MESSAGE document id.
+    // They previously carried Date.now(), which defeated the point of a dedupe
+    // key: emitPush writes pushRequests/{schoolId}_{key}, so a STABLE key makes
+    // the send idempotent by overwrite. Firestore triggers are AT-LEAST-once, so
+    // on redelivery a timestamped key produced a second document and a second
+    // notification for a single parent message. TICKET_RAISED already used a
+    // stable key (sup_new_{ticketId}); these two did not.
     const assignee = String(t.assignedTo || '');
     if (reopened) {
-      await emitPush(schoolId, 'TICKET_REOPENED', `sup_reo_${ticketId}_${Date.now()}`, {
+      await emitPush(schoolId, 'TICKET_REOPENED', `sup_reo_${snap.id}`, {
         recipientStaffIds: assignee ? [assignee] : await deskRecipients(schoolId),
         ticketId,
       });
       return;
     }
 
-    await emitPush(schoolId, 'TICKET_REPLIED', `sup_prep_${ticketId}_${Date.now()}`, {
+    await emitPush(schoolId, 'TICKET_REPLIED', `sup_prep_${snap.id}`, {
       recipientIds: assignee ? [assignee] : await deskRecipients(schoolId),
       ticketId,
       senderName: String(m.senderName || 'Parent'),
