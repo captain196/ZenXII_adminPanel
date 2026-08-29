@@ -18,6 +18,9 @@ $ticket_id  = isset($ticket_id)  ? $ticket_id  : '';
 <link rel="stylesheet" href="<?= base_url('assets/css/rbac_ui_kit.css') ?>">
 <link rel="stylesheet" href="<?= base_url('assets/css/support_desk.css') ?>">
 
+<div class="content-wrapper">
+<div class="rx-loadbar" id="rxLoadbar"></div>
+<section class="content">
 <div class="sd-wrap">
   <div class="sd-head">
     <h1 class="sd-title" id="sdTitle">Ticket</h1>
@@ -100,6 +103,8 @@ $ticket_id  = isset($ticket_id)  ? $ticket_id  : '';
       </div>
     </aside>
   </div>
+</div>
+</section>
 </div>
 
 <script src="<?= base_url('assets/js/support_desk.js') ?>"></script>

@@ -14,6 +14,9 @@ $has_queue = isset($has_queue) ? $has_queue : (function_exists('has_permission')
 <link rel="stylesheet" href="<?= base_url('assets/css/rbac_ui_kit.css') ?>">
 <link rel="stylesheet" href="<?= base_url('assets/css/support_desk.css') ?>">
 
+<div class="content-wrapper">
+<div class="rx-loadbar" id="rxLoadbar"></div>
+<section class="content">
 <div class="sd-wrap">
   <div class="sd-head">
     <h1 class="sd-title">My Tickets</h1>
@@ -45,6 +48,8 @@ $has_queue = isset($has_queue) ? $has_queue : (function_exists('has_permission')
     <div id="sdState" class="sd-state">Loading…</div>
     <div class="sd-more" id="sdMoreWrap" hidden><button class="sd-btn" id="sdMore">Load more</button></div>
   </div>
+</div>
+</section>
 </div>
 
 <script src="<?= base_url('assets/js/support_desk.js') ?>"></script>
