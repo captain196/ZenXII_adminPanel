@@ -3457,6 +3457,21 @@
       ]
     },
     {
+      "_comment": "Support Desk (2026-08-30) - the index closeStaleTickets ACTUALLY needs. The sweep queries status==resolved AND reopenableUntil<now with NO schoolId, so it is cross-tenant by design; Firestore requires a query's equality fields to be a PREFIX of the index, and every other index here leads with schoolId. Verified against live 2026-08-30: the exact query returns FAILED_PRECONDITION, so that scheduled function has never once succeeded - resolved tickets never auto-close and the reopen window means nothing. DEPLOY-PENDING.",
+      "collectionGroup": "supportTickets",
+      "queryScope": "COLLECTION",
+      "fields": [
+        {
+          "fieldPath": "status",
+          "order": "ASCENDING"
+        },
+        {
+          "fieldPath": "reopenableUntil",
+          "order": "ASCENDING"
+        }
+      ]
+    },
+    {
       "_comment": "Support Desk P0 (2026-08-25) - parent to school ticketing. DEPLOY-PENDING, not yet deployed. 6/8 The awaiting-reply view, the one a triager actually lives in: lastParentReplyAt later than lastStaffReplyAt means the parent is waiting on us.",
       "collectionGroup": "supportTickets",
       "queryScope": "COLLECTION",
