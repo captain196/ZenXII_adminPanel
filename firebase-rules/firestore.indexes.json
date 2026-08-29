@@ -3428,6 +3428,10 @@
           "order": "ASCENDING"
         },
         {
+          "fieldPath": "reporterId",
+          "order": "ASCENDING"
+        },
+        {
           "fieldPath": "createdAt",
           "order": "ASCENDING"
         }
