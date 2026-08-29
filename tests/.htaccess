@@ -1,0 +1,24 @@
+# Deny all web access to the test tree.
+#
+# Nothing here is meant to be reachable over HTTP. Two concrete reasons, both
+# real rather than theoretical:
+#
+#  1. `doctemplates/` holds a browser E2E harness. Its runner LOADS AND
+#     EXECUTES the Certificate Designer against whatever host serves it. On
+#     production that is zenxii.com.
+#  2. The PHPUnit files are `.php`. Apache would hand them to the interpreter,
+#     and a class file with no bootstrap fatals — leaking absolute paths and a
+#     stack trace.
+#
+# The root .htaccess denies .md/.json/.xml etc. but NOT .php, .html or .js, so
+# neither of the above is covered by it. This file is directory-scoped on
+# purpose: it ships as a NEW file, so it cannot collide with production's
+# hand-maintained root .htaccess (which differs from the repo copy and already
+# blocks `git pull`).
+<IfModule mod_authz_core.c>
+    Require all denied
+</IfModule>
+<IfModule !mod_authz_core.c>
+    Order deny,allow
+    Deny from all
+</IfModule>
