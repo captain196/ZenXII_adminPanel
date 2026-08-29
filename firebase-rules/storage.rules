@@ -251,8 +251,20 @@ service firebase.storage {
     }
 
     match /schools/{schoolId}/{path=**} {
-      allow read:  if request.auth != null
-                   && request.auth.token.school_id == schoolId;
+      // READ MOVED OUT of this block on 2026-08-30 — see L6a/L6b below.
+      //
+      // It granted read to any token whose school_id matched, for EVERY object
+      // under the school tree. Correct for logos, circulars and report cards;
+      // wrong for support-ticket attachments, where a parent's photographed
+      // evidence became readable by every other parent in the school. Firestore
+      // already restricts the ticket DOCUMENT to its reporter, so document-level
+      // and object-level access disagreed.
+      //
+      // A narrower block could not fix it: Storage rules OR together, so the
+      // owner-scoped support block above grants the owner access and subtracts
+      // nothing from anyone else. The broad grant had to be withdrawn and
+      // re-issued per sub-tree, which is what L6a/L6b do.
+      //
       // D5 (2026-07-12): write gated to non-student/parent/guardian. Audit
       // confirmed NO rule-subject client writes here (real writers are
       // admin-panel Admin-SDK, which bypasses rules) — this is a defence-in-
@@ -270,6 +282,38 @@ service firebase.storage {
                    // `<=`, not `<` — every other block in this file uses `<=`,
                    // so a file of exactly 50 MiB was rejected here alone.
                    && request.resource.size <= 50 * 1024 * 1024;
+    }
+
+    // ─── L6a: READ for every school sub-tree EXCEPT support ────────────────
+    // The first segment is captured as {area} precisely so it can be tested.
+    // `{path=**}` yields a Path, which rules cannot index, so the exclusion is
+    // not expressible in the broad block above.
+    //
+    // Still readable school-wide, unchanged from the grant this replaces:
+    // logo|logos, holidays, academic, reportcard, circulars, students, staff,
+    // events, stories — and any future sub-tree, with no rule churn.
+    //
+    // Support attachments are the sole exclusion; they are reachable only via
+    // the owner-scoped block above. Staff read them through the panel, which
+    // uses the Admin SDK and hands out 5-minute signed URLs.
+    match /schools/{schoolId}/{area}/{rest=**} {
+      allow read: if request.auth != null
+                  && request.auth.token.school_id == schoolId
+                  // .lower() is NOT decoration. A case-sensitive compare lets
+                  // schools/{id}/Support/... slip the exclusion and be read
+                  // school-wide, silently reopening the hole this block exists
+                  // to close. Parents cannot write there (role-excluded from the
+                  // broad write arm, and the owner-scoped block below requires
+                  // literal lowercase), but any other authenticated role could.
+                  && area.lower() != 'support';
+    }
+
+    // ─── L6b: READ for files directly under schools/{schoolId}/ ────────────
+    // L6a needs at least one sub-folder segment. Anything written straight into
+    // the school root would otherwise lose the read it had before this change.
+    match /schools/{schoolId}/{file} {
+      allow read: if request.auth != null
+                  && request.auth.token.school_id == schoolId;
     }
 
     // ─── L7: STUDENTS (Sis.php:1601 lowercase variant) ──────────────────
