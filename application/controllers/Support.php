@@ -1159,7 +1159,19 @@ class Support extends MY_Controller
         }
 
         // Built here, from the authorised ticket. Never from request input.
-        $path = 'schools/' . $this->school_id . '/support/' . $ticketId . '/' . $name;
+        //
+        // The reporter id is part of the path. Storage rules cannot read the
+        // ticket to check ownership — attachments upload BEFORE the ticket
+        // document is created — so the owner is carried as a path segment and
+        // the rule compares it to request.auth.uid. Taken from the ticket this
+        // method has already authorised, never from the request.
+        $reporterId = (string) ($ticket['reporterId'] ?? '');
+        if ($reporterId === '') {
+            log_message('error', 'Support::attachment — ticket ' . $ticketId . ' has no reporterId');
+            show_404();
+            return;
+        }
+        $path = 'schools/' . $this->school_id . '/support/' . $reporterId . '/' . $ticketId . '/' . $name;
 
         try {
             $object = $this->firebase->getStorageBucket()->object($path);
