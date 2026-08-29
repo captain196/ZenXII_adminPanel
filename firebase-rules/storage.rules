@@ -176,6 +176,25 @@ service firebase.storage {
                     && request.auth.token.school_id == schoolId;
     }
 
+    // ─── L4: STORIES (Admin-posted via Stories.php) ─────────────────────
+    // Path:  stories/admin/{schoolId}/{adminId}/{path=**}
+    // Distinct from the block above: a literal 'admin' second segment instead
+    // of a schoolId. Both patterns coexist via the OR semantic of Storage
+    // rules — a path is allowed if either matching block allows it.
+    //
+    // RECOVERED FROM PRODUCTION 2026-08-30. This block was LIVE and in no
+    // checkout: a whole-file deploy from disk would have deleted it and broken
+    // admin-posted Stories media for every school. Caught by diffing the live
+    // ruleset against disk before deploying and finding 27 deletions, of which
+    // this was one. It is load-bearing, not dead — Storage_path_map.php builds
+    // this exact path in three places.
+    match /stories/admin/{schoolId}/{adminId}/{path=**} {
+      allow read:  if request.auth != null
+                   && request.auth.token.school_id == schoolId;
+      allow write: if request.auth != null
+                   && request.auth.token.school_id == schoolId;
+    }
+
     // NOTE (2026-07-13): the old L4 block for `stories/admin/{schoolId}/{adminId}/**`
     // was REMOVED — it was dead. Admin stories are written by Stories.php to
     // `schools/{schoolId}/stories/{adminId}/...` (covered by L6 below) via the
