@@ -106,14 +106,36 @@ class Support_audit
                 return false;
             }
 
+            // Attribution comes from the SESSION, not from $this->CI->admin_id.
+            //
+            // MY_Controller declares admin_id, admin_name, admin_role and
+            // school_id as PROTECTED. Reading them from out here is not an
+            // error you would ever see: PHP's `??` on an inaccessible property
+            // yields the fallback silently — no warning, no exception — so
+            // every entry this ledger wrote carried an empty actor and an empty
+            // school while looking perfectly healthy. An append-only audit log
+            // that records what happened but never who did it is the one
+            // failure mode this class exists to prevent, and it is the part
+            // that matters legally on the confidential lane.
+            //
+            // MY_Controller populates all four FROM these session keys, so the
+            // session is the same source, reached through a public accessor.
+            // Verified on device UAT 2026-08-29.
+            $sess = $this->CI->session ?? null;
+            $sv = static function ($key) use ($sess) {
+                if ($sess === null) return '';
+                $v = $sess->userdata($key);
+                return is_scalar($v) ? (string) $v : '';
+            };
+
             $entry = [
                 'ts'       => gmdate('c'),
                 'action'   => $action,
-                'schoolId' => (string) ($this->CI->school_id ?? ''),
+                'schoolId' => $sv('school_id'),
                 'ticketId' => $ticketId,
-                'actorId'  => (string) ($this->CI->admin_id ?? ''),
-                'actorName'=> (string) ($this->CI->admin_name ?? ''),
-                'actorRole'=> (string) ($this->CI->admin_role ?? ''),
+                'actorId'  => $sv('admin_id'),
+                'actorName'=> $sv('admin_name'),
+                'actorRole'=> $sv('admin_role'),
                 'detail'   => $this->_scrub($detail),
             ];
 
