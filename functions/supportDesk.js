@@ -22,9 +22,11 @@
  *  3. closeStaleTickets — retire resolved tickets once the reopen window has
  *     passed, so "resolved" and "closed" mean different things.
  *
- *  4. onSupportTicketStatusChanged — decrement openCount when a ticket leaves
- *     the active states. Without this the rules-layer cap in C-06 ratchets:
- *     a parent who raised five tickets over a year could never raise another.
+ *  4. onSupportTicketStatusChanged — RECOMPUTE openCount whenever a ticket
+ *     crosses the active boundary. It used to apply a ±1 delta; deltas are not
+ *     idempotent and these triggers are at-least-once, so a redelivery ratcheted
+ *     the counter permanently — the very failure this trigger exists to prevent.
+ *     A derived count is idempotent by construction and self-heals prior drift.
  *
  * ─────────────────────────────────────────────────────────────────────────────
  *  DIVISION OF LABOUR WITH THE PANEL — READ BEFORE ADDING A COUNTER
@@ -198,14 +200,29 @@ exports.onSupportTicketCreated = onDocumentCreated(
     }
 
     // ── per-parent open counter, read by the RULES cap (C-06) ────────────
+    //
+    // Derived, not incremented — same reasoning as onSupportTicketStatusChanged.
+    // increment(1) is not idempotent, and this trigger is at-least-once: a
+    // redelivery of a single create used to consume a second slot of the
+    // parent's cap of five, permanently and invisibly. Recomputing from the
+    // tickets themselves makes redelivery a no-op and repairs any existing drift
+    // for that parent on their next ticket.
     if (reporterId) {
       try {
+        const owned = await db.collection('supportTickets')
+          .where('schoolId', '==', schoolId)
+          .where('reporterId', '==', reporterId)
+          .get();
+        const openCount = owned.docs
+          .filter((d) => ACTIVE.includes(String((d.data() || {}).status || '')))
+          .length;
+
         await openRef(schoolId, reporterId).set(
-          { schoolId, reporterId, openCount: FieldValue.increment(1) },
+          { schoolId, reporterId, openCount },
           { merge: true }
         );
       } catch (e) {
-        logger.error('[support] openCount increment failed', { schoolId, reporterId, error: e.message });
+        logger.error('[support] openCount recompute failed', { schoolId, reporterId, error: e.message });
       }
     }
 
@@ -270,6 +287,26 @@ exports.onSupportMessageCreated = onDocumentCreated(
       after = await db.runTransaction(async (tx) => {
         const doc = await tx.get(ref);
         if (!doc.exists) return null;
+
+        // B12: at-least-once delivery means this transaction can run twice for
+        // ONE message. The dedupe keys were made stable, but the transaction was
+        // not: a redelivery re-ran increment(1) on messageCount, and — worse —
+        // read the ticket in its ALREADY-REOPENED state, so `reopened` came out
+        // false and it emitted TICKET_REPLIED under sup_prep_{id} instead of
+        // TICKET_REOPENED under sup_reo_{id}. A different doc id is a genuine
+        // create, so the parent's single reply produced a second notification.
+        //
+        // The message document is its own idempotency token: mark it counted
+        // inside the same transaction that counts it. Exact per message, bounded
+        // to one field, atomic with the increment, and needs no new collection.
+        const msg = await tx.get(snap.ref);
+        if (msg.exists && (msg.data() || {}).countedAt) {
+          // A distinct sentinel, not null: null already means "the ticket is
+          // gone", and the handler below logs it as such. Two different causes
+          // reported as one wrong cause is how a log stops being evidence.
+          return { redelivery: true };
+        }
+
         const t = doc.data() || {};
         const now = new Date().toISOString();
 
@@ -297,10 +334,17 @@ exports.onSupportMessageCreated = onDocumentCreated(
         }
 
         tx.update(ref, patch);
+        // Written in the SAME transaction as the increment, so the count and the
+        // mark can never disagree.
+        tx.update(snap.ref, { countedAt: now });
         return { t, reopened, status };
       });
     } catch (e) {
       logger.error('[support] message transaction failed', { ticketId, error: e.message });
+      return;
+    }
+    if (after && after.redelivery) {
+      logger.info('[support] redelivery ignored — this message was already counted', { id: snap.id, ticketId });
       return;
     }
     if (!after) {
@@ -376,16 +420,41 @@ exports.onSupportTicketStatusChanged = onDocumentUpdated(
     const isActive  = ACTIVE.includes(now);
     if (wasActive === isActive) return;
 
-    // Leaving active frees a slot; returning to it consumes one. Clamped at
-    // zero on read in the rules, but keep the stored value sane too.
-    const delta = isActive ? 1 : -1;
+    // B13: RECOMPUTE, do not increment.
+    //
+    // This applied FieldValue.increment(±1). Firestore triggers are at-least-once
+    // and `before`/`after` are frozen snapshots, so a redelivery re-applied the
+    // same delta and the counter ratcheted permanently — the exact failure this
+    // trigger exists to prevent, arriving through the delivery guarantee rather
+    // than through double ownership. openCount is read by the rules cap
+    // (openCount < 5), so a parent silently loses the ability to raise any ticket
+    // at all, with nothing anywhere reporting it.
+    //
+    // A derived value is idempotent BY CONSTRUCTION: a redelivery recomputes the
+    // same number. It also self-heals drift already present in the document,
+    // whatever caused it — retiring a class of bug instead of guarding one path
+    // into it. The reconciler script becomes a detector rather than a repair.
+    //
+    // Two equality filters only, with the status counted in memory rather than
+    // via an `in` clause, so it needs no new index. A parent holds at most a
+    // handful of tickets (the cap is 5) and status transitions are rare, so the
+    // extra read is not on a hot path.
     try {
+      const owned = await db.collection('supportTickets')
+        .where('schoolId', '==', schoolId)
+        .where('reporterId', '==', reporterId)
+        .get();
+      const openCount = owned.docs
+        .filter((d) => ACTIVE.includes(String((d.data() || {}).status || '')))
+        .length;
+
       await openRef(schoolId, reporterId).set(
-        { schoolId, reporterId, openCount: FieldValue.increment(delta) },
+        { schoolId, reporterId, openCount },
         { merge: true }
       );
+      logger.info('[support] openCount recomputed', { schoolId, reporterId, openCount, was, now });
     } catch (e) {
-      logger.error('[support] openCount adjust failed', { schoolId, reporterId, delta, error: e.message });
+      logger.error('[support] openCount recompute failed', { schoolId, reporterId, error: e.message });
     }
   }
 );

@@ -913,7 +913,7 @@ class Support extends MY_Controller
     private function _append_message(array $t, string $senderType, string $body): bool
     {
         $tid  = (string) $t['ticketId'];
-        $now  = date('c');
+        $now  = $this->_iso();
 
         // B4: an IDEMPOTENT message id, not a fresh random one.
         //
@@ -1078,7 +1078,7 @@ class Support extends MY_Controller
 
         $prev = (string) ($t['assignedTo'] ?? '');
         $name = (string) ($staff['name'] ?? $staff['Name'] ?? $staffId);
-        $now  = date('c');
+        $now  = $this->_iso();
 
         if (!$this->_patch_ticket($t, [
             'assignedTo'   => $staffId,
@@ -1198,7 +1198,7 @@ class Support extends MY_Controller
             'authorId'   => (string) ($this->admin_id ?? ''),
             'authorName' => (string) ($this->admin_name ?? ''),
             'body'       => $body,
-            'createdAt'  => date('c'),
+            'createdAt'  => $this->_iso(),
         ]);
         if (!$ok) { $this->json_error('Could not save the note.', 500); return; }
 
@@ -1243,11 +1243,11 @@ class Support extends MY_Controller
         }
         if (!$this->_patch_ticket($t, [
             'status'          => 'resolved',
-            'resolvedAt'      => date('c', $now),
+            'resolvedAt'      => $this->_iso($now),
             // 7-day reopen window. Past it the parent raises a new ticket
             // instead, which keeps "resolved" meaning something.
-            'reopenableUntil' => date('c', $now + (7 * 86400)),
-            'updatedAt'       => date('c', $now),
+            'reopenableUntil' => $this->_iso($now + (7 * 86400)),
+            'updatedAt'       => $this->_iso($now),
             'updatedBy'       => (string) ($this->admin_id ?? ''),
         ], 'resolve')) {
             $this->json_error('Could not resolve this ticket. The closing message was saved; the status is unchanged.', 500);
@@ -1325,7 +1325,7 @@ class Support extends MY_Controller
             return;
         }
 
-        $now = date('c');
+        $now = $this->_iso();
         if (!$this->_patch_ticket($t, [
             'assignedTo'   => '',
             'assignedName' => '',
@@ -1477,7 +1477,7 @@ class Support extends MY_Controller
             log_message('error', 'Support::_close_one — closing message failed for ' . $ticketId . '; ticket left open');
             return false;
         }
-        $now = date('c');
+        $now = $this->_iso();
         if (!$this->_patch_ticket($t, [
             'status'        => 'closed',
             'closedAt'      => $now,
