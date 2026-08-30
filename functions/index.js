@@ -193,6 +193,40 @@ function markError(snap, msg) {
 }
 
 /**
+ * A push that resolved an audience but reached NO device.
+ *
+ * Deliberately a third state beside 'done' and 'error'. It is not an error —
+ * nothing threw, nothing is retryable — but recording it as 'done' is what made
+ * this whole class of failure invisible: a support ticket that no staff member
+ * could ever hear about was indistinguishable, in this collection, from one
+ * delivered to fifty phones. `sendToTokens` has always reported `skipped` for an
+ * empty token list; the dispatcher simply discarded that and wrote 'done'.
+ *
+ * `audienceSize` carries the actionable half, because the two causes look
+ * identical here and have opposite remedies:
+ *   audienceSize === 0  → nobody is targeted at all. Grant the module, or fix
+ *                         the producer's audience field.
+ *   audienceSize > 0    → the right people are targeted and not one of them has
+ *                         the app installed. A staffing/rollout problem, not code.
+ * null means the mark resolved tokens directly from a role/class query, so there
+ * is no id list to count — zero tokens there means nobody in that group has a device.
+ *
+ * Query `pushRequests where status == 'undelivered'` to find silent failures.
+ */
+function markUndelivered(snap, audienceSize) {
+  return snap.ref
+    .set({
+      status:      'undelivered',
+      audienceSize: audienceSize == null ? null : Number(audienceSize),
+      recipients:  0,
+      fcmSuccess:  0,
+      fcmFailure:  0,
+      processedAt: new Date().toISOString(),
+    }, { merge: true })
+    .catch(() => {});
+}
+
+/**
  * Resolve target_group → list of appRole(s) to query.
  * Default is both (All School). Customise if finer-grained targeting is needed.
  */
@@ -386,10 +420,15 @@ exports.dispatchNoticeAndCircularPushes = onDocumentCreated(
       // mode — lets a producer (e.g. a scoped story) name exact recipients on
       // any mark. Otherwise fall back to the mark's audience mode.
       let tokens = [];
+      // How many recipients the mark RESOLVED, before tokens. Distinguishes
+      // "nobody targeted" from "targeted, but nobody has the app". See
+      // markUndelivered. Stays null for role/class marks, which have no id list.
+      let audienceIds = null;
       const explicitIds = Array.isArray(doc.userIds)
         ? [...new Set(doc.userIds.map((x) => String(x == null ? '' : x).trim()).filter(Boolean))]
         : [];
       if (explicitIds.length) {
+        audienceIds = explicitIds.length;
         tokens = await tokensForUsers(schoolId, explicitIds);
         logger.info(`[${mark}] school=${schoolId} explicit userIds=${explicitIds.length} tokens=${tokens.length}`);
       } else if (spec.audience === AUDIENCE.BROADCAST) {
@@ -411,6 +450,7 @@ exports.dispatchNoticeAndCircularPushes = onDocumentCreated(
           await markError(snap, 'no recipients');
           return;
         }
+        audienceIds = ids.length;
         tokens = await tokensForUsers(schoolId, ids);
         logger.info(`[${mark}] school=${schoolId} recipients=${ids.length} tokens=${tokens.length}`);
       }
@@ -418,6 +458,18 @@ exports.dispatchNoticeAndCircularPushes = onDocumentCreated(
       // ── Build notification + data and send ──
       const { notification, dataPayload } = buildPayload(spec, doc, schoolId);
       const result = await sendToTokens(tokens, notification, dataPayload);
+
+      // sendToTokens returns { skipped: true } when the token list was empty.
+      // That signal already existed and was thrown away here, so a push that
+      // reached nobody was written as `done` — indistinguishable from success.
+      if (result.skipped) {
+        logger.warn(
+          `[${mark}] UNDELIVERED — resolved audience=${audienceIds == null ? 'n/a' : audienceIds}, 0 registered devices`,
+          { id: snap.id, schoolId }
+        );
+        await markUndelivered(snap, audienceIds);
+        return;
+      }
 
       await snap.ref.set({
         status: 'done',
