@@ -491,7 +491,17 @@ exports.closeStaleTickets = onSchedule(
     // Collection-group-wide: the sweep is tenant-agnostic on purpose, because
     // running it per school would need a school list and would silently skip
     // any tenant missing from it.
-    while (true) {
+      // B19: bounded. `while (true)` relied entirely on the batch moving every
+      // document out of the query's own predicate. If a commit partially applied,
+      // or a document kept matching for any reason, this span until the 300s
+      // timeout with no completion log — and that log line exists precisely so a
+      // silent sweep is distinguishable from a broken one. A ceiling makes the
+      // runaway case visible instead of indistinguishable from success.
+      const MAX_PASSES = 25;   // 25 x 400 = 10,000 tickets per invocation
+      let pass = 0;
+
+      while (pass < MAX_PASSES) {
+        pass++;
       let snap;
       try {
         snap = await db.collection('supportTickets')
@@ -513,10 +523,26 @@ exports.closeStaleTickets = onSchedule(
         updatedAt:     new Date().toISOString(),
         updatedBy:     'system',
       }));
-      await batch.commit();
+      // B19: the commit was OUTSIDE the try, so a failure threw straight out of
+      // the scheduled function — past the completion log below. Count only what
+      // actually committed.
+      try {
+        await batch.commit();
+      } catch (e) {
+        logger.error('[support] closeStaleTickets batch commit failed', {
+          pass, size: snap.size, closed, error: e.message,
+        });
+        return;
+      }
       closed += snap.size;
       if (snap.size < 400) break;
     }
+      if (pass >= MAX_PASSES) {
+        logger.error('[support] closeStaleTickets hit the pass ceiling — tickets are not leaving '
+          + 'the predicate, or there is a real backlog. Investigate rather than assume it finished.',
+          { passes: pass, closed });
+      }
+
 
     // Assert success explicitly — a silent sweep is indistinguishable from a
     // broken one.
