@@ -1001,7 +1001,18 @@ class Support extends MY_Controller
         if ($body === null) return;
 
         $now = time();
-        $this->_append_message($t, 'staff', $body);
+        // B5: the return value is checked, not discarded. The comment above calls
+        // this message "required, not optional -- the single biggest driver of
+        // reopens", and the code then dropped the boolean on the floor: a failed
+        // write still flipped status to resolved, still pushed TICKET_RESOLVED to
+        // the parent, still wrote RESOLVED to the append-only ledger, and still
+        // returned 200. The parent got "your ticket was resolved" with no
+        // explanation attached, and the ledger recorded an explanation that does
+        // not exist. Fail closed instead: no message, no resolution.
+        if (!$this->_append_message($t, 'staff', $body)) {
+            $this->json_error('Could not save the closing message. The ticket has NOT been resolved.', 500);
+            return;
+        }
         $this->fs->update('supportTickets', $this->fs->docId($ticketId), [
             'status'          => 'resolved',
             'resolvedAt'      => date('c', $now),
@@ -1049,7 +1060,13 @@ class Support extends MY_Controller
         if ($reason === null) return;
 
         $who = (string) ($this->admin_name ?? 'A staff member');
-        $this->_append_message($t, 'system', $who . ' returned this to the queue — ' . $reason);
+        // B5: fail closed. Returning a ticket to the queue without the system
+        // message that says who did it and why leaves the next triager holding an
+        // unassigned ticket with no history of how it got there.
+        if (!$this->_append_message($t, 'system', $who . ' returned this to the queue — ' . $reason)) {
+            $this->json_error('Could not record the reason. The ticket has NOT been returned to the queue.', 500);
+            return;
+        }
 
         $this->fs->update('supportTickets', $this->fs->docId($ticketId), [
             'assignedTo'   => '',
@@ -1098,7 +1115,10 @@ class Support extends MY_Controller
         $reason = $this->_text('reason', 500);
         if ($reason === null) return;
 
-        $this->_close_one($t, $reason);
+        if (!$this->_close_one($t, $reason)) {
+            $this->json_error('Could not record the closure reason. The ticket has NOT been closed.', 500);
+            return;
+        }
         $this->json_success(['status' => 'closed']);
     }
 
@@ -1133,7 +1153,7 @@ class Support extends MY_Controller
                 $skipped[] = (string) $raw;
                 continue;
             }
-            $this->_close_one($t, $reason);
+            if (!$this->_close_one($t, $reason)) { $skipped[] = (string) $raw; continue; }
             $closed++;
         }
 
@@ -1142,14 +1162,27 @@ class Support extends MY_Controller
         $this->json_success(['closed' => $closed, 'skipped' => $skipped]);
     }
 
-    /** Shared close path, so single and bulk cannot drift apart. */
-    private function _close_one(array $t, string $reason): void
+    /**
+     * Shared close path, so single and bulk cannot drift apart.
+     *
+     * Returns false when the ticket was NOT closed. It used to return void, so a
+     * failed closing message was invisible to both callers (B5): the status
+     * flipped, the ledger recorded FORCE_CLOSED, and the caller reported success.
+     */
+    private function _close_one(array $t, string $reason): bool
     {
         $ticketId = (string) $t['ticketId'];
         $prev     = (string) ($t['status'] ?? '');
         $who      = (string) ($this->admin_name ?? 'An administrator');
 
-        $this->_append_message($t, 'system', $who . ' closed this ticket — ' . $reason);
+        // B5: a close with no recorded reason is exactly the state the closure
+        // reason exists to prevent, and force_close is the one action that ends a
+        // parent's complaint without their agreement. Refuse rather than close
+        // silently; the caller reports it (bulk_force_close lists it in skipped[]).
+        if (!$this->_append_message($t, 'system', $who . ' closed this ticket — ' . $reason)) {
+            log_message('error', 'Support::_close_one — closing message failed for ' . $ticketId . '; ticket left open');
+            return false;
+        }
         $this->fs->update('supportTickets', $this->fs->docId($ticketId), [
             'status'        => 'closed',
             'closedAt'      => date('c'),
@@ -1160,6 +1193,8 @@ class Support extends MY_Controller
         $this->_audit()->record('FORCE_CLOSED', $ticketId, [
             'from' => $prev, 'to' => 'closed', 'reason' => $reason,
         ]);
+
+        return true;
     }
 
     /**
