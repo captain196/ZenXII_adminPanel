@@ -192,14 +192,25 @@ $ticket_id  = isset($ticket_id)  ? $ticket_id  : '';
     // and refuses any name that ticket does not declare. See Support::attachment.
     var names = d.attachmentNames || [];
     if (names.length) {
+      // Reveal the panel BEFORE writing the images, and do NOT lazy-load them.
+      //
+      // Both halves matter. These <img> were injected into a container that was
+      // still `hidden`, so Chrome never scheduled the lazy load — and un-hiding
+      // afterwards does not retrigger it. The tile then stayed blank forever:
+      // verified 2026-08-30, still incomplete after 18s, while the identical URL
+      // loaded in ~3s via a script-created Image(). Staff simply never saw that a
+      // parent had attached a photo.
+      //
+      // `loading="lazy"` bought nothing regardless: at most 3 thumbnails, always
+      // at the top of the thread and always in view.
+      document.getElementById('sdAttachPanel').hidden = false;
       document.getElementById('sdAttach').innerHTML = names.map(function (n) {
         var url = SD.base + '/support/attachment/' +
                   encodeURIComponent(t.ticketId) + '/' + encodeURIComponent(n);
         return '<a class="sd-thumb" href="' + url + '" target="_blank" rel="noopener noreferrer">' +
-                 '<img src="' + url + '" alt="' + SD.esc(n) + '" loading="lazy">' +
+                 '<img src="' + url + '" alt="' + SD.esc(n) + '">' +
                '</a>';
       }).join('');
-      document.getElementById('sdAttachPanel').hidden = false;
     }
 
     var msgs = d.messages || [];
