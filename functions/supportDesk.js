@@ -499,6 +499,7 @@ exports.closeStaleTickets = onSchedule(
       // runaway case visible instead of indistinguishable from success.
       const MAX_PASSES = 25;   // 25 x 400 = 10,000 tickets per invocation
       let pass = 0;
+      let completed = false;   // did the loop END, rather than run out of passes?
 
       while (pass < MAX_PASSES) {
         pass++;
@@ -513,7 +514,7 @@ exports.closeStaleTickets = onSchedule(
         logger.error('[support] closeStaleTickets query failed — index missing?', { error: e.message });
         return;
       }
-      if (snap.empty) break;
+      if (snap.empty) { completed = true; break; }
 
       const batch = db.batch();
       snap.docs.forEach((d) => batch.update(d.ref, {
@@ -535,9 +536,15 @@ exports.closeStaleTickets = onSchedule(
         return;
       }
       closed += snap.size;
-      if (snap.size < 400) break;
+      if (snap.size < 400) { completed = true; break; }
     }
-      if (pass >= MAX_PASSES) {
+      // A sweep that legitimately finishes ON the last pass — snap.empty, or a
+      // final partial batch — still leaves pass === MAX_PASSES. Comparing the
+      // counter therefore raised the "investigate" alarm on a perfectly healthy
+      // run, and then logged "complete" directly after it. Two contradictory
+      // lines degrade exactly the observability B19 was added to protect, so the
+      // condition tracks whether the loop actually ENDED, not how far it counted.
+      if (pass >= MAX_PASSES && !completed) {
         logger.error('[support] closeStaleTickets hit the pass ceiling — tickets are not leaving '
           + 'the predicate, or there is a real backlog. Investigate rather than assume it finished.',
           { passes: pass, closed });

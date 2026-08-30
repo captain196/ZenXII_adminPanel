@@ -910,8 +910,20 @@ class Support extends MY_Controller
     /** Document id written by the most recent _append_message(). See B6. */
     private string $_last_message_id = '';
 
+    /**
+     * Did the most recent _append_message() find the message ALREADY there?
+     *
+     * The content-derived id cannot tell a timeout retry from a genuine repeat —
+     * "Ok" twice in five minutes is ordinary desk traffic and hashes identically.
+     * Swallowing it silently was the wrong half of that trade: reply() went on to
+     * write REPLIED to the append-only ledger and answer 200 for a message that
+     * was never created. Callers read this and tell the truth instead.
+     */
+    private bool $_last_message_duplicate = false;
+
     private function _append_message(array $t, string $senderType, string $body): bool
     {
+        $this->_last_message_duplicate = false;
         $tid  = (string) $t['ticketId'];
         $now  = $this->_iso();
 
@@ -930,13 +942,30 @@ class Support extends MY_Controller
         // bucket keeps a genuine later repeat ("are you there?" twice in a day) a
         // distinct message, while collapsing the retry that happens seconds after
         // a timeout — which is the only window this failure occurs in.
-        $bucket = (int) floor(time() / 300);
+        // The dedupe SCOPE follows the event's identity, not one fixed rule.
+        //
+        //   staff  — typed by a human. The hazard is the timeout retry: identical
+        //            text re-sent seconds later because we told them it failed. A
+        //            5-minute content bucket collapses that into one message.
+        //
+        //   system — generated once per state transition. Two transitions are
+        //            genuinely DIFFERENT events even when their text is identical:
+        //            assign to A, return to queue, re-assign to A produces the
+        //            same sentence twice, and bucketing it dropped the second —
+        //            leaving the thread with no record of the reassignment while
+        //            the ticket's state had changed. These carry the exact
+        //            timestamp, so each transition is its own message. The retry
+        //            hazard is covered instead by the 409 guards on resolve,
+        //            force_close and return_to_queue.
+        $scope = $senderType === 'system'
+            ? $now                                  // exact — one per transition
+            : (string) ((int) floor(time() / 300)); // 5-minute retry window
         $mid = $this->fs->docId2($tid, substr(hash('sha256', implode('|', [
             $tid,
             (string) ($this->admin_id ?? ''),
             $senderType,
             $body,
-            (string) $bucket,
+            $scope,
         ])), 0, 16));
 
         // Exposed so the caller can use it as a push dedupe key. It is already
@@ -944,17 +973,46 @@ class Support extends MY_Controller
         // across a retry of the same reply, distinct for a genuinely new one.
         $this->_last_message_id = $mid;
 
+        // The denormal patch is built BEFORE the branch, because both paths need
+        // it. It is a set of ABSOLUTE values, so re-running it is idempotent and
+        // is in fact the repair a retry exists to perform.
+        $patch = [
+            'lastMessageAt' => $now,
+            'updatedAt'     => $now,
+            'updatedBy'     => (string) ($this->admin_id ?? ''),
+        ];
+        // A system message is bookkeeping, not a reply — it must not reset the
+        // "awaiting us" clock, or an assignment would make a waiting parent
+        // look answered.
+        if ($senderType === 'staff') {
+            $patch['lastStaffReplyAt'] = $now;
+            if (empty($t['firstStaffReplyAt'])) {
+                // Un-backfillable once missed, which is why it is captured from
+                // the very first reply rather than when reporting is built.
+                $patch['firstStaffReplyAt'] = $now;
+            }
+        }
+
         // Already written? Then this is the retry the idempotent id exists for.
-        // Return success WITHOUT re-running the denormal patch or _bump_count —
-        // overwriting the message but incrementing messageCount a second time
-        // would trade a duplicate message for a corrupt count, which is worse:
-        // the count is what the parent's thread and the queue badge both read,
-        // and nothing would ever reconcile it.
+        //
+        // An earlier version returned true here immediately, skipping BOTH the
+        // denormal patch and _bump_count. That was half right. _bump_count is an
+        // increment and must never repeat. The patch is absolute values, and on
+        // the exact failure this whole mechanism exists for — a cURL timeout on a
+        // write that actually landed — attempt 1 returns false BEFORE the patch
+        // and attempt 2 used to return true before it too. So the denormals were
+        // never written at all: `_awaiting_us()` reported the ticket unanswered
+        // forever, and firstStaffReplyAt — "un-backfillable once missed" by its
+        // own comment — was lost permanently. The patch must run here.
         //
         // get() returns null on read failure as well as on absence, so a failed
         // existence check falls through to the write — the safe direction.
         if ($this->fs->get('supportMessages', $mid) !== null) {
-            log_message('debug', 'Support::_append_message — idempotent hit for ' . $mid . '; not re-counting');
+            $this->_last_message_duplicate = true;
+            log_message('info',
+                'Support::_append_message — message ' . $mid . ' already exists; '
+                . 're-applying denormals, not re-counting');
+            $this->_patch_ticket($t, $patch, 'append_message_denormals_retry');
             return true;
         }
 
@@ -972,26 +1030,10 @@ class Support extends MY_Controller
         ]);
         if (!$ok) return false;
 
-        $patch = [
-            'lastMessageAt' => $now,
-            'updatedAt'     => $now,
-            'updatedBy'     => (string) ($this->admin_id ?? ''),
-        ];
-        // A system message is bookkeeping, not a reply — it must not reset the
-        // "awaiting us" clock, or an assignment would make a waiting parent
-        // look answered.
-        if ($senderType === 'staff') {
-            $patch['lastStaffReplyAt'] = $now;
-            if (empty($t['firstStaffReplyAt'])) {
-                // Un-backfillable once missed, which is why it is captured from
-                // the very first reply rather than when reporting is built.
-                $patch['firstStaffReplyAt'] = $now;
-            }
-        }
-        // The denormal patch. $tid already comes from $t['ticketId'] here, so B10
-        // never applied — but the return was still discarded (W4), which meant a
-        // failed patch left lastMessageAt stale and the ticket never surfaced as
-        // touched. Not fatal to the message itself, so it logs and continues.
+        // $tid already comes from $t['ticketId'] here, so B10 never applied — but
+        // the return was discarded (W4), which left lastMessageAt stale and the
+        // ticket never surfaced as touched. Not fatal to the message itself, so
+        // it logs and continues.
         $this->_patch_ticket($t, $patch, 'append_message_denormals');
         $this->_bump_count($tid);
         return true;
@@ -1053,8 +1095,22 @@ class Support extends MY_Controller
         // closureReason stayed on the document, and onSupportTicketStatusChanged
         // saw inactive→active and spent one of the reporter's five cap slots on a
         // ticket they had been told was finished.
-        if ((string) ($t['status'] ?? '') === 'closed') {
-            $this->json_error('This ticket is closed. Reopen it before assigning.', 409);
+        // X1 — and 'resolved' as well, which the first version of this guard
+        // missed. resolve() and return_to_queue() both refuse BOTH states; assign
+        // stopped one status short, so the identical failure survived one step
+        // over: assigning a resolved ticket writes status='assigned'
+        // unconditionally, which is inactive→active, so the status trigger
+        // recomputes and spends one of the reporter's five cap slots on a ticket
+        // they were told was finished — while resolvedAt and reopenableUntil stay
+        // stranded on it, putting it permanently outside closeStaleTickets'
+        // status=='resolved' predicate.
+        $cur = (string) ($t['status'] ?? '');
+        if ($cur === 'closed' || $cur === 'resolved') {
+            $this->json_error(
+                $cur === 'closed'
+                    ? 'This ticket is closed. Reopen it before assigning.'
+                    : 'This ticket is resolved. It cannot be assigned until it is reopened.',
+                409);
             return;
         }
 
@@ -1151,6 +1207,30 @@ class Support extends MY_Controller
         // pushRequests/{schoolId}_{key}, and a stable key is exactly what makes
         // the send idempotent by overwrite. The message id is already
         // content-derived (B4), so it is stable for a retry and unique per reply.
+        // Nothing new was written — the identical body already exists on this
+        // ticket from this author inside the dedupe window.
+        //
+        // The content-derived id cannot distinguish a timeout retry from a genuine
+        // repeat, and "Ok" or "Noted." twice in five minutes is ordinary desk
+        // traffic. The previous version swallowed it and then carried on: it wrote
+        // REPLIED to the APPEND-ONLY LEDGER and answered 200 for a message that
+        // does not exist — reintroducing, one commit later, exactly the class of
+        // lie that B5 was closing.
+        //
+        // Say what actually happened. Correct for the retry ("it did go through")
+        // and correct for the repeat ("that exact text is already on the thread"),
+        // and it leaves the staff member in control: change a word and it sends.
+        // No push, and NO ledger entry, because neither event occurred.
+        if ($this->_last_message_duplicate) {
+            log_message('info', 'Support::reply — duplicate suppressed for ' . $ticketId);
+            $this->json_success([
+                'appended'  => false,
+                'duplicate' => true,
+                'message'   => 'That reply is already on this thread — nothing further was sent.',
+            ]);
+            return;
+        }
+
         $this->_push('TICKET_REPLIED', 'sup_rep_' . $this->_last_message_id, [
             'recipientIds' => [(string) ($t['reporterId'] ?? '')],
             'ticketId'     => $ticketId,
