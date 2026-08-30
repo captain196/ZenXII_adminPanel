@@ -851,7 +851,44 @@ class Support extends MY_Controller
     {
         $tid  = (string) $t['ticketId'];
         $now  = date('c');
-        $mid  = $this->fs->docId2($tid, bin2hex(random_bytes(8)));
+
+        // B4: an IDEMPOTENT message id, not a fresh random one.
+        //
+        // The REST client's cURL timeout is 15s. On a timeout curl_exec returns
+        // false and the HTTP code is 0, so set() reports failure for a write that
+        // may well have landed — and reply() then told the user, with complete
+        // confidence, "Nothing was sent." With a random id per call, the staff
+        // member's natural response (retype and resend) produced a SECOND copy of
+        // the same message in the parent's thread.
+        //
+        // Deriving the id from the content makes the retry converge: the same
+        // author sending the same body on the same ticket writes the SAME
+        // document, so a retry overwrites rather than duplicates. The 5-minute
+        // bucket keeps a genuine later repeat ("are you there?" twice in a day) a
+        // distinct message, while collapsing the retry that happens seconds after
+        // a timeout — which is the only window this failure occurs in.
+        $bucket = (int) floor(time() / 300);
+        $mid = $this->fs->docId2($tid, substr(hash('sha256', implode('|', [
+            $tid,
+            (string) ($this->admin_id ?? ''),
+            $senderType,
+            $body,
+            (string) $bucket,
+        ])), 0, 16));
+
+        // Already written? Then this is the retry the idempotent id exists for.
+        // Return success WITHOUT re-running the denormal patch or _bump_count —
+        // overwriting the message but incrementing messageCount a second time
+        // would trade a duplicate message for a corrupt count, which is worse:
+        // the count is what the parent's thread and the queue badge both read,
+        // and nothing would ever reconcile it.
+        //
+        // get() returns null on read failure as well as on absence, so a failed
+        // existence check falls through to the write — the safe direction.
+        if ($this->fs->get('supportMessages', $mid) !== null) {
+            log_message('debug', 'Support::_append_message — idempotent hit for ' . $mid . '; not re-counting');
+            return true;
+        }
 
         $ok = $this->fs->set('supportMessages', $mid, [
             'schoolId'   => $this->school_id,
@@ -1017,7 +1054,13 @@ class Support extends MY_Controller
         if ($body === null) return;
 
         if (!$this->_append_message($t, 'staff', $body)) {
-            $this->json_error('Could not save your reply. Nothing was sent.', 500);
+            // Deliberately does NOT claim nothing was sent. A cURL timeout is
+            // indeterminate — the write may have landed. Telling staff it
+            // definitely failed is what made them resend. The id is idempotent
+            // now, so a resend is safe, but the message should still be honest.
+            $this->json_error(
+                'Could not confirm your reply was saved. Reload the thread before resending — '
+                . 'if it is already there, it went through.', 500);
             return;
         }
 
