@@ -5622,6 +5622,24 @@
         }
       ],
       "_comment": "Captured from production 2026-08-29 \u2014 was live but declared nowhere. Recorded so git can rebuild this database; not authored here."
+    },
+    {
+      "collectionGroup": "supportNotes",
+      "queryScope": "COLLECTION",
+      "fields": [
+        {
+          "fieldPath": "schoolId",
+          "order": "ASCENDING"
+        },
+        {
+          "fieldPath": "ticketId",
+          "order": "ASCENDING"
+        },
+        {
+          "fieldPath": "createdAt",
+          "order": "ASCENDING"
+        }
+      ]
     }
   ],
   "fieldOverrides": [
