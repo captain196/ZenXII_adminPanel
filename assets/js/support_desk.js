@@ -227,6 +227,13 @@
 
     function load(append) {
       if (loading) return;
+      // W1: an append with no cursor re-requested PAGE ONE and
+      // insertAdjacentHTML'd it onto the existing rows, duplicating every row on
+      // screen. That was reachable because .sd-more declared `display:flex`,
+      // which beat the [hidden] attribute and left "Load more" clickable even
+      // when there was nothing more to load. The CSS is fixed too; this guard
+      // makes the data path correct on its own rather than merely unreachable.
+      if (append && !cursor) { cfg.moreWrap.hidden = true; return; }
       loading = true;
       if (!append) { cfg.rows.innerHTML = ''; cfg.moreWrap.hidden = true; }
       render('Loading…', false);

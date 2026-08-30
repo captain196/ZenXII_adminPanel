@@ -82,6 +82,16 @@
 .sd-err     { border-left: 3px solid #dc2626; text-align: left; padding-left: 18px; }
 .sd-err b   { color: #dc2626; }
 .sd-more    { display: flex; justify-content: center; padding: 14px; }
+/* `display` on a class beats the [hidden] attribute, whose UA rule is only
+   `[hidden]{display:none}` at the same specificity — and this stylesheet loads
+   after bootstrap's. So #sdMoreWrap[hidden] stayed VISIBLE: "Load more" showed
+   even when there was no cursor, and clicking it re-requested page 1 and
+   appended the same rows again, so a 5-ticket queue became 10 then 15 identical
+   rows. Restore the attribute's meaning explicitly.
+   Checked the module's other seven `hidden` elements — sd-state, sd-flash,
+   sd-panel, sd-compose, sd-btn, sd-full — none of them declares `display`, so
+   this is the only element with the problem. */
+.sd-more[hidden] { display: none !important; }
 
 /* ── thread view ─────────────────────────────────────────────────────── */
 .sd-thread   { display: grid; grid-template-columns: minmax(0, 1fr) 300px; gap: 18px; align-items: start; }

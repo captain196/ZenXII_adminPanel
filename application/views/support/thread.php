@@ -255,10 +255,25 @@ $ticket_id  = isset($ticket_id)  ? $ticket_id  : '';
       .then(render)
       .catch(function (e) {
         // A failure must not render as an empty thread.
+        //
+        // W3: render() hides $mstat once messages draw, and this block set its
+        // class and innerHTML but never un-hid it — so on a RELOAD failure the
+        // error was written into an invisible element. The visible result was a
+        // green "Reply sent." flash, a blank Details sidebar, no subtitle, the
+        // previous conversation still on screen, and the action panel still
+        // enabled against unknown ticket state. The list views get this right
+        // (support_desk.js sets state.hidden = false first); this inline copy
+        // lost the line.
+        $mstat.hidden = false;
         $mstat.className = 'sd-state sd-err';
         $mstat.innerHTML = '<b>Could not load this ticket</b>' + SD.esc(e.message);
         $facts.innerHTML = '';
         document.getElementById('sdSub').textContent = '';
+        // The panels below act on a ticket whose state we no longer know.
+        ['sdActionPanel', 'sdReplyPanel'].forEach(function (id) {
+          var el = document.getElementById(id);
+          if (el) el.hidden = true;
+        });
       });
   }
 
@@ -280,20 +295,39 @@ $ticket_id  = isset($ticket_id)  ? $ticket_id  : '';
   }
 
   /** Wrap a write: disable the button, post, reload, report honestly. */
+  // Returns a promise resolving TRUE only if the write actually succeeded.
+  //
+  // It used to return nothing, so every caller cleared its textarea on the line
+  // AFTER the call — synchronously, before the POST had resolved. A staff member
+  // who wrote a long reply and hit a 403, a 409 (someone else closed the ticket),
+  // a 500, or an expired session got an honest error message with the box
+  // already empty. Accurate error, work gone: they were told to retry something
+  // that no longer existed.
   function act(btn, url, fields, okMsg) {
-    if (!btn) return;
+    if (!btn) return Promise.resolve(false);
     btn.disabled = true;
     var was = btn.textContent;
     btn.textContent = 'Working…';
-    SD.postJSON(SD.base + url, fields).then(function () {
+    return SD.postJSON(SD.base + url, fields).then(function () {
       flash(okMsg, 'ok');
-      return reload();
+      // The write succeeded even if the redraw afterwards does not.
+      return reload().then(function () { return true; }, function () { return true; });
     }).catch(function (e) {
       // Never claim success on a refused write.
       flash(e.message, 'error');
-    }).then(function () {
+      return false;
+    }).then(function (ok) {
       btn.disabled = false;
       btn.textContent = was;
+      return ok;
+    });
+  }
+
+  /** Clear a field only once the write that consumed it actually succeeded. */
+  function clearOnOk(promise, elId) {
+    return promise.then(function (ok) {
+      if (ok) { var el = document.getElementById(elId); if (el) el.value = ''; }
+      return ok;
     });
   }
 
@@ -301,24 +335,21 @@ $ticket_id  = isset($ticket_id)  ? $ticket_id  : '';
   if (replyBtn) replyBtn.addEventListener('click', function () {
     var body = document.getElementById('sdReplyBody').value.trim();
     if (!body) { flash('Write a reply first.', 'error'); return; }
-    act(this, '/support/reply', { ticket_id: TICKET_ID, body: body }, 'Reply sent.');
-    document.getElementById('sdReplyBody').value = '';
+    clearOnOk(act(this, '/support/reply', { ticket_id: TICKET_ID, body: body }, 'Reply sent.'), 'sdReplyBody');
   });
 
   var resolveBtn = document.getElementById('sdResolveBtn');
   if (resolveBtn) resolveBtn.addEventListener('click', function () {
     var body = document.getElementById('sdReplyBody').value.trim();
     if (!body) { flash('Write a closing message — "resolved" with no explanation is the main cause of reopens.', 'error'); return; }
-    act(this, '/support/resolve', { ticket_id: TICKET_ID, body: body }, 'Resolved.');
-    document.getElementById('sdReplyBody').value = '';
+    clearOnOk(act(this, '/support/resolve', { ticket_id: TICKET_ID, body: body }, 'Resolved.'), 'sdReplyBody');
   });
 
   var noteBtn = document.getElementById('sdNoteBtn');
   if (noteBtn) noteBtn.addEventListener('click', function () {
     var body = document.getElementById('sdNoteBody').value.trim();
     if (!body) { flash('Write a note first.', 'error'); return; }
-    act(this, '/support/add_note', { ticket_id: TICKET_ID, body: body }, 'Note added.');
-    document.getElementById('sdNoteBody').value = '';
+    clearOnOk(act(this, '/support/add_note', { ticket_id: TICKET_ID, body: body }, 'Note added.'), 'sdNoteBody');
   });
 
   var assignBtn = document.getElementById('sdAssignBtn');
