@@ -140,6 +140,19 @@ const MARK_REGISTRY = {
     audience: AUDIENCE.USERS, idField: 'recipientIds', type: 'support_resolved',
     fTitle: 'Ticket resolved', fBody: 'Tap to view the response', dataKeys: ['ticketId'],
   },
+  // Force-close ends a parent's complaint WITHOUT their agreement — it is the
+  // one action in this module that does that. It emitted nothing, so the parent
+  // learned of it only by reopening the app and noticing the thread had closed.
+  // closeStaleTickets is deliberately silent (a ticket ageing out of its reopen
+  // window is not news); a human closing your complaint is.
+  TICKET_CLOSED: {
+    audience: AUDIENCE.USERS, idField: 'recipientIds', type: 'support_closed',
+    notify: (d) => ({
+      title: 'Ticket closed',
+      body: String(d.closureReason || 'The school closed this ticket').slice(0, 180),
+    }),
+    data: (d) => ({ ticketId: String(d.ticketId || '') }),
+  },
   TICKET_REOPENED: {
     audience: AUDIENCE.USERS, idField: 'recipientStaffIds', type: 'support_reopened',
     fTitle: 'Ticket reopened', fBody: 'A parent reopened a resolved ticket', dataKeys: ['ticketId'],

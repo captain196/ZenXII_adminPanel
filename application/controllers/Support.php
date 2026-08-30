@@ -847,6 +847,9 @@ class Support extends MY_Controller
      * write: two staff replying in the same second would otherwise both read
      * the same count and one write would be lost (E-18).
      */
+    /** Document id written by the most recent _append_message(). See B6. */
+    private string $_last_message_id = '';
+
     private function _append_message(array $t, string $senderType, string $body): bool
     {
         $tid  = (string) $t['ticketId'];
@@ -875,6 +878,11 @@ class Support extends MY_Controller
             $body,
             (string) $bucket,
         ])), 0, 16));
+
+        // Exposed so the caller can use it as a push dedupe key. It is already
+        // idempotent (see above), which makes it the ideal event identity: stable
+        // across a retry of the same reply, distinct for a genuinely new one.
+        $this->_last_message_id = $mid;
 
         // Already written? Then this is the retry the idempotent id exists for.
         // Return success WITHOUT re-running the denormal patch or _bump_count —
@@ -920,7 +928,11 @@ class Support extends MY_Controller
                 $patch['firstStaffReplyAt'] = $now;
             }
         }
-        $this->fs->update('supportTickets', $this->fs->docId($tid), $patch);
+        // The denormal patch. $tid already comes from $t['ticketId'] here, so B10
+        // never applied — but the return was still discarded (W4), which meant a
+        // failed patch left lastMessageAt stale and the ticket never surfaced as
+        // touched. Not fatal to the message itself, so it logs and continues.
+        $this->_patch_ticket($t, $patch, 'append_message_denormals');
         $this->_bump_count($tid);
         return true;
     }
@@ -1008,20 +1020,31 @@ class Support extends MY_Controller
         $name = (string) ($staff['name'] ?? $staff['Name'] ?? $staffId);
         $now  = date('c');
 
-        $this->fs->update('supportTickets', $this->fs->docId($ticketId), [
+        if (!$this->_patch_ticket($t, [
             'assignedTo'   => $staffId,
             'assignedName' => $name,     // snapshot — survives the staff member leaving
             'status'       => 'assigned',
             'updatedAt'    => $now,
             'updatedBy'    => (string) ($this->admin_id ?? ''),
-        ]);
+        ], 'assign')) {
+            $this->json_error('Could not assign this ticket. Nothing has been changed.', 500);
+            return;
+        }
 
         $t['assignedTo'] = $staffId;
         $this->_append_message($t, 'system',
             ($prev === '' ? 'Assigned to ' : 'Reassigned to ') . $name .
             ' by ' . (string) ($this->admin_name ?? 'an administrator') . '.');
 
-        $this->_push('TICKET_ASSIGNED', 'sup_asg_' . $ticketId . '_' . $staffId, [
+        // B6: the key must identify this ASSIGNMENT, not this (ticket, staff) pair.
+        // Keyed on the pair alone, assigning to A, returning to the queue, then
+        // assigning to A again produced the SAME key — emit_push writes with
+        // merge=false, the REST client falls back to PATCH on 409, and the
+        // dispatcher is onDocumentCreated, so the second push simply never fired.
+        // A never learned they held the ticket. $now is the recorded assignment
+        // time, so retries inside one request share a key and separate
+        // assignments do not.
+        $this->_push('TICKET_ASSIGNED', 'sup_asg_' . (string) $t['ticketId'] . '_' . $staffId . '_' . $now, [
             'recipientStaffIds' => [$staffId],
             'ticketId'          => $ticketId,
             'category'          => (string) ($t['category'] ?? ''),
@@ -1064,7 +1087,11 @@ class Support extends MY_Controller
             return;
         }
 
-        $this->_push('TICKET_REPLIED', 'sup_rep_' . $ticketId . '_' . time(), [
+        // P-08: time() in a dedupe key defeats the key — emit_push writes
+        // pushRequests/{schoolId}_{key}, and a stable key is exactly what makes
+        // the send idempotent by overwrite. The message id is already
+        // content-derived (B4), so it is stable for a retry and unique per reply.
+        $this->_push('TICKET_REPLIED', 'sup_rep_' . $this->_last_message_id, [
             'recipientIds' => [(string) ($t['reporterId'] ?? '')],
             'ticketId'     => $ticketId,
             'senderName'   => (string) ($this->admin_name ?? 'School'),
@@ -1154,7 +1181,7 @@ class Support extends MY_Controller
             $this->json_error('Could not save the closing message. The ticket has NOT been resolved.', 500);
             return;
         }
-        $this->fs->update('supportTickets', $this->fs->docId($ticketId), [
+        if (!$this->_patch_ticket($t, [
             'status'          => 'resolved',
             'resolvedAt'      => date('c', $now),
             // 7-day reopen window. Past it the parent raises a new ticket
@@ -1162,9 +1189,17 @@ class Support extends MY_Controller
             'reopenableUntil' => date('c', $now + (7 * 86400)),
             'updatedAt'       => date('c', $now),
             'updatedBy'       => (string) ($this->admin_id ?? ''),
-        ]);
+        ], 'resolve')) {
+            $this->json_error('Could not resolve this ticket. The closing message was saved; the status is unchanged.', 500);
+            return;
+        }
 
-        $this->_push('TICKET_RESOLVED', 'sup_res_' . $ticketId, [
+        // B6: keyed on the ticket alone, a SECOND resolve (after the parent reopened
+        // it) collided with the first and sent nothing — the parent was never told
+        // it had been resolved again. resolvedAt is this resolution's own identity.
+        // A retry cannot duplicate: resolve() 409s on an already-resolved ticket
+        // before reaching this line.
+        $this->_push('TICKET_RESOLVED', 'sup_res_' . (string) $t['ticketId'] . '_' . $now, [
             'recipientIds' => [(string) ($t['reporterId'] ?? '')],
             'ticketId'     => $ticketId,
         ]);
@@ -1230,13 +1265,17 @@ class Support extends MY_Controller
             return;
         }
 
-        $this->fs->update('supportTickets', $this->fs->docId($ticketId), [
+        $now = date('c');
+        if (!$this->_patch_ticket($t, [
             'assignedTo'   => '',
             'assignedName' => '',
             'status'       => 'open',
-            'updatedAt'    => date('c'),
+            'updatedAt'    => $now,
             'updatedBy'    => (string) ($this->admin_id ?? ''),
-        ]);
+        ], 'return_to_queue')) {
+            $this->json_error('Could not return this ticket to the queue. Nothing has been changed.', 500);
+            return;
+        }
 
         // Back to the desk, not to nobody.
         // recipientStaffIds is REQUIRED: TICKET_RAISED declares it as its idField
@@ -1245,7 +1284,7 @@ class Support extends MY_Controller
         // to nobody, silently, every time an assignee handed a ticket back.
         // The desk is whoever holds the Support module, same set the Cloud
         // Function notifies when a ticket is first raised.
-        $this->_push('TICKET_RAISED', 'sup_ret_' . $ticketId . '_' . time(), [
+        $this->_push('TICKET_RAISED', 'sup_ret_' . (string) $t['ticketId'] . '_' . $now, [
             'recipientStaffIds' => $this->_desk_recipients(),
             'ticketId' => $ticketId,
             'subject'  => (string) ($t['subject'] ?? ''),
@@ -1325,6 +1364,39 @@ class Support extends MY_Controller
     }
 
     /**
+     * Patch a ticket, from the AUTHORISED DOCUMENT, and report whether it worked.
+     *
+     * Two bug classes are closed by the signature alone.
+     *
+     * B10 — it takes the ticket array, never an id. `_get_ticket()` trims a LOCAL
+     * copy of its argument, so the caller's $ticketId stays untrimmed; four
+     * mutators then built the document id from that raw request value. Firestore
+     * PATCH upserts, so `resolve()` on " TKT_ABC " wrote status:'resolved' into a
+     * brand-new GHOST document, returned 200, and left the real ticket open —
+     * while the closing message, which correctly used $t['ticketId'], landed on
+     * the real thread. Taking the document makes the wrong id unexpressible.
+     *
+     * W4 — Firestore_service::update() returns bool and every Support call site
+     * discarded it. A transient failure meant the status never changed while the
+     * audit ledger recorded the action, the push went out, and the endpoint
+     * returned success. Checked in one place instead of five.
+     */
+    private function _patch_ticket(array $t, array $fields, string $what): bool
+    {
+        $tid = (string) ($t['ticketId'] ?? '');
+        if ($tid === '') {
+            log_message('error', 'Support::_patch_ticket — ticket has no ticketId; refusing to write (' . $what . ')');
+            return false;
+        }
+        $ok = $this->fs->update('supportTickets', $this->fs->docId($tid), $fields);
+        if (!$ok) {
+            log_message('error', 'Support::_patch_ticket — ' . $what . ' failed for ' . $tid
+                . '; fields=' . implode(',', array_keys($fields)));
+        }
+        return $ok;
+    }
+
+    /**
      * Shared close path, so single and bulk cannot drift apart.
      *
      * Returns false when the ticket was NOT closed. It used to return void, so a
@@ -1345,12 +1417,28 @@ class Support extends MY_Controller
             log_message('error', 'Support::_close_one — closing message failed for ' . $ticketId . '; ticket left open');
             return false;
         }
-        $this->fs->update('supportTickets', $this->fs->docId($ticketId), [
+        $now = date('c');
+        if (!$this->_patch_ticket($t, [
             'status'        => 'closed',
-            'closedAt'      => date('c'),
+            'closedAt'      => $now,
             'closureReason' => $reason,
-            'updatedAt'     => date('c'),
+            'updatedAt'     => $now,
             'updatedBy'     => (string) ($this->admin_id ?? ''),
+        ], 'force_close')) {
+            return false;
+        }
+
+        // B16: tell the parent. This is the one action that ends their complaint
+        // without their agreement, and it emitted nothing — they found out by
+        // reopening the app and noticing the thread had closed. resolve() has
+        // always pushed; closing is strictly more consequential.
+        //
+        // Keyed on the ticket AND this closure's own timestamp, so a second close
+        // after a reopen is a distinct event rather than a silent collision (B6).
+        $this->_push('TICKET_CLOSED', 'sup_cls_' . $ticketId . '_' . $now, [
+            'ticketId'      => $ticketId,
+            'recipientIds'  => [(string) ($t['reporterId'] ?? '')],
+            'closureReason' => $reason,
         ]);
         $this->_audit()->record('FORCE_CLOSED', $ticketId, [
             'from' => $prev, 'to' => 'closed', 'reason' => $reason,
