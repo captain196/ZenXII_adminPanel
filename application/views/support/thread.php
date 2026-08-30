@@ -214,8 +214,24 @@ $ticket_id  = isset($ticket_id)  ? $ticket_id  : '';
     }
 
     var msgs = d.messages || [];
-    if (msgs.length) { $msgs.innerHTML = msgs.map(msgHTML).join(''); $mstat.hidden = true; }
-    else { $mstat.className = 'sd-state'; $mstat.innerHTML = '<b>No messages yet</b>The thread is empty.'; }
+    if (msgs.length) {
+      $msgs.innerHTML = msgs.map(msgHTML).join('');
+      $mstat.hidden = true;
+      // B7: the server returns the NEWEST MAX_LIMIT messages, so on a long
+      // thread it is the OLDEST that are missing. Say so, rather than presenting
+      // a partial conversation as the whole thing. Inserted after the innerHTML
+      // assignment above, which would otherwise overwrite it.
+      if (d.truncated) {
+        $msgs.insertAdjacentHTML('afterbegin',
+          '<div class="sd-state" style="margin-bottom:10px">' +
+          'Showing the most recent ' + msgs.length + ' of ' +
+          SD.esc(String(d.total_messages || '?')) +
+          ' messages. Older messages are not shown.</div>');
+      }
+    } else {
+      $mstat.className = 'sd-state';
+      $mstat.innerHTML = '<b>No messages yet</b>The thread is empty.';
+    }
 
     if ($npanel && d.can_note && (d.notes || []).length) {
       $notes.innerHTML = d.notes.map(noteHTML).join('');

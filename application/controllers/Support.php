@@ -578,12 +578,25 @@ class Support extends MY_Controller
 
         $tid = (string) ($ticket['ticketId'] ?? '');
 
-        // Index 4 [schoolId, ticketId, createdAt ASC].
+        // B7: fetch the NEWEST MAX_LIMIT, not the oldest.
+        //
+        // This queried createdAt ASC with limit 100, so past 100 messages staff
+        // saw the opening exchange and never the parent's most recent message —
+        // with no indicator that anything was missing. On a long-running fee or
+        // safeguarding dispute that is the one screen that must not lie by
+        // omission, and it lies in the worst direction: the newest message is the
+        // one being replied to.
+        //
+        // Ordered DESC here and reversed below, so the thread still renders
+        // chronologically. Needs index [schoolId, ticketId, createdAt DESC] —
+        // declared in firestore.indexes.json. Without it, query() silently drops
+        // the orderBy and re-sorts an arbitrary page in PHP (A4's B1), which
+        // would reintroduce exactly the same bug with no signal at all.
         $msgs = $this->fs->schoolWhere(
             'supportMessages',
             [['ticketId', '==', $tid]],
             'createdAt',
-            'ASC',
+            'DESC',
             self::MAX_LIMIT
         );
 
@@ -611,9 +624,18 @@ class Support extends MY_Controller
             return;
         }
 
+        // Back to chronological for display. array_reverse, not a re-sort: the
+        // server already ordered these, and re-sorting in PHP is what B1 does.
+        $msgs = array_reverse($this->_flatten($msgs));
+
+        // Tell the client when it is not seeing everything, so the thread can say
+        // so instead of quietly presenting a partial conversation as complete.
+        $truncated = count($msgs) >= self::MAX_LIMIT
+                     && (int) ($ticket['messageCount'] ?? 0) > count($msgs);
+
         $anon = !empty($ticket['isAnonymous']);
         $messages = [];
-        foreach ($this->_flatten($msgs) as $m) {
+        foreach ($msgs as $m) {
             if (!is_array($m)) continue;
             $isParent = ((string) ($m['senderType'] ?? '')) === 'parent';
             $messages[] = [
@@ -662,6 +684,11 @@ class Support extends MY_Controller
                 'strval', (array) ($ticket['attachments'] ?? [])
             )),
             'messages'    => $messages,
+            // B7: true when the thread holds more messages than were returned.
+            // The client must say so — a partial conversation presented as
+            // complete is how a triager replies to the wrong thing.
+            'truncated'   => $truncated,
+            'total_messages' => (int) ($ticket['messageCount'] ?? count($messages)),
             'notes'       => $notes,
             'can_note'    => $this->_can('view'),
             'is_assignee' => $this->_is_assignee($ticket),
