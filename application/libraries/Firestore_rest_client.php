@@ -21,6 +21,15 @@ class FirestoreRestClient
      * was. Read it immediately after the query you care about — it is reset at the
      * start of every query() call.
      */
+    /**
+     * How many rows the unordered fallback will scan before giving up.
+     *
+     * Only reached when a composite index is missing. Generous on purpose: the
+     * cost of scanning is bounded and visible in the logs, whereas the cost of
+     * an arbitrary-but-convincing page is a wrong decision nobody can see.
+     */
+    private const FALLBACK_SCAN_MAX = 1000;
+
     private $lastQueryFailed = false;
 
     /**
@@ -1402,13 +1411,32 @@ class FirestoreRestClient
         if ($r['code'] !== 200 && $orderBy !== null) {
             $firstError = $this->_indexHint($r);
             unset($structuredQuery['orderBy']);
+
+            // Fetch the COMPLETE matching set, not a page of it.
+            //
+            // The limit is what made this fallback dangerous. Applied server-side
+            // to an UNORDERED query, it hands back an arbitrary subset (Firestore
+            // falls back to __name__ order) and the PHP sort below then arranges
+            // that arbitrary subset convincingly. Sorting a complete set, on the
+            // other hand, is genuinely equivalent to sorting it server-side — so
+            // take the whole set and apply the caller's limit AFTER the sort,
+            // which is what the caller semantically asked for anyway.
+            //
+            // Every other filter still runs server-side, including the cursor
+            // range, so this is the same set the ordered query would have drawn
+            // from — just not yet cut.
+            //
+            // Probe one past the ceiling: coming back with SCAN_MAX+1 rows is how
+            // we know the set was too large to have been complete.
+            $structuredQuery['limit'] = self::FALLBACK_SCAN_MAX + 1;
             $r = $this->request('POST', $url, ['structuredQuery' => $structuredQuery]);
             $usedFallback = ($r['code'] === 200);
             if ($usedFallback && function_exists('log_message')) {
                 log_message('error',
-                    "FirestoreREST::query {$collection} — ORDERED QUERY FAILED, served from the "
-                    . "unordered fallback and sorted in PHP. This is a MISSING INDEX. "
-                    . "orderBy={$orderBy} {$direction}" . ($firstError ? " :: {$firstError}" : ''));
+                    "FirestoreREST::query {$collection} — ORDERED QUERY FAILED; served by scanning "
+                    . "the full match set and sorting in PHP. This is a MISSING INDEX and it costs "
+                    . "reads on every request until declared. orderBy={$orderBy} {$direction}"
+                    . ($firstError ? " :: {$firstError}" : ''));
             }
         }
 
@@ -1436,29 +1464,48 @@ class FirestoreRestClient
                 $results[] = ['id' => $docId, 'data' => $data];
             }
         }
-        // A fallback page that hit the limit is an arbitrary subset, not a page.
-        // Serving it would be the silent-wrong-data case above; refuse instead,
-        // and let the caller's own fail-closed handling report it.
-        if ($usedFallback && $limit !== null && count($results) >= $limit) {
-            $this->lastQueryFailed = true;
-            if (function_exists('log_message')) {
-                log_message('error',
-                    "FirestoreREST::query {$collection} — fallback page hit the limit ({$limit}); "
-                    . "the result would be an ARBITRARY subset in a convincing order. Refusing it. "
-                    . "Declare the composite index for orderBy={$orderBy}.");
+        if ($usedFallback) {
+            // More than the ceiling means the scan did NOT capture the whole set,
+            // so any order we impose here is a guess. This is the only case that
+            // is genuinely unanswerable without the index — and it is the ONLY
+            // case that returns empty. An earlier version of this fix refused
+            // whenever the page was full, which was far too broad: 89 of the 93
+            // orderBy+limit call sites in this panel do not read lastQueryFailed,
+            // so for them a missing index turned "wrongly ordered but complete"
+            // into "blank and silent". That traded one invisible wrong for
+            // another. Scanning the full set removes the dilemma instead.
+            if (count($results) > self::FALLBACK_SCAN_MAX) {
+                $this->lastQueryFailed = true;
+                if (function_exists('log_message')) {
+                    log_message('error',
+                        "FirestoreREST::query {$collection} — match set exceeds "
+                        . self::FALLBACK_SCAN_MAX . " rows and there is no index to order it. "
+                        . "Refusing rather than returning an arbitrary slice. "
+                        . "Declare the composite index for orderBy={$orderBy} {$direction}.");
+                }
+                return [];
             }
-            return [];
-        }
 
-        // Client-side sort if orderBy was requested but couldn't be done server-side
-        if ($orderBy !== null && !empty($results)) {
+            // Complete set in hand: sorting it here IS the correct answer.
             usort($results, function ($a, $b) use ($orderBy, $direction) {
                 $va = $a['data'][$orderBy] ?? '';
                 $vb = $b['data'][$orderBy] ?? '';
                 $cmp = $va <=> $vb;
                 return strtoupper($direction) === 'DESC' ? -$cmp : $cmp;
             });
+
+            // The caller's limit, applied AFTER the sort — the semantics they
+            // asked for. Server-side it was applied before, which is the bug.
+            if ($limit !== null && count($results) > $limit) {
+                $results = array_slice($results, 0, $limit);
+            }
         }
+        // NOTE: no client-side sort on the SUCCESS path. It used to run whenever
+        // orderBy was requested, re-sorting rows the server had already ordered —
+        // and PHP's <=> does not order mixed types the way Firestore does. With
+        // this module's known Timestamp-vs-String drift, that re-sort could
+        // silently REORDER a correctly-ordered page. Trust the server when the
+        // server answered.
 
         if ($limit !== null && count($results) > $limit) {
             $results = array_slice($results, 0, $limit);
