@@ -445,6 +445,26 @@ class Firestore_service
     }
 
     /**
+     * Did the last where()/schoolWhere()/sessionWhere() FAIL, as opposed to
+     * legitimately returning no rows?
+     *
+     * where() deliberately swallows exceptions and returns [] so one bad read
+     * cannot take down a page. The cost is that "the query failed" and "there is
+     * nothing here" look identical to the caller, and an endpoint that renders
+     * the empty case then reports a failure as a confident, wrong answer —
+     * "no tickets", "no staff", "no results".
+     *
+     * Read it immediately after the query you care about. Callers that do not
+     * ask behave exactly as before.
+     */
+    public function lastQueryFailed(): bool
+    {
+        return $this->client !== null
+            && method_exists($this->client, 'lastQueryFailed')
+            && $this->client->lastQueryFailed();
+    }
+
+    /**
      * Query filtered by current school (auto-adds schoolId condition).
      */
     public function schoolWhere(

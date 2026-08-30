@@ -12,6 +12,23 @@ if (!function_exists('base64url_encode')) {
 
 class FirestoreRestClient
 {
+
+    /**
+     * Did the most recent query() fail?
+     *
+     * query() returns [] both when a collection is empty and when the request
+     * failed, so the two are indistinguishable to a caller. This records which it
+     * was. Read it immediately after the query you care about — it is reset at the
+     * start of every query() call.
+     */
+    private $lastQueryFailed = false;
+
+    /** True if the last query() call failed rather than legitimately returned no rows. */
+    public function lastQueryFailed(): bool
+    {
+        return $this->lastQueryFailed;
+    }
+
     // Feature flag: flip to false to disable cURL reuse and fall back to per-call curl_init.
     // Kept as an explicit knob so we can instantly roll back without redeploying code.
     private const USE_PERSISTENT_CURL = true;
@@ -1336,6 +1353,8 @@ class FirestoreRestClient
         }
 
         $url = $this->baseUrl() . ':runQuery';
+        // Reset per call: a caller asks about the query it just ran.
+        $this->lastQueryFailed = false;
         $r = $this->request('POST', $url, ['structuredQuery' => $structuredQuery]);
 
         // If query fails with index error and we have orderBy, retry without orderBy (client-side sort)
@@ -1345,6 +1364,14 @@ class FirestoreRestClient
         }
 
         if ($r['code'] !== 200) {
+            // ADDITIVE ONLY — this records what already happened. The return value,
+            // the orderBy-drop retry above, and every existing caller's behaviour
+            // are unchanged. It exists because query() returns [] on failure, so a
+            // failed read and an empty collection are indistinguishable at the call
+            // site — and several endpoints were reporting "no results" for a query
+            // that never ran. Callers that care can now ask; callers that do not
+            // are unaffected.
+            $this->lastQueryFailed = true;
             if (function_exists('log_message')) log_message('error', "FirestoreREST::query $collection HTTP {$r['code']}: " . json_encode($r['body']));
             return [];
         }
