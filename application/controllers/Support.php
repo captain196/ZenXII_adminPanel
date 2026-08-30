@@ -485,6 +485,18 @@ class Support extends MY_Controller
             $docs = array_values(array_filter($docs, [$this, '_awaiting_us']));
         }
 
+        // B3: where() returns [] on failure as well as on genuine emptiness, so
+        // this endpoint was answering a failed read with a confident "no tickets".
+        // The client is written to prevent exactly this — support_desk.js's own
+        // comment says a failure "must never read as 'no tickets'" — but it can
+        // only act on a non-ok status or {status:'error'}, and the server was
+        // handing it 200/success. Ask the query layer which it was.
+        if (empty($docs) && $this->fs->lastQueryFailed()) {
+            log_message('error', 'Support::get_queue — query failed; refusing to render an empty result as success');
+            $this->json_error('Could not load the ticket queue. Please retry.', 503);
+            return;
+        }
+
         $page = $this->_page($docs, $limit, $orderBy);
         $this->json_success($page + ['status_filter' => $statusParam ?: 'active', 'filter' => $filter]);
     }
@@ -528,6 +540,18 @@ class Support extends MY_Controller
         }
 
         $docs = $this->fs->schoolWhere('supportTickets', $conds, 'lastMessageAt', 'DESC', $limit);
+        // B3: where() returns [] on failure as well as on genuine emptiness, so
+        // this endpoint was answering a failed read with a confident "no tickets".
+        // The client is written to prevent exactly this — support_desk.js's own
+        // comment says a failure "must never read as 'no tickets'" — but it can
+        // only act on a non-ok status or {status:'error'}, and the server was
+        // handing it 200/success. Ask the query layer which it was.
+        if (empty($docs) && $this->fs->lastQueryFailed()) {
+            log_message('error', 'Support::get_mine — query failed; refusing to render an empty result as success');
+            $this->json_error('Could not load your tickets. Please retry.', 503);
+            return;
+        }
+
         $page = $this->_page($this->_flatten($docs), $limit);
         $this->json_success($page + ['scope' => 'mine']);
     }
@@ -562,6 +586,30 @@ class Support extends MY_Controller
             'ASC',
             self::MAX_LIMIT
         );
+
+        // B2: a failed query and a genuinely empty thread are INDISTINGUISHABLE
+        // at this call site — Firestore_service::where() catches every error and
+        // returns []. Before this guard, a transient failure on the messages
+        // query produced HTTP 200, status:'success', a fully populated ticket
+        // header, and messages:[]. The panel then rendered a real complaint with
+        // an empty conversation, and every action on that screen — reply,
+        // resolve, force-close — stayed enabled. A triager could close a
+        // safeguarding ticket whose contents they had never seen.
+        //
+        // messageCount is the tripwire. Every ticket carries at least the opening
+        // message, so an empty result against a non-zero count means the read
+        // failed or the denormal has drifted. Either way the honest answer is an
+        // error, not an empty thread: the one thing this screen must never do is
+        // claim a parent said nothing.
+        $expected = (int) ($ticket['messageCount'] ?? 0);
+        if (empty($msgs) && $expected > 0) {
+            log_message('error',
+                'Support::get_thread — messages query returned empty for ' . $tid .
+                ' but messageCount=' . $expected . '; failing closed rather than rendering an empty thread');
+            $this->json_error(
+                'Could not load this conversation. Nothing has been changed — please retry.', 503);
+            return;
+        }
 
         $anon = !empty($ticket['isAnonymous']);
         $messages = [];
@@ -658,6 +706,18 @@ class Support extends MY_Controller
             'DESC',
             $limit
         );
+
+        // B3: where() returns [] on failure as well as on genuine emptiness, so
+        // this endpoint was answering a failed read with a confident "no results".
+        // The client is written to prevent exactly this — support_desk.js's own
+        // comment says a failure "must never read as 'no tickets'" — but it can
+        // only act on a non-ok status or {status:'error'}, and the server was
+        // handing it 200/success. Ask the query layer which it was.
+        if (empty($docs) && $this->fs->lastQueryFailed()) {
+            log_message('error', 'Support::search — query failed; refusing to render an empty result as success');
+            $this->json_error('Could not load search results. Please retry.', 503);
+            return;
+        }
 
         $page = $this->_page($this->_flatten($docs), $limit);
         $this->json_success($page + ['q' => $q, 'token' => $token]);
@@ -850,6 +910,17 @@ class Support extends MY_Controller
 
         $t = $this->_load_for_write($ticketId, 'manage', 'assign', false);
         if ($t === null) return;
+
+        // X1: assign() had no status check of any kind, while force_close (:1093),
+        // resolve (:992) and reply (:913) all had one. So a CLOSED ticket could be
+        // assigned: status flipped back to 'assigned' while closedAt and
+        // closureReason stayed on the document, and onSupportTicketStatusChanged
+        // saw inactive→active and spent one of the reporter's five cap slots on a
+        // ticket they had been told was finished.
+        if ((string) ($t['status'] ?? '') === 'closed') {
+            $this->json_error('This ticket is closed. Reopen it before assigning.', 409);
+            return;
+        }
 
         if ($staffId === '' || !preg_match('/^[A-Za-z0-9_-]{1,32}$/', $staffId)) {
             $this->json_error('Pick a staff member.', 400);
@@ -1050,6 +1121,27 @@ class Support extends MY_Controller
         $ticketId = (string) $this->input->post('ticket_id', true);
         $t = $this->_load_for_write($ticketId, null, 'return_to_queue');
         if ($t === null) return;
+
+        // X2/X3: return_to_queue had no status check either, and it is the
+        // LOWEST-privilege mutator in the module — _load_for_write is called with
+        // $level = null, so the module-permission arm can never fire and being the
+        // assignee is the entire gate. Someone holding no Support grant at all
+        // could therefore move a closed or resolved ticket back to 'open'.
+        //
+        // _close_one deliberately preserves assignedTo (so `mine` still shows what
+        // you closed), which left every force-closed ticket that had an assignee
+        // permanently eligible. On a resolved ticket it also stranded resolvedAt
+        // and reopenableUntil on a document whose status was 'open'.
+        $cur = (string) ($t['status'] ?? '');
+        if ($cur === 'closed' || $cur === 'resolved') {
+            $this->json_error(
+                $cur === 'closed'
+                    ? 'This ticket is closed. It cannot be returned to the queue.'
+                    : 'This ticket is resolved. Reopen it before returning it to the queue.',
+                409
+            );
+            return;
+        }
 
         if ((string) ($t['assignedTo'] ?? '') === '') {
             $this->json_error('This ticket is not assigned to anyone.', 409);
@@ -1317,6 +1409,15 @@ class Support extends MY_Controller
                 'department' => (string) ($s['department'] ?? $s['Department'] ?? ''),
             ];
         }
+        // B3: an empty picker from a failed staff query looks identical to a
+        // school with no active staff. The admin then cannot assign anyone and is
+        // given no reason — and assign() would reject whatever they picked anyway.
+        if (empty($rows) && $this->fs->lastQueryFailed()) {
+            log_message('error', 'Support::get_assignees — staff query failed; refusing to return an empty picker as success');
+            $this->json_error('Could not load the staff list. Please retry.', 503);
+            return;
+        }
+
         $this->json_success(['staff' => $out, 'count' => count($out)]);
     }
 }
