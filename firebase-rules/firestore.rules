@@ -3269,6 +3269,28 @@ service cloud.firestore {
         && request.resource.data.lane   == 'normal'
         && !('assignedTo' in request.resource.data)
         && !('ticketNo'   in request.resource.data)
+        // C-07: an ALLOWLIST, not a denylist. Before this the rule named the two
+        // fields it refused and let every other field through, so a client could
+        // create a ticket carrying `lastStaffReplyAt`, `messageCount`,
+        // `resolvedAt`, `reopenableUntil` or `closureReason`.
+        //
+        // `lastStaffReplyAt` is the live one: _awaiting_us() (Support.php:202)
+        // decides the desk's "Awaiting us" queue by comparing it against
+        // lastParentReplyAt, so a far-future value removes the ticket from that
+        // view permanently — a complaint nobody has answered, which the queue
+        // reports as answered. Settled by execution, not inspection:
+        // tests/support_desk_transitions.test.js "X21".
+        //
+        // These 17 are exactly what the Parent app writes. Every server-owned
+        // field — ticketNo, keywords, messageCount, assignedTo, the status
+        // transitions, and the resolution/closure fields — is absent by design
+        // and written only through the Admin SDK, which bypasses rules.
+        && request.resource.data.keys().hasOnly([
+             'schoolId', 'ticketId', 'sessionId', 'lane', 'category', 'subject',
+             'studentId', 'studentName', 'className', 'reporterId', 'reporterName',
+             'isAnonymous', 'status', 'attachments', 'createdAt', 'lastMessageAt',
+             'lastParentReplyAt'
+           ])
         // C-02: no client-chosen timestamps, anywhere, ever.
         && request.resource.data.createdAt     == request.time
         && request.resource.data.lastMessageAt == request.time
@@ -3302,7 +3324,24 @@ service cloud.firestore {
         && request.resource.data.reporterId == request.auth.uid
         && request.resource.data.createdAt  == request.time
         && exists(/databases/$(database)/documents/supportTickets/$(request.resource.data.schoolId + '_' + request.resource.data.ticketId))
-        && get(/databases/$(database)/documents/supportTickets/$(request.resource.data.schoolId + '_' + request.resource.data.ticketId)).data.reporterId == request.auth.uid;
+        && get(/databases/$(database)/documents/supportTickets/$(request.resource.data.schoolId + '_' + request.resource.data.ticketId)).data.reporterId == request.auth.uid
+        // A CLOSED ticket takes no further messages. This rule previously read
+        // ownership and nothing else, so a parent could append to a ticket the
+        // desk considered finished: the CF then bumped messageCount and
+        // lastParentReplyAt on the closed ticket and pushed TICKET_REPLIED to its
+        // assignee. Two comments in the codebase asserted the server already
+        // prevented this — SupportThreadScreen.kt:152 and views/support/thread.php
+        // :240, both wording it "the server refuses the write". True for staff
+        // (Support.php:913 returns 409); false for the parent.
+        // Settled by execution: tests/support_desk_transitions.test.js "X5".
+        //
+        // 'resolved' MUST stay permitted — a parent message on a resolved ticket
+        // inside the reopen window IS the reopen transition
+        // (functions/supportDesk.js:291). Denying it would remove the only route
+        // a parent has back to a live conversation.
+        //
+        // Same document as the get() above, so no additional billed read.
+        && get(/databases/$(database)/documents/supportTickets/$(request.resource.data.schoolId + '_' + request.resource.data.ticketId)).data.status != 'closed';
 
       allow update, delete: if false;   // messages are immutable
     }
