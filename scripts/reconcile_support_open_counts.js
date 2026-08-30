@@ -75,12 +75,20 @@ const CAP = 5;
 
   const actual = new Map();   // key -> count of ACTIVE tickets
   const seen   = new Map();   // key -> total tickets (for context in the report)
+  // key -> { schoolId, reporterId } carried from the TICKET, never re-derived
+  // from the document key. Both ids contain underscores (`SCH_B56BB9A401`,
+  // and the key is `{schoolId}_{reporterId}`), so splitting the key on '_'
+  // yields schoolId='SCH' and reporterId='B56BB9A401_STU0012'. Writing those
+  // back would corrupt the very fields any `where('schoolId','==',…)` query
+  // over supportCounters depends on.
+  const ids    = new Map();
   for (const doc of tickets.docs) {
     const d = doc.data() || {};
     const schoolId   = String(d.schoolId   || '');
     const reporterId = String(d.reporterId || '');
     if (!schoolId || !reporterId) continue;           // nothing to key on
     const key = `${schoolId}_${reporterId}`;
+    if (!ids.has(key)) ids.set(key, { schoolId, reporterId });
     seen.set(key, (seen.get(key) || 0) + 1);
     if (ACTIVE.includes(String(d.status || ''))) {
       actual.set(key, (actual.get(key) || 0) + 1);
@@ -95,7 +103,13 @@ const CAP = 5;
   const counters = await cq.get();
   const stored = new Map();
   for (const doc of counters.docs) {
-    stored.set(doc.id, Number((doc.data() || {}).openCount || 0));
+    const d = doc.data() || {};
+    stored.set(doc.id, Number(d.openCount || 0));
+    // A counter with no tickets still needs its ids; take what the document
+    // already carries rather than parsing the key.
+    if (!ids.has(doc.id) && d.schoolId && d.reporterId) {
+      ids.set(doc.id, { schoolId: String(d.schoolId), reporterId: String(d.reporterId) });
+    }
   }
 
   // Union: a reporter may have tickets and no counter, or the reverse.
@@ -141,15 +155,13 @@ const CAP = 5;
   for (let i = 0; i < drifted.length; i += 400) {
     const batch = fs.batch();
     for (const d of drifted.slice(i, i + 400)) {
-      const [schoolId, ...rest] = d.key.split('_');
-      // reporter ids contain no underscore today, but rebuild defensively
-      // rather than assuming a two-part key.
-      const reporterId = rest.join('_');
-      batch.set(
-        fs.collection('supportCounters').doc(d.key),
-        { schoolId, reporterId, openCount: d.want },
-        { merge: true }
-      );
+      const known = ids.get(d.key);
+      // If neither a ticket nor the existing document told us the ids, write
+      // ONLY the count. Guessing them from the key is what corrupts the doc.
+      const payload = known
+        ? { schoolId: known.schoolId, reporterId: known.reporterId, openCount: d.want }
+        : { openCount: d.want };
+      batch.set(fs.collection('supportCounters').doc(d.key), payload, { merge: true });
       written++;
     }
     await batch.commit();
