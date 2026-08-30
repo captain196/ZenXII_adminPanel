@@ -268,10 +268,34 @@ service firebase.storage {
         // evidence in an open investigation, and it leaves no trace: Storage emits
         // no audit event, and supportTickets.attachments still declares the name.
         //
-        // create-only IS the control. Omitting update and delete denies them by
-        // default, which is why no explicit deny follows — a deny line that reads
-        // as load-bearing but is not is worse than no line at all. Nothing is lost:
-        // ticketId is minted per ticket, so 1..3.jpg are always new objects.
+        // create + a NARROW update window. Delete stays denied by omission.
+        //
+        // create-only was wrong, and the comment that justified it was factually
+        // false: "ticketId is minted per ticket, so 1..3.jpg are always new
+        // objects". draftTicketId is minted ONCE and persisted in savedState
+        // (SupportViewModel.kt:107); it rotates only on the SUCCESS branch. So
+        // after a partial upload failure — 1.jpg lands, 2.jpg fails — the parent's
+        // obvious next move, tapping Send again, re-uploads index 1 to a path that
+        // now EXISTS. putBytes on an existing object is an update, and create-only
+        // denied it. The parent then failed on photo 1 forever, with no way out
+        // but destroying the composer. Shipped and deployed; caught by the
+        // adversarial re-read of this same session's changes.
+        //
+        // The threat that motivated the narrowing is real and unchanged: a
+        // complainant must not be able to delete or SUBSTITUTE evidence once the
+        // school has it. Retry and substitution differ in exactly one observable
+        // way — WHEN. A retry happens seconds after the original; a substitution
+        // happens after someone has read the ticket. So update is permitted only
+        // inside a short window from the object's own creation time, and delete
+        // not at all.
+        allow update: if request.auth != null
+                      && request.auth.token.school_id == schoolId
+                      && request.auth.uid == reporterId
+                      && request.resource.size <= 5 * 1024 * 1024
+                      && request.resource.contentType == 'image/jpeg'
+                      && fileName.matches('[1-3]\\.jpg')
+                      && request.time < resource.timeCreated + duration.value(15, 'm');
+
       allow create: if request.auth != null
                     && request.auth.token.school_id == schoolId
                     && request.auth.uid == reporterId
