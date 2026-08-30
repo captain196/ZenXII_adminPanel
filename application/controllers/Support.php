@@ -208,6 +208,27 @@ class Support extends MY_Controller
     }
 
     /** Firestore timestamps arrive in several shapes; normalise to epoch seconds. */
+    /**
+     * The ONE format this controller writes timestamps in.
+     *
+     * R8/R17: `lastMessageAt` is written by BOTH runtimes — the panel with
+     * date('c') ("…T08:26:02+00:00") and the Cloud Function with toISOString()
+     * ("…T08:26:02.632Z"). Both are strings, so Firestore compares them
+     * lexicographically, and '+' (0x2B) sorts before '.' (0x2E): for the same
+     * instant the PHP form sorts BEFORE the CF form. Ordering on that field is
+     * therefore wrong across the boundary, and a cursor over it cannot be
+     * trusted.
+     *
+     * Matching the CF's shape makes every NEW panel write directly comparable
+     * with every CF write. Existing documents keep their old format — see the
+     * note on _page(): a backfill is still required before pagination over these
+     * fields is trustworthy.
+     */
+    private function _iso(?int $at = null): string
+    {
+        return gmdate('Y-m-d\TH:i:s', $at ?? time()) . '.000Z';
+    }
+
     private function _ts($v): ?int
     {
         if ($v === null || $v === '') return null;
@@ -320,7 +341,7 @@ class Support extends MY_Controller
         return $out;
     }
 
-    private function _query_tickets(array $statuses, ?int $cursor, int $limit, string $orderBy = 'lastMessageAt'): array
+    private function _query_tickets(array $statuses, $cursor, int $limit, string $orderBy = 'lastMessageAt'): array
     {
         $conds = [
             ['lane', '==', self::LANE_NORMAL],
@@ -334,7 +355,11 @@ class Support extends MY_Controller
             $conds[] = ['status', 'in', array_values($statuses)];
         }
 
-        if ($cursor !== null && $cursor > 0) {
+        // The cursor is passed through UNCHANGED and untyped: it is whatever
+        // _page() read off the last document, so it always matches the field's
+        // stored type. Casting it (it used to arrive as (int)) is what made the
+        // comparison type-mismatch and return nothing.
+        if ($cursor !== null && $cursor !== '' && $cursor !== 0) {
             $conds[] = [$orderBy, '<', $cursor];
         }
 
@@ -363,16 +388,43 @@ class Support extends MY_Controller
     }
 
     /** Build the {rows, nextCursor} envelope both list endpoints return. */
-    private function _page(array $docs, int $limit, string $orderBy = 'lastMessageAt'): array
+    /**
+     * Build the {rows, nextCursor} envelope both list endpoints return.
+     *
+     * $cursorDocs, when given, is the UNFILTERED result of the query. Pagination
+     * is a property of the query's page boundary, not of whatever survives a
+     * post-filter — see B8 below.
+     */
+    private function _page(array $docs, int $limit, string $orderBy = 'lastMessageAt', ?array $cursorDocs = null): array
     {
         $docs = $this->_normal_only($docs);
         $rows = array_map([$this, '_row'], $docs);
 
+        // B8, first half: the cursor is read from the SOURCE DOCUMENT, not from
+        // the rendered row. It used to be
+        //     $key = $orderBy === 'lastParentReplyAt' ? 'lastMessageAt' : $orderBy;
+        // which handed back a lastMessageAt value and then applied it as a range
+        // on lastParentReplyAt — a different field entirely. That ternary existed
+        // because _row() does not expose lastParentReplyAt at all, so the rendered
+        // row simply had no correct value to offer. Reading the source document
+        // removes the constraint rather than working around it.
+        //
+        // B8, second half: get_queue applies the "awaiting" filter AFTER the
+        // limit, so count($rows) >= $limit was almost never true and nextCursor
+        // stayed null — "Load more" never appeared, making everything past the
+        // first raw page unreachable. Callers that post-filter pass the unfiltered
+        // docs here so the page boundary is judged on what the query returned.
+        $src  = $cursorDocs !== null ? $cursorDocs : $docs;
         $next = null;
-        if (count($rows) >= $limit && $rows) {
-            $last = end($rows);
-            $key  = $orderBy === 'lastParentReplyAt' ? 'lastMessageAt' : $orderBy;
-            $next = $last[$key] ?? null;
+        if (count($src) >= $limit && $src) {
+            $last = end($src);
+            // R17: emit the value AS STORED. It used to pass through _ts(),
+            // which returns an epoch int — and Firestore inequality is
+            // type-exact, so an integerValue cursor could never match a
+            // stringValue field. Every "Load more" past page 1 returned empty,
+            // silently. The cursor must be the same type as the field it filters.
+            $raw  = $last[$orderBy] ?? null;
+            $next = ($raw === null || $raw === '') ? null : $raw;
         }
         return ['rows' => $rows, 'nextCursor' => $next, 'count' => count($rows)];
     }
@@ -479,8 +531,12 @@ class Support extends MY_Controller
         }
 
         $orderBy = ($filter === 'awaiting') ? 'lastParentReplyAt' : 'lastMessageAt';
-        $docs    = $this->_query_tickets($statuses, $cursor === null || $cursor === '' ? null : (int) $cursor, $limit, $orderBy);
+        // R17: passed through untyped — the cursor must keep the type of the field
+        // it filters on, and casting it to int is what made every page past the
+        // first return nothing.
+        $docs    = $this->_query_tickets($statuses, ($cursor === null || $cursor === '') ? null : $cursor, $limit, $orderBy);
 
+        $rawDocs = $docs;   // page boundary is judged on this, before filtering
         if ($filter === 'awaiting') {
             $docs = array_values(array_filter($docs, [$this, '_awaiting_us']));
         }
@@ -497,7 +553,9 @@ class Support extends MY_Controller
             return;
         }
 
-        $page = $this->_page($docs, $limit, $orderBy);
+        // Pass the pre-filter docs so the cursor tracks the QUERY's page boundary,
+        // not the count that survived _awaiting_us().
+        $page = $this->_page($docs, $limit, $orderBy, $rawDocs);
         $this->json_success($page + ['status_filter' => $statusParam ?: 'active', 'filter' => $filter]);
     }
 
@@ -535,8 +593,10 @@ class Support extends MY_Controller
         } else {
             $conds[] = ['status', 'in', array_values($statuses)];
         }
-        if ($cursor !== null && $cursor !== '' && (int) $cursor > 0) {
-            $conds[] = ['lastMessageAt', '<', (int) $cursor];
+        // R17: same fix as get_queue — no cast, so the cursor's type matches
+        // lastMessageAt's stored type.
+        if ($cursor !== null && $cursor !== '' && $cursor !== 0) {
+            $conds[] = ['lastMessageAt', '<', $cursor];
         }
 
         $docs = $this->fs->schoolWhere('supportTickets', $conds, 'lastMessageAt', 'DESC', $limit);
