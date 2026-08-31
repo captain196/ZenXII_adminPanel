@@ -611,6 +611,44 @@ class Lifecycle_probe extends CI_Controller
                 ]);
                 return;
 
+            // ACCOUNTING — the CANONICAL chart-of-accounts seed a real school
+            // uses (Accounting → Seed Chart). The refund journal needs an
+            // active fee-income account plus a cash/bank account; seeding
+            // through the product's own endpoint is what makes the journal leg
+            // a REAL proof rather than fabricated accounting data.
+            // ── DAY-ONE SETUP · the screens a brand-new school fills in ─────
+            case 'add_section':
+                $this->dispatch('classes', 'add_section', [
+                    'class_name'   => $a1,
+                    'section_name' => $a2 !== '' ? $a2 : 'A',
+                    'max_strength' => $a3 !== '' ? $a3 : '40',
+                ]);
+                return;
+
+            // The fee chart. `fees` is the JSON the Fee Chart screen posts:
+            // { "<Month>": { "<Head>": amount, ... }, ... }
+            case 'fee_chart':
+                // save_updated_fees accepts AJAX POST only. The browser sends
+                // X-Requested-With; the harness must send it too. Faking the
+                // header here keeps the CONTROLLER's guard fully intact — the
+                // alternative (relaxing the guard for testing) would weaken a
+                // real defence to make a test pass.
+                $_SERVER['HTTP_X_REQUESTED_WITH'] = 'XMLHttpRequest';
+                $this->dispatch('fees', 'save_updated_fees', [
+                    'class'   => $a1,
+                    'section' => $a2 !== '' ? $a2 : 'Section A',
+                    'fees'    => (string) getenv('ZX_FEES_JSON'),
+                ]);
+                return;
+
+            case 'seed_coa':
+                $this->dispatch('accounting', 'seed_default_chart', []);
+                return;
+
+            case 'retry_journal':
+                $this->dispatch('fee_management', 'retry_refund_journal', ['refund_id' => $a1]);
+                return;
+
             case 'disc_policy':
                 $this->dispatch('fee_management', 'save_discount', [
                     'name' => 'WEAKELIG ' . $a1, 'policy_name' => 'WEAKELIG ' . $a1,
