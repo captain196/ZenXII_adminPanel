@@ -133,6 +133,21 @@ class Fee_firestore_sync
             // Build name → feeHeadId map from the previous snapshot; any
             // head without a match gets a freshly minted ID.
             $existingIds = [];
+            // ── feeHeadRef DURABILITY (Fee Head Registry prerequisite) ──────
+            //
+            // THE DEFECT THIS CLOSES: this method REBUILDS every fee-head row
+            // from a fixed key set and writes with firestoreSet() WITHOUT a
+            // merge flag — a full document overwrite. `feeHeadRef` (the
+            // school-scoped Fee Head Registry identity) was not among those
+            // keys, so an ordinary chart save silently ERASED it from every
+            // row. The registry identity was therefore non-durable: attached
+            // once, destroyed by the next pricing edit.
+            //
+            // NOTE the distinction that matters: the name is used here only to
+            // RE-LINK a row to the binding it already had. It is NOT the
+            // identity authority — the registry is. See the fail-closed rule
+            // below, which is what stops the name from quietly becoming one.
+            $existingRefs = [];
             try {
                 $prev = $this->firebase->firestoreGet(self::COL_FEE_STRUCTURES, $docId);
                 if (is_array($prev) && is_array($prev['feeHeads'] ?? null)) {
@@ -140,10 +155,56 @@ class Fee_firestore_sync
                         if (!is_array($h)) continue;
                         $nm  = (string) ($h['name'] ?? '');
                         $fid = (string) ($h['feeHeadId'] ?? '');
+                        $ref = trim((string) ($h['feeHeadRef'] ?? ''));
                         if ($nm !== '' && $fid !== '') $existingIds[$nm] = $fid;
+                        if ($nm !== '' && $ref !== '') $existingRefs[$nm] = $ref;
                     }
                 }
             } catch (\Exception $_) {}
+
+            // Secondary source: the school-scoped Fee Head Registry itself.
+            // Consulted only when the previous snapshot has no binding for a
+            // row — which is exactly the registry-mediated rename case (the
+            // head was renamed in the REGISTRY first, so the incoming chart
+            // name matches the registry but not the old snapshot). Keyed on
+            // the registry's own normalised name, never on a chart string.
+            //
+            // SCHOOL-SCOPED BY CONSTRUCTION: the query filters on schoolId and
+            // the doc id is `{schoolId}_{feeHeadId}`. No session participates,
+            // and none may ever be introduced — a Fee Head survives session
+            // rollover with one identity.
+            $registryRefs = [];
+            try {
+                $regRows = $this->firebase->firestoreQuery('feeHeadRegistry', [
+                    ['schoolId', '==', $this->schoolCode],
+                ]);
+                foreach ((array) $regRows as $rr) {
+                    $rd = $rr['data'] ?? $rr;
+                    if (!is_array($rd)) continue;
+                    if (($rd['kind'] ?? '') === 'nameClaim') continue;      // claims are not entries
+                    if (($rd['status'] ?? 'active') !== 'active') continue; // archived: never for new use
+                    $nn  = strtolower(trim((string) preg_replace('/\s+/', ' ', (string) ($rd['name'] ?? ''))));
+                    $rid = trim((string) ($rd['feeHeadId'] ?? ''));
+                    if ($nn !== '' && $rid !== '') $registryRefs[$nn] = $rid;
+                }
+            } catch (\Exception $_) { $registryRefs = []; }
+
+            /**
+             * Resolve the row's registry identity, or NOTHING.
+             *
+             * ⚠ DELIBERATELY NEVER MINTS. If a row matches neither the previous
+             * binding nor an active registry entry — the chart-only rename and
+             * delete-and-re-add cases — the field is simply OMITTED. Minting a
+             * fresh identity here is precisely the defect this architecture
+             * exists to remove: it is how one logical fee head acquires several
+             * identities. An absent ref is a fail-closed signal for a later
+             * consumer, which is strictly safer than a confident wrong one.
+             */
+            $resolveRef = static function (string $name) use ($existingRefs, $registryRefs): ?string {
+                if (isset($existingRefs[$name])) return $existingRefs[$name];
+                $nn = strtolower(trim((string) preg_replace('/\s+/', ' ', $name)));
+                return $registryRefs[$nn] ?? null;
+            };
 
             $mintFeeHeadId = static function (): string {
                 return 'FH_' . strtoupper(bin2hex(random_bytes(6)));
@@ -177,13 +238,18 @@ class Fee_firestore_sync
                 foreach ($monthlyFees as $name => $amount) {
                     $amt = floatval($amount);
                     if (!isset($seenHeads[$name])) {
-                        $feeHeads[] = [
+                        $row = [
                             'feeHeadId'   => $regId[$name] ?? $existingIds[$name] ?? $mintFeeHeadId(),
                             'name'        => $name,
                             'amount'      => $amt,
                             'frequency'   => 'monthly',
                             'billingType' => $regBill[$name] ?? 'Monthly',
                         ];
+                        // Carried through only when a binding already exists or
+                        // the registry knows this head. Never minted here.
+                        $ref = $resolveRef($name);
+                        if ($ref !== null) $row['feeHeadRef'] = $ref;
+                        $feeHeads[] = $row;
                         $seenHeads[$name] = true;
                     }
                     $totalMonthly += $amt;
@@ -196,13 +262,18 @@ class Fee_firestore_sync
                 foreach ($yearlyFees as $name => $amount) {
                     $amt = floatval($amount);
                     if (!isset($seenHeads[$name])) {
-                        $feeHeads[] = [
+                        $row = [
                             'feeHeadId'   => $regId[$name] ?? $existingIds[$name] ?? $mintFeeHeadId(),
                             'name'        => $name,
                             'amount'      => $amt,
                             'frequency'   => 'annual',
                             'billingType' => $regBill[$name] ?? 'Yearly',
                         ];
+                        // Same rule as the monthly branch: preserve or resolve,
+                        // never mint.
+                        $ref = $resolveRef($name);
+                        if ($ref !== null) $row['feeHeadRef'] = $ref;
+                        $feeHeads[] = $row;
                         $seenHeads[$name] = true;
                     }
                     $totalAnnual += $amt;
@@ -1106,8 +1177,41 @@ class Fee_firestore_sync
                         $base = "{$sessionRoot}/{$classKey}/{$sectionKey}/Students/{$studentId}";
 
                         // Discounts
+                        // ── ADJ-GOV-7 · A RETIRED SOURCE MAY NOT ZERO LIVE MONEY ──
+                        //
+                        // This reads the discount from RTDB, and RTDB is retired
+                        // (ZERO-RTDB, commit 758c924 — Firestore/Auth only). The
+                        // write it feeds, `syncDiscount()`, is a FULL overwrite of
+                        // `studentDiscounts`, so an empty or partial RTDB read
+                        // would set `onDemandDiscount` and `scholarshipDiscount`
+                        // to 0 for every student it walks — wiping live, approved
+                        // concessions across the whole school.
+                        //
+                        // Today that does not happen, but only by luck: a missing
+                        // RTDB path returns NULL, and `is_array(null)` is false.
+                        // The moment the wrapper returned `[]` — or RTDB held a
+                        // partial shell — this endpoint (`fee_management/
+                        // firestore_bulk_sync`, reachable by any `Fees: manage`
+                        // admin) would destroy money with one click.
+                        //
+                        // Refusing an EMPTY source costs nothing: there is
+                        // nothing to migrate. A source that genuinely carries a
+                        // discount is still honoured, so no legitimate historical
+                        // backfill is blocked.
                         $disc = $this->firebase->get("{$base}/Discount");
-                        if (is_array($disc)) {
+                        $__hasSource = is_array($disc) && (
+                            (float) ($disc['OnDemandDiscount'] ?? 0) > 0
+                            || (float) ($disc['ScholarshipDiscount'] ?? 0) > 0
+                            || (float) ($disc['totalDiscount'] ?? 0) > 0
+                            || !empty($disc['Applied']) || !empty($disc['Scholarships'])
+                        );
+                        if (is_array($disc) && !$__hasSource) {
+                            log_message('error', 'ADJ_GOV_RTDB_SYNC_REFUSED student=[' . $studentId
+                                . '] — the legacy RTDB discount source is empty, and applying it '
+                                . 'would overwrite this student\'s live Firestore discount with '
+                                . 'zero. Skipped.');
+                        }
+                        if ($__hasSource) {
                             $applied = is_array($disc['Applied'] ?? null) ? array_values($disc['Applied']) : [];
                             $scholarships = [];
                             if (is_array($disc['Scholarships'] ?? null)) {
@@ -1275,6 +1379,36 @@ class Fee_firestore_sync
                 'scholarships'        => $scholarships,
                 'updatedAt'           => date('c'),
             ];
+
+            // ── ADJ-GOV-4 · THE MIRROR MUST NOT ERASE THE ORIGINAL ──────────
+            //
+            // This is the SIXTH writer of `studentDiscounts` and it runs
+            // immediately AFTER `Fee_management::apply_discount` has written
+            // the same document. It builds a FIXED payload and does a full
+            // `firestoreSet` (no merge), so every field it does not name is
+            // wiped from the stored record.
+            //
+            // Two consequences, both real money:
+            //
+            //   1. ATTRIBUTION. `reason`, `appliedBy` and `source` were written
+            //      by the caller and erased here microseconds later. Fixing the
+            //      write boundary in Fee_firestore_txn::updateDiscount (ADJ-GOV-3)
+            //      was not enough — a second mirror silently undid it. PROVEN at
+            //      runtime: a governed bulk apply landed with an empty reason.
+            //
+            //   2. EXPIRY. `apply_discount` explicitly accepts `valid_until` and
+            //      dual-emits it, and both the fee counter and the server-side
+            //      receipt cap read it. Dropping it here turned an EXPIRING bulk
+            //      discount into a permanent one — the school sets an end date,
+            //      the system quietly ignores it, and the reduction keeps
+            //      applying for ever.
+            //
+            // Caller value wins; otherwise the stored value is preserved. A
+            // mirror may restate a record, never quietly strip it.
+            foreach (['reason', 'appliedBy', 'source', 'validUntil', 'valid_until'] as $keep) {
+                $v = $summary[$keep] ?? $existing[$keep] ?? null;
+                if ($v !== null) $doc[$keep] = is_string($v) ? $v : (string) $v;
+            }
 
             $ok = $this->firebase->firestoreSet(self::COL_STUDENT_DISCOUNTS, $docId, $doc);
             if (!$ok) {

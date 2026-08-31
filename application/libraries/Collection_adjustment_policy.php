@@ -74,6 +74,49 @@ defined('BASEPATH') or exit('No direct script access allowed');
  * session. Documents with no stamp are LEGACY and are still honoured, so no
  * existing record changes meaning — the leak is closed for everything written
  * from now on, without reinterpreting settled history.
+ *
+ * ══════════════════════════════════════════════════════════════════════════
+ *  FIELD OWNERSHIP — `studentDiscounts`
+ * ══════════════════════════════════════════════════════════════════════════
+ *
+ * Established by a COMPLETE repository census (controllers, libraries,
+ * services, mirrors, Cloud Functions, scripts) — not by reading one writer.
+ * Cloud Functions write this collection ZERO times; `scripts/` touches it only
+ * through one-off, dry-run-guarded migration tools.
+ *
+ * THE SEVEN WRITERS
+ *   W1 Fees::set_student_discount        -> Fee_firestore_txn::updateDiscount
+ *   W2 Fees::submit_discount             -> Fee_firestore_txn::updateDiscount
+ *   W3 Fee_management::apply_discount    -> firestoreSet + Fee_firestore_sync::syncDiscount
+ *   W4 Fee_management scholarship award  -> firestoreSet + syncDiscount
+ *   W5 Fee_management scholarship revoke -> firestoreSet + syncDiscount
+ *   W6 FeeCollectionService (receipt)    -> updateDiscount   [CONSUMES — ADJ-GOV-6]
+ *   W7 Fee_firestore_sync::syncAllDiscountsAndMonthFees   [legacy RTDB backfill]
+ *
+ * W3-W5 each write TWICE — their own `firestoreSet`, then the sync mirror.
+ * That second write is what made ADJ-GOV-4 invisible: fixing one boundary was
+ * undone microseconds later by the other.
+ *
+ * | field               | canonical owner       | writers     | rule                    |
+ * |---------------------|-----------------------|-------------|-------------------------|
+ * | onDemandDiscount    | this class            | W1 W2 W3 W6 | SET_REPLACE; W6 only    |
+ * |                     |                       |             | ever DECREMENTS         |
+ * | scholarshipDiscount | scholarshipAwards     | W4 W5       | mirror; never priced    |
+ * | totalDiscount       | derived / reported    | W1..W6      | = onDemand + scholarship|
+ * | reason              | the granting actor    | all         | preserve when absent    |
+ * | appliedBy appliedAt | the granting actor    | all         | preserve when absent    |
+ * | source              | the granting door     | all         | preserve when absent    |
+ * | validUntil          | the granting actor    | W1 W3       | preserve when absent    |
+ * | session schoolId    | this class (stamp)    | all         | always written          |
+ *
+ * PROHIBITED, without exception:
+ *   - writing `onDemandDiscount` without passing `refusal()` first;
+ *   - any full-document write that does not carry attribution forward
+ *     (ADJ-GOV-3 in updateDiscount, ADJ-GOV-4 in syncDiscount);
+ *   - applying a legacy or absent source over a live value (ADJ-GOV-7);
+ *   - treating the authorisation as a per-receipt allowance (ADJ-GOV-6).
+ *
+ * A later sync or mirror may RESTATE a record. It may never silently strip it.
  */
 final class Collection_adjustment_policy
 {
