@@ -148,7 +148,28 @@ class FeeCollectionService
                 if (is_array($__discDoc)) {
                     $__vu = trim((string) ($__discDoc['validUntil'] ?? $__discDoc['valid_until'] ?? ''));
                     $__expired = ($__vu !== '' && $__vu < date('Y-m-d'));
-                    if (!$__expired) {
+                    // SESSION SCOPE. This is the server-side authorization cap
+                    // on what a clerk may waive on a receipt, so a discount
+                    // that belongs to a different session must not authorise
+                    // money in this one. Unstamped (legacy) documents are
+                    // honoured exactly as before; only an explicit mismatch is
+                    // refused, which can only occur on writes made after
+                    // stamping was introduced.
+                    // `$session` (from $data['session_year']), NOT
+                    // $controller->session_year: that property is PROTECTED on
+                    // MY_Controller and this is a separate class, so reading it
+                    // throws — and the \Throwable catch below would swallow the
+                    // error, leave the cap at 0 and silently reject EVERY
+                    // counter discount. Caught by driving the real endpoint and
+                    // reading the log, not by any unit test.
+                    $__docSession = trim((string) ($__discDoc['session'] ?? ''));
+                    $__wrongSession = ($__docSession !== '' && $__docSession !== (string) $session);
+                    if ($__wrongSession) {
+                        log_message('error', 'FCS discount ignored — belongs to session ['
+                            . $__docSession . '], collecting for [' . $session
+                            . '] student=' . $userId);
+                    }
+                    if (!$__expired && !$__wrongSession) {
                         $approvedDiscountCap = (float) ($__discDoc['onDemandDiscount'] ?? 0);
                     }
                 }
@@ -1420,8 +1441,50 @@ class FeeCollectionService
 
         // ── 5. Discount update (if any) ────────────────────────────────
         if ($discountFees > 0.005) {
+            // ── ADJ-GOV-6 · THE AUTHORISATION MUST BE CONSUMED ──────────────
+            //
+            // `onDemandDiscount` is a SINGLE STANDING REDUCTION, not a
+            // per-receipt allowance: `Fees::fetch_months` computes
+            // `netDue = totalRemaining - onDemandDiscount` exactly once against
+            // the whole outstanding balance.
+            //
+            // This block used to write only `totalDiscount` and leave
+            // `onDemandDiscount` untouched, while the authorisation check above
+            // re-reads that same field fresh on every receipt. So one approved
+            // waiver could be spent again on the next receipt, and the next.
+            //
+            // PROVEN at runtime: a 500 waiver was accepted on receipt 1 AND on
+            // receipt 2 — two receipts each recording discount=500 — with
+            // `onDemandDiscount` still standing at 500 afterwards. A single
+            // 500 approval became 500 x (number of receipts).
+            //
+            // Consuming it keeps the two readings coherent: as the outstanding
+            // falls by what the receipt settled, the remaining authorisation
+            // falls by what the receipt used, and `netDue` stays correct.
+            // Never negative, and the `applied` history below still records the
+            // full amount used on this receipt.
+            $__remainingAuth = round(max(0.0, $approvedDiscountCap - $discountFees), 2);
+            $__scholKeep     = 0.0;
+            try {
+                $__cur = $controller->fs->get('studentDiscounts', "{$schoolFs}_{$userId}");
+                if (is_array($__cur)) {
+                    $__scholKeep = (float) ($__cur['scholarshipDiscount']
+                        ?? $__cur['ScholarshipDiscount'] ?? 0);
+                }
+            } catch (\Throwable $e) {
+                log_message('error', 'ADJ_GOV_CONSUME_READ_FAILED student=' . $userId
+                    . ': ' . $e->getMessage());
+            }
+
+            log_message('error', 'ACC_DISCOUNT_CONSUMED student=[' . $userId . '] receipt=['
+                . $receiptKey . '] used=[' . $discountFees . '] authorised=['
+                . $approvedDiscountCap . '] remaining=[' . $__remainingAuth . ']');
+
             $controller->fsTxn->updateDiscount($userId, [
-                'totalDiscount' => $discountFees,
+                'onDemandDiscount' => $__remainingAuth,
+                // SD-2 coherence: the reported total is the sum of its parts,
+                // not the last receipt's discount.
+                'totalDiscount' => round($__remainingAuth + $__scholKeep, 2),
                 'applied'       => [
                     'type'       => 'receipt',
                     'amount'     => $discountFees,

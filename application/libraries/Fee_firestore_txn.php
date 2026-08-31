@@ -905,6 +905,19 @@ class Fee_firestore_txn
             'fineAmount'     => (float) $pick($data, ['fineAmount', 'fine_amount'], 0),
             'netAmount'      => (float) $pick($data, ['netAmount', 'net_amount'], 0),
             'dueDate'        => (string) $pick($data, ['dueDate', 'due_date']),
+            // PA-FEE-GRACE — the last day this demand is still on time,
+            // `dueDate + overdue_grace_days`, derived by Fee_overdue_policy at
+            // generation. This allowlist is why it must be named here: a field
+            // the builder does not know about is silently dropped, which is
+            // exactly what happened on the first attempt (0 of 25 demands
+            // carried it).
+            //
+            // Stamped rather than sent as a policy so the Parent App holds no
+            // overdue rule of its own — it compares this date to today.
+            // Defaults to '' for demands with no due date (Transport, Hostel),
+            // and the app then falls back to `dueDate`, which is the correct
+            // zero-grace answer.
+            'overdueFrom'    => (string) $pick($data, ['overdueFrom', 'overdue_from']),
             'createdAt'      => (string) $pick($data, ['createdAt', 'created_at'], date('c')),
             'createdBy'      => (string) $pick($data, ['createdBy', 'created_by']),
             'updatedAt'      => date('c'),
@@ -1548,6 +1561,47 @@ class Fee_firestore_txn
                 'section'             => (string) ($context['section']     ?? $existing['section']     ?? ''),
                 'updatedAt'           => date('c'),
             ];
+
+            // ── ADJ-GOV-3 · ATTRIBUTION MUST SURVIVE THE WRITE BOUNDARY ─────
+            //
+            // This method used to build a FIXED document, so every field its
+            // callers passed for provenance — `reason`, `appliedBy`,
+            // `appliedAt`, `source` — was silently discarded, and the write is
+            // a full overwrite, so anything previously stored was erased too.
+            //
+            // That is the root cause of SD-1 in STUDENT_DISCOUNTS_FORENSIC_AUDIT:
+            // a live school carries a permanent, unattributed reduction on a
+            // child's fees, and the audit concluded its provenance was
+            // "unknown and unknowable from code". It was unknowable because the
+            // writer threw it away. A gate that makes a reason MANDATORY is
+            // worthless if the storage layer drops it one call later.
+            //
+            // `validUntil` matters just as much: it is the ONLY temporal
+            // control on a discount that is otherwise permanent, and both the
+            // counter (`fetch_months`) and the server-side receipt cap in
+            // FeeCollectionService read it. Dropping it silently converted an
+            // expiring waiver into a forever one.
+            //
+            // Existing values are preserved when a caller does not supply one,
+            // so no stored attribution is lost by an unrelated update.
+            foreach (['reason', 'appliedBy', 'appliedAt', 'source',
+                      'validUntil', 'valid_until'] as $keep) {
+                $v = $summary[$keep] ?? $existing[$keep] ?? null;
+                if ($v !== null) $doc[$keep] = is_string($v) ? $v : (string) $v;
+            }
+
+            // ADJ-GOV-8 — the dual-emitted expiry pair must agree. Each writer
+            // supplies only one of the two keys, so the preserve loop can pair
+            // a caller's camel value with a STALE stored snake value. Every
+            // reader is camel-first, so that key is authoritative and the snake
+            // key is a compatibility echo of it. A record that contradicts
+            // itself sets up the dangerous reading: "" = never expires.
+            if (array_key_exists('validUntil', $doc) || array_key_exists('valid_until', $doc)) {
+                $__vu = (string) ($doc['validUntil'] ?? '');
+                if ($__vu === '') $__vu = (string) ($doc['valid_until'] ?? '');
+                $doc['validUntil']  = $__vu;
+                $doc['valid_until'] = $__vu;
+            }
             return (bool) $this->firebase->firestoreSet(self::COL_DISCOUNTS, "{$this->schoolId}_{$userId}", $doc);
         } catch (\Exception $_) { return false; }
     }
