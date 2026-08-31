@@ -28,6 +28,15 @@ class FirestoreRestClient
     /** @var array<string,?array> request-scoped single-doc read memo; flushed on any write. */
     private $_readCache = [];
 
+    /**
+     * P20.3c — raw {code, body} of the most recent :commit response.
+     * Written by commitBatch(), read by commitBatchStatus() so the latter can
+     * tell a CAS precondition conflict from an unknown failure without
+     * duplicating commitBatch()'s write-encoding path. Not part of any public
+     * contract; never read outside this class.
+     */
+    private $_lastCommitDetail = null;
+
     /** @var bool When true, all WRITE operations return false without hitting Firestore */
     private bool $simulateFailure = false;
 
@@ -132,9 +141,93 @@ class FirestoreRestClient
         return true;
     }
 
+    /**
+     * ── EMULATOR REDIRECT (opt-in, test-only) ────────────────────────────
+     *
+     * Returns the Firestore host root. Production is the ONLY behaviour
+     * unless `FIRESTORE_EMULATOR_HOST` is set — the same variable Google's
+     * own SDKs use, so nothing bespoke is invented here.
+     *
+     * WHY THIS EXISTS: proving lifecycle transitions at runtime requires
+     * executing real writes. The only alternatives were writing to a live
+     * operator tenant or not proving them at all. An emulator is strictly
+     * safer than a "fixture tenant" in the live project, because there is no
+     * live data present to damage even in principle.
+     *
+     * WHY IT IS SAFE:
+     *   • unset  -> byte-identical to before; production is unreachable by
+     *     accident because nothing sets this in any deployed environment;
+     *   • the value is host:port only, and is scheme-stripped and
+     *     shape-validated below, so it cannot redirect writes to an
+     *     arbitrary URL;
+     *   • it never widens what a caller may do — only where the request goes.
+     *
+     * This is a testability seam, not a relaxed control.
+     */
+    private function emulatorHost(): string
+    {
+        $raw = trim((string) (getenv('FIRESTORE_EMULATOR_HOST') ?: ''));
+        if ($raw === '') return '';
+        // Accept "host:port" only. A scheme or a path would let this point
+        // somewhere other than a local emulator.
+        $raw = preg_replace('#^https?://#i', '', $raw);
+        $raw = rtrim((string) $raw, '/');
+        if (!preg_match('/^[A-Za-z0-9._-]+:\d{2,5}$/', $raw)) {
+            if (function_exists('log_message')) {
+                log_message('error', 'FIRESTORE_EMULATOR_HOST is malformed; ignoring and using production.');
+            }
+            return '';
+        }
+        return $raw;
+    }
+
+    private function apiRoot(): string
+    {
+        $emu = $this->emulatorHost();
+        return $emu === '' ? 'https://firestore.googleapis.com' : "http://{$emu}";
+    }
+
+    /**
+     * WHERE THIS CLIENT WILL ACTUALLY TALK — the resolved destination, not the
+     * intent expressed by an environment variable.
+     *
+     * ── WHY THIS EXISTS ────────────────────────────────────────────────────
+     * On 2026-08-31 a write-capable harness ran against PRODUCTION while
+     * reporting itself sandboxed. `Lifecycle_probe::_assertEmulator()` checked
+     * that `FIRESTORE_EMULATOR_HOST` was set and loopback-shaped, and stopped
+     * there. But the emulator seam in this class was uncommitted, so a clean
+     * checkout had no `emulatorHost()` at all and fell through to
+     * `https://firestore.googleapis.com`. The variable said emulator; the
+     * client went to the live project. 85 documents were created in the real
+     * `graderadmin` database before the discrepancy was noticed.
+     *
+     * An environment variable states an INTENTION. Only the client can state
+     * its DESTINATION. Anything that gates writes must ask the client.
+     */
+    public function resolvedApiRoot(): string
+    {
+        return $this->apiRoot();
+    }
+
+    /**
+     * Is this client demonstrably pointed at a local emulator?
+     *
+     * Deliberately allow-list, not deny-list: it must PROVE loopback rather
+     * than merely fail to spot a production hostname. A deny-list would pass
+     * for any hostname nobody thought to ban.
+     */
+    public function isEmulatorTarget(): bool
+    {
+        $root = $this->apiRoot();
+        if (strpos($root, 'http://') !== 0) return false;          // production is https
+        $host = strtolower((string) parse_url($root, PHP_URL_HOST));
+        return in_array($host, ['127.0.0.1', 'localhost', '::1'], true);
+    }
+
     private function baseUrl(): string
     {
-        return "https://firestore.googleapis.com/v1/projects/{$this->projectId}/databases/{$this->databaseId}/documents";
+        return $this->apiRoot()
+            . "/v1/projects/{$this->projectId}/databases/{$this->databaseId}/documents";
     }
 
     /** Cross-request persisted token cache key — shared across PHP processes. */
@@ -288,6 +381,15 @@ class FirestoreRestClient
 
     private function getAccessToken(): string
     {
+        // EMULATOR: there is no OAuth endpoint to call, and the emulator
+        // accepts the literal "owner" bearer. Guarded by the same validated
+        // env var as apiRoot(), so production can never take this branch —
+        // and note it returns a token that is useless against production,
+        // which is the safe failure direction if the two ever disagreed.
+        if ($this->emulatorHost() !== '') {
+            return 'owner';
+        }
+
         // Per-request memo — fastest path, no I/O.
         if ($this->accessToken !== '' && time() < $this->tokenExpiry - self::TOKEN_EXPIRY_BUFFER) {
             return $this->accessToken;
@@ -632,14 +734,35 @@ class FirestoreRestClient
         return $val;
     }
 
-    private function _getDocumentUncached(string $collection, string $docId): ?array
+    /**
+     * Fail-loud sibling of getDocument(). Returns null ONLY for a genuine 404;
+     * every other non-200 throws. Use wherever null would be read as "absent"
+     * and drive a create-vs-update decision. Bypasses the read cache so a
+     * failure is never served from, or written to, it.
+     */
+    public function getDocumentOrFail(string $collection, string $docId): ?array
+    {
+        return $this->_getDocumentUncached($collection, $docId, true);
+    }
+
+    private function _getDocumentUncached(string $collection, string $docId, bool $failLoud = false): ?array
     {
         $safeDocId = rawurlencode($docId);
         $url = $this->baseUrl() . "/$collection/$safeDocId";
         $r = $this->request('GET', $url);
+        // 404 is the ONLY honest null: the document is genuinely absent.
         if ($r['code'] === 404) return null;
         if ($r['code'] !== 200) {
             if (function_exists('log_message')) log_message('error', "FirestoreREST::get $collection/$docId HTTP {$r['code']}: " . json_encode($r['body']));
+            // A caller deciding CREATE-vs-UPDATE from this cannot tell a failed
+            // read from "no such document", and will treat an existing record as
+            // new — resetting its version and provenance and writing an audit
+            // entry that says 'create' for what was an update.
+            if ($failLoud) {
+                $status = $r['body']['error']['status'] ?? '';
+                throw new \RuntimeException('GET_FAILED:' . $collection . ':'
+                    . ($status !== '' ? $status : (string) $r['code']));
+            }
             return null;
         }
         return $this->decodeDocument($r['body']);
@@ -921,18 +1044,116 @@ class FirestoreRestClient
      * setDocument() falls back to PATCH on 409 which would silently
      * overwrite a concurrent writer's reservation.
      */
-    public function createDocument(string $collection, string $docId, array $data): bool
+    /** Result statuses returned by createDocumentStatus(). */
+    public const CREATE_SUCCESS   = 'SUCCESS';
+    public const CREATE_COLLISION = 'COLLISION';
+    public const CREATE_FAILURE   = 'FAILURE';
+
+    /**
+     * ── PHASE 20.3b (P20.3-CLAIM-1) — STATUS-AWARE CREATE-IF-NOT-EXISTS ─────
+     *
+     * THE DEFECT THIS CLOSES: createDocument() below returns `false` for an
+     * HTTP 409 (the document already exists — a BUSINESS-level contention
+     * result) and ALSO for every infrastructure failure: 500, 401, timeout,
+     * DNS failure, connection reset. A caller holding that boolean cannot tell
+     * "someone else owns this key" from "the write did not happen and I do not
+     * know why".
+     *
+     * That distinction is safety-critical for claim-style callers. A claim loop
+     * that reads `false` as "taken, try the next candidate" will, during a
+     * transient outage, walk past keys that were never actually claimed — and
+     * the next create may well SUCCEED. For roll numbers that silently skips a
+     * free number (the live defect at Sis::suggest_roll_no). For any future
+     * seat/capacity claim it would step past the last valid slot and grant a
+     * place beyond capacity — the exact overflow such a mechanism exists to
+     * prevent (Phase 20.3, P20.2-RACE-1).
+     *
+     * ── CLASSIFICATION ──────────────────────────────────────────────────────
+     * The transport already carries everything needed; `request()` is NOT
+     * modified (it is shared by every Firestore operation in the system):
+     *
+     *   2xx  → SUCCESS    this call created the document
+     *   409  → COLLISION  the document already exists — a definitive answer
+     *   0    → FAILURE    curl_exec failed: timeout, DNS, connection reset.
+     *                     CURLINFO_HTTP_CODE is 0 when no response was received.
+     *   4xx  → FAILURE    client/auth error (400 malformed, 401/403 denied)
+     *   5xx  → FAILURE    server error
+     *
+     * THE INVARIANT: COLLISION is returned for 409 and for nothing else.
+     * An unknown outcome is never reported as contention.
+     *
+     * `_blockWrite` (probe/read-only guard) is also FAILURE, not COLLISION —
+     * a suppressed write proves nothing about who owns the key.
+     *
+     * @return array{status:string, code:int, message:string}
+     */
+    public function createDocumentStatus(string $collection, string $docId, array $data): array
     {
         $this->_readCache = []; $this->_bustConfigCache($collection, $docId); // PERF: invalidate memo + config cache
-        if ($this->_blockWrite('CREATE', "$collection/$docId")) return false;
+
+        if ($this->_blockWrite('CREATE', "$collection/$docId")) {
+            return ['status' => self::CREATE_FAILURE, 'code' => 0, 'message' => 'write blocked by guard'];
+        }
+
         $fields = [];
         foreach ($data as $k => $v) $fields[$k] = $this->encode($v);
-        $url = $this->baseUrl() . "/$collection?documentId=" . urlencode($docId);
-        $r = $this->request('POST', $url, ['fields' => $fields]);
-        if ($r['code'] >= 200 && $r['code'] < 300) return true;
-        if ($r['code'] === 409) return false; // doc exists — caller must handle
-        if (function_exists('log_message')) log_message('error', "FirestoreREST::create $collection/$docId HTTP {$r['code']}: " . json_encode($r['body']));
-        return false;
+        // ── DOCID-ENCODE-1 · CREATE AND READ MUST AGREE ON THE ID ───────────
+        // This was urlencode(). Every read, update and delete in this class
+        // builds the document PATH with rawurlencode(), where a space becomes
+        // %20 and Firestore decodes it back to a space. Create passes the id as
+        // the ?documentId= QUERY parameter, and urlencode() turns a space into
+        // '+' — which Firestore does NOT decode. It is taken literally.
+        //
+        // So a document whose id contained a space was CREATED under an id that
+        // no subsequent read could ever compute. Measured: a fee head name claim
+        // '{school}_name_tuition fee' was stored as '..._name_tuition+fee', and
+        // Fee_head_resolver::resolveByName() — which recomputes the id with a
+        // space — returned not_found for a head that plainly existed. With the
+        // registry active that fails generation closed, so a school could
+        // register its fee heads correctly and still bill nobody.
+        //
+        // Ids that are alphanumeric/underscore (almost all of ZenX's) encode
+        // identically either way, so this changes nothing for them. Documents
+        // already written with a literal '+' were unreachable before this fix
+        // and remain unreachable; they were never readable to begin with.
+        $url = $this->baseUrl() . "/$collection?documentId=" . rawurlencode($docId);
+        $r   = $this->request('POST', $url, ['fields' => $fields]);
+        $code = (int) ($r['code'] ?? 0);
+
+        if ($code >= 200 && $code < 300) {
+            return ['status' => self::CREATE_SUCCESS, 'code' => $code, 'message' => ''];
+        }
+
+        if ($code === 409) {
+            // Definitive: the key is owned. NOT logged as an error — contention
+            // is a normal outcome for every claim-style caller.
+            return ['status' => self::CREATE_COLLISION, 'code' => 409, 'message' => 'document already exists'];
+        }
+
+        $msg = ($code === 0)
+            ? 'transport failure (timeout / connection / DNS) — no HTTP response'
+            : ('HTTP ' . $code);
+        if (function_exists('log_message')) {
+            log_message('error', "FirestoreREST::create $collection/$docId {$msg}: " . json_encode($r['body'] ?? []));
+        }
+        return ['status' => self::CREATE_FAILURE, 'code' => $code, 'message' => $msg];
+    }
+
+    /**
+     * Create-if-not-exists, boolean form.
+     *
+     * ⚠ `false` is AMBIGUOUS — it means collision OR infrastructure failure.
+     * Retained verbatim for the 30+ existing call sites across identity
+     * generation (Student ID, SRNO, Admission No, APAAR), fee counters,
+     * accounting idempotency and the school registry, none of which change in
+     * this phase. Its observable behaviour is byte-for-byte what it was.
+     *
+     * NEW CODE THAT MAKES A SAFETY DECISION ON THE RESULT MUST USE
+     * createDocumentStatus() INSTEAD.
+     */
+    public function createDocument(string $collection, string $docId, array $data): bool
+    {
+        return $this->createDocumentStatus($collection, $docId, $data)['status'] === self::CREATE_SUCCESS;
     }
 
     /**
@@ -1009,7 +1230,34 @@ class FirestoreRestClient
             // `updateMask` that limits the fields touched — with it we
             // patch only the provided fields; without it we overwrite.
             if (!empty($op['merge'])) {
-                $writeEntry['updateMask'] = ['fieldPaths' => array_keys($data)];
+                // ── LC-13 · FIELD PATHS IN A BATCH MUST BE ENCODED ───────
+                //
+                // This passed RAW keys. Firestore requires an unquoted field
+                // path to match ([a-zA-Z_][a-zA-Z_0-9]*); anything else must
+                // be backtick-quoted. `encodeFieldPath()` already does this
+                // correctly and is used by the single-document writer — the
+                // batch writer simply never called it.
+                //
+                // FOUND AT RUNTIME, not by reading: the emulator harness ran
+                // `rollover_session` and Firestore replied
+                //
+                //   HTTP 400 INVALID_ARGUMENT — Invalid property path
+                //   "rolloverIntents.2026-27__to__2027-28"
+                //
+                // The intent key embeds the session names, and EVERY ZenX
+                // session is `YYYY-YY` — a segment that both starts with a
+                // digit and contains a hyphen. So session rollover with
+                // promote_students=1 could never record its intent and always
+                // failed with "Could not record rollover intent. Retry."
+                //
+                // It fails loudly rather than corrupting anything, which is
+                // why it survived: the feature simply never worked, and the
+                // error reads like a transient CAS conflict inviting a retry
+                // that can never succeed.
+                $writeEntry['updateMask'] = ['fieldPaths' => array_map(
+                    fn($k) => $this->encodeFieldPath((string) $k),
+                    array_keys($data)
+                )];
             }
             // Phase 7B / 8A — optional precondition (currentDocument):
             //   ['exists'     => false]   create-if-not-exists semantics
@@ -1030,11 +1278,134 @@ class FirestoreRestClient
 
         if (empty($writes)) return true;
 
-        $url = "https://firestore.googleapis.com/v1/projects/{$this->projectId}/databases/{$this->databaseId}/documents:commit";
+        $url = $this->apiRoot()
+            . "/v1/projects/{$this->projectId}/databases/{$this->databaseId}/documents:commit";
         $r = $this->request('POST', $url, ['writes' => $writes]);
+        // P20.3c — record the raw outcome so commitBatchStatus() can classify a
+        // precondition conflict without re-implementing the encode path above.
+        // Purely additive: commitBatch()'s own return value is unchanged.
+        $this->_lastCommitDetail = ['code' => (int) ($r['code'] ?? 0), 'body' => $r['body'] ?? []];
         if ($r['code'] >= 200 && $r['code'] < 300) return true;
         if (function_exists('log_message')) log_message('error', "FirestoreREST::commitBatch HTTP {$r['code']} ops=" . count($writes) . " body=" . json_encode($r['body']));
         return false;
+    }
+
+    /** Result statuses returned by commitBatchStatus(). */
+    public const COMMIT_SUCCESS      = 'SUCCESS';
+    public const COMMIT_CONFLICT     = 'PRECONDITION_CONFLICT';
+    public const COMMIT_FAILURE      = 'FAILURE';
+
+    /**
+     * ── PHASE 20.3c (P20.2-RACE-1 enabler) — STATUS-AWARE ATOMIC COMMIT ─────
+     *
+     * THE PROBLEM: commitBatch() above returns a bare bool. A CAS precondition
+     * conflict — "another writer moved this document, retry" — is reported
+     * identically to a 500, an auth error, or a timeout. Optimistic
+     * concurrency is unimplementable on that signal: a retry loop cannot tell
+     * "you lost the race, re-read and try again" from "the outcome is unknown,
+     * retrying may duplicate work".
+     *
+     * This is the same defect class as P20.3-CLAIM-1 (createDocument's
+     * ambiguous false), one layer up, and it is fixed the same way: a
+     * status-aware sibling, with the boolean API left byte-for-byte intact.
+     *
+     * ── CLASSIFICATION ──────────────────────────────────────────────────────
+     * Firestore's REST `:commit` rejects a batch whose `currentDocument`
+     * precondition no longer holds with HTTP 400 and
+     * `error.status = FAILED_PRECONDITION`. The whole batch rolls back — no
+     * partial write — which is what makes "student write + section marker"
+     * safe to attempt speculatively.
+     *
+     *   2xx                              → SUCCESS
+     *   400 + FAILED_PRECONDITION        → PRECONDITION_CONFLICT (retryable)
+     *   400 + anything else              → FAILURE (malformed request)
+     *   0 (no HTTP response)             → FAILURE (timeout / DNS / reset)
+     *   other 4xx / 5xx                  → FAILURE
+     *
+     * THE INVARIANT: PRECONDITION_CONFLICT is returned ONLY for a genuine
+     * precondition rejection. An unknown outcome is never reported as
+     * contention — retrying an unknown outcome can duplicate a non-idempotent
+     * operation, which is exactly what must not happen on a placement path.
+     *
+     * ⚠ NOT VERIFIED AGAINST LIVE FIRESTORE. The FAILED_PRECONDITION body
+     * shape follows Google's documented REST error contract but has not been
+     * observed from this client. Confirming it is a REQUIRED live-UAT item
+     * before any retry loop is trusted in production.
+     *
+     * @return array{status:string, code:int, message:string}
+     */
+    public function commitBatchStatus(array $ops): array
+    {
+        // Delegate the whole encode/precondition path to commitBatch()? No —
+        // that would discard the HTTP detail this method exists to surface.
+        // Instead reuse it for the trivial cases and re-issue otherwise.
+        if (empty($ops)) {
+            return ['status' => self::COMMIT_SUCCESS, 'code' => 0, 'message' => 'no operations'];
+        }
+
+        $before = $this->_lastCommitDetail;
+        $this->_lastCommitDetail = null;
+        $ok = $this->commitBatch($ops);
+        $detail = $this->_lastCommitDetail;
+        $this->_lastCommitDetail = $before;
+
+        if ($ok) {
+            return ['status' => self::COMMIT_SUCCESS, 'code' => 200, 'message' => ''];
+        }
+
+        $code = (int) ($detail['code'] ?? 0);
+        $body = $detail['body'] ?? [];
+        $errStatus = (string) ($body['error']['status'] ?? '');
+        $errMsg    = (string) ($body['error']['message'] ?? '');
+
+        if ($code === 400 && (
+                $errStatus === 'FAILED_PRECONDITION'
+                || stripos($errMsg, 'precondition') !== false
+                || stripos($errMsg, 'stored version') !== false)) {
+            return [
+                'status'  => self::COMMIT_CONFLICT,
+                'code'    => 400,
+                'message' => $errMsg !== '' ? $errMsg : 'precondition failed',
+            ];
+        }
+
+        // ── REF1-F1 ──────────────────────────────────────────────────────────
+        // The TWO precondition forms fail with DIFFERENT codes, and only one of
+        // them was classified here. Proven on the emulator
+        // (firebase-rules/tests/payment_claim_cas.test.js):
+        //
+        //     currentDocument.updateTime  conflict → 400 FAILED_PRECONDITION
+        //     currentDocument.exists      conflict → 409 ALREADY_EXISTS
+        //
+        // Both mean the same thing to a caller — "the document was not in the
+        // state we required; another writer won; re-read and retry" — but a 409
+        // fell through to COMMIT_FAILURE, i.e. "outcome UNKNOWN".
+        //
+        // That distinction is load-bearing for optimistic-concurrency callers:
+        // a CONFLICT is safe to retry and safe to report as contention, whereas
+        // an UNKNOWN must NOT be, because the write may or may not have landed.
+        // Collapsing a conflict into unknown makes callers defensive about
+        // something that definitely did not happen — and REF-1's refund path
+        // must not discard its idempotency guard on UNKNOWN.
+        //
+        // Inert for existing callers: no current commitBatchStatus() caller uses
+        // an `exists` precondition (AccountingReconciler does, but through the
+        // bool commitBatch(), which never distinguished the two).
+        if ($code === 409 || $errStatus === 'ALREADY_EXISTS') {
+            return [
+                'status'  => self::COMMIT_CONFLICT,
+                'code'    => $code !== 0 ? $code : 409,
+                'message' => $errMsg !== '' ? $errMsg : 'document already exists',
+            ];
+        }
+
+        return [
+            'status'  => self::COMMIT_FAILURE,
+            'code'    => $code,
+            'message' => ($code === 0)
+                ? 'transport failure (timeout / connection / DNS) — outcome UNKNOWN'
+                : ($errMsg !== '' ? $errMsg : ('HTTP ' . $code)),
+        ];
     }
 
     /**
@@ -1255,12 +1626,18 @@ class FirestoreRestClient
             foreach ($data as $k => $v) $fields[$k] = $this->encode($v);  // same encoder → identical bytes
             $entry = ['update' => ['name' => $path, 'fields' => $fields]];
             if (!empty($op['merge'])) {
-                $entry['updateMask'] = ['fieldPaths' => array_keys($data)];
+                // LC-13 — same defect as commitBatch(). Fixed in both, because
+                // a caller that switched between the two writers would
+                // otherwise get different answers for the same data.
+                $entry['updateMask'] = ['fieldPaths' => array_map(
+                    fn($k) => $this->encodeFieldPath((string) $k),
+                    array_keys($data)
+                )];
             }
             $writes[] = $entry;
         }
 
-        $url = "https://firestore.googleapis.com/v1/{$dbPrefix}:batchWrite";
+        $url = $this->apiRoot() . "/v1/{$dbPrefix}:batchWrite";
         $r = $this->request('POST', $url, ['writes' => $writes]);
 
         if ($r['code'] < 200 || $r['code'] >= 300) {
@@ -1315,7 +1692,7 @@ class FirestoreRestClient
             'updateTransforms' => $transforms,
         ]];
 
-        $url = "https://firestore.googleapis.com/v1/{$dbPrefix}:commit";
+        $url = $this->apiRoot() . "/v1/{$dbPrefix}:commit";
         $r = $this->request('POST', $url, ['writes' => $writes]);
         if ($r['code'] >= 200 && $r['code'] < 300) return true;
         if (function_exists('log_message')) {
@@ -1337,7 +1714,7 @@ class FirestoreRestClient
             $url = $this->baseUrl() . "/$collection/$safeDocId?$maskParams";
             $r = $this->request('PATCH', $url, ['fields' => $fields]);
         } else {
-            $url = $this->baseUrl() . "/$collection?documentId=" . urlencode($docId);
+            $url = $this->baseUrl() . "/$collection?documentId=" . rawurlencode($docId);
             $r = $this->request('POST', $url, ['fields' => $fields]);
             if ($r['code'] === 409) {
                 $url = $this->baseUrl() . "/$collection/$safeDocId";
@@ -1478,13 +1855,38 @@ class FirestoreRestClient
         return $this->query($collection, $conditions, $orderBy, $direction, $limit, $startAfter);
     }
 
-    public function query(
+    /**
+     * Fail-loud sibling of query(). Identical read; a non-200 THROWS rather
+     * than returning [].
+     *
+     * query() itself cannot be changed: hundreds of call sites read [] as
+     * "no rows" and would start throwing. But a caller that reasons
+     * NEGATIVELY over the result — "this teacher is not in the busy map, so
+     * they are free" — cannot tell [] apart from a failed read, and silently
+     * picks the permissive answer. A guard that cannot evaluate must deny.
+     * Those callers must use this method.
+     *
+     * Mirrors the fail-loud shape already used by queryCursor().
+     */
+    public function queryOrFail(
         string $collection,
         array $conditions = [],
         ?string $orderBy = null,
         string $direction = 'ASC',
         ?int $limit = null,
         $startAfter = null
+    ): array {
+        return $this->query($collection, $conditions, $orderBy, $direction, $limit, $startAfter, true);
+    }
+
+    public function query(
+        string $collection,
+        array $conditions = [],
+        ?string $orderBy = null,
+        string $direction = 'ASC',
+        ?int $limit = null,
+        $startAfter = null,
+        bool $failLoud = false
     ): array {
         $opMap = ['=' => 'EQUAL', '==' => 'EQUAL', '<' => 'LESS_THAN', '<=' => 'LESS_THAN_OR_EQUAL',
                   '>' => 'GREATER_THAN', '>=' => 'GREATER_THAN_OR_EQUAL', '!=' => 'NOT_EQUAL',
@@ -1563,6 +1965,14 @@ class FirestoreRestClient
 
         if ($r['code'] !== 200) {
             if (function_exists('log_message')) log_message('error', "FirestoreREST::query $collection HTTP {$r['code']}: " . json_encode($r['body']));
+            // A caller that reasons negatively over the rows ("not in the busy
+            // map, therefore free") cannot tell [] apart from this failure.
+            // failLoud makes the difference visible so the guard can deny.
+            if ($failLoud) {
+                $status = $r['body']['error']['status'] ?? '';
+                throw new \RuntimeException('QUERY_FAILED:' . $collection . ':'
+                    . ($status !== '' ? $status : (string) $r['code']));
+            }
             return [];
         }
 

@@ -84,14 +84,72 @@ class Lifecycle_probe extends CI_Controller
         $loopback = in_array($host, ['127.0.0.1', 'localhost', '::1'], true);
 
         if ($emu === '' || !$loopback) {
-            fwrite(STDERR,
-                "REFUSING TO RUN.\n"
-                . "This harness executes real lifecycle WRITES through the real controllers.\n"
-                . "It runs only against a local Firestore emulator.\n"
-                . "  FIRESTORE_EMULATOR_HOST = " . ($emu === '' ? '(unset)' : $emu) . "\n"
-                . "Set it to a loopback emulator (e.g. 127.0.0.1:8092) and retry.\n");
-            exit(3);
+            $this->_refuse('FIRESTORE_EMULATOR_HOST = ' . ($emu === '' ? '(unset)' : $emu),
+                'Set it to a loopback emulator (e.g. 127.0.0.1:8092) and retry.');
         }
+
+        // ── THE CHECK THAT WAS MISSING ──────────────────────────────────────
+        //
+        // Everything above proves only that an ENVIRONMENT VARIABLE expresses
+        // an intention. On 2026-08-31 that was not enough: the emulator seam in
+        // Firestore_rest_client was uncommitted, so a clean checkout had no way
+        // to honour the variable and silently used
+        // https://firestore.googleapis.com. This guard said "sandboxed" while
+        // the harness wrote 85 documents into the live project.
+        //
+        // So now ASK THE CLIENT where it will actually talk. A variable states
+        // an intention; only the client states a destination.
+        //
+        // Fails CLOSED on every uncertainty — missing class, missing method,
+        // unreadable credential, unparseable root — because "I could not prove
+        // it is the emulator" and "it is production" must be treated
+        // identically before the first write.
+        $clientFile = APPPATH . 'libraries/Firestore_rest_client.php';
+        if (!is_file($clientFile)) {
+            $this->_refuse('Firestore_rest_client.php not found',
+                'The Firestore client is missing, so its destination cannot be proven.');
+        }
+        require_once $clientFile;
+
+        if (!class_exists('FirestoreRestClient')
+            || !method_exists('FirestoreRestClient', 'isEmulatorTarget')
+            || !method_exists('FirestoreRestClient', 'resolvedApiRoot')) {
+            $this->_refuse('FirestoreRestClient cannot report its destination',
+                'This build predates the emulator-target check (the exact 2026-08-31 '
+                . 'condition: a client with no emulator seam). Refusing rather than '
+                . 'assuming the environment variable is honoured.');
+        }
+
+        $sa = APPPATH . 'config/graderadmin-firebase-adminsdk-a1sml-2b5f1862a7.json';
+        try {
+            $probe = new FirestoreRestClient($sa, 'graderadmin', '(default)');
+            $root  = $probe->resolvedApiRoot();
+            $ok    = $probe->isEmulatorTarget();
+        } catch (\Throwable $e) {
+            $this->_refuse('could not construct the Firestore client: ' . $e->getMessage(),
+                'Its destination cannot be proven, so no write may proceed.');
+            return; // unreachable; keeps static analysers happy
+        }
+
+        if (!$ok || stripos($root, 'firestore.googleapis.com') !== false) {
+            $this->_refuse('RESOLVED Firestore destination = ' . $root,
+                'The client is NOT pointed at a local emulator. This is the exact '
+                . 'condition that wrote to production on 2026-08-31. Nothing will run.');
+        }
+
+        fwrite(STDERR, "[probe] verified emulator destination: {$root}\n");
+    }
+
+    /** One refusal path, so no caller can accidentally continue past a failed check. */
+    private function _refuse(string $what, string $why): void
+    {
+        fwrite(STDERR,
+            "REFUSING TO RUN.\n"
+            . "This harness executes real lifecycle WRITES through the real controllers.\n"
+            . "It runs only against a local Firestore emulator.\n"
+            . "  {$what}\n"
+            . "  {$why}\n");
+        exit(3);
     }
 
     /**
