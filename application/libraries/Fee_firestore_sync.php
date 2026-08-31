@@ -1410,6 +1410,29 @@ class Fee_firestore_sync
                 if ($v !== null) $doc[$keep] = is_string($v) ? $v : (string) $v;
             }
 
+            // ── ADJ-GOV-8 · THE EXPIRY PAIR MUST AGREE ──────────────────────
+            //
+            // `validUntil` and `valid_until` are dual-emitted, but each writer
+            // supplies only one of them, so the preserve loop above can restore
+            // the camel key from the caller and the snake key from a STALE
+            // stored value. Observed after a real bulk apply:
+            //     validUntil = "2027-03-31"   valid_until = ""
+            //
+            // All five readers happen to be camel-first, and `??` only falls
+            // through on NULL, so this is harmless TODAY. It is still a record
+            // that contradicts itself, and the failure it sets up is the
+            // dangerous direction: a reader preferring the snake key would see
+            // "" and conclude the discount NEVER EXPIRES.
+            //
+            // The camel key is authoritative because that is what every reader
+            // consults first; the snake key is a compatibility echo of it.
+            if (array_key_exists('validUntil', $doc) || array_key_exists('valid_until', $doc)) {
+                $__vu = (string) ($doc['validUntil'] ?? '');
+                if ($__vu === '') $__vu = (string) ($doc['valid_until'] ?? '');
+                $doc['validUntil']  = $__vu;
+                $doc['valid_until'] = $__vu;
+            }
+
             $ok = $this->firebase->firestoreSet(self::COL_STUDENT_DISCOUNTS, $docId, $doc);
             if (!$ok) {
                 log_message('error', "Fee_firestore_sync::syncDiscount() — firestoreSet returned false [{$docId}]");

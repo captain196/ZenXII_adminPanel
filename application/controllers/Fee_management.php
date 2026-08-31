@@ -890,68 +890,79 @@ class Fee_management extends MY_Controller
         }
 
         // For sibling criteria, group by parent and only include those with 2+ children
-        if ($criteria === 'sibling') {
-            // Build father name map from Firestore students
-            $fatherMap = [];
-            foreach ((array) $studentRows as $row) {
-                $d = $row['data'] ?? $row;
-                if (!is_array($d)) continue;
-                $uid = (string) ($d['studentId'] ?? $this->_stripSchoolPrefix($row['id'] ?? ''));
-                $fatherName = trim((string) ($d['fatherName'] ?? $d['Father_name'] ?? ''));
-                if ($fatherName !== '') {
-                    $fatherMap[$fatherName][] = $uid;
-                }
-            }
+        // ══ WEAK-ELIG-1 · NAMES AND PHONE NUMBERS NO LONGER DECIDE MONEY ══════
+        //
+        // WHAT THIS REPLACED, and why it mattered:
+        //
+        //   sibling    — grouped students by FATHER-NAME STRING EQUALITY. Two
+        //                unrelated families whose fathers are both "Ramesh
+        //                Kumar" became siblings; real siblings whose records
+        //                spell the father differently ("R. Kumar") did not.
+        //   staff_ward — matched a parent's phone against ANY staff phone. A
+        //                recycled number, a shared family handset, or an
+        //                employee who is a neighbour rather than a parent all
+        //                qualified a child.
+        //
+        // This is NOT cosmetic. The list produced here is applied as a bulk
+        // discount into `studentDiscounts`, and that collection is a real
+        // financial authority at the COLLECTION layer — `Fees::fetch_months`
+        // computes `netDue = max(0, totalRemaining - discAmt)` from
+        // `onDemandDiscount`, and FeeCollectionService uses the same field as
+        // the authorised cap on what a clerk may discount on a receipt. So a
+        // coincidence of names or digits could reduce what a family actually
+        // paid at the counter.
+        //
+        // ZenX now has verified relationships: `studentRelationships`, written
+        // only after a human resolved an SR Number or a Staff ID against THIS
+        // tenant and confirmed the person. That is the canonical evidence, and
+        // it is the only evidence used here now.
+        //
+        // FAILS CLOSED. If the relationships cannot be read, the eligible list
+        // is EMPTY rather than falling back to the old guess — an empty list
+        // discounts nobody, while a guessed list discounts the wrong families.
+        if ($criteria === 'sibling' || $criteria === 'staff_ward') {
+            $kind = ($criteria === 'sibling') ? 'sibling' : 'staff_ward';
 
-            // Keep only siblings (2+ children with same father)
-            $siblingIds = [];
-            foreach ($fatherMap as $father => $uids) {
-                if (count($uids) >= 2) {
-                    foreach ($uids as $uid) {
-                        $siblingIds[$uid] = true;
-                    }
-                }
-            }
-
-            $students = array_filter($students, function ($s) use ($siblingIds) {
-                return isset($siblingIds[$s['user_id']]);
-            });
-            $students = array_values($students);
-        } elseif ($criteria === 'staff_ward') {
-            // Filter to students whose parent phone matches a staff member
-            $staffRows = $this->firebase->firestoreQuery('staff', [
-                ['schoolId', '==', $schoolFs],
-            ]);
-            $staffPhones = [];
-            foreach ((array) $staffRows as $row) {
-                $d = $row['data'] ?? $row;
-                $phone = trim((string) ($d['phone'] ?? $d['Phone'] ?? ''));
-                if ($phone !== '') $staffPhones[$phone] = true;
-            }
-
-            if (!empty($staffPhones)) {
-                $staffWardIds = [];
-                foreach ((array) $studentRows as $row) {
+            $eligibleIds = [];
+            $relOk = false;
+            try {
+                $relRows = $this->firebase->firestoreQuery('studentRelationships', [
+                    ['schoolId', '==', $schoolFs],
+                    ['kind',     '==', $kind],
+                    ['status',   '==', 'active'],
+                ]);
+                $relOk = true;
+                foreach ((array) $relRows as $row) {
                     $d = $row['data'] ?? $row;
                     if (!is_array($d)) continue;
-                    $uid = (string) ($d['studentId'] ?? $this->_stripSchoolPrefix($row['id'] ?? ''));
-                    $fatherPhone = trim((string) ($d['fatherPhone'] ?? $d['Father_phone'] ?? ''));
-                    $motherPhone = trim((string) ($d['motherPhone'] ?? $d['Mother_phone'] ?? ''));
-                    if (($fatherPhone !== '' && isset($staffPhones[$fatherPhone])) ||
-                        ($motherPhone !== '' && isset($staffPhones[$motherPhone]))) {
-                        $staffWardIds[$uid] = true;
-                    }
+                    $sid = trim((string) ($d['studentId'] ?? ''));
+                    if ($sid !== '') $eligibleIds[$sid] = true;
                 }
+            } catch (\Throwable $e) {
+                log_message('error', 'WEAK_ELIG_1 could not read studentRelationships for '
+                    . 'school=[' . $schoolFs . '] kind=[' . $kind . '] — returning NO eligible '
+                    . 'students rather than guessing from names or phone numbers: ' . $e->getMessage());
+            }
 
-                $students = array_filter($students, function ($s) use ($staffWardIds) {
-                    return isset($staffWardIds[$s['user_id']]);
-                });
-                $students = array_values($students);
-            } else {
+            if (!$relOk) {
                 $students = [];
+            } else {
+                if ($eligibleIds === []) {
+                    log_message('error', 'WEAK_ELIG_1 school=[' . $schoolFs . '] kind=[' . $kind
+                        . '] — no VERIFIED relationships on record, so no student is eligible. '
+                        . 'Link them from the student record (SR Number for a sibling, Staff ID '
+                        . 'for an employee ward); name and phone matching no longer qualify anyone.');
+                }
+                $students = array_values(array_filter($students, function ($s) use ($eligibleIds) {
+                    return isset($eligibleIds[$s['user_id']]);
+                }));
             }
         }
-        // For early_bird, merit, custom — return all students for manual selection
+        // early_bird, merit and custom return the full list for MANUAL selection.
+        // They are left untouched deliberately: none of them infers a family
+        // relationship, so an operator picking students by hand is exactly what
+        // they are for. Only the two relationship-based criteria carried an
+        // eligibility claim the system could get wrong on its own.
 
         $this->json_success([
             'students' => $students,
@@ -970,6 +981,28 @@ class Fee_management extends MY_Controller
      *
      * Each student_ids[] element is JSON: {"user_id":"...","class":"Class 9th","section":"Section A"}
      */
+    /**
+     * The ONE collection-layer adjustment authority, shared with the fee
+     * counter's two writers in Fees.php. Held per request so the outstanding
+     * memo inside it survives a bulk apply over many students.
+     */
+    private function _adjustmentPolicy(): Collection_adjustment_policy
+    {
+        if ($this->_adjPolicy === null) {
+            if (!class_exists('Collection_adjustment_policy')) {
+                require_once APPPATH . 'libraries/Collection_adjustment_policy.php';
+            }
+            $this->_adjPolicy = (new Collection_adjustment_policy())->init(
+                $this->firebase, (string) $this->school_name,
+                (string) $this->session_year, (string) ($this->admin_id ?? 'system')
+            );
+        }
+        return $this->_adjPolicy;
+    }
+
+    /** @var Collection_adjustment_policy|null */
+    private $_adjPolicy = null;
+
     public function apply_discount()
     {
         $this->_require_role(self::FINANCE_ROLES, 'apply_discount', 'Fees', 'edit');
@@ -1027,7 +1060,25 @@ class Fee_management extends MY_Controller
             $discountAmount = $discValue;
             if ($discType === 'percentage') {
                 // For percentage, read total fee from Firestore feeStructures
-                $csKey = str_ireplace(['Class ', 'Section '], '', $class) . '_' . str_ireplace('Section ', '', $section);
+                // ── ADJ-GOV-5 · THE PERCENTAGE BASE NEVER RESOLVED ──────────
+                //
+                // This built the key by STRIPPING the "Class " and "Section "
+                // prefixes, producing `10th_A`. Every other reader of
+                // feeStructures — Fee_firestore_txn included — uses the
+                // canonical `{schoolId}_{session}_{className}_{section}` with
+                // the FULL names, and that is how the documents are actually
+                // stored (`SCH_..._2026-27_Class 10th_Section A`).
+                //
+                // So the lookup ALWAYS missed, `$heads` was always empty, the
+                // percentage base was always 0, and every percentage-type rule
+                // discount silently computed ZERO — while the endpoint still
+                // reported "Discount applied to N student(s)". An operator
+                // granting a class a 10% discount got nothing, and was told it
+                // had worked. PROVEN at runtime before this fix.
+                //
+                // `$class`/`$section` have already been through
+                // _normalizeClassSection(), so they are canonical here.
+                $csKey = $class . '_' . $section;
                 $feeStructDoc = $this->firebase->firestoreGet('feeStructures', "{$this->school_name}_{$this->session_year}_{$csKey}");
                 $totalFee = 0;
                 if (is_array($feeStructDoc)) {
@@ -1044,7 +1095,64 @@ class Fee_management extends MY_Controller
                 $discountAmount = $maxDisc;
             }
 
-            $newTotal = $existingAmt + $discountAmount;
+            // ── ADJ-GOV-2 · THE SAME GATE THE FEE COUNTER PASSES ────────────
+            //
+            // This writes `onDemandDiscount`, which governs what the counter
+            // ASKS FOR and caps what a clerk may waive on a receipt. It is the
+            // same money the counter's own grant touches, and until now this
+            // door had no outstanding-balance invariant and no reason — capped
+            // only by the policy's optional `max_discount`, which defaults to
+            // 0 meaning NO CAP. Applied in bulk, that could drive netDue to
+            // zero for an entire selection of students in one click.
+            //
+            // `max_discount` is passed as a TIGHTENING override: it may lower
+            // the ceiling, never raise it above what the student owes.
+            //
+            // A refusal skips THIS student and is reported — one ineligible
+            // student must not abort a legitimate bulk apply, but the skip is
+            // never silent.
+            $adjRefusal = $this->_adjustmentPolicy()->refusal(
+                $safeUserId,
+                (float) $discountAmount,
+                'Rule discount applied: ' . $discName,
+                $maxDisc > 0 ? $maxDisc : null
+            );
+            if ($adjRefusal !== null) {
+                $errors[] = "{$userId}: {$adjRefusal}";
+                continue;
+            }
+
+            // ── SD-2 · totalDiscount IS DERIVED, NOT ACCUMULATED ────────────
+            //
+            // This wrote `existing total + this discount`, so the figure grew
+            // on every rule application and never came down when the governing
+            // `onDemandDiscount` was reduced or consumed. The school-wide
+            // discount report sums this field, so it over-reported without
+            // limit. OBSERVED on the persisted document: onDemandDiscount 60,
+            // scholarshipDiscount 0, totalDiscount 2,740.
+            //
+            // `onDemandDiscount` governs the money; `totalDiscount` is the
+            // REPORTED sum of its parts, exactly as the two counter doors and
+            // the receipt path now write it. Stored history is left alone —
+            // only new writes are coherent — so no settled record is restated.
+            $__scholNow = (float) ($existing['scholarshipDiscount']
+                ?? $existing['ScholarshipDiscount'] ?? 0);
+            // ── SD-2 · totalDiscount IS DERIVED, NOT ACCUMULATED ────────────
+            //
+            // This wrote `existing total + this discount`, so the figure grew
+            // on every rule application and never came down when the governing
+            // `onDemandDiscount` was reduced or consumed. The school-wide
+            // discount report sums this field, so it over-reported without
+            // limit. OBSERVED on the persisted document: onDemandDiscount 60,
+            // scholarshipDiscount 0, totalDiscount 2,740.
+            //
+            // `onDemandDiscount` governs the money; `totalDiscount` is the
+            // REPORTED sum of its parts, exactly as the two counter doors and
+            // the receipt path now write it. Stored history is left alone —
+            // only new writes are coherent — so no settled record is restated.
+            $__scholNow = (float) ($existing['scholarshipDiscount']
+                ?? $existing['ScholarshipDiscount'] ?? 0);
+            $newTotal = round($discountAmount + $__scholNow, 2);
 
             // Write to student's Discount node - maintain history
             $historyKey = $discId . '_' . date('Ymd_His');
@@ -1081,8 +1189,26 @@ class Fee_management extends MY_Controller
                     [$historyKey => $appliedData]
                 ),
             ]);
+            // SESSION STAMP. `studentDiscounts` is keyed {schoolId}_{studentId}
+            // with NO session component, so without this a rule discount
+            // applied in one session silently keeps reducing collection in
+            // every session after a rollover. Stamping does not change any
+            // existing record — unstamped documents stay legacy and keep
+            // working — it closes the leak for everything written from now on.
+            $discountDoc = array_merge(
+                $discountDoc,
+                $this->_adjustmentPolicy()->stamp('Rule discount applied: ' . $discName, 'fee_management_rule')
+            );
             $this->firebase->firestoreSet('studentDiscounts', "{$this->school_name}_{$safeUserId}", $discountDoc, true);
-            $applied++;
+
+            // SD-3. The only trail this had was log_message('info', …), and
+            // production runs log_threshold=1 (errors only) — so the discount
+            // audit trail wrote NOTHING. feeAuditLogs is the canonical trail
+            // that demands, receipts, payments and refunds already use.
+            $this->_adjustmentPolicy()->audit(
+                $safeUserId, $existing, $discountDoc,
+                'Rule discount applied: ' . $discName, 'fee_management_rule'
+            );
 
             // Mirror discount summary + history to Firestore `studentDiscounts`.
             try {
@@ -1411,7 +1537,31 @@ class Fee_management extends MY_Controller
                 ]]
             ),
         ];
+        // ── CLASSIFICATION, PROVEN BEFORE GATING ────────────────────────────
+        //
+        // This writes `ScholarshipDiscount`, NOT `onDemandDiscount`. A
+        // repository-wide trace shows `scholarshipDiscount` is only ever
+        // written and then read back to re-write itself (read-before-write
+        // preservation in Fee_firestore_sync / Fee_firestore_txn) — no pricing
+        // path and no collection path reads it to change money. It is a
+        // MIRROR/SUMMARY field. The scholarship's actual financial effect is at
+        // the GENERATION layer, through `scholarshipAwards`, which
+        // `Fees::_getStudentDiscounts()` reads.
+        //
+        // So the outstanding-balance gate is deliberately NOT applied here:
+        // it governs what the counter may ASK FOR, and recording a scholarship
+        // does not change that. Gating it would refuse legitimate awards.
+        // Stamping and auditing DO apply — a summary that outlives its session
+        // still misreports, and an unaudited write is still unaccountable.
+        $scholarshipUpdate = array_merge(
+            $scholarshipUpdate,
+            $this->_adjustmentPolicy()->stamp('Scholarship awarded: ' . $scholName, 'scholarship_award')
+        );
         $this->firebase->firestoreSet('studentDiscounts', "{$this->school_name}_{$studentId}", $scholarshipUpdate, true);
+        $this->_adjustmentPolicy()->audit(
+            $studentId, $existing, $scholarshipUpdate,
+            'Scholarship awarded: ' . $scholName, 'scholarship_award'
+        );
 
         // ── Firestore: canonical scholarship award record + student summary ──
         try {
