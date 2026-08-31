@@ -679,13 +679,20 @@ exports.studentAssistant = onCall(
         };
       }
 
-      // Echo the model's own turn back verbatim, then answer every call in a
-      // single following turn — splitting them trains the model out of
-      // requesting tools in parallel.
-      messages.push({
-        role: 'model',
-        parts: calls.map((c) => ({ functionCall: { id: c.id, name: c.name, args: c.args } })),
-      });
+      // Echo the model's own turn back VERBATIM. It must be the original content
+      // object, not a reconstruction: Gemini 3.x thinking models attach a
+      // `thoughtSignature` to functionCall parts and reject the next request
+      // without it —
+      //   400 "Function call is missing a thought_signature in functionCall parts"
+      // Rebuilding parts from {name, args} silently drops it. Same rule as
+      // replaying Anthropic thinking blocks unchanged.
+      const modelTurn = response.candidates && response.candidates[0]
+        && response.candidates[0].content;
+      messages.push(
+        modelTurn && Array.isArray(modelTurn.parts)
+          ? modelTurn
+          : { role: 'model', parts: calls.map((c) => ({ functionCall: { id: c.id, name: c.name, args: c.args } })) }
+      );
 
       // Independent reads, so run them concurrently — serial awaits would add
       // a full Firestore round-trip per tool to every multi-tool answer.
