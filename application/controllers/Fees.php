@@ -7793,7 +7793,7 @@ class Fees extends MY_Controller
         // (identical to the pre-refactor early-return on empty pendingUpdates).
         if ($res['attempted'] === 0) {
             $this->json_success([
-                'message'   => "0 demands updated, {$preserved} paid/partial preserved.",
+                'message'   => "0 demands updated, {$preserved} already correct or settled.",
                 'updated'   => 0,
                 'preserved' => $preserved,
             ]);
@@ -7805,7 +7805,7 @@ class Fees extends MY_Controller
         $this->_refreshStudentAggregates($studentId, $studentName, $class, $section);
 
         $this->json_success([
-            'message'   => "{$updated} demands updated, {$preserved} paid/partial preserved.",
+            'message'   => "{$updated} demands updated, {$preserved} already correct or settled.",
             'updated'   => $updated,
             'preserved' => $preserved,
         ]);
