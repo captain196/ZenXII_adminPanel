@@ -28,6 +28,30 @@
     </a>
   </div>
 
+  <?php /* UI CONSOLIDATION. Three screens write the SAME collection-layer
+           field (studentDiscounts.onDemandDiscount): this one in bulk, the Fee
+           Counter one student at a time, and the student profile. They now all
+           pass one shared gate (Collection_adjustment_policy), so the money can
+           no longer diverge between them — but the SCREENS never said they were
+           the same money, which is what made them look like separate powers.
+           This states the model rather than removing a door schools use. */ ?>
+  <div class="fm-model-note" style="margin:0 0 18px;padding:12px 15px;border:1px solid rgba(188,90,60,.28);
+       border-radius:9px;background:rgba(188,90,60,.05);font-size:13px;line-height:1.65;color:var(--t1,#334155);">
+    <strong>What this screen changes</strong> — a <em>discount</em> here reduces what the
+    <strong>fee counter asks for</strong>; it does not change the bill that was generated.
+    It is the same figure the Fee Counter's own discount box sets for one student, so a rule
+    applied here <strong>replaces</strong> a counter waiver on the same student rather than
+    adding to it.
+    <br>
+    A <strong>scholarship</strong> is different: it reduces the <strong>generated demand</strong>
+    itself. <a href="<?= base_url('fee_concessions') ?>">Concessions</a> and
+    <a href="<?= base_url('financial_policies') ?>">Benefits &amp; Policies</a> also act on the
+    demand, before any bill is collected.
+    <br>
+    No discount can ever exceed what a student still owes this session, and every one records a
+    reason against the student.
+  </div>
+
   <!-- Stats Row -->
   <div class="fm-stats-row">
     <div class="fm-stat-card">

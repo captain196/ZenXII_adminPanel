@@ -82,9 +82,44 @@ class Fees extends MY_Controller
      * development/testing environments keep them for the test suite.
      * show_404() halts execution, so callers place this FIRST.
      */
+    /**
+     * ── FEE-S1 · FAIL CLOSED, NOT OPEN ────────────────────────────────────
+     *
+     * This guard fences FOUR destructive money-path endpoints, including
+     * void_test_receipt(), which hard-deletes `feeReceipts` + `feeReceiptIndex`
+     * and reverses the journal — i.e. it erases the evidence that a payment
+     * happened.
+     *
+     * It previously blocked only when ENVIRONMENT === 'production'. But
+     * index.php resolves that as:
+     *
+     *     define('ENVIRONMENT', isset($_SERVER['CI_ENV']) ? $_SERVER['CI_ENV'] : 'development');
+     *
+     * so the value depends on `SetEnv CI_ENV production` living in the
+     * production Apache config / .htaccess — a file that is deliberately NOT in
+     * git and cannot be verified from the repository. If it is ever missing,
+     * mistyped, or lost during a vhost change, ENVIRONMENT silently becomes
+     * 'development' and this guard becomes a NO-OP on the live server.
+     *
+     * A destructive financial endpoint must not be protected by a default that
+     * resolves to "allow" when configuration is absent. Inverted: permit ONLY
+     * when the environment is EXPLICITLY development. An unset, misspelt or
+     * unexpected value now denies.
+     *
+     * This is strictly subtractive — it can only turn a currently-permitted
+     * call into a 404. On a correctly configured production host the behaviour
+     * is identical; on a misconfigured one it is the difference between a
+     * fenced endpoint and a live receipt-deletion tool.
+     *
+     * NOTE: the same fail-open shape exists elsewhere and is NOT fixed here —
+     * `auth_api.php:21` (missing internal key tolerated), `config.php:121`
+     * (missing encryption key tolerated) and `database.php:86` (db_debug on).
+     * Those are config-bootstrap decisions with a wider blast radius and are
+     * recorded as FEE-S1's siblings rather than changed in a fees commit.
+     */
     private function _reject_in_production(): void
     {
-        if (defined('ENVIRONMENT') && ENVIRONMENT === 'production') {
+        if (!defined('ENVIRONMENT') || ENVIRONMENT !== 'development') {
             show_404();
         }
     }
@@ -485,7 +520,7 @@ class Fees extends MY_Controller
                 min(500, $limit * 2)
             );
         } catch (\Throwable $e) {
-            log_message('warning', "get_defaulter_data feeDefaulters query failed — trying studentFeeSummary: " . $e->getMessage());
+            log_message('error', "get_defaulter_data feeDefaulters query failed — trying studentFeeSummary: " . $e->getMessage());
             try {
                 $rows = $this->firebase->firestoreQuery(
                     'studentFeeSummary', $whereDefaulters, 'totalBalance', 'DESC',
@@ -631,7 +666,7 @@ class Fees extends MY_Controller
                 ['session',  '==', $sy],
             ]);
         } catch (\Throwable $e) {
-            log_message('warning', "get_collection_analytics classFeeSummary query failed, will fallback: " . $e->getMessage());
+            log_message('error', "get_collection_analytics classFeeSummary query failed, will fallback: " . $e->getMessage());
             $summaryRows = [];
         }
 
@@ -1468,45 +1503,26 @@ class Fees extends MY_Controller
         $demandsGenerated = 0;
         $demandsFailed    = 0;
         $genJobId         = null;
-        try {
-            if (!empty($roster)) {
-                $schoolId = $this->fs->schoolId();
-                $genJobId = 'job_' . date('YmdHis') . '_' . substr(bin2hex(random_bytes(4)), 0, 8);
-                $this->firebase->firestoreSet('fee_generation_jobs', $genJobId, [
-                    'jobId'             => $genJobId,
-                    'schoolId'          => $schoolId,
-                    'session'           => $this->session_year,
-                    'class'             => $class,
-                    'section'           => $section,
-                    'months'            => array_values(self::ACADEMIC_MONTHS),
-                    'requestedBy'       => (string) ($this->admin_id   ?? ''),
-                    'requestedByName'   => (string) ($this->admin_name ?? ''),
-                    'requestedAt'       => date('c'),
-                    'status'            => 'pending',
-                    'totalStudents'     => 0,
-                    'processedStudents' => 0,
-                    'successCount'      => 0,
-                    'failureCount'      => 0,
-                    'demandsCreated'    => 0,
-                    'demandsSkipped'    => 0,
-                    'errors'            => [],
-                    'source'            => 'save_updated_fees',
-                ]);
-
-                $this->_processGenerationJob(
-                    $genJobId, $class, $section, self::ACADEMIC_MONTHS, $schoolId
-                );
-
-                $finalJob = $this->firebase->firestoreGet('fee_generation_jobs', $genJobId) ?? [];
-                $demandsGenerated = (int) ($finalJob['successCount'] ?? 0);
-                $demandsFailed    = (int) ($finalJob['failureCount'] ?? 0);
-                log_message('info', "save_updated_fees: auto-demands {$class}/{$section} job={$genJobId} students_ok={$demandsGenerated} students_fail={$demandsFailed} demands_created=" . (int)($finalJob['demandsCreated'] ?? 0) . " status=" . (string)($finalJob['status'] ?? '?'));
-            }
-        } catch (\Throwable $e) {
-            // Swallow — the structure save already succeeded. Admins can
-            // regenerate via the "Generate Demands" button if needed.
-            log_message('error', "save_updated_fees: auto-demands failed (structure saved OK) for {$class}/{$section}: " . $e->getMessage());
-        }
+        // ── PHASE 3 · SAVE NO LONGER GENERATES DEMANDS (2026-08-17) ────────
+        //
+        // THE BOUNDARY THIS RESTORES: saving a Fee Structure is a PRICING
+        // CONFIGURATION change. It must not issue financial obligations.
+        //
+        // Previously this block auto-ran _processGenerationJob() over the whole
+        // class roster on every save. Live consequence: one fee-chart save took
+        // a student from 26 demands to 63, a second save to 100 — 37 real
+        // financial obligations created each time, by an admin who was only
+        // correcting an amount. Phases 1 and 2 stopped the duplication; this
+        // stops the generation from happening at all.
+        //
+        // Generation remains fully available as an EXPLICIT operator action
+        // (fees/generate_monthly_demands — the "Generate Demands" button), and
+        // _processGenerationJob() is untouched and still serves it.
+        //
+        // The response contract is preserved: demands_generated/demands_failed
+        // stay in the payload as 0, so no frontend branch breaks.
+        // Generation is now an explicit operator action only. Nothing is
+        // generated here; the counters below keep the response contract.
 
         // ── Propagate the edited amounts to EXISTING unpaid demands ─────────
         // Save Fee Structure is the authoritative fee-policy change, so
@@ -1525,8 +1541,34 @@ class Fees extends MY_Controller
                 foreach ($roster as $sid => $stu) {
                     $sid = (string) $sid;
                     if ($sid === '') continue;
-                    $dMap = $this->_getStudentDiscounts($sid, $class, $section);
-                    $res  = $this->_recalculateStudentUnpaidDemands($sid, $freshChart, $dMap);
+                    // ══ P5-K · SAVE-FEE-STRUCTURE PROPAGATION CONVERGED ═════
+                    //
+                    // This was the LAST billing path still pricing from the
+                    // legacy third authority (`_getStudentDiscounts` →
+                    // `scholarshipAwards` / `exemptedFees` / `discountHeads`).
+                    //
+                    // It was never DANGEROUS — `_recalculateStudentUnpaidDemands`
+                    // preserves any demand carrying `concessionApplied`, so an
+                    // existing concession was never voided here. But it was
+                    // INCOMPLETE in the same way the two recalculation endpoints
+                    // were: a demand generated BEFORE an entitlement was granted
+                    // carries `concessionApplied = 0`, so it was rebuilt at gross
+                    // and the grant could never reach the money.
+                    //
+                    // It now shares the ONE recalculation authority, which was
+                    // production-verified on 2026-08-20 (STU0185: 12 demands
+                    // corrected in place, 0 deleted, identity untouched).
+                    //
+                    // Still best-effort: the structure save has already
+                    // succeeded, so a propagation failure must not fail the
+                    // request. A refusal is counted and skipped, not thrown.
+                    $res = $this->_recalculateStudentCanonical($sid, $class, $section);
+                    if (isset($res['refused'])) {
+                        log_message('error', 'ACC_PROPAGATION_SKIPPED student=[' . $sid
+                            . '] reason=[' . $res['refused'] . '] — fee-structure propagation '
+                            . 'skipped this student; the structure save itself is unaffected.');
+                        continue;
+                    }
                     if ($res['updated'] > 0) {
                         $syncStudents++;
                         $syncDemands += $res['updated'];
@@ -1559,73 +1601,19 @@ class Fees extends MY_Controller
         ]);
     }
 
-    /**
-     * Regenerate feeDemand docs for a single student from the given
-     * fee chart. Missing months are created, existing paid/partial
-     * demands are left untouched. Called from save_updated_fees so
-     * admins don't have to hit a separate "Generate Demands" button.
-     */
-    private function _auto_generate_student_demands(string $studentId, string $class, string $section, array $chart): bool
-    {
-        $allMonths = [
-            'April','May','June','July','August','September',
-            'October','November','December','January','February','March',
-            'Yearly Fees',
-        ];
-        $existing  = $this->fsTxn->demandsForStudent($studentId);
-        $headIdMap = $this->fsTxn->readFeeHeadIds($class, $section);
-        $canonMap  = $this->fsTxn->canonicalHeadIdMap(); // name(lower) -> canonical feeHeadId
-
-        // Fees V7: duplicate-detection by canonical key (periodKey + canonicalFeeHeadId)
-        // among NON-archived demands — id-agnostic, rename-safe, archive-aware.
-        $haveKeys = [];
-        foreach ($existing as $_docId => $d) {
-            if (($d['status'] ?? '') === 'archived') continue;
-            $pk  = (string) ($d['periodKey'] ?? $d['period_key'] ?? '');
-            $cid = (string) ($d['canonicalFeeHeadId'] ?? '');
-            if ($pk !== '' && $cid !== '') $haveKeys[$pk . '|' . $cid] = true;
-        }
-
-        $today = date('Y-m-d');
-        $wrote = false;
-        foreach ($allMonths as $month) {
-            $heads = is_array($chart[$month] ?? null) ? $chart[$month] : [];
-            foreach ($heads as $title => $amount) {
-                $amt = (float) $amount;
-                if ($amt <= 0) continue;
-
-                $periodKey   = $this->_period_key_for_month($month);
-                $periodLabel = $month === 'Yearly Fees'
-                    ? "Yearly Fees {$this->session_year}"
-                    : "{$month} " . $this->_year_for_month($month);
-                $feeHeadId   = (string) ($headIdMap[$title] ?? '');
-                $canonicalId = (string) ($canonMap[strtolower(trim($title))] ?? $feeHeadId);
-
-                if (isset($haveKeys[$periodKey . '|' . $canonicalId])) continue; // already exists
-
-                $this->fsTxn->writeDemand($this->fsTxn->newDemandId(), [
-                    'studentId'          => $studentId,
-                    'className'          => $class,
-                    'section'            => $section,
-                    'feeHead'            => $title,
-                    'feeHeadId'          => $feeHeadId,
-                    'canonicalFeeHeadId' => $canonicalId,
-                    'period'             => $periodLabel,
-                    'periodKey'          => $periodKey,
-                    'frequency'          => $month === 'Yearly Fees' ? 'yearly' : 'monthly',
-                    'grossAmount'        => $amt,
-                    'netAmount'          => $amt,
-                    'paidAmount'         => 0.0,
-                    'balance'            => $amt,
-                    'status'             => 'unpaid',
-                    'generatedAt'        => $today,
-                ]);
-                $haveKeys[$periodKey . '|' . $canonicalId] = true; // guard within this run
-                $wrote = true;
-            }
-        }
-        return $wrote || !empty($haveKeys);
-    }
+    // _auto_generate_student_demands() DELETED at the P2 contract freeze
+    // (2026-08-17). It was a THIRD demand generator carrying the pre-Phase-1
+    // lookup asymmetry: it indexed existing demands only under
+    // `periodKey|canonicalFeeHeadId`, and only when BOTH parts were
+    // non-empty, so a legacy demand with an empty canonical id was invisible
+    // to it and got a duplicate. That is the defect Phase 1 closed in
+    // _generateDemandsForMonth (26 -> 63 -> 100 demands over two chart
+    // saves); this copy also had no Phase 2 conflict detection.
+    //
+    // It had ZERO executable callers. Deleted rather than repaired: a
+    // repaired copy would be a third generator to keep in sync with the other
+    // two. Chart-save routes through the batched generator instead - see the
+    // note in save_updated_fees.
 
     /** Map a month name to its YYYY-MM key inside the current session. */
     /**
@@ -1680,6 +1668,23 @@ class Fees extends MY_Controller
         if ($studentId === '') return $this->json_error('Student ID is required.');
         $studentId = $this->safe_path_segment($studentId, 'student_id');
 
+        // ══ DEC-013 · GUARD RETIRED BY P5-E (2026-08-20) ════════════════════
+        //
+        // A guard stood here from 2026-08-18 to 2026-08-20. It refused
+        // recalculation outright for any student holding an active entitlement,
+        // because this method DELETED their unpaid demands and regenerated them
+        // through the legacy generator — which cannot read `studentEntitlements`
+        // — so an approved concession came back at GROSS with no error and no log.
+        //
+        // DEC-013 named its own removal condition: "Making this path
+        // entitlement-aware is P5 convergence (one canonical pipeline that
+        // recomputes IN PLACE and never deletes), not a patch. This guard is
+        // DELIBERATE, SELF-DELETING DEBT — P5 removes it."
+        //
+        // That condition is now met. The method deletes nothing and prices
+        // through the canonical pipeline, so refusing here would deny the fix to
+        // exactly the students it was built to protect. The guard is retired
+        // because its cause is gone, not because it was inconvenient.
         $this->load->library('Fee_firestore_txn', null, 'fsTxn');
         $this->fsTxn->init($this->firebase, $this->fs, $this->fs->schoolId(), $this->session_year);
 
@@ -1690,62 +1695,62 @@ class Fees extends MY_Controller
         $section = (string) ($profile['section']   ?? '');
         if ($class === '' || $section === '') return $this->json_error('Cannot resolve class/section.');
 
-        // 1. Delete UNPAID demands. Touched (partial/paid) are preserved
-        //    so receipts + balances stay correct.
-        $existing  = $this->fsTxn->demandsForStudent($studentId);
-        $deleted   = 0;
-        $preserved = 0;
-        foreach ($existing as $did => $d) {
-            $status = (string) ($d['status'] ?? 'unpaid');
-            $paid   = (float)  ($d['paid_amount'] ?? 0);
-            if ($status === 'unpaid' && $paid <= 0.005) {
-                try {
-                    $this->firebase->firestoreDelete('feeDemands', $did);
-                    $deleted++;
-                } catch (\Exception $e) {
-                    log_message('error', "recalc_unpaid_discounts: delete {$did} failed: " . $e->getMessage());
-                }
-            } else {
-                $preserved++;
-            }
-        }
+        // ══ P5-E · RECOMPUTE IN PLACE — NO DELETES ══════════════════════════
+        //
+        // This method used to DELETE every unpaid demand and regenerate them
+        // through the legacy generator. That is what made DEC-013 necessary:
+        // the regeneration priced from `_getStudentDiscounts()`, which cannot
+        // see `studentEntitlements`, so an approved concession came back at
+        // gross and the only safe answer was to refuse the whole operation.
+        //
+        // It now recomputes IN PLACE through the canonical pipeline:
+        //   • no demand is ever deleted — identity is preserved, so no receipt
+        //     or journal can be orphaned;
+        //   • settled money is PROTECTED, and a paid demand whose charge moved
+        //     is escalated for a human rather than rewritten;
+        //   • an entitlement granted AFTER generation now reaches the money,
+        //     which the refuse-only containment could never achieve.
+        $r = $this->_recalculateStudentCanonical($studentId, $class, $section);
 
-        // 2. Re-run the generator (creates a fresh set of unpaid demands
-        //    using the latest scholarship + discount snapshot).
-        $studentName = (string) ($profile['name'] ?? $profile['Name'] ?? $studentId);
-        $feeChart = $this->_getClassFeeChart($class, $section);
-        if (empty($feeChart)) return $this->json_error("No fee chart for {$class}/{$section}.");
-        $discountMap = $this->_getStudentDiscounts($studentId, $class, $section);
-        $dueDay      = $this->_getDueDay();
-        $headIdMap   = $this->fsTxn->readFeeHeadIds($class, $section);
-        $noBatch     = null; // sequential-write mode
-
-        $totals = ['created' => 0, 'skipped' => 0, 'errors' => 0];
-        foreach (self::ACADEMIC_MONTHS as $month) {
-            $r = $this->_generateDemandsForMonth(
-                $studentId, $studentName, $class, $section,
-                $month, $feeChart, $discountMap, $dueDay,
-                $noBatch, $headIdMap
+        if (isset($r['refused'])) {
+            return $this->json_error(
+                $r['refused'] === 'no_chart'
+                    ? "No fee chart for {$class}/{$section}."
+                    : 'The recalculation could not read this student\'s current demands, so it '
+                      . 'was refused rather than risk rebuilding them incorrectly. Nothing was '
+                      . 'changed. Please retry.'
             );
-            $totals['created'] += $r['created'];
-            $totals['skipped'] += $r['skipped'];
-            $totals['errors']  += $r['errors'];
         }
 
-        // Phase 3 (Finding B): unpaid demands were deleted + regenerated,
-        // changing this student's balances — refresh feeDefaulters +
-        // studentFeeSummary through the canonical rule so downstream views
-        // (Defaulter Report / dashboards / Teacher dues) don't go stale.
-        $this->_refreshStudentAggregates($studentId, $studentName, $class, $section);
+        $studentName = (string) ($profile['name'] ?? $profile['Name'] ?? $studentId);
+
+        // Amounts may have changed — refresh the projections through the
+        // canonical rule so defaulter/summary views do not go stale.
+        if ($r['updated'] > 0) {
+            $this->_refreshStudentAggregates($studentId, $studentName, $class, $section);
+        }
+
+        $msg = "Recalculated in place. {$r['updated']} demand(s) corrected, "
+             . "{$r['preserved']} already correct or settled.";
+        if ($r['adjust'] > 0) {
+            $msg .= " {$r['adjust']} paid demand(s) need review — their charge changed after "
+                  . 'payment, so they were left untouched.';
+        }
+        if ($r['obsolete'] > 0) {
+            $msg .= " {$r['obsolete']} demand(s) are for fee heads no longer in the chart and "
+                  . 'were left untouched.';
+        }
 
         $this->json_success([
-            'message'   => "Recalculated. {$deleted} unpaid demand(s) refreshed, {$preserved} paid/partial preserved.",
+            'message'   => $msg,
             'student'   => $studentName,
-            'deleted'   => $deleted,
-            'preserved' => $preserved,
-            'created'   => $totals['created'],
-            'skipped'   => $totals['skipped'],
-            'errors'    => $totals['errors'],
+            'updated'   => $r['updated'],
+            'preserved' => $r['preserved'],
+            'adjust'    => $r['adjust'],
+            'obsolete'  => $r['obsolete'],
+            'attempted' => $r['attempted'],
+            'deleted'   => 0,
+            'pipeline'  => 'canonical',
         ]);
     }
 
@@ -1857,6 +1862,19 @@ class Fees extends MY_Controller
         $userId  = $this->safe_path_segment($userId, 'user_id');
         $amount  = round((float) $amountRaw, 2);
 
+        // ADJ-GOV-1 — the SECOND door to studentDiscounts.onDemandDiscount.
+        // The first version of this governance lived inline in
+        // submit_discount() only, so this endpoint stayed uncapped and
+        // unreasoned: the same hole, one door along. Both now pass the same
+        // gate. Setting 0 is always allowed — clearing an adjustment reduces
+        // no bill and must never be blocked by a ceiling.
+        if ($amount > 0) {
+            $__refusal = $this->_adjustment_refusal($userId, $amount, $reason);
+            if ($__refusal !== null) {
+                return $this->_json_out(['success' => false, 'message' => $__refusal]);
+            }
+        }
+
         try {
             $this->load->library('Fee_firestore_txn', null, 'fsTxn');
             $this->fsTxn->init($this->firebase, $this->fs, $this->fs->schoolId(), $this->session_year);
@@ -1872,12 +1890,16 @@ class Fees extends MY_Controller
             $now       = date('c');
 
             // SET the discount (no increment); preserve scholarship tally.
+            // Session-stamped: studentDiscounts has no session in its doc id,
+            // so without the stamp this waiver would keep reducing collection
+            // in every future session after a rollover.
             $this->fsTxn->updateDiscount($userId, [
                 'onDemandDiscount'    => $amount,
                 'scholarshipDiscount' => $scholAmt,
-                'totalDiscount'       => $amount + $scholAmt,
+                'totalDiscount'       => round($amount + $scholAmt, 2),
                 'validUntil'          => $validUntil,
                 'valid_until'         => $validUntil,    // dual-emit
+                'session'             => (string) $this->session_year,
                 'reason'              => $reason,
                 'appliedAt'           => $now,
                 'appliedBy'           => $this->admin_name ?? 'admin',
@@ -1889,10 +1911,20 @@ class Fees extends MY_Controller
             // SET_REPLACE: newTotal = amount + scholAmt by construction.
             $prevTotal    = is_array($existing) ? (float) ($existing['totalDiscount']    ?? 0) : 0;
             $prevOnDemand = is_array($existing) ? (float) ($existing['onDemandDiscount'] ?? 0) : 0;
-            log_message('info', sprintf(
+            // SD-3: 'error', not 'info'. Production runs log_threshold=1
+            // (errors only), so an 'info' line on a money path writes nothing.
+            log_message('error', sprintf(
                 'ACC_DISCOUNT_WRITE source=fees_counter_inline user=%s prevTotal=%s prevOnDemand=%s prevSchol=%s newTotal=%s newOnDemand=%s newSchol=%s',
                 $userId, $prevTotal, $prevOnDemand, $scholAmt, ($amount + $scholAmt), $amount, $scholAmt
             ));
+
+            // The canonical financial audit trail — the same one demands,
+            // receipts, payments and refunds already write to.
+            $this->_adjustmentPolicy()->audit(
+                $userId, is_array($existing) ? $existing : [],
+                ['onDemandDiscount' => $amount, 'totalDiscount' => round($amount + $scholAmt, 2)],
+                $reason, 'fees_counter_inline'
+            );
 
             // Refresh defaulter snapshot so dashboards reflect the new
             // outstanding balance immediately.
@@ -1919,93 +1951,22 @@ class Fees extends MY_Controller
         }
     }
 
-    public function submit_discount()
+    /**
+     * What this student actually still owes, this school and session.
+     *
+     * The ceiling for ADJ-GOV-1. Sums the OUTSTANDING balance of live demands
+     * rather than their gross: a waiver may not exceed what is left to pay, and
+     * an already-paid period is not something that can be discounted again.
+     *
+     * Returns 0.0 when the answer cannot be established — refusing the
+     * adjustment is the safe failure here, because the alternative is allowing
+     * an uncapped one.
+     */
+    private function _student_outstanding(string $studentId): float
     {
-        $this->_require_post();
-        $this->_require_role(self::MANAGE_ROLES, 'submit_discount', 'Fees', 'edit');
-        $this->output->set_content_type('application/json');
-
-        $userId   = trim($this->input->post('userId'));
-        $class    = trim($this->input->post('class'));
-        $section  = trim($this->input->post('section'));
-        $discount = $this->input->post('discount');
-        // Optional — not surfaced in the current profile form. Accepted so a
-        // future UI iteration (or a bulk-grant script / API caller) can
-        // populate it without another schema change.
-        $reason   = trim((string) ($this->input->post('reason') ?? ''));
-
-        if (empty($userId) || empty($class) || empty($section) || $discount === false || $discount === '') {
-            $this->_json_out(['success' => false, 'message' => 'Missing required fields.']);
-            return;
-        }
-
-        if (!is_numeric($discount) || (int)$discount < 0) {
-            $this->_json_out(['success' => false, 'message' => 'Invalid discount value.']);
-            return;
-        }
-        $userId = $this->safe_path_segment($userId, 'userId');
-
-        $base = $this->studentPath($class, $section, $userId);
-
-        try {
-            // Pure Firestore: read existing discount, update, write back.
-            $this->load->library('Fee_firestore_txn', null, 'fsTxn');
-            $this->fsTxn->init($this->firebase, $this->fs, $this->fs->schoolId(), $this->session_year);
-
-            $existing = $this->firebase->firestoreGet('studentDiscounts', "{$this->fs->schoolId()}_{$userId}");
-            $curTotal = is_array($existing) ? (int) ($existing['totalDiscount'] ?? 0) : 0;
-            $scholAmt = is_array($existing) ? (float) ($existing['scholarshipDiscount'] ?? 0) : 0;
-            $new = $curTotal + (int) $discount;
-            $now = date('c');
-
-            $this->fsTxn->updateDiscount($userId, [
-                'onDemandDiscount'    => (int) $discount,
-                'scholarshipDiscount' => $scholAmt,
-                'totalDiscount'       => $new,
-                'appliedAt'           => $now,
-                'appliedBy'           => $this->admin_name ?? 'admin',
-                'source'              => 'profile_managerial_grant',
-                'reason'              => $reason,
-            ], ['className' => $class, 'section' => $section]);
-
-            // Structured discount-write log (2026-05-29). The cross-writer
-            // equality `total == onDemand + schol` is NOT an invariant —
-            // submit_discount, apply_discount, and the receipt path all
-            // break it BY CONSTRUCTION on legitimate operations (writer
-            // audit 2026-05-29). We log every write here with a writer
-            // label and prev/new values so an offline reconciliation can
-            // attribute drift to its causing writer, rather than asserting
-            // a runtime invariant that would fire on >90% of legitimate
-            // writes. submit_discount's own contract is ADDITIVE_ONDEMAND:
-            // newTotal = prevTotal + delta.
-            $prevOnDemand = is_array($existing) ? (int) ($existing['onDemandDiscount'] ?? 0) : 0;
-            log_message('info', sprintf(
-                'ACC_DISCOUNT_WRITE source=profile_managerial_grant user=%s prevTotal=%d prevOnDemand=%d prevSchol=%s delta=%d newTotal=%d newOnDemand=%d newSchol=%s',
-                $userId, $curTotal, $prevOnDemand, $scholAmt, (int) $discount, $new, (int) $discount, $scholAmt
-            ));
-
-            // Refresh defaulter status from demand data.
-            try {
-                $stu = $this->fsTxn->getStudent($userId);
-                $studentName = is_array($stu) ? ((string) ($stu['name'] ?? $stu['Name'] ?? '')) : '';
-                $defaulterStatus = $this->feeDefaulter->updateDefaulterStatus($userId);
-                $this->fsSync->syncDefaulterStatus($userId, $defaulterStatus, $studentName, $class, $section);
-            } catch (\Throwable $e) {
-                // \Throwable (not \Exception) so PHP `Error` (e.g.,
-                // undefined-method on a Firebase wrapper) is also caught.
-                // Same reasoning as the fetch_fee_receipts fix earlier.
-                log_message('error', "submit_discount: defaulter sync failed for {$userId}: " . $e->getMessage());
-            }
-
-            $this->_json_out(['success' => true, 'newTotalDiscount' => $new]);
-        } catch (\Throwable $e) {
-            // Outer guard — catches both \Exception and \Error so a
-            // typo or undefined-method in any nested call surfaces as a
-            // structured JSON 500 instead of a CodeIgniter white-screen.
-            log_message('error', 'submit_discount: ' . $e->getMessage());
-            $this->_json_out(['success' => false, 'message' => 'Internal server error.']);
-        }
+        return $this->_adjustmentPolicy()->outstanding($studentId);
     }
+
 
     // ══════════════════════════════════════════════════════════════════
     //  SEARCH
@@ -2343,9 +2304,46 @@ class Fees extends MY_Controller
         $this->_require_role(self::VIEW_ROLES, 'lookup_student', 'Fees', 'view');
         $this->output->set_content_type('application/json');
 
-        $userId = trim($this->input->post('user_id') ?? '');
-        if ($userId === '') { $this->_json_out(['error' => 'No user ID provided']); return; }
-        $userId = $this->safe_path_segment($userId, 'user_id');
+        // `$entered` is what the OPERATOR typed — a register number or a
+        // student id. It is deliberately kept distinct from the canonical
+        // `$userId` resolved below, because the two overlap in shape at the
+        // counter: SR No. 12 and a student key "12" are both digits, and
+        // safe_path_segment() accepts either. Money must only ever be written
+        // against the canonical id.
+        $entered = trim($this->input->post('user_id') ?? '');
+        if ($entered === '') { $this->_json_out(['error' => 'No user ID provided']); return; }
+        $entered = $this->safe_path_segment($entered, 'user_id');
+        $userId  = $entered;
+
+        // ── SR-NO RESOLUTION · RECONSTRUCTED, NOT EXACTLY RECOVERED ─────────
+        //
+        // This behaviour existed and was verified working earlier in this
+        // session — SR "2" returned STU0032 with resolved_via "srNo", and SR
+        // "999" was refused with "not found in this school". It was lost when a
+        // damaged region of this file was restored from git HEAD, because the
+        // original change was uncommitted working-tree work.
+        //
+        // Exhaustive search found no copy of it: not in any local or remote
+        // branch, not in dangling git objects, not in editor history, not in
+        // any other checkout on this machine. So this is a RECONSTRUCTION of
+        // proven behaviour, not a byte-for-byte restoration.
+        //
+        // It delegates to MY_Controller::_resolveStudentRef(), the ONE
+        // canonical resolver (Sr_no_service, scoped to $school_id) — no second
+        // lookup implementation. SR No matters here because it is what a parent
+        // can actually recite at the fee counter; admission numbers are not.
+        $resolvedVia = 'studentId';
+        $ref = $this->_resolveStudentRef($entered);
+        if (!empty($ref['ok']) && ($ref['via'] ?? '') === 'srNo') {
+            $userId      = (string) $ref['studentId'];
+            $resolvedVia = 'srNo';
+        } elseif (($ref['via'] ?? '') === 'srNo') {
+            // A numeric input that is a well-formed SR No but matches nothing
+            // in THIS school. Say so precisely rather than "student not found",
+            // which sends the operator hunting for a student id.
+            $this->_json_out(['error' => "SR No. '{$entered}' not found in this school"]);
+            return;
+        }
 
         // Session A: Firestore-only student lookup.
         $student = $this->fs->get('students', "{$this->fs->schoolId()}_{$userId}");
@@ -2360,6 +2358,12 @@ class Fees extends MY_Controller
             'father_name' => (string) ($student['fatherName'] ?? ''),
             'class'       => (string) ($student['className']  ?? ''),
             'section'     => (string) ($student['section']    ?? ''),
+            // Echoed so the counter can show WHICH identifier matched. The
+            // pre-accident version returned this, and the SR No is the value
+            // the operator actually typed.
+            'sr_no'        => (string) ($student['srNo'] ?? $student['srNumber'] ?? ''),
+            'roll_no'      => (string) ($student['rollNo'] ?? $student['roll_no'] ?? ''),
+            'resolved_via' => $resolvedVia,
         ]);
     }
 
@@ -2495,6 +2499,14 @@ class Fees extends MY_Controller
         $vu       = is_array($discDoc) ? trim((string) ($discDoc['validUntil'] ?? $discDoc['valid_until'] ?? '')) : '';
         $discExpired = false;
         if ($vu !== '' && $vu < date('Y-m-d')) { $discAmt = 0; $discExpired = true; }
+        // SESSION SCOPE. studentDiscounts has no session in its doc id, so a
+        // waiver granted last year would otherwise keep reducing this year's
+        // netDue forever. A document with no `session` field is LEGACY and is
+        // honoured unchanged; only one that explicitly names a different
+        // session is ignored, and only writes made after stamping carry one.
+        if (is_array($discDoc) && !$this->_adjustmentPolicy()->appliesToSession($discDoc)) {
+            $discAmt = 0;
+        }
 
         $totalGross = 0; $totalPaidAll = 0; $totalRemaining = 0;
         foreach ($result as $row) {
@@ -2668,6 +2680,11 @@ class Fees extends MY_Controller
             if ($validUntil !== '' && $validUntil < date('Y-m-d')) {
                 $discountAmount = 0;
                 $discountExpired = true;
+            }
+            // SESSION SCOPE — see fetch_months. Legacy unstamped documents are
+            // honoured; a discount stamped for a different session is not.
+            if (!$this->_adjustmentPolicy()->appliesToSession($discountDoc)) {
+                $discountAmount = 0;
             }
         }
 
@@ -2853,8 +2870,17 @@ class Fees extends MY_Controller
             $father  = (string) ($s['fatherName'] ?? $s['Father Name'] ?? '');
             $class   = (string) ($s['className']  ?? '');
             $section = (string) ($s['section']    ?? '');
+            $srNo    = (string) ($s['srNo'] ?? $s['srNumber'] ?? '');
 
-            $haystack = $name . ' ' . $sid . ' ' . $father . ' ' . $class . ' ' . $section;
+            // SR No is searchable; ROLL NUMBER deliberately is not.
+            //
+            // A register number is unique across the school, so matching it
+            // identifies exactly one student. A roll number is scoped to a
+            // class and section and repeats throughout the school — searching
+            // it school-wide at a fee counter implies a uniqueness that does
+            // not exist, and the operator could collect money against the
+            // wrong child with the same roll number in another class.
+            $haystack = $name . ' ' . $sid . ' ' . $srNo . ' ' . $father . ' ' . $class . ' ' . $section;
             $match = ($term === '');   // empty term ⇒ everyone matches
             if (!$match) {
                 // Match if ANY whitespace-separated token of the search
@@ -4604,7 +4630,7 @@ class Fees extends MY_Controller
             // Legacy fallback — sanitise the display name. Any caller that
             // reaches this branch should be flagged by the "[DEM ID FALLBACK]"
             // log line so it can be migrated.
-            log_message('warning', "[DEM ID FALLBACK] head='{$feeHeadName}' — caller missing feeHeadId");
+            log_message('error', "[DEM ID FALLBACK] head='{$feeHeadName}' — caller missing feeHeadId");
             $key = strtoupper(trim($feeHeadName));
             $key = preg_replace('/[^A-Z0-9]+/', '_', $key);
             $key = trim((string) $key, '_');
@@ -4747,6 +4773,196 @@ class Fees extends MY_Controller
      * @param int    $dueDay      Day of month for due date
      * @return array  [created => int, skipped => int, errors => int]
      */
+    /**
+     * DEC-013b — how many ACTIVE entitlements does this student hold?
+     *
+     * PROVEN LIVE, 2026-08-20: STU0185 held an approved, ACTIVE 10% Tuition
+     * concession. `fees/generate_demands_for_student` produced 37 demands,
+     * gross ₹11,200, discountAmount 0.00 — where ₹10,480 was owed. No error,
+     * no log. The entitlement document survived untouched and simply stopped
+     * being reflected in the money.
+     *
+     * The cause is that this controller's legacy pricing
+     * (`_getStudentDiscounts()`) reads scholarshipAwards, exemptedFees and
+     * discountHeads, and has never read `studentEntitlements` — entitlement
+     * pricing lives at exactly one boundary, which the legacy paths are not.
+     *
+     * @return int 0 = none, >0 = held, -1 = UNKNOWN (unreadable)
+     *
+     * -1 is a BLOCKING sentinel, never 0. An unreadable entitlement set must
+     * never be mistaken for an absent one — that is precisely the mistake that
+     * turns a fail-closed guard into a silent over-charge.
+     *
+     * Memoised per request: bulk generation asks once per student-MONTH, so an
+     * unmemoised lookup would be twelve Firestore queries per student.
+     */
+    private function _activeEntitlementCount(string $studentId): int
+    {
+        static $memo = [];
+        if (array_key_exists($studentId, $memo)) {
+            return $memo[$studentId];
+        }
+        try {
+            if (!class_exists('Fee_entitlement_reader')) {
+                require_once APPPATH . 'libraries/Fee_entitlement_reader.php';
+            }
+            $reader = new Fee_entitlement_reader();
+            $reader->init($this->firebase);
+            $held = $reader->activeConcessionsForStudent(
+                (string) $this->fs->schoolId(), $studentId, (string) $this->session_year
+            );
+            return $memo[$studentId] = count($held);
+        } catch (\Throwable $e) {
+            log_message('error', 'ACC_ENTITLEMENT_LOOKUP_FAILED school=[' . $this->fs->schoolId()
+                . '] student=[' . $studentId . ']: ' . $e->getMessage()
+                . ' — treating as UNKNOWN, which blocks legacy generation.');
+            return $memo[$studentId] = -1;
+        }
+    }
+
+    /**
+     * DEC-013b — the operator-facing refusal.
+     *
+     * A vague refusal gets retried blindly, so this says WHAT was refused and,
+     * just as importantly, that nothing changed: an operator who believes a
+     * half-run happened will go looking for damage that does not exist.
+     */
+    private function _entitlementRefusalMessage(int $count): string
+    {
+        $what = $count < 0
+            ? 'This student\'s concessions could not be read'
+            : 'This student holds ' . $count . ' active concession' . ($count === 1 ? '' : 's')
+              . ' that this legacy path cannot price';
+
+        return $what . ', so generation was refused and nothing was changed. '
+            . 'Billing here would have charged FULL PRICE and silently voided an approved '
+            . 'concession. Generate the whole session instead — that path prices concessions '
+            . 'correctly — or raise the demands from Fees → Student Benefits.';
+    }
+
+    /**
+     * T2 — does this tenant override a global rollout default?
+     *
+     * The config file remains the SOLE author of the global default; each gate
+     * reads its own value and passes it here, so this only ever answers "does
+     * this tenant override it?". Nothing is centralised and no default moves.
+     *
+     * Fails to the caller's own default on every failure path — an unreachable
+     * rollout store must never silently flip a financial gate.
+     */
+    private function _rolloutEnabled(string $flag, bool $globalDefault): bool
+    {
+        $school = (string) $this->fs->schoolId();
+        if ($school === '') return $globalDefault;
+        try {
+            if (!isset($this->rollout)) {
+                $this->load->library('rollout_flag_service', null, 'rollout');
+            }
+            return (bool) $this->rollout
+                ->init($this->firebase, $school)
+                ->isEnabled($flag, $globalDefault);
+        } catch (\Throwable $e) {
+            log_message('error', 'Fees::_rolloutEnabled failed for ' . $flag . ': '
+                . $e->getMessage() . ' — falling back to the config default.');
+            return $globalDefault;
+        }
+    }
+
+    /**
+     * M5 — is the Fee Head Registry the classification authority for demands
+     * generated by THIS controller?
+     *
+     * Mirrors Fee_lifecycle::_registryModeOn() deliberately: the flag states
+     * INTENT, the readiness check states CAPABILITY. The flag defaults ON, and
+     * registry mode fails CLOSED on an unresolvable head — so without the
+     * readiness gate a school that has not finished registering its heads would
+     * silently bill nobody on its first day. When the registry does not yet
+     * cover the chart we stay on legacy pricing and keep billing, losing only
+     * the registry's category precision until configuration finishes.
+     *
+     * Memoised per request per tenant — one generation run prices many students.
+     */
+    private function _m5RegistryModeOn(): bool
+    {
+        $this->config->load('fee_head_registry', true, true);
+        // One literal, one switch: the flag name is held in a variable so this
+        // gate cannot drift from a second copy of the same name elsewhere.
+        $flag = 'USE_FEE_HEAD_REGISTRY';
+        if (!$this->_rolloutEnabled($flag, (bool) $this->config->item($flag, 'fee_head_registry'))) {
+            return false;
+        }
+
+        $school = (string) $this->fs->schoolId();
+        if ($school === '') return false;
+
+        if (array_key_exists($school, self::$_m5ReadyMemo)) {
+            return self::$_m5ReadyMemo[$school];
+        }
+
+        $ready = false;
+        try {
+            if (!class_exists('Fee_head_readiness')) {
+                require_once APPPATH . 'libraries/Fee_head_readiness.php';
+            }
+            $missing = (new Fee_head_readiness())->missingForSchool($this->firebase, $school);
+            // NULL means the question could not be answered. Never assume ready:
+            // an unverified registry is exactly the state that bills nobody.
+            $ready = ($missing === []);
+            if (!$ready) {
+                log_message('error', 'FEEHEAD_REGISTRY_HELD school=[' . $school . '] — registry mode '
+                    . 'is enabled but the registry does not yet cover this school\'s fee chart ('
+                    . ($missing === null ? 'unreadable' : count($missing) . ' head(s) unregistered')
+                    . '). Pricing on the LEGACY authority so billing continues.');
+            }
+        } catch (\Throwable $e) {
+            log_message('error', 'FEEHEAD_REGISTRY_HELD school=[' . $school . '] — readiness check '
+                . 'failed: ' . $e->getMessage() . '. Pricing on the LEGACY authority.');
+            $ready = false;
+        }
+
+        return self::$_m5ReadyMemo[$school] = $ready;
+    }
+
+    /** @var array<string,bool> tenant => registry readiness, per request. */
+    private static array $_m5ReadyMemo = [];
+
+    /** @var Fee_head_resolver|null */
+    private $_m5Resolver = null;
+
+    /**
+     * M5 — classify one charted head against the registry.
+     *
+     * Returns ['ok' => false, 'reason' => ...] when the head cannot be
+     * classified. The caller must then REFUSE that charge rather than guess:
+     * a demand carrying a wrong category misfiles real money in the ledger,
+     * and a name keyword is not an authority.
+     */
+    private function _m5RegistryStamp(string $headName): array
+    {
+        if ($headName === '') return ['ok' => false, 'reason' => 'missing_fee_head_name'];
+
+        if ($this->_m5Resolver === null) {
+            if (!class_exists('Fee_head_resolver')) {
+                require_once APPPATH . 'libraries/Fee_head_resolver.php';
+            }
+            $this->_m5Resolver = (new Fee_head_resolver())->init($this->fs);
+        }
+
+        $res = $this->_m5Resolver->resolveByName((string) $this->fs->schoolId(), $headName);
+        if (empty($res['ok'])) {
+            return ['ok' => false, 'reason' => (string) ($res['reason'] ?? 'unresolved')];
+        }
+        // An archived head may explain history but must never price new work.
+        if (($res['status'] ?? 'active') !== 'active') {
+            return ['ok' => false, 'reason' => 'archived'];
+        }
+        return ['ok' => true, 'fields' => [
+            'feeHeadRef'     => (string) $res['feeHeadId'],
+            'category'       => (string) $res['category'],
+            'categorySource' => 'registry',
+        ]];
+    }
+
     private function _generateDemandsForMonth(
         string $studentId,
         string $studentName,
@@ -4759,7 +4975,26 @@ class Fees extends MY_Controller
         array  &$batchOps = null, // optional — when provided, ops accumulate here instead of writing inline (for bulk generation)
         array  $feeHeadIdByName = []  // Phase 2.5 Step 2 — name→feeHeadId for stable demand IDs
     ): array {
-        $result = ['created' => 0, 'skipped' => 0, 'errors' => 0];
+        // `entitlementRefused` is ALWAYS present, so a caller cannot omit it
+        // from a summary by accident — a refusal nobody sees is the same defect
+        // as the silent over-charge it was added to prevent.
+        $result = ['created' => 0, 'skipped' => 0, 'errors' => 0, 'entitlementRefused' => 0];
+
+        // ── DEC-013b · SKIP AND COUNT, NEVER ABORT ──────────────────────────
+        //
+        // This generator is entitlement-blind (see _activeEntitlementCount).
+        // In a bulk run one entitled student must not block a whole school, so
+        // the student is skipped rather than the run aborted — but the skip is
+        // COUNTED and logged, never silent. `-1` (unreadable) blocks too: an
+        // unknown entitlement set must never be read as an absent one.
+        $entCount = $this->_activeEntitlementCount($studentId);
+        if ($entCount !== 0) {
+            log_message('error', 'ACC_GENERATION_REFUSED_ENTITLEMENT school=['
+                . $this->fs->schoolId() . '] student=[' . $studentId . '] entitlements=['
+                . $entCount . '] month=[' . $monthName . '] — student skipped, run continues.');
+            $result['entitlementRefused'] = 1;
+            return $result;
+        }
 
         $periodKey = $this->_buildPeriodKey($monthName);
         $dueDate   = $this->_computeDueDate($monthName, $dueDay);
@@ -4820,7 +5055,13 @@ class Fees extends MY_Controller
             $pk  = (string) ($_d['periodKey'] ?? $_d['period_key'] ?? '');
             if ($pk === '') continue;
             $cid = (string) ($_d['canonicalFeeHeadId'] ?? '');
-            if ($cid !== '') $haveKeys[$pk . '|' . $cid] = true;
+            // PHASE 2 — the value is a SET OF DEMAND DOCUMENT IDS, not a
+            // boolean. One physical demand is indexed under BOTH the canonical
+            // and the name shape, so counting matched KEYS would report two
+            // matches for a single healthy demand and fail closed on good data.
+            // Counting document ids, unioned across both shapes, tells 0 / 1 /
+            // 2+ apart correctly.
+            if ($cid !== '') $haveKeys[$pk . '|' . $cid][$_did] = true;
             // Phase 2 fix (empty-canonical edge): also index by fee-head NAME so
             // demands with an EMPTY canonicalFeeHeadId (unregistered head / no
             // feeHeadId) remain de-duplicated. Without this, distinct empty-
@@ -4829,8 +5070,12 @@ class Fees extends MY_Controller
             // the guard (duplicate on re-run). Non-empty-canonical dedup is
             // unchanged — this only ADDS a fallback index.
             $nm = strtolower(trim((string) ($_d['feeHead'] ?? '')));
-            if ($nm !== '') $haveKeys[$pk . '|name:' . $nm] = true;
+            if ($nm !== '') $haveKeys[$pk . '|name:' . $nm][$_did] = true;
         }
+
+        // M5 — resolved ONCE per generation call, not per head: the readiness
+        // check behind it is a Firestore read, and one run prices many heads.
+        $registryMode = $this->_m5RegistryModeOn();
 
         $newDemands = []; // autoId => demand row, only the rows we will create
 
@@ -4860,6 +5105,19 @@ class Fees extends MY_Controller
                 ? ($periodKey . '|' . $canonicalId)
                 : ($periodKey . '|name:' . strtolower(trim($feeHead)));
 
+            // PHASE 1 — THE ASYMMETRY THAT DUPLICATED REAL OBLIGATIONS.
+            //
+            // The existing-demand side indexes BOTH shapes; the generator side
+            // used to pick exactly ONE — always the canonical one, because the
+            // chart supplies it. A legacy demand indexed only under the NAME
+            // key was therefore invisible, and every save re-created it. Live
+            // evidence: one fee-chart save took a student from 26 demands to
+            // 63, a second to 100 — 37 duplicates per save, each a real
+            // financial obligation.
+            //
+            // Both shapes are now consulted on both sides.
+            $dedupKeyByName = $periodKey . '|name:' . strtolower(trim($feeHead));
+
             // Idempotency pre-check — applies to BOTH inline and bulk
             // paths.
             //
@@ -4873,11 +5131,59 @@ class Fees extends MY_Controller
             // paid state. Removing the bulk-path bypass restores
             // true idempotency: a re-run never touches an existing
             // demand regardless of mode.
-            if (isset($haveKeys[$dedupKey])) {
+            $matchIds = ($haveKeys[$dedupKey] ?? []) + ($haveKeys[$dedupKeyByName] ?? []);
+            $matchCount = count($matchIds);
+
+            // PHASE 2 — IDENTITY CONFLICT. Two or more DISTINCT demand
+            // documents already answer to this one (period, head) identity.
+            // Skipping would leave the duplicate in place and creating would
+            // add a third, so neither is safe: refuse this head, count it, and
+            // make the conflict loud. This is a data condition a human must
+            // resolve, not one a generator may paper over.
+            if ($matchCount >= 2) {
+                log_message('error', 'ACC_FEE_DEMAND_IDENTITY_CONFLICT school=['
+                    . $this->fs->schoolId() . '] student=[' . $studentId . '] period=['
+                    . $periodKey . '] head=[' . $feeHead . '] demands=['
+                    . implode(',', array_keys($matchIds)) . ']');
+                $result['errors']++;
+                continue;
+            }
+
+            if ($matchCount === 1) {
                 $result['skipped']++;
                 continue;
             }
-            $haveKeys[$dedupKey] = true; // guard within this run
+
+            // Guard within this run — register BOTH shapes, so a second chart
+            // row naming the same head cannot slip past under the other key.
+            $haveKeys[$dedupKey][$demandId]       = true;
+            $haveKeys[$dedupKeyByName][$demandId] = true;
+
+            // ── M5 · REGISTRY CLASSIFICATION, FAIL CLOSED ───────────────────
+            //
+            // In registry mode the Fee Head Registry — not a name keyword — is
+            // the authority for a demand's category. An unresolvable head is
+            // refused rather than guessed: a wrong category misfiles real money
+            // in the ledger, and that error is invisible until reconciliation.
+            //
+            // Refusing is safe here precisely because _m5RegistryModeOn() has
+            // already confirmed the registry covers this school's chart, so an
+            // unresolved head at this point is a genuine anomaly, not an
+            // unconfigured tenant.
+            $m5Fields = [];
+            if ($registryMode) {
+                $stamp = $this->_m5RegistryStamp($feeHead);
+                if (empty($stamp['ok'])) {
+                    log_message('error', 'ACC_FEEHEAD_UNRESOLVED path=generation school=['
+                        . $this->fs->schoolId() . '] student=[' . $studentId . '] period=['
+                        . $periodKey . '] head=[' . $feeHead . '] reason=['
+                        . (string) ($stamp['reason'] ?? 'unresolved') . '] — charge refused '
+                        . '(fail closed); register this head in Fee Management → Fee Heads.');
+                    $result['errors']++;
+                    continue;
+                }
+                $m5Fields = $stamp['fields'];
+            }
 
             // Calculate discount for this fee head
             $discountAmount = 0;
@@ -4893,7 +5199,38 @@ class Fees extends MY_Controller
                 $discountAmount += round($scholarshipTotal * $proportion, 2);
             }
 
-            // Cap discount at fee amount
+            // ── STACK-2 · PARITY WITH THE CANONICAL ENGINE'S STACK-1 ────────
+            //
+            // Cap the discount at the charge, so the family is never billed a
+            // negative amount. That clamp was already here and is correct.
+            //
+            // What was missing is the SIGNAL. A head-specific discount plus a
+            // proportional scholarship can total more than the charge — the
+            // clamp then floors the net at zero, the money is right, and
+            // precisely because the money is right nobody ever notices. The
+            // demand can only record the CLAMPED discount, so the surplus grant
+            // is invisible and revoking one of two overlapping grants silently
+            // changes nothing: the bill stays zero and the revocation looks
+            // like it failed.
+            //
+            // The canonical generator already reports this as
+            // ACC_CONCESSION_EXCEEDS_CHARGE. Leaving the legacy generator
+            // silent would mean the same condition is observable on one path
+            // and invisible on the other. Not refused — billing a genuinely
+            // over-granted family zero is the right answer; only the silence
+            // is removed.
+            if ($discountAmount > $amount + 0.005) {
+                log_message('error', sprintf(
+                    'ACC_CONCESSION_EXCEEDS_CHARGE path=legacy student=[%s] feeHead=[%s] '
+                    . 'period=[%s] gross=[%.2f] granted=[%.2f] applied=[%.2f] excess=[%.2f] '
+                    . '— the discounts on this demand total MORE than the charge. The family '
+                    . 'is billed 0, which is correct, but the surplus grant is not recorded '
+                    . 'anywhere and revoking one of the overlapping grants will not change '
+                    . 'the bill.',
+                    $studentId, $feeHead, $periodKey,
+                    $amount, $discountAmount, $amount, $discountAmount - $amount
+                ));
+            }
             if ($discountAmount > $amount) {
                 $discountAmount = $amount;
             }
@@ -4933,6 +5270,14 @@ class Fees extends MY_Controller
                 'createdAt'       => $now,
                 'createdBy'       => $this->admin_id ?? 'system',
             ];
+
+            // M5 stamps `category` from the REGISTRY, which must override the
+            // name-derived value rather than lose to it — that override is the
+            // whole point of the flag. Empty in legacy mode, so this is a no-op
+            // there.
+            if ($m5Fields !== []) {
+                $newDemands[$demandId] = array_merge($newDemands[$demandId], $m5Fields);
+            }
         }
 
         // Nothing new to create — return early
@@ -5129,6 +5474,56 @@ class Fees extends MY_Controller
         $validMonths = array_intersect($requestedMonths, self::ACADEMIC_MONTHS);
         if (empty($validMonths)) {
             return $this->json_error('No valid months specified.');
+        }
+
+        // ── P5-D · WHOLE-SESSION GENERATION GOES THROUGH THE CANONICAL PIPELINE ──
+        //
+        // An operator generating the WHOLE session is asking for exactly what
+        // admission does, so it is served by the same single pricing authority
+        // — which reads studentEntitlements and prices concessions correctly.
+        //
+        // The legacy month-subset branch below remains entitlement-blind and is
+        // still refused for an entitled student (DEC-013b). The guard did not
+        // weaken when this landed; it moved to the only path still capable of
+        // the defect. Refusing HERE too would deny exactly the students this
+        // convergence was built to serve.
+        $wholeSession = (count($validMonths) === count(self::ACADEMIC_MONTHS));
+        if ($wholeSession) {
+            $assigned = $this->feeLifecycle->assignInitialFees($studentId, $class, $section);
+            // TRUTHFULNESS. `assigned` is the set of chart heads the builder
+            // WALKED, not the set it created — a head already billed is
+            // suppressed and still appears here. Saying "N generated" would
+            // report a re-run that created nothing as if it had raised N new
+            // charges, which is the phantom-success shape this codebase treats
+            // as a defect. The wording states coverage, and states explicitly
+            // that existing charges were untouched.
+            return $this->json_success([
+                'message' => 'Full session processed for ' . count($assigned) . ' fee head(s). '
+                    . 'Charges that already existed were left unchanged.',
+                'student' => $studentName,
+                'class'   => $class,
+                'section' => $section,
+                'heads'   => $assigned,
+                'pricing' => 'canonical',
+            ]);
+        }
+
+        // ── DEC-013b · THE LEGACY MONTH-SUBSET BRANCH ───────────────────────
+        //
+        // Everything below prices from _getStudentDiscounts(), which has never
+        // read studentEntitlements. For a student holding an approved, active
+        // concession that means billing at GROSS — silently, with the
+        // entitlement document left intact and simply not reflected in the
+        // money. DEC-013 already decided this question for the recalculation
+        // path: refuse, because a silent over-charge is invisible while a
+        // refusal is obvious. This applies that decision; it does not invent a
+        // new one.
+        $entCount = $this->_activeEntitlementCount($studentId);
+        if ($entCount !== 0) {
+            log_message('error', 'ACC_GENERATION_REFUSED_ENTITLEMENT school=['
+                . $this->fs->schoolId() . '] student=[' . $studentId . '] entitlements=['
+                . $entCount . '] months=[' . implode(',', $validMonths) . ']');
+            return $this->json_error($this->_entitlementRefusalMessage($entCount));
         }
 
         $dueDay    = $this->_getDueDay();
@@ -5456,6 +5851,15 @@ class Fees extends MY_Controller
         // for chunking (≤400/commit), retries (3 attempts w/ exp backoff),
         // throttle (100ms between commits to stay under Firestore's
         // 500 writes/s soft limit), and durable failure tracking.
+        // P5-C — the months this job targets, as period keys. The canonical
+        // builder always prices the WHOLE session (pricing is a per-student
+        // decision and must not vary with which months an operator selected),
+        // so the selection is applied to the priced specs instead.
+        $wantPeriods = [];
+        foreach ($months as $__m) {
+            $wantPeriods[$this->_buildPeriodKey((string) $__m)] = true;
+        }
+
         $batchOps = [];
         $cumulativeFailedBatches = [];
         $flushBatch = function () use (&$batchOps, &$cumulativeFailedBatches, $writer, $jobId) {
@@ -5512,23 +5916,89 @@ class Fees extends MY_Controller
                     }
                     continue;
                 }
+
                 $studentName = (string) ($profile['name'] ?? $profile['Name'] ?? $sid);
                 try {
-                    $discountMap = $this->_getStudentDiscounts($sid, $cs['class'], $cs['section']);
-                    foreach ($months as $month) {
-                        $r = $this->_generateDemandsForMonth(
-                            $sid, $studentName, $cs['class'], $cs['section'],
-                            $month, $feeChart, $discountMap, $dueDay,
-                            $batchOps, $headIdMap
-                        );
-                        $skipped += (int) ($r['skipped'] ?? 0);
-                        if (($r['created'] ?? 0) > 0) {
-                            $created += (int) $r['created'];
+                    // ── P5-C · CANONICAL PRICING FOR BULK GENERATION ────────
+                    //
+                    // This loop used to price from _getStudentDiscounts() —
+                    // scholarshipAwards, students.exemptedFees,
+                    // students.discountHeads — which has never read
+                    // studentEntitlements. Single-student generation had the
+                    // same hole (P5-D), but here it applied to an entire school
+                    // in one click: every student holding an APPROVED, ACTIVE
+                    // concession billed at GROSS, silently, with no error.
+                    //
+                    // Routing through the canonical builder gives this path the
+                    // SAME single pricing authority as admission. What it must
+                    // NOT cost is the machinery around it: 400-op batching, the
+                    // soft deadline, resume-by-lastProcessedSid and per-student
+                    // failure isolation all survive below, because bulk is not
+                    // "the single-student path in a loop" — calling
+                    // assignInitialFees() per student would turn a 2,000-student
+                    // run into 2,000 commits.
+                    $built = $this->feeLifecycle->buildCanonicalDemandSpecs(
+                        (string) $sid, $cs['class'], $cs['section']
+                    );
+
+                    // FAIL CLOSED. `chartFound => false` covers both "this class
+                    // has no fee chart" and the P5-0 refusal raised when the
+                    // existing-demand read fails. Writing specs built without
+                    // that read would re-emit charges that already exist and,
+                    // because the write below merges, reset paidAmount, balance
+                    // and status on demands that already carry a payment.
+                    if (empty($built['chartFound'])) {
+                        $refused = (string) ($built['refused'] ?? '');
+                        if ($refused !== '') {
+                            $failureCount++;
+                            $errors[] = [
+                                'studentId' => $sid,
+                                'error'     => 'spec build refused: ' . $refused,
+                                'at'        => date('c'),
+                            ];
                         }
-                        // Flush when batch hits the 400-op threshold.
+                        $processed++;
+                        continue;
+                    }
+
+                    // The job may target a subset of months. The canonical
+                    // builder always prices the whole session, so the filter is
+                    // applied to the PRICED specs rather than by asking for a
+                    // partial build — pricing is a per-student decision and must
+                    // not vary with which months an operator happened to select.
+                    $hasAllocations = false;
+                    $specsForStudent = [];
+                    foreach ((array) ($built['specs'] ?? []) as $entry) {
+                        $pk = (string) ($entry['data']['periodKey'] ?? '');
+                        if ($pk === '' || !isset($wantPeriods[$pk])) {
+                            $skipped++;
+                            continue;
+                        }
+                        $batchOps[] = [
+                            'op'         => 'set',
+                            'collection' => 'feeDemands',
+                            'docId'      => (string) $entry['demandId'],
+                            'merge'      => true,
+                            'data'       => $entry['data'],
+                        ];
+                        $specsForStudent[] = $entry;
+                        if (!empty($entry['allocations'])) $hasAllocations = true;
+                        $created++;
+
+                        // Flush when the batch hits the 400-op threshold.
                         if (count($batchOps) >= 400) {
                             $flushBatch();
                         }
+                    }
+
+                    // Allocations are persisted ONLY AFTER the demands they
+                    // describe are committed — a ledger row about a charge that
+                    // failed to write would be worse than no row. Conditional
+                    // because an unconditional flush per student would defeat
+                    // the batching this routing exists to preserve.
+                    if ($hasAllocations) {
+                        $flushBatch();
+                        $this->feeLifecycle->persistAllocationsForBatch((string) $sid, $specsForStudent);
                     }
 
                     // Phase 3 (Finding A / A2): capture ONLY the identity fields
@@ -5639,7 +6109,7 @@ class Fees extends MY_Controller
                 'at'    => date('c'),
                 'error' => "resumeFromSid '{$resumeFromSid}' not found in roster — full re-run may be needed.",
             ];
-            log_message('warning', "fee-gen-worker: job={$jobId} resume cursor '{$resumeFromSid}' not found; no students processed.");
+            log_message('error', "fee-gen-worker: job={$jobId} resume cursor '{$resumeFromSid}' not found; no students processed.");
         }
 
         // Phase 3 — distinguish completed vs soft-deadline 'incomplete'.
@@ -6676,15 +7146,182 @@ class Fees extends MY_Controller
     }
 
     /**
-     * GET — Fetch all demands for a student.
+     * ══ ADJ-GOV-1 · THE ONE GATE EVERY COUNTER ADJUSTMENT PASSES ═══════════
      *
-     * Params:
-     *   student_id  (required)
-     *   status      (optional) — "unpaid", "partial", "paid", or "" for all
-     *   period_key  (optional) — e.g. "2026-04" to filter by month
+     * `studentDiscounts.onDemandDiscount` has TWO writers — submit_discount()
+     * and set_student_discount() — and the first version of this governance
+     * was written inline in only one of them. The other stayed uncapped and
+     * unreasoned: exactly the same hole, one door along. Two divergent copies
+     * of a money rule is how that happens, so there is now one gate and both
+     * doors call it.
      *
-     * Returns: demands[] sorted by period_key ASC, then fee_head
+     * Enforces the platform invariants (never a school preference):
+     *   • a reason is mandatory — money moved for an unrecorded cause is
+     *     unauditable;
+     *   • the amount may never exceed what the student actually owes;
+     *   • an unestablished outstanding refuses the adjustment rather than
+     *     allowing an uncapped one.
+     * Then the school's own tighter ceiling, if it has configured one.
+     *
+     * @return string|null null when allowed, otherwise the refusal message
      */
+    private function _adjustment_refusal(string $userId, float $amount, string $reason): ?string
+    {
+        return $this->_adjustmentPolicy()->refusal($userId, $amount, $reason);
+    }
+
+    /**
+     * The ONE collection-layer adjustment authority, shared with
+     * Fee_management's rule/bulk and scholarship writers. Held per request so
+     * the outstanding memo inside it survives a bulk loop.
+     */
+    private function _adjustmentPolicy(): Collection_adjustment_policy
+    {
+        if ($this->_adjPolicy === null) {
+            if (!class_exists('Collection_adjustment_policy')) {
+                require_once APPPATH . 'libraries/Collection_adjustment_policy.php';
+            }
+            $this->_adjPolicy = (new Collection_adjustment_policy())->init(
+                $this->firebase, (string) $this->fs->schoolId(),
+                (string) $this->session_year, (string) ($this->admin_id ?? 'system')
+            );
+        }
+        return $this->_adjPolicy;
+    }
+
+    /** @var Collection_adjustment_policy|null */
+    private $_adjPolicy = null;
+
+    public function submit_discount()
+    {
+        $this->_require_post();
+        $this->_require_role(self::MANAGE_ROLES, 'submit_discount', 'Fees', 'edit');
+        $this->output->set_content_type('application/json');
+
+        $userId   = trim($this->input->post('userId'));
+        $class    = trim($this->input->post('class'));
+        $section  = trim($this->input->post('section'));
+        $discount = $this->input->post('discount');
+        // Optional — not surfaced in the current profile form. Accepted so a
+        // future UI iteration (or a bulk-grant script / API caller) can
+        // populate it without another schema change.
+        $reason   = trim((string) ($this->input->post('reason') ?? ''));
+
+        if (empty($userId) || empty($class) || empty($section) || $discount === false || $discount === '') {
+            $this->_json_out(['success' => false, 'message' => 'Missing required fields.']);
+            return;
+        }
+
+        if (!is_numeric($discount) || (int)$discount < 0) {
+            $this->_json_out(['success' => false, 'message' => 'Invalid discount value.']);
+            return;
+        }
+        $userId = $this->safe_path_segment($userId, 'userId');
+
+        // ADJ-GOV-1 — one shared gate, see _adjustment_refusal().
+        $__refusal = $this->_adjustment_refusal($userId, (float) $discount, $reason);
+        if ($__refusal !== null) {
+            $this->_json_out(['success' => false, 'message' => $__refusal]);
+            return;
+        }
+
+        $base = $this->studentPath($class, $section, $userId);
+
+        try {
+            // Pure Firestore: read existing discount, update, write back.
+            $this->load->library('Fee_firestore_txn', null, 'fsTxn');
+            $this->fsTxn->init($this->firebase, $this->fs, $this->fs->schoolId(), $this->session_year);
+
+            $existing = $this->firebase->firestoreGet('studentDiscounts', "{$this->fs->schoolId()}_{$userId}");
+            $scholAmt = is_array($existing) ? (float) ($existing['scholarshipDiscount'] ?? 0) : 0;
+            $now = date('c');
+
+            // ── SD-2 · THE TWO DOORS NOW STORE THE SAME THING ───────────────
+            //
+            // This door used to store `totalDiscount = previous + delta` while
+            // set_student_discount() stored `onDemand + scholarship`. The same
+            // grant therefore produced DIFFERENT stored state depending on which
+            // screen the operator used, and `totalDiscount` became a running
+            // historical tally for some students and a current figure for
+            // others — while the school-wide discount report sums them all
+            // together. The accumulating form also grew without bound: it never
+            // came down when the governing `onDemandDiscount` was reduced.
+            //
+            // `totalDiscount` is a REPORTED figure; the money is governed by
+            // `onDemandDiscount`. Making it the coherent sum of its parts is
+            // what lets the report be true. Existing stored values are left
+            // exactly as they are — this changes only what NEW writes record,
+            // so no settled history is reinterpreted.
+            //
+            // The (int) casts are also gone. `$discount` is validated numeric,
+            // and truncating it silently turned a ₹500.50 waiver into ₹500.
+            $amountF = round((float) $discount, 2);
+
+            $this->fsTxn->updateDiscount($userId, array_merge([
+                'onDemandDiscount'    => $amountF,
+                'scholarshipDiscount' => $scholAmt,
+                'totalDiscount'       => round($amountF + $scholAmt, 2),
+                'appliedAt'           => $now,
+                'appliedBy'           => $this->admin_name ?? 'admin',
+            ], $this->_adjustmentPolicy()->stamp($reason, 'profile_managerial_grant')),
+                ['className' => $class, 'section' => $section]);
+
+            // SD-3 — the canonical financial audit trail. The pre-existing
+            // ACC_DISCOUNT_WRITE line below logs at 'info', and production runs
+            // log_threshold=1 (errors only), so it records nothing at all.
+            $this->_adjustmentPolicy()->audit(
+                $userId, is_array($existing) ? $existing : [],
+                ['onDemandDiscount' => $amountF, 'totalDiscount' => round($amountF + $scholAmt, 2)],
+                $reason, 'profile_managerial_grant'
+            );
+
+            // Structured discount-write log (2026-05-29). The cross-writer
+            // equality `total == onDemand + schol` is NOT an invariant —
+            // submit_discount, apply_discount, and the receipt path all
+            // break it BY CONSTRUCTION on legitimate operations (writer
+            // audit 2026-05-29). We log every write here with a writer
+            // label and prev/new values so an offline reconciliation can
+            // attribute drift to its causing writer, rather than asserting
+            // a runtime invariant that would fire on >90% of legitimate
+            // writes. SD-2 CLOSED: this door's contract is now the same as
+            // set_student_discount's — SET_REPLACE, newTotal = onDemand + schol.
+            //
+            // The level is 'error' rather than 'info' because CodeIgniter's
+            // production threshold here is 1 (errors only), so an 'info' line
+            // on a money path records NOTHING — the SD-3 finding. The canonical
+            // trail is feeAuditLogs (written above); this line stays as a
+            // grep-able breadcrumb beside it.
+            $prevTotal    = is_array($existing) ? (float) ($existing['totalDiscount']    ?? 0) : 0;
+            $prevOnDemand = is_array($existing) ? (float) ($existing['onDemandDiscount'] ?? 0) : 0;
+            log_message('error', sprintf(
+                'ACC_DISCOUNT_WRITE source=profile_managerial_grant user=%s prevTotal=%s prevOnDemand=%s prevSchol=%s newTotal=%s newOnDemand=%s newSchol=%s',
+                $userId, $prevTotal, $prevOnDemand, $scholAmt,
+                round($amountF + $scholAmt, 2), $amountF, $scholAmt
+            ));
+
+            // Refresh defaulter status from demand data.
+            try {
+                $stu = $this->fsTxn->getStudent($userId);
+                $studentName = is_array($stu) ? ((string) ($stu['name'] ?? $stu['Name'] ?? '')) : '';
+                $defaulterStatus = $this->feeDefaulter->updateDefaulterStatus($userId);
+                $this->fsSync->syncDefaulterStatus($userId, $defaulterStatus, $studentName, $class, $section);
+            } catch (\Throwable $e) {
+                // \Throwable (not \Exception) so PHP `Error` (e.g.,
+                // undefined-method on a Firebase wrapper) is also caught.
+                // Same reasoning as the fetch_fee_receipts fix earlier.
+                log_message('error', "submit_discount: defaulter sync failed for {$userId}: " . $e->getMessage());
+            }
+
+            $this->_json_out(['success' => true, 'newTotalDiscount' => round($amountF + $scholAmt, 2)]);
+        } catch (\Throwable $e) {
+            // Outer guard — catches both \Exception and \Error so a
+            // typo or undefined-method in any nested call surfaces as a
+            // structured JSON 500 instead of a CodeIgniter white-screen.
+            log_message('error', 'submit_discount: ' . $e->getMessage());
+            $this->_json_out(['success' => false, 'message' => 'Internal server error.']);
+        }
+    }
+
     public function get_student_demands()
     {
         $this->_require_role(self::VIEW_ROLES, 'get_student_demands', 'Fees', 'view');
@@ -6837,38 +7474,150 @@ class Fees extends MY_Controller
      *
      * @return array ['updated' => int, 'preserved' => int, 'attempted' => int]
      */
+    /**
+     * ══ P5-E · CANONICAL RECALCULATION — RECOMPUTE IN PLACE ═════════════════
+     *
+     * The entitlement-aware replacement for `_recalculateStudentUnpaidDemands()`.
+     *
+     * WHAT WAS WRONG. The legacy rule prices from `_getStudentDiscounts()`
+     * (`scholarshipAwards`, `exemptedFees`, `discountHeads`) and has never read
+     * `studentEntitlements`. DEC-013 therefore had to REFUSE recalculation for
+     * any student holding an entitlement, because rebuilding their demands would
+     * silently void an approved concession. That refusal was containment, not a
+     * fix: an entitlement granted AFTER generation could never reach the money
+     * at all — the STU0184 shape observed live (₹11,200 while holding a 10%
+     * grant that should have made it ₹10,480).
+     *
+     * HOW THIS WORKS.
+     *   1. `previewDemandSpecs()` prices the FULL chart through the ONE routed
+     *      authority. Preview mode is correct here precisely because duplicate
+     *      suppression must be OFF: recalculation needs the target amount for
+     *      charges that already exist, which the writing build deliberately
+     *      omits. Nothing from the preview is written — it supplies target
+     *      amounts only.
+     *   2. `Fee_recalculation_planner` diffs those targets against the student's
+     *      existing demands. The planner has NO DELETE VERB: settled money is
+     *      PROTECTED, a paid demand whose charge moved is escalated to ADJUST
+     *      for a human, a head no longer in the chart is reported OBSOLETE and
+     *      left alone.
+     *   3. Only `update` outcomes are applied, as merge patches onto the
+     *      EXISTING demand id. Identity never changes, so no receipt or journal
+     *      is ever orphaned.
+     *
+     * This is the "recompute IN PLACE and never delete" that DEC-013 named as
+     * its own removal condition.
+     *
+     * @return array{updated:int, preserved:int, attempted:int, adjust:int,
+     *               obsolete:int, refused?:string}
+     */
+    private function _recalculateStudentCanonical(string $studentId, string $class, string $section): array
+    {
+        $out = ['updated' => 0, 'preserved' => 0, 'attempted' => 0,
+                'adjust' => 0, 'obsolete' => 0];
+
+        // Existing demands — FAIL CLOSED. An unreadable set would make the
+        // planner see "no existing charges" and propose creating everything
+        // again (B-011's shape). Refuse instead.
+        try {
+            $existing = $this->fsTxn->demandsForStudentStrict($studentId);
+        } catch (\Throwable $e) {
+            log_message('error', 'ACC_RECALC_REFUSED school=[' . $this->fs->schoolId()
+                . '] student=[' . $studentId . '] reason=[existing_demand_read_failed]: '
+                . $e->getMessage());
+            $out['refused'] = 'existing_demand_read_failed';
+            return $out;
+        }
+
+        $priced = $this->feeLifecycle->previewDemandSpecs($studentId, $class, $section);
+        if (!($priced['chartFound'] ?? false)) {
+            $out['refused'] = (string) ($priced['refused'] ?? 'no_chart');
+            return $out;
+        }
+
+        $expected = [];
+        foreach ((array) ($priced['specs'] ?? []) as $entry) {
+            $expected[] = is_array($entry['data'] ?? null) ? $entry['data'] : $entry;
+        }
+
+        $this->load->library('Fee_recalculation_planner', null, 'recalcPlanner');
+        $plan = $this->recalcPlanner->plan($existing, $expected);
+
+        $out['attempted'] = count($existing);
+        $out['preserved'] = (int) ($plan['summary'][Fee_recalculation_planner::UNCHANGED] ?? 0)
+                          + (int) ($plan['summary'][Fee_recalculation_planner::PROTECT] ?? 0);
+        $out['adjust']    = (int) ($plan['summary'][Fee_recalculation_planner::ADJUST] ?? 0);
+        $out['obsolete']  = (int) ($plan['summary'][Fee_recalculation_planner::OBSOLETE] ?? 0);
+
+        // ADJUST and OBSOLETE are reported, never auto-applied: both mean a
+        // human has to decide something (settled money moved; a charge left the
+        // chart). Applying them silently is exactly what a planner without a
+        // delete verb exists to prevent.
+        foreach ((array) ($plan[Fee_recalculation_planner::UPDATE] ?? []) as $did => $row) {
+            $patch = is_array($row['patch'] ?? null) ? $row['patch'] : [];
+            if ($patch === []) continue;
+            if ($this->fsTxn->updateDemand((string) $did, $patch)) {
+                $out['updated']++;
+            }
+        }
+
+        if ($out['adjust'] > 0 || $out['obsolete'] > 0) {
+            log_message('error', 'ACC_RECALC_NEEDS_REVIEW school=[' . $this->fs->schoolId()
+                . '] student=[' . $studentId . '] adjust=' . $out['adjust']
+                . ' obsolete=' . $out['obsolete']
+                . ' — reported for review; neither is auto-applied.');
+        }
+
+        return $out;
+    }
+
     private function _recalculateStudentUnpaidDemands(string $studentId, array $feeChart, array $discountMap): array
     {
-        $this->_require_post();
-        $this->_require_role(self::MANAGE_ROLES, 'recalculate_demands', 'Fees', 'edit');
-
-        $studentId = trim($this->input->post('student_id') ?? '');
-        if ($studentId === '') {
-            return $this->json_error('Student ID is required.');
+        // ── P3D-F1 FIX (2026-08-17) — HONOUR THE PARAMETERS ─────────────────
+        //
+        // THE DEFECT. This private helper declared $studentId, $feeChart and
+        // $discountMap as parameters and then discarded ALL THREE, re-deriving
+        // them from the current HTTP request:
+        //
+        //     $studentId   = trim($this->input->post('student_id') ?? '');
+        //     if ($studentId === '') return $this->json_error(…);
+        //     $feeChart    = $this->_getClassFeeChart($class, $section);
+        //     $discountMap = $this->_getStudentDiscounts($studentId, …);
+        //
+        // WHY IT WAS FATAL. save_updated_fees() saves a CLASS fee chart and then
+        // loops the roster calling this per student. That request posts no
+        // `student_id` at all, so the helper read '', reached json_error(), and
+        // json_error() ends in `exit` (MY_Controller:1546). The class fee-chart
+        // save therefore DIED on the first student in the roster and every
+        // later student was silently never recalculated. The caller's try/catch
+        // could not help — `exit` is not an exception — which is why the
+        // fail-soft intent documented at the call site never actually held.
+        //
+        // recalculate_demands() appeared to work only because it happens to
+        // POST the same student it passes: correct by coincidence, not by
+        // contract.
+        //
+        // THE FIX. Use what the caller passed. A private helper invoked inside
+        // a per-student loop must not re-read the request (the POST cannot
+        // identify which iteration this is), must not emit a response, and must
+        // not terminate the process. Authorisation stays with the two public
+        // callers, which already gate on POST + role before the loop.
+        //
+        // EQUIVALENCE. recalculate_demands() resolves and passes exactly the
+        // three values this block used to recompute, so its behaviour is
+        // unchanged. save_updated_fees() now genuinely completes, using the
+        // FRESHLY SAVED chart it passes rather than the stored copy this block
+        // used to re-read.
+        //
+        // Fail-soft, matching save_updated_fees()'s documented intent: an
+        // unusable input yields the neutral result shape both callers already
+        // handle, instead of aborting the request.
+        if ($studentId === '' || $feeChart === []) {
+            return ['updated' => 0, 'preserved' => 0, 'attempted' => 0];
         }
-        $studentId = $this->safe_path_segment($studentId, 'student_id');
 
-        // Pure Firestore: read student from students collection.
         $this->load->library('Fee_firestore_txn', null, 'fsTxn');
         $this->fsTxn->init($this->firebase, $this->fs, $this->fs->schoolId(), $this->session_year);
-        $profile = $this->fsTxn->getStudent($studentId);
-        if (!is_array($profile)) {
-            return $this->json_error('Student not found.');
-        }
-
-        $class   = (string) ($profile['className'] ?? '');
-        $section = (string) ($profile['section']   ?? '');
-        if ($class === '' || $section === '') {
-            return $this->json_error("Cannot resolve class/section.");
-        }
-
-        $feeChart = $this->_getClassFeeChart($class, $section);
-        if (empty($feeChart)) {
-            return $this->json_error("No fee chart found for {$class} / {$section}. Please set up Fee Titles and Fee Chart first.");
-        }
-
-        $discountMap = $this->_getStudentDiscounts($studentId, $class, $section);
-        $existing    = $this->fsTxn->demandsForStudent($studentId);
+        $existing = $this->fsTxn->demandsForStudent($studentId);
 
         $updated     = 0;
         $preserved   = 0;
@@ -6914,6 +7663,14 @@ class Fees extends MY_Controller
 
             $netAmount = round($newAmount - $discountAmount, 2);
 
+            // Both key spellings are read: the late-fee engine writes
+            // `fine_amount`, other paths emit `fineAmount`. Absent/null → 0,
+            // and a negative is clamped, so no artificial fine is introduced.
+            $fineSoFar = (float) ($demand['fine_amount'] ?? $demand['fineAmount'] ?? 0);
+            if ($fineSoFar < 0) $fineSoFar = 0.0;
+            $paidSoFar = (float) ($demand['paid_amount'] ?? $demand['paidAmount'] ?? 0);
+            if ($paidSoFar < 0) $paidSoFar = 0.0;
+
             // Only update if something changed
             $oldNet = floatval($demand['net_amount'] ?? 0);
             if (abs($oldNet - $netAmount) < 0.01) continue;
@@ -6922,7 +7679,28 @@ class Fees extends MY_Controller
                 'original_amount' => round($newAmount, 2),
                 'discount_amount' => round($discountAmount, 2),
                 'net_amount'      => $netAmount,
-                'balance'         => $netAmount, // unpaid, so balance = net
+                // ── FINE-AWARE BALANCE (2026-08-17) ────────────────────────
+                //
+                // THE DEFECT THIS CLOSES: this re-derived `balance` from the
+                // net alone, SILENTLY DROPPING any late fee already posted to
+                // the demand. `fine_amount` survives on the document — the
+                // money simply stopped being owed. A demand reading
+                // `fine_amount: 200` would become payable at the net, so the
+                // fine was recorded but uncollectable.
+                //
+                // Same defect class as FEES-FROZEN-1 in Fee_lifecycle, which
+                // was fixed there and never propagated here.
+                //
+                // Uses the canonical formula four independent sites already
+                // agree on — Fee_late_fee_service::applyTo() (the fine writer
+                // itself), Fee_lifecycle, and FeeCollectionService:
+                //     balance = net + fine − paid
+                //
+                // `paid` is 0 for every demand reaching this line (the
+                // unpaid-only guard above), but the full form is written out
+                // so this site reads identically to the other four rather than
+                // relying on that invariant holding forever.
+                'balance'         => round($netAmount + $fineSoFar - $paidSoFar, 2),
                 'updated_at'      => date('c'),
                 'updated_by'      => $this->admin_id ?? 'system',
             ];
@@ -6979,13 +7757,35 @@ class Fees extends MY_Controller
             return $this->json_error("No fee chart found for {$class} / {$section}. Please set up Fee Titles and Fee Chart first.");
         }
 
-        $discountMap = $this->_getStudentDiscounts($studentId, $class, $section);
         $studentName = (string) ($profile['name'] ?? $profile['Name'] ?? $studentId);
 
-        // Single canonical rule — shared with the Save-Fee-Structure
-        // propagation path. Same preservation semantics (paid/partial/
-        // concession/archived untouched; unchanged amounts skipped).
-        $res       = $this->_recalculateStudentUnpaidDemands($studentId, $feeChart, $discountMap);
+        // ══ P5-H · CONVERGED ONTO THE CANONICAL RECALCULATION (2026-08-20) ══
+        //
+        // This used the legacy rule (`_recalculateStudentUnpaidDemands`), which
+        // prices from `_getStudentDiscounts()` and cannot see
+        // `studentEntitlements`. That rule is not DANGEROUS — it preserves any
+        // demand carrying `concessionApplied`, so an existing concession was
+        // never voided here — but it is INCOMPLETE: an entitlement granted after
+        // generation could never reach the money, because the demand it needed
+        // to correct carries `concessionApplied = 0` and was rebuilt at gross.
+        //
+        // That is the STU0184 shape observed live: ₹11,200 billed while holding
+        // an active 10% grant worth ₹720, and no amount of recalculating could
+        // fix it.
+        //
+        // Now shares ONE recalculation authority with `recalc_unpaid_discounts`:
+        // canonical pricing, RC-1 planning, in-place patches, settled money
+        // escalated rather than rewritten.
+        $res       = $this->_recalculateStudentCanonical($studentId, $class, $section);
+        if (isset($res['refused'])) {
+            return $this->json_error(
+                $res['refused'] === 'no_chart'
+                    ? "No fee chart found for {$class} / {$section}."
+                    : 'This student\'s current demands could not be read, so the recalculation '
+                      . 'was refused rather than risk rebuilding them incorrectly. Nothing was '
+                      . 'changed. Please retry.'
+            );
+        }
         $updated   = $res['updated'];
         $preserved = $res['preserved'];
 
@@ -7426,7 +8226,7 @@ class Fees extends MY_Controller
                     ];
                 }
             } catch (\Throwable $e) {
-                log_message('warning', "year_rollover_prepare: open-orders read failed (non-fatal): " . $e->getMessage());
+                log_message('error', "year_rollover_prepare: open-orders read failed (non-fatal): " . $e->getMessage());
             }
 
             // ── Blocker 3: source session already frozen ───────────────
@@ -7635,7 +8435,7 @@ class Fees extends MY_Controller
                 'startedBy'   => $this->admin_id ?? 'system',
             ]);
         } catch (\Throwable $e) {
-            log_message('warning', "year_rollover_execute: idempotency write failed (continuing): " . $e->getMessage());
+            log_message('error', "year_rollover_execute: idempotency write failed (continuing): " . $e->getMessage());
         }
 
         try {
@@ -7671,10 +8471,34 @@ class Fees extends MY_Controller
                 if ($sid === '' || $bal <= 0) continue;
                 if (!isset($byStudent[$sid])) $byStudent[$sid] = ['dues' => 0, 'details' => []];
                 $byStudent[$sid]['dues'] += $bal;
-                $pk = $d['period_key'] ?? '';
+                // ── CF-1 · THE BREAKDOWN WAS ALWAYS EMPTY ───────────────────
+                //
+                // These read snake_case off a demand document, and NO writer
+                // emits snake_case: both `_buildDemandDoc()` and
+                // `updateDemand()` ACCEPT either shape from a caller and emit
+                // camelCase only. So `$pk` was always '', the `if` never fired,
+                // and every feeCarryForward record in the estate carries
+                // `unpaidDetails: {}`.
+                //
+                // `totalDues` is unaffected — it sums `balance`, which is
+                // camelCase and read correctly — so the MONEY was always right
+                // and only the itemisation that explains it was lost. That is
+                // why nothing surfaced it: the figure a school checks agreed,
+                // and the breakdown behind it was simply absent.
+                //
+                // It is consumed on all three surfaces: `Fee_firestore_sync`
+                // forwards it, and both the Parent and Teacher apps declare it
+                // on `FeeCarryForwardDoc`.
+                //
+                // Reading BOTH shapes rather than switching to camelCase: a
+                // pre-camel document could still exist, and the dual read costs
+                // nothing. It is the same `?? ` convention the `studentId` line
+                // four lines above already uses — this block was simply
+                // inconsistent with itself.
+                $pk = (string) ($d['periodKey'] ?? $d['period_key'] ?? '');
                 if ($pk !== '') $byStudent[$sid]['details'][$pk] = [
                     'amount'   => $bal,
-                    'fee_head' => $d['fee_head'] ?? '',
+                    'fee_head' => (string) ($d['feeHead'] ?? $d['fee_head'] ?? ''),
                 ];
             }
 

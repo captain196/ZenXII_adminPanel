@@ -2732,35 +2732,30 @@ class Transport_service
                 $this->fs->setEntity(self::COL_STUDENT_ROUTES_LEGACY, $studentId, ['fee_demand_ref' => 'suspended'], /* merge */ true);
                 $feeStatus = 'suspended';
             } else {
-                $demandRef = $this->ci->feeLifecycle->createModuleFee($studentId, 'Transport', [
+                // Service starts on the date the operator chose, not on the day
+                // the row happens to be written — a back-dated assignment must
+                // bill the months it actually covers.
+                $periods = $this->_syncServicePeriods(
+                    $studentId, 'start',
+                    (string) ($data['effective_from'] ?? date('Y-m-d')),
+                    $monthlyFee, $data
+                );
+                $ref = $this->_writeTransportDemand($studentId, $periods, [
                     'route_id'   => $routeId,
                     'route_name' => (string) ($route['name'] ?? ''),
-                    'amount'     => $monthlyFee,
-                    // G2 fix (2026-08-07): this is the single per-session demand
-                    // (one doc per student per session — see periodKey in
-                    // createModuleFee), so it must be tagged 'Annual' for
-                    // proRateFees() to act on it. Left at the implicit default
-                    // ('Monthly'), proRateFees's own guard treats it as
-                    // "already per-period, nothing to scale" and silently
-                    // no-ops — the root cause of G1/G2.
-                    'frequency'  => 'Annual',
-                    'period'     => 'Monthly',
-                    'start_date' => date('Y-m-d'),
                     'end_date'   => (string) ($data['effective_to'] ?? ''),
                     'context'    => ['subscription_type' => $subscription, 'fee_category' => $feeCategory],
                 ]);
-                $ref = is_string($demandRef) && $demandRef !== '' ? $demandRef : 'ok';
                 $this->fs->setEntity(self::COL_STUDENT_ROUTES_LEGACY, $studentId, ['fee_demand_ref' => $ref], /* merge */ true);
-                // G2 completeness fix (2026-08-08): createModuleFee always
-                // (re)writes grossAmount/netAmount to the FULL amount, so a
-                // proRateFees() call made BEFORE it (the original ordering
-                // here) was clobbered on every single invocation — dead code,
-                // removed above. Prorating a mid-session join/edit to the
-                // remaining academic months only actually sticks when it runs
-                // AFTER the demand write, same as every other call site in
-                // this file (suspend/unassign/route-change all prorate as
-                // their LAST fee-affecting step).
-                $this->ci->feeLifecycle->proRateFees($studentId, date('Y-m-d'), 'Transport');
+                // NO proRateFees() here any more. The amount is already the
+                // sum of the months actually served (see _syncServicePeriods),
+                // so a proration pass would re-derive it from a join date and
+                // reintroduce TRN-PRORATE-INVERT-1. The G2 note this replaces
+                // was about the ORDERING of that call; the call itself is what
+                // turned out to be wrong for anything but a first assignment.
+                // TRN-DOUBLE-BILL-1 — after the module charge exists, so the
+                // comparison is against the state the family will actually see.
+                $this->_warnIfChartAlsoBillsTransport($studentId);
                 $feeStatus = 'ok';
             }
         } catch (\Throwable $e) {
@@ -2789,12 +2784,21 @@ class Transport_service
 
         $routeId = (string) ($existing['route_id'] ?? '');
 
-        // Fee_lifecycle: pro-rate to today (best-effort; failure logged)
+        // Removal CLOSES the service record and rebills the months served.
+        //
+        // Was: proRateFees($studentId, date('Y-m-d')) — today's date fed into a
+        // JOIN-date parameter, so a student removed in February was billed
+        // February to March, the months they would NOT be travelling, and not
+        // the months they had. Best-effort, as before: a billing failure must
+        // not roll back the removal.
         try {
-            $this->ci->load->library('Fee_lifecycle', null, 'feeLifecycle');
-            $this->ci->feeLifecycle->proRateFees($studentId, date('Y-m-d'), 'Transport');
+            $periods = $this->_syncServicePeriods($studentId, 'stop', date('Y-m-d'), 0.0, $existing);
+            $this->_writeTransportDemand($studentId, $periods, [
+                'route_id'   => (string) ($existing['route_id'] ?? ''),
+                'route_name' => (string) ($existing['route_name'] ?? ''),
+            ]);
         } catch (\Throwable $e) {
-            log_message('error', 'F3 unassignStudent proRateFees failed for ' . $studentId . ': ' . $e->getMessage());
+            log_message('error', 'F3 unassignStudent rebill failed for ' . $studentId . ': ' . $e->getMessage());
         }
 
         $this->fs->remove(self::COL_STUDENT_ROUTES_LEGACY, $this->fs->docId($studentId));
@@ -2872,10 +2876,21 @@ class Transport_service
         // pending-then-retry pattern matching every other Fee_lifecycle call in
         // this file — a failure here must not roll back the suspension itself.
         try {
-            $this->ci->load->library('Fee_lifecycle', null, 'feeLifecycle');
-            $this->ci->feeLifecycle->proRateFees($studentId, $from, 'Transport');
+            // Suspension CLOSES the service record at $from (exclusive) and
+            // rebills the months actually served up to it.
+            //
+            // Was: proRateFees($studentId, $from) — the suspension date handed
+            // to a JOIN-date parameter. Suspending on 1 February billed
+            // February and March, the months the bus would NOT be running,
+            // while August to January went unbilled. Proven: 8,000 -> 2,000
+            // where 6,000 was owed.
+            $periods = $this->_syncServicePeriods($studentId, 'stop', $from, 0.0, $existing);
+            $this->_writeTransportDemand($studentId, $periods, [
+                'route_id'   => (string) ($existing['route_id'] ?? ''),
+                'route_name' => (string) ($existing['route_name'] ?? ''),
+            ]);
         } catch (\Throwable $e) {
-            log_message('error', 'F3 suspendAssignment proRateFees failed for ' . $studentId . ': ' . $e->getMessage());
+            log_message('error', 'F3 suspendAssignment rebill failed for ' . $studentId . ': ' . $e->getMessage());
         }
     }
 
@@ -2916,14 +2931,17 @@ class Transport_service
         // flags left by the suspend-time proRateFees call. Best-effort, matching
         // every other Fee_lifecycle call in this file.
         try {
-            $this->ci->load->library('Fee_lifecycle', null, 'feeLifecycle');
-            $demandRef = $this->ci->feeLifecycle->createModuleFee($studentId, 'Transport', [
+            // Resume OPENS a new service segment from today. The months served
+            // BEFORE the suspension stay on the record and stay billed, which
+            // is what the old code could not express: it rewrote the single
+            // demand with one "full amount" and the earlier period vanished.
+            $periods   = $this->_syncServicePeriods(
+                $studentId, 'start', date('Y-m-d'),
+                (float) ($existing['monthly_fee'] ?? 0), $existing
+            );
+            $demandRef = $this->_writeTransportDemand($studentId, $periods, [
                 'route_id'   => (string) ($existing['route_id'] ?? ''),
                 'route_name' => (string) ($existing['route_name'] ?? ''),
-                'amount'     => (float) ($existing['monthly_fee'] ?? 0),
-                'frequency'  => 'Annual',
-                'period'     => 'Monthly',
-                'start_date' => date('Y-m-d'),
             ]);
             // G1 follow-up fix (2026-08-08): an edit/route-change/rollover that
             // happened WHILE suspended now stamps fee_demand_ref='suspended'
@@ -2933,8 +2951,34 @@ class Transport_service
             // again. The demandId itself is deterministic per student+module
             // (route-independent), so this is always the same doc already
             // referenced by any earlier successful create.
-            $ref = is_string($demandRef) && $demandRef !== '' ? $demandRef : 'ok';
-            $this->fs->setEntity(self::COL_STUDENT_ROUTES_LEGACY, $studentId, ['fee_demand_ref' => $ref], /* merge */ true);
+            $this->fs->setEntity(self::COL_STUDENT_ROUTES_LEGACY, $studentId, ['fee_demand_ref' => $demandRef], /* merge */ true);
+
+            // ── SUPERSEDED · TRN-RESUME-PRORATE-1 ─────────────────────────
+            //
+            // Resume was the only fee-affecting transport path that wrote a
+            // demand and never prorated it. createModuleFee always writes the
+            // FULL amount, so a resumed student was billed the whole session
+            // regardless of when they resumed.
+            //
+            // MEASURED BEFORE THE FIX, on a Rs 1,000/month route joined in
+            // August (fare basis unchanged, so this was purely the missing
+            // proration):
+            //     joined August   gross 666.67   (8/12)
+            //     suspended Sept  gross 583.33   (7/12)
+            //     resumed         gross 1000.00  <- full year, unprorated
+            // Suspending and resuming RAISED the bill above what the student
+            // was charged before they ever suspended, and left the demand
+            // stamped prorated=true factor=0.583 while carrying the full
+            // amount — flags that disagreed with the money.
+            //
+            // That over-charge lands on a parent, so it outranks the
+            // under-charge TRN-FARE-BASIS-1 fixes in kind. With the fare basis
+            // now twelve times larger, leaving this out would have turned a
+            // 1.5x over-charge into an 18x one.
+            //
+            // SUPERSEDED by the service-period model: the amount is now the
+            // sum of the months actually served, so there is nothing to prorate
+            // and a proration pass would re-derive it from a join date.
         } catch (\Throwable $e) {
             log_message('error', 'F3 resumeAssignment createModuleFee failed for ' . $studentId . ': ' . $e->getMessage());
         }
@@ -3063,26 +3107,19 @@ class Transport_service
             if ($suspended) {
                 return;
             }
-            $this->ci->load->library('Fee_lifecycle', null, 'feeLifecycle');
-            $demandRef = $this->ci->feeLifecycle->createModuleFee($studentId, 'Transport', [
+            // A route change is a FARE change, not a restart: months already
+            // served keep the fare they were served at, and the new fare
+            // applies from today forward. The old code rewrote the whole
+            // session at the new fare, retro-repricing months the family had
+            // already consumed on the previous route.
+            $periods = $this->_syncServicePeriods($studentId, 'refare', date('Y-m-d'), $newFee, $existing);
+            $ref = $this->_writeTransportDemand($studentId, $periods, [
                 'route_id'   => $newRouteId,
                 'route_name' => (string) ($newRoute['name'] ?? ''),
-                'amount'     => $newFee,
-                'frequency'  => 'Annual',   // G2 fix (2026-08-07) — see assignStudent for rationale
-                'period'     => 'Monthly',
-                'start_date' => date('Y-m-d'),
             ]);
-            $ref = is_string($demandRef) && $demandRef !== '' ? $demandRef : 'ok';
             $this->fs->setEntity(self::COL_STUDENT_ROUTES_LEGACY, $studentId, ['fee_demand_ref' => $ref], /* merge */ true);
-            // G2 completeness fix (2026-08-08): proRateFees used to run BEFORE
-            // this createModuleFee call, targeting the very same demand doc
-            // (the Transport demandId is route-independent — see createModuleFee
-            // in Fee_lifecycle.php) — so its shrink was unconditionally
-            // clobbered by this call's full-amount rewrite, every time. Moved
-            // to run after, so a mid-session route change actually prorates
-            // the new route's fee to the remaining academic months, same as
-            // suspend/unassign already do.
-            $this->ci->feeLifecycle->proRateFees($studentId, date('Y-m-d'), 'Transport');
+            // SUPERSEDED: the amount is now per-month from the service
+            // record, so there is nothing left to prorate.
         } catch (\Throwable $e) {
             log_message('error', 'F3 changeRoute createModuleFee failed: ' . $e->getMessage());
         }
@@ -3150,21 +3187,14 @@ class Transport_service
             return;
         }
         try {
-            $this->ci->load->library('Fee_lifecycle', null, 'feeLifecycle');
-            $demandRef = $this->ci->feeLifecycle->createModuleFee($studentId, 'Transport', [
+            // Changing the subscription changes the FARE from today. Months
+            // already served keep the fare they were served at.
+            $periods = $this->_syncServicePeriods($studentId, 'refare', date('Y-m-d'), $newFee, $existing);
+            $ref = $this->_writeTransportDemand($studentId, $periods, [
                 'route_id'   => (string) ($existing['route_id'] ?? ''),
                 'route_name' => (string) ($existing['route_name'] ?? ''),
-                'amount'     => $newFee,
-                'frequency'  => 'Annual',   // G2 fix (2026-08-07) — see assignStudent for rationale
-                'period'     => 'Monthly',
-                'start_date' => date('Y-m-d'),
             ]);
-            $ref = is_string($demandRef) && $demandRef !== '' ? $demandRef : 'ok';
             $this->fs->setEntity(self::COL_STUDENT_ROUTES_LEGACY, $studentId, ['fee_demand_ref' => $ref], /* merge */ true);
-            // G2 completeness fix (2026-08-08) — prorate the new rate to the
-            // remaining academic months, same reasoning as assignStudent/
-            // changeRoute (must run AFTER createModuleFee, not before).
-            $this->ci->feeLifecycle->proRateFees($studentId, date('Y-m-d'), 'Transport');
         } catch (\Throwable $e) {
             log_message('error', 'F3 changeSubscription createModuleFee failed for ' . $studentId . ': ' . $e->getMessage());
         }
@@ -3398,13 +3428,35 @@ class Transport_service
                                 'session'        => $toSession,
                             ], /* merge */ true);
                         } else {
-                            $rolloverRef = $this->ci->feeLifecycle->createModuleFee($sid, 'Transport', [
+                            // The new session starts a fresh service record: one
+                            // segment covering the whole year at the carried fare.
+                            // Without this reset the OLD session's segments would
+                            // decide the new year's bill.
+                            $this->ci->load->library('Transport_billing_period', null, 'trnPeriod');
+                            $rollFare = (float) ($row['monthly_fee'] ?? 0);
+                            $rollMonths = \Transport_billing_period::sessionMonths($toSession);
+                            $rolloverPeriods = [];
+                            foreach ($rollMonths as $pk) { $rolloverPeriods[$pk] = round($rollFare, 2); }
+                            if ($rollMonths !== []) {
+                                $this->fs->setEntity(self::COL_STUDENT_ROUTES_LEGACY, $sid, ['service_periods' => [[
+                                    'from' => $rollMonths[0] . '-01', 'to' => '', 'monthly_fee' => round($rollFare, 2),
+                                ]]], /* merge */ true);
+                            }
+                            // ROLL-2 — the demand belongs to the session being rolled
+                            // INTO. Without this the period, the demand id and the stored
+                            // session all came from whichever session Fee_lifecycle was
+                            // inited with — normally the one being rolled OUT of — so the
+                            // new demand landed on the id cancelSessionDemands had just
+                            // archived, resurrecting it while the new session got nothing.
+                            //
+                            // A continuing student rides the WHOLE new session, so every
+                            // month of $toSession is billable. Passed as periods so a
+                            // concession effective part-way through the new year discounts
+                            // only the months it covers.
+                            $rolloverRef = $this->_writeTransportDemand($sid, $rolloverPeriods, [
+                                'session'    => $toSession,
                                 'route_id'   => (string) ($row['route_id'] ?? ''),
                                 'route_name' => (string) ($row['route_name'] ?? ''),
-                                'amount'     => (float) ($row['monthly_fee'] ?? 0),
-                                'frequency'  => 'Annual',   // G2 fix (2026-08-07) — see assignStudent for rationale
-                                'period'     => 'Monthly',
-                                'start_date' => date('Y-m-d'),
                             ]);
                             // CON-4: only on a confirmed create do we point
                             // fee_demand_ref at the real demand (so the reconciler
@@ -3531,17 +3583,18 @@ class Transport_service
             }
             try {
                 $this->ci->load->library('Fee_lifecycle', null, 'feeLifecycle');
-                $demandRef = $this->ci->feeLifecycle->createModuleFee($sid, 'Transport', [
+                // Recomputed from the service RECORD, not from a join date.
+                $periods = $this->_syncServicePeriods($sid, 'recompute', date('Y-m-d'), 0.0, $d);
+                $ref = $this->_writeTransportDemand($sid, $periods, [
                     'route_id'   => (string) ($d['route_id'] ?? ''),
                     'route_name' => (string) ($d['route_name'] ?? ''),
-                    'amount'     => (float) ($d['monthly_fee'] ?? 0),
-                    'frequency'  => 'Annual',   // G2 fix (2026-08-07) — see assignStudent for rationale
-                    'period'     => 'Monthly',
-                    'start_date' => date('Y-m-d'),
                 ]);
-                $ref = is_string($demandRef) && $demandRef !== '' ? $demandRef : 'ok';
                 $this->fs->setEntity(self::COL_STUDENT_ROUTES_LEGACY, $sid,
                     ['fee_demand_ref' => $ref], /* merge */ true);
+
+                // SUPERSEDED: the retry now recomputes the same period-based
+                // amount assignStudent would have written, so there is no
+                // half-step left to reproduce.
                 $retried++;
             } catch (\Throwable $e) {
                 $stillPending++;
@@ -5844,6 +5897,338 @@ class Transport_service
      * Compute the monthly fee for an assignment given the route + subscription
      * semantics. Applies OneWay + Hostel + fee_category adjustments.
      */
+    /**
+     * ══ TRN-FARE-BASIS-1 · MONTHLY FARE → ACADEMIC-SESSION DEMAND AMOUNT ══
+     *
+     * THE DEFECT THIS CLOSES. A route's fare is entered, stored, listed and
+     * displayed as a MONTHLY figure — "Monthly Fee (Rs)" on the route form,
+     * "Monthly Fee" in the route and assignment tables, `Transport 200/mo` in
+     * the project's own design notes, and `Monthly` in the fee-head registry.
+     * That monthly figure was handed to createModuleFee() unchanged, and
+     * createModuleFee writes ONE demand per academic session. A route at
+     * Rs 1,000/month therefore billed Rs 1,000 for the whole year.
+     *
+     * Proven side by side in one fresh tenant, one student:
+     *     Tuition   (class chart, frequency=monthly, 500) -> 12 x 500 = 6,000
+     *     Transport (this module, "Monthly Fee"  , 1000) ->  1 x  667 =   667
+     * The chart is the product's own statement of what "monthly" means: it
+     * bills a monthly head twelve times. Transport billed its monthly fare
+     * once, then prorated it DOWN. Roughly a 12x under-charge to the school.
+     *
+     * ROOT CAUSE, for the record: the G2 fix of 2026-08-07 tagged the demand
+     * 'Annual' so that proRateFees() would act on it at all. That tag was
+     * chosen to unlock a PRORATION MECHANISM and silently redefined the
+     * amount's MEANING from per-month to per-session. Nothing in the UI, the
+     * registry or the docs ever agreed with the annual reading.
+     *
+     * WHY THE CONVERSION LIVES HERE AND NOT IN _computeAssignmentFee(). That
+     * function's return is also written to the assignment document as
+     * `monthly_fee` (see assignStudent) and rendered to staff as "Rs {fee}"
+     * per month. Multiplying inside it would make the UI claim a Rs 12,000
+     * monthly fare. The monthly figure stays monthly everywhere a human reads
+     * it; it becomes a session amount at exactly one boundary — the demand.
+     *
+     * PRORATION IS STILL THE MECHANISM, NOT A REPLACEMENT FOR IT. The demand
+     * carries the full twelve-month list value and proRateFees() scales it by
+     * remainingMonths/12 from `listGrossAmount`, so a mid-session joiner pays
+     * monthlyFare x remainingMonths and an April joiner pays the full year.
+     * Because proration always recomputes from the list anchor it is
+     * idempotent — running it again never compounds.
+     *
+     * EVERY caller must prorate after using this. Two did not (resumeAssignment
+     * and the pending-fee reconciler); without proration this conversion would
+     * turn their existing over-charge into a twelve-fold one. Both now prorate.
+     */
+    private const SESSION_MONTHS = 12;
+
+    private function _sessionFareFromMonthly(float $monthlyFare): float
+    {
+        return round($monthlyFare * self::SESSION_MONTHS, 2);
+    }
+
+    /**
+     * ══ THE AUTHORITATIVE SERVICE RECORD · TRN-PRORATE-INVERT-1 ════════════
+     *
+     * Records what happened to this student's transport, then derives the bill
+     * from that record rather than transforming whatever the demand happened to
+     * say. Every fee-affecting event funnels through here, so suspend → resume
+     * → route change → removal CONVERGE on one answer instead of each
+     * overwriting the last.
+     *
+     * $event:
+     *   'start'    service begins (or resumes) on $date at $fare
+     *   'stop'     service ends on $date — EXCLUSIVE, so stopping on the 1st
+     *              does not bill that month
+     *   'refare'   service continues but the fare changes from $date (route
+     *              change): the running segment is closed and a new one opened,
+     *              so months already served keep the fare they were served at
+     *   'recompute' no state change — re-derive the bill from what is recorded
+     *
+     * @return array<string, float> periodKey => fare, the months to bill
+     */
+    private function _syncServicePeriods(
+        string $studentId,
+        string $event,
+        string $date,
+        float  $fare = 0.0,
+        ?array $assignment = null,
+        string $session = ''
+    ): array {
+        $this->ci->load->library('Transport_billing_period', null, 'trnPeriod');
+
+        $session = $session !== '' ? $session : $this->sessionYear;
+        $date    = trim($date) !== '' ? trim($date) : date('Y-m-d');
+
+        if (!is_array($assignment)) {
+            $assignment = $this->fs->getEntity(self::COL_STUDENT_ROUTES_LEGACY, $studentId);
+        }
+        $segments = [];
+        if (is_array($assignment) && isset($assignment['service_periods']) && is_array($assignment['service_periods'])) {
+            $segments = $assignment['service_periods'];
+        }
+
+        // A record that predates this model: seed one segment so an existing
+        // assignment is not treated as never having had service. Its start is
+        // the effective_from the operator actually chose, falling back to the
+        // creation date — never to today, which would erase months served.
+        if ($segments === [] && $event !== 'start' && is_array($assignment)) {
+            $seed = trim((string) ($assignment['effective_from'] ?? ''));
+            if ($seed === '') $seed = substr((string) ($assignment['created_at'] ?? ''), 0, 10);
+            if ($seed !== '') {
+                $segments = [[
+                    'from'        => $seed,
+                    'to'          => '',
+                    'monthly_fee' => round((float) ($assignment['monthly_fee'] ?? 0), 2),
+                ]];
+            }
+        }
+
+        switch ($event) {
+            case 'start':
+                $segments = \Transport_billing_period::open($segments, $date, $fare);
+                break;
+            case 'stop':
+                $segments = \Transport_billing_period::close($segments, $date);
+                break;
+            case 'refare':
+                $segments = \Transport_billing_period::close($segments, $date);
+                $segments = \Transport_billing_period::open($segments, $date, $fare);
+                break;
+            case 'recompute':
+            default:
+                break;
+        }
+
+        if ($event !== 'recompute') {
+            $this->fs->setEntity(self::COL_STUDENT_ROUTES_LEGACY, $studentId,
+                ['service_periods' => array_values($segments)], /* merge */ true);
+        }
+
+        return \Transport_billing_period::billableMonths($session, $segments);
+    }
+
+    /**
+     * Write the transport demand from the service record.
+     *
+     * Deliberately does NOT call proRateFees(). Proration answers "you JOINED
+     * in month X, pay the rest of the year" — right for a joiner, and the exact
+     * mechanism that produced TRN-PRORATE-INVERT-1 when a STOP date was fed
+     * into the same parameter. The months are now computed directly, so there
+     * is nothing left to prorate and a second pass would only re-break it.
+     *
+     * Nothing else in the codebase prorates a Transport demand — verified —
+     * so removing these calls leaves no other writer to clobber the result.
+     */
+    private function _writeTransportDemand(string $studentId, array $periods, array $ctx): string
+    {
+        $this->ci->load->library('Fee_lifecycle', null, 'feeLifecycle');
+
+        $demandRef = $this->ci->feeLifecycle->createModuleFee($studentId, 'Transport', array_merge([
+            'amount'          => round(array_sum($periods), 2),
+            'billablePeriods' => $periods,
+            'frequency'       => 'Annual',
+            'period'          => 'Monthly',
+            'start_date'      => date('Y-m-d'),
+            'dueDate'         => $this->_moduleFeeDueDate(),
+        ], $ctx));
+
+        // ── EXCESS MONEY MUST NEVER SILENTLY DISAPPEAR ─────────────────────
+        //
+        // Every transport liability change lands here, which makes this the
+        // one place that can see "the charge just fell below what the family
+        // already paid". Fee_lifecycle floors the balance at zero — correct,
+        // a balance must never go negative — but that alone left the
+        // difference visible nowhere.
+        //
+        // This only DETECTS and raises a pending obligation in the existing
+        // feeRefunds queue. It approves nothing and moves no money: refunds
+        // still leave through the established maker-checker route.
+        $this->_reconcileOverpayment($studentId, $demandRef);
+
+        return is_string($demandRef) && $demandRef !== '' ? $demandRef : 'ok';
+    }
+
+    /**
+     * Re-read the demand this write produced and reconcile any excess against
+     * the canonical refund queue.
+     *
+     * Reads the demand back rather than trusting the amounts just computed:
+     * `paidAmount` and any fine live on the stored document, and the whole
+     * question is what the family has ALREADY paid against it.
+     */
+    private function _reconcileOverpayment(string $studentId, $demandRef): void
+    {
+        try {
+            if (!is_string($demandRef) || $demandRef === '' || $demandRef === 'ok') return;
+
+            $demand = $this->fs->get('feeDemands', $demandRef);
+            if (!is_array($demand) || $demand === []) return;
+
+            // Belt and braces: a demand from another tenant must never drive a
+            // refund obligation in this one.
+            if ((string) ($demand['schoolId'] ?? $this->schoolId) !== $this->schoolId) {
+                log_message('error', "ACC_OVERPAYMENT_CROSS_TENANT demand=[{$demandRef}] school=[{$this->schoolId}]");
+                return;
+            }
+
+            // The raw client comes from the CI instance — the established way a
+            // library reaches it here (Lock_cache, Staff_attendance_finaliser).
+            // Transport_service holds Firestore_service, not the client itself.
+            $firebase = isset($this->ci->firebase) ? $this->ci->firebase : null;
+            if ($firebase === null) {
+                log_message('error', 'ACC_OVERPAYMENT_NO_CLIENT — firebase unavailable; '
+                    . "excess for [{$studentId}] NOT reconciled. The liability change stands.");
+                return;
+            }
+
+            $this->ci->load->library('Fee_firestore_txn', null, 'feeTxn');
+            $this->ci->load->library('Overpayment_service', null, 'overpay');
+
+            // Fee_firestore_txn must be init'd before writeRefund() will do
+            // anything — it fails closed on !$this->ready and would otherwise
+            // return false silently, losing the obligation.
+            $this->ci->feeTxn->init($firebase, $this->fs, $this->schoolId, $this->sessionYear);
+
+            $this->ci->overpay
+                ->init($this->ci->feeTxn, $firebase,
+                       $this->schoolId, $this->sessionYear, $this->adminId)
+                ->reconcile($studentId, 'Transport', $demand);
+        } catch (\Throwable $e) {
+            // Never allowed to fail the service change that revealed it — the
+            // reduction is correct on its own, and a missed obligation is
+            // logged loudly and recoverable.
+            log_message('error', "ACC_OVERPAYMENT_HOOK_FAILED [{$studentId}]: " . $e->getMessage());
+        }
+    }
+
+    /**
+     * ══ TRN-DUE-1 · A TRANSPORT DEMAND CARRIED NO DUE DATE ══════════════════
+     *
+     * DUE-2 fixed the plumbing — createModuleFee() now writes whatever
+     * `dueDate` a caller passes — but Transport passed none, so every transport
+     * demand was still stored with `dueDate: ''`. Confirmed on a live demand:
+     * every field a fee reader filters on matched the tuition rows exactly,
+     * except this one.
+     *
+     * Three consumers break on an empty due date, and DUE-2 recorded all three
+     * PROVEN ON A REAL DEVICE for the sibling Student Charge case:
+     *   • The Parent app falls back to inferring a due date from the demand's
+     *     month label — and createModuleFee files every module charge under the
+     *     SESSION START (April). A transport fee raised in August therefore
+     *     displays to the parent as months overdue on the day it is created.
+     *   • The late-fee engine cannot fine it: fineFor() returns null on an
+     *     empty dueDate.
+     *   • The reminder service cannot chase it.
+     * So the charge sits unpaid and unchased while telling the family they are
+     * already late.
+     *
+     * THIRTY DAYS FROM THE CHARGE, matching Student_charge_service's
+     * DEFAULT_DUE_DAYS — the same convention already used for the other
+     * per-student one-off this system raises. Deliberately NOT the session
+     * start: the demand is created when transport is approved, which is when
+     * the obligation begins, and a date in the past is exactly the bug above.
+     */
+    private function _moduleFeeDueDate(): string
+    {
+        return date('Y-m-d', strtotime('+30 days'));
+    }
+
+    /**
+     * ══ TRN-DOUBLE-BILL-1 · THE SAME FAMILY CHARGED TWICE FOR ONE BUS ══════
+     *
+     * A school can put a "Transport Fee" head in the CLASS FEE CHART and also
+     * run the Transport module. Nothing stops it. The two produce different
+     * demand ids, so they never collide — they simply both stand:
+     *
+     *   chart   frequency 'monthly'  ->  TWELVE demands, billed to EVERY student
+     *                                    in the class whether or not they ride
+     *   module  one per session      ->  ONE demand, only for enrolled students
+     *
+     * Reproduced: a fixture tenant carried 12 chart transport demands of 300
+     * AND the module demand, for the same child. Both are valid rows; the
+     * family is simply billed twice, and the chart also bills children who
+     * never asked for a bus.
+     *
+     * WHY THIS ONLY WARNS. The correct prevention is at CONFIGURATION time —
+     * refusing to place a service-category head in a class chart at all, using
+     * Fee_head_resolver::isServiceCategory(), the authority that already exists.
+     * That code lives in Fee_management.php, which is at a parked commit
+     * boundary this workstream must not disturb, so it is reported rather than
+     * written here.
+     *
+     * What this DOES do is refuse to be silent at the moment the second charge
+     * appears. It deletes nothing and changes no amount — rewriting a family's
+     * existing demands from inside a route assignment would be far worse than
+     * the duplicate — but the operator, and the log, now learn about it at the
+     * exact point it happens instead of when a parent complains.
+     */
+    private function _warnIfChartAlsoBillsTransport(string $studentId): void
+    {
+        try {
+            // schoolWhere(), not querySchool(): $this->fs here is
+            // Firestore_service, which has no querySchool — the first version
+            // of this check called it, threw, and was swallowed by the catch
+            // below, so the warning silently never fired. Caught only because
+            // the catch logs; a bare `return` would have hidden it completely.
+            $rows = (array) $this->fs->schoolWhere('feeDemands', [['studentId', '=', $studentId]]);
+
+            $chartRows = 0;
+            $chartTotal = 0.0;
+            foreach ($rows as $r) {
+                $d = $r['data'] ?? $r;
+                if (!is_array($d)) continue;
+                // A transport-looking head that this module did NOT raise. The
+                // module stamps moduleType; the chart generator does not.
+                if ((string) ($d['moduleType'] ?? '') === 'Transport') continue;
+                if (!preg_match('/transport/i', (string) ($d['feeHead'] ?? ''))) continue;
+                if (in_array((string) ($d['status'] ?? ''), ['archived', 'cancelled'], true)) continue;
+                $chartRows++;
+                $chartTotal += (float) ($d['netAmount'] ?? 0);
+            }
+
+            if ($chartRows === 0) return;
+
+            log_message('error',
+                'ACC_TRANSPORT_DOUBLE_BILL school=[' . $this->schoolId . '] student=[' . $studentId
+                . '] chart_transport_demands=[' . $chartRows . '] chart_total=[' . round($chartTotal, 2)
+                . '] — this student is ALSO billed for transport by the class fee chart, on top of '
+                . 'the module charge just raised. Transport is a per-student service and should be '
+                . 'owned by the Transport module alone: remove the transport head from the class '
+                . 'fee structure, or stop assigning routes. No demand has been altered.');
+
+            // Surfaced on the assignment so an operator looking at the student
+            // sees it, not only whoever reads the log.
+            $this->fs->setEntity(self::COL_STUDENT_ROUTES_LEGACY, $studentId, [
+                'chart_transport_conflict'       => true,
+                'chart_transport_demand_count'   => $chartRows,
+                'chart_transport_amount'         => round($chartTotal, 2),
+            ], /* merge */ true);
+        } catch (\Throwable $e) {
+            // Diagnostic only — it must never be able to fail an assignment.
+            log_message('error', 'TRN double-bill check failed for ' . $studentId . ': ' . $e->getMessage());
+        }
+    }
+
     private function _computeAssignmentFee(
         array $route,
         string $subscription,

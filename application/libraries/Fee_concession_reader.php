@@ -62,7 +62,21 @@ class Fee_concession_reader
      *  2. Effective-window overlap: effectiveFrom <= last-of-period-month,
      *     AND (effectiveTo is null OR effectiveTo >= first-of-period-month).
      */
-    public function appliesTo(array $concession, string $periodKey, string $feeHeadId, string $feeHead, string $category = ''): bool
+    /**
+     * @param string $feeHeadRef DEC-009 (2026-08-18) — ACCEPTED AND DELIBERATELY
+     *   IGNORED. Legacy `studentConcessions` records carry the head target in
+     *   `targetFeeHeadId`, never as a `head:<feeHeadRef>` scope string, so this
+     *   reader has nothing to resolve it against and its behaviour is unchanged.
+     *
+     *   It exists so both readers expose ONE call contract. The caller in
+     *   Fee_generation_service is handed whichever reader the rollout flag
+     *   selected and cannot know which it holds; when the signatures diverged,
+     *   that caller silently dropped the argument and made
+     *   Fee_entitlement_reader's first match tier unreachable in production —
+     *   billing head-scoped entitlements at gross with no error. A shared
+     *   signature makes that class of mistake impossible to write.
+     */
+    public function appliesTo(array $concession, string $periodKey, string $feeHeadId, string $feeHead, string $category = '', string $feeHeadRef = ''): bool
     {
         // Scope
         $scope = (string) ($concession['scope'] ?? '');
@@ -95,4 +109,70 @@ class Fee_concession_reader
 
         return true;
     }
+
+    /**
+     * ── PHASE 3B / B2 — THE ACCESSOR BOUNDARY ───────────────────────────────
+     *
+     * Deduction vocabulary accessors, mirroring
+     * Fee_entitlement_reader::deductionType()/deductionValue() exactly.
+     *
+     * WHY THESE EXIST HERE. Before this, Fee_generation_service asked a rule for
+     * its deduction semantics by reaching into LEGACY field names inline —
+     * `$c['type']` and `$c['value']`. An entitlement stores those as `valueType`
+     * / `value` and carries NO `type` field at all, so swapping the reader alone
+     * would have fetched the right ROWS through the wrong FIELDS: `type` would
+     * resolve to '', no branch would match, and every entitlement would deduct
+     * ZERO. An approved concession, a gross bill, and no error — the precise
+     * failure this programme exists to close, reintroduced by its own fix.
+     *
+     * With both readers exposing the same two accessors, the generator asks the
+     * reader and never learns which collection or field name backs the answer.
+     * The reader is the only thing that changes at cutover.
+     *
+     * `Phase3bEntitlementBillingCutoverTest` fails if the generator ever names a
+     * source field again.
+     */
+    public function deductionType(array $concession): string
+    {
+        return (string) ($concession['type'] ?? '');
+    }
+
+    public function deductionValue(array $concession): float
+    {
+        return (float) ($concession['value'] ?? 0);
+    }
+
+    /**
+     * ── LEDGER-EMIT-1 · THIS READER HAS NO LEDGER IDENTITY ──────────────────
+     *
+     * The allocation ledger explains a discount by pointing at the GRANT that
+     * caused it, using the deterministic identity
+     * `{schoolId}_{demandId}_{entitlementId}`. A legacy `studentConcessions`
+     * record has no entitlement identity — it carries `concessionId`, which
+     * names a different thing in a different collection with no entitlement
+     * lifecycle behind it (no approval record, no effective-dated grant row).
+     *
+     * Minting an `entitlementId` from a `concessionId` would fabricate a
+     * reference to a document that does not exist, so every ledger row would
+     * point at nothing and the audit trail the ledger exists to provide would
+     * be a lie that reconciles.
+     *
+     * So this reader declares, honestly, that it cannot back a ledger. The
+     * generator asks BEFORE pricing and treats the ledger as off for this
+     * authority, instead of pricing a discount and then having every row
+     * refused one-by-one inside the allocation service — which is exactly how
+     * LEDGER-EMIT-1 stayed invisible: 25 refusal lines that read like data
+     * problems rather than one configuration answer.
+     */
+    public function supportsAllocationLedger(): bool
+    {
+        return false;
+    }
+
+    /** No entitlement identity exists in this shape. Never invent one. */
+    public function ledgerIdentity(array $concession): string
+    {
+        return '';
+    }
+
 }
