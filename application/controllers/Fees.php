@@ -7519,6 +7519,25 @@ class Fees extends MY_Controller
         // planner see "no existing charges" and propose creating everything
         // again (B-011's shape). Refuse instead.
         try {
+            // The strict reader is what makes this fail-closed: it THROWS on an
+            // unreadable demand set instead of returning [], so the planner can
+            // never mistake "could not read" for "nothing is billed".
+            //
+            // Checked explicitly rather than relying on an undefined-method
+            // Error being caught below. Same behaviour — refuse — but the
+            // refusal names the missing capability instead of surfacing as
+            // "Call to undefined method", which reads like a crash and sends
+            // the reader hunting for a bug that is not there. Falling back to
+            // the LENIENT reader would be worse than refusing: that is exactly
+            // the silent-[] shape B-011 was about.
+            if (!method_exists($this->fsTxn, 'demandsForStudentStrict')) {
+                throw new \RuntimeException(
+                    'Fee_firestore_txn::demandsForStudentStrict() is unavailable, so the '
+                    . 'existing demands cannot be read fail-closed. Recalculation refused '
+                    . 'rather than risk rebuilding this student\'s charges from an '
+                    . 'incomplete picture.'
+                );
+            }
             $existing = $this->fsTxn->demandsForStudentStrict($studentId);
         } catch (\Throwable $e) {
             log_message('error', 'ACC_RECALC_REFUSED school=[' . $this->fs->schoolId()
