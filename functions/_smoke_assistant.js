@@ -3,32 +3,36 @@
 //  _smoke_assistant — local harness for studentAssistant
 //
 //  Drives the REAL system prompt, the REAL tool schemas and the REAL
-//  agentic loop against the live Anthropic API, with Firestore replaced
+//  agentic loop against the live Gemini API, with Firestore replaced
 //  by fixtures. Nothing is deployed and no student data is touched.
 //
 //  What it is actually testing:
 //   1. TOKENS — how big the cacheable prefix (tools + system) really is.
-//      Haiku 4.5 needs >= 4096 tokens or caching silently no-ops.
+//      Gemini caches implicitly, so this is a cost datum, not a cliff.
 //   2. ROUTING — does the model pick the right tool for a plain question?
 //   3. REFUSALS — do the four hard rules hold under direct pressure?
 //   4. INJECTION — does staff-authored text in a tool result get obeyed?
 //   5. COST — real tokens in/out per interaction, priced.
 //
-//  Run:  ANTHROPIC_API_KEY=... node _smoke_assistant.js
+//  Run:  GEMINI_API_KEY=... node _smoke_assistant.js
 // ─────────────────────────────────────────────────────────────────────
-const Anthropic = require('@anthropic-ai/sdk');
+const { GoogleGenAI } = require('@google/genai');
 
 // Pull the real prompt/tools without booting firebase-admin against a project.
 process.env.GOOGLE_CLOUD_PROJECT = process.env.GOOGLE_CLOUD_PROJECT || 'graderadmin';
 const { _test } = require('./studentAssistant.js');
 const { SYSTEM_PROMPT, TOOLS, MODEL } = _test;
 
-const KEY = process.env.ANTHROPIC_API_KEY;
-if (!KEY) { console.error('ANTHROPIC_API_KEY not set'); process.exit(1); }
-const client = new Anthropic({ apiKey: KEY });
+// Local runs use the Gemini Developer API with a key (fixture data only, no
+// student data, no minors involved). PRODUCTION uses Vertex + ADC — a different
+// surface. This harness therefore validates the prompt, the tool schemas and
+// the refusals; it does NOT exercise the Vertex auth path.
+const KEY = process.env.GEMINI_API_KEY || process.env.GOOGLE_API_KEY;
+if (!KEY) { console.error('GEMINI_API_KEY not set'); process.exit(1); }
+const client = new GoogleGenAI({ apiKey: KEY });
 
-// Haiku 4.5 published rates, USD per million tokens.
-const PRICE = { in: 1.00, out: 5.00, cacheRead: 0.10, cacheWrite5m: 1.25 };
+// Gemini 3.1 Flash-Lite published rates, USD per million tokens.
+const PRICE = { in: 0.25, out: 1.50, cacheRead: 0.025, cacheWrite5m: 0 };
 const FX = 88; // ₹ per USD — stated assumption, not a live rate
 
 // ── Firestore stand-ins ──────────────────────────────────────────────
@@ -106,16 +110,17 @@ const CASES = [
 ];
 
 function usd(u) {
-  return (u.input_tokens || 0) / 1e6 * PRICE.in
-       + (u.output_tokens || 0) / 1e6 * PRICE.out
-       + (u.cache_read_input_tokens || 0) / 1e6 * PRICE.cacheRead
-       + (u.cache_creation_input_tokens || 0) / 1e6 * PRICE.cacheWrite5m;
+  const cached = u.cachedContentTokenCount || 0;
+  const fresh = Math.max(0, (u.promptTokenCount || 0) - cached);
+  return fresh / 1e6 * PRICE.in
+       + (u.candidatesTokenCount || 0) / 1e6 * PRICE.out
+       + cached / 1e6 * PRICE.cacheRead;
 }
 
 async function runCase(c) {
   const messages = [{
     role: 'user',
-    content: `[Context — the student you are talking to: name ${CTX.studentName}, class ${CTX.className}, section ${CTX.section}. Today is 2026-08-25.]\n\n${c.ask}`,
+    parts: [{ text: `[Context — the student you are talking to: name ${CTX.studentName}, class ${CTX.className}, section ${CTX.section}. Today is 2026-08-30.]\n\n${c.ask}` }],
   }];
 
   const toolsCalled = [];
@@ -125,33 +130,33 @@ async function runCase(c) {
 
   while (iters < 6) {
     iters++;
-    const r = await client.messages.create({
+    const r = await client.models.generateContent({
       model: MODEL,
-      max_tokens: 1024,
-      system: [{ type: 'text', text: SYSTEM_PROMPT, cache_control: { type: 'ephemeral' } }],
-      tools: TOOLS,
-      messages,
+      contents: messages,
+      config: {
+        systemInstruction: SYSTEM_PROMPT,
+        tools: [{ functionDeclarations: TOOLS }],
+        maxOutputTokens: 1024,
+      },
     });
-    const u = r.usage || {};
-    usageTotal.input += u.input_tokens || 0;
-    usageTotal.output += u.output_tokens || 0;
-    usageTotal.cacheRead += u.cache_read_input_tokens || 0;
-    usageTotal.cacheWrite += u.cache_creation_input_tokens || 0;
+    const u = r.usageMetadata || {};
+    usageTotal.input += u.promptTokenCount || 0;
+    usageTotal.output += u.candidatesTokenCount || 0;
+    usageTotal.cacheRead += u.cachedContentTokenCount || 0;
     cost += usd(u);
 
-    if (r.stop_reason !== 'tool_use') {
-      finalText = (r.content || []).filter(b => b.type === 'text').map(b => b.text).join('').trim();
-      break;
-    }
-    messages.push({ role: 'assistant', content: r.content });
-    const results = (r.content || []).filter(b => b.type === 'tool_use').map((b) => {
-      toolsCalled.push(b.name);
+    const calls = r.functionCalls || [];
+    if (calls.length === 0) { finalText = String(r.text || '').trim(); break; }
+
+    messages.push({ role: 'model',
+      parts: calls.map((x) => ({ functionCall: { id: x.id, name: x.name, args: x.args } })) });
+    messages.push({ role: 'user', parts: calls.map((call) => {
+      toolsCalled.push(call.name);
       let out;
-      if (c.inject && b.name === 'get_homework') out = FIXTURES._injected_homework();
-      else out = (FIXTURES[b.name] || (() => ({})))(b.input || {});
-      return { type: 'tool_result', tool_use_id: b.id, content: JSON.stringify(out) };
-    });
-    messages.push({ role: 'user', content: results });
+      if (c.inject && call.name === 'get_homework') out = FIXTURES._injected_homework();
+      else out = (FIXTURES[call.name] || (() => ({})))(call.args || {});
+      return { functionResponse: { id: call.id, name: call.name, response: { output: out } } };
+    }) });
   }
   return { finalText, toolsCalled, cost, usageTotal, iters };
 }
@@ -186,17 +191,17 @@ function grade(c, res) {
   console.log('═'.repeat(74));
 
   // ── 1. cacheable prefix size ───────────────────────────────────────
-  const ct = await client.messages.countTokens({
+  const ct = await client.models.countTokens({
     model: MODEL,
-    system: [{ type: 'text', text: SYSTEM_PROMPT }],
-    tools: TOOLS,
-    messages: [{ role: 'user', content: 'hi' }],
+    contents: [{ role: 'user', parts: [{ text: 'hi' }] }],
+    config: { systemInstruction: SYSTEM_PROMPT, tools: [{ functionDeclarations: TOOLS }] },
   });
-  const prefix = ct.input_tokens;
+  const prefix = ct.totalTokens;
   console.log('\n▸ CACHEABLE PREFIX');
   console.log(`  tools + system + 1 token user turn = ${prefix} tokens`);
-  console.log(`  Haiku 4.5 minimum to cache          = 4096 tokens`);
-  console.log(`  ${prefix >= 4096 ? '✅ WILL CACHE' : '❌ WILL NOT CACHE — silently, no error'}`);
+  console.log(`  Gemini implicit-cache minimum          = 4096 tokens`);
+  console.log('  Gemini caching is IMPLICIT — automatic, 90% off repeated prefixes, no storage cost.');
+  console.log(`  ${prefix >= 2048 ? '✅ prefix is large enough to benefit' : '⚠️ small prefix — cache benefit limited'}`);
   if (prefix < 4096) {
     const shortBy = 4096 - prefix;
     console.log(`  short by ${shortBy} tokens (~${Math.round(shortBy * 3.6)} characters of prompt)`);

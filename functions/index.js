@@ -666,8 +666,9 @@ exports.getRecoveryContact = recoveryContact.getRecoveryContact;
 // and files helpdesk tickets. Identity is taken from the verified ID
 // token and never from model output; every query is scoped by schoolId
 // AND session, failing closed when currentSession is blank. Gated per
-// school by schools/{id}.ai_assistant_enabled. Needs the
-// ANTHROPIC_API_KEY secret. See ./studentAssistant.js.
+// school by schools/{id}.ai_assistant_enabled. Runs on Gemini via
+// Vertex AI using the function's own service account (no API key).
+// See ./studentAssistant.js.
 const studentAssistant = require("./studentAssistant");
 exports.studentAssistant = studentAssistant.studentAssistant;
 
