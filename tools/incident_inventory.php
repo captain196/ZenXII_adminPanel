@@ -182,6 +182,17 @@ echo "incident window: " . WINDOW_FROM . " .. " . WINDOW_TO . "\n\n";
 
 if (!$hits) { echo "NO MATCHING DOCUMENTS FOUND for the suspected identifiers.\n"; exit(0); }
 
+if (getenv('ZX_CENSUS')) {
+  foreach (['schools','students','sections','feeStructures','chartOfAccounts','auditLogs'] as $c) {
+    $d = zx_all($ROOT,$c,$TOKEN);
+    $t=[]; foreach($d as $x){ $fl=zx_fields($x); $sid=(string)($fl['schoolId']??'?'); $t[$sid]=($t[$sid]??0)+1; }
+    printf("  %-18s total=%-5d tenants=%d
+", $c, count($d), count($t));
+    foreach($t as $k=>$v) if (strpos($k,'GATE')!==false) printf("      *** GATE REMNANT %s = %d
+", $k, $v);
+  }
+  exit(0);
+}
 if (getenv('ZX_COUNTER')) {
   foreach (['feeCounters'] as $c) {
     foreach (zx_all($ROOT,$c,$TOKEN) as $d) {
