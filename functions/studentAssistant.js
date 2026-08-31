@@ -243,6 +243,32 @@ async function consumeQuota(schoolId, studentId) {
   });
 }
 
+/**
+ * Give a quota unit back when the question was never answered.
+ *
+ * The unit is spent BEFORE the model call, so the cap holds under concurrency —
+ * but that meant a Vertex outage or a 429 silently cost the student one of their
+ * ten. Confirmed live on 2026-08-31: a failed call left count=1 with ok:false.
+ *
+ * Best-effort and never throws: the student already has an error, and a failed
+ * refund must not become a second one. Floors at zero so a double refund cannot
+ * mint credit.
+ */
+async function refundQuota(schoolId, studentId) {
+  try {
+    const day = new Date().toISOString().slice(0, 10);
+    const ref = db().doc(`${C.ASSISTANT_QUOTA}/${schoolId}_${studentId}_${day}`);
+    await db().runTransaction(async (tx) => {
+      const snap = await tx.get(ref);
+      if (!snap.exists) return;
+      const used = Number(snap.data().count || 0);
+      tx.set(ref, { count: Math.max(0, used - 1) }, { merge: true });
+    });
+  } catch (e) {
+    logger.warn('studentAssistant: quota refund failed', { schoolId, studentId, err: e.message });
+  }
+}
+
 // ─────────────────────────────────────────────────────────────────────
 //  TOOLS — the closed set. Note what is NOT in any schema: schoolId,
 //  studentId, collection names. Those come from `ctx`, which comes from
@@ -653,6 +679,7 @@ exports.studentAssistant = onCall(
         // the student's quota already spent and no audit row written.
         logger.error('studentAssistant: model call failed', {
           schoolId, studentId, iteration: iterations, err: e.message });
+        await refundQuota(schoolId, studentId);   // never answered — don't bill it
         await writeLog({ ctx, role, question, toolsUsed, iterations,
           usageIn, usageOut, cacheRead, cacheWrite, ok: false, error: e.message });
         throw new HttpsError('unavailable',
@@ -726,6 +753,7 @@ exports.studentAssistant = onCall(
       messages.push({ role: 'user', parts });
     }
 
+    await refundQuota(schoolId, studentId);   // no answer reached the student
     await writeLog({ ctx, role, question, toolsUsed, iterations,
       usageIn, usageOut, cacheRead, cacheWrite, ok: false });
     throw new HttpsError('deadline-exceeded',
