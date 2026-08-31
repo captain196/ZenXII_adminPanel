@@ -601,8 +601,16 @@ exports.studentAssistant = onCall(
     const history = Array.isArray(request.data && request.data.messages)
       ? request.data.messages.slice(-MAX_TURNS)
       : [];
-    const question = String(request.data && request.data.message || '').trim().slice(0, MAX_MESSAGE_CHARS);
+    const question = String(request.data && request.data.message || '').trim();
     if (!question) throw new HttpsError('invalid-argument', 'Ask a question.');
+    // Reject rather than truncate. Slicing the first N characters silently
+    // discarded the tail — and a long message usually carries its question at
+    // the END, so the student got a generic greeting and never learned why.
+    // Verified live 2026-08-31: a 4,000-char message answered "How can I help?"
+    if (question.length > MAX_MESSAGE_CHARS) {
+      throw new HttpsError('invalid-argument',
+        `That message is too long. Please shorten it to under ${MAX_MESSAGE_CHARS} characters.`);
+    }
 
     // Per-request context lives in the USER turn, never in the cached system
     // prompt. Note it carries no ids — only what the model needs to phrase an
