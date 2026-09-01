@@ -2462,11 +2462,138 @@ class Sis extends MY_Controller
         $student = $this->_getStudent($userId);
         if (empty($student)) return $this->json_error('Student not found.');
 
+        // Prior status, read BEFORE the write, so the fee-book consequence
+        // below fires only on a real transition and not on a re-save.
+        $priorStatus = trim((string) ($student['status'] ?? $student['Status'] ?? ''));
+
         // Phase 1 (2026-04-08): write camelCase only. The legacy `Status`
         // (capital S) duplicate caused case-sensitivity collisions in the
         // Teacher app's StudentDoc Kotlin class — see
         // memory/firestore_class_section_canonical.md for the full story.
-        $this->fs->updateEntity('students', $userId, ['status' => $newStatus, 'updatedAt' => date('c')]);
+        // ── TYPE C · REACTIVATION ACQUIRES A SEAT ───────────────────────────
+        //
+        // A status flip is not "just a field update". Inactive -> Active moves a
+        // student from consuming no seat to consuming one, which is the same
+        // capacity event as an admission — and this endpoint performed it with
+        // no capacity check at all. Reproduced deterministically, no concurrency
+        // needed: fill a maxStrength=2 section, deactivate one student, admit a
+        // replacement into the freed seat, then reactivate the original. Active
+        // occupancy became 3.
+        //
+        // Only the ACQUIRING transition is guarded. Active -> Inactive releases a
+        // seat and must never require capacity; Active -> Active and
+        // Inactive -> Inactive change nothing. Guarding every status write would
+        // make releases fail when a section is full, which is precisely backwards.
+        //
+        // The seat is acquired through the SAME authority admission uses —
+        // decision version captured BEFORE the occupancy it protects, then the
+        // status write committed under that version's CAS — rather than a second
+        // copy of the concurrency algorithm.
+        // Declare the dependency where it is used. Committed MY_Controller does
+        // not load this library, so relying on some other constructor having
+        // pulled it in leaves the guard as "class not found" — which is a
+        // fatal, not a silent bypass, but still the wrong failure.
+        require_once APPPATH . 'libraries/Section_seat_guard.php';
+        $acquiresSeat = ($priorStatus !== $newStatus && $newStatus === 'Active');
+        if ($acquiresSeat && Section_seat_guard::enabled()) {
+            $classNode   = (string) ($student['className'] ?? $student['Class'] ?? '');
+            $sectionNode = (string) ($student['section'] ?? $student['Section'] ?? '');
+            $sessionNode = (string) ($student['session'] ?? $this->session_year);
+
+            if ($classNode === '' || $sectionNode === '') {
+                // Without a placement there is no seat to acquire and no section
+                // to guard. Refusing is the fail-closed direction: silently
+                // reactivating an unplaced student is how occupancy drifts.
+                return $this->json_error(
+                    'This student has no class/section on record, so they cannot be '
+                    . 'reactivated. Set their placement first.'
+                );
+            }
+
+            $placed = false;
+            $capacityMsg = '';
+            for ($attempt = 1; $attempt <= self::SEAT_RETRY_ATTEMPTS; $attempt++) {
+                // Version FIRST — it must witness the count that follows.
+                $decisionVersion = $this->_sectionDecisionVersion($classNode, $sectionNode, $sessionNode);
+                $cap = $this->_sectionCapacity($classNode, $sectionNode, $sessionNode);
+                if ($cap > 0) {
+                    $now = $this->_sectionActiveCountFresh($classNode, $sectionNode, $sessionNode, $userId);
+                    if ($now + 1 > $cap) {
+                        $capacityMsg = $this->_sectionCapacityMessage(
+                            ['capacity' => $cap, 'current' => $now, 'incoming' => 1,
+                             'projected' => $now + 1, 'over' => ($now + 1) - $cap],
+                            $classNode, $sectionNode
+                        );
+                        break;
+                    }
+                }
+
+                $res = $this->_seatGuard()->commitPlacement(
+                    $classNode, $sectionNode, $sessionNode,
+                    [[
+                        'collection' => 'students',
+                        'docId'      => $this->fs->docId($userId),
+                        'data'       => ['status' => $newStatus, 'updatedAt' => date('c')],
+                        'merge'      => true,
+                    ]],
+                    $decisionVersion
+                );
+                if (($res['status'] ?? '') === Section_seat_guard::PLACED) { $placed = true; break; }
+                if (($res['status'] ?? '') !== Section_seat_guard::CONFLICT) break;
+            }
+
+            if (!$placed) {
+                return $this->json_error(
+                    $capacityMsg !== '' ? $capacityMsg
+                    : 'Could not reactivate this student because the section changed while the '
+                      . 'request was in progress. Nothing was changed. Please retry.'
+                );
+            }
+        } else {
+            $this->fs->updateEntity('students', $userId, ['status' => $newStatus, 'updatedAt' => date('c')]);
+        }
+
+        // ── LC-1 · A STATUS FLIP HERE MUST MOVE THE FEE BOOK TOO ───────────
+        //
+        // This endpoint reaches the SAME two states that withdraw_student and
+        // cancel_tc reach, but it was the one path that never touched the fee
+        // book. FRZ-4's docblock records "freezeFeesOnSoftDelete() has three
+        // live callers" — there are four doors to Inactive (withdraw_student,
+        // delete_student, Hostel, and this one), and this is the door that was
+        // missed. Both directions were financially wrong:
+        //
+        //   Active -> Inactive   demands stayed COLLECTABLE. The student kept
+        //                        accruing late fees (Fee_late_fee_service
+        //                        exempts only 'frozen'), kept appearing in
+        //                        defaulter reports, and kept showing dues in
+        //                        the Parent App — while withdraw_student, which
+        //                        reaches the identical state, froze them.
+        //
+        //   Inactive -> Active   a previously withdrawn student came back with
+        //                        the whole fee book still 'frozen', i.e.
+        //                        silently exempt from fees AND late fees for
+        //                        the rest of the session, with no report saying
+        //                        so. That is exactly FRZ-4, reached through a
+        //                        different door than cancel_tc.
+        //
+        // Only fires on an actual transition: re-saving Active over Active must
+        // not unfreeze a book that was frozen for an unrelated reason.
+        //
+        // Best-effort, mirroring both existing call sites: a status change must
+        // not fail because a demand could not be re-stamped. \Throwable, not
+        // \Exception — a missing collaborator raises an Error (FEE-W1).
+        if ($priorStatus !== $newStatus) {
+            try {
+                if ($newStatus === 'Inactive') {
+                    $this->feeLifecycle->freezeFeesOnSoftDelete($userId);
+                } else {
+                    $this->feeLifecycle->unfreezeFeesOnRestore($userId);
+                }
+            } catch (\Throwable $e) {
+                log_message('error', "change_status: fee-book transition failed for {$userId} "
+                    . "({$priorStatus} -> {$newStatus}): " . $e->getMessage());
+            }
+        }
 
         $this->_log_history($school_id, $userId, 'STATUS_CHANGE',
             "Status changed to {$newStatus}", ['status' => $newStatus]
@@ -9373,5 +9500,24 @@ class Sis extends MY_Controller
             $this->fs, $this->firebase, $this->school_id,
             $this->session_year, (string) ($this->admin_id ?? 'system')
         );
+    }
+
+    /**
+ * The initialised seat guard. One accessor so every caller — admission and
+ * reactivation alike — gets the same authority, initialised the same way,
+ * rather than each repeating the load/init dance.
+ */
+    private function _seatGuard()
+    {
+        if (!isset($this->seatGuard)) {
+            $this->load->library('section_seat_guard', null, 'seatGuard');
+            $this->seatGuard->init(
+                $this->fs,
+                $this->firebase,
+                (string) $this->school_id,
+                (string) ($this->admin_id ?? 'system')
+            );
+        }
+        return $this->seatGuard;
     }
 }
