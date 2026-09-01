@@ -1,0 +1,616 @@
+<?php
+defined('BASEPATH') or exit('No direct script access allowed');
+
+// Phase 20.3 — Section_seat_guard is a STATIC utility, so CI's loader never
+// brings it in: `$this->load->library()` instantiates, and nothing here holds
+// an instance. Without this the class is simply undefined at every call site
+// below and placement fatals with "Class Section_seat_guard not found".
+// `require_once` at file level is the pattern this repo already uses for
+// static libraries (see Sis.php's Entity_firestore_sync load); it is
+// idempotent, costs one include, and changes no behaviour beyond making the
+// already-wired guard resolvable.
+require_once APPPATH . 'libraries/Section_seat_guard.php';
+
+/**
+ * Student_write_service — Firestore + Auth write helper for student records.
+ *
+ * HISTORY: this was originally `Dual_write`, a dual-write engine (RTDB primary
+ * + Firestore query layer). Per the ZERO-RTDB policy every line of RTDB code
+ * was removed 2026-08-07 — writes have targeted ONLY Firestore (via
+ * Entity_firestore_sync, with inline retry + async retry-queue fallback) and
+ * Firebase Auth ever since. The class was renamed 2026-08-13 (previously kept
+ * as `Dual_write` "solely to avoid touching the MY_Controller loader and the
+ * Sis.php call sites") — that deferred cleanup is done now: every call site
+ * (MY_Controller's loader, Sis.php's `$this->dw->...` usages, and this file)
+ * was updated in the same pass, verified via `git grep` for every prior
+ * spelling before and after. No RTDB code exists anywhere in this class.
+ *
+ * REMOVED (had NO live callers — verified): writeToRTDB, multiPathUpdate,
+ * _retriedRemove, write(), writeSection/Attendance/Exam/ExamSchedule/
+ * Notification/Route/Vehicle/Leave, rtdbOnly. Roster methods (addToRoster/
+ * removeFromRoster) remain as no-ops — rosters derive from the Firestore
+ * students collection (see Roster_helper).
+ *
+ * FEATURES (Firestore/Auth only):
+ *   1. batchMoveStudents() for bulk promotion (per-student Firestore sync)
+ *   2. Inline retry + idempotent async retry-queue (survives restarts)
+ *   3. syncVersion monotonic counter (in-memory; stale-read cache-buster)
+ *   4. Unified idempotencyKey across Firestore + Auth operations
+ *   5. Soft-delete with recovery support
+ */
+class Student_write_service
+{
+    private $firebase;
+    private $sync;
+    private $retryQueue;
+
+    private $schoolId    = '';
+    private $session     = '';
+    private $schoolCode  = '';
+    private $parentDbKey = '';
+    private $ready       = false;
+
+    /** @var int Monotonic sync version — incremented on every write */
+    private $syncVersion = 0;
+
+    /** @var array Idempotency keys processed this request */
+    private $processedKeys = [];
+
+    private $stats = [
+        'fs_writes'      => 0, 'fs_failures'    => 0,
+        'fs_retries'     => 0, 'fs_queued'      => 0,
+        'auth_writes'    => 0, 'auth_failures'  => 0,
+    ];
+
+    // ══════════════════════════════════════════════════════════════════
+    //  INIT
+    // ══════════════════════════════════════════════════════════════════
+
+    public function init($firebase, string $schoolId, string $session, string $schoolCode = '', string $parentDbKey = ''): self
+    {
+        $this->firebase    = $firebase;
+        $this->schoolId    = $schoolId;
+        $this->session     = $session;
+        $this->schoolCode  = $schoolCode ?: $schoolId;
+        $this->parentDbKey = $parentDbKey ?: $this->schoolCode;
+
+        $CI =& get_instance();
+        if (!isset($CI->entity_sync)) {
+            $CI->load->library('entity_firestore_sync', null, 'entity_sync');
+        }
+        $this->sync = $CI->entity_sync;
+        $this->sync->init($firebase, $schoolId, $session, $this->schoolCode);
+
+        if (!isset($CI->firestore_retry_queue)) {
+            $CI->load->library('firestore_retry_queue');
+        }
+        $this->retryQueue = $CI->firestore_retry_queue;
+
+        // 2026-04-24: RTDB has been fully retired (see memory file
+        // "NO RTDB — Firestore ONLY"). Reading System/SyncVersion here
+        // was consuming a ~5–10 s retry timeout on every request when
+        // the legacy RTDB endpoint was unreachable (DNS / connect
+        // failures) — directly responsible for the 26 s fetch_fee_details
+        // spike in the 2026-04-24 logs, and every similar cross-module
+        // slow-request trace. We now seed with a local epoch-ms counter
+        // so writes that depend on syncVersion still get a monotonic,
+        // tenant-unique value without any network call.
+        $this->syncVersion = (int) (microtime(true) * 1000);
+
+        $this->ready = ($firebase !== null && $schoolId !== '');
+        return $this;
+    }
+
+    public function isReady(): bool       { return $this->ready; }
+    public function getStats(): array     { return $this->stats; }
+    public function schoolId(): string    { return $this->schoolId; }
+    public function session(): string     { return $this->session; }
+    public function parentDbKey(): string { return $this->parentDbKey; }
+    public function getSyncVersion(): int { return $this->syncVersion; }
+
+    // ══════════════════════════════════════════════════════════════════
+    //  SYNC VERSION (prevents stale reads in apps)
+    // ══════════════════════════════════════════════════════════════════
+
+    /**
+     * Increment and return the next syncVersion.
+     * Stored in RTDB at System/SyncVersion/{schoolId}.
+     * Apps can compare this to their cached version to detect stale data.
+     */
+    private function _nextSyncVersion(): int
+    {
+        $this->syncVersion++;
+        // 2026-04-24: RTDB retired — see init(). The write below was
+        // "fire-and-forget" per the comment but the Firebase library
+        // still issued the HTTP request synchronously on mod_php,
+        // costing ~500 ms on healthy days and ~10 s on flaky DNS.
+        // The counter lives purely in memory now; readers that need a
+        // monotonic cache-buster get the same guarantee from the
+        // epoch-ms seed plus the in-process increment.
+        return $this->syncVersion;
+    }
+
+    /**
+     * Build metadata fields injected into every Firestore write.
+     */
+    private function _syncMeta(): array
+    {
+        return [
+            'syncVersion'  => $this->_nextSyncVersion(),
+            'lastSyncedAt' => date('c'),
+            'updatedAt'    => date('c'),
+        ];
+    }
+
+    // ══════════════════════════════════════════════════════════════════
+    //  VALIDATION
+    // ══════════════════════════════════════════════════════════════════
+
+    public static function validateClass(string $val): string
+    {
+        $v = Firestore_service::classKey(trim($val));
+        if ($v === '' || $v === 'Class ') {
+            throw new \InvalidArgumentException("Invalid class: '{$val}'");
+        }
+        return $v;
+    }
+
+    public static function validateSection(string $val): string
+    {
+        $v = Firestore_service::sectionKey(trim($val));
+        if ($v === '' || $v === 'Section ') {
+            throw new \InvalidArgumentException("Invalid section: '{$val}'");
+        }
+        return $v;
+    }
+
+    // ══════════════════════════════════════════════════════════════════
+    //  FIRESTORE ENGINE (with idempotent retry queue)
+    // ══════════════════════════════════════════════════════════════════
+
+    /**
+     * @param string      $syncMethod      Entity_firestore_sync method
+     * @param array       $args            Method arguments
+     * @param string|null $idempotencyKey  Shared across RTDB/FS/Auth for same logical operation
+     */
+    private function writeToFirestore(string $syncMethod, array $args, ?string $idempotencyKey = null): bool
+    {
+        if (!$this->sync || !method_exists($this->sync, $syncMethod)) {
+            $this->stats['fs_failures']++;
+            return false;
+        }
+
+        // Deduplicate within same request
+        if ($idempotencyKey && isset($this->processedKeys[$idempotencyKey])) {
+            return true;
+        }
+
+        // Attempt 1
+        try {
+            if (call_user_func_array([$this->sync, $syncMethod], $args)) {
+                $this->stats['fs_writes']++;
+                if ($idempotencyKey) $this->processedKeys[$idempotencyKey] = true;
+                return true;
+            }
+        } catch (\Exception $e) {
+            $this->_log('error', "FS {$syncMethod} attempt 1: " . $e->getMessage());
+        }
+
+        // Attempt 2 (200ms backoff)
+        $this->stats['fs_retries']++;
+        usleep(200000);
+        try {
+            if (call_user_func_array([$this->sync, $syncMethod], $args)) {
+                $this->stats['fs_writes']++;
+                if ($idempotencyKey) $this->processedKeys[$idempotencyKey] = true;
+                return true;
+            }
+        } catch (\Exception $e) { /* fall through */ }
+
+        // Queue for async retry
+        $this->stats['fs_failures']++;
+        $this->_enqueue($syncMethod, $args, $idempotencyKey);
+        return false;
+    }
+
+    private function _enqueue(string $syncMethod, array $args, ?string $idempotencyKey = null, string $error = ''): void
+    {
+        if (!$this->retryQueue) return;
+        $queued = $this->retryQueue->push(
+            $syncMethod, $args,
+            $this->schoolId, $this->schoolCode, $this->session,
+            $error ?: 'Inline retry exhausted',
+            $idempotencyKey
+        );
+        if ($queued) {
+            $this->stats['fs_queued']++;
+        } else {
+            $this->_log('error', "FS {$syncMethod} FAILED and could NOT be queued");
+        }
+    }
+
+    // ══════════════════════════════════════════════════════════════════
+    //  AUTH ENGINE (with retry via queue)
+    // ══════════════════════════════════════════════════════════════════
+
+    /**
+     * Update Firebase Auth — NOT fire-and-forget. Shares idempotencyKey with
+     * the parent operation so RTDB+FS+Auth are all tracked together.
+     */
+    public function updateAuth(string $uid, array $props, ?string $idempotencyKey = null): bool
+    {
+        $key = $idempotencyKey ?? "auth_{$uid}_" . md5(json_encode($props));
+        if (isset($this->processedKeys[$key])) return true;
+
+        try {
+            $this->firebase->updateFirebaseUser($uid, $props);
+            $this->stats['auth_writes']++;
+            $this->processedKeys[$key] = true;
+            return true;
+        } catch (\Exception $e) {
+            $this->stats['auth_failures']++;
+            $this->_log('error', "Auth update failed {$uid}: " . $e->getMessage());
+            // Queue auth retry — uses same idempotencyKey as parent op
+            $this->_enqueue('_retryAuth', [$uid, $props], $key, $e->getMessage());
+            return false;
+        }
+    }
+
+    public function createAuth(string $uid, string $email, string $password, string $displayName, array $claims, ?string $idempotencyKey = null): bool
+    {
+        $key = $idempotencyKey ?? "authCreate_{$uid}";
+        if (isset($this->processedKeys[$key])) return true;
+
+        try {
+            $this->firebase->createFirebaseUser($email, $password, [
+                'uid' => $uid, 'displayName' => $displayName,
+            ]);
+            $this->firebase->setFirebaseClaims($uid, $claims);
+            $this->stats['auth_writes']++;
+            $this->processedKeys[$key] = true;
+            return true;
+        } catch (\Exception $e) {
+            $this->stats['auth_failures']++;
+            $this->_log('error', "Auth create failed {$uid}: " . $e->getMessage());
+            return false;
+        }
+    }
+
+    // ══════════════════════════════════════════════════════════════════
+    //  STUDENT: SINGLE OPERATIONS
+    // ══════════════════════════════════════════════════════════════════
+
+    /**
+     * R7 — Firestore-only. Was a dual-write to
+     * `Users/Parents/{parentDbKey}/{id}` (RTDB) + Firestore students;
+     * now the RTDB write is gone. No live callers remain in the
+     * codebase but the public signature is preserved for safety.
+     */
+    public function writeStudent(string $studentId, array $data): bool
+    {
+        if (!$this->ready) return false;
+        $idemKey = "stu_{$studentId}_" . $this->syncVersion;
+        $data = array_merge($data, $this->_syncMeta());
+        $this->writeToFirestore('syncStudent', [$studentId, $data], $idemKey);
+        return true;
+    }
+
+    /**
+     * R7 — Firestore-only. See writeStudent() for the rationale.
+     */
+    public function setStudent(string $studentId, array $data): bool
+    {
+        if (!$this->ready) return false;
+        $idemKey = "stuSet_{$studentId}_" . $this->syncVersion;
+        $data = array_merge($data, $this->_syncMeta());
+        $this->writeToFirestore('syncStudent', [$studentId, $data], $idemKey);
+        return true;
+    }
+
+    // ══════════════════════════════════════════════════════════════════
+    //  STUDENT: MOVE (single student)
+    // ══════════════════════════════════════════════════════════════════
+
+    /**
+     * Move student between classes — Firestore-only post-R7.
+     *
+     * The previous implementation did an atomic RTDB add-new + profile
+     * update, then a retried remove from the old roster, and finally a
+     * Firestore sync. All RTDB steps are gone; the single syncStudent()
+     * call below carries the new className/section/status, and rosters
+     * are derived from Firestore (so the old roster entry is implicitly
+     * gone the moment the doc's section field flips).
+     *
+     * No live callers — `Sis::promote` uses `batchMoveStudents` instead.
+     * Kept for API compatibility.
+     */
+    public function moveStudent(string $studentId, array $from, array $to, array $data): bool
+    {
+        if (!$this->ready) return false;
+
+        $name      = $data['Name'] ?? $data['name'] ?? $studentId;
+        $toClass   = self::validateClass($to['class']);
+        $toSection = self::validateSection($to['section']);
+        // $from and its sub-fields are validated at the caller and
+        // would historically determine the old-roster path; that path
+        // no longer exists. Validate-and-discard to fail fast on bad input.
+        self::validateClass($from['class']  ?? '');
+        self::validateSection($from['section'] ?? '');
+        $idemKey = "move_{$studentId}_{$this->syncVersion}";
+
+        $fsData = array_merge($data, $this->_syncMeta(), [
+            'Name'       => $name,
+            'name'       => $name,
+            'className'  => $toClass,
+            'section'    => $toSection,
+            'sectionKey' => Firestore_service::buildSectionKey($toClass, $toSection),
+            'status'     => 'Active',
+        ]);
+        $this->writeToFirestore('syncStudent', [$studentId, $fsData], $idemKey);
+
+        return true;
+    }
+
+    // ══════════════════════════════════════════════════════════════════
+    //  STUDENT: BATCH MOVE (bulk promotion — single RTDB call)
+    // ══════════════════════════════════════════════════════════════════
+
+    /**
+     * Move N students in ONE atomic RTDB multi-path update.
+     *
+     * Instead of N separate moveStudent() calls (N network roundtrips),
+     * this builds a single multi-path update for ALL students, then
+     * batch-syncs Firestore.
+     *
+     * @param array  $students   [ userId => ['name'=>..., 'oldSection'=>'Section A'] ]
+     * @param string $fromClass  "Class 8th"
+     * @param string $fromSession "2025-26"
+     * @param string $toClass    "Class 9th"
+     * @param string $toSection  "Section A"
+     * @param string $toSession  "2026-27"
+     * @return array ['moved' => [...], 'failed' => [...]]
+     */
+    public function batchMoveStudents(
+        array  $students,
+        string $fromClass,
+        string $fromSession,
+        string $toClass,
+        string $toSection,
+        string $toSession
+    ): array {
+        $result = ['moved' => [], 'failed' => []];
+        if (!$this->ready || empty($students)) return $result;
+
+        $toClass   = self::validateClass($toClass);
+        $toSection = self::validateSection($toSection);
+        // $fromClass / $fromSession / oldSection are no longer needed —
+        // the legacy "remove from old session roster" RTDB step is gone
+        // post-R7 (rosters are now derived from Firestore students.className /
+        // section, which the per-student syncStudent below updates).
+        // Validating $fromClass and reading $oldSection is left intentionally
+        // un-done here so a stale `from` arg can't hide a bug.
+
+        // R7 — Firestore-only batch promotion. Each student gets a
+        // syncStudent() call with the new class/section/status. No
+        // RTDB roster writes (`Schools/{...}/{class}/{section}/Students/List`
+        // and `…/{Students}/{id}`) and no RTDB profile writes
+        // (`Users/Parents/{parentDbKey}/{id}/Class` & `/Section`).
+        // Roster reads everywhere now derive from the Firestore
+        // students collection — see Roster_helper.
+        $syncMeta = $this->_syncMeta();
+
+        // ── PHASE 20.3i — PATH 4/5: PROMOTION (P20.2-RACE-1) ────────────
+        //
+        // Every student in this call moves to the SAME ($toClass, $toSection),
+        // so the whole batch is ONE destination-section group — the same shape
+        // as transfer. That means one section read and ONE atomic commit of
+        // N student writes + 1 CAS marker: no per-student section read, no
+        // N+1, no per-student CAS loop.
+        //
+        // GROUP-ATOMIC, not whole-operation-atomic: this method already has a
+        // single destination, so the group IS the operation. If the destination
+        // section moved since it was read, Firestore rolls the entire batch
+        // back and NOT ONE student is promoted — every id lands in failed[],
+        // which is exactly the existing contract Sis::execute_promotion()
+        // renders back to the operator as skipped[].
+        //
+        // Mints no identity: promotion moves existing students, so SRNO,
+        // Student ID and Admission Number are untouched (Phase 20.3e-1).
+        if (\Section_seat_guard::enabled()) {
+            $CI = &get_instance();
+            $CI->load->library('section_seat_guard', null, 'seatGuard');
+            $CI->seatGuard->init(
+                $CI->fs, $this->firebase, $this->schoolId,
+                (string) ($CI->admin_id ?? 'system')
+            );
+
+            $group = [];
+            foreach ($students as $userId => $info) {
+                $name = $info['name'] ?? $userId;
+                $group[] = ['studentId' => $userId, 'data' => array_merge($syncMeta, [
+                    'Name'       => $name,
+                    'name'       => $name,
+                    'className'  => $toClass,
+                    'section'    => $toSection,
+                    'sectionKey' => Firestore_service::buildSectionKey($toClass, $toSection),
+                    'status'     => 'Active',
+                    'session'    => $toSession,
+                ])];
+            }
+
+            $res = $CI->seatGuard->placeStudentGroup(
+                $this->sync, $group, $toClass, $toSection, $toSession
+            );
+
+            if (($res['status'] ?? '') === \Section_seat_guard::PLACED) {
+                $result['moved'] = array_keys($students);
+            } else {
+                // Atomic refusal — nobody moved. Report every student as
+                // failed so the caller never tells the operator a student was
+                // promoted when the group commit did not happen.
+                $result['failed'] = array_keys($students);
+                $this->_log('error', 'batchMoveStudents: destination group REFUSED ('
+                    . ($res['status'] ?? '?') . ') for ' . $toClass . '/' . $toSection
+                    . ' — ' . ($res['message'] ?? '') . ' — no student was moved');
+            }
+
+            $this->_log('info', 'batchMoveStudents: ' . count($result['moved']) . ' moved, '
+                . count($result['failed']) . ' failed (atomic destination group)');
+            return $result;
+        }
+
+        foreach ($students as $userId => $info) {
+            $name    = $info['name'] ?? $userId;
+            $idemKey = "batchMove_{$userId}_{$this->syncVersion}";
+            $fsData  = array_merge($syncMeta, [
+                'Name'       => $name,
+                'name'       => $name,
+                'className'  => $toClass,
+                'section'    => $toSection,
+                'sectionKey' => Firestore_service::buildSectionKey($toClass, $toSection),
+                'status'     => 'Active',
+                // BUG-053 fix 2026-05-25: propagate target session to syncStudent so cross-session
+                // promote lands at $toSession. Pairs with BUG-052 caller-precedence in
+                // Entity_firestore_sync::syncStudent which now picks $data['session'].
+                'session'    => $toSession,
+            ]);
+            if ($this->writeToFirestore('syncStudent', [$userId, $fsData], $idemKey)) {
+                $result['moved'][] = $userId;
+            } else {
+                // BUG-054 fix 2026-05-25: properly classify failures. Pre-fix this
+                // branch pushed to moved[] anyway with the rationale "queue will
+                // reconcile" — but the RTDB-based retry queue is post-R7 disabled,
+                // so failures here are SILENT data loss (student stays at old
+                // class/section/session without any caller-visible signal).
+                // Honest classification: failed writes go to failed[]; caller
+                // (Sis::execute_promotion) renders skipped[] back to UI per BUG-055.
+                $result['failed'][] = $userId;
+                $this->_log('error', "batchMoveStudents: syncStudent write failed for {$userId} (returning failure to caller for UI surfacing)");
+            }
+        }
+
+        $this->_log('info', 'batchMoveStudents: ' . count($result['moved']) . ' moved, '
+            . count($result['failed']) . ' failed (Firestore-only post-R7)');
+
+        return $result;
+    }
+
+    // ══════════════════════════════════════════════════════════════════
+    //  STUDENT: SOFT DELETE / RECOVER / HARD DELETE
+    // ══════════════════════════════════════════════════════════════════
+
+    public function softDeleteStudent(string $studentId, string $classKey, string $sectionKey, string $reason = ''): bool
+    {
+        if (!$this->ready) return false;
+        // R7 — Firestore-only soft delete.
+        // The previous implementation wrote three things to RTDB
+        // (Users/Parents/{id}/Status, deletedAt, deleteReason) AND
+        // removed the student from the section roster. All gone now;
+        // Firestore students.status='Deleted' + deletedAt + deleteReason
+        // is the canonical record. The roster derives from Firestore
+        // (status filter), so removing from RTDB roster is unnecessary.
+        // $classKey/$sectionKey are still validated for caller-API
+        // compatibility (Sis::delete_student passes them) but no longer
+        // used to compute an RTDB path.
+        self::validateClass($classKey);
+        self::validateSection($sectionKey);
+        $now     = date('Y-m-d H:i:s');
+        $idemKey = "softDel_{$studentId}_{$this->syncVersion}";
+
+        $this->writeToFirestore('syncStudent', [$studentId, array_merge($this->_syncMeta(), [
+            'status' => 'Deleted', 'deletedAt' => $now, 'deleteReason' => $reason,
+        ])], $idemKey);
+
+        // Disable Auth (same idempotency key) — login still has to be
+        // blocked for a soft-deleted student.
+        $this->updateAuth($studentId, ['disabled' => true], $idemKey . '_auth');
+
+        return true;
+    }
+
+    public function hardDeleteStudent(string $studentId): bool
+    {
+        if (!$this->ready) return false;
+        // R7 — Firestore-only hard delete. The previous RTDB delete of
+        // `Users/Parents/{parentDbKey}/{id}` is gone; Firestore is the
+        // sole student record. Sis::delete_student also calls
+        // `$this->fs->removeEntity('students', $id)` directly (and clears
+        // the indexPhones doc + Firebase Auth account), so the deletion
+        // is fully covered by the surrounding controller code plus this
+        // queued sync.
+        $this->writeToFirestore('deleteStudent', [$studentId], "hardDel_{$studentId}");
+        return true;
+    }
+
+    public function recoverStudent(string $studentId, string $classKey, string $sectionKey, string $name): bool
+    {
+        if (!$this->ready) return false;
+        self::validateClass($classKey);
+        self::validateSection($sectionKey);
+        $idemKey = "recover_{$studentId}_{$this->syncVersion}";
+
+        // R7 — Firestore-only recovery. RTDB roster restore + RTDB
+        // profile reset are gone. addToRoster() is now a no-op and
+        // wasn't doing useful work even before R7 — the roster is
+        // derived from `students.status='Active'` so flipping the
+        // status (via syncStudent below) restores the student to every
+        // class/section view automatically. `$name` is preserved on
+        // the call signature for audit/logging callers but is not
+        // re-written to the doc here (the existing Firestore name is
+        // canonical and unchanged across a soft-delete cycle).
+        $this->writeToFirestore('syncStudent', [$studentId, array_merge($this->_syncMeta(), [
+            'status' => 'Active', 'deletedAt' => null, 'deleteReason' => null,
+        ])], $idemKey);
+
+        $this->updateAuth($studentId, ['disabled' => false], $idemKey . '_auth');
+        return true;
+    }
+
+    // ══════════════════════════════════════════════════════════════════
+    //  ROSTER HELPERS (with session support)
+    // ══════════════════════════════════════════════════════════════════
+
+    /**
+     * @deprecated R7 — no-op. The RTDB roster node
+     *             `Schools/{...}/{class}/{section}/Students/List` is no
+     *             longer authoritative; rosters are derived from the
+     *             Firestore `students` collection (filtered by
+     *             schoolId+className+section+status='Active'). All
+     *             writers that affect roster membership now go through
+     *             `Entity_firestore_sync::syncStudent` directly. Kept
+     *             as a no-op so existing callers (Sis::cancel_tc, etc.)
+     *             don't crash; safe to delete after R7 is verified.
+     */
+    public function addToRoster(string $cls, string $sec, string $stuId, string $name, ?string $sess = null): bool
+    {
+        return $this->ready;
+    }
+
+    /**
+     * @deprecated R7 — no-op. See addToRoster() for the rationale.
+     */
+    public function removeFromRoster(string $cls, string $sec, string $stuId, ?string $sess = null): bool
+    {
+        return $this->ready;
+    }
+
+    // ══════════════════════════════════════════════════════════════════
+    //  LOGGING
+    // ══════════════════════════════════════════════════════════════════
+
+    private function _log(string $level, string $msg): void
+    {
+        log_message($level, "Student_write_service: {$msg}");
+        if (defined('GRADER_DEBUG') && GRADER_DEBUG) {
+            try {
+                $CI =& get_instance();
+                if (isset($CI->debug_tracker)) {
+                    $CI->debug_tracker->record(
+                        $level === 'error' ? 'FIREBASE_ERROR' : 'FIREBASE_WRITE',
+                        $msg
+                    );
+                }
+            } catch (\Exception $e) { /* silent */ }
+        }
+    }
+}
