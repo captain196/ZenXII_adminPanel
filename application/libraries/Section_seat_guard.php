@@ -271,6 +271,17 @@ class Section_seat_guard
      * @param array  $writes      [['collection'=>..,'docId'=>..,'data'=>..,'merge'=>bool], ...]
      * @return array{status:string, message:string, attempts:int}
      */
+    /** Race forensics. Enabled only by ZX_RACE_LOG; writes nothing otherwise. */
+    public static function trace(string $event, array $kv = []): void
+    {
+        $p = getenv('ZX_RACE_LOG'); if (!$p) return;
+        $cid = getenv('ZX_CID') ?: '?';
+        $line = sprintf('%.6f %-6s %-22s', microtime(true), $cid, $event);
+        foreach ($kv as $k => $v) $line .= " {$k}=" . (is_scalar($v) ? $v : json_encode($v));
+        @file_put_contents($p, $line . "
+", FILE_APPEND | LOCK_EX);
+    }
+
     public function commitPlacement(string $classNode, string $sectionNode, string $session, array $writes, string $decisionVersion = ''): array
     {
         if (empty($writes)) {
@@ -315,6 +326,7 @@ class Section_seat_guard
         // proven safe must not be written. The self-read below survives only
         // to prove the section exists and to surface a missing __updateTime.
         $selfRead   = trim((string) ($secDoc['__updateTime'] ?? ''));
+        self::trace('guard.read', ['selfRead' => substr($selfRead, 11, 15), 'decision' => substr($decisionVersion, 11, 15), 'sec' => $sectionDocId]);
         $updateTime = trim($decisionVersion);
         if ($updateTime === '') {
             log_message('error',
@@ -367,7 +379,25 @@ class Section_seat_guard
             'collection'   => 'sections',
             'docId'        => $sectionDocId,
             'merge'        => true,
-            'data'         => [self::MARKER_FIELD => date('c')],
+            // ── THE MARKER MUST ALWAYS CHANGE THE DOCUMENT ────────────────
+            // This wrote date('c') — ONE-SECOND resolution. Concurrent
+            // placements inside the same second therefore wrote a BYTE-IDENTICAL
+            // value, Firestore treated the write as a no-op, and updateTime did
+            // not advance. The precondition of the next placement then still
+            // matched, so several commits succeeded against the SAME version and
+            // each consumed a seat. Captured directly: three commits with
+            // precond=08:25:17.769138 all returned SUCCESS, giving occupancy 5 in
+            // a maxStrength=2 section.
+            //
+            // A CAS marker only works if writing it is always a real change, so
+            // the value carries microsecond time AND a random nonce. Two writers
+            // cannot collide, and the version advances on every seat consumed —
+            // which is what makes a successful placement invalidate every
+            // competing decision built on the prior state.
+            'data'         => [self::MARKER_FIELD => sprintf(
+                '%s.%06d#%s', date('c'), (int) ((microtime(true) - (int) microtime(true)) * 1e6),
+                bin2hex(random_bytes(6))
+            )],
             'precondition' => ['updateTime' => $updateTime],
         ];
 
@@ -378,6 +408,7 @@ class Section_seat_guard
             $attempts++;
             try {
                 $last = $this->firebase->firestoreCommitBatchStatus($ops);
+                self::trace('guard.commit', ['precond' => substr($updateTime, 11, 15), 'status' => ($last['status'] ?? '?'), 'ops' => count($ops)]);
             } catch (\Throwable $e) {
                 log_message('error', 'ACC_SEAT_CAS_EXCEPTION ' . $e->getMessage());
                 $last = ['status' => 'FAILURE', 'code' => 0, 'message' => $e->getMessage()];

@@ -333,7 +333,14 @@ class Sis extends MY_Controller
         // unfalsifiable by a concurrent admission rather than merely unchanged
         // during the commit. Empty means the version could not be established;
         // the guard then refuses, which is the fail-closed direction.
+        // Load before the FIRST static use of the class. The working tree only
+        // ever got here with it already loaded, as a side effect of
+        // MY_Controller constructing Student_write_service; depending on another
+        // library's load order for a safety guard is accidental, not architectural.
+        require_once APPPATH . 'libraries/Section_seat_guard.php';
         $decisionVersion = $this->_sectionDecisionVersion($classOrd, $section, $this->session_year);
+        $__occ = $this->_sectionActiveCountFresh($classOrd, $section, $this->session_year);
+        Section_seat_guard::trace('decide', ['ver' => substr($decisionVersion, 11, 15), 'occ' => $__occ, 'cap' => $this->_sectionCapacity($classOrd, $section, $this->session_year)]);
         $capOver = $this->_sectionCapacityExceeded($classOrd, $section, $this->session_year, 1, '', /* fresh */ true);
         if ($capOver !== null) {
             return $this->json_error($this->_sectionCapacityMessage($capOver, $classOrd, $section));
@@ -615,7 +622,6 @@ class Sis extends MY_Controller
         // A refusal returns HERE, before _claimIdentityAttributes() below, so
         // no SRNO or APAAR is claimed for an admission that did not happen
         // (ordering verified in Phase 20.3e-1).
-        require_once APPPATH . 'libraries/Section_seat_guard.php';
         if (Section_seat_guard::enabled()) {
             // ── SEAT-RACE-1 · BOUNDED RE-DECIDE ─────────────────────────────
             //
@@ -661,16 +667,19 @@ class Sis extends MY_Controller
                             break;
                         }
                     }
+                    Section_seat_guard::trace('redecide', ['occ' => ($now ?? -1), 'cap' => ($cap ?? -1)]);
                     $decisionVersion = $this->_sectionDecisionVersion(
                         $classOrd, $section, $this->session_year
                     );
                 }
 
+                Section_seat_guard::trace('attempt', ['n' => $attempt, 'ver' => substr($decisionVersion, 11, 15), 'stu' => $userId]);
                 $placement = $this->_placeStudentGuarded(
                     $userId, $studentData, $classOrd, $section, $this->session_year, 'save_admission',
                     $decisionVersion
                 );
 
+                Section_seat_guard::trace('outcome', ['n' => $attempt, 'status' => ($placement['status'] ?? '?'), 'stu' => $userId]);
                 if (($placement['status'] ?? '') === Section_seat_guard::PLACED) break;
 
                 // Only a CONFLICT is retryable. FAILURE means the outcome is
