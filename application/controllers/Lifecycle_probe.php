@@ -290,56 +290,20 @@ class Lifecycle_probe extends CI_Controller
      * `get_instance()` singleton to it — deliberate, because every library the
      * endpoint loads must resolve against the endpoint, not against this probe.
      */
+    /**
+ * Delegate to the SHARED dispatcher.
+ *
+ * This helper used to live here in full, and a verbatim copy lived in
+ * `Production_admission_probe`. That meant production would have been the
+ * FIRST runtime execution of the code orchestrating a real admission —
+ * every emulator rehearsal proved only the copy. One implementation, in
+ * `libraries/Probe_dispatch.php`, makes this rehearsal a real proof of the
+ * production path.
+ */
     private function dispatch(string $controller, string $method, array $post)
     {
-        $_POST = $post;
-        $file  = APPPATH . 'controllers/' . ucfirst($controller) . '.php';
-        require_once $file;
-        $class = ucfirst($controller);
-
-        // ── WHY THE REGISTRY IS TEMPORARILY NARROWED ─────────────────────
-        //
-        // `CI_Controller::__construct()` does:
-        //
-        //     foreach (is_loaded() as $var => $class) $this->$var =& load_class($class);
-        //
-        // `is_loaded()` is a GLOBAL registry, and `CI_Loader` aliases its own
-        // class list to it by reference (Loader.php:140), so every library
-        // ever loaded through `$this->load->library()` ends up in it — including
-        // `Firebase`, which this application AUTOLOADS
-        // (`$autoload['libraries'] = array('Firebase', …)`).
-        //
-        // `load_class()` only searches the CORE directories. So the moment a
-        // SECOND controller is constructed, that loop reaches 'Firebase' and
-        // dies with "Class CI_Firebase not found". This is a property of the
-        // application's autoload configuration, not of the harness: in-process
-        // construction of a second controller cannot work here at all.
-        //
-        // The registry is returned BY REFERENCE, so the fix is to present the
-        // constructor with only the genuine core classes — exactly what it
-        // would see on a real request — and restore it immediately afterwards.
-        // The target controller then loads its own libraries normally through
-        // its own constructor, which is what a real request does too.
-        //
-        // Nothing is bypassed: the controller still runs its full constructor,
-        // its authorization, and its real dependencies.
-        $registry =& is_loaded();
-        $saved    = $registry;
-        $core     = ['benchmark', 'hooks', 'config', 'log', 'utf8', 'uri',
-                     'router', 'output', 'security', 'input', 'lang'];
-        foreach (array_keys($registry) as $k) {
-            if (!in_array($k, $core, true)) unset($registry[$k]);
-        }
-
-        try {
-            $c = new $class();
-            return $c->$method();
-        } finally {
-            // Restore even when the endpoint exits via json_success(); a
-            // `finally` still runs on a normal return, and on exit() the
-            // process is ending anyway.
-            $registry = $saved;
-        }
+        require_once APPPATH . 'libraries/Probe_dispatch.php';
+        return Probe_dispatch::run($controller, $method, $post);
     }
 
     public function step($name = '', $a1 = '', $a2 = '', $a3 = '', $a4 = '')

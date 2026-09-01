@@ -289,6 +289,167 @@ class Production_admission_probe extends CI_Controller
         ]) . "\n");
     }
 
+    // ══ EXECUTION STAGES ═══════════════════════════════════════════════════
+
+    /**
+     * Run exactly ONE approved stage, then stop.
+     *
+     * One stage per process, deliberately. `json_success()`/`json_error()` both
+     * `exit`, so an in-process sequence would end at the first stage anyway —
+     * but the stronger reason is that each stage must be independently
+     * authorised, independently verified against persisted state, and reported
+     * before the next one is even considered. A single process that ran the
+     * whole chain could not be stopped between stages, which is precisely the
+     * control this run exists to keep.
+     *
+     * Every stage re-runs the full five-condition gate (consuming its own
+     * ticket) and re-asserts the tenant immediately before dispatching.
+     */
+    /**
+     * THE ONE SOURCE OF STAGE PARAMETERS.
+     *
+     * `stage()` (which writes) and `verify()` (which does not) both build their
+     * work from this method, so a dry run cannot drift from the real run: there
+     * is no second copy of the plan to fall out of step. The values are fixed
+     * here and are NOT readable from the environment — an approved plan that a
+     * flag could alter is not an approved plan.
+     *
+     * @return array{controller:string,method:string,post:array}
+     */
+    private function _plan(string $stage): array
+    {
+        switch ($stage) {
+            case 'seed_coa':
+                return ['controller' => 'accounting', 'method' => 'seed_default_chart', 'post' => []];
+
+            case 'add_section':
+                return ['controller' => 'classes', 'method' => 'add_section', 'post' => [
+                    'class_name'   => '5',
+                    'section_name' => 'A',
+                    'max_strength' => '40',
+                ]];
+
+            case 'fee_chart':
+                $months = ['April','May','June','July','August','September',
+                           'October','November','December','January','February','March'];
+                $chart = [];
+                foreach ($months as $m) {
+                    $chart[$m] = ['Tuition Fee' => 1000, 'Transport Fee' => 500];
+                }
+                // The CANONICAL ordinal class name. `Classes::add_section`
+                // normalises 5 to 'Class 5th', while `Fees::save_updated_fees`
+                // stores what it is given, so a chart saved as 'Class 5' is
+                // orphaned and the admission is then refused for having no fee
+                // structure. Proven in rehearsal.
+                return ['controller' => 'fees', 'method' => 'save_updated_fees', 'post' => [
+                    'class'   => 'Class 5th',
+                    'section' => 'Section A',
+                    'fees'    => json_encode($chart),
+                ]];
+
+            case 'admit':
+                return ['controller' => 'sis', 'method' => 'save_admission', 'post' => [
+                    'name'         => self::MARKER . ' Controlled UAT',
+                    'class'        => 'Class 5th',
+                    'section'      => 'Section A',
+                    // A date of birth is what makes the generated password reach
+                    // Firebase's six-character minimum, so this is also what
+                    // makes the Auth account real rather than silently refused.
+                    'dob'          => '2015-04-12',
+                    'phone_number' => '9000000190',
+                    'phone'        => '9000000190',
+                    'email'        => '',
+                    // The genuine configured admission fee, collected in cash.
+                    // Cash needs no bank ledger; a non-cash mode would also
+                    // require an active bank account on the chart.
+                    'admission_payment_mode' => 'cash',
+                ]];
+        }
+        $this->_refuse("unknown stage '{$stage}'", 'There is no plan for it.');
+        return [];
+    }
+
+    /** Stage names, in the order they must run. Nothing else is dispatchable. */
+    private const STAGES = ['seed_coa', 'add_section', 'fee_chart', 'admit'];
+
+    // ══ EXECUTION STAGES ═══════════════════════════════════════════════════
+
+    /**
+     * Run exactly ONE approved stage, then stop.
+     *
+     * One stage per process, deliberately. `json_success()`/`json_error()` both
+     * `exit`, so an in-process sequence would end at the first stage anyway —
+     * but the stronger reason is that each stage must be independently
+     * authorised, independently verified against persisted state, and reported
+     * before the next is even considered. A single process running the whole
+     * chain could not be stopped between stages, which is precisely the control
+     * this run exists to keep. That is also why a failing stage needs no
+     * "halt" branch: the endpoint exits, the process ends, and the next stage
+     * cannot start because it needs a fresh ticket only a human can mint.
+     */
+    public function stage($name = ''): void
+    {
+        $this->_orchestrate($name, true);
+    }
+
+    /**
+     * Prove the production orchestration WITHOUT writing.
+     *
+     * Everything the real run does, runs: the same session seed, the same
+     * five-condition gate, the same single-use ticket consumption, the same
+     * per-write tenant re-assertion, the same stage table and the same
+     * `_plan()`. Only the final call into the application is withheld, and the
+     * plan is printed instead. That keeps the side-effect boundary — one line —
+     * as the only difference between a proof and a run, rather than testing a
+     * second implementation that could drift from it.
+     *
+     * It talks to PRODUCTION, deliberately: the destination proof, the tenant
+     * document check and the ticket semantics are only meaningful against the
+     * real project. It performs reads only.
+     */
+    public function verify($name = ''): void
+    {
+        $this->_orchestrate($name, false);
+    }
+
+    private function _orchestrate(string $name, bool $write): void
+    {
+        if (!in_array($name, self::STAGES, true)) {
+            $this->_refuse("unknown stage '{$name}'",
+                'Approved stages, in order: ' . implode(' -> ', self::STAGES) . '.');
+        }
+
+        $this->_seedSession();
+        $this->_gate($name);          // five conditions, incl. this stage's single-use ticket
+        $this->_assertTenant($name);  // re-reads the LIVE session, immediately before the write
+
+        $plan = $this->_plan($name);
+
+        if (!$write) {
+            fwrite(STDOUT, json_encode([
+                'mode'       => 'verify',
+                'stage'      => $name,
+                'order'      => array_search($name, self::STAGES, true) + 1,
+                'of'         => count(self::STAGES),
+                'tenant'     => self::TENANT,
+                'project'    => self::PROJECT,
+                'actor'      => (string) $this->session->userdata('admin_id'),
+                'role'       => (string) $this->session->userdata('admin_role'),
+                'session'    => (string) $this->session->userdata('session'),
+                'planDigest' => substr($this->_planDigest(), 0, 12),
+                'dispatch'   => $plan['controller'] . '::' . $plan['method'],
+                'post'       => $plan['post'],
+                'writes'     => 0,
+                'note'       => 'Gate, ticket, tenant binding and plan all exercised. '
+                              . 'The dispatch was withheld; nothing was written.',
+            ], JSON_PRETTY_PRINT | JSON_UNESCAPED_SLASHES) . "\n");
+            return;
+        }
+
+        require_once APPPATH . 'libraries/Probe_dispatch.php';
+        Probe_dispatch::run($plan['controller'], $plan['method'], $plan['post']);
+    }
+
     private function _seedSession(): void
     {
         if (session_status() !== PHP_SESSION_ACTIVE) @session_start();
