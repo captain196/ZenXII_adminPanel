@@ -333,10 +333,6 @@ class Sis extends MY_Controller
         // unfalsifiable by a concurrent admission rather than merely unchanged
         // during the commit. Empty means the version could not be established;
         // the guard then refuses, which is the fail-closed direction.
-        // Load before the FIRST static use of the class. The working tree only
-        // ever got here with it already loaded, as a side effect of
-        // MY_Controller constructing Student_write_service; depending on another
-        // library's load order for a safety guard is accidental, not architectural.
         require_once APPPATH . 'libraries/Section_seat_guard.php';
         $decisionVersion = $this->_sectionDecisionVersion($classOrd, $section, $this->session_year);
         $__occ = $this->_sectionActiveCountFresh($classOrd, $section, $this->session_year);
@@ -644,6 +640,21 @@ class Sis extends MY_Controller
                 if ($attempt > 1) {
                     // Re-decide FIRST: if the seats are gone, say so plainly
                     // instead of reporting a concurrency conflict.
+                    // ORDER IS LOAD-BEARING — capture the version BEFORE counting.
+                    // The initial decision already does this; the retry did not, and
+                    // that asymmetry was the residual race. Captured:
+                    //   .213710 STU0253 PLACED            -> occupancy becomes 2
+                    //   .223117 STU0254 redecide occ=1    -> stale roster
+                    //   .226557 STU0254 version captured  -> NEWER than that roster
+                    //   .233429 STU0254 commit SUCCESS    -> CAS passes honestly
+                    // A version taken after the count cannot witness a placement that
+                    // landed during the count, so the CAS proves nothing about the
+                    // decision. Taken before, any such placement invalidates it and we
+                    // retry instead of consuming a seat that is already gone. The count
+                    // may still be stale; the version makes that harmless.
+                    $decisionVersion = $this->_sectionDecisionVersion(
+                        $classOrd, $section, $this->session_year
+                    );
                     $cap = $this->_sectionCapacity($classOrd, $section, $this->session_year);
                     if ($cap > 0) {
                         $now = $this->_sectionActiveCountFresh(
@@ -667,10 +678,7 @@ class Sis extends MY_Controller
                             break;
                         }
                     }
-                    Section_seat_guard::trace('redecide', ['occ' => ($now ?? -1), 'cap' => ($cap ?? -1)]);
-                    $decisionVersion = $this->_sectionDecisionVersion(
-                        $classOrd, $section, $this->session_year
-                    );
+                    Section_seat_guard::trace('redecide', ['occ' => ($now ?? -1), 'cap' => ($cap ?? -1), 'ver' => substr($decisionVersion, 11, 15)]);
                 }
 
                 Section_seat_guard::trace('attempt', ['n' => $attempt, 'ver' => substr($decisionVersion, 11, 15), 'stu' => $userId]);
