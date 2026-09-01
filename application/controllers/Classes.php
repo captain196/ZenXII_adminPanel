@@ -183,7 +183,33 @@ class Classes extends MY_Controller
         }
 
         $classKey = Firestore_service::classKey($class_name);
-        $sectionDocId = $this->fs->schoolId() . '_' . $classKey . '_' . $section_name;
+
+        // ── Phase 16.4 (SEC-2) — CANONICAL SECTION DOCUMENT ID ──────────
+        //
+        // THE DEFECT THIS CLOSES: this writer built the id by hand as
+        // `{schoolId}_{classKey}_{section}` — WITHOUT the session — while
+        // every reader and the other writer use
+        // Firestore_service::sectionDocId(), which is
+        // `{schoolId}_{session}_{classKey}_{sectionKey}`. They therefore
+        // addressed DIFFERENT DOCUMENTS, so a section created here was
+        // invisible to everything that later looked for it:
+        //
+        //   • get_section_settings() (:392) read the session-ful id, found
+        //     nothing, and reported max_strength = 0 — the settings screen
+        //     showed nothing even though a capacity had just been saved.
+        //   • MY_Controller::_sectionCapacity() read the session-ful id,
+        //     found nothing, and fell back to its HARDCODED DEFAULT OF 40.
+        //     A school configuring 30 seats silently had 40 enforced, and a
+        //     school configuring 50 silently had 40 enforced. The capacity
+        //     guards added in Phase 15 were working correctly — they were
+        //     simply being handed the wrong number.
+        //   • save_section_settings() (:422) then wrote a SECOND, session-ful
+        //     document, leaving two records for one section.
+        //
+        // Using the canonical helper makes create/read/update address one
+        // document. `sectionKey()` is applied inside the helper, so the
+        // stored id no longer depends on this method's own prefix handling.
+        $sectionDocId = $this->fs->sectionDocId($class_name, $section_name);
 
         // Prevent overwrite
         $existing = $this->fs->get('sections', $sectionDocId);

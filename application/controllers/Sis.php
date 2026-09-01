@@ -28,6 +28,9 @@ use PhpOffice\PhpSpreadsheet\Spreadsheet;
 class Sis extends MY_Controller
 {
     /** Roles for student information management */
+    /** SEAT-RACE-1: bounded re-decide attempts for a lost placement race. */
+    private const SEAT_RETRY_ATTEMPTS = 4;
+
     private const MANAGE_ROLES = ['Super Admin', 'School Super Admin', 'Admin', 'Principal', 'Vice Principal', 'Front Office'];
 
     /** Roles that may view student information */
@@ -297,10 +300,56 @@ class Sis extends MY_Controller
         $phone       = trim($this->input->post('phone_number')  ?? $this->input->post('phone') ?? '');
         $email       = trim($this->input->post('email')         ?? '');
         $rollNo      = trim($this->input->post('roll_no')       ?? '');
+        // Phase 9.1 (2026-08-13) — SRNO is no longer read from POST here
+        // (or anywhere in the admission flow) — it is ALWAYS server-
+        // allocated inside _claimIdentityAttributes(), same as
+        // enroll_student(). Any `sr_no` a client might still send is
+        // silently ignored. APAAR remains optional/operator-entered.
+        $apaarInput  = trim((string) $this->input->post('apaar_id'));
 
         // M-07 FIX: Validate email format before storing
         if ($email !== '' && !filter_var($email, FILTER_VALIDATE_EMAIL)) {
             return $this->json_error('Invalid email address format.');
+        }
+
+        // ── Phase 15 (HIGH-1) — Section capacity, SERVER-AUTHORITATIVE ──────
+        // Direct admission previously had NO capacity awareness at all: an
+        // operator could admit the 41st student into a 40-seat section and
+        // nothing objected. The CRM screen showed live headroom via
+        // get_class_sections(), but that is a UI SUGGESTION helper — source
+        // check confirmed enroll_student() had no server-side guard either,
+        // so the client was the only thing standing between a school and an
+        // over-full register on BOTH paths.
+        //
+        // Checked here, at commit time, against the LIVE roster — not against
+        // whatever the browser saw when the form was opened. A stale tab whose
+        // seats were consumed while the operator typed is correctly rejected.
+        //
+        // Placed BEFORE the roll check and before any write, so a rejection
+        // burns no Student ID, claims no SRNO, and creates no document.
+        // SEAT-RACE-1: capture the section version BEFORE counting occupancy, so
+        // the version covers the count itself. It is carried into the placement
+        // commit as the CAS precondition, which is what makes this decision
+        // unfalsifiable by a concurrent admission rather than merely unchanged
+        // during the commit. Empty means the version could not be established;
+        // the guard then refuses, which is the fail-closed direction.
+        $decisionVersion = $this->_sectionDecisionVersion($classOrd, $section, $this->session_year);
+        $capOver = $this->_sectionCapacityExceeded($classOrd, $section, $this->session_year, 1, '', /* fresh */ true);
+        if ($capOver !== null) {
+            return $this->json_error($this->_sectionCapacityMessage($capOver, $classOrd, $section));
+        }
+
+        // ── Phase 14.1 — Roll Number roster uniqueness ──────────────────────
+        // Rejected BEFORE any write, so a collision can never leave a
+        // half-created student (no Student ID burned, no SRNO claimed, no
+        // Firestore document). Scoped to School+Session+Class+Section, so the
+        // same roll stays legal in another section, class, session or school.
+        // A blank roll skips the check entirely — assigning later is normal.
+        if ($rollNo !== '') {
+            $rollConflict = $this->_rollNoConflict($rollNo, $classOrd, $section, $this->session_year);
+            if ($rollConflict !== null) {
+                return $this->json_error($this->_rollNoConflictMessage($rollConflict, $classOrd, $section));
+            }
         }
 
         // Phone format guard — matches the pattern in update_profile().
@@ -355,6 +404,27 @@ class Sis extends MY_Controller
         // Sanitize path segments (exits with json_error on invalid input)
         $this->safe_path_segment($classOrd, 'class');
         $this->safe_path_segment($section, 'section');
+
+        // BUG-076 Part 2-A (walk-in path, 2026-08-12) — fee-structure
+        // pre-flight. execute_promotion() and enroll_student() have carried
+        // this guard since 2026-05-28/05-31; save_admission() never did, so the
+        // walk-in path could still admit a student Active-with-zero-demands
+        // (the STU0004-11 incident) whenever the operator had not configured
+        // the destination fee structure. Placement is load-bearing: this runs
+        // BEFORE _nextStudentId() below, so a blocked admission does not burn a
+        // student ID off the counter (the burned-ID hazard documented further
+        // down this method).
+        $feeStructErr = $this->_fee_structure_missing($classOrd, $section, $session, 'Admission');
+        if ($feeStructErr !== '') {
+            return $this->json_error($feeStructErr);
+        }
+
+        // G10 (2026-08-08) — resolve + validate the admission fee BEFORE any
+        // student/counter/Auth write, so a blocked or mis-configured collection
+        // rejects the request cleanly rather than admitting a student whose fee
+        // then can't be charged. Exits via json_error on any problem. Applied
+        // after the student exists (see _admission_fee_apply below).
+        $admissionFeePlan = $this->_admission_fee_precheck($classOrd);
 
         // Always generate userId at save time (counter increments only here, not on page load)
         $generated = $this->_nextStudentId($school_id);
@@ -535,7 +605,88 @@ class Sis extends MY_Controller
         // ══════════════════════════════════════════════════════════════
         // SIS Wave-2 S6 (2026-05-31): capture sync return so silent failure
         // is visible in logs. Observability-only; no behavior change.
-        if (!$this->entity_sync->syncStudent($userId, $studentData)) {
+        // ── PHASE 20.3h — PATH 1/5: ADMISSION (P20.2-RACE-1) ────────────
+        // Primary student write. When the atomic capacity authority is ON this
+        // commits the student AND the destination-section CAS marker in one
+        // Firestore batch; a concurrent writer that already moved the section
+        // causes the whole batch to roll back and the admission is refused
+        // without writing anything.
+        //
+        // A refusal returns HERE, before _claimIdentityAttributes() below, so
+        // no SRNO or APAAR is claimed for an admission that did not happen
+        // (ordering verified in Phase 20.3e-1).
+        require_once APPPATH . 'libraries/Section_seat_guard.php';
+        if (Section_seat_guard::enabled()) {
+            // ── SEAT-RACE-1 · BOUNDED RE-DECIDE ─────────────────────────────
+            //
+            // A CAS conflict means a competing admission committed first, so
+            // this request's capacity decision is stale — not wrong. Refusing
+            // outright would be safe but would under-admit: five simultaneous
+            // requests for two seats would fill one seat and reject four.
+            //
+            // So a loser re-decides against the roster as it is now, using the
+            // UNCACHED count (the per-request memo still holds the roster that
+            // lost) and a freshly captured section version, then retries. It
+            // stops as soon as the section is genuinely full, which is the
+            // answer the operator should get.
+            //
+            // The student id is minted before this point and is NOT re-minted
+            // on retry, so a retry consumes no additional id.
+            $placement = ['status' => '', 'message' => ''];
+            $capacityMsg = '';
+            for ($attempt = 1; $attempt <= self::SEAT_RETRY_ATTEMPTS; $attempt++) {
+                if ($attempt > 1) {
+                    // Re-decide FIRST: if the seats are gone, say so plainly
+                    // instead of reporting a concurrency conflict.
+                    $cap = $this->_sectionCapacity($classOrd, $section, $this->session_year);
+                    if ($cap > 0) {
+                        $now = $this->_sectionActiveCountFresh(
+                            $classOrd, $section, $this->session_year
+                        );
+                        if ($now + 1 > $cap) {
+                            // Match _sectionCapacityExceeded()'s return shape exactly —
+                            // _sectionCapacityMessage() reads 'incoming' and 'over', and a
+                            // hand-built array missing them produced a PHP warning instead
+                            // of the operator-facing "section is full" message.
+                            $capacityMsg = $this->_sectionCapacityMessage(
+                                [
+                                    'capacity'  => $cap,
+                                    'current'   => $now,
+                                    'incoming'  => 1,
+                                    'projected' => $now + 1,
+                                    'over'      => ($now + 1) - $cap,
+                                ],
+                                $classOrd, $section
+                            );
+                            break;
+                        }
+                    }
+                    $decisionVersion = $this->_sectionDecisionVersion(
+                        $classOrd, $section, $this->session_year
+                    );
+                }
+
+                $placement = $this->_placeStudentGuarded(
+                    $userId, $studentData, $classOrd, $section, $this->session_year, 'save_admission',
+                    $decisionVersion
+                );
+
+                if (($placement['status'] ?? '') === Section_seat_guard::PLACED) break;
+
+                // Only a CONFLICT is retryable. FAILURE means the outcome is
+                // unknown and re-committing an unknown outcome is how duplicate
+                // students are made.
+                if (($placement['status'] ?? '') !== Section_seat_guard::CONFLICT) break;
+            }
+
+            if (($placement['status'] ?? '') !== Section_seat_guard::PLACED) {
+                return $this->json_error(
+                    $capacityMsg !== ''
+                        ? $capacityMsg
+                        : ($placement['message'] ?: 'Admission could not be saved.')
+                );
+            }
+        } elseif (!$this->entity_sync->syncStudent($userId, $studentData)) {
             log_message('warning', "syncStudent returned false for {$userId} (save_admission)");
         }
         if (!$this->entity_sync->syncParent($userId, $studentData)) {
@@ -546,12 +697,10 @@ class Sis extends MY_Controller
         // admission section-picker's strength bars stay accurate.
         $this->_recompute_section_strength($classKey, $sectionKey);
 
-        // Phone index
+        // Phone index — P14-1: append, never overwrite, so a sibling admitted
+        // later does not evict this student from the shared phone.
         if (!empty($phone)) {
-            $this->fs->set('indexPhones', $this->fs->docId($phone), [
-                'schoolId' => $this->school_id, 'phone' => $phone,
-                'userId' => $userId, 'type' => 'student',
-            ]);
+            $this->_registerPhoneIndex($phone, $userId, 'student');
         }
 
         // Fee month markers
@@ -618,6 +767,68 @@ class Sis extends MY_Controller
             }
         }
 
+        // Phase 9 correction pass (2026-08-13) — optional SRNO + APAAR
+        // claim, wired at the SAME best-effort point subjects/
+        // additionalSubjects already use (student record already exists
+        // and is committed by this point). SAME shared helper
+        // enroll_student() uses — one canonical wiring to
+        // Sr_no_service/Apaar_service across both admission entry points.
+        $srnoAssigned     = true;
+        $identityWarnings = $this->_claimIdentityAttributes($userId, $school_id, $apaarInput, $studentData, $srnoAssigned);
+
+        // ── SRNO-F1 (2026-08-17) — ADMISSION IS AN IDENTITY TRANSACTION ─────
+        //
+        // INVARIANT: student creation + SRNO allocation = successful admission.
+        // `studentId` is the global system identity; SRNO is the school-scoped
+        // OPERATIONAL identity the school works by. Half of that pair is not an
+        // admission, and reporting it as one — which is exactly what this method
+        // used to do, appending "SRNO requires administrator follow-up" to a
+        // SUCCESS response — leaves an unusable student the operator believes is
+        // finished.
+        //
+        // WHY FAILING HERE IS SAFE. At this point the student document, parent
+        // record, phone index, section strength, monthFee and subjects exist —
+        // but the Firebase Auth user, the entitlement, the fee demands, the
+        // history/audit entry and the admission-fee receipt do NOT. Nothing
+        // financial and no credential has been created, so this is the last
+        // point at which the request can be undone cheaply. The ordering is
+        // asserted by PhaseSrnoF1AdmissionIdentityTest, so a future reorder that
+        // moved money above this line would fail the build.
+        //
+        // COMPENSATION mirrors the PROVEN Import contract (Sis:6190 and
+        // Phase203kStep0ImportHarnessTest::test_GOLDEN_03_...): delete the
+        // student and return the Student ID to the counter, so a refused
+        // admission burns no identity. Section strength is recomputed because
+        // THIS method inflated it above — leaving it would permanently consume a
+        // seat for a student that does not exist, corrupting the very data the
+        // atomic-capacity guard reads.
+        //
+        // DELIBERATELY NOT UNDONE: the phone index and the parent record. Both
+        // are SHARED, append-shaped structures — the phone index is explicitly
+        // append-never-overwrite so siblings can share a number — so removing
+        // this student's entry risks damaging a DIFFERENT student's data. That
+        // residue is reported rather than silently cleaned; a wrong repair here
+        // is worse than a known one.
+        if (!$srnoAssigned) {
+            log_message('error', "ACC_ADMISSION_SRNO_FAILED student=[{$userId}] school=[{$school_id}] "
+                . '— admission REFUSED and rolled back; no SRNO could be allocated.');
+
+            try {
+                $this->entity_sync->deleteStudent($userId);
+            } catch (\Throwable $e) {
+                log_message('error', "ACC_ADMISSION_SRNO_ROLLBACK_FAILED student=[{$userId}]: " . $e->getMessage());
+            }
+            $this->id_generator->releaseClaim('STU', (int) preg_replace('/\D/', '', $userId));
+            $this->_recompute_section_strength($classKey, $sectionKey);
+
+            return $this->json_error(
+                'Admission could not be completed: an SR Number could not be allocated for this '
+                . 'student, and every admitted student must have one. No student record, fee demand '
+                . 'or receipt was created. Please retry; if it keeps failing, check the SR Number '
+                . 'counter for this school before re-admitting.'
+            );
+        }
+
         // Fees Exemption v2 (P0-b): the exempted_fees_multiple admission write
         // was removed. Concessions are captured via Fee_concessions (Phase 0+),
         // applied by the unified generator (Phase 2+). Admission billing here
@@ -635,12 +846,82 @@ class Sis extends MY_Controller
         $this->_createFirebaseAuthStudent($userId, $password, $name, 'SIS save_admission');
 
         // ══════════════════════════════════════════════════════════════
+        // 3.5 ENTITLEMENT RESOLUTION — PHASE 3B / B1 (must precede pricing)
+        // ══════════════════════════════════════════════════════════════
+        //
+        // THE DEFECT THIS CLOSES. Entitlement capture used to be possible only
+        // AFTER this request returned (ENTCAP.mount() runs in the response
+        // handler), so a concession agreed at the admission desk could not
+        // affect the demands this method was about to write. The operator saw
+        // "Admission successful", the parent saw a full-price invoice, and
+        // nothing anywhere reported a problem.
+        //
+        // An entitlement KNOWN at admission time is now submitted with the form
+        // and resolved HERE — after identity, before pricing — so
+        // assignInitialFees() below prices against it. Post-hoc capture through
+        // ENTCAP is unchanged and still supported for concessions agreed later.
+        //
+        // Placement is load-bearing: after _claimIdentityAttributes() so the
+        // student is complete, and before assignInitialFees() so the demand is
+        // priced once, correctly, rather than written and then repaired.
+        $entitlementState = $this->_resolve_admission_entitlement($userId, $school_id);
+
+        // ══════════════════════════════════════════════════════════════
         // 4. POST-ADMISSION — Fees, history, leads, notifications
         // ══════════════════════════════════════════════════════════════
+        //
+        // PHASE 3B / B6 — A FINANCIAL OPERATION MUST NOT FAIL SILENTLY.
+        // This used to catch, log, and carry on: the student was admitted, the
+        // response said "success", and the student had ZERO demands. The
+        // operator's next signal was a parent asking why no fee was due.
+        //
+        // The student genuinely exists by this point, so aborting with
+        // json_error would be a lie in the other direction — hence an explicit
+        // BILLING STATE rather than a boolean success. The admission stands; the
+        // billing outcome is reported truthfully.
+        $billingState = 'billed';
+        $billingNote  = '';
         try {
-            $this->feeLifecycle->assignInitialFees($userId, $classOrd, $section, $school_id);
-        } catch (Exception $e) {
-            log_message('error', "Fee_lifecycle::assignInitialFees failed for {$userId}: " . $e->getMessage());
+            $assigned = $this->feeLifecycle->assignInitialFees($userId, $classOrd, $section, $school_id);
+            if (!is_array($assigned) || $assigned === []) {
+                // assignInitialFees() returns the assigned heads. Empty means no
+                // demand was created — a missing/blocked fee structure, or a
+                // failed commit that it logged internally.
+                $billingState = 'billing_failed';
+                $billingNote  = 'No fee demands were created. Open the student\'s Fees page and run '
+                              . 'Generate Demands before collecting any payment.';
+                log_message('error', "ACC_ADMISSION_BILLING_EMPTY student=[{$userId}] class=[{$classOrd}/{$section}] "
+                    . '— admission succeeded with ZERO demands.');
+            }
+        } catch (\Throwable $e) {
+            $billingState = 'billing_failed';
+            $billingNote  = 'Fee generation failed for this admission. Do NOT collect payment until '
+                          . 'demands have been generated from the student\'s Fees page.';
+            log_message('error', "ACC_ADMISSION_BILLING_FAILED student=[{$userId}]: " . $e->getMessage());
+        }
+
+        // An entitlement that could not be resolved means the demand above was
+        // priced WITHOUT it. That is a pending billing decision, not a success.
+        if ($billingState === 'billed' && ($entitlementState['status'] ?? 'none') === 'failed') {
+            $billingState = 'billing_pending';
+            $billingNote  = 'The student was admitted and billed, but the concession could not be '
+                          . 'recorded, so it is NOT reflected in these demands. Add it from the '
+                          . 'student\'s record, then regenerate the demands.';
+        }
+
+        // ADM-ENT-1 — recorded, but into a store this tenant's pricing engine
+        // does not read, so the demands above are FULL PRICE. Same operator
+        // consequence as 'failed' (a concession not reflected in the demands),
+        // so it gets the same treatment rather than a success message that is
+        // not true. The wording differs because the remedy differs: re-adding
+        // it from the student record will NOT help — the tenant needs the
+        // canonical billing authority.
+        if ($billingState === 'billed' && ($entitlementState['status'] ?? 'none') === 'recorded_not_priced') {
+            $billingState = 'billing_pending';
+            $billingNote  = 'The student was admitted and billed, and the concession WAS recorded — '
+                          . 'but this school is not yet on entitlement-based billing, so the '
+                          . 'concession is NOT reflected in these demands. They are at full price. '
+                          . 'Do not collect against them until the concession has been applied.';
         }
 
         // Phase 3D (2026-05-09) — admission-time defaulter projection sync.
@@ -678,18 +959,148 @@ class Sis extends MY_Controller
             }
         }
 
+        // G10 (2026-08-08) — collect (or record the audited waive of) the
+        // admission fee, through the SAME Admission_collection receipt +
+        // accounting path the online and CRM-counter pathways use. Runs after
+        // lead conversion so a converted lead's crmApplications doc already
+        // carries student_id when the receipt timeline is appended. Non-fatal:
+        // the student is admitted at this point, so the outcome is reported
+        // back rather than failing the request.
+        $admissionFee = $this->_admission_fee_apply(
+            $admissionFeePlan, $userId, $name, $father, $classOrd,
+            ($leadId !== '' && preg_match('/^[A-Za-z0-9_]+$/', $leadId)) ? $leadId : ''
+        );
+
         // Notify parent
         if ($phone !== '') {
             notify_admission_confirmed($phone, $this->school_display_name ?? $this->school_name, $userId, $name);
         }
 
+        // PHASE 3B / B1 — the message must never claim more than the financial
+        // state supports. "Admission successful" on a student with no demands,
+        // or with a concession that was not applied, is the failure mode this
+        // phase exists to remove.
+        $message = $billingState === 'billed'
+            ? 'Student admitted successfully.'
+            : ($billingState === 'billing_pending'
+                ? 'Student admitted — BILLING PENDING.'
+                : 'Student admitted — BILLING FAILED.');
+        if ($billingNote !== '') $message .= ' ' . $billingNote;
+        if (($entitlementState['status'] ?? 'none') === 'applied') {
+            $message .= ' Concession recorded and applied to the initial demands.';
+        } elseif (($entitlementState['status'] ?? 'none') === 'recorded_not_priced') {
+            // ADM-ENT-1: say what actually happened. Claiming "applied" here was
+            // the whole defect — the operator had no way to know the invoice the
+            // parent receives is at full price.
+            $message .= ' Concession recorded, but NOT applied to these demands —'
+                      . ' this school is not yet on entitlement-based billing.';
+        } elseif (($entitlementState['status'] ?? 'none') === 'duplicate') {
+            $message .= ' This concession was already on file — not added a second time.';
+        }
+        if (($admissionFee['status'] ?? '') === 'collected') {
+            $message .= ' Admission fee ' . number_format((float) $admissionFee['amount'], 2)
+                . ' collected — receipt ' . ($admissionFee['receipt_no'] ?? '') . '.';
+        } elseif (($admissionFee['status'] ?? '') === 'already_collected') {
+            $message .= ' Admission fee was already collected for this application — receipt '
+                . ($admissionFee['receipt_no'] ?? '') . '. Not charged again.';
+        } elseif (($admissionFee['status'] ?? '') === 'waived') {
+            $message .= ' Admission fee waived.';
+        } elseif (($admissionFee['status'] ?? '') === 'failed') {
+            $message .= ' WARNING: the admission fee could not be collected — collect it from the'
+                . ' student ledger before issuing a receipt.';
+        }
+
+        // Phase 9 correction pass — surface any SRNO/APAAR claim warnings
+        // the SAME way this method already surfaces admission-fee status:
+        // appended to $message. save_admission()'s response has no
+        // separate `warnings` array (unlike enroll_student()), and its own
+        // view (studentAdmission.php) only ever displays `res.message` —
+        // adding an unused response key nothing reads would be dead
+        // surface area, not a real fix.
+        if (!empty($identityWarnings)) {
+            $message .= ' ' . implode(' ', $identityWarnings);
+        }
+
+        // ── ONE CANONICAL TRANSPORT LIFECYCLE, BOTH ADMISSION PATHS ─────────
+        //
+        // Online admission already does this: public_form captures a transport
+        // DECLARATION, and enroll_student() turns it into a pending
+        // transportRequests row for the Transport → Requests queue.
+        //
+        // Direct staff admission did not, so a family admitted at the counter
+        // never entered that lifecycle at all. The Services & Concessions panel
+        // on this screen offered "Service enrolment (adds fee)", which wrote an
+        // ACTIVE studentEntitlements kind='service' row that nothing reads — no
+        // request, no queue entry, no route, no fee. Staff got a success
+        // message for an outcome that never happened (SVC-ORPHAN-1).
+        //
+        // A DECLARATION IS NOT AN ASSIGNMENT. At this moment the school usually
+        // has no route or stop for this child, and assignStudent() would raise a
+        // transport FEE — so a bare declaration must never become an assignment,
+        // or the family is billed for a service nobody has arranged. Route and
+        // stop stay an operational decision made at approval, where the atomic
+        // capacity reservation also lives.
+        //
+        // requestTransport() is idempotent per (student, session), so a
+        // resubmitted admission cannot produce two requests.
+        //
+        // Best-effort BY DESIGN, exactly as enroll_student() does it: a
+        // worklist entry must never fail an admission that has already created
+        // the student and their Auth account.
+        $transportRequest = null;
+        try {
+            if ((string) $this->input->post('decl_transport') === '1') {
+                $this->load->library('numbering_service', null, 'trnNumbering');
+                $this->trnNumbering->init($this->fs, $this->school_name, $this->session_year);
+                $this->load->library('transport_service', null, 'trnSvc');
+                $this->trnSvc->init($this->fs, $this->trnNumbering,
+                    $this->school_name, $this->session_year, $this->admin_id ?? 'admission');
+                $transportRequest = $this->trnSvc->requestTransport([
+                    'studentId'      => $userId,
+                    'student_name'   => (string) ($studentData['name'] ?? ''),
+                    'student_class'  => (string) ($studentData['className'] ?? ''),
+                    // MODEL A: a request is DESCRIPTIVE. No route_id/stop_id —
+                    // management supplies the canonical pair at approval.
+                    'type'           => (string) ($this->input->post('decl_transport_type') ?? 'both'),
+                    'requested_area' => substr(trim((string) $this->input->post('decl_transport_area')), 0, 120),
+                ], 'admission');
+                $message .= ' Transport requested — it is now in Operations → Transport → Requests'
+                          . ' for route and stop assignment. No transport fee has been raised yet.';
+            }
+        } catch (\Throwable $e) {
+            log_message('error', "F14 direct-admission transport request failed for {$userId}: "
+                . $e->getMessage());
+        }
+
+        // Verified relationships declared on this form. Every note is reported
+        // to the operator — including the failures — because a relationship
+        // that silently did not happen is the defect this replaced.
+        foreach ($this->_captureAdmissionRelationships(
+            $userId,
+            (string) $this->input->post('decl_sibling_srno'),
+            (string) $this->input->post('decl_staff_ward_id'),
+            (string) $this->input->post('decl_rte_ref')
+        ) as $note) {
+            $message .= ' ' . $note;
+        }
+
         return $this->json_success([
-            'message'  => 'Student admitted successfully.',
-            'user_id'  => $userId,
-            'name'     => $name,
-            'password' => $password,
-            'class'    => str_replace('Class ', '', $classOrd),
-            'section'  => str_replace('Section ', '', $section),
+            'message'       => $message,
+            'user_id'       => $userId,
+            'sr_no'         => $studentData['srNo'] ?? '',   // Phase 9.1 — server-allocated, for the credentials/identity panel
+            'admission_no'  => $studentData['Admission Number'] ?? '',   // Phase 10.1 — admission-event identifier, YYYY/CLASS/XXX
+            'name'          => $name,
+            'password'      => $password,
+            'class'         => str_replace('Class ', '', $classOrd),
+            'section'       => str_replace('Section ', '', $section),
+            'admission_fee' => $admissionFee,
+            // PHASE 3B / B1 — explicit financial state. The UI renders this
+            // rather than inferring success from the HTTP status, so an
+            // operator can never be told "successful" while billing is
+            // incomplete. billed | billing_pending | billing_failed.
+            'billing_state' => $billingState,
+            'billing_note'  => $billingNote,
+            'entitlement'   => $entitlementState,
         ]);
     }
 
@@ -3532,27 +3943,19 @@ class Sis extends MY_Controller
         string $description,
         array  $metadata = []
     ): void {
+        // Phase 16.0 (R1) — the writer now lives in Student_history_service so
+        // that lifecycle events raised OUTSIDE this controller can be audited
+        // through the same code. This method was private, which is why
+        // Classes::transfer_students() recorded nothing (CS-2) while the
+        // structurally identical promotion was fully audited.
+        //
+        // Record shape, doc-id and histKey format are unchanged, so existing
+        // rows and Student_timeline_reader are unaffected.
         $adminName = $this->session->userdata('admin_name') ?? 'System';
-        $histKey   = date('YmdHis') . '_' . bin2hex(random_bytes(3));
-        $docId     = $schoolId . '_' . $userId . '_' . $histKey;
-        $data = [
-            'schoolId'    => $schoolId,
-            'studentId'   => $userId,
-            'histKey'     => $histKey,
-            'action'      => $action,
-            'description' => $description,
-            'changed_by'  => $adminName,
-            'changed_at'  => date('Y-m-d H:i:s'),
-            'metadata'    => $metadata,
-        ];
-        try {
-            $ok = $this->firebase->firestoreCreate('studentHistory', $docId, $data);
-            if (!$ok) {
-                log_message('error', "Sis::_log_history studentHistory create returned false: {$docId} action={$action}");
-            }
-        } catch (\Throwable $e) {
-            log_message('error', "Sis::_log_history studentHistory write failed: {$docId} action={$action} err=" . $e->getMessage());
-        }
+        $this->load->library('Student_history_service', null, 'studentHistorySvc');
+        $this->studentHistorySvc
+             ->init($this->firebase, (string) $adminName)
+             ->log($schoolId, $userId, $action, $description, $metadata);
     }
 
     /**
@@ -8149,5 +8552,809 @@ class Sis extends MY_Controller
             ];
         }
         return $classes;
+    }
+
+    /**
+     * BUG-076 Part 2-A shared guard (extracted 2026-08-12).
+     *
+     * Returns '' when a usable fee structure exists for the given
+     * class/section/session, otherwise the operator-facing error message.
+     *
+     * A student must never land Active-with-zero-demands because the fee
+     * structure for their class/section/session was never configured — that
+     * is the STU0004-11 incident. assignInitialFees() reads
+     * feeStructures/{schoolId}_{session}_{class}_{section} and silently
+     * returns [] when the doc is missing or carries no feeHeads, so the only
+     * safe place to detect it is BEFORE any student/counter/Auth write.
+     *
+     * This body previously existed as three separate copies — in
+     * execute_promotion() and enroll_student() (both correct) and NOT AT ALL
+     * in save_admission(), which is how the walk-in path reproduced the
+     * incident the other two paths were hardened against. One implementation,
+     * three callers. Do not re-inline it.
+     *
+     * $classKey/$sectionKey MUST already be normalized through
+     * Firestore_service::classKey()/sectionKey() — the docId has to match the
+     * exact key assignInitialFees will read. ($school_name == school_id ==
+     * SCH_xxxxxx.)
+     *
+     * @param string $verb Operation name for the message ('Admission',
+     *                     'Promotion', 'Enrollment').
+     */
+    private function _fee_structure_missing(
+        string $classKey,
+        string $sectionKey,
+        string $session,
+        string $verb
+    ): string {
+        $docId  = "{$this->school_name}_{$session}_{$classKey}_{$sectionKey}";
+        $struct = $this->fs->get('feeStructures', $docId);
+        if (is_array($struct) && !empty($struct['feeHeads'])) {
+            return '';
+        }
+
+        return "No fee structure exists for {$classKey} / {$sectionKey} in session "
+            . "{$session}. {$verb} aborted to prevent the student being enrolled "
+            . "without fee demands. Set up the fee structure for this class/section "
+            . "in session {$session} first, then retry.";
+    }
+
+    /**
+     * G10 (2026-08-08) — admission-fee PRE-CHECK for the direct admission
+     * screen (pathway 3).
+     *
+     * Background: the ERP has three admission pathways — (1) the public online
+     * form, (2) the CRM application converted at the counter
+     * (Sis::collect_admission_fee), and (3) THIS screen, direct entry with no
+     * lead. Pathways 1 and 2 both charge the admission fee through
+     * admission_resolve_fee() + Admission_collection::record_payment(); pathway
+     * 3 had no payment logic whatsoever, so every student admitted directly was
+     * silently never charged. Operator decision (recorded in
+     * STUDENT_ENTITLEMENTS_ARCHITECTURE_BASELINE.md): charge it by default,
+     * through the SAME shared path — no second collection engine — plus a
+     * deliberate, separately-permissioned, audited waive override.
+     *
+     * Runs BEFORE the student doc is created so a mis-configured or blocked
+     * collection fails the request cleanly instead of leaving an admitted
+     * student with an uncollected fee. Every rejection path calls json_error(),
+     * which exits.
+     *
+     * Waive authority is the graded `Fees:manage` capability — deliberately NOT
+     * a side effect of the `SIS:manage` grant this screen already requires, so
+     * an admissions clerk who can admit cannot also waive. (Reference: the
+     * default role catalogue in Staff.php gives ROLE_FRONT_OFFICE `SIS` without
+     * `Fees`.) Granting waive authority to a role that holds SIS but not Fees —
+     * Principal, in the default catalogue — is a catalogue/per-person `extra`
+     * decision, not a code change.
+     *
+     * @return array{due:bool,waived:bool,amount:float,fee_head:string,fee_label:string,
+     *               mode:string,mode_label:string,bank_code:string,bank_reference:string,
+     *               waive_reason:string}
+     */
+    private function _admission_fee_precheck(string $classOrd): array
+    {
+        $plan = [
+            'due' => false, 'waived' => false, 'amount' => 0.0,
+            'fee_head' => 'Admission Fee', 'fee_label' => 'Admission Fee',
+            'mode' => '', 'mode_label' => '', 'bank_code' => '', 'bank_reference' => '',
+            'waive_reason' => '',
+        ];
+
+        $this->load->helper('admission_crm');
+        $schoolDoc = $this->firebase->firestoreGet('schools', $this->school_name) ?? [];
+        $feeInfo   = admission_resolve_fee(
+            $this->fs, is_array($schoolDoc) ? $schoolDoc : [], $this->session_year, $classOrd
+        );
+        $amount = round((float) ($feeInfo['amount'] ?? 0), 2);
+        if (empty($feeInfo['enabled']) || $amount <= 0) {
+            return $plan;   // school hasn't configured an admission fee — nothing to charge
+        }
+
+        $plan['due']       = true;
+        $plan['amount']    = $amount;
+        $plan['fee_head']  = (string) ($feeInfo['fee_head'] ?? 'Admission Fee');
+        $plan['fee_label'] = (string) ($feeInfo['label']    ?? $plan['fee_head']);
+
+        // ── Waive override — separate graded capability + mandatory reason ──
+        if ((string) $this->input->post('waive_admission_fee') === '1') {
+            if (!has_permission('Fees', 'manage')) {
+                log_message('error',
+                    'G10 waive DENIED: admin=[' . ($this->admin_id ?? '') . '] role=['
+                    . ($this->admin_role ?? '') . '] school=[' . $this->school_name
+                    . '] lacks Fees:manage');
+                $this->json_error('You do not have permission to waive the admission fee.', 403);
+            }
+            $reason = trim((string) ($this->input->post('waive_reason') ?? ''));
+            if ($reason === '') {
+                $this->json_error('A reason is required to waive the admission fee.');
+            }
+            $plan['waived']       = true;
+            $plan['waive_reason'] = $reason;
+            return $plan;
+        }
+
+        // ── Collection inputs — mirror collect_admission_fee's validation ──
+        $mode = trim((string) $this->input->post('admission_payment_mode'));
+        if ($mode === '') {
+            $this->json_error('Select how the admission fee of ' . number_format($amount, 2)
+                . ' was collected, or waive it.');
+        }
+        $modeMap = [
+            'cash' => 'cash', 'upi' => 'upi', 'cheque' => 'cheque', 'neft' => 'neft', 'rtgs' => 'rtgs',
+            'dd' => 'bank_transfer', 'demand draft' => 'bank_transfer', 'bank transfer' => 'bank_transfer',
+            'pos' => 'bank_transfer', 'pos/card' => 'bank_transfer', 'card' => 'bank_transfer',
+        ];
+        $acctMode = $modeMap[strtolower($mode)] ?? null;
+        if ($acctMode === null) {
+            $this->json_error('Invalid payment mode: ' . $mode);
+        }
+        $bankCode = trim((string) $this->input->post('admission_bank_ledger_code'));
+        if ($acctMode === 'cash') {
+            $bankCode = '';
+        } else {
+            if ($bankCode === '') {
+                $this->json_error('Select a bank ledger for a non-cash admission-fee collection.');
+            }
+            $okBank = false;
+            foreach ((array) $this->firebase->firestoreQuery('chartOfAccounts', [['schoolId', '==', $this->school_name]]) as $row) {
+                $cd = $row['data'] ?? $row;
+                if ((string) ($cd['code'] ?? '') !== $bankCode) continue;
+                if (!empty($cd['is_bank']) && empty($cd['is_group']) && ($cd['status'] ?? '') === 'active') $okBank = true;
+                break;
+            }
+            if (!$okBank) {
+                $this->json_error('Invalid or inactive bank ledger selected.');
+            }
+        }
+
+        // ── Period lock — a collection must never post into a closed period ──
+        $this->load->library('Accounting_cache', null, 'acctCacheAdm');
+        $this->load->library('Accounting_period_lock', null, 'acctLockAdm');
+        $this->acctCacheAdm->init($this->school_name, $this->session_year);
+        $this->acctLockAdm->init($this->firebase, $this->acctCacheAdm, $this->school_name, $this->session_year);
+        $lock = $this->acctLockAdm->forceValidate(date('Y-m-d'));
+        if (!empty($lock['locked'])) {
+            $this->json_error('The accounting period is closed up to ' . ($lock['lockedUntil'] ?? '')
+                . '. Reopen it before admitting a student with an admission fee.');
+        }
+
+        $plan['mode']           = $acctMode;
+        $plan['mode_label']     = $mode;
+        $plan['bank_code']      = $bankCode;
+        $plan['bank_reference'] = trim((string) ($this->input->post('admission_bank_reference') ?? ''));
+        return $plan;
+    }
+
+    /**
+     * ── PHASE 20.3c (P20.2-RACE-1) — ATOMIC SEAT-GUARDED STUDENT WRITE ──────
+     *
+     * The single entry point every seat-consuming path in this controller uses
+     * to write a student into a section. Replaces a bare
+     * `entity_sync->syncStudent()` at each placement site.
+     *
+     * WHY: the capacity check and the student write were separate operations
+     * with nothing between them, so two requests could both pass a 39/40 check
+     * and both write — 41/40. This routes the write through
+     * Section_seat_guard, which commits it atomically with a CAS marker on the
+     * destination section. A concurrent writer that already moved that section
+     * causes the whole batch to roll back — the student is NOT written — and
+     * the placement is refused.
+     *
+     * IDENTITY SAFETY: this mints nothing. `$studentId` is fixed by the caller
+     * before this is reached, the student document id is derived from it, and
+     * a refusal writes nothing at all — so no SRNO, Student ID or Admission No
+     * can be issued twice by a refused placement. In save_admission() the SRNO
+     * / APAAR claim (_claimIdentityAttributes) runs AFTER this call, so a
+     * refusal never reaches it.
+     *
+     * NOT used for non-placement student writes (profile edit, TC, withdrawal,
+     * status change) — those consume no seat and keep calling syncStudent()
+     * directly.
+     *
+     * @return array{status:string, message:string, attempts:int}
+     */
+    private function _placeStudentGuarded(
+        string $studentId,
+        array $studentData,
+        string $classNode,
+        string $sectionNode,
+        string $session,
+        string $context = '',
+        string $decisionVersion = ''
+    ): array {
+        if (!isset($this->seatGuard)) {
+            $this->load->library('section_seat_guard', null, 'seatGuard');
+            $this->seatGuard->init(
+                $this->fs,
+                $this->firebase,
+                (string) $this->school_id,
+                (string) ($this->admin_id ?? 'system')
+            );
+        }
+
+        $res = $this->seatGuard->placeStudent(
+            $this->entity_sync, $studentId, $studentData, $classNode, $sectionNode, $session,
+            $decisionVersion
+        );
+
+        if (($res['status'] ?? '') !== Section_seat_guard::PLACED) {
+            log_message('error',
+                "ACC_PLACEMENT_REFUSED context={$context} schoolId={$this->school_id} "
+                . "student={$studentId} section={$classNode}/{$sectionNode} session={$session} "
+                . "status=" . ($res['status'] ?? '?'));
+        }
+        return $res;
+    }
+
+    /**
+     * P14-1 (Phase 14.1) — register a student against a phone WITHOUT evicting
+     * the siblings who share it.
+     *
+     * ── THE DEFECT THIS CLOSES ──────────────────────────────────────────────
+     * `indexPhones/{schoolId}_{phone}` held ONE `userId`, written with
+     * `set(..., merge = false)`. A family shares a phone, so importing Rahul
+     * then Priya left the document pointing only at Priya. Re-importing the
+     * same file then resolved Rahul's row to PRIYA's id, the Phase 13 name
+     * corroboration correctly said "different person", and a SECOND Rahul was
+     * created. The Phase 13 fix corrected the dedup RULE; this corrects the
+     * INDEX SHAPE, which is the actual root cause and exactly what
+     * ZENX_ADMISSION_DOMAIN_SPEC.md already prescribed ("append, not
+     * overwrite").
+     *
+     * ── SHAPE, AND WHY IT IS BACKWARD COMPATIBLE ────────────────────────────
+     *   { phone, schoolId, type, userId: <first/primary>, userIds: [ … ] }
+     *
+     * `userId` is RETAINED as the first-registered student so every existing
+     * reader (Staff.php's pre-owner checks, legacy lookups) keeps working
+     * unchanged. `userIds[]` is the new authoritative set. A legacy document
+     * with only `userId` reads as a single-element set — **no backfill and no
+     * migration are required**.
+     *
+     * This is NOT a sibling graph: it records "these students share a contact
+     * number", nothing more. No relationship, no guardian entity, no ordering.
+     *
+     * Cost: 1 read + 1 write per phone registration, replacing the previous
+     * blind 1 write. The read is required to append without evicting; there is
+     * no atomic array-union primitive exposed on this path. Idempotent —
+     * re-registering the same student is a no-op set membership add.
+     */
+    private function _registerPhoneIndex(string $phone, string $studentId, string $type = 'student'): void
+    {
+        if ($phone === '' || $studentId === '') return;
+        try {
+            $docId    = $this->fs->docId($phone);
+            $existing = $this->fs->get('indexPhones', $docId);
+
+            $ids = [];
+            if (is_array($existing)) {
+                if (is_array($existing['userIds'] ?? null)) {
+                    $ids = array_values(array_filter(array_map('strval', $existing['userIds'])));
+                }
+                // Legacy single-value document → seed the set from it.
+                $legacy = trim((string) ($existing['userId'] ?? ''));
+                if ($legacy !== '' && !in_array($legacy, $ids, true)) $ids[] = $legacy;
+            }
+            if (!in_array($studentId, $ids, true)) $ids[] = $studentId;
+
+            $this->fs->set('indexPhones', $docId, [
+                'schoolId' => $this->school_id,
+                'phone'    => $phone,
+                // Primary stays STABLE (first registrant) so legacy readers do
+                // not silently change meaning when a sibling is added.
+                'userId'   => $ids[0],
+                'userIds'  => array_values($ids),
+                'type'     => $type,
+            ]);
+        } catch (\Throwable $e) {
+            log_message('error', "indexPhones registration failed for {$studentId}/{$phone}: " . $e->getMessage());
+        }
+    }
+
+    /**
+     * ── SRNO-F1 (2026-08-17) — SIGNAL SRNO FAILURE, DO NOT NARRATE IT ────────
+     *
+     * `$srnoAssigned` is an OUT parameter: it reports whether the SR Number was
+     * actually allocated, so a caller can enforce the product invariant
+     *
+     *     student creation + SRNO allocation = successful admission
+     *
+     * rather than having to parse prose out of the warnings array.
+     *
+     * WHY. `studentId` is the global system identity; SRNO is the school-scoped
+     * OPERATIONAL identity that schools actually work by. A student admitted
+     * without one is not a complete student, and this method used to say the
+     * opposite in its own message text ("The admission was completed; SRNO
+     * requires administrator follow-up") while returning a warning that
+     * save_admission() appended to a SUCCESS response.
+     *
+     * Defaulting to TRUE keeps every existing caller byte-compatible: a caller
+     * that does not pass the parameter behaves exactly as before, which is why
+     * enroll_student() is unaffected by this change (see SRNO-F2 there).
+     */
+    private function _claimIdentityAttributes(string $studentId, string $schoolId, string $apaarInput, array &$studentData, bool &$srnoAssigned = true): array
+    {
+        $warnings = [];
+        $srnoAssigned = true;
+
+        try {
+            $this->load->library('Sr_no_service', null, 'srnoSvc');
+            $srnoRes = $this->srnoSvc->init($this->firebase, $this->fs, $schoolId, (string) ($this->admin_id ?? 'system'))
+                ->allocateNext($schoolId, $studentId);
+            if (empty($srnoRes['ok'])) {
+                $reason = (string) ($srnoRes['reason'] ?? 'unknown');
+                $srnoAssigned = false;
+                $warnings[] = "SRNO could not be assigned automatically (reason: {$reason}).";
+                log_message('error', "Sr_no_service::allocateNext failed for {$studentId} school={$schoolId} reason={$reason}");
+            } else {
+                $assignedSrNo = (string) $srnoRes['srNo'];
+                // Mirror the same display fields Sr_no_service::relink() writes
+                // on the re-admission path, so both first-time and re-admitted
+                // students converge on one field shape on the student doc.
+                $norm = \Sr_no_service::normalize($assignedSrNo);
+                $srnoFields = [
+                    'srNo'       => $assignedSrNo,
+                    'srNoNorm'   => $norm['norm'] ?? '',
+                    'srNoSource' => 'admission_auto',
+                    'updatedAt'  => date('c'),
+                ];
+                // Phase 10.2 — Admission Number for this FIRST-TIME admission
+                // event, allocated by Admission_no_service (random token,
+                // atomically claimed). Independent of class/section/SRNO/
+                // Roll Number by construction. Frozen for the life of THIS
+                // admission record: promotion never recomputes it, and a
+                // future re-admission gets its own BRAND-NEW number issued
+                // by Readmission::confirm() (which no longer leaves the
+                // field stale — the Phase 10.1 open gap is now closed).
+                $allocatedAdmNo = $this->_allocateAdmissionNumber($studentId, $schoolId);
+                if ($allocatedAdmNo !== '') {
+                    $srnoFields['Admission Number'] = $allocatedAdmNo;
+                    $srnoFields['admissionNumber']  = $allocatedAdmNo; // camelCase dual-emit, Android/Firestore convention
+                } else {
+                    $warnings[] = 'Admission Number could not be generated automatically. The admission was completed; it requires administrator follow-up.';
+                }
+                // allocateNext() already wrote srNoIndex + these same fields
+                // via claim() internally — this second write is redundant
+                // for srNo/srNoNorm but harmless (same values); it exists
+                // only to set srNoSource distinctly ('admission_auto') and
+                // to merge into $studentData for enroll_student()'s later
+                // sync, mirroring the pre-Phase-9.1 pattern exactly.
+                $this->fs->update('students', $this->fs->docId($studentId), $srnoFields);
+                $studentData = array_merge($studentData, $srnoFields);
+                log_message('info', "Sr_no_service: auto-allocated SRNO {$assignedSrNo} for {$studentId} school={$schoolId}");
+            }
+        } catch (\Throwable $e) {
+            // An exception is no less a failure than a returned error — the SRNO
+            // does not exist either way, so the invariant is equally violated.
+            $srnoAssigned = false;
+            log_message('error', "Sr_no_service::allocateNext threw for {$studentId}: " . $e->getMessage());
+            $warnings[] = 'SRNO could not be assigned automatically.';
+        }
+
+        // Deliberately a SEPARATE service (Apaar_service, not Sr_no_service)
+        // per SR_NUMBER_AND_APAAR_ID_DESIGN.md §4/§6 — APAAR is a distinct
+        // identity domain with its own claim collection (apaarIndex, not
+        // srNoIndex). Format is validated (exactly 12 digits after
+        // stripping spaces/hyphens — Apaar_service::normalize()); an
+        // invalid format is rejected as a warning, never silently coerced
+        // into "valid" data. Warning text never includes the raw APAAR
+        // digits (PII discipline — matches Apaar_service's own audit calls,
+        // which likewise never log the value).
+        if ($apaarInput !== '') {
+            try {
+                $this->load->library('Apaar_service', null, 'apaarSvc');
+                $apaarRes = $this->apaarSvc->init($this->firebase, $this->fs, $schoolId, (string) ($this->admin_id ?? 'system'))
+                    ->claim($apaarInput, $studentId);
+                if (empty($apaarRes['ok'])) {
+                    $reason = (string) ($apaarRes['reason'] ?? 'unknown');
+                    if ($reason === 'duplicate') {
+                        $existingOwner = (string) ($apaarRes['currentStudentId'] ?? 'another student');
+                        $warnings[] = "APAAR ID is already assigned to {$existingOwner} in this school — check for a typing mistake. The admission was completed without it; APAAR requires administrator follow-up.";
+                    } elseif ($reason === 'invalid_format') {
+                        $warnings[] = 'APAAR ID must be exactly 12 digits — it was not saved. The admission was completed; APAAR requires administrator follow-up.';
+                    } else {
+                        $warnings[] = "APAAR ID could not be linked automatically (reason: {$reason}). The admission was completed; APAAR requires administrator follow-up.";
+                    }
+                    log_message('warning', "Apaar_service::claim failed for {$studentId} reason={$reason}");
+                } else {
+                    $apaarFields = [
+                        'apaarId'   => \Apaar_service::normalize($apaarInput),
+                        'updatedAt' => date('c'),
+                    ];
+                    $this->fs->update('students', $this->fs->docId($studentId), $apaarFields);
+                    $studentData = array_merge($studentData, $apaarFields);
+                    log_message('info', "Apaar_service: claimed APAAR for {$studentId}");
+                }
+            } catch (\Throwable $e) {
+                log_message('error', "Apaar_service::claim threw for {$studentId}: " . $e->getMessage());
+                $warnings[] = 'APAAR ID could not be linked automatically. The admission was completed, but APAAR requires administrator follow-up.';
+            }
+        }
+
+        return $warnings;
+    }
+
+    /**
+     * ── PHASE 3B / B1 — resolve an entitlement submitted WITH the admission ──
+     *
+     * Runs after the student and their identity exist, and BEFORE
+     * assignInitialFees() prices the demands, so a concession agreed at the
+     * admission desk is priced into the first invoice rather than discovered
+     * afterwards.
+     *
+     * Returns a state the caller folds into the admission's billing state:
+     *   none      — no entitlement was submitted (the overwhelming common case)
+     *   applied   — recorded and ACTIVE, so pricing below will see it
+     *   pending   — recorded but awaiting approval; pricing will NOT see it yet
+     *   duplicate — identical entitlement already on file (a retry); not re-added
+     *   failed    — could not be recorded; the caller downgrades the billing state
+     *
+     * Deliberately NON-FATAL. The student already exists at this point, so
+     * aborting would leave a half-made admission. The failure is surfaced
+     * through the billing state instead, which is the honest signal.
+     *
+     * Approval policy is NOT re-implemented here: it defers to the same
+     * has_permission('Fees','manage') rule Entitlements::_approval_required()
+     * applies, so the desk and the API cannot diverge.
+     */
+    private function _resolve_admission_entitlement(string $studentId, string $schoolId): array
+    {
+        $kind = trim((string) $this->input->post('ent_kind'));
+        if ($kind === '') return ['status' => 'none'];
+
+        try {
+            $this->load->library('Entitlement_service', null, 'entitlementSvc');
+            // ── TENANT IDENTITY BOUNDARY (2026-08-18) ────────────────────────
+            //
+            // CANONICAL `school_id`, NOT the `$schoolId` argument.
+            //
+            // save_admission() sets `$school_id = $this->parent_db_key`, and
+            // `parent_db_key = school_code ?: school_id` — on this tenant the
+            // login code is "10012" while the canonical id is
+            // "SCH_B56BB9A401". Passing the legacy key made
+            // Entitlement_service ask Fee_head_resolver for
+            // `10012_FH_DF3C200439E2`, a document that cannot exist: the Fee
+            // Head Registry is keyed by canonical school_id
+            // (`SCH_B56BB9A401_FH_DF3C200439E2`). Every head-scoped admission
+            // entitlement therefore failed closed with "fee head not
+            // registered", and the student was admitted BILLING PENDING.
+            //
+            // The rule this restores: a store keyed by canonical school_id must
+            // be addressed with canonical school_id. `parent_db_key` stays
+            // correct for the legacy/RTDB-shaped paths that own that key space
+            // — including SRNO, whose `srNoIndex` rows are self-consistently
+            // stored under the login code and would be ORPHANED by a blanket
+            // rename. This is deliberately the narrowest possible change: one
+            // argument, one boundary. See DEC-008.
+            $this->entitlementSvc->init(
+                $this->firebase, $this->fs, (string) $this->school_id, $this->session_year,
+                (string) ($this->admin_id ?? 'system')
+            );
+
+            $concessionType = trim((string) ($this->input->post('ent_concession_type') ?? 'other'));
+            // Same maker-checker rule as the standalone endpoint.
+            $approvalRequired = ($kind === 'concession') && !has_permission('Fees', 'manage');
+
+            $res = $this->entitlementSvc->propose([
+                'studentId'            => $studentId,
+                'kind'                 => $kind,
+                'serviceType'          => trim((string) ($this->input->post('ent_service_type') ?? '')),
+                'concessionType'       => $concessionType,
+                'scope'                => trim((string) $this->input->post('ent_scope')),
+                'valueType'            => trim((string) $this->input->post('ent_value_type')),
+                'value'                => $this->input->post('ent_value'),
+                // No `frequency` — retired at the P2 contract freeze (I1). The
+                // server side of the same obsolete dependency the admission
+                // bridge dropped in REG-P6-R1; the service already ignored it.
+                'effectiveFrom'        => trim((string) $this->input->post('ent_effective_from')),
+                'effectiveTo'          => trim((string) ($this->input->post('ent_effective_to') ?? '')),
+                'reason'               => trim((string) ($this->input->post('ent_reason') ?? '')),
+                'govtReceivableAmount' => $this->input->post('ent_govt_receivable_amount'),
+                'source'               => 'direct_admission',
+                'approvalRequired'     => $approvalRequired,
+            ]);
+
+            if (empty($res['ok'])) {
+                log_message('error', "ACC_ADMISSION_ENTITLEMENT_FAILED student=[{$studentId}]: "
+                    . (string) ($res['error'] ?? 'unknown'));
+                return ['status' => 'failed', 'error' => (string) ($res['error'] ?? 'Could not record the concession.')];
+            }
+
+            if (!empty($res['duplicate'])) {
+                return ['status' => 'duplicate', 'id' => (string) $res['id'], 'entitlement_status' => (string) $res['status']];
+            }
+            // ── ADM-ENT-1 · "RECORDED" IS NOT "APPLIED" ─────────────────────
+            // Entitlement_service writes to `studentEntitlements` (canonical)
+            // and is NOT gated by USE_ENTITLEMENT_BILLING. But pricing chooses
+            // its reader FROM that flag (Fee_lifecycle ~L748): canonical when
+            // true, `studentConcessions` when false.
+            //
+            // So on a tenant that has not been granted the canonical authority,
+            // an admission-desk concession lands in a store the pricing engine
+            // does not read. assignInitialFees() then prices at full rate, and
+            // reporting this as 'applied' would tell the operator
+            // "Concession recorded and applied to the initial demands" — which
+            // would be false.
+            //
+            // That is precisely the failure this method's own header describes
+            // as fixed: "The operator saw 'Admission successful', the parent saw
+            // a full-price invoice, and nothing anywhere reported a problem."
+            // The ORDERING was fixed; the store mismatch reproduces the same
+            // symptom, so it is reported truthfully instead.
+            //
+            // Deliberately NOT resolved by making pricing read both stores: the
+            // architecture enforces ONE authority ("NEVER BOTH"), and a fallback
+            // would resurrect the split-authority hazard that design exists to
+            // prevent. The real resolution is the per-tenant grant, which is
+            // rollout — not something to fake here.
+            $__canonicalPricing = false;
+            try {
+                $__canonicalPricing = (bool) $this->config->item(
+                    'USE_ENTITLEMENT_BILLING', 'fees_exemption_v2_flags'
+                );
+            } catch (\Throwable $_) {
+                $__canonicalPricing = false;   // unknown ⇒ assume not priced
+            }
+
+            $__isActive = ((string) $res['status'] === 'active');
+
+            if ($__isActive && !$__canonicalPricing) {
+                log_message('error',
+                    'ACC_ADMISSION_ENTITLEMENT_NOT_PRICED student=[' . $studentId . '] — recorded in '
+                    . 'studentEntitlements but this tenant prices from studentConcessions '
+                    . '(USE_ENTITLEMENT_BILLING=false), so the initial demands are FULL PRICE.');
+                return [
+                    'status'             => 'recorded_not_priced',
+                    'id'                 => (string) $res['id'],
+                    'entitlement_status' => (string) $res['status'],
+                ];
+            }
+
+            return [
+                'status'             => $__isActive ? 'applied' : 'pending',
+                'id'                 => (string) $res['id'],
+                'entitlement_status' => (string) $res['status'],
+            ];
+        } catch (\Throwable $e) {
+            log_message('error', "ACC_ADMISSION_ENTITLEMENT_EXCEPTION student=[{$studentId}]: " . $e->getMessage());
+            return ['status' => 'failed', 'error' => 'The concession could not be recorded.'];
+        }
+    }
+
+    /**
+     * G10 (2026-08-08) — execute the plan built by _admission_fee_precheck().
+     * Either collects through the shared Admission_collection path (the SAME
+     * receipt + journal engine pathways 1 and 2 use — no second implementation)
+     * or records the audited waive. Never throws: the student is already
+     * admitted by this point, so the outcome is reported back to the operator
+     * in the response payload instead of failing the request.
+     *
+     * @return array reportable outcome for the JSON response
+     */
+    private function _admission_fee_apply(array $plan, string $userId, string $studentName, string $fatherName, string $classOrd, string $leadId): array
+    {
+        if (empty($plan['due'])) {
+            return ['status' => 'not_applicable'];
+        }
+
+        if (!empty($plan['waived'])) {
+            // Audited exception path — never a silent skip. Uses the same
+            // auditLogs mechanism the rest of SIS already writes through.
+            log_audit('Fees', 'admission_fee_waived', $userId,
+                'Admission fee ' . number_format((float) $plan['amount'], 2)
+                . ' WAIVED for ' . $studentName . ' (' . $userId . ') — reason: ' . $plan['waive_reason']);
+            $this->_log_history($this->parent_db_key, $userId, 'ADMISSION_FEE_WAIVED',
+                'Admission fee of ' . number_format((float) $plan['amount'], 2) . ' waived',
+                [
+                    'amount'    => (float) $plan['amount'],
+                    'fee_head'  => $plan['fee_head'],
+                    'reason'    => $plan['waive_reason'],
+                    'waived_by' => (string) ($this->admin_id ?? ''),
+                    'session'   => $this->session_year,
+                ]
+            );
+            return [
+                'status' => 'waived',
+                'amount' => (float) $plan['amount'],
+                'reason' => $plan['waive_reason'],
+            ];
+        }
+
+        try {
+            $this->load->library('Admission_collection', null, 'admissionCol');
+            $this->admissionCol->init($this->firebase, $this->fs, $this->school_name, $this->session_year);
+            // app_id: the originating lead when this admission converted one (so
+            // the receipt/timeline correlate to it), else the new student id —
+            // which keeps Admission_collection's app_id-derived idempotency key
+            // stable and unique per admission. append_timeline() is a safe no-op
+            // when no crmApplications doc exists for the id.
+            $rc = $this->admissionCol->record_payment([
+                'app_id'         => $leadId !== '' ? $leadId : $userId,
+                'amount'         => (float) $plan['amount'],
+                'currency'       => 'INR',
+                'student_name'   => $studentName,
+                'father_name'    => $fatherName,
+                'applied_class'  => $classOrd,
+                'fee_head'       => $plan['fee_head'],
+                'fee_label'      => $plan['fee_label'],
+                'payment_mode'   => $plan['mode'],
+                'mode_label'     => $plan['mode_label'],
+                'bank_code'      => $plan['bank_code'],
+                'bank_reference' => $plan['bank_reference'],
+                'remarks'        => 'Direct admission (SIS admission screen)',
+                'collected_by'   => $this->admin_name ?: ($this->admin_id ?: 'Admin'),
+                'source'         => 'offline',
+                'admission_ref'  => 'ADMREF-' . strtoupper($userId),
+            ]);
+            if (!is_array($rc)) {
+                log_message('error',
+                    "G10 admission-fee collection returned null for {$userId} (amount={$plan['amount']}) — student admitted, fee NOT collected");
+                return ['status' => 'failed', 'amount' => (float) $plan['amount']];
+            }
+            // A `deduped` result means Admission_collection's idempotency gate
+            // matched an EXISTING receipt for this app_id — the correct outcome
+            // when a lead's admission fee was already collected at the CRM
+            // counter (pathway 2) and that lead is now being converted here. No
+            // second receipt, no second journal, no double charge; report the
+            // original receipt so the operator isn't told to collect again.
+            return [
+                'status'     => !empty($rc['deduped']) ? 'already_collected' : 'collected',
+                'amount'     => (float) ($rc['amount'] ?? $plan['amount']),
+                'receipt_no' => (string) ($rc['receipt_no'] ?? ''),
+            ];
+        } catch (\Throwable $e) {
+            log_message('error', "G10 admission-fee collection failed for {$userId}: " . $e->getMessage());
+            return ['status' => 'failed', 'amount' => (float) $plan['amount']];
+        }
+    }
+
+    /**
+     * Record whatever relationships this admission VERIFIED.
+     *
+     * Runs after the student exists, best-effort: a relationship is valuable
+     * but it is not worth failing an admission that already created the
+     * student and their Auth account. Every identifier is re-resolved here —
+     * the form's hidden ids are display state, and trusting them would let a
+     * tampered field link a child to another tenant's student.
+     *
+     * NO MONEY. This writes relationships only. Any sibling or staff-ward
+     * concession must still go through the canonical entitlement path with a
+     * reason and an approver — see Student_relationship_service's header.
+     *
+     * @return string[] human-readable notes to append to the success message
+     */
+    private function _captureAdmissionRelationships(
+        string $studentId,
+        string $srNoRaw,
+        string $staffIdRaw,
+        string $rteRefRaw = ''
+    ): array {
+        $notes = [];
+
+        // ── RTE / EWS · PERSIST THE REFERENCE, DECIDE NO MONEY ─────────────
+        // The certificate reference was captured on the form and then dropped:
+        // stored on the online application, never read, and on the direct path
+        // not stored at all. A government-category claim that leaves no trace
+        // on the student record cannot be audited or produced on request.
+        //
+        // ZenX ALREADY has the canonical financial path for this — an
+        // entitlement of concessionType 'rte_ews' carrying govtReceivableAmount,
+        // raised through the capture panel under maker-checker. So the only
+        // thing missing was persistence of the identifier, which is a record-
+        // keeping fix, not a policy one. Deliberately NO fee effect here: how
+        // much an RTE/EWS student pays, and how much is recoverable from the
+        // state, is a school-and-statute question this code must not guess.
+        $rteRef = trim($rteRefRaw);
+        if ($rteRef !== '') {
+            try {
+                $this->fs->set('students', $this->school_id . '_' . $studentId, [
+                    'rteEwsDeclared' => true,
+                    'rteEwsRef'      => substr($rteRef, 0, 120),
+                    'rteEwsSource'   => 'admission',
+                ], /* merge */ true);
+                $notes[] = 'RTE/EWS reference recorded. Raise the concession from Services & Concessions '
+                         . '— it is not applied automatically.';
+            } catch (\Throwable $e) {
+                log_message('error', "REL rte capture failed for {$studentId}: " . $e->getMessage());
+                $notes[] = 'RTE/EWS reference could not be saved — please add it on the student record.';
+            }
+        }
+
+        if (trim($srNoRaw) !== '') {
+            try {
+                $ref = $this->_resolveStudentRef(trim($srNoRaw));
+                if (!empty($ref['ok']) && ($ref['via'] ?? '') === 'srNo') {
+                    $sibId = (string) $ref['studentId'];
+                    $sib   = $this->fs->get('students', $this->school_id . '_' . $sibId);
+                    $res   = $this->_relationshipService()->linkSibling($studentId, [
+                        'studentId' => $sibId,
+                        'name'      => is_array($sib) ? trim((string) ($sib['name'] ?? $sib['Name'] ?? '')) : '',
+                        'srNo'      => trim($srNoRaw),
+                    ], 'admission');
+                    $notes[] = !empty($res['ok'])
+                        ? 'Sibling link recorded and verified.'
+                        : 'Sibling link NOT recorded: ' . (string) ($res['error'] ?? 'unknown reason');
+                } else {
+                    // Truthful over convenient: the operator must know the
+                    // number did not match rather than assume it did.
+                    $notes[] = "Sibling NOT linked — SR No. '" . trim($srNoRaw) . "' did not match a student in this school.";
+                }
+            } catch (\Throwable $e) {
+                log_message('error', "REL sibling capture failed for {$studentId}: " . $e->getMessage());
+                $notes[] = 'Sibling link could not be recorded — please add it from the student record.';
+            }
+        }
+
+        if (trim($staffIdRaw) !== '') {
+            try {
+                $svc  = $this->_relationshipService();
+                $look = $svc->lookupStaff(trim($staffIdRaw));
+                if (!empty($look['ok'])) {
+                    $res = $svc->linkStaffWard($studentId, $look, 'admission');
+                    $notes[] = !empty($res['ok'])
+                        ? 'Employee relationship recorded and verified.'
+                        : 'Employee link NOT recorded: ' . (string) ($res['error'] ?? 'unknown reason');
+                } else {
+                    $notes[] = 'Employee NOT linked — ' . (string) ($look['error'] ?? 'staff member not found.');
+                }
+            } catch (\Throwable $e) {
+                log_message('error', "REL staff_ward capture failed for {$studentId}: " . $e->getMessage());
+                $notes[] = 'Employee link could not be recorded — please add it from the student record.';
+            }
+        }
+
+        return $notes;
+    }
+
+    /**
+     * Phase 10.2 (2026-08-13) — CORRECTION of the Phase 10.1 design.
+     *
+     * Phase 10.1 generated YYYY/CLASS/SRNO (e.g. "2026/01/012"). That was
+     * WRONG per the corrected business rule: an Admission Number must be
+     * INDEPENDENT of class, section, SRNO and Roll Number. Embedding SRNO
+     * made the two identifiers redundant (SRNO already IS the school's
+     * sequential register number) and embedding class made the value
+     * conceptually tied to an academic position the student outgrows.
+     *
+     * Corrected: a system-generated, collision-claimed, random-token
+     * admission-EVENT identifier — YYYY/TTTTTT (e.g. "2026/7K4P92") —
+     * produced by the dedicated Admission_no_service, a structural sibling
+     * of Sr_no_service/Apaar_service. See that class for the format,
+     * entropy, scope and atomic-claim rationale.
+     *
+     * This wrapper exists only to keep the service wiring in ONE place for
+     * every admission path (the same "one canonical wiring" discipline
+     * _claimIdentityAttributes() already applies to SRNO and APAAR).
+     *
+     * @param string $studentId  the student this admission event belongs to
+     * @param string $schoolId   server-derived tenant (never client input)
+     * @return string  the allocated Admission Number, or '' on failure
+     *                 (callers treat '' as a non-fatal warning, exactly as
+     *                 they already do for a failed SRNO/fee step — an
+     *                 admission is never blocked by this)
+     */
+    private function _allocateAdmissionNumber(string $studentId, string $schoolId): string
+    {
+        $year = substr((string) $this->session_year, 0, 4);
+        if (!preg_match('/^\d{4}$/', $year)) $year = date('Y'); // defensive only — session_year is always set in every real caller
+
+        try {
+            $this->load->library('Admission_no_service', null, 'admNoSvc');
+            $res = $this->admNoSvc->init($this->firebase, $this->fs, $schoolId, (string) ($this->admin_id ?? 'system'))
+                ->allocate($schoolId, $studentId, $year);
+            if (!empty($res['ok'])) return (string) $res['admissionNo'];
+            log_message('error', "Admission_no_service::allocate failed for {$studentId} school={$schoolId} reason=" . ($res['reason'] ?? 'unknown'));
+        } catch (\Throwable $e) {
+            log_message('error', "Admission_no_service::allocate threw for {$studentId}: " . $e->getMessage());
+        }
+        return '';
+    }
+
+    private function _relationshipService()
+    {
+        $this->load->library('student_relationship_service', null, 'relSvc');
+        return $this->relSvc->init(
+            $this->fs, $this->firebase, $this->school_id,
+            $this->session_year, (string) ($this->admin_id ?? 'system')
+        );
     }
 }

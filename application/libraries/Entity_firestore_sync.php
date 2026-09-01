@@ -365,6 +365,16 @@ class Entity_firestore_sync
         // pass `Status => 'Active'`, so this still defaults correctly.
         if (($v = $pick(['Status', 'status'])) !== null)                    $doc['status'] = $v;
 
+        // ── PHASE 20.3c ────────────────────────────────────────────────
+        // The payload is now handed to _write() via buildStudentDoc()'s
+        // capture hook so a caller can obtain the EXACT same document for an
+        // atomic batch commit without re-deriving it. Behaviour is unchanged:
+        // when no capture is armed this is the identical single merge-set.
+        if ($this->_captureStudentDoc !== null) {
+            $this->_captureStudentDoc = ['docId' => $docId, 'doc' => $doc];
+            return true;   // caller commits it; nothing written here
+        }
+
         return $this->_write('students', $docId, $doc);
     }
 
@@ -1055,5 +1065,38 @@ class Entity_firestore_sync
             log_message('error', "Entity_firestore_sync::_delete({$collection}/{$docId}) failed: " . $e->getMessage());
             return false;
         }
+    }
+
+    /**
+     * ── PHASE 20.3c (P20.2-RACE-1) — PAYLOAD CAPTURE ────────────────────────
+     *
+     * Returns the EXACT document syncStudent() would write, WITHOUT writing it,
+     * so a placement path can commit it atomically alongside the destination
+     * section's CAS marker (Option B).
+     *
+     * WHY A CAPTURE HOOK RATHER THAN A SEPARATE BUILDER: syncStudent() is ~110
+     * lines of field-shape normalisation that 12 call sites depend on. Copying
+     * it into a builder would create a second student-document contract that
+     * could silently drift — the same class of defect as SEC-11. Re-entering
+     * the real method and intercepting its single write point guarantees the
+     * batched payload and the direct-write payload can never differ, because
+     * they are produced by the same code.
+     *
+     * NOT re-entrant and NOT concurrent — CI3 request handling is single
+     * threaded; the flag is cleared in a finally block regardless of outcome.
+     *
+     * @return array|null ['docId' => string, 'doc' => array] or null on failure
+     */
+    public function buildStudentDoc(string $studentId, array $data): ?array
+    {
+        $this->_captureStudentDoc = [];          // arm
+        try {
+            $ok = $this->syncStudent($studentId, $data);
+            $captured = $this->_captureStudentDoc;
+        } finally {
+            $this->_captureStudentDoc = null;    // disarm, always
+        }
+        if (!$ok || !is_array($captured) || empty($captured['docId'])) return null;
+        return $captured;
     }
 }

@@ -1960,4 +1960,271 @@ class MY_Controller extends CI_Controller
         } catch (\Exception $e) { /* fall through to IST default */ }
         return $this->_school_tz_cache = new \DateTimeZone($tzName);
     }
+
+    protected function _sectionCapacityExceeded(
+        string $classKey,
+        string $sectionKey,
+        string $session,
+        int $incoming = 1,
+        string $exceptStudentId = '',
+        bool $fresh = false
+    ): ?array {
+        if ($classKey === '' || $sectionKey === '' || $incoming < 1) return null;
+
+        $capacity = $this->_sectionCapacity($classKey, $sectionKey, $session);
+        // <= 0 means "no capacity configured" => unlimited, mirroring the
+        // existing promotion/transfer guards. Never means "zero seats".
+        if ($capacity <= 0) return null;
+
+        // SEAT-RACE-1 (second window): the memoised roster is backed by a FILE
+        // cache shared across processes, so a concurrent admission can decide
+        // capacity against a roster that predates another request's placement.
+        // The CAS then passes honestly — that request's section version really
+        // is current — and the seat is consumed twice. Observed: a fee-enabled
+        // tenant (slower path, wider window) admitted 3 into maxStrength=2
+        // while two faster tenants held at 2.
+        //
+        // A decision that authorises a WRITE therefore reads through no cache.
+        // Callers that merely validate (bulk import previewing many rows) keep
+        // the cached path by leaving $fresh false.
+        $current   = $fresh
+            ? $this->_sectionActiveCountFresh($classKey, $sectionKey, $session, $exceptStudentId)
+            : $this->_sectionActiveCount($classKey, $sectionKey, $session, $exceptStudentId);
+        $projected = $current + $incoming;
+        if ($projected <= $capacity) return null;
+
+        return [
+            'capacity'  => $capacity,
+            'current'   => $current,
+            'incoming'  => $incoming,
+            'projected' => $projected,
+            'over'      => $projected - $capacity,
+        ];
+    }
+
+    /**
+ * ── SEAT-RACE-1 · THE VERSION THE CAPACITY DECISION WAS MADE AGAINST ──
+ *
+ * `Section_seat_guard::commitPlacement()` used to take its CAS precondition
+ * from its OWN read, taken microseconds before the commit. That proves only
+ * "the section did not change while I was committing" — true, and useless.
+ * The interval that actually matters runs from the moment occupancy was
+ * counted to the moment the placement lands, roughly a second later and many
+ * operations apart. Five simultaneous admissions into a maxStrength=2 section
+ * therefore each read a fresh, valid version and ALL FIVE committed:
+ * persisted occupancy 5, zero CAS conflicts logged.
+ *
+ * This returns the section document version observed at DECISION time, so
+ * the caller can carry it into the placement commit. Every successful
+ * placement bumps the section (the guard writes its marker there), so a
+ * competing admission holding an older version is refused rather than
+ * silently consuming a seat that is already gone.
+ *
+ * Read UNCACHED and BEFORE counting occupancy: a version captured after the
+ * count would not cover the count itself.
+ *
+ * @return string the section __updateTime, or '' if it cannot be established
+ *                (callers must treat '' as "do not place" — fail closed).
+ */
+    protected function _sectionDecisionVersion(
+        string $classKey,
+        string $sectionKey,
+        string $session = ''
+    ): string {
+        try {
+            $doc = $this->fs->get(
+                'sections',
+                $this->fs->sectionDocId($classKey, $sectionKey, $session !== '' ? $session : null)
+            );
+        } catch (\Throwable $e) {
+            log_message('error', 'ACC_SEAT_VERSION_READ_FAILED ' . $classKey . '/' . $sectionKey
+                . ': ' . $e->getMessage());
+            return '';
+        }
+        return is_array($doc) ? trim((string) ($doc['__updateTime'] ?? '')) : '';
+    }
+
+    /**
+ * SEAT-RACE-1 retry support: occupancy read WITHOUT the per-request memo.
+ *
+ * `_sectionActiveCount()` reads through `_cachedStudentDocsForRollCheck()`,
+ * which memoises in a `static` for the life of the request and also consults
+ * a file cache. That is right for a single decision and wrong for a retry:
+ * a placement that lost a CAS race must re-decide against the roster as it
+ * is NOW, and the memo would hand back the roster that already lost.
+ *
+ * Deliberately reuses `_filterSectionRoster()` rather than re-implementing
+ * the roster predicate — two copies of "which students occupy this section"
+ * would eventually disagree, and the disagreement would be a seat.
+ */
+    protected function _sectionActiveCountFresh(
+        string $classKey,
+        string $sectionKey,
+        string $session,
+        string $exceptStudentId = ''
+    ): int {
+        try {
+            $docs = $this->fs->schoolWhere('students');
+        } catch (\Throwable $e) {
+            log_message('error', 'ACC_SEAT_FRESH_ROSTER_FAILED: ' . $e->getMessage());
+            return PHP_INT_MAX; // unreadable roster => treat as full (fail closed)
+        }
+        if (!is_array($docs)) return PHP_INT_MAX;
+        return count($this->_filterSectionRoster(
+            $docs, $classKey, $sectionKey, $session, $exceptStudentId
+        ));
+    }
+
+    /**
+     * Operator-facing capacity message. One voice across admission, CRM,
+     * import and any future caller. Deliberately concrete (numbers, not
+     * "validation failed") so a school administrator can act on it.
+     */
+    protected function _sectionCapacityMessage(array $over, string $classKey, string $sectionKey): string
+    {
+        $cls = trim(preg_replace('/^Class\s+/i', '', $classKey));
+        $sec = trim(preg_replace('/^Section\s+/i', '', $sectionKey));
+
+        if ($over['incoming'] <= 1) {
+            return "Class {$cls} Section {$sec} is full. Capacity: {$over['capacity']}, "
+                 . "Current students: {$over['current']}. Please select another available section.";
+        }
+        return "Class {$cls} Section {$sec} would exceed capacity by {$over['over']} student(s). "
+             . "Capacity: {$over['capacity']}, Existing: {$over['current']}, Incoming: {$over['incoming']}.";
+    }
+
+    /**
+     * Configured capacity for one section. Default 40 when unset — the SAME
+     * default `Sis::get_class_sections()` applies, so picker and enforcement
+     * never disagree. Memoised per request: an import validating many rows
+     * across a handful of sections reads each section document once.
+     */
+    protected function _sectionCapacity(string $classKey, string $sectionKey, string $session = ''): int
+    {
+        static $memo = [];
+        // Session is part of the key because sectionDocId() embeds it —
+        // `{schoolId}_{session}_{class}_{section}`. Omitting it from the memo
+        // would let a 2025 lookup serve a 2026 capacity.
+        $key = mb_strtolower("{$session}|{$classKey}|{$sectionKey}");
+        if (array_key_exists($key, $memo)) return $memo[$key];
+
+        $capacity = 40;
+        try {
+            $doc = $this->fs->get(
+                'sections',
+                $this->fs->sectionDocId($classKey, $sectionKey, $session !== '' ? $session : null)
+            );
+            if (is_array($doc)) {
+                $raw = (int) ($doc['maxStrength'] ?? $doc['max_strength'] ?? 0);
+                if ($raw > 0) $capacity = $raw;
+            }
+        } catch (\Throwable $e) {
+            log_message('error', "section capacity read failed for {$classKey}/{$sectionKey}: " . $e->getMessage());
+        }
+        return $memo[$key] = $capacity;
+    }
+
+    protected function _sectionActiveCount(
+        string $classKey,
+        string $sectionKey,
+        string $session,
+        string $exceptStudentId = ''
+    ): int {
+        return count($this->_filterSectionRoster(
+            $this->_cachedStudentDocsForRollCheck(),
+            $classKey, $sectionKey, $session, $exceptStudentId
+        ));
+    }
+
+    /**
+     * Phase 16.6 (SEC-11) — the single definition of "which student documents
+     * belong to this section, this session, right now".
+     *
+     * Extracted from _sectionActiveCount() because several screens needed the
+     * DOCUMENTS, not just a count, and were each re-deriving the rule with a
+     * raw `schoolWhere('students', [...])`. Those queries were school-scoped
+     * but NOT session-scoped, so they counted students from other sessions —
+     * the same SEC-8 defect fixed on the placement paths in Phase 16.5, still
+     * live on the read/display paths.
+     *
+     * ⚠ WHY THIS FILTERS IN PHP RATHER THAN ADDING `where session ==`:
+     * legacy student documents predate the `session` field and carry a blank
+     * value. A Firestore equality predicate cannot express "matches OR is
+     * blank", so a hard predicate would silently DROP those students —
+     * under-counting a section and, worse, letting a full section look empty.
+     * Filtering in memory keeps the blank-tolerant rule and costs nothing
+     * extra: the caller has already fetched the documents.
+     *
+     * @param array $docs raw Firestore rows (`['data' => …]` or bare maps)
+     * @return array the matching rows, unmodified
+     */
+    protected function _filterSectionRoster(
+        array $docs,
+        string $classKey,
+        string $sectionKey,
+        string $session,
+        string $exceptStudentId = ''
+    ): array {
+        if ($classKey === '' || $sectionKey === '') return [];
+
+        $classCmp   = mb_strtolower(trim($classKey));
+        $sectionCmp = mb_strtolower(trim($sectionKey));
+        $sessionCmp = mb_strtolower(trim($session));
+        $exceptCmp  = trim($exceptStudentId);
+
+        $out = [];
+        foreach ($docs as $row) {
+            $d = is_array($row) ? ($row['data'] ?? $row) : null;
+            if (!is_array($d)) continue;
+
+            $sid = (string) ($d['studentId'] ?? $d['userId'] ?? $d['User Id'] ?? '');
+            if ($sid === '' || ($exceptCmp !== '' && $sid === $exceptCmp)) continue;
+
+            $status = trim((string) ($d['status'] ?? $d['Status'] ?? 'Active'));
+            if ($status !== '' && strcasecmp($status, 'Active') !== 0) continue;
+
+            if (mb_strtolower(trim((string) ($d['className'] ?? $d['Class'] ?? ''))) !== $classCmp) continue;
+            if (mb_strtolower(trim((string) ($d['section'] ?? $d['Section'] ?? ''))) !== $sectionCmp) continue;
+
+            // Blank session = legacy document → kept, never excluded.
+            $rowSession = mb_strtolower(trim((string) ($d['session'] ?? '')));
+            if ($sessionCmp !== '' && $rowSession !== '' && $rowSession !== $sessionCmp) continue;
+
+            $out[] = $row;
+        }
+        return $out;
+    }
+
+    /**
+     * Phase 17 — widened from `private` to `protected`.
+     *
+     * The rollover promotion pre-flight (School_config::rollover_session)
+     * needs the SAME warm snapshot the capacity and roll guards use, so that
+     * validating a whole promotion batch costs ONE read rather than one per
+     * student. Every other member of this capacity/roll family
+     * (_sectionActiveCount, _filterSectionRoster, _sectionCapacityExceeded)
+     * is already protected; this was the odd one out.
+     *
+     * Still not public: it is an internal snapshot, not an API.
+     */
+    protected function _cachedStudentDocsForRollCheck(): array
+    {
+        static $memo = null;                 // per-request memo: one read max
+        if (is_array($memo)) return $memo;
+
+        try {
+            $this->load->driver('cache', ['adapter' => 'file']);
+            $key  = $this->fs->listCacheKey('students_raw');
+            $docs = $this->cache->get($key);
+            if (!is_array($docs)) {
+                $docs = $this->fs->schoolWhere('students');
+                if (!is_array($docs)) $docs = [];
+                $this->cache->save($key, $docs, 90);
+            }
+        } catch (\Throwable $e) {
+            log_message('error', 'roll-uniqueness snapshot failed: ' . $e->getMessage());
+            $docs = [];
+        }
+        return $memo = $docs;
+    }
 }

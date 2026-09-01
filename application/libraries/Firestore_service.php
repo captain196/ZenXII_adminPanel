@@ -242,21 +242,34 @@ class Firestore_service
     }
 
     /**
-     * Ensure "Class " prefix: "9th" → "Class 9th"
+     * SL-12 fix (2026-08-13): was a naive prefix-add ("9th" → "Class 9th",
+     * but "9" → "Class 9" — no ordinal suffix), which diverged from
+     * Entity_firestore_sync::normalizeClassSection() — the documented
+     * single source of truth every student write funnels through
+     * (Entity_firestore_sync.php:116-121). Any caller here that queried
+     * or wrote a bare numeric class ("9") produced "Class 9", a document
+     * that could never match a student row written as "Class 9th" by
+     * syncStudent(). Now delegates to the same canonical algorithm so
+     * every caller of classKey()/sectionKey() (sections, examSchedule,
+     * attendance filters, promotion capacity checks, rosters, ...)
+     * converges on the identical representation used for student docs.
+     * See STUDENT_LIFECYCLE_SL12_CANONICAL_CLASS_SECTION_IMPLEMENTATION_REPORT.md.
      */
     public static function classKey(string $val): string
     {
         $s = trim($val);
-        return ($s !== '' && stripos($s, 'Class ') !== 0) ? "Class {$s}" : $s;
+        if ($s === '') return '';
+        return Entity_firestore_sync::normalizeClassSection($s, '')['className'];
     }
 
     /**
-     * Ensure "Section " prefix: "A" → "Section A"
+     * SL-12 fix (2026-08-13) — see classKey() above for rationale.
      */
     public static function sectionKey(string $val): string
     {
         $s = trim($val);
-        return ($s !== '' && stripos($s, 'Section ') !== 0) ? "Section {$s}" : $s;
+        if ($s === '') return '';
+        return Entity_firestore_sync::normalizeClassSection('', $s)['section'];
     }
 
     /**
