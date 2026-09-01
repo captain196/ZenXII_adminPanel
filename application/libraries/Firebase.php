@@ -1306,6 +1306,35 @@ class Firebase
      * Atomic merge-write + field-delete in a single PATCH. Used by
      * shape-migration scripts (Phase 1 class/section cleanup, etc.).
      */
+    /**
+     * ── PHASE 20.3c ─────────────────────────────────────────────────────────
+     * Status-aware atomic commit. Distinguishes a CAS precondition conflict
+     * ("another writer won — re-read and retry") from an unknown failure
+     * ("outcome unknown — retrying may duplicate work"), which
+     * firestoreCommitBatch()'s bool cannot.
+     *
+     * Required by optimistic-concurrency callers. See
+     * Firestore_rest_client::commitBatchStatus() for the classification table
+     * and its live-verification caveat.
+     *
+     * An uninitialised client is FAILURE, never PRECONDITION_CONFLICT.
+     *
+     * @return array{status:string, code:int, message:string}
+     *         status ∈ SUCCESS | PRECONDITION_CONFLICT | FAILURE
+     */
+    public function firestoreCommitBatchStatus(array $ops): array
+    {
+        if ($this->firestoreDb === null) {
+            log_message('error', 'Firebase::firestoreCommitBatchStatus() — Firestore not initialized');
+            return ['status' => 'FAILURE', 'code' => 0, 'message' => 'Firestore not initialized'];
+        }
+        return $this->firestoreDb->commitBatchStatus($ops);
+    }
+
+    /**
+     * Atomic merge-write + field-delete in a single PATCH. Used by
+     * shape-migration scripts (Phase 1 class/section cleanup, etc.).
+     */
     public function firestoreSetWithDeletes(string $collection, string $docId, array $setData, array $deleteFields): bool
     {
         if ($this->firestoreDb === null) { log_message('error', 'Firebase::firestoreSetWithDeletes() — Firestore not initialized'); return false; }
