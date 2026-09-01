@@ -376,7 +376,12 @@ class Student_write_service
         string $fromSession,
         string $toClass,
         string $toSection,
-        string $toSession
+        string $toSession,
+        // The destination section version captured by the CALLER, before it read
+        // the occupancy that version protects. Without it the guard fails closed
+        // (ACC_SEAT_NO_DECISION_VERSION) and every promotion is refused — which is
+        // exactly what this path did.
+        string $decisionVersion = ''
     ): array {
         $result = ['moved' => [], 'failed' => []];
         if (!$this->ready || empty($students)) return $result;
@@ -439,7 +444,8 @@ class Student_write_service
             }
 
             $res = $CI->seatGuard->placeStudentGroup(
-                $this->sync, $group, $toClass, $toSection, $toSession
+                $this->sync, $group, $toClass, $toSection, $toSession,
+                $decisionVersion
             );
 
             if (($res['status'] ?? '') === \Section_seat_guard::PLACED) {
@@ -449,6 +455,14 @@ class Student_write_service
                 // failed so the caller never tells the operator a student was
                 // promoted when the group commit did not happen.
                 $result['failed'] = array_keys($students);
+                // Surface the guard verdict so the caller can tell a CONFLICT (a
+                // competing placement won; the decision is stale but retryable after
+                // a fresh re-decide) from a FAILURE (outcome unknown; never retry).
+                // Collapsing both into 'failed' left promotion unable to re-decide,
+                // which is why it alone lacked the bounded retry every other
+                // protected workflow has.
+                $result['guardStatus'] = (string) ($res['status'] ?? '');
+                $result['guardMessage'] = (string) ($res['message'] ?? '');
                 $this->_log('error', 'batchMoveStudents: destination group REFUSED ('
                     . ($res['status'] ?? '?') . ') for ' . $toClass . '/' . $toSection
                     . ' — ' . ($res['message'] ?? '') . ' — no student was moved');

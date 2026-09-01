@@ -320,7 +320,7 @@ class MY_Controller extends CI_Controller
         }
 
         // Initialize Dual-write service (RTDB + Firestore)
-        $this->load->library('dual_write', null, 'dw');
+        $this->load->library('student_write_service', null, 'dw');
         if ($this->school_id && $this->session_year) {
             $this->dw->init(
                 $this->firebase,

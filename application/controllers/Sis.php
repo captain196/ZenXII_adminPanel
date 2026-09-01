@@ -1501,22 +1501,118 @@ class Sis extends MY_Controller
             }
         }
 
-        // Check target section capacity before promotion (uses post-filter count)
+        // ── Phase 16.5 (SEC-4 / SEC-7 / SEC-8) — CANONICAL CAPACITY ─────
+        //
+        // This block did its own capacity arithmetic and got three things
+        // wrong:
+        //
+        //  1. WRONG SESSION FOR THE CAPACITY DOCUMENT. `sectionDocId($toClass,
+        //     $toSection)` defaults to $this->session — the session the
+        //     operator is currently viewing — but a promotion targets
+        //     $toSession. It therefore read LAST year's section document to
+        //     decide NEXT year's capacity (SEC-7).
+        //
+        //  2. WRONG SESSION FOR OCCUPANCY. schoolWhere() is school-scoped but
+        //     NOT session-scoped, so it counted Active students in that
+        //     class/section across EVERY session. Promoting 5th → 6th counted
+        //     the CURRENT 6th-graders as already occupying next year's 6-A,
+        //     over-counting the destination and wrongly BLOCKING legitimate
+        //     promotions (SEC-8).
+        //
+        //  3. Unset capacity meant UNLIMITED here but 40 in admission/import/
+        //     CRM (SEC-4). Operator decision 2026-08-15: configured positive
+        //     value wins; missing/zero/invalid means 40, everywhere.
+        //
+        // The canonical validator fixes all three and reads the shared
+        // memoised student snapshot, so this REMOVES a Firestore query.
+        // $toSession is passed explicitly — that is the whole point of (1).
         $newClassKey   = Firestore_service::classKey($toClass);
         $newSectionKey = Firestore_service::sectionKey($toSection);
-        $targetSectionDoc = $this->fs->get('sections', $this->fs->sectionDocId($toClass, $toSection));
-        $maxStrength = (int) ($targetSectionDoc['maxStrength'] ?? $targetSectionDoc['max_strength'] ?? 0);
-        if ($maxStrength > 0) {
-            $existingStudents = $this->fs->schoolWhere('students', [
-                ['className', '==', $newClassKey], ['section', '==', $newSectionKey], ['status', '==', 'Active'],
-            ]);
-            $currentCount = count($existingStudents);
-            $promotionCount = count($students);
-            if (($currentCount + $promotionCount) > (int) $maxStrength) {
-                return $this->json_error(
-                    "Target section {$newClassKey}/{$newSectionKey} capacity exceeded ({$currentCount}/{$maxStrength}). Cannot promote {$promotionCount} student(s)."
-                );
+        // Version BEFORE the occupancy it protects, and read uncached — the same
+        // ordering admission, reactivation, enrolment and import already use. A
+        // version taken after the count cannot witness a placement that landed
+        // during the count, so the CAS would prove nothing about the decision.
+        require_once APPPATH . 'libraries/Section_seat_guard.php';
+        $promoVersion = $this->_sectionDecisionVersion($newClassKey, $newSectionKey, $toSession);
+        $capOver = $this->_sectionCapacityExceeded(
+            $newClassKey, $newSectionKey, $toSession, count($students), '', /* fresh */ true
+        );
+        if ($capOver !== null) {
+            return $this->json_error(
+                $this->_sectionCapacityMessage($capOver, $newClassKey, $newSectionKey)
+            );
+        }
+
+        // ── Phase 14.1 — Roll Number collisions in the DESTINATION section ───
+        //
+        // THE DEFECT THIS CLOSES: `batchMoveStudents()` writes className,
+        // section, sectionKey, status and session — and deliberately NOT
+        // rollNo. Each promoted student therefore CARRIES THEIR OLD ROLL
+        // FORWARD. Promote 5-A (Rahul, Roll 18) and 5-B (Priya, Roll 18) into
+        // 6-A and the destination silently ends up with two Roll 18s. Nothing
+        // in the system objected, because every module keys on studentId.
+        //
+        // Blocked all-or-nothing BEFORE any student moves, mirroring the
+        // capacity and fee-structure guards immediately above/below — the
+        // established shape for this endpoint. Deliberately NOT auto-renumbered
+        // and NOT silently blanked: choosing who keeps Roll 18 is a business
+        // decision for the operator, and inventing one here would be exactly
+        // the "silent conflict resolution" this phase forbids.
+        //
+        // Two collision sources are considered:
+        //   (a) students ALREADY in the destination (e.g. a partial earlier
+        //       promotion, or a section that is not empty), and
+        //   (b) two students WITHIN this promotion batch holding the same roll
+        //       — the merge-two-sections case, which no per-student check on
+        //       its own would catch.
+        //
+        // Cost: ZERO extra reads on the (a) path — it reuses the
+        // `$existingStudents` list the capacity guard already fetched when a
+        // maxStrength is configured, and otherwise falls back to the shared
+        // write-invalidated snapshot. (b) is pure in-memory.
+        $rollOwners = [];       // lowercased roll => owner label, in destination
+        try {
+            $destRows = $existingStudents ?? null;
+            if (!is_array($destRows)) {
+                $destRows = $this->fs->schoolWhere('students', [
+                    ['className', '==', $newClassKey], ['section', '==', $newSectionKey], ['status', '==', 'Active'],
+                ]);
             }
+            foreach ((array) $destRows as $dr) {
+                $dd = is_array($dr) ? ($dr['data'] ?? $dr) : [];
+                if (!is_array($dd)) continue;
+                $r = mb_strtolower(trim((string) ($dd['rollNo'] ?? $dd['Roll No'] ?? '')));
+                if ($r === '') continue;
+                $rollOwners[$r] = (string) ($dd['name'] ?? $dd['Name'] ?? $dd['studentId'] ?? 'an existing student');
+            }
+        } catch (\Throwable $e) {
+            log_message('error', 'promotion roll pre-check (destination) failed: ' . $e->getMessage());
+        }
+
+        $rollClashes = [];
+        foreach ($students as $__uid => $__info) {
+            $sInfo = is_array($__info) ? ($__info['data'] ?? $__info) : [];
+            if (!is_array($sInfo)) continue;
+            $sRoll = trim((string) ($sInfo['rollNo'] ?? $sInfo['Roll No'] ?? ''));
+            if ($sRoll === '') continue;                     // blank carries no claim
+            $sName = (string) ($sInfo['name'] ?? $sInfo['Name'] ?? $__uid);
+            $k     = mb_strtolower($sRoll);
+            if (isset($rollOwners[$k])) {
+                $rollClashes[] = "Roll {$sRoll} ({$sName} vs {$rollOwners[$k]})";
+            } else {
+                $rollOwners[$k] = $sName;                    // now claimed by this batch
+            }
+        }
+
+        if (!empty($rollClashes)) {
+            $shown = array_slice($rollClashes, 0, 5);
+            $more  = count($rollClashes) - count($shown);
+            return $this->json_error(
+                "Cannot promote: " . count($rollClashes) . " Roll Number conflict(s) in "
+                . "{$newClassKey}/{$newSectionKey} — " . implode('; ', $shown)
+                . ($more > 0 ? " and {$more} more" : '')
+                . ". Resolve the Roll Numbers before promoting; no student was moved."
+            );
         }
 
         // BUG-076 Part 2-A (2026-05-28): destination fee-structure guard.
@@ -1530,15 +1626,16 @@ class Sis extends MY_Controller
         // missing. ($school_name == school_id == SCH_xxx; classKey/sectionKey
         // are already applied to $newClassKey/$newSectionKey — identical to
         // the key assignInitialFees will read.)
-        $destFeeStructDocId = "{$school_name}_{$toSession}_{$newClassKey}_{$newSectionKey}";
-        $destFeeStruct      = $this->fs->get('feeStructures', $destFeeStructDocId);
-        if (!is_array($destFeeStruct) || empty($destFeeStruct['feeHeads'])) {
-            return $this->json_error(
-                "No fee structure exists for {$newClassKey} / {$newSectionKey} in session "
-                . "{$toSession}. Promotion aborted before moving any student, to prevent "
-                . "students being enrolled without fee demands. Set up the fee structure for "
-                . "this class/section in session {$toSession} first, then retry."
-            );
+        // Shared implementation — see _fee_structure_missing() above.
+        $feeStructErr = $this->_fee_structure_missing(
+            $newClassKey,
+            $newSectionKey,
+            $toSession,
+            'Promotion'
+        );
+        if ($feeStructErr !== '') {
+            // All-or-nothing: aborts before moving any student.
+            return $this->json_error($feeStructErr);
         }
 
         $adminName     = $this->session->userdata('admin_name') ?? 'Admin';
@@ -1567,10 +1664,68 @@ class Sis extends MY_Controller
 
         // Firestore-only bulk promotion (RTDB retired) — per-student syncStudent
         // with inline retry + async retry-queue; returns moved[]/failed[].
-        $moveResult = $this->dw->batchMoveStudents(
-            $batchMap, $oldClassKey, $session,
-            $newClassKey, $newSectionKey, $toSession
-        );
+        // ── BOUNDED RE-DECIDE, matching every other protected workflow ──────
+        // A CONFLICT means a competing placement committed first: this promotion's
+        // capacity decision is stale, not wrong. Re-decide against the destination
+        // as it is NOW — version first, then a fresh occupancy read — and retry.
+        // Only CONFLICT is retryable; a FAILURE outcome is unknown and re-issuing
+        // it is how duplicate placements are made.
+        $moveResult = ['moved' => [], 'failed' => []];
+        for ($__pa = 1; $__pa <= self::SEAT_RETRY_ATTEMPTS; $__pa++) {
+            if ($__pa > 1) {
+                $promoVersion = $this->_sectionDecisionVersion($newClassKey, $newSectionKey, $toSession);
+                $__cap = $this->_sectionCapacity($newClassKey, $newSectionKey, $toSession);
+                if ($__cap > 0) {
+                    $__now = $this->_sectionActiveCountFresh($newClassKey, $newSectionKey, $toSession);
+                    if ($__now + count($students) > $__cap) {
+                        return $this->json_error($this->_sectionCapacityMessage(
+                            ['capacity' => $__cap, 'current' => $__now, 'incoming' => count($students),
+                             'projected' => $__now + count($students),
+                             'over' => ($__now + count($students)) - $__cap],
+                            $newClassKey, $newSectionKey));
+                    }
+                }
+            }
+            $moveResult = $this->dw->batchMoveStudents(
+                $batchMap, $oldClassKey, $session,
+                $newClassKey, $newSectionKey, $toSession, $promoVersion
+            );
+            if (!empty($moveResult['moved'])) break;
+            if (($moveResult['guardStatus'] ?? '') !== Section_seat_guard::CONFLICT) break;
+        }
+
+        // ── Phase 15.5 (L-1): INVALIDATE THE SHARED STUDENT SNAPSHOT ────
+        //
+        // THE DEFECT THIS CLOSES: batchMoveStudents writes each student via
+        // Entity_firestore_sync::syncStudent() → _write() → raw
+        // firebase->firestoreSet(). That bypasses Firestore_service entirely,
+        // so Firestore_service::_bustDashboard() — the hook that normally
+        // drops these cache keys on any students write — NEVER FIRES for a
+        // promotion. Admission, import, deletion and transfers all route
+        // through fs->update/remove and are unaffected; promotion was the one
+        // student-lifecycle flow that left the snapshot stale (90 s TTL, see
+        // MY_Controller::_cachedStudentDocsForRollCheck).
+        //
+        // WHY IT MATTERED: the roll-uniqueness check and the section-capacity
+        // check both read that snapshot. For 90 s after a promotion the
+        // promoted students were still filed under their OLD class/section,
+        // so a roll number already taken in the DESTINATION class read as
+        // free — a hole in the Phase 14.1 guarantee that opened at exactly
+        // the moment operators sit down to assign new-session roll numbers.
+        //
+        // Fixed at the CALLER, deliberately: rerouting _write() through
+        // Firestore_service would change the write path of every entity sync
+        // in the ERP (staff, sections, routes, vehicles…) to fix one flow.
+        // Cache-only, no Firestore I/O — cost is strictly negative latency.
+        try {
+            $this->load->driver('cache', ['adapter' => 'file']);
+            $this->cache->delete($this->fs->listCacheKey('students'));
+            $this->cache->delete($this->fs->listCacheKey('students_raw'));
+        } catch (\Throwable $e) {
+            // Never fail a completed promotion over a cache delete; worst case
+            // is the pre-existing 90 s staleness this fix removes.
+            log_message('error', 'Sis::execute_promotion — student cache bust failed: ' . $e->getMessage());
+        }
 
         // Log history for moved students
         foreach ($moveResult['moved'] as $userId) {
@@ -1581,7 +1736,14 @@ class Sis extends MY_Controller
 
         $skipped = [];
         foreach ($moveResult['failed'] as $userId) {
-            $skipped[] = ['user_id' => $userId, 'reason' => 'RTDB atomic write failed'];
+            // LC-2 · The reason a promotion skipped a student must name a
+            // system that still exists. This said "RTDB atomic write failed"
+            // long after the Dual_write RTDB engine was retired (758c924,
+            // ZERO-RTDB). `$this->dw` is now an alias for Student_write_service,
+            // which is Firestore-only — so an operator reading this message was
+            // sent to debug a datastore ZenX no longer talks to, while the real
+            // failure (a Firestore write for that student) went unnamed.
+            $skipped[] = ['user_id' => $userId, 'reason' => 'Firestore write failed for this student'];
         }
 
         // G2 — Refresh section strength on every (old, new) section
@@ -1631,7 +1793,23 @@ class Sis extends MY_Controller
                 'toClass'         => $newClassKey,
                 'toSection'       => $newSectionKey,
                 'expectedCount'   => count($promoted),
+                // ── LC-5 · RECORD THE TARGET SET, NOT JUST ITS SIZE ─────────
+                // The students are ALREADY moved by this point — batchMoveStudents
+                // committed synchronously above. Only fee regeneration is
+                // deferred to the shutdown handler.
+                //
+                // If that handler dies mid-loop (fatal, OOM, timeout, worker
+                // kill), some promoted students have regenerated demands and
+                // some do not — the "Active-with-zero-demands" state this code
+                // already names as the danger. A count alone cannot tell anyone
+                // WHICH students those are, so the damage was undiscoverable
+                // and unrepairable. The id list makes recovery a reconciliation
+                // rather than a guess.
+                'promotedStudentIds' => array_values(array_map(
+                    static fn($p) => (string) ($p['user_id'] ?? ''), $promoted
+                )),
                 'processedCount'  => 0,
+                'lastProcessedStudentId' => '',
                 'failedStudents'  => [],
                 'status'          => 'deferred-fees-pending',
                 'startedAt'       => $now,
@@ -1809,6 +1987,30 @@ class Sis extends MY_Controller
                         'reason'  => $e->getMessage(),
                     ];
                 }
+
+                    // ── LC-5 · CHECKPOINT, SO AN INTERRUPTION IS DISCOVERABLE ──
+                    // processedCount was written ONLY at the end of the handler.
+                    // A handler killed at student 59 of 60 therefore left the job
+                    // doc claiming processedCount: 0 — a figure that is not merely
+                    // stale but actively false, and which no recovery could act on.
+                    //
+                    // Checkpointing every few students bounds the extra writes
+                    // (6 for a 60-student batch) and keeps them on the DEFERRED
+                    // path, which exists precisely so slow work is off the
+                    // operator-facing request. Best-effort: a checkpoint that
+                    // fails must never abort the regeneration it is describing.
+                    if (($processedCount % 10) === 0 && $processedCount > 0) {
+                        try {
+                            $__firebase->firestoreSet('promote_jobs', $__jobDocId, [
+                                'processedCount'         => $processedCount,
+                                'lastProcessedStudentId' => (string) ($p['user_id'] ?? ''),
+                                'checkpointAt'           => date('c'),
+                            ], true);
+                        } catch (\Throwable $__cpErr) {
+                            log_message('warning', 'promote(deferred): checkpoint failed for '
+                                . $__batchIdLocal . ': ' . $__cpErr->getMessage());
+                        }
+                    }
             }
 
             // BUG-076 Part 2-B: restore the boot session on the shared fsTxn +
@@ -4569,6 +4771,12 @@ class Sis extends MY_Controller
                 'name'    => $s['name'] ?? $s['Name'] ?? $uid,
                 'class'   => $s['className'] ?? $s['Class'] ?? $classOrd,
                 'section' => $s['section'] ?? $s['Section'] ?? $section,
+                // Phase 14.1 — carried so execute_promotion() can detect Roll
+                // Number collisions in the destination section BEFORE moving
+                // anyone. The source document is already loaded here, so this
+                // costs ZERO extra reads. Display/validation only; promotion
+                // still keys on user_id and never writes rollNo.
+                'rollNo'  => (string) ($s['rollNo'] ?? $s['Roll No'] ?? ''),
             ];
         }
         return $students;
