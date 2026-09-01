@@ -650,6 +650,48 @@ class Firebase
      * @param array  $props    Extra properties: uid, displayName, disabled, etc.
      * @return \Kreait\Firebase\Auth\UserRecord|null
      */
+    /**
+     * ── AUTH DESTINATION REPORTER (2026-09-01) ────────────────────────────
+     *
+     * The 2026-08-31 incident was closed for Firestore by making the CLIENT
+     * report where it will actually talk, instead of trusting an environment
+     * variable. Firebase AUTH had no such reporter, so `Lifecycle_probe`'s
+     * "emulator" guard sandboxed Firestore and nothing else: every rehearsal
+     * admission issued a REAL production Auth create. Those calls failed only
+     * because the generated password was shorter than Firebase's six-character
+     * minimum — luck, not design.
+     *
+     * This asks Kreait for the exact URL its Auth calls will use. Kreait
+     * resolves that URL from FIREBASE_AUTH_EMULATOR_HOST at call time through
+     * this very builder, so the answer cannot drift from real behaviour the
+     * way a separate environment-variable read could.
+     */
+    public function resolvedAuthRoot(): string
+    {
+        return \Kreait\Firebase\Auth\ProjectAwareAuthResourceUrlBuilder::forProject('graderadmin')->getUrl();
+    }
+
+    /**
+     * True only when Auth calls provably go to a LOOPBACK emulator.
+     *
+     * Fails CLOSED: any exception, any non-http scheme and any non-loopback
+     * host return false, because "I could not prove it is the emulator" and
+     * "it is production" must be treated identically before the first write.
+     */
+    public function isAuthEmulatorTarget(): bool
+    {
+        try {
+            $root = $this->resolvedAuthRoot();
+        } catch (\Throwable $e) {
+            return false;
+        }
+        if (stripos($root, 'http://') !== 0) {
+            return false;
+        }
+        $host = strtolower((string) parse_url($root, PHP_URL_HOST));
+        return in_array($host, ['127.0.0.1', 'localhost', '::1'], true);
+    }
+
     public function createFirebaseUser(string $email, string $password, array $props = [])
     {
         try {
