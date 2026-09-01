@@ -7710,19 +7710,41 @@ class Sis extends MY_Controller
         // [] and the student would land Active-with-zero-demands. Block here,
         // before any Firestore write or Auth side-effect, so the operator can
         // set up the fee structure first and retry the enrollment.
-        $destFeeStructDocId = "{$school_name}_{$session}_{$className}_{$section}";
-        $destFeeStruct      = $this->fs->get('feeStructures', $destFeeStructDocId);
-        if (!is_array($destFeeStruct) || empty($destFeeStruct['feeHeads'])) {
+        // Shared implementation — see _fee_structure_missing() above.
+        $feeStructErr = $this->_fee_structure_missing($className, $section, $session, 'Enrollment');
+        if ($feeStructErr !== '') {
             // Release the enroll lock so the operator can retry immediately
             // after creating the fee structure (the documented "set it up and
             // retry" workflow — a wait here would be pure friction).
             $this->fs->remove('crmEnrollLocks', $lockId);
-            return $this->json_error(
-                "No fee structure exists for {$className} / {$section} in session "
-                . "{$session}. Enrollment aborted to prevent the student being "
-                . "created without fee demands. Set up the fee structure for this "
-                . "class/section in session {$session} first, then retry."
-            );
+            return $this->json_error($feeStructErr);
+        }
+
+        // ── Phase 15 (HIGH-1, CRM path) — Section capacity, SERVER-SIDE ─────
+        // CORRECTION TO A PRIOR REPORT: the Class/Section research stated the
+        // CRM path "already enforces capacity". Source says otherwise —
+        // get_class_sections() computes headroom for the PICKER, but
+        // enroll_student() itself had no guard, so the CRM path was equally
+        // capable of overfilling a section if the client was stale or bypassed.
+        // Both paths are now enforced by the same canonical validator.
+        //
+        // Released the enroll lock on rejection, matching the fee-structure
+        // guard immediately above — the operator fixes the section choice and
+        // retries without waiting out the mutex.
+        // Same authority, same ordering as admission: the section version must be
+        // captured BEFORE the occupancy it protects, and carried into the placement
+        // commit. Without it the guard fails closed (ACC_SEAT_NO_DECISION_VERSION)
+        // and refuses EVERY enrolment — which is what this path did before, since
+        // it called the guard but supplied no version.
+        // Declare the dependency at the point of use — committed MY_Controller
+        // does not load this library, and relying on another constructor to have
+        // pulled it in has now failed in three different callers.
+        require_once APPPATH . 'libraries/Section_seat_guard.php';
+        $decisionVersion = $this->_sectionDecisionVersion($className, $section, $session);
+        $capOver = $this->_sectionCapacityExceeded($className, $section, $session, 1, '', /* fresh */ true);
+        if ($capOver !== null) {
+            $this->fs->remove('crmEnrollLocks', $lockId);
+            return $this->json_error($this->_sectionCapacityMessage($capOver, $className, $section));
         }
 
         $combinedPath = "{$className}/{$section}";
@@ -7823,17 +7845,105 @@ class Sis extends MY_Controller
         }
         // first_claim | stale_override ⇒ we own the slot; enroll exactly once.
 
+        // ── PHASE 20.3h — PATH 2/5: ENROLL (P20.2-RACE-1) ───────────────
+        // The guard protects saveStudent(), NOT the later syncStudent().
+        // Phase 20.3e-1 proved saveStudent() is the document-CREATING primary
+        // write here; guarding the follow-up sync instead would leave the real
+        // creation unprotected — a bypass that reads as protected.
+        //
+        // A refusal returns before _claimIdentityAttributes() further below, so
+        // no SRNO is claimed for an enrollment that did not happen.
         $studentSaved = false;
+        $capacityRefusal = '';
         try {
-            $studentSaved = (bool) $this->fs->saveStudent($studentId, $studentData);
+            if (Section_seat_guard::enabled()) {
+                $placement = ['status' => '', 'message' => ''];
+                for ($attempt = 1; $attempt <= self::SEAT_RETRY_ATTEMPTS; $attempt++) {
+                    if ($attempt > 1) {
+                        // Re-decide on a genuine conflict, version first.
+                        $decisionVersion = $this->_sectionDecisionVersion($className, $section, $session);
+                        $cap2 = $this->_sectionCapacity($className, $section, $session);
+                        if ($cap2 > 0) {
+                            $now2 = $this->_sectionActiveCountFresh($className, $section, $session);
+                            if ($now2 + 1 > $cap2) {
+                                $placement = ['status' => '', 'message' => $this->_sectionCapacityMessage(
+                                    ['capacity' => $cap2, 'current' => $now2, 'incoming' => 1,
+                                     'projected' => $now2 + 1, 'over' => ($now2 + 1) - $cap2],
+                                    $className, $section)];
+                                break;
+                            }
+                        }
+                    }
+                    $placement = $this->_placeStudentGuarded(
+                        $studentId, $studentData, $className, $section, $session, 'enroll_student',
+                        $decisionVersion
+                    );
+                    if (($placement['status'] ?? '') === Section_seat_guard::PLACED) break;
+                    if (($placement['status'] ?? '') !== Section_seat_guard::CONFLICT) break;
+                }
+                $studentSaved = (($placement['status'] ?? '') === Section_seat_guard::PLACED);
+                if (!$studentSaved) $capacityRefusal = (string) ($placement['message'] ?? '');
+            } else {
+                $studentSaved = (bool) $this->fs->saveStudent($studentId, $studentData);
+            }
         } catch (\Exception $e) {
             log_message('error', "Firestore saveStudent failed for {$studentId}: " . $e->getMessage());
         }
         if (!$studentSaved) {
             // Release the slot so a corrected retry can immediately reclaim it.
             $this->enrollIdemp->markFailed($enrollKey, 'saveStudent failed');
-            return $this->json_error('Failed to create student profile in database. Please retry. If the issue persists, contact support.');
+            return $this->json_error($capacityRefusal !== ''
+                ? $capacityRefusal
+                : 'Failed to create student profile in database. Please retry. If the issue persists, contact support.');
         }
+
+        // ── F14 Phase 1g (2026-08-12) — admission transport declaration ──
+        //
+        // The family ticked "transport" on the admission form. That is a REQUEST,
+        // not an entitlement: at this point the school normally has no route or
+        // stop for them, and assignStudent() would create a transport FEE — so
+        // converting a bare declaration into an assignment would bill a family
+        // for a service nobody has arranged yet.
+        //
+        // Hybrid F-3: route + stop present ⇒ assign for real; otherwise ⇒ a
+        // pending worklist row for the office to complete. requestTransport() is
+        // idempotent per (student, session), so the enroll-retry path above
+        // cannot produce two requests.
+        //
+        // Wrapped and best-effort BY DESIGN: a transport worklist entry must
+        // never be able to fail an enrollment that has already created the
+        // student and their Auth account.
+        $transportRequest = null;
+        try {
+            $decl = (array) ($app['entitlementDeclarations'] ?? []);
+            if (!empty($decl['transport'])) {
+                $this->load->library('numbering_service', null, 'trnNumbering');
+                $this->trnNumbering->init($this->fs, $this->school_name, $this->session_year);
+                $this->load->library('transport_service', null, 'trnSvc');
+                $this->trnSvc->init($this->fs, $this->trnNumbering,
+                    $this->school_name, $this->session_year, $this->admin_id ?? 'admission');
+                $transportRequest = $this->trnSvc->requestTransport([
+                    'studentId'      => $studentId,
+                    'student_name'   => (string) ($app['student_name'] ?? ''),
+                    'student_class'  => (string) ($app['class'] ?? ''),
+                    // MODEL A (ratified 2026-08-15): a request is DESCRIPTIVE. It
+                    // never establishes a canonical route/stop — management
+                    // supplies those at approve_transport_request, which is where
+                    // assignStudent() runs. route_id/stop_id were only ever read
+                    // by the assign-now shortcut removed in Phase 4, so passing
+                    // them here is dropped rather than silently ignored.
+                    'type'           => (string) ($this->input->post('transport_type') ?? 'both'),
+                    'requested_area' => (string) ($decl['transportArea'] ?? ''),
+                ], 'admission');
+            }
+        } catch (\Throwable $e) {
+            log_message('error', "F14 admission transport request failed for {$studentId}: " . $e->getMessage());
+        }
+
+        // Relationship capture happens further down, AFTER $warnings exists —
+        // see "Verified relationships from the ONLINE application". Putting it
+        // here would have appended to a $warnings that is reassigned to []
+        // later in this method, silently discarding every note.
 
         // Revised D1 — reference (do NOT copy) the canonical documents on the
         // enrolled student. One physical object referenced by both the admission
@@ -7849,13 +7959,8 @@ class Sis extends MY_Controller
 
         $phone = trim($app['phone'] ?? '');
         if ($phone !== '') {
-            // Firestore dual-write: phone index
-            try {
-                $this->fs->set('indexPhones', $this->fs->docId($phone), [
-                    'schoolId' => $this->school_id, 'phone' => $phone,
-                    'userId' => $studentId, 'type' => 'student',
-                ]);
-            } catch (\Exception $e) { log_message('error', "Firestore dual-write indexPhones failed: " . $e->getMessage()); }
+            // P14-1: append, never overwrite (CRM enrolment path).
+            $this->_registerPhoneIndex($phone, $studentId, 'student');
         }
 
         // Update Students_Index (matches save_admission pattern)
@@ -7960,6 +8065,29 @@ class Sis extends MY_Controller
         // follow-up; this at least makes partial failure VISIBLE.
         $warnings = [];
 
+        // ── Verified relationships from the ONLINE application ──────────────
+        // The public form is filled by a PARENT, so what it carries is a CLAIM
+        // ("we have a sibling here", plus an SR No) and never a verified link.
+        // It is verified HERE, at enrolment, by the same server-side resolver
+        // the counter uses — this is the first moment an authenticated member
+        // of staff is accountable for the record. An unresolvable number
+        // produces a warning the operator can act on, not a silent link.
+        try {
+            $declRel = (array) ($app['entitlementDeclarations'] ?? []);
+            foreach ($this->_captureAdmissionRelationships(
+                $studentId,
+                (string) ($declRel['siblingSrNo'] ?? ''),
+                (string) ($declRel['staffWardId'] ?? ''),
+                (string) ($declRel['rteRef'] ?? '')
+            ) as $note) {
+                if (stripos($note, 'NOT ') !== false || stripos($note, 'could not') !== false) {
+                    $warnings[] = $note;
+                }
+            }
+        } catch (\Throwable $e) {
+            log_message('error', "REL enrol capture failed for {$studentId}: " . $e->getMessage());
+        }
+
         // Auto-assign class fees for enrolled student
         try {
             $parentDbKey = $school_id;
@@ -7969,6 +8097,54 @@ class Sis extends MY_Controller
             log_message('error', "Fee_lifecycle::assignInitialFees failed for {$studentId}: " . $e->getMessage());
             $warnings[] = 'Initial fees could not be assigned automatically — assign them manually from Fees.';
         }
+
+        // ── CONS-2 · THE DEFAULTER PROJECTION MUST BE SEEDED HERE TOO ────────
+        // Same gap Phase 3D closed for direct admission and CONS-1 closed for
+        // single-student generation: assignInitialFees writes feeDemands but
+        // emits NO defaulter event, so a student enrolled through this path has
+        // unpaid demands and NO feeDefaulters document.
+        //
+        // The consequence is a collection blind spot rather than a wrong
+        // figure: the family's dues are correct everywhere that reads
+        // feeDemands (including the Parent app), but the school's DEFAULTER
+        // REPORT — which reads the projection — simply does not list them. A
+        // school cannot chase a student it cannot see, and nothing anywhere
+        // reports the omission.
+        //
+        // updateDefaulterStatus reads feeDemands canonically and writes the
+        // projection idempotently, so this is safe to run unconditionally and
+        // safe to re-run.
+        //
+        // Fail-soft, exactly as Phase 3D is: enrolment must still succeed if the
+        // projection write fails. The doc is recreated by any future payment
+        // event or by backfill_defaulters.js.
+        try {
+            $this->feeDefaulter->updateDefaulterStatus($studentId);
+        } catch (\Throwable $e) {
+            log_message('error', "CONS-2 enrolment defaulter sync failed for {$studentId}: " . $e->getMessage());
+        }
+
+        // SRNO_STUDENT_ID_RE_ADMISSION_MULTI_TENANT_FINAL_AUDIT.md Phase 2 /
+        // Phase 9 correction pass (2026-08-13) — ordinary first-time SRNO +
+        // APAAR claim, wired at the SAME "best-effort, never blocks the
+        // already-committed admission" point as the fee assignment
+        // immediately above. Both are entirely OPTIONAL input (a school
+        // that hasn't adopted either sends nothing and this is a no-op),
+        // the student is already fully created and committed by this point
+        // in the method, and a failed claim degrades to a warning exactly
+        // like a failed fee assignment does — it can never leave behind a
+        // "partially created identity" because the identity (the Student
+        // ID) was never partial to begin with; only the display attributes
+        // are affected. Logic lives in the ONE shared
+        // _claimIdentityAttributes() helper (also used by save_admission()
+        // — the direct/walk-in admission path) so both entry points wire
+        // to Sr_no_service/Apaar_service identically, never two copies.
+        // Phase 9.1 (2026-08-13): SRNO is no longer read from POST — it is
+        // ALWAYS server-allocated inside _claimIdentityAttributes(). Any
+        // `sr_no` value a client might still send (stale UI, direct API
+        // call) is silently ignored; the server is the sole authority.
+        $apaarInput = trim((string) $this->input->post('apaar_id'));
+        $warnings = array_merge($warnings, $this->_claimIdentityAttributes($studentId, $school_id, $apaarInput, $studentData));
 
         // Firestore sync for Android apps (entity_sync loaded in constructor)
         // SIS Wave-2 S6 (2026-05-31): observability for sync return.
@@ -8005,12 +8181,18 @@ class Sis extends MY_Controller
         $this->fs->remove('crmEnrollLocks', $lockId);   // release enroll mutex — enrollment complete
         return $this->json_success([
             'student_id'   => $studentId,
+            'sr_no'        => $studentData['srNo'] ?? '',   // Phase 9.1 — server-allocated, for the credentials/identity panel
+            'admission_no' => $studentData['Admission Number'] ?? '',   // Phase 10.1 — admission-event identifier, YYYY/CLASS/XXX
             'class'        => $className,
             'section'      => $section,
             'password'     => $generatedPassword,           // plain — for the credentials panel
             'auth_created' => $authCreated,
             'auth_error'   => $authCreated ? '' : $authError,
             'sms_sent'     => $smsSent,
+            // F14 Phase 1g — surface the transport outcome so the operator knows
+            // a request is waiting rather than assuming transport is live. Null
+            // when the family did not ask for transport.
+            'transport'    => $transportRequest,
             'warnings'     => $warnings,   // non-fatal post-enroll issues (fees/sync) for the operator
             'message'      => $authCreated
                 ? "Enrolled as {$studentId} in {$className} / {$section}." . ($smsSent ? ' Login credentials sent via SMS.' : '')

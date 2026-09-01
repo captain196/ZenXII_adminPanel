@@ -827,6 +827,18 @@ class Lifecycle_probe extends CI_Controller
                 ]);
                 return;
 
+            // Lead -> student conversion. Requires an APPROVED crmApplications
+            // document, which the driver seeds as a fixture; the path under test
+            // is the real controller, not the fixture.
+            case 'enroll':
+                $this->dispatch('sis', 'enroll_student', [
+                    'id'             => $a1,
+                    'section'        => $a2,
+                    'transport_type' => '',
+                    'apaar_id'       => '',
+                ]);
+                return;
+
             case 'change_status':
                 $this->dispatch('sis', 'change_status', ['user_id' => $a1, 'status' => $a2]);
                 return;
