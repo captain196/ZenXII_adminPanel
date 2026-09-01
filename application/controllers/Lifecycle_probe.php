@@ -839,6 +839,17 @@ class Lifecycle_probe extends CI_Controller
                 ]);
                 return;
 
+            // Bulk import. Drives the REAL import_commit endpoint, which is the
+            // modern JSON path both file upload and preview funnel into via
+            // _runStudentImport(). The driver supplies the row payload the
+            // spreadsheet parser would have produced; every validation, dedupe,
+            // placement and fee decision downstream of that is the real one.
+            case 'import':
+                $this->dispatch('sis', 'import_commit', [
+                    'payload' => (string) getenv('ZX_IMPORT_PAYLOAD'),
+                ]);
+                return;
+
             case 'change_status':
                 $this->dispatch('sis', 'change_status', ['user_id' => $a1, 'status' => $a2]);
                 return;

@@ -163,7 +163,8 @@ class Section_seat_guard
         array $students,
         string $classNode,
         string $sectionNode,
-        string $session
+        string $session,
+        string $decisionVersion = ''
     ): array {
         $n = count($students);
         if ($n === 0) {
@@ -209,7 +210,7 @@ class Section_seat_guard
             ];
         }
 
-        $res = $this->commitPlacement($classNode, $sectionNode, $session, $writes);
+        $res = $this->commitPlacement($classNode, $sectionNode, $session, $writes, $decisionVersion);
         $res['count'] = ($res['status'] === self::PLACED) ? count($writes) : 0;
         return $res;
     }

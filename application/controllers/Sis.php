@@ -618,7 +618,7 @@ class Sis extends MY_Controller
         // A refusal returns HERE, before _claimIdentityAttributes() below, so
         // no SRNO or APAAR is claimed for an admission that did not happen
         // (ordering verified in Phase 20.3e-1).
-        if (Section_seat_guard::enabled()) {
+        if ($this->_seatGuardEnabled()) {
             // ── SEAT-RACE-1 · BOUNDED RE-DECIDE ─────────────────────────────
             //
             // A CAS conflict means a competing admission committed first, so
@@ -2495,7 +2495,7 @@ class Sis extends MY_Controller
         // fatal, not a silent bypass, but still the wrong failure.
         require_once APPPATH . 'libraries/Section_seat_guard.php';
         $acquiresSeat = ($priorStatus !== $newStatus && $newStatus === 'Active');
-        if ($acquiresSeat && Section_seat_guard::enabled()) {
+        if ($acquiresSeat && $this->_seatGuardEnabled()) {
             $classNode   = (string) ($student['className'] ?? $student['Class'] ?? '');
             $sectionNode = (string) ($student['section'] ?? $student['Section'] ?? '');
             $sessionNode = (string) ($student['session'] ?? $this->session_year);
@@ -4676,16 +4676,45 @@ class Sis extends MY_Controller
         $dupPolicy = in_array(($opts['dupPolicy'] ?? 'skip'), ['create', 'skip', 'update'], true)
             ? $opts['dupPolicy'] : 'skip';
 
+        // Phase 9.2 (2026-08-13) — identity import mode. '' (unspecified)
+        // is the exact pre-Phase-9.2 behavior: the legacy exact-template
+        // caller (Sis::import_students(), confirmed dead/unreachable via
+        // any current UI — no view posts to its route) passes no opts at
+        // all, so it continues to create students with ZERO SRNO/APAAR
+        // handling, exactly as before this phase. Retrofitting a mode
+        // selector onto an unreachable path was judged unnecessary scope
+        // expansion (documented in the implementation report). Only the
+        // mapped-flow caller (import_commit(), reachable and live) ever
+        // passes 'historical' or 'new'.
+        $importMode = in_array(($opts['importMode'] ?? ''), ['historical', 'new'], true)
+            ? $opts['importMode'] : '';
+
         $success     = 0;
         $error       = 0;
         $skipped     = [];
-        $feesPending = []; // imported students whose class/section has no fee chart yet
+        $feesPending = []; // rows BLOCKED because their class/section has no fee chart (P1 #10)
+        $feeChartMemo = []; // "class|section" => '' when a usable fee chart exists, else the error
         $duplicates  = []; // rows skipped as duplicates (skip policy)
         $updated     = 0;  // existing students updated (update policy)
         $credentials = []; // {name,phone,userId,password} per newly-created student (for the handout PDF)
 
-        $seenPhones  = []; // phone(10) => studentId created earlier in THIS file
+        // SIB-B1 (Phase 13): phone(10) => [ normalisedName => studentId ].
+        // NESTED BY NAME on purpose — a phone maps to potentially SEVERAL
+        // students (siblings), so a flat phone=>id map structurally cannot
+        // represent a family and was the root of the SIB-B1 data loss.
+        $seenPhones  = [];
         $seenNameDob = []; // "name|dob" => studentId created earlier in THIS file
+        // Phase 14.1: "class|section|roll" => studentName claimed earlier in
+        // THIS file. Needed because rows created during this run are not yet in
+        // the students snapshot the shared validator reads.
+        $seenRolls   = [];
+        // Phase 15 (HIGH-2): "class|section" => seats consumed by rows this run
+        // has ALREADY created. The shared capacity validator reads a snapshot
+        // that is memoised per request, so it cannot see students created
+        // moments ago inside this same loop. Projecting
+        // (live count + seats used this run + 1) is what makes an
+        // over-capacity RESULT impossible without re-reading per row.
+        $seatsUsedThisRun = [];
 
         // Each row does ~13-15 sequential network writes. Relax the limit on
         // EVERY call — the commit is chunked into 25-row batches, so the old
@@ -4697,174 +4726,170 @@ class Sis extends MY_Controller
         // Load ID generator for globally unique student IDs
         $this->load->library('id_generator');
 
+        // Phase 9.2 — same canonical services every other admission path
+        // uses (Sis::_claimIdentityAttributes()); loaded once per import
+        // rather than per row.
+        if ($importMode !== '') {
+            $this->load->library('Sr_no_service', null, 'srnoSvc');
+            $this->srnoSvc->init($this->firebase, $this->fs, $school_id, (string) ($this->admin_id ?? 'system'));
+        }
+
         $subjectCache = [];
 
-        foreach ($rows as $idx => $rowData) {
-            if (!is_array($rowData)) { $error++; continue; }
-            $rowNo = $idx + 1;
-
-                $studentName = trim($rowData['Name'] ?? '');
-                $classRaw    = trim($rowData['Class'] ?? '');
-                $section     = trim($rowData['Section'] ?? '');
-                if (!$studentName || !$classRaw || !$section) {
-                    $skipped[] = "Row {$rowNo}: missing required Name/Class/Section";
-                    $error++;
-                    continue;
-                }
-
-                preg_match('/\d+/', $classRaw, $match);
-                if (!isset($match[0])) {
-                    $skipped[] = "Row {$rowNo}: {$studentName} — Class \"{$classRaw}\" has no recognizable number (1–12)";
-                    $error++;
-                    continue;
-                }
-                $classNumber = (int)$match[0];
-
-                // ── Duplicate detection (skip/update policies) ───────────────
-                $phone10 = preg_replace('/\D+/', '', (string) ($rowData['Phone Number'] ?? ''));
-                if (strlen($phone10) > 10) $phone10 = substr($phone10, -10);
-                $dobKey  = trim((string) ($rowData['DOB'] ?? ''));
-                $nameKey = strtolower($studentName) . '|' . $dobKey;
-
-                if ($dupPolicy !== 'create') {
-                    $existingId = null; $dupReason = '';
-                    if ($phone10 !== '' && strlen($phone10) === 10) {
-                        if (isset($seenPhones[$phone10])) {
-                            $existingId = $seenPhones[$phone10]; $dupReason = 'duplicate phone within file';
-                        } else {
-                            $dbId = $this->_existingStudentIdByPhone($phone10);
-                            if ($dbId) { $existingId = $dbId; $dupReason = 'existing student (phone match)'; }
-                        }
+        // ── PHASE 20.3K-Step1 — POST-WRITE ROUTINE (EXTRACTION ONLY) ────
+        //
+        // The per-row work that follows a successful saveStudent(), moved out
+        // of the row loop VERBATIM apart from one mechanical change: the five
+        // `continue;` statements that controlled the OUTER row loop are now
+        // `return 'SKIP';`, and the caller performs the continue. A closure
+        // cannot continue the loop it was called from.
+        //
+        // The two inner `$rawList` continues are UNCHANGED — they still
+        // control only the subjects loop.
+        //
+        // No business logic, ordering, rollback or result semantics changed.
+        // Equivalence is proven by the Phase 20.3K golden master comparing
+        // ordered side-effect traces before and after this move.
+        //
+        // Per-row values arrive via $ctx (compact/extract) rather than a
+        // 16-parameter signature; mutable result state is captured by
+        // reference so the existing contract keeps working untouched.
+        $postWrite = function (array $ctx) use (
+            &$success, &$error, &$skipped, &$feesPending, &$credentials,
+            &$seenPhones, &$seenRolls, &$seenNameDob, &$seatsUsedThisRun, &$subjectCache,
+            $school_id, $school_name, $session_year, $importMode
+        ) {
+            extract($ctx, EXTR_OVERWRITE);
+                // Phase 9.2 — the ACTUAL atomic identity claim/allocation.
+                // The pre-flight check above (Sr_no_service::resolve())
+                // catches the common case before a Student ID is burned;
+                // this is the race-safe, authoritative step — reuses the
+                // SAME Sr_no_service::claim()/allocateNext() primitives
+                // every other admission path calls, never a second
+                // mechanism. A failure HERE (a genuine race the pre-check
+                // could not see, or a row whose SR Number was claimed by a
+                // concurrent import row a moment earlier) must not leave a
+                // half-identified student behind: the just-created student
+                // document AND the Student ID claim are both rolled back,
+                // and the row is rejected outright — never a silent
+                // reassignment, never an overwrite of the existing owner.
+                if ($importMode === 'historical' && $srNoRaw !== '') {
+                    $srRes = $this->srnoSvc->claim($srNoRaw, $studentId);
+                    if (empty($srRes['ok'])) {
+                        $this->entity_sync->deleteStudent($studentId);
+                        $this->id_generator->releaseClaim('STU', (int) preg_replace('/\D/', '', $studentId));
+                        $reason = (string) ($srRes['reason'] ?? 'unknown');
+                        $skipped[] = "Row {$rowNo}: {$studentName} — SR Number {$srNoRaw} could not be claimed (reason: {$reason}); row rejected, no student created";
+                        $error++;
+                        return 'SKIP';   // P20.3K-Step1: was `continue;` (outer row loop)
                     }
-                    if (!$existingId && $dobKey !== '' && isset($seenNameDob[$nameKey])) {
-                        $existingId = $seenNameDob[$nameKey]; $dupReason = 'duplicate name+DOB within file';
+                    $srnoFields = ['srNo' => $srNoRaw, 'srNoNorm' => \Sr_no_service::normalize($srNoRaw)['norm'] ?? '', 'srNoSource' => 'import_historical', 'updatedAt' => date('c')];
+                    // Phase 10.2 — Admission Number, system-generated via the
+                    // SAME service every other path uses. Never operator-
+                    // supplied: there is no 'Admission Number' import column
+                    // in Import_schema, so a spreadsheet cannot inject one.
+                    // HISTORICAL-MODE YEAR CAVEAT (unchanged from 10.1, still
+                    // disclosed): the YEAR component is the CURRENT session,
+                    // not the student's real original admission year — the
+                    // import file has no canonical field supplying it. See
+                    // the report §J for why this is left as-is rather than
+                    // guessed at.
+                    $importAdmNo = $this->_allocateAdmissionNumber($studentId, $school_id);
+                    if ($importAdmNo !== '') {
+                        $srnoFields['Admission Number'] = $importAdmNo;
+                        $srnoFields['admissionNumber']  = $importAdmNo;
                     }
-
-                    if ($existingId) {
-                        if ($dupPolicy === 'update') {
-                            if ($this->_updateExistingStudent($existingId, $rowData)) {
-                                $updated++;
-                            } else {
-                                $skipped[] = "Row {$rowNo}: {$studentName} — update of {$existingId} failed (see log)";
-                                $error++;
-                            }
-                        } else {
-                            $duplicates[] = "Row {$rowNo}: {$studentName} — {$dupReason} ({$existingId})";
-                        }
-                        continue;
+                    $this->fs->update('students', $this->fs->docId($studentId), $srnoFields);
+                    $studentData = array_merge($studentData, $srnoFields);
+                } elseif ($importMode === 'new') {
+                    $srRes = $this->srnoSvc->allocateNext($school_id, $studentId);
+                    if (empty($srRes['ok'])) {
+                        $this->entity_sync->deleteStudent($studentId);
+                        $this->id_generator->releaseClaim('STU', (int) preg_replace('/\D/', '', $studentId));
+                        $reason = (string) ($srRes['reason'] ?? 'unknown');
+                        $skipped[] = "Row {$rowNo}: {$studentName} — SR Number could not be allocated automatically (reason: {$reason}); row rejected, no student created";
+                        $error++;
+                        return 'SKIP';   // P20.3K-Step1: was `continue;` (outer row loop)
                     }
-                }
-
-                $suffix = 'th';
-                if (!in_array(($classNumber % 100), [11, 12, 13])) {
-                    switch ($classNumber % 10) {
-                        case 1: $suffix = 'st'; break;
-                        case 2: $suffix = 'nd'; break;
-                        case 3: $suffix = 'rd'; break;
+                    $assignedSrNo = (string) $srRes['srNo'];
+                    $srnoFields = ['srNo' => $assignedSrNo, 'srNoNorm' => \Sr_no_service::normalize($assignedSrNo)['norm'] ?? '', 'srNoSource' => 'import_auto', 'updatedAt' => date('c')];
+                    // Phase 10.2 — same service; for new-admission import the
+                    // current session IS the correct admission year, so no
+                    // caveat applies here (unlike the historical branch).
+                    $importAdmNo = $this->_allocateAdmissionNumber($studentId, $school_id);
+                    if ($importAdmNo !== '') {
+                        $srnoFields['Admission Number'] = $importAdmNo;
+                        $srnoFields['admissionNumber']  = $importAdmNo;
                     }
+                    $this->fs->update('students', $this->fs->docId($studentId), $srnoFields);
+                    $studentData = array_merge($studentData, $srnoFields);
                 }
+                // $importMode === '' (the dead legacy exact-template caller,
+                // see the $importMode assignment's own comment above) — no
+                // SRNO handling at all, exactly the pre-Phase-9.2 behavior.
 
-                $className = Firestore_service::classKey($classNumber . $suffix);
-                $section   = Firestore_service::sectionKey($section);
-                $combinedClass = "{$className}/{$section}";
-
-                // Phase 1 (2026-06-12): admission is no longer hard-blocked on a
-                // missing fee chart. The earlier B6 guard (2026-05-31) skipped
-                // the whole row when feeStructures/{school}_{session}_{class}_{section}
-                // was absent, which meant a school that imports its roster BEFORE
-                // configuring Fees → Chart got zero students imported and a
-                // summary it never saw (redirect target didn't render it).
-                //
-                // New behaviour: import the student as Active regardless, and
-                // record rows with no chart in $feesPending so the summary can
-                // tell the operator which class/sections still need a chart.
-                // assignInitialFees() below is a graceful no-op when the chart
-                // is absent and is re-runnable once Fees → Chart is set up, which
-                // back-fills demands — so no student is left silently un-billable.
-                $destFeeStructDocId = "{$school_name}_{$session_year}_{$className}_{$section}";
-                $destFeeStruct      = $this->fs->get('feeStructures', $destFeeStructDocId);
-                $hasFeeChart        = is_array($destFeeStruct) && !empty($destFeeStruct['feeHeads']);
-
-                // Generate globally unique student ID from central counter
-                $studentId = $this->_nextStudentId($school_id);
-                if (!$studentId) {
-                    $skipped[] = "Row {$rowNo}: {$studentName} — ID generation failed";
-                    $error++;
-                    continue;
-                }
-
-                $formattedDOB = '';
-                if (!empty($rowData['DOB'])) $formattedDOB = date('d-m-Y', strtotime($rowData['DOB']));
-                $formattedAdmDate = '';
-                if (!empty($rowData['Admission Date'])) $formattedAdmDate = date('d-m-Y', strtotime($rowData['Admission Date']));
-
-                $password = $this->_generatePassword($studentName, $formattedDOB);
-
-                $studentData = [
-                    "Name" => $studentName, "User Id" => $studentId, "DOB" => $formattedDOB,
-                    "Admission Date" => $formattedAdmDate, "Class" => $className, "Section" => $section,  // Already prefixed via classKey/sectionKey
-                    "Gender" => trim($rowData['Gender'] ?? ''), "Blood Group" => trim($rowData['Blood Group'] ?? ''),
-                    "Category" => trim($rowData['Category'] ?? ''), "Religion" => trim($rowData['Religion'] ?? ''),
-                    "Nationality" => trim($rowData['Nationality'] ?? ''),
-                    "Father Name" => trim($rowData['Father Name'] ?? ''), "Father Occupation" => trim($rowData['Father Occupation'] ?? ''),
-                    "Mother Name" => trim($rowData['Mother Name'] ?? ''), "Mother Occupation" => trim($rowData['Mother Occupation'] ?? ''),
-                    "Guard Contact" => trim($rowData['Guard Contact'] ?? ''), "Guard Relation" => trim($rowData['Guard Relation'] ?? ''),
-                    "Phone Number" => trim($rowData['Phone Number'] ?? ''), "Email" => trim($rowData['Email'] ?? ''),
-                    "Password" => $password,
-                    "Address" => [
-                        "Street" => trim($rowData['Street'] ?? ''), "City" => trim($rowData['City'] ?? ''),
-                        "State" => trim($rowData['State'] ?? ''), "PostalCode" => trim($rowData['PostalCode'] ?? ''),
-                    ],
-                    "Pre School" => trim($rowData['Pre School'] ?? ''), "Pre Class" => trim($rowData['Pre Class'] ?? ''),
-                    "Pre Marks" => trim($rowData['Pre Marks'] ?? ''),
-                    "Profile Pic" => "",
-                    "Status" => "Active",
-                    "Doc" => [
-                        "Aadhar Card" => ["thumbnail" => "", "url" => ""],
-                        "Birth Certificate" => ["thumbnail" => "", "url" => ""],
-                        "Photo" => ["thumbnail" => "", "url" => ""],
-                        "Transfer Certificate" => ["thumbnail" => "", "url" => ""],
-                    ],
-                ];
-
-                // Firestore-only per no-RTDB policy. RTDB profile + roster mirror removed.
-                // SIS Tier-1 fix B2 (2026-05-31): saveStudent must be fail-loud
-                // per row. Pre-fix, this call had no try/catch and no return
-                // check — a Firestore failure either threw (killing the whole
-                // import mid-loop via the outer catch) or returned false
-                // silently (loop continued, row was counted as $success, but
-                // the student doc never existed). The import summary lied
-                // about which rows imported.
-                // Mirrors the B1 pattern from enroll_student@4627; the
-                // loop-shape difference is that a per-row failure increments
-                // $error and adds a $skipped[] entry then `continue`s to the
-                // next row, instead of aborting the entire import.
-                $studentSaved = false;
-                try {
-                    $studentSaved = (bool) $this->fs->saveStudent($studentId, $studentData);
-                } catch (\Exception $e) {
-                    log_message('error', "SIS import saveStudent failed for {$studentId}: " . $e->getMessage());
-                }
-                if (!$studentSaved) {
-                    // Release the claimed STU id so a failed write doesn't burn the number.
-                    $this->id_generator->releaseClaim('STU', (int) preg_replace('/\D/', '', $studentId));
-                    $skipped[] = "Row {$rowNo}: {$studentName} — Firestore save failed (see log)";
-                    $error++;
-                    continue;
+                // APAAR — optional in BOTH modes, per the locked decision
+                // ("do NOT make APAAR mandatory merely because bulk import
+                // supports it"). SAME Apaar_service::claim() every other
+                // path uses; a duplicate is rejected (row skipped, student
+                // rolled back), never silently overwritten — no different
+                // from how a duplicate SRNO is handled above.
+                $apaarRaw = trim((string) ($rowData['APAAR ID'] ?? ''));
+                if ($apaarRaw !== '') {
+                    $this->load->library('Apaar_service', null, 'apaarSvc');
+                    $apaarRes = $this->apaarSvc->init($this->firebase, $this->fs, $school_id, (string) ($this->admin_id ?? 'system'))
+                        ->claim($apaarRaw, $studentId);
+                    if (empty($apaarRes['ok'])) {
+                        $this->entity_sync->deleteStudent($studentId);
+                        $this->id_generator->releaseClaim('STU', (int) preg_replace('/\D/', '', $studentId));
+                        $reason = (string) ($apaarRes['reason'] ?? 'unknown');
+                        $skipped[] = "Row {$rowNo}: {$studentName} — APAAR ID could not be claimed (reason: {$reason}); row rejected, no student created";
+                        $error++;
+                        return 'SKIP';   // P20.3K-Step1: was `continue;` (outer row loop)
+                    }
+                    $apaarFields = ['apaarId' => \Apaar_service::normalize($apaarRaw), 'updatedAt' => date('c')];
+                    $this->fs->update('students', $this->fs->docId($studentId), $apaarFields);
+                    $studentData = array_merge($studentData, $apaarFields);
                 }
 
                 $phone = trim($rowData['Phone Number'] ?? '');
                 if ($phone !== '') {
-                    $this->CM->addKey_pair_data("Schools/{$school_name}/Phone_Index/", [$phone => $studentId]);
-                    $this->CM->addKey_pair_data('Exits/', [$phone => $school_id]);
-                    $this->CM->addKey_pair_data('User_ids_pno/', [$phone => $studentId]);
-                    // Firestore dual-write: phone index
-                    try {
-                        $this->fs->set('indexPhones', $this->fs->docId($phone), [
-                            'schoolId' => $this->school_id, 'phone' => $phone,
-                            'userId' => $studentId, 'type' => 'student',
-                        ]);
-                    } catch (\Exception $e) { log_message('error', "Firestore dual-write indexPhones failed: " . $e->getMessage()); }
+                    // P14-2 (Phase 14.1) — the three RTDB writes that stood here
+                    // are REMOVED:
+                    //     Schools/{school}/Phone_Index/   User_ids_pno/   Exits/
+                    // They went through Common_model::addKey_pair_data(), i.e.
+                    // firebaseDatabase->getReference()->update() — live Realtime
+                    // Database writes in the admission path, contrary to the
+                    // Firestore-only architecture. Every previous RTDB sweep
+                    // missed them because they use a different call shape than
+                    // the `$this->firebase->set/get` pattern those greps matched.
+                    //
+                    // READER SWEEP (done before removal — two readers DO exist,
+                    // and neither depends on these writes continuing):
+                    //
+                    //  1. Health_check.php:417-440 verifies Phone_Index/Exits
+                    //     against RTDB profiles it enumerates from
+                    //     `Users/Parents/{school_id}`. New admissions have not
+                    //     written RTDB profiles since the no-RTDB migration, so
+                    //     a newly-admitted student never appears in that
+                    //     enumeration and is never checked. The check therefore
+                    //     cannot start failing because of this removal; for a
+                    //     Firestore-era school it already short-circuits with
+                    //     "No profiles to check".
+                    //
+                    //  2. Superadmin_migration.php:313-339 is a one-time
+                    //     backfill that READS the pre-existing legacy nodes to
+                    //     copy them into tenant-scoped paths. It operates on
+                    //     historical data and does not require new writes.
+                    //
+                    // Phone resolution for all live logic is served by the
+                    // Firestore `indexPhones` collection (_existingStudentIdsByPhone).
+                    //
+                    // No fallback, mirror or dual-write replaces them.
+                    //
+                    // P14-1: append-not-overwrite, so siblings sharing this phone
+                    // all remain registered.
+                    $this->_registerPhoneIndex($phone, $studentId, 'student');
                 }
 
                 // Update Students_Index
@@ -4896,12 +4921,43 @@ class Sis extends MY_Controller
                 if (!$monthFeeOk) {
                     $skipped[] = "Row {$rowNo}: {$studentName} — monthFee init failed (see log); student doc remains without fee tracking";
                     $error++;
-                    continue;
+                    return 'SKIP';   // P20.3K-Step1: was `continue;` (outer row loop)
                 }
 
                 // Auto-assign class fees for imported student
                 try {
                     $this->feeLifecycle->assignInitialFees($studentId, $className, $section, $school_id);
+
+                    // ── CONS-2 · SEED THE DEFAULTER PROJECTION ──────────────
+                    // Same gap Phase 3D closed for direct admission:
+                    // assignInitialFees writes feeDemands but emits NO defaulter
+                    // event, so every imported student would carry unpaid
+                    // demands and NO feeDefaulters document.
+                    //
+                    // On a bulk import that is the worst version of the defect:
+                    // an ENTIRE INTAKE is invisible to the school's defaulter
+                    // report at once. Their dues are correct everywhere that
+                    // reads feeDemands — including the Parent app — so nothing
+                    // looks wrong until the school wonders why the report is
+                    // short.
+                    //
+                    // COST: one write per student, inside a loop that already
+                    // performs several Firestore writes per row (student doc,
+                    // monthFee init, fee assignment, subject assignment). It
+                    // does not change the order of the import's cost.
+                    //
+                    // Placed INSIDE the success branch deliberately: if fee
+                    // assignment threw, there are no demands to project, and
+                    // writing a "not a defaulter" record would assert something
+                    // untrue about a student whose billing is broken.
+                    //
+                    // Fail-soft per student — one bad projection must not abort
+                    // an import of hundreds.
+                    try {
+                        $this->feeDefaulter->updateDefaulterStatus($studentId);
+                    } catch (\Throwable $e) {
+                        log_message('error', "CONS-2 import defaulter sync failed for {$studentId}: " . $e->getMessage());
+                    }
                 } catch (Exception $e) {
                     log_message('error', "Fee_lifecycle bulk import fee assign failed for {$studentId}: " . $e->getMessage());
                 }
@@ -4973,27 +5029,572 @@ class Sis extends MY_Controller
                     ['class' => $className, 'section' => $section, 'session' => $session_year]
                 );
 
-                // Imported, but flag if this class/section had no fee chart so the
-                // operator knows to set one up (Fees → Chart) to generate demands.
-                if (!$hasFeeChart) {
-                    $feesPending[] = "{$studentName} ({$className}/{$section})";
-                }
+                // P1 #10: rows without a fee chart are now blocked and `continue`d
+                // above, so control only reaches here when $hasFeeChart is true.
+                // The former `if (!$hasFeeChart) $feesPending[] = ...` here is
+                // therefore unreachable and has been removed — $feesPending is
+                // populated at the block site instead.
 
                 // Record keys so a later row in the SAME file matching this
                 // student (skip/update policies) is caught as a duplicate.
-                if ($phone10 !== '' && strlen($phone10) === 10) $seenPhones[$phone10] = $studentId;
+                // SIB-B1 (Phase 13): keyed by phone AND name so a later sibling
+                // row sharing this phone is not mistaken for this student.
+                if ($phone10 !== '' && strlen($phone10) === 10 && $nameNorm !== '') {
+                    $seenPhones[$phone10][$nameNorm] = $studentId;
+                }
+                // Phase 14.1: claim this roll for the rest of the file.
+                if ($rowRoll !== '') {
+                    $seenRolls[mb_strtolower("{$className}|{$section}|{$rowRoll}")] = $studentName;
+                }
+                // Phase 15: this row consumed a seat — subsequent rows for the
+                // same class+section must project against it.
+                $seatKey = mb_strtolower("{$className}|{$section}");
+                $seatsUsedThisRun[$seatKey] = ($seatsUsedThisRun[$seatKey] ?? 0) + 1;
                 if ($dobKey !== '') $seenNameDob[$nameKey] = $studentId;
 
                 // Capture the login handout row (plaintext password is only known
                 // here at creation time). Missing phone stays '' → blank in the PDF.
+                // Phase 11 (P11-G1) — carry the school identity fields onto the
+                // handout row. Both were merged into $studentData by the SRNO /
+                // Admission Number blocks earlier in this same iteration, so this
+                // costs ZERO extra Firestore reads. APAAR is deliberately absent:
+                // it is PII under the masked + audited-reveal policy and must
+                // never reach a printable handout.
                 $credentials[] = [
-                    'name'     => $studentName,
-                    'phone'    => $phone,
-                    'userId'   => $studentId,
-                    'password' => $password,
+                    'name'        => $studentName,
+                    'phone'       => $phone,
+                    'userId'      => $studentId,
+                    'password'    => $password,
+                    'srNo'        => (string) ($studentData['srNo'] ?? ''),
+                    'admissionNo' => (string) ($studentData['admissionNumber'] ?? $studentData['Admission Number'] ?? ''),
                 ];
 
                 $success++;
+            return 'OK';
+        };
+
+        // P20.3K-Step2 — Pass 1 buffer, keyed by destination section. Stays
+        // empty while the atomic capacity flag is OFF, so flag-off Import is
+        // byte-for-byte the Step 1 path (proven by the frozen golden master).
+        $importGroups = [];
+        foreach ($rows as $idx => $rowData) {
+            if (!is_array($rowData)) { $error++; continue; }
+            $rowNo = $idx + 1;
+
+                $studentName = trim($rowData['Name'] ?? '');
+                $classRaw    = trim($rowData['Class'] ?? '');
+                $section     = trim($rowData['Section'] ?? '');
+                if (!$studentName || !$classRaw || !$section) {
+                    $skipped[] = "Row {$rowNo}: missing required Name/Class/Section";
+                    $error++;
+                    continue;
+                }
+
+                preg_match('/\d+/', $classRaw, $match);
+                if (!isset($match[0])) {
+                    $skipped[] = "Row {$rowNo}: {$studentName} — Class \"{$classRaw}\" has no recognizable number (1–12)";
+                    $error++;
+                    continue;
+                }
+                $classNumber = (int)$match[0];
+
+                // ── Duplicate detection (skip/update policies) ───────────────
+                $phone10 = preg_replace('/\D+/', '', (string) ($rowData['Phone Number'] ?? ''));
+                if (strlen($phone10) > 10) $phone10 = substr($phone10, -10);
+                $dobKey  = trim((string) ($rowData['DOB'] ?? ''));
+                $nameKey = strtolower($studentName) . '|' . $dobKey;
+
+                // SIB-B1 FIX (Phase 13, Workstream B) — a shared parent phone is
+                // NOT proof of a duplicate student.
+                //
+                // Siblings legitimately share a father's/mother's/guardian's
+                // mobile. The previous rule treated phone equality ALONE as
+                // "same student", so importing two siblings from one file meant
+                // the second child was either silently discarded (skip policy)
+                // or OVERWROTE the first child's record (update policy). That is
+                // data loss, and it is the documented SIB-B1 defect.
+                //
+                // A duplicate now requires phone match AND name corroboration:
+                //   - two siblings     → same phone, DIFFERENT names → both imported ✔
+                //   - re-imported file → same phone, SAME name       → still deduped ✔
+                //
+                // Name (not name+DOB) is the corroborator on purpose: the same
+                // student re-exported with DOB present in one file and blank in
+                // another must still dedupe, which a name+DOB key would miss.
+                $nameNorm = strtolower(preg_replace('/\s+/', ' ', trim($studentName)));
+
+                if ($dupPolicy !== 'create') {
+                    $existingId = null; $dupReason = '';
+                    if ($phone10 !== '' && strlen($phone10) === 10 && $nameNorm !== '') {
+                        if (isset($seenPhones[$phone10][$nameNorm])) {
+                            $existingId = $seenPhones[$phone10][$nameNorm];
+                            $dupReason = 'duplicate phone + name within file';
+                        } else {
+                            // P14-1 (Phase 14.1): a phone can legitimately belong
+                            // to SEVERAL students (siblings), so every
+                            // registered candidate is name-corroborated — not
+                            // just whichever one happened to be written last.
+                            // Without this, re-importing a sibling file created
+                            // duplicate students.
+                            //
+                            // Costs 1 read for the index, plus at most one read
+                            // per candidate until a name matches — and only on
+                            // rows whose phone is already known. An ordinary
+                            // first-time admission row reads nothing extra.
+                            foreach ($this->_existingStudentIdsByPhone($phone10) as $candidateId) {
+                                if ($this->_studentNameMatches($candidateId, $nameNorm)) {
+                                    $existingId = $candidateId;
+                                    $dupReason = 'existing student (phone + name match)';
+                                    break;
+                                }
+                            }
+                        }
+                    }
+                    if (!$existingId && $dobKey !== '' && isset($seenNameDob[$nameKey])) {
+                        $existingId = $seenNameDob[$nameKey]; $dupReason = 'duplicate name+DOB within file';
+                    }
+
+                    if ($existingId) {
+                        if ($dupPolicy === 'update') {
+                            if ($this->_updateExistingStudent($existingId, $rowData)) {
+                                $updated++;
+                            } else {
+                                $skipped[] = "Row {$rowNo}: {$studentName} — update of {$existingId} failed (see log)";
+                                $error++;
+                            }
+                        } else {
+                            $duplicates[] = "Row {$rowNo}: {$studentName} — {$dupReason} ({$existingId})";
+                        }
+                        continue;
+                    }
+                }
+
+                // Phase 16.2 — shared with import_validate() so the preview and
+                // the commit can never derive different placement keys. See
+                // _importPlacementKeys().
+                $__keys    = $this->_importPlacementKeys($classNumber, $section);
+                $className = $__keys['className'];
+                $section   = $__keys['section'];
+                $combinedClass = "{$className}/{$section}";
+
+                // ── Phase 15 (HIGH-2) — Section capacity on IMPORT ───────────
+                //
+                // Bulk import could previously drop 50 students into a 40-seat
+                // section without a word. Now every row is projected against
+                // the section's real remaining headroom BEFORE it is created,
+                // so no combination of rows can produce an over-capacity
+                // section.
+                //
+                // WHY A RUNNING COUNTER, NOT A PER-ROW QUERY: the shared
+                // validator reads a request-memoised snapshot, so rows created
+                // earlier in this same loop are invisible to it.
+                // `$seatsUsedThisRun` closes that window. Net effect for a
+                // 500-row import spanning 3 sections: ONE roster snapshot +
+                // THREE section-capacity reads total — NOT 500 capacity
+                // queries. No N+1.
+                //
+                // TRANSACTION MODEL PRESERVED: this loop is chunked into
+                // 25-row batches by design and already has row-level
+                // skip/error semantics. A capacity-blocked row is therefore
+                // skipped with an explicit reason (increment $error, record in
+                // $skipped, continue) — exactly like the fee-chart and roll
+                // guards — rather than aborting the whole file. That keeps the
+                // documented partial-commit behaviour while making an
+                // over-capacity outcome unreachable. Valid rows for OTHER
+                // sections are unaffected: each class+section is projected
+                // independently.
+                $capUsed  = $seatsUsedThisRun[mb_strtolower("{$className}|{$section}")] ?? 0;
+                $capOver  = $this->_sectionCapacityExceeded(
+                    $className, $section, $session_year, $capUsed + 1
+                );
+                if ($capOver !== null) {
+                    $clsDisp = trim(preg_replace('/^Class\s+/i', '', $className));
+                    $secDisp = trim(preg_replace('/^Section\s+/i', '', $section));
+                    $skipped[] = "Row {$rowNo}: {$studentName} — Class {$clsDisp} Section {$secDisp} is full "
+                               . "(capacity {$capOver['capacity']}, already {$capOver['current']} active"
+                               . ($capUsed > 0 ? " + {$capUsed} from this import" : '')
+                               . "); row not imported";
+                    $error++;
+                    continue;
+                }
+
+                // ── Phase 14.1 — Roll Number roster uniqueness on IMPORT ─────
+                // Two collision sources, both rejected BEFORE the student is
+                // created (so no Student ID is burned and no SRNO is claimed):
+                //   (a) an EARLIER ROW in this same file, tracked in
+                //       $seenRolls — the DB snapshot cannot see rows this run
+                //       has not written yet;
+                //   (b) an EXISTING active student, via the shared validator.
+                //
+                // Per-row skip, matching this loop's established failure shape
+                // (increment $error, record a reason, continue) — deliberately
+                // NOT a whole-file abort, and NOT a new partial-import policy.
+                // A blank roll is skipped: assigning later is normal.
+                $rowRoll = trim((string) ($rowData['Roll No'] ?? ''));
+                if ($rowRoll !== '') {
+                    $rollScopeKey = mb_strtolower("{$className}|{$section}|{$rowRoll}");
+                    if (isset($seenRolls[$rollScopeKey])) {
+                        $skipped[] = "Row {$rowNo}: {$studentName} — Roll Number {$rowRoll} is already used by "
+                                   . "{$seenRolls[$rollScopeKey]} earlier in this file for {$className}/{$section}";
+                        $error++;
+                        continue;
+                    }
+                    $rollConflict = $this->_rollNoConflict($rowRoll, $className, $section, $session_year);
+                    if ($rollConflict !== null) {
+                        $who = $rollConflict['name'] !== '' ? $rollConflict['name'] : $rollConflict['studentId'];
+                        $skipped[] = "Row {$rowNo}: {$studentName} — Roll Number {$rowRoll} is already assigned to "
+                                   . "an active student ({$who}) in {$className}/{$section}";
+                        $error++;
+                        continue;
+                    }
+                }
+
+                // P1 #10 (2026-08-12, operator decision): bulk import now
+                // BLOCKS rows whose class/section has no fee chart, matching
+                // save_admission()/execute_promotion()/enroll_student(). A
+                // student must never become Active without the fee setup that
+                // makes them billable.
+                //
+                // This REVERSES the Phase 1 decision (2026-06-12) that imported
+                // such rows as Active and merely listed them in $feesPending for
+                // the summary. That was a deliberate onboarding concession — a
+                // school importing its roster before configuring Fees → Chart
+                // would otherwise import nothing — but it is exactly the
+                // Active-with-zero-demands state the STU0004-11 incident was
+                // about, and the operator has chosen data integrity over
+                // onboarding convenience.
+                //
+                // Per-row skip (not a whole-file abort) to match this loop's
+                // established failure shape: increment $error, record a reason
+                // in $skipped, continue. Placed BEFORE _nextStudentId() so a
+                // blocked row does not burn a student ID off the central
+                // counter. $feesPending is retained and still populated so the
+                // operator gets the same "which class/sections need a chart"
+                // guidance — it now lists BLOCKED rows rather than admitted ones.
+                //
+                // Memoised per class/section: the pre-fix code issued one
+                // feeStructures read per ROW, so a 500-row single-class import
+                // cost 500 identical reads. Keyed reads collapse that to one
+                // per distinct class/section.
+                $feeChartKey = "{$className}|{$section}";
+                if (!isset($feeChartMemo[$feeChartKey])) {
+                    $feeChartMemo[$feeChartKey] = $this->_fee_structure_missing(
+                        $className,
+                        $section,
+                        $session_year,
+                        'Import'
+                    );
+                }
+                $hasFeeChart = ($feeChartMemo[$feeChartKey] === '');
+                if (!$hasFeeChart) {
+                    $feesPending[] = "{$studentName} ({$className}/{$section})";
+                    $skipped[]     = "Row {$rowNo}: {$studentName} — no fee structure for {$className}/{$section} in {$session_year}; set up Fees → Chart and re-import";
+                    $error++;
+                    continue;
+                }
+
+                // Phase 9.2 — Historical-mode SR Number pre-flight, BEFORE
+                // _nextStudentId() burns a Student ID off the global
+                // counter, matching the exact same placement rationale the
+                // fee-chart gate above already documents. This is a
+                // read-only pre-check (Sr_no_service::resolve(), no write)
+                // to catch the COMMON case cheaply; the actual atomic,
+                // race-safe ownership claim happens below, AFTER the
+                // student document exists — see that block for why a
+                // pre-check alone is not sufficient on its own.
+                $srNoRaw = trim((string) ($rowData['SR Number'] ?? ''));
+                if ($importMode === 'historical') {
+                    if ($srNoRaw === '') {
+                        $skipped[] = "Row {$rowNo}: {$studentName} — SR Number is required in Historical mode";
+                        $error++;
+                        continue;
+                    }
+                    $preCheck = $this->srnoSvc->resolve($srNoRaw);
+                    if (!empty($preCheck['ok'])) {
+                        $skipped[] = "Row {$rowNo}: {$studentName} — SR Number {$srNoRaw} is already assigned to {$preCheck['currentStudentId']} in this school";
+                        $error++;
+                        continue;
+                    }
+                } elseif ($importMode === 'new' && $srNoRaw !== '') {
+                    // Structural guarantee, not merely a UI convention: even
+                    // if a client somehow sent a non-blank SR Number for a
+                    // 'new'-mode row (import_commit()'s own validateRow()
+                    // call already blanks this server-side, so reaching
+                    // here with a non-empty value should be unreachable —
+                    // defense-in-depth only), it is NEVER read for
+                    // allocation purposes below.
+                    $srNoRaw = '';
+                }
+
+                // Generate globally unique student ID from central counter
+                $studentId = $this->_nextStudentId($school_id);
+                if (!$studentId) {
+                    $skipped[] = "Row {$rowNo}: {$studentName} — ID generation failed";
+                    $error++;
+                    continue;
+                }
+
+                $formattedDOB = '';
+                if (!empty($rowData['DOB'])) $formattedDOB = date('d-m-Y', strtotime($rowData['DOB']));
+                $formattedAdmDate = '';
+                if (!empty($rowData['Admission Date'])) $formattedAdmDate = date('d-m-Y', strtotime($rowData['Admission Date']));
+
+                $password = $this->_generatePassword($studentName, $formattedDOB);
+
+                $studentData = [
+                    "Name" => $studentName, "User Id" => $studentId, "DOB" => $formattedDOB,
+                    "Admission Date" => $formattedAdmDate, "Class" => $className, "Section" => $section,  // Already prefixed via classKey/sectionKey
+                    "Gender" => trim($rowData['Gender'] ?? ''), "Blood Group" => trim($rowData['Blood Group'] ?? ''),
+                    "Category" => trim($rowData['Category'] ?? ''), "Religion" => trim($rowData['Religion'] ?? ''),
+                    "Nationality" => trim($rowData['Nationality'] ?? ''),
+                    "Father Name" => trim($rowData['Father Name'] ?? ''), "Father Occupation" => trim($rowData['Father Occupation'] ?? ''),
+                    "Mother Name" => trim($rowData['Mother Name'] ?? ''), "Mother Occupation" => trim($rowData['Mother Occupation'] ?? ''),
+                    "Guard Contact" => trim($rowData['Guard Contact'] ?? ''), "Guard Relation" => trim($rowData['Guard Relation'] ?? ''),
+                    "Phone Number" => trim($rowData['Phone Number'] ?? ''), "Email" => trim($rowData['Email'] ?? ''),
+                    "Password" => $password,
+                    "Address" => [
+                        "Street" => trim($rowData['Street'] ?? ''), "City" => trim($rowData['City'] ?? ''),
+                        "State" => trim($rowData['State'] ?? ''), "PostalCode" => trim($rowData['PostalCode'] ?? ''),
+                    ],
+                    "Pre School" => trim($rowData['Pre School'] ?? ''), "Pre Class" => trim($rowData['Pre Class'] ?? ''),
+                    "Pre Marks" => trim($rowData['Pre Marks'] ?? ''),
+                    // Phase 9.2 — free text, no forced numeric conversion,
+                    // matching save_admission()'s own Roll No handling
+                    // exactly (the audited existing architecture has no
+                    // uniqueness enforcement for this field anywhere — not
+                    // invented here either).
+                    "Roll No" => trim($rowData['Roll No'] ?? ''),
+                    "Profile Pic" => "",
+                    "Status" => "Active",
+                    "Doc" => [
+                        "Aadhar Card" => ["thumbnail" => "", "url" => ""],
+                        "Birth Certificate" => ["thumbnail" => "", "url" => ""],
+                        "Photo" => ["thumbnail" => "", "url" => ""],
+                        "Transfer Certificate" => ["thumbnail" => "", "url" => ""],
+                    ],
+                ];
+
+                // Firestore-only per no-RTDB policy. RTDB profile + roster mirror removed.
+                // SIS Tier-1 fix B2 (2026-05-31): saveStudent must be fail-loud
+                // per row. Pre-fix, this call had no try/catch and no return
+                // check — a Firestore failure either threw (killing the whole
+                // import mid-loop via the outer catch) or returned false
+                // silently (loop continued, row was counted as $success, but
+                // the student doc never existed). The import summary lied
+                // about which rows imported.
+                // Mirrors the B1 pattern from enroll_student@4627; the
+                // loop-shape difference is that a per-row failure increments
+                // $error and adds a $skipped[] entry then `continue`s to the
+                // next row, instead of aborting the entire import.
+                // ── PHASE 20.3K-Step2 — PATH 3/5: IMPORT (P20.2-RACE-1) ─────
+                //
+                // PASS 1: everything above already ran — validation, supplied
+                // SRNO resolution, Student ID mint, payload build. Instead of
+                // writing now, buffer against the DESTINATION SECTION so the
+                // write happens once per destination in Pass 2: one section
+                // read and one atomic commit per group, never one per row.
+                //
+                // Nothing identity-bearing has been claimed yet — SRNO, APAAR
+                // and Admission Number all live inside postWrite(), which Pass 3
+                // runs ONLY for students whose group actually committed. A
+                // capacity or CAS refusal therefore consumes no SRNO, preserving
+                // the ordering proven in 20.3e-1 and observed in the golden master.
+                if ($this->_seatGuardEnabled()) {
+                    $__dk = mb_strtolower("{$className}|{$section}");
+                    if (!isset($importGroups[$__dk])) {
+                        $importGroups[$__dk] = ['className' => $className, 'section' => $section, 'rows' => []];
+                    }
+                    $importGroups[$__dk]['rows'][] = [
+                        'studentId'   => $studentId,
+                        'studentData' => $studentData,
+                        'rowNo'       => $rowNo,
+                        'studentName' => $studentName,
+                        'ctx'         => compact(
+                            'studentId', 'studentData', 'rowNo', 'studentName',
+                            'className', 'section', 'classNumber', 'dobKey',
+                            'nameKey', 'nameNorm', 'password', 'phone10',
+                            'rowRoll', 'srNoRaw', 'hasFeeChart', 'rowData'
+                        ),
+                    ];
+                    continue;   // Pass 2 commits it; Pass 3 replays postWrite()
+                }
+
+                $studentSaved = false;
+                try {
+                    $studentSaved = (bool) $this->fs->saveStudent($studentId, $studentData);
+                } catch (\Exception $e) {
+                    log_message('error', "SIS import saveStudent failed for {$studentId}: " . $e->getMessage());
+                }
+                if (!$studentSaved) {
+                    // Release the claimed STU id so a failed write doesn't burn the number.
+                    $this->id_generator->releaseClaim('STU', (int) preg_replace('/\D/', '', $studentId));
+                    $skipped[] = "Row {$rowNo}: {$studentName} — Firestore save failed (see log)";
+                    $error++;
+                    continue;
+                }
+
+                // P20.3K-Step1 — post-write routine (was inline here).
+                if ($postWrite(compact(
+                    'studentId', 'studentData', 'rowNo', 'studentName',
+                    'className', 'section', 'classNumber', 'dobKey',
+                    'nameKey', 'nameNorm', 'password', 'phone10',
+                    'rowRoll', 'srNoRaw', 'hasFeeChart', 'rowData'
+                )) === 'SKIP') {
+                    continue;
+                }
+        }
+
+        // ── PHASE 20.3K-Step2 — PASS 2 (atomic group) + PASS 3 (postWrite) ──
+        //
+        // One destination section = ONE capacity decision = ONE atomic commit.
+        //
+        // $seatsUsedThisRun is NOT consulted here and takes no part in this
+        // decision. It remains the flag-OFF running projection, incremented
+        // inside postWrite() which now runs only AFTER a group has committed —
+        // so there is exactly one authoritative capacity decision per group and
+        // no second occupancy authority. Occupancy comes from
+        // _sectionCapacityExceeded(), which derives it solely from student docs.
+        if ($this->_seatGuardEnabled() && !empty($importGroups)) {
+            $this->load->library('section_seat_guard', null, 'seatGuard');
+            $this->seatGuard->init(
+                $this->fs, $this->firebase, (string) $this->school_id,
+                (string) ($this->admin_id ?? 'system')
+            );
+            $__max = Section_seat_guard::groupMaxStudents();
+
+            foreach ($importGroups as $__g) {
+                $__rows = $__g['rows'];
+                $__n    = count($__rows);
+                $__cls  = $__g['className'];
+                $__sec  = $__g['section'];
+                $__lbl  = "{$__cls} / {$__sec}";
+
+                // Mark every row of a refused group — never silently succeed.
+                //
+                // ── PHASE 20.3M (P20.3L-F1) — RETURN THE CLAIMED STUDENT IDs ────
+                // Pass 1 minted a Student ID per row (:6090) before the group's
+                // fate was known. A refusal that kept them would burn numbers off
+                // a GLOBAL, monotonic counter forever — the defect Phase 20.3L
+                // measured live.
+                //
+                // Releasing is safe because allocation is CAS: generate() claims
+                // by CREATING `feeCounters/_sys_STU_claim_{N}` with
+                // create-if-not-exists, and that claim doc — not the pointer —
+                // is the authority (Id_generator.php:516). A freed number can
+                // therefore be re-claimed by exactly one future allocator, and a
+                // stale pointer only costs extra linear probing, never a
+                // duplicate. No student document exists for a refused group, so
+                // nothing is holding the number we return.
+                //
+                // Released HIGHEST FIRST: releaseClaim() rewinds the pointer only
+                // when it still equals the value being freed, so returning the
+                // top of the run first gives the pointer the best chance to walk
+                // back instead of stranding the whole block.
+                $__refuse = function (string $why, bool $releaseIds = true) use ($__rows, &$skipped, &$error) {
+                    foreach ($__rows as $__r) {
+                        $skipped[] = "Row {$__r['rowNo']}: {$__r['studentName']} — {$why}";
+                        $error++;
+                    }
+                    if (!$releaseIds) return;
+
+                    $__vals = [];
+                    foreach ($__rows as $__r) {
+                        $__n = (int) preg_replace('/\D/', '', (string) $__r['studentId']);
+                        if ($__n > 0) $__vals[] = $__n;
+                    }
+                    rsort($__vals);
+                    foreach ($__vals as $__n) {
+                        $__ok = false;
+                        try {
+                            $__ok = (bool) $this->id_generator->releaseClaim('STU', $__n);
+                        } catch (\Throwable $__e) {
+                            log_message('error', 'ACC_IMPORT_ID_RELEASE_FAILED schoolId=' . $this->school_id
+                                . " value={$__n} err=" . $__e->getMessage());
+                            continue;
+                        }
+                        if (!$__ok) {
+                            // Never silent: a leaked number must be greppable, or
+                            // it is unfindable in production. The row result is
+                            // unaffected — the student was not imported either way.
+                            log_message('error', 'ACC_IMPORT_ID_RELEASE_FAILED schoolId=' . $this->school_id
+                                . " value={$__n} — Student ID leaked; run Id_generator::reconcile('STU')");
+                        }
+                    }
+                };
+
+                // 499 students + 1 marker = 500 writes. A larger group is
+                // REFUSED, never chunked: a first chunk would move the section's
+                // updateTime, so the second would no longer be the same atomic
+                // capacity decision — reopening the race.
+                if ($__n > $__max) {
+                    $__refuse("{$__lbl} received {$__n} students in one import; the safe maximum "
+                        . "per section is {$__max}. No student was imported for this section — "
+                        . 'split the file by section and retry.');
+                    continue;
+                }
+
+                // Same authority, same ordering: capture the destination section's
+                // version BEFORE the occupancy decision it protects, then carry it
+                // into the group commit. Without it the guard fails closed and the
+                // whole group is refused — which is what this path did, reporting
+                // "the placement outcome could not be confirmed" for every row.
+                $__ver  = $this->_sectionDecisionVersion($__cls, $__sec, $this->session_year);
+                $__over = $this->_sectionCapacityExceeded($__cls, $__sec, $this->session_year, $__n, '', /* fresh */ true);
+                if ($__over !== null) {
+                    $__refuse($this->_sectionCapacityMessage($__over, $__cls, $__sec)
+                        . ' No student was imported for this section.');
+                    continue;
+                }
+
+                $__group = [];
+                foreach ($__rows as $__r) {
+                    $__group[] = ['studentId' => $__r['studentId'], 'data' => $__r['studentData']];
+                }
+
+                $__res = $this->seatGuard->placeStudentGroup(
+                    $this->entity_sync, $__group, $__cls, $__sec, $this->session_year, $__ver
+                );
+
+                if (($__res['status'] ?? '') !== Section_seat_guard::PLACED) {
+                    // Whole batch rolled back — NOT ONE student exists, so no
+                    // postWrite() and therefore no SRNO / Admission Number /
+                    // APAAR claimed for a placement that did not happen.
+                    //
+                    // ── PHASE 20.3M — WHY CONFLICT AND FAILURE DIFFER HERE ─────
+                    // CONFLICT is a GUARANTEED full rollback: Firestore rejected
+                    // the batch on the precondition, so no student document was
+                    // written and the claimed Student IDs are provably free to
+                    // return.
+                    //
+                    // FAILURE means the outcome is UNKNOWN — the writes may have
+                    // landed. Returning those numbers could later hand one to a
+                    // second student while an orphan document already holds it:
+                    // a DUPLICATE IDENTITY, which is strictly worse than a gap in
+                    // a monotonic counter. So FAILURE deliberately KEEPS its
+                    // claims, and says so loudly enough to be reconciled later.
+                    $__conflict = ($__res['status'] ?? '') === Section_seat_guard::CONFLICT;
+                    $__refuse("{$__lbl}: " . ($__conflict
+                            ? 'the section changed while the import was in progress'
+                            : 'the placement outcome could not be confirmed')
+                        . '. No student was imported for this section — please retry.',
+                        $__conflict);
+                    log_message('error',
+                        "ACC_IMPORT_GROUP_REFUSED schoolId={$this->school_id} dest={$__lbl} "
+                        . "count={$__n} status=" . ($__res['status'] ?? '?'));
+                    if (!$__conflict) {
+                        log_message('error',
+                            "ACC_IMPORT_ID_RETAINED_UNKNOWN schoolId={$this->school_id} dest={$__lbl} "
+                            . "count={$__n} — outcome unknown, Student IDs deliberately NOT released; "
+                            . "verify whether the students exist, then run Id_generator::reconcile('STU')");
+                    }
+                    continue;
+                }
+
+                // PASS 3 — committed; replay the existing post-write routine.
+                foreach ($__rows as $__r) {
+                    $postWrite($__r['ctx']);
+                }
+            }
         }
 
         return [
@@ -5091,12 +5692,9 @@ class Sis extends MY_Controller
             $ph = preg_replace('/\D+/', '', $merged['Phone Number']);
             if (strlen($ph) > 10) $ph = substr($ph, -10);
             if ($ph !== '' && strlen($ph) === 10) {
-                try {
-                    $this->fs->set('indexPhones', $this->fs->docId($ph), [
-                        'schoolId' => $this->school_id, 'phone' => $ph,
-                        'userId' => $existingId, 'type' => 'student',
-                    ]);
-                } catch (\Throwable $e) { /* index refresh best-effort */ }
+                // P14-1: append — an import "update" of one sibling must not
+                // evict the other sibling from the shared phone entry.
+                $this->_registerPhoneIndex($ph, $existingId, 'student');
             }
 
             $this->_log_history($this->parent_db_key, $existingId, 'UPDATE',
@@ -5126,9 +5724,14 @@ class Sis extends MY_Controller
         if (!empty($duplicates)) {
             $msg .= " | Duplicates skipped: " . count($duplicates) . " — " . implode('; ', $duplicates);
         }
+        // P1 #10 (2026-08-12): these rows are now BLOCKED, not imported-pending.
+        // The old wording ("Fees pending … then demands auto-assign") told the
+        // operator the students were in and would be billed later — the
+        // opposite of what now happens. They were NOT imported and must be
+        // re-imported after the chart exists.
         if (!empty($feesPending)) {
-            $msg .= " | Fees pending for " . count($feesPending)
-                 . " (no fee chart yet — set up Fees → Chart for these class/sections, then demands auto-assign): "
+            $msg .= " | NOT imported — no fee chart: " . count($feesPending)
+                 . " (set up Fees → Chart for these class/sections, then re-import these rows): "
                  . implode('; ', $feesPending);
         }
         if (!empty($skipped)) {
@@ -5296,6 +5899,20 @@ class Sis extends MY_Controller
         $dupPolicy = in_array(($payload['dupPolicy'] ?? 'skip'), ['skip', 'update'], true)
             ? $payload['dupPolicy'] : 'skip';
 
+        // Phase 9.2 — the import mode is REQUIRED at commit time (unlike
+        // import_validate(), which tolerates '' for an early preview
+        // before the operator has chosen). Never trust import_validate()'s
+        // client-reported status for this — re-validated fully below,
+        // exactly like every other field. An invalid/missing mode aborts
+        // the whole commit rather than guessing — this is the "all-or-
+        // nothing mode per file" requirement's server-side enforcement
+        // point, not merely a UI convention.
+        $importMode = (string) ($payload['importMode'] ?? '');
+        if (!in_array($importMode, ['historical', 'new'], true)) {
+            echo json_encode(['status' => 'error', 'message' => 'Select an import mode (Historical or New Admissions) before committing.']);
+            return;
+        }
+
         if (empty($rows)) {
             echo json_encode(['status' => 'error', 'message' => 'No rows to import.']);
             return;
@@ -5304,16 +5921,36 @@ class Sis extends MY_Controller
         $this->load->library('import_schema');
 
         // Re-validate authoritatively; only OK/warning rows are written.
+        // Phase 9.2 — in-file SR Number/APAAR duplicate detection, SAME
+        // logic as import_validate()'s own pre-commit check, re-run here
+        // because import_validate()'s results are never trusted at commit
+        // time (matches this method's own pre-existing doc comment: "never
+        // trust the client's prior validation").
         $toImport  = [];
         $preErrors = 0;
+        $seenSrNo  = [];
+        $seenApaar = [];
         foreach ($rows as $r) {
-            $v = $this->import_schema->validateRow(is_array($r) ? $r : []);
+            $v = $this->import_schema->validateRow(is_array($r) ? $r : [], $importMode);
+
+            $srNorm = $v['data']['SR Number'] ?? '';
+            if ($srNorm !== '') {
+                $srKey = \Sr_no_service::normalize($srNorm)['norm'] ?? $srNorm;
+                if (isset($seenSrNo[$srKey])) { $v['status'] = 'error'; }
+                else { $seenSrNo[$srKey] = true; }
+            }
+            $apaarNorm = $v['data']['APAAR ID'] ?? '';
+            if ($apaarNorm !== '') {
+                if (isset($seenApaar[$apaarNorm])) { $v['status'] = 'error'; }
+                else { $seenApaar[$apaarNorm] = true; }
+            }
+
             if ($v['status'] === 'error') { $preErrors++; continue; }
             $toImport[] = $v['data'];
         }
 
         try {
-            $res = $this->_runStudentImport($toImport, ['dupPolicy' => $dupPolicy]);
+            $res = $this->_runStudentImport($toImport, ['dupPolicy' => $dupPolicy, 'importMode' => $importMode]);
         } catch (\Throwable $e) {
             log_message('error', 'IMPORT COMMIT error: ' . $e->getMessage());
             echo json_encode(['status' => 'error', 'message' => 'Import failed — check server logs.']);
@@ -5354,6 +5991,25 @@ class Sis extends MY_Controller
             'skipped'     => $res['skipped'] ?? [],
             'duplicates'  => $res['duplicates'] ?? [],
             'feesPending' => $res['feesPending'] ?? [],
+            // Phase 11 (P11-G1) — per-student identity for the import RESULT
+            // screen, so the operator can see what SRNO / Admission Number the
+            // system allocated without opening the PDF or the student list.
+            //
+            // Built from the SAME $res['credentials'] rows already assembled
+            // during the import loop — zero additional Firestore reads.
+            //
+            // The DEFAULT PASSWORD IS DELIBERATELY OMITTED here: this payload is
+            // rendered into the page, while the password stays in the
+            // session-stashed handout that only import_credentials_pdf() reads.
+            // Do not add it. APAAR is likewise never included.
+            'created'     => array_map(static function ($c) {
+                return [
+                    'name'        => (string) ($c['name'] ?? ''),
+                    'userId'      => (string) ($c['userId'] ?? ''),
+                    'srNo'        => (string) ($c['srNo'] ?? ''),
+                    'admissionNo' => (string) ($c['admissionNo'] ?? ''),
+                ];
+            }, is_array($res['credentials'] ?? null) ? $res['credentials'] : []),
         ]);
     }
 
@@ -7856,7 +8512,7 @@ class Sis extends MY_Controller
         $studentSaved = false;
         $capacityRefusal = '';
         try {
-            if (Section_seat_guard::enabled()) {
+            if ($this->_seatGuardEnabled()) {
                 $placement = ['status' => '', 'message' => ''];
                 for ($attempt = 1; $attempt <= self::SEAT_RETRY_ATTEMPTS; $attempt++) {
                     if ($attempt > 1) {
@@ -9701,5 +10357,90 @@ class Sis extends MY_Controller
             );
         }
         return $this->seatGuard;
+    }
+
+    /**
+     * P14-1 — every student currently registered against a phone.
+     * Legacy single-value documents yield a one-element list.
+     */
+    private function _existingStudentIdsByPhone(string $phone): array
+    {
+        if ($phone === '') return [];
+        try {
+            $rec = $this->fs->get('indexPhones', $this->fs->docId($phone));
+            if (!is_array($rec)) return [];
+            if ((string) ($rec['type'] ?? 'student') !== 'student') return [];
+
+            $ids = [];
+            if (is_array($rec['userIds'] ?? null)) {
+                $ids = array_values(array_filter(array_map('strval', $rec['userIds'])));
+            }
+            $legacy = trim((string) ($rec['userId'] ?? ''));
+            if ($legacy !== '' && !in_array($legacy, $ids, true)) $ids[] = $legacy;
+            return $ids;
+        } catch (\Throwable $e) {
+            log_message('error', 'dedup phone lookup failed: ' . $e->getMessage());
+            return [];
+        }
+    }
+
+    private function _studentNameMatches(string $studentId, string $nameNorm): bool
+    {
+        if ($studentId === '' || $nameNorm === '') return false;
+        try {
+            $doc = $this->fs->get('students', $this->fs->docId($studentId));
+            if (!is_array($doc)) return false;
+            $existing = (string) ($doc['name'] ?? $doc['Name'] ?? '');
+            if ($existing === '') return false;
+            return strtolower(preg_replace('/\s+/', ' ', trim($existing))) === $nameNorm;
+        } catch (\Throwable $e) {
+            log_message('error', "SIB-B1 name-corroboration read failed for {$studentId}: " . $e->getMessage());
+            return false;
+        }
+    }
+
+    /**
+     * Phase 16.2 — canonical class/section key derivation for bulk import.
+     *
+     * Extracted so `import_validate()` (preview) and `_runStudentImport()`
+     * (commit) derive placement keys through ONE definition. If the preview
+     * computed keys even slightly differently — a different ordinal suffix, a
+     * different normaliser — it would project capacity for a section the
+     * commit never writes to, and the operator would be shown a seat count
+     * that does not correspond to reality.
+     *
+     * Pure: no Firestore access, no side effects.
+     */
+    private function _importPlacementKeys(int $classNumber, string $sectionRaw): array
+    {
+        $suffix = 'th';
+        if (!in_array(($classNumber % 100), [11, 12, 13], true)) {
+            switch ($classNumber % 10) {
+                case 1: $suffix = 'st'; break;
+                case 2: $suffix = 'nd'; break;
+                case 3: $suffix = 'rd'; break;
+            }
+        }
+        return [
+            'className' => Firestore_service::classKey($classNumber . $suffix),
+            'section'   => Firestore_service::sectionKey($sectionRaw),
+        ];
+    }
+
+    /**
+ * Is atomic capacity enforcement on? Loads the class first.
+ *
+ * Every caller used to reach $this->_seatGuardEnabled() as a bare static
+ * call, which only worked because MY_Controller happened to construct
+ * Student_write_service, which loads this library for its own reasons. The
+ * committed MY_Controller does not, so the static call died with "class not
+ * found" — in save_admission, change_status, enroll_student and the importer,
+ * one after another, each discovered only by running the real path. One
+ * accessor that declares the dependency ends that whole class of bug.
+ */
+    private function _seatGuardEnabled(): bool
+    {
+        require_once APPPATH . 'libraries/Section_seat_guard.php';
+        return Section_seat_guard::enabled();
     }
 }
