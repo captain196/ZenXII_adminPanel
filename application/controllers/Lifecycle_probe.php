@@ -138,6 +138,59 @@ class Lifecycle_probe extends CI_Controller
         }
 
         fwrite(STDERR, "[probe] verified emulator destination: {$root}\n");
+
+        // ── THE SECOND MISSING CHECK — FIREBASE AUTH (2026-09-01) ───────────
+        //
+        // Everything above proves only where FIRESTORE goes. Auth is a
+        // different service on a different host, and it was never covered:
+        // FIRESTORE_EMULATOR_HOST does not affect it, and
+        // FIREBASE_AUTH_EMULATOR_HOST was set nowhere in this repository. So
+        // this guard reported "sandboxed" while `Sis::save_admission` issued
+        // REAL production Auth creates on every rehearsal. They failed only
+        // because `_generatePassword()` returns fewer than Firebase's six
+        // required characters when no date of birth is supplied. With a date of
+        // birth — which a real admission always has — a live account would have
+        // been created, carrying production `school_id` custom claims, outside
+        // every Firestore cleanup rail.
+        //
+        // Same remedy, same reasoning as above: ask the LIBRARY where it will
+        // talk, never an environment variable. Kreait resolves the Auth URL
+        // through the identical builder at call time, so this answer cannot
+        // drift from real behaviour.
+        $authFile = APPPATH . 'libraries/Firebase.php';
+        if (!is_file($authFile)) {
+            $this->_refuse('Firebase.php not found',
+                'The Auth client is missing, so its destination cannot be proven.');
+        }
+        if (!method_exists('Firebase', 'isAuthEmulatorTarget')
+            || !method_exists('Firebase', 'resolvedAuthRoot')) {
+            $this->_refuse('Firebase cannot report its AUTH destination',
+                'This build predates the Auth emulator-target check. Refusing rather '
+                . 'than assuming Auth is sandboxed — it was not, until 2026-09-01.');
+        }
+        try {
+            $authRoot = $this->firebase->resolvedAuthRoot();
+            $authOk   = $this->firebase->isAuthEmulatorTarget();
+        } catch (\Throwable $e) {
+            $this->_refuse('could not resolve the Auth destination: ' . $e->getMessage(),
+                'Unprovable destination is treated as production.');
+            return; // unreachable
+        }
+        // Test the HOST, never the whole URL: the emulator's own URL format is
+        // http://{emulator}/identitytoolkit.googleapis.com/v1/... — the real
+        // service name appears in the PATH, so a substring test rejects the
+        // very destination it is supposed to accept. (Caught by running the
+        // positive case; a negative-only proof would have shipped this.)
+        $authHost = strtolower((string) parse_url($authRoot, PHP_URL_HOST));
+        if (!$authOk || substr($authHost, -14) === 'googleapis.com') {
+            $this->_refuse('RESOLVED Auth destination = ' . $authRoot,
+                'Firebase Auth is NOT pointed at a local emulator. An admission '
+                . 'creates a real login account with production claims. Set '
+                . 'FIREBASE_AUTH_EMULATOR_HOST to a loopback emulator (e.g. '
+                . '127.0.0.1:9199) and retry. Nothing will run.');
+        }
+
+        fwrite(STDERR, "[probe] verified emulator AUTH destination: {$authRoot}\n");
     }
 
     /** One refusal path, so no caller can accidentally continue past a failed check. */
@@ -792,6 +845,21 @@ class Lifecycle_probe extends CI_Controller
                     'phone_number' => '9000000001',
                     'phone'        => '9000000001',
                     'email'        => '',
+                    // Admission-fee collection inputs. The real screen posts these
+                    // whenever schools.admissionFee is enabled; without them
+                    // _admission_fee_precheck() refuses, so a tenant WITH a
+                    // configured admission fee could not be rehearsed at all.
+                    // Empty by default, so every existing driver is unchanged.
+                    // A date of birth is what makes _generatePassword() return a
+                    // password of PRODUCTION length (3 letters + 4 DOB digits + @).
+                    // Without one it returns 4 characters and Firebase rejects the
+                    // Auth create — which is exactly why the missing Auth sandbox
+                    // went unnoticed for so long. Rehearsals must reproduce the
+                    // real password length, not the accidental short one.
+                    'dob'          => (string) getenv('ZX_DOB'),
+                    'admission_payment_mode'      => (string) getenv('ZX_ADM_FEE_MODE'),
+                    'admission_bank_ledger_code'  => (string) getenv('ZX_ADM_BANK_CODE'),
+                    'admission_bank_reference'    => (string) getenv('ZX_ADM_BANK_REF'),
                 ]);
                 return;
 

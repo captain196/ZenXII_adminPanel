@@ -25,7 +25,8 @@ defined('BASEPATH') or exit('No direct script access allowed');
  *   2. the Firebase project resolves to the expected project
  *   3. the declared target equals the ONE permitted tenant
  *   4. that tenant's `schools` document exists and its identity matches
- *   5. a one-time authorisation token is present and matches
+ *   5. a SINGLE-USE authorisation ticket, minted on this machine, is
+ *      present and is bound to this tenant, this stage and this plan
  *
  * Any failure refuses through a single path, before the first write. There is
  * no "continue anyway", no override flag, and no branch that skips a check.
@@ -69,7 +70,7 @@ class Production_admission_probe extends CI_Controller
      * All five conditions. Called once at startup; `_assertTenant()` then
      * re-proves the tenant before every individual write.
      */
-    private function _gate(): void
+    private function _gate(string $stage): void
     {
         // 1 — the operator must SAY this is production. Nothing infers it.
         if (trim((string) getenv('ZX_PRODUCTION')) !== 'YES') {
@@ -126,16 +127,126 @@ class Production_admission_probe extends CI_Controller
                 'The tenant document does not identify itself as the declared target.');
         }
 
-        // 5 — a one-time human authorisation.
-        $auth = trim((string) getenv('ZX_PRODUCTION_AUTHORIZATION'));
-        if ($auth === '') {
-            $this->_refuse('ZX_PRODUCTION_AUTHORIZATION is not set',
-                'A production write requires an explicit one-time authorisation token.');
-        }
+        // 5 — a SINGLE-USE authorisation TICKET, bound to tenant and stage.
+        $this->_consumeTicket($stage);
 
         fwrite(STDERR, "[prod] gate passed — project=" . self::PROJECT
             . " destination={$root} tenant=" . self::TENANT
             . " school='" . (string) ($doc['schoolName'] ?? $doc['name'] ?? '?') . "'\n");
+    }
+
+    /**
+     * ── CONDITION 5: THE SINGLE-USE AUTHORISATION TICKET ──────────────────
+     *
+     * The earlier design read a shared secret from `ZX_PRODUCTION_AUTHORIZATION`.
+     * That is wrong in three ways: the secret has to travel to whoever runs the
+     * command (so it gets pasted into a chat, a note, or a shell history), it
+     * authorises EVERY stage rather than one, and it stays valid forever.
+     *
+     * Instead, the authorising act is a human running `tools/prod_ticket.php`
+     * ON THE MACHINE THAT WILL DO THE WRITE. That command mints a ticket file
+     * containing a locally-generated nonce. The nonce never has to be seen,
+     * transmitted, quoted or stored anywhere else — nobody, including this
+     * conversation, ever needs to know its value. There is nothing to leak.
+     *
+     * A ticket is:
+     *   • BOUND to one tenant          — a ticket cannot move to another school
+     *   • BOUND to one stage           — `admit` cannot authorise `collect`
+     *   • BOUND to one plan digest     — the approved manifest, hashed; if the
+     *                                    plan changes, every ticket is void
+     *   • TIME-LIMITED                 — default 30 minutes
+     *   • SINGLE-USE                   — consumed (deleted) BEFORE the write, so
+     *                                    a crash, retry or re-run cannot reuse it
+     *
+     * Consume-before-write is deliberate. Deleting after a successful write
+     * would leave a live ticket behind whenever the write fails midway, which
+     * is exactly the moment a re-run is most tempting and least safe.
+     */
+    private function _consumeTicket(string $stage): void
+    {
+        $dir = $this->_ticketDir();
+        $file = $dir . DIRECTORY_SEPARATOR . self::TENANT . '.' . $stage . '.ticket.json';
+
+        if (!is_file($file)) {
+            $this->_refuse("no authorisation ticket for stage '{$stage}'",
+                'Mint one on this machine with: php tools/prod_ticket.php issue ' . $stage
+                . '   (the ticket never leaves the machine; its value is never displayed'
+                . ' in full and must never be quoted anywhere).');
+        }
+
+        $t = json_decode((string) @file_get_contents($file), true);
+        if (!is_array($t)) {
+            @unlink($file);
+            $this->_refuse('the authorisation ticket is unreadable',
+                'A malformed ticket is treated as forged. It has been discarded; mint a new one.');
+        }
+
+        // Bindings. Each is a refusal, never a warning.
+        if ((string) ($t['tenant'] ?? '') !== self::TENANT) {
+            $this->_refuse('ticket tenant = ' . (string) ($t['tenant'] ?? '(none)'),
+                'The ticket authorises a different tenant. It will not be consumed.');
+        }
+        if ((string) ($t['stage'] ?? '') !== $stage) {
+            $this->_refuse("ticket stage = '" . (string) ($t['stage'] ?? '(none)') . "', run stage = '{$stage}'",
+                'Authorisation is per stage. One approval never covers a different operation.');
+        }
+        if ((string) ($t['planDigest'] ?? '') !== $this->_planDigest()) {
+            $this->_refuse('ticket plan digest does not match the approved manifest',
+                'The execution plan changed after this ticket was issued. Every outstanding '
+                . 'ticket is void; the new plan must be approved and a new ticket minted.');
+        }
+        $exp = (int) ($t['expiresAt'] ?? 0);
+        if ($exp <= 0 || $exp < time()) {
+            @unlink($file);
+            $this->_refuse('the authorisation ticket has expired',
+                'Tickets are short-lived so an approval cannot be replayed later. Expired '
+                . 'ticket discarded; mint a new one at the moment of execution.');
+        }
+        if (strlen((string) ($t['nonce'] ?? '')) < 32) {
+            $this->_refuse('the authorisation ticket has no usable nonce',
+                'Refusing rather than accepting a weak or hand-written ticket.');
+        }
+
+        // CONSUME FIRST. From this point the ticket cannot authorise anything again.
+        if (!@unlink($file)) {
+            $this->_refuse('the authorisation ticket could not be consumed',
+                'A ticket that cannot be deleted could be replayed. Refusing before any write.');
+        }
+
+        // Append-only local ledger. Records THAT a ticket was used, never its value.
+        @file_put_contents(
+            $dir . DIRECTORY_SEPARATOR . 'consumed.log',
+            sprintf("%s\ttenant=%s\tstage=%s\tissuedBy=%s\tticket=%s\n",
+                gmdate('c'), self::TENANT, $stage,
+                (string) ($t['issuedBy'] ?? '?'),
+                substr(hash('sha256', (string) $t['nonce']), 0, 12)),
+            FILE_APPEND
+        );
+
+        fwrite(STDERR, "[prod] ticket consumed — stage={$stage} issuedBy="
+            . (string) ($t['issuedBy'] ?? '?') . " (single-use; a re-run needs a new ticket)\n");
+    }
+
+    /** Tickets live OUTSIDE the repository, so one can never be committed. */
+    private function _ticketDir(): string
+    {
+        $home = getenv('USERPROFILE') ?: (getenv('HOME') ?: sys_get_temp_dir());
+        return rtrim($home, "\\/") . DIRECTORY_SEPARATOR . '.zenxii'
+            . DIRECTORY_SEPARATOR . 'prod_tickets';
+    }
+
+    /**
+     * The digest of the approved execution plan.
+     *
+     * Binding tickets to this means an approval covers the plan that was
+     * actually reviewed. Editing the manifest — adding a write, changing an
+     * amount — invalidates every outstanding ticket automatically, instead of
+     * relying on someone remembering to revoke them.
+     */
+    private function _planDigest(): string
+    {
+        $plan = FCPATH . 'PRODUCTION_ADMISSION_MANIFEST.md';
+        return is_file($plan) ? hash('sha256', (string) file_get_contents($plan)) : 'NO_PLAN';
     }
 
     /**
@@ -167,7 +278,7 @@ class Production_admission_probe extends CI_Controller
     public function preflight(): void
     {
         $this->_seedSession();
-        $this->_gate();
+        $this->_gate('preflight');
         $this->_assertTenant('preflight');
         fwrite(STDOUT, json_encode([
             'status'  => 'gate_passed',
