@@ -32,7 +32,30 @@
 if (PHP_SAPI !== 'cli') { fwrite(STDERR, "CLI only\n"); exit(1); }
 
 const TENANT      = 'SCH_D94FE8F7AD';
-const STAGES      = ['preflight','admit','fee_chart','generate','collect','verify'];
+/**
+ * The stage list is READ FROM THE CONTROLLER, never restated here.
+ *
+ * These two files each held their own list and they had already drifted:
+ * the controller dispatches seed_coa/add_section/fee_chart/admit while this
+ * tool still offered preflight/generate/collect. A ticket for a stage the
+ * controller cannot run is useless, and — worse — a missing stage silently
+ * cannot be authorised at all. One source, parsed and verified.
+ */
+function zx_stages(): array
+{
+    $src = @file_get_contents(__DIR__ . '/../application/controllers/Production_admission_probe.php');
+    if ($src === false || !preg_match('/private const STAGES\s*=\s*\[(.*?)\];/s', $src, $m)) {
+        fwrite(STDERR, "REFUSING: cannot read the controller's STAGES list.
+"
+            . "A ticket must name a stage the controller will actually run.
+");
+        exit(3);
+    }
+    preg_match_all("/'([a-z_]+)'/", $m[1], $s);
+    if (empty($s[1])) { fwrite(STDERR, "REFUSING: controller STAGES list is empty.
+"); exit(3); }
+    return $s[1];
+}
 const MAX_MINUTES = 120;
 
 function zx_dir(): string
@@ -60,8 +83,8 @@ $cmd = $argv[1] ?? '';
 
 if ($cmd === 'issue') {
     $stage = (string) ($argv[2] ?? '');
-    if (!in_array($stage, STAGES, true)) {
-        fwrite(STDERR, "unknown stage '{$stage}'. One of: " . implode(', ', STAGES) . "\n"); exit(2);
+    if (!in_array($stage, zx_stages(), true)) {
+        fwrite(STDERR, "unknown stage '{$stage}'. One of: " . implode(', ', zx_stages()) . "\n"); exit(2);
     }
     $mins = (int) ($argv[3] ?? 30);
     if ($mins < 1 || $mins > MAX_MINUTES) {
@@ -103,7 +126,7 @@ if ($cmd === 'issue') {
 
 if ($cmd === 'list') {
     $now = time(); $n = 0;
-    foreach (STAGES as $stage) {
+    foreach (zx_stages() as $stage) {
         $f = zx_file($dir, $stage);
         if (!is_file($f)) continue;
         $t = json_decode((string) file_get_contents($f), true);
@@ -121,7 +144,7 @@ if ($cmd === 'list') {
 
 if ($cmd === 'revoke') {
     $what = (string) ($argv[2] ?? '');
-    $targets = $what === '--all' ? STAGES : [$what];
+    $targets = $what === '--all' ? zx_stages() : [$what];
     foreach ($targets as $stage) {
         $f = zx_file($dir, $stage);
         if (is_file($f) && @unlink($f)) echo "  revoked {$stage}\n";
@@ -136,5 +159,5 @@ if ($cmd === 'ledger') {
 }
 
 fwrite(STDERR, "usage: php tools/prod_ticket.php issue <stage> [minutes] | list | revoke <stage>|--all | ledger\n"
-    . "stages: " . implode(', ', STAGES) . "\n");
+    . "stages: " . implode(', ', zx_stages()) . "\n");
 exit(2);
