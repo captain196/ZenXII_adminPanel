@@ -4,6 +4,14 @@ defined('BASEPATH') or exit('No direct script access allowed');
 class Classes extends MY_Controller
 {
     private const MANAGE_ROLES = ['Super Admin', 'School Super Admin', 'Admin', 'Principal', 'Vice Principal', 'Academic Coordinator'];
+    /**
+     * Bounded re-decides after a CAS conflict. Same value and same reason as
+     * Sis::SEAT_RETRY_ATTEMPTS: a loser re-decides against the roster as it is
+     * now rather than being refused outright, and stops as soon as the section
+     * is genuinely full — which is the answer the operator should get.
+     */
+    private const SEAT_RETRY_ATTEMPTS = 4;
+
     private const VIEW_ROLES   = ['Super Admin', 'School Super Admin', 'Admin', 'Principal', 'Vice Principal', 'Academic Coordinator', 'Class Teacher', 'Teacher'];
 
     public function __construct()
@@ -521,7 +529,19 @@ class Classes extends MY_Controller
 
     public function transfer_students()
     {
-        $this->_require_role(self::MANAGE_ROLES, '', 'Configuration', 'manage');
+        // Phase 16.0 (R1 / D16) — SIS now governs this operation.
+        //
+        // THE MISMATCH THIS CLOSES: moving a child between sections is a
+        // STUDENT-PLACEMENT action, but it was gated on `Configuration:manage`
+        // while every other placement path (admission, import, promotion,
+        // edit, delete) is gated on `SIS`. A user who administers school
+        // settings but holds no student-record rights could relocate
+        // children. Operator decision 2026-08-15: align with the other
+        // placement operations.
+        //
+        // NOTE FOR ROLLOUT: anyone who performs section transfers today needs
+        // SIS `manage`. This is a deliberate tightening, not a regression.
+        $this->_require_role(self::MANAGE_ROLES, 'transfer_students', 'SIS', 'manage');
         header('Content-Type: application/json');
 
         $studentIds  = $this->input->post('student_ids');
@@ -544,50 +564,309 @@ class Classes extends MY_Controller
             return;
         }
 
-        // Check target section capacity
-        $toClassKey = Firestore_service::classKey($toClass);
-        $toSectionKey = Firestore_service::sectionKey($toSection);
-        $toSectionDocId = $this->fs->schoolId() . '_' . $toClassKey . '_' . $toSectionKey;
-        $toSectionDoc = $this->fs->get('sections', $toSectionDocId);
-        $maxStrength = (int) ($toSectionDoc['maxStrength'] ?? $toSectionDoc['max_strength'] ?? 0);
-
-        if ($maxStrength > 0) {
-            $currentStudents = $this->fs->schoolWhere('students', [
-                ['Class', '==', $toClassKey],
-                ['Section', '==', $toSectionKey],
-                ['Status', '==', 'Active'],
-            ]);
-            $currentCount = count($currentStudents);
-            $transferCount = count($studentIds);
-            if (($currentCount + $transferCount) > $maxStrength) {
-                echo json_encode(['status' => 'error', 'message' => "Target section capacity exceeded ({$currentCount}/{$maxStrength}). Cannot add {$transferCount} more student(s)."]);
-                return;
+        // ── LC-4 · VALIDATE EVERY ID IN THE BATCH, BEFORE ANY DOCUMENT ACCESS ──
+        //
+        // `$studentIds` came straight from POST into two document paths without
+        // ever being checked:
+        //
+        //     $this->fs->get('students', $this->fs->docId($stuId))
+        //     $this->fs->updateEntity('students', $stuId, [...])
+        //
+        // docId() scopes to the tenant, so a forged id cannot simply name
+        // another school's student — but scoping is prefixing, and a segment
+        // containing a path separator is exactly what defeats a prefix. That is
+        // what safe_path_segment() exists to stop, and it is applied to single
+        // ids throughout SIS (53 call sites) while this batch had none.
+        //
+        // These ids arrive by POST, so CodeIgniter's permitted_uri_chars — the
+        // thing that incidentally narrowed the route-parameter case — never
+        // applies here. This was the more exposed of the two.
+        //
+        // The WHOLE batch is refused rather than skipping bad members: a
+        // half-applied transfer leaves some students moved and some not, with
+        // section strengths and roll numbers already recomputed around the
+        // partial result. A refused transfer is trivially retried; a partial one
+        // has to be unpicked by hand.
+        $invalidIds = [];
+        foreach ((array) $studentIds as $stuId) {
+            $stuId = trim((string) $stuId);
+            if ($stuId === '' || !preg_match("/^[A-Za-z0-9 ',_\-]+$/u", $stuId)) {
+                $invalidIds[] = $stuId;
             }
+        }
+        if (!empty($invalidIds)) {
+            log_message('error', 'transfer_students: rejected ' . count($invalidIds)
+                . ' malformed student id(s) from ip=' . $this->input->ip_address());
+            echo json_encode([
+                'status'  => 'error',
+                'message' => 'One or more selected students could not be identified. '
+                           . 'Refresh the list and try again.',
+            ]);
+            return;
+        }
+
+        $toClassKey   = Firestore_service::classKey($toClass);
+        $toSectionKey = Firestore_service::sectionKey($toSection);
+
+        // ── Phase 16.5 (SEC-4 / SEC-7 / SEC-8) — CANONICAL CAPACITY ─────
+        //
+        // This block previously did its own capacity arithmetic and got three
+        // things wrong at once:
+        //
+        //  1. ⚠ REGRESSION I INTRODUCED IN PHASE 16.4. It hand-built the
+        //     section doc-id WITHOUT the session — the same SEC-2 shape I
+        //     fixed in create_section() but missed HERE. Before that fix both
+        //     sides were session-less and agreed, so this check worked. After
+        //     it, create wrote session-ful while this still read session-less,
+        //     found nothing, and `if ($maxStrength > 0)` fell through —
+        //     SILENTLY DISABLING the transfer capacity check for every newly
+        //     created section. Fixing one reader and not its sibling is
+        //     exactly the half-fix this programme forbids.
+        //
+        //  2. Unset capacity was treated as UNLIMITED here, while admission /
+        //     import / CRM treated it as 40 (_sectionCapacity's default). The
+        //     same section enforced different limits depending on how a
+        //     student arrived (SEC-4). Operator decision 2026-08-15: a
+        //     configured positive value wins; missing/zero/invalid means 40,
+        //     everywhere.
+        //
+        //  3. Occupancy was counted with schoolWhere(), which is school-scoped
+        //     but NOT session-scoped, so students from other sessions were
+        //     counted against this session's seats (SEC-8).
+        //
+        // The canonical validator resolves capacity through _sectionCapacity()
+        // and counts Active students scoped to school + session + class +
+        // section. It also reads the shared memoised snapshot, so this REMOVES
+        // a Firestore query rather than adding one.
+        // ── ORDERING: VERSION BEFORE OCCUPANCY ──────────────────────────
+        // The destination's version must be captured BEFORE the occupancy it
+        // protects. Captured after, a placement landing in between leaves this
+        // request holding a version NEWER than the roster it decided on, so the
+        // CAS passes honestly on a stale decision — the second of the two
+        // SEAT-RACE-1 races. Same discipline as admission and promotion.
+        $transferVersion = $this->_sectionDecisionVersion(
+            $toClassKey, $toSectionKey, $this->session_year
+        );
+
+        // FRESH, not the memoised roster: the occupancy this CAS protects must be
+        // read AFTER the version above. Served from the shared snapshot it can
+        // predate the version, and then the commit passes honestly on a count that
+        // was already stale when the version was taken — which is exactly how three
+        // concurrent transfers put 5 students into a 3-seat section on the emulator.
+        $capOver = $this->_sectionCapacityExceeded(
+            $toClassKey, $toSectionKey, $this->session_year,
+            count($studentIds), '', /* fresh */ true
+        );
+        if ($capOver !== null) {
+            echo json_encode([
+                'status'  => 'error',
+                'message' => $this->_sectionCapacityMessage($capOver, $toClassKey, $toSectionKey),
+            ]);
+            return;
         }
 
         $cleanClass   = Firestore_service::classKey($toClass);
         $cleanSection = Firestore_service::sectionKey($toSection);
 
-        // Build RTDB path components for roster move
         $fromClassKey   = Firestore_service::classKey($fromClass);
         $fromSectionKey = Firestore_service::sectionKey($fromSection);
-        $toClassNode    = $toClassKey;   // already prefixed above
-        $toSectionNode  = $toSectionKey; // already prefixed above
-        $sessionRoot    = "Schools/{$this->school_name}/{$this->session_year}";
-        $parentRoot     = "Users/Parents/{$this->parent_db_key}";
 
-        // Update each student in Firestore + RTDB
+        // ── Phase 16.0 (CS-1): ROLL-NUMBER COLLISION PRE-FLIGHT ─────────
+        //
+        // THE DEFECT THIS CLOSES: this method updated Class/Section only and
+        // left `rollNo` untouched — with NO roll validation anywhere. A
+        // student therefore CARRIED THEIR ROLL INTO THE DESTINATION. Move
+        // Rahul (Roll 18) from 5-A into 5-B where Priya already holds Roll 18
+        // and 5-B silently ends up with two Roll 18s. Every other placement
+        // path — admission, import, edit, promotion — validates this; section
+        // transfer was the only one that did not, so the roll-uniqueness
+        // guarantee (School+Session+Class+Section) had a hole on a routine
+        // operation.
+        //
+        // Nothing is silently renumbered: choosing who keeps Roll 18 is a
+        // school's decision, not ours. The batch is rejected with the
+        // conflicting names so an operator can resolve it deliberately —
+        // the same stance promotion takes.
+        //
+        // ALL-OR-NOTHING: validated BEFORE any write, so a rejected batch
+        // leaves no student half-moved.
+        //
+        // COST: +0 Firestore reads — _rollNoConflict() reads the same
+        // per-request memoised snapshot the capacity check and every other
+        // guard already use.
+        $rollClashes = [];
+        $seenInBatch = [];   // catches two students INSIDE this batch sharing a roll
+        foreach ((array) $studentIds as $stuId) {
+            $stuId = (string) $stuId;
+            if ($stuId === '') continue;
+            try {
+                $stuDoc = $this->fs->get('students', $this->fs->docId($stuId));
+            } catch (\Throwable $e) {
+                log_message('error', "transfer roll pre-check: student read failed {$stuId}: " . $e->getMessage());
+                continue;
+            }
+            if (!is_array($stuDoc)) continue;
+
+            $roll = trim((string) ($stuDoc['rollNo'] ?? $stuDoc['Roll No'] ?? ''));
+            if ($roll === '') continue;   // no roll to clash with
+
+            $name = (string) ($stuDoc['name'] ?? $stuDoc['Name'] ?? $stuId);
+
+            // (a) clash with a student ALREADY in the destination section
+            $conflict = $this->_rollNoConflict($roll, $cleanClass, $cleanSection, $this->session_year, $stuId);
+            if ($conflict !== null) {
+                $rollClashes[] = "{$name} (Roll {$roll}) — already used by "
+                               . ($conflict['name'] !== '' ? $conflict['name'] : $conflict['studentId']);
+                continue;
+            }
+            // (b) clash with another student INSIDE this same transfer batch
+            $rk = mb_strtolower($roll);
+            if (isset($seenInBatch[$rk])) {
+                $rollClashes[] = "{$name} (Roll {$roll}) — same roll as {$seenInBatch[$rk]} in this transfer";
+                continue;
+            }
+            $seenInBatch[$rk] = $name;
+        }
+
+        if (!empty($rollClashes)) {
+            $cls = trim(preg_replace('/^Class\s+/i', '', $cleanClass));
+            $sec = trim(preg_replace('/^Section\s+/i', '', $cleanSection));
+            echo json_encode([
+                'status'  => 'error',
+                'message' => 'Transfer blocked — Roll Number conflicts in Class ' . $cls . '-' . $sec . ': '
+                           . implode('; ', array_slice($rollClashes, 0, 10))
+                           . (count($rollClashes) > 10 ? ' …and ' . (count($rollClashes) - 10) . ' more' : '')
+                           . '. Change the Roll Numbers, then retry.',
+                'conflicts' => $rollClashes,
+            ]);
+            return;
+        }
+
+        // ── Phase 16.0 (CS-2): audit the move ───────────────────────────
+        // Promotion records a studentHistory event; this path recorded
+        // NOTHING, so a child's section could change with no trace of who
+        // moved them or when. Uses the shared Student_history_service — the
+        // same writer Sis::_log_history now delegates to — rather than a
+        // second copy of the record shape.
+        $this->load->library('Student_history_service', null, 'studentHistorySvc');
+        $this->studentHistorySvc->init(
+            $this->firebase,
+            (string) ($this->session->userdata('admin_name') ?? 'System')
+        );
+
+        // ── PHASE 20.3h — PATH 5/5: TRANSFER (P20.2-RACE-1) ─────────────
+        // Every student in this call moves to the SAME destination, so the
+        // whole operation is ONE destination-section group: one section read,
+        // one atomic commit of N student writes + 1 CAS marker. No per-student
+        // section read, no N+1.
+        //
+        // Atomic or nothing: if the destination section moved since it was
+        // read, Firestore rolls the entire batch back and NOT ONE student is
+        // transferred — so a concurrent admission can never push the
+        // destination over capacity via a half-applied transfer.
+        //
+        // Mints no identity: transfer moves existing students, so SRNO, Student
+        // ID and Admission Number are untouched (verified Phase 20.3e-1).
+        $casTransferIds = [];
+        if (Section_seat_guard::enabled()) {
+            // CI3 has NO autoloader for libraries — both must be loaded here or
+            // the first property access is a hard fatal. Classes.php does not
+            // otherwise use entity_firestore_sync (Sis.php loads it at :75).
+            $this->load->library('entity_firestore_sync', null, 'entity_sync');
+            $this->load->library('section_seat_guard', null, 'seatGuard');
+            $this->seatGuard->init($this->fs, $this->firebase,
+                (string) $this->school_id, (string) ($this->admin_id ?? 'system'));
+
+            $group = [];
+            foreach ($studentIds as $stuId) {
+                $group[] = ['studentId' => $stuId, 'data' => [
+                    'Class'   => $cleanClass,
+                    'Section' => $cleanSection,
+                ]];
+            }
+
+            // ── BOUNDED RE-DECIDE, matching every other protected workflow ──
+            // A CONFLICT means a competing placement committed first, so this
+            // transfer's capacity decision is stale, not wrong. Re-decide against
+            // the destination as it is NOW — version first, then a FRESH count
+            // (the memoised roster still holds the one that lost) — and retry.
+            // Only CONFLICT is retryable: a FAILURE outcome is unknown, and
+            // re-issuing an unknown outcome is how duplicate placements are made.
+            $res      = ['status' => '', 'message' => ''];
+            $__capMsg = '';
+            for ($__ta = 1; $__ta <= self::SEAT_RETRY_ATTEMPTS; $__ta++) {
+                if ($__ta > 1) {
+                    $transferVersion = $this->_sectionDecisionVersion(
+                        $toClassKey, $toSectionKey, $this->session_year
+                    );
+                    $__over = $this->_sectionCapacityExceeded(
+                        $toClassKey, $toSectionKey, $this->session_year,
+                        count($studentIds), '', true
+                    );
+                    if ($__over !== null) {
+                        $__capMsg = $this->_sectionCapacityMessage(
+                            $__over, $toClassKey, $toSectionKey
+                        );
+                        break;
+                    }
+                }
+
+                $res = $this->seatGuard->placeStudentGroup(
+                    $this->entity_sync, $group, $cleanClass, $cleanSection,
+                    $this->session_year, $transferVersion
+                );
+                if (($res['status'] ?? '') === Section_seat_guard::PLACED) break;
+                if (($res['status'] ?? '') !== Section_seat_guard::CONFLICT) break;
+            }
+
+            if ($__capMsg !== '') {
+                return $this->json_error($__capMsg);
+            }
+            if (($res['status'] ?? '') !== Section_seat_guard::PLACED) {
+                log_message('error',
+                    "ACC_TRANSFER_REFUSED schoolId={$this->school_id} actor={$this->admin_id} "
+                    . "dest={$cleanClass}/{$cleanSection} count=" . count($group)
+                    . " status=" . ($res['status'] ?? '?'));
+                return $this->json_error($res['message']
+                    ?: 'The transfer could not be completed. No student was moved.');
+            }
+            // Committed atomically — everyone moved. Fall through so the
+            // existing audit/history loop below runs unchanged for each.
+            $casTransferIds = $studentIds;
+        }
+
         $transferred = 0;
         foreach ($studentIds as $stuId) {
-            // Firestore write
-            $ok = $this->fs->updateEntity('students', $stuId, [
-                'Class'     => $cleanClass,
-                'Section'   => $cleanSection,
-                'className' => $cleanClass,   // lowercase alias
-                'section'   => $cleanSection,  // lowercase alias
-                'updatedAt' => date('c'),
-            ]);
-            if ($ok) $transferred++;
+            if (Section_seat_guard::enabled()) {
+                // Already written in the atomic group above.
+                $ok = in_array($stuId, $casTransferIds, true);
+            } else {
+                $ok = $this->fs->updateEntity('students', $stuId, [
+                    'Class'     => $cleanClass,
+                    'Section'   => $cleanSection,
+                    'className' => $cleanClass,   // lowercase alias
+                    'section'   => $cleanSection,  // lowercase alias
+                    'updatedAt' => date('c'),
+                ]);
+            }
+            if (!$ok) continue;
+            $transferred++;
+
+            // Audit AFTER a confirmed write, so history never records a move
+            // that did not happen. A failed audit never fails the transfer.
+            $this->studentHistorySvc->log(
+                (string) $this->school_id,
+                (string) $stuId,
+                'SECTION_TRANSFER',
+                "Transferred from {$fromClassKey} {$fromSectionKey} to {$cleanClass} {$cleanSection}",
+                [
+                    'from_class'   => $fromClassKey,
+                    'from_section' => $fromSectionKey,
+                    'to_class'     => $cleanClass,
+                    'to_section'   => $cleanSection,
+                    'session'      => $this->session_year,
+                ]
+            );
 
             // RTDB mirror removed per no-RTDB policy. Firestore `students` is the sole source.
         }
