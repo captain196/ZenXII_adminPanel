@@ -2474,10 +2474,89 @@ class Sis extends MY_Controller
             $tcHistory[$tcKey]['status'] = 'cancelled';
             $tcHistory[$tcKey]['cancelled_at'] = date('Y-m-d H:i:s');
         }
-        $this->fs->updateEntity('students', $userId, [
-            'status' => 'Active',
-            'TC' => $tcHistory, 'updatedAt' => date('c'),
-        ]);
+        // ── CANCELLING A TC RE-ACQUIRES A SEAT ─────────────────────────────
+        //
+        // TC -> Active moves a student from consuming no seat to consuming
+        // one. That is the same capacity event as an admission, and this
+        // endpoint performed it with no capacity check at all. Reproduced
+        // deterministically, no concurrency needed: fill a maxStrength=2
+        // section, issue a TC to one student, admit a replacement into the
+        // freed seat, then cancel the TC. Active occupancy became 3, and the
+        // endpoint answered "TC cancelled and student re-activated."
+        //
+        // This is the fourth door to Active found in this programme, after
+        // change_status reactivation, section transfer and rollover. Only the
+        // ACQUIRING direction is guarded — issue_tc and withdraw_student
+        // RELEASE a seat and must never require capacity.
+        //
+        // The TC history and the status flip go in ONE commit, so the guard
+        // can never leave a TC cancelled while the student stays inactive, or
+        // a student reactivated with the TC still standing.
+        require_once APPPATH . 'libraries/Section_seat_guard.php';
+        $tcRestoreData = [
+            'status'    => 'Active',
+            'TC'        => $tcHistory,
+            'updatedAt' => date('c'),
+        ];
+        $priorStatus  = (string) ($student['status'] ?? $student['Status'] ?? '');
+        $acquiresSeat = ($priorStatus !== 'Active');
+
+        if ($acquiresSeat && $this->_seatGuardEnabled()) {
+            $classNode   = (string) ($student['className'] ?? $student['Class'] ?? '');
+            $sectionNode = (string) ($student['section'] ?? $student['Section'] ?? '');
+            $sessionNode = (string) ($student['session'] ?? $this->session_year);
+
+            if ($classNode === '' || $sectionNode === '') {
+                // No placement means no seat to acquire and no section to
+                // guard. Refusing is the fail-closed direction.
+                return $this->json_error(
+                    'This student has no class/section on record, so their TC cannot be '
+                    . 'cancelled. Set their placement first.'
+                );
+            }
+
+            $placed      = false;
+            $capacityMsg = '';
+            for ($attempt = 1; $attempt <= self::SEAT_RETRY_ATTEMPTS; $attempt++) {
+                // Version FIRST — it must witness the count that follows.
+                $decisionVersion = $this->_sectionDecisionVersion($classNode, $sectionNode, $sessionNode);
+                $cap = $this->_sectionCapacity($classNode, $sectionNode, $sessionNode);
+                if ($cap > 0) {
+                    $now = $this->_sectionActiveCountFresh($classNode, $sectionNode, $sessionNode, $userId);
+                    if ($now + 1 > $cap) {
+                        $capacityMsg = $this->_sectionCapacityMessage(
+                            ['capacity' => $cap, 'current' => $now, 'incoming' => 1,
+                             'projected' => $now + 1, 'over' => ($now + 1) - $cap],
+                            $classNode, $sectionNode
+                        );
+                        break;
+                    }
+                }
+
+                $res = $this->_seatGuard()->commitPlacement(
+                    $classNode, $sectionNode, $sessionNode,
+                    [[
+                        'collection' => 'students',
+                        'docId'      => $this->fs->docId($userId),
+                        'data'       => $tcRestoreData,
+                        'merge'      => true,
+                    ]],
+                    $decisionVersion
+                );
+                if (($res['status'] ?? '') === Section_seat_guard::PLACED) { $placed = true; break; }
+                if (($res['status'] ?? '') !== Section_seat_guard::CONFLICT) break;
+            }
+
+            if (!$placed) {
+                return $this->json_error(
+                    $capacityMsg !== '' ? $capacityMsg
+                    : 'Could not cancel this TC because the section changed while the '
+                      . 'request was in progress. Nothing was changed. Please retry.'
+                );
+            }
+        } else {
+            $this->fs->updateEntity('students', $userId, $tcRestoreData);
+        }
 
         // Update school's tcIndex
         $schoolDoc = $this->fs->get('schools', $this->school_id);
