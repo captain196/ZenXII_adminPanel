@@ -347,9 +347,24 @@ class Doc_template_service
      * calls this; `publish()` reads what is on record and verifies it still
      * describes the current design.
      */
-    public function recordProof(string $docId, array $proof, string $by = ''): array
+    /**
+     * @param ?array $head The head document, if the caller already has it.
+     *        Firestore reads from outside the database's region cost ~2.3s
+     *        each — measured on a dev machine against nam5 — and proof_pdf has
+     *        ALREADY read this document in order to render it. Re-reading it
+     *        here doubled the round-trips of the slowest operation in the
+     *        module for no new information. Passing null still re-reads, so
+     *        every other caller is unaffected.
+     */
+    public function recordProof(string $docId, array $proof, string $by = '', ?array $head = null): array
     {
-        $head = $this->head($docId);
+        if ($head === null) {
+            $head = $this->head($docId);
+        } elseif ($this->schoolId !== null && ($head['schoolId'] ?? null) !== $this->schoolId) {
+            // A caller-supplied head must still pass the tenant check the
+            // re-read would have applied.
+            throw new RuntimeException("Doc_template_service: no template '$docId'");
+        }
 
         foreach (['hash', 'fontManifest', 'mpdfVersion'] as $k) {
             if (empty($proof[$k])) {

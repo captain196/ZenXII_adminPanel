@@ -751,4 +751,31 @@ class DocTemplateServiceTest extends TestCase
             $this->assertNotSame('', $desc, "the '$a' event must say what happened");
         }
     }
+
+    /**
+     * A caller-supplied head is still tenant-checked.
+     *
+     * recordProof() accepts the head to avoid a second Firestore read — those
+     * cost ~2.3s from outside the database region — but an optimisation that
+     * skips the ownership check would reintroduce the P0 it was written after.
+     */
+    public function test_a_supplied_head_from_another_school_is_refused(): void
+    {
+        $foreign = ['schoolId' => 'SCH2', 'templateId' => 'TPL0001', 'version' => 1];
+
+        $this->expectException(RuntimeException::class);
+        $this->expectExceptionMessageMatches('/no template/');
+        $this->svc->recordProof('SCH2_TPL0001', $this->proof(), 'STA1', $foreign);
+    }
+
+    public function test_a_supplied_head_avoids_the_extra_read_and_records_the_same_thing(): void
+    {
+        $head = $this->docs['documentTemplates']['SCH1_TPL0007'];
+
+        $viaRead     = $this->svc->recordProof('SCH1_TPL0007', $this->proof(), 'STA1');
+        $viaSupplied = $this->svc->recordProof('SCH1_TPL0007', $this->proof(), 'STA1', $head);
+
+        $this->assertSame($viaRead['contentHash'], $viaSupplied['contentHash']);
+        $this->assertSame($viaRead['version'], $viaSupplied['version']);
+    }
 }

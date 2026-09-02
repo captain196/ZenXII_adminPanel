@@ -249,6 +249,13 @@ class Doc_renderer
                 ));
             }
 
+            /* render() already knows how many pages it produced. Keeping it
+               means a caller that needs the count does NOT have to call
+               pageCount(), which renders the whole document a second time —
+               proof_pdf did exactly that, so a two-language proof ran FOUR
+               mPDF renders for information the first two already had. */
+            $this->lastPages = $pages;
+
             $pdf = $mpdf->Output('', Destination::STRING_RETURN);
             unset($mpdf);
             return $pdf;
@@ -292,6 +299,21 @@ class Doc_renderer
      * content, which is why tier 2 (measureBlock) exists and why this method
      * must never be used to judge an absolute chain.
      */
+    /** @var int pages produced by the most recent render() */
+    private int $lastPages = 0;
+
+    /**
+     * How many pages the LAST render() produced.
+     *
+     * Prefer this to pageCount() when you have just rendered: pageCount() is a
+     * full second render, and on a multi-language proof that doubles the whole
+     * job.
+     */
+    public function lastPageCount(): int
+    {
+        return max(1, $this->lastPages);
+    }
+
     public function pageCount(string $html, array $page = [], array $opts = []): int
     {
         $this->guardImages($html);

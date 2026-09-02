@@ -3918,10 +3918,32 @@ async function proofOnServer(){
       say("Saving the draft — the server renders what is stored, not what is on screen");
       if(!await srvSaveDraft(true)){ if(bar) bar.style.width="0"; return; }
     }
-    say("Rendering "+(S.tpl.languages||["en"]).length+" language(s) at p95 · mPDF");
-    if(bar) bar.style.width="55%";
+    const langs=(S.tpl.languages||["en"]).length;
+    say("Rendering "+langs+" language(s) at p95 · mPDF");
 
-    const out=await srv.proof(S.tpl.templateId);
+    /* THE BAR MUST NOT FREEZE.
+    
+       It used to jump to 55% and sit there for the whole render — four seconds
+       of a motionless bar and a disabled button, which is indistinguishable
+       from a hang. The work happens in ONE server request, so the client cannot
+       know real progress; pretending to would be worse. So show the honest
+       thing: elapsed seconds, ticking, against what this template usually
+       takes. A number that moves says "working"; a bar that doesn't says
+       "broken". */
+    const t0=Date.now();
+    if(bar){ bar.style.width="15%"; bar.classList.add("is-working"); }
+    const tick=setInterval(()=>{
+      const s=Math.round((Date.now()-t0)/1000);
+      if(bar) bar.style.width=Math.min(90, 15+s*8)+"%";
+      const el=document.getElementById("proofElapsed");
+      if(el) el.textContent=s+"s"+(s>20?" — still working; long or multi-language templates take longer":"");
+    },1000);
+    if(log) log.insertAdjacentHTML("beforeend",
+      '<div>· elapsed <b id="proofElapsed">0s</b></div>');
+
+    let out;
+    try { out=await srv.proof(S.tpl.templateId); }
+    finally { clearInterval(tick); if(bar) bar.classList.remove("is-working"); }
     const pr=out.proof||{};
     S.proofed={hash:pr.hash, pages:pr.pages, contentHash:pr.contentHash, paths:out.paths||{}};
     if(bar) bar.style.width="100%";

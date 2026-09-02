@@ -659,7 +659,8 @@ class Doc_templates extends MY_Controller
                 ]);
 
                 $pdf = $this->docpdf->render($html, (array) ($tpl['page'] ?? []));
-                $n   = $this->docpdf->pageCount($html, (array) ($tpl['page'] ?? []));
+                // NOT pageCount() — that renders the document all over again.
+                $n   = $this->docpdf->lastPageCount();
 
                 $safeLang = preg_replace('/[^a-z]/', '', strtolower($lang)) ?: 'x';
                 $file = $dir . '/' . basename($id) . '_v' . $version . '_' . $safeLang . '.pdf';
@@ -684,7 +685,7 @@ class Doc_templates extends MY_Controller
                 'pages'        => $pages,
                 'pdfPaths'     => $paths,
                 'perLanguage'  => $perLang,
-            ], $this->_actor());
+            ], $this->_actor(), $tpl);   // $tpl is already loaded — do not re-read it
 
             log_audit(self::AUDIT_MODULE, 'template.proof', $id,
                       'Proof rendered v' . $version . ' — ' . $rec['hash']);
