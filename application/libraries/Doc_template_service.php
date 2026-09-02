@@ -114,6 +114,90 @@ class Doc_template_service
     }
 
     /* ================================================================== *
+     *  P1.x — create
+     * ================================================================== */
+
+    /**
+     * Mint a new draft template for a school.
+     *
+     * The id is `{schoolId}_TPL####`, matching the repo-wide
+     * `{schoolId}_{entityId}` key scheme.
+     *
+     * NUMBERING IS CREATE-ONLY WITH RETRY, not read-then-write. Two clerks
+     * pressing "New template" in the same second both read the same maximum,
+     * and a plain write would have the second silently OVERWRITE the first
+     * one's template — no error, no trace, one template simply gone. So each
+     * attempt refuses to write over an existing id and tries the next number.
+     *
+     * This is not a counter document, deliberately: a counter for template ids
+     * would be a new collection needing its own rules, for ids that are
+     * internal handles. The numbers a school is legally accountable for are
+     * issued-document serials, which belong to the Issuance Engine and DO need
+     * a transactional counter (CON-NO_PRINT_IMPL).
+     *
+     * @throws RuntimeException if a free id cannot be found — better than
+     *         looping forever or silently overwriting.
+     */
+    public function create(string $schoolId, string $docType, array $seed = [], string $by = ''): array
+    {
+        if ($schoolId === '' || $docType === '') {
+            throw new InvalidArgumentException('Doc_template_service: schoolId and docType are required');
+        }
+
+        $existing = ($this->store['query'])(self::HEAD_COLLECTION, [['schoolId', '=', $schoolId]]) ?: [];
+        $max = 0;
+        foreach ($existing as $id => $row) {
+            $tid = (string) ($row['templateId'] ?? '');
+            if (preg_match('/^TPL(\d+)$/', $tid, $m)) {
+                $max = max($max, (int) $m[1]);
+            }
+        }
+
+        for ($n = $max + 1; $n <= $max + 50; $n++) {
+            $templateId = sprintf('TPL%04d', $n);
+            $docId      = $schoolId . '_' . $templateId;
+            if (($this->store['exists'])(self::HEAD_COLLECTION, $docId)) {
+                continue;                       // somebody else took it
+            }
+
+            $head = [
+                'schoolId'         => $schoolId,
+                'templateId'       => $templateId,
+                'docType'          => $docType,
+                'name'             => (string) ($seed['name'] ?? 'Untitled template'),
+                'status'           => 'draft',
+                'version'          => 1,
+                'lockVersion'      => 0,
+                'publishedVersion' => null,
+                'activeVersion'    => null,
+                'page'             => $seed['page']    ?? ['size' => 'A4', 'orientation' => 'portrait'],
+                'header'           => $seed['header']  ?? [],
+                'footer'           => $seed['footer']  ?? [],
+                'objects'          => $seed['objects'] ?? [],
+                'languages'        => $seed['languages'] ?? ['en'],
+                'defaultLanguage'  => (string) ($seed['defaultLanguage'] ?? 'en'),
+                'contractRef'      => $seed['contractRef'] ?? null,
+                'complianceBasis'  => $seed['complianceBasis']  ?? [],
+                'complianceLayers' => $seed['complianceLayers'] ?? [],
+                'starterId'        => $seed['starterId'] ?? null,
+                'createdBy'        => $by,
+                'createdAt'        => $this->now(),
+                'updatedAt'        => $this->now(),
+            ];
+
+            ($this->store['set'])(self::HEAD_COLLECTION, $docId, $head);
+            $this->log('create', $docId, "Created $docType template $templateId");
+
+            return ['templateId' => $docId, 'head' => $head];
+        }
+
+        throw new RuntimeException(
+            'Doc_template_service: could not mint a free template id after 50 attempts '
+            . "from TPL" . sprintf('%04d', $max + 1) . '. Refusing to overwrite an existing template.'
+        );
+    }
+
+    /* ================================================================== *
      *  P6.5 — optimistic concurrency
      * ================================================================== */
 
@@ -170,24 +254,135 @@ class Doc_template_service
      * @throws RuntimeException if unproofed, mis-transitioned, or the snapshot
      *         id already exists.
      */
-    public function publish(string $docId, array $proof, string $by = ''): array
+    /**
+     * A canonical hash of the DESIGN — the only fields that change what prints.
+     *
+     * Used to answer "is the proof on record still a proof of THIS document?".
+     * Deliberately content-based rather than a `proofed` flag: a flag says a
+     * proof happened at some point, which is not the question. Status,
+     * lockVersion and timestamps are excluded because they move without
+     * changing a single printed pixel, and re-proofing for them would train
+     * people to click through the gate.
+     */
+    public function contentHash(array $head): string
+    {
+        return 'sha256:' . hash('sha256', self::canonical([
+            'page'            => $head['page']            ?? [],
+            'header'          => $head['header']          ?? [],
+            'footer'          => $head['footer']          ?? [],
+            'objects'         => $head['objects']         ?? [],
+            'languages'       => $head['languages']       ?? [],
+            'defaultLanguage' => $head['defaultLanguage'] ?? 'en',
+        ]));
+    }
+
+    /**
+     * Order-independent, precision-stable serialization.
+     *
+     * json_encode alone is not enough for a hash that must match across
+     * machines: PHP key order follows insertion, and float output follows
+     * `serialize_precision`, so the SAME design could hash two ways and every
+     * publish would report a stale proof. Keys are sorted; floats are printed
+     * to a fixed 6dp — finer than any position the designer can express, since
+     * it snaps at 0.1mm.
+     */
+    private static function canonical($v): string
+    {
+        if (is_array($v)) {
+            $isList = array_keys($v) === range(0, count($v) - 1);
+            if (!$isList) {
+                ksort($v);
+            }
+            $parts = [];
+            foreach ($v as $k => $x) {
+                $parts[] = ($isList ? '' : json_encode((string) $k) . ':') . self::canonical($x);
+            }
+            return ($isList ? '[' : '{') . implode(',', $parts) . ($isList ? ']' : '}');
+        }
+        if (is_float($v)) {
+            return rtrim(rtrim(sprintf('%.6F', $v), '0'), '.') ?: '0';
+        }
+        if (is_bool($v) || is_null($v) || is_int($v)) {
+            return json_encode($v);
+        }
+        return json_encode((string) $v);
+    }
+
+    /**
+     * P6.2 — record a proof the SERVER rendered.
+     *
+     * The proof must never be accepted from the request body. It previously
+     * was, and that made the publish gate decorative: any caller could POST a
+     * fabricated hash and the immutable snapshot would record a hash that no
+     * PDF ever produced — defeating the one thing the snapshot exists for,
+     * which is a byte-identical re-render years later.
+     *
+     * So `Doc_templates::proof_pdf()` renders, hashes the actual bytes, and
+     * calls this; `publish()` reads what is on record and verifies it still
+     * describes the current design.
+     */
+    public function recordProof(string $docId, array $proof, string $by = ''): array
     {
         $head = $this->head($docId);
-        $this->assertTransition($head['status'] ?? 'draft', 'published');
 
-        // P6.2 — a snapshot that cannot name the faces and engine that produced
-        // it cannot be re-rendered years later, which is the entire point of it.
         foreach (['hash', 'fontManifest', 'mpdfVersion'] as $k) {
             if (empty($proof[$k])) {
                 throw new RuntimeException(
-                    "Doc_template_service: cannot publish without proof.$k. "
-                    . 'A snapshot must record the exact faces and engine used, or a '
-                    . 'byte-identical re-render later is impossible.'
+                    "Doc_template_service: refusing to record a proof without $k. "
+                    . 'A snapshot must name the exact faces and engine used.'
                 );
             }
         }
 
+        $rec = [
+            'hash'         => (string) $proof['hash'],
+            'contentHash'  => $this->contentHash($head),
+            'fontManifest' => $proof['fontManifest'],
+            'mpdfVersion'  => (string) $proof['mpdfVersion'],
+            'pages'        => (int) ($proof['pages'] ?? 0),
+            'validation'   => $proof['validation'] ?? ['blocking' => [], 'warnings' => []],
+            'version'      => (int) ($head['version'] ?? 1),
+            'renderedBy'   => $by,
+            'renderedAt'   => $this->now(),
+        ];
+        ($this->store['update'])(self::HEAD_COLLECTION, $docId, ['lastProof' => $rec]);
+
+        return $rec;
+    }
+
+    public function publish(string $docId, string $by = ''): array
+    {
+        $head = $this->head($docId);
+        $this->assertTransition($head['status'] ?? 'draft', 'published');
+
+        /* P6.2 — the proof comes from the RECORD, never from the caller. */
+        $proof = $head['lastProof'] ?? null;
+        if (!is_array($proof) || empty($proof['hash'])) {
+            throw new RuntimeException(
+                'Doc_template_service: no proof on record for this template. '
+                . 'Render a proof before publishing — publishing writes an immutable '
+                . 'snapshot, and a snapshot whose hash was never produced by a real '
+                . 'render cannot be verified against anything later.'
+            );
+        }
+
         $version = (int) ($head['version'] ?? 1);
+
+        if ((int) ($proof['version'] ?? 0) !== $version) {
+            throw new RuntimeException(
+                'Doc_template_service: the proof on record is for v'
+                . (int) ($proof['version'] ?? 0) . " but this draft is v$version. Render a new proof."
+            );
+        }
+
+        /* Content, not a flag. A stale proof and a fresh one look identical to
+           a boolean; they do not look identical to a hash of what prints. */
+        if (($proof['contentHash'] ?? null) !== $this->contentHash($head)) {
+            throw new RuntimeException(
+                'Doc_template_service: the design changed after the proof was rendered, '
+                . 'so the proof no longer describes what would print. Render a new proof.'
+            );
+        }
         $vid     = $docId . '_v' . $version;
 
         // P6.1 — create-only. If the id exists we would be OVERWRITING history.

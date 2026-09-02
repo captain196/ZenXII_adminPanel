@@ -337,10 +337,38 @@ class Doc_templates extends MY_Controller
     //  AJAX — writes
     // ═══════════════════════════════════════════════════════════════════
 
+    /**
+     * Mint a new draft. schoolId comes from the SESSION, never the body — the
+     * panel uses the Admin SDK, which bypasses firestore.rules entirely, so a
+     * client-supplied tenant would be honoured.
+     */
     public function create(): void
     {
         if (!$this->_require_post()) return;
-        $this->json_success(['data' => ['pending' => 'P1.x']]);
+
+        $this->_run(function () {
+            $docType = $this->_safe_type((string) $this->input->post('docType'));
+
+            $seed = json_decode((string) $this->input->post('seed'), true);
+            if ($seed !== null && !is_array($seed)) {
+                throw new InvalidArgumentException('seed must be a JSON object');
+            }
+            $seed = $seed ?: [];
+            // A seed may carry a starter's layout. It may NOT carry identity,
+            // ownership or lifecycle — those are the server's to set.
+            foreach (['schoolId', 'templateId', 'status', 'version', 'lockVersion',
+                      'publishedVersion', 'activeVersion', 'lastProof'] as $k) {
+                unset($seed[$k]);
+            }
+
+            $r = $this->_templates()->create(
+                (string) $this->school_id, $docType, $seed, (string) ($this->staff_id ?? '')
+            );
+            log_audit(self::AUDIT_MODULE, 'template.create', $r['templateId'],
+                      "Created $docType template");
+
+            return ['templateId' => $r['templateId'], 'template' => $r['head']];
+        });
     }
 
     public function save(): void
@@ -363,10 +391,86 @@ class Doc_templates extends MY_Controller
         });
     }
 
+    /**
+     * Authoritative validation. The designer runs its own copy for live
+     * feedback; THIS is the one publish is gated on.
+     *
+     * The client's copy cannot be the gate — it runs on the caller's machine
+     * and answers to whoever is holding it. Both are kept in step by
+     * DocContractParityTest.
+     */
     public function validate(): void
     {
         if (!$this->_require_post()) return;
-        $this->json_success(['data' => ['pending' => 'P5.x']]);
+
+        $this->_run(function () {
+            $tpl = json_decode((string) $this->input->post('template'), true);
+            if (!is_array($tpl)) {
+                throw new InvalidArgumentException('template must be a JSON object');
+            }
+            $docType = $this->_safe_type((string) ($tpl['docType'] ?? ''));
+
+            $blocking = [];
+            $warnings = [];
+
+            /* 1 — every REQUIRED contract key is bound by some object. */
+            $bound = $this->_boundKeys($tpl);
+            foreach ($this->_contract()->keysFor($docType) as $key => $def) {
+                if (!empty($def['required']) && !in_array($key, $bound, true)) {
+                    $blocking[] = ['type' => 'unbound', 'key' => $key,
+                                   'message' => "Required field '{$def['label']}' is not on the template"];
+                }
+            }
+
+            /* 2 — a text object with no line height. mPDF and the browser
+                   resolve a missing line-height differently, so the proof and
+                   the preview would disagree about where the text sits. */
+            foreach ($this->_objects($tpl) as $o) {
+                if (($o['type'] ?? '') === 'text' && empty($o['style']['lineHeight'])) {
+                    $blocking[] = ['type' => 'lineheight', 'id' => (string) ($o['id'] ?? '?'),
+                                   'message' => 'Text object has no line height'];
+                }
+            }
+
+            /* 3 — contract-level checks on a sample bundle: off-contract keys
+                   and over-length values. Over-length is a WARNING by design —
+                   maxLen is our own estimate, and the real gate measures the
+                   rendered block. */
+            $r = $this->_contract()->validateBundle(
+                $docType, $this->_contract()->sampleBundle($docType, true), $bound
+            );
+            foreach ($r['errors'] ?? [] as $e) {
+                if (($e['type'] ?? '') === 'offContract') { $blocking[] = $e; }
+            }
+            $warnings = array_merge($warnings, $r['warnings'] ?? []);
+
+            return ['blocking' => $blocking, 'warnings' => $warnings,
+                    'ok' => $blocking === []];
+        });
+    }
+
+    /** Every merge key bound by any object on the template. */
+    private function _boundKeys(array $tpl): array
+    {
+        $keys = [];
+        foreach ($this->_objects($tpl) as $o) {
+            foreach ((array) ($o['content']['i18n'] ?? []) as $runs) {
+                foreach ((array) $runs as $run) {
+                    if (!empty($run['field'])) { $keys[(string) $run['field']] = true; }
+                }
+            }
+        }
+        return array_keys($keys);
+    }
+
+    /** Objects from the body plus header and footer regions. */
+    private function _objects(array $tpl): array
+    {
+        return array_merge(
+            (array) ($tpl['objects'] ?? []),
+            (array) ($tpl['header']['objects'] ?? []),
+            (array) ($tpl['footer']['objects'] ?? [])
+        );
     }
 
     /**
@@ -410,16 +514,158 @@ class Doc_templates extends MY_Controller
         });
     }
 
+    /**
+     * Render a real proof PDF and put it ON RECORD.
+     *
+     * The template is read from the STORE, never from the request body. That is
+     * the whole point: publish() verifies that the proof on record still
+     * describes the stored design, so a proof rendered from a caller-supplied
+     * document would describe something that was never saved.
+     *
+     * One proof per declared language — a template can be correct in English
+     * and overflow in Hindi, and only the language you rendered would have told
+     * you.
+     */
     public function proof_pdf(): void
     {
         if (!$this->_require_post()) return;
-        $this->json_success(['data' => ['pending' => 'P6.2']]);
+        $id = $this->safe_path_segment((string) $this->input->post('templateId'), 'templateId');
+
+        $this->_run(function () use ($id) {
+            $tpl = $this->fs->get('documentTemplates', $id);
+            if (!is_array($tpl) || ($tpl['schoolId'] ?? null) !== $this->school_id) {
+                throw new RuntimeException('Template not found');
+            }
+
+            $this->load->library('doc_serializer', null, 'docser');
+            $contract = $this->_contract()->get((string) ($tpl['docType'] ?? ''));
+
+            $dir = FCPATH . 'uploads/' . $this->school_id . '/doctemplates/_proofs';
+            if (!is_dir($dir) && !@mkdir($dir, 0755, true) && !is_dir($dir)) {
+                throw new RuntimeException('Could not create the proof directory');
+            }
+
+            $version  = (int) ($tpl['version'] ?? 1);
+            $paths    = [];
+            $pages    = 0;
+            $perLang  = [];
+            $bytesAll = '';
+
+            foreach ((array) ($tpl['languages'] ?? ['en']) as $lang) {
+                $lang = (string) $lang;
+                $html = $this->docser->render($tpl, [], $lang, [
+                    'contract' => $contract,
+                    'sample'   => 'p95',      // the hard case, not the flattering one
+                ]);
+
+                $pdf = $this->docpdf->render($html, (array) ($tpl['page'] ?? []));
+                $n   = $this->docpdf->pageCount($html, (array) ($tpl['page'] ?? []));
+
+                $safeLang = preg_replace('/[^a-z]/', '', strtolower($lang)) ?: 'x';
+                $file = $dir . '/' . basename($id) . '_v' . $version . '_' . $safeLang . '.pdf';
+                if (file_put_contents($file, $pdf) === false) {
+                    throw new RuntimeException('Could not write the proof PDF');
+                }
+
+                $paths[$lang]   = 'uploads/' . $this->school_id . '/doctemplates/_proofs/' . basename($file);
+                $perLang[$lang] = ['pages' => $n, 'bytes' => strlen($pdf),
+                                   'hash' => 'sha256:' . hash('sha256', $pdf)];
+                $pages   += $n;
+                $bytesAll .= $pdf;
+            }
+
+            /* One hash over every language, in the order the template declares
+               them. A per-language hash alone could not answer "is this the
+               same document I published?" for a bilingual certificate. */
+            $rec = $this->_templates()->recordProof($id, [
+                'hash'         => 'sha256:' . hash('sha256', $bytesAll),
+                'fontManifest' => $this->docpdf->fontManifest(),
+                'mpdfVersion'  => $this->docpdf->engineVersion(),
+                'pages'        => $pages,
+                'pdfPaths'     => $paths,
+                'perLanguage'  => $perLang,
+            ], (string) ($this->staff_id ?? ''));
+
+            log_audit(self::AUDIT_MODULE, 'template.proof', $id,
+                      'Proof rendered v' . $version . ' — ' . $rec['hash']);
+
+            return ['proof' => $rec, 'paths' => $paths, 'perLanguage' => $perLang];
+        });
     }
 
+    /** Image types a certificate may carry, by CONTENT not by file name. */
+    const ASSET_MIME = [
+        'image/png'  => 'png',
+        'image/jpeg' => 'jpg',
+        'image/webp' => 'webp',
+    ];
+
+    /** 4 MB. A crest or a signature; anything larger is a scanned page. */
+    const ASSET_MAX_BYTES = 4194304;
+
+    /**
+     * Upload a crest or signature.
+     *
+     * The type is decided by INSPECTING the file, never by its extension or by
+     * the browser-supplied Content-Type — both are caller-controlled, and a
+     * .png that is really a PHP script inside a web-served directory is a
+     * remote-code-execution path, not a rendering bug.
+     *
+     * The stored name is derived from the file's own content hash, so a
+     * caller cannot choose a path, collide with an existing asset, or traverse
+     * out of the school's directory.
+     */
     public function upload_asset(): void
     {
         if (!$this->_require_post()) return;
-        $this->json_success(['data' => ['pending' => 'P1.x']]);
+
+        $this->_run(function () {
+            $f = $_FILES['file'] ?? null;
+            if (!is_array($f) || ($f['error'] ?? UPLOAD_ERR_NO_FILE) !== UPLOAD_ERR_OK) {
+                throw new InvalidArgumentException('No file was uploaded');
+            }
+            if (!is_uploaded_file($f['tmp_name'])) {
+                throw new RuntimeException('Not an uploaded file');
+            }
+            if (($f['size'] ?? 0) > self::ASSET_MAX_BYTES) {
+                throw new InvalidArgumentException(
+                    'Image is larger than ' . (self::ASSET_MAX_BYTES / 1048576) . ' MB'
+                );
+            }
+
+            // Content sniffing, and then a second opinion: getimagesize also
+            // has to agree it is a real raster image with real dimensions.
+            $mime = (new finfo(FILEINFO_MIME_TYPE))->file($f['tmp_name']) ?: '';
+            if (!isset(self::ASSET_MIME[$mime])) {
+                throw new InvalidArgumentException(
+                    'Only PNG, JPEG and WebP images are accepted (this file is ' . ($mime ?: 'unrecognised') . ')'
+                );
+            }
+            $info = @getimagesize($f['tmp_name']);
+            if (!$info || empty($info[0]) || empty($info[1])) {
+                throw new InvalidArgumentException('That file is not a readable image');
+            }
+
+            $dir = FCPATH . 'uploads/' . $this->school_id . '/doctemplates/assets';
+            if (!is_dir($dir) && !@mkdir($dir, 0755, true) && !is_dir($dir)) {
+                throw new RuntimeException('Could not create the asset directory');
+            }
+
+            $name = hash_file('sha256', $f['tmp_name']) . '.' . self::ASSET_MIME[$mime];
+            $dest = $dir . '/' . $name;
+            if (!is_file($dest) && !move_uploaded_file($f['tmp_name'], $dest)) {
+                throw new RuntimeException('Could not store the image');
+            }
+            @chmod($dest, 0644);
+
+            // Relative, and with no scheme — Doc_serializer::guardSrc() rejects
+            // anything else, and this path is what it will be handed.
+            $src = 'uploads/' . $this->school_id . '/doctemplates/assets/' . $name;
+            log_audit(self::AUDIT_MODULE, 'template.asset_upload', $name, "Uploaded $mime asset");
+
+            return ['src' => $src, 'width' => (int) $info[0], 'height' => (int) $info[1],
+                    'mime' => $mime, 'bytes' => (int) $f['size']];
+        });
     }
 
     public function save_block(): void
@@ -465,11 +711,11 @@ class Doc_templates extends MY_Controller
         log_audit(self::AUDIT_MODULE, 'template.publish_attempt', $id, 'Publish requested');
 
         $this->_run(function () use ($id) {
-            $proof = json_decode((string) $this->input->post('proof'), true);
-            if (!is_array($proof)) {
-                throw new InvalidArgumentException('proof is required');
-            }
-            $r = $this->_templates()->publish($id, $proof, (string) ($this->staff_id ?? ''));
+            /* No proof is read from the request. The server renders it in
+               proof_pdf() and publish() verifies what is on record still
+               describes the stored design — a caller-supplied proof would let
+               anyone publish a snapshot whose hash no PDF ever produced. */
+            $r = $this->_templates()->publish($id, (string) ($this->staff_id ?? ''));
             return ['versionId' => $r['versionId'], 'version' => $r['version']];
         });
     }

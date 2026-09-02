@@ -323,7 +323,8 @@ class DocSecurityTest extends TestCase
         $src = file_get_contents(__DIR__ . '/../../application/controllers/Doc_templates.php');
 
         $wired = ['get_types', 'get_templates', 'get_template', 'get_blocks',
-                  'save', 'save_block', 'publish', 'activate', 'archive', 'preview'];
+                  'create', 'save', 'validate', 'preview', 'proof_pdf', 'upload_asset',
+                  'save_block', 'publish', 'activate', 'archive'];
 
         foreach ($wired as $name) {
             $i = strpos($src, "public function $name(): void");
@@ -337,8 +338,16 @@ class DocSecurityTest extends TestCase
         }
     }
 
-    /** The still-stubbed ones, named so the remaining work stays visible. */
-    public function test_the_remaining_stubs_are_exactly_the_known_four(): void
+    /**
+     * NOTHING is stubbed any more — all 14 AJAX endpoints are wired.
+     *
+     * Kept as an assertion rather than deleted, and deliberately phrased as
+     * "the set is empty" rather than "these four are stubs": a stub reappearing
+     * is a silent loss of function, because a stub returns HTTP 200 with
+     * `{status: 'success'}`. The client cannot tell it from a real answer, and
+     * neither can a person clicking the button.
+     */
+    public function test_no_endpoint_is_a_stub_any_more(): void
     {
         $src = file_get_contents(__DIR__ . '/../../application/controllers/Doc_templates.php');
 
@@ -354,11 +363,9 @@ class DocSecurityTest extends TestCase
         }
         sort($stubs);
 
-        $this->assertSame(
-            ['create', 'proof_pdf', 'upload_asset', 'validate'],
-            $stubs,
-            'the set of unwired endpoints changed. If one was wired, add it to the list above; '
-            . 'if one regressed, that is a real loss of function.'
-        );
+        $this->assertSame([], $stubs,
+            'an endpoint went back to returning a pending stub. A stub answers 200 with '
+            . "{status:'success'}, so the caller — and the person who clicked — cannot tell "
+            . 'it from a real result. If this is deliberate, it needs to fail loudly instead.');
     }
 }

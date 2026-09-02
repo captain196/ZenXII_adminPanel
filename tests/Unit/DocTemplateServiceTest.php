@@ -104,6 +104,18 @@ class DocTemplateServiceTest extends TestCase
         ];
     }
 
+    /**
+     * Put a proof ON RECORD the way the server does.
+     *
+     * publish() no longer accepts a proof argument. It used to, and that made
+     * the gate decorative — a caller could hand it any hash. These tests now
+     * go through the same door production does.
+     */
+    private function recordProof(string $id = 'SCH1_TPL0007', array $over = []): array
+    {
+        return $this->svc->recordProof($id, array_merge($this->proof(), $over), 'STA1');
+    }
+
     /* ---------------------------------------------------------------- *
      * P6.6 — the state machine
      * ---------------------------------------------------------------- */
@@ -181,7 +193,8 @@ class DocTemplateServiceTest extends TestCase
 
     public function test_publish_freezes_a_snapshot_and_opens_the_next_draft(): void
     {
-        $r = $this->svc->publish('SCH1_TPL0007', $this->proof(), 'STA1');
+        $this->recordProof('SCH1_TPL0007');
+        $r = $this->svc->publish('SCH1_TPL0007', 'STA1');
 
         $this->assertSame('SCH1_TPL0007_v3', $r['versionId']);
         $snap = $this->docs['documentTemplateVersions']['SCH1_TPL0007_v3'];
@@ -197,7 +210,8 @@ class DocTemplateServiceTest extends TestCase
     /** P6.2 — a snapshot that cannot name its faces and engine cannot be re-rendered. */
     public function test_publish_records_the_font_manifest_and_engine_version(): void
     {
-        $this->svc->publish('SCH1_TPL0007', $this->proof(), 'STA1');
+        $this->recordProof('SCH1_TPL0007');
+        $this->svc->publish('SCH1_TPL0007', 'STA1');
         $snap = $this->docs['documentTemplateVersions']['SCH1_TPL0007_v3'];
 
         $this->assertSame('8.3.1', $snap['mpdfVersion']);
@@ -206,14 +220,109 @@ class DocTemplateServiceTest extends TestCase
     }
 
     /** @dataProvider missingProofParts */
-    public function test_publish_refuses_without_the_reproducibility_metadata(string $missing): void
+    public function test_a_proof_without_the_reproducibility_metadata_is_never_recorded(string $missing): void
     {
         $p = $this->proof();
         unset($p[$missing]);
 
         $this->expectException(RuntimeException::class);
-        $this->expectExceptionMessageMatches("/proof\.$missing/");
-        $this->svc->publish('SCH1_TPL0007', $p);
+        $this->expectExceptionMessageMatches("/refusing to record a proof without $missing/");
+        $this->svc->recordProof('SCH1_TPL0007', $p, 'STA1');
+    }
+
+    /* ---------------------------------------------------------------- *
+     * P6.2 — the proof is the SERVER'S, not the caller's
+     *
+     * publish() used to take the proof as an argument, which meant the gate
+     * only stopped a client that chose to be stopped: a POST carrying an
+     * invented hash published happily, and the immutable snapshot recorded a
+     * hash no PDF had ever produced. The snapshot exists to make a
+     * byte-identical re-render possible years later; one built on an invented
+     * hash cannot be verified against anything.
+     * ---------------------------------------------------------------- */
+
+    public function test_publish_refuses_when_no_proof_was_ever_rendered(): void
+    {
+        $this->expectException(RuntimeException::class);
+        $this->expectExceptionMessageMatches('/no proof on record/');
+        $this->svc->publish('SCH1_TPL0007', 'STA1');
+    }
+
+    public function test_publish_cannot_be_handed_a_proof_by_its_caller(): void
+    {
+        $r = new \ReflectionMethod(Doc_template_service::class, 'publish');
+        $params = array_map(fn($p) => $p->getName(), $r->getParameters());
+
+        $this->assertSame(['docId', 'by'], $params,
+            'publish() must take no proof parameter. If one returns, a caller can '
+            . 'publish a snapshot whose hash was never produced by a real render.');
+    }
+
+    /**
+     * The gate is CONTENT-based, not a flag. A `proofed` boolean cannot tell a
+     * stale proof from a fresh one; a hash of what prints can.
+     */
+    public function test_publish_refuses_after_the_design_changed_under_the_proof(): void
+    {
+        $this->recordProof('SCH1_TPL0007');
+        $this->docs['documentTemplates']['SCH1_TPL0007']['objects'][] = ['id' => 'added-after-the-proof'];
+
+        $this->expectException(RuntimeException::class);
+        $this->expectExceptionMessageMatches('/design changed after the proof/');
+        $this->svc->publish('SCH1_TPL0007', 'STA1');
+    }
+
+    public function test_publish_refuses_a_proof_rendered_for_an_earlier_version(): void
+    {
+        $this->recordProof('SCH1_TPL0007');
+        $this->docs['documentTemplates']['SCH1_TPL0007']['lastProof']['version'] = 2;
+
+        $this->expectException(RuntimeException::class);
+        $this->expectExceptionMessageMatches('/proof on record is for v2 but this draft is v3/');
+        $this->svc->publish('SCH1_TPL0007', 'STA1');
+    }
+
+    /**
+     * Moving status or lockVersion changes no printed pixel. If they counted,
+     * every save would invalidate the proof and people would learn to click
+     * through the gate — which is how a gate stops being one.
+     */
+    public function test_the_content_hash_ignores_fields_that_change_nothing_printed(): void
+    {
+        $head = $this->docs['documentTemplates']['SCH1_TPL0007'];
+        $before = $this->svc->contentHash($head);
+
+        $head['lockVersion'] = 999;
+        $head['status']      = 'archived';
+        $head['updatedAt']   = '2099-01-01T00:00:00Z';
+
+        $this->assertSame($before, $this->svc->contentHash($head));
+    }
+
+    public function test_the_content_hash_is_stable_across_key_order_and_float_precision(): void
+    {
+        $a = ['page' => ['size' => 'A4', 'marginMm' => 12.5],
+              'objects' => [['id' => 'x', 'xMm' => 45.5, 'yMm' => 10.0]]];
+        // Same design, keys inserted in a different order — PHP preserves
+        // insertion order, so an unsorted hash would differ here.
+        $b = ['objects' => [['yMm' => 10.0, 'xMm' => 45.5, 'id' => 'x']],
+              'page' => ['marginMm' => 12.5, 'size' => 'A4']];
+
+        $this->assertSame($this->svc->contentHash($a), $this->svc->contentHash($b));
+        // ...and a real change still moves it, or the hash proves nothing.
+        $c = $a; $c['objects'][0]['xMm'] = 45.6;
+        $this->assertNotSame($this->svc->contentHash($a), $this->svc->contentHash($c));
+    }
+
+    public function test_a_recorded_proof_carries_the_design_it_was_rendered_from(): void
+    {
+        $rec = $this->recordProof('SCH1_TPL0007');
+        $head = $this->docs['documentTemplates']['SCH1_TPL0007'];
+
+        $this->assertSame($this->svc->contentHash($head), $rec['contentHash']);
+        $this->assertSame(3, $rec['version']);
+        $this->assertSame('STA1', $rec['renderedBy']);
+        $this->assertSame($rec, $head['lastProof'], 'the record lands on the head');
     }
 
     public static function missingProofParts(): array
@@ -224,7 +333,8 @@ class DocTemplateServiceTest extends TestCase
     /** The layers that APPLIED are frozen, not referenced. */
     public function test_publish_freezes_the_compliance_layers(): void
     {
-        $this->svc->publish('SCH1_TPL0007', $this->proof());
+        $this->recordProof('SCH1_TPL0007');
+        $this->svc->publish('SCH1_TPL0007');
         $snap = $this->docs['documentTemplateVersions']['SCH1_TPL0007_v3'];
 
         $this->assertSame([['authorityId' => 'cbse', 'version' => 4]], $snap['complianceLayers'],
@@ -239,13 +349,15 @@ class DocTemplateServiceTest extends TestCase
 
         $this->expectException(RuntimeException::class);
         $this->expectExceptionMessageMatches('/create-only/');
-        $this->svc->publish('SCH1_TPL0007', $this->proof());
+        $this->recordProof('SCH1_TPL0007');
+        $this->svc->publish('SCH1_TPL0007');
     }
 
     /** P6.3 — editing a published template never touches the snapshot. */
     public function test_editing_after_publish_touches_the_head_and_not_the_snapshot(): void
     {
-        $this->svc->publish('SCH1_TPL0007', $this->proof());
+        $this->recordProof('SCH1_TPL0007');
+        $this->svc->publish('SCH1_TPL0007');
         $before = $this->docs['documentTemplateVersions']['SCH1_TPL0007_v3'];
 
         $lock = $this->docs['documentTemplates']['SCH1_TPL0007']['lockVersion'];
@@ -261,7 +373,8 @@ class DocTemplateServiceTest extends TestCase
 
     public function test_activate_displaces_the_incumbent_leaving_exactly_one_active(): void
     {
-        $r = $this->svc->publish('SCH1_TPL0007', $this->proof());
+        $r = $this->recordProof('SCH1_TPL0007');
+        $this->svc->publish('SCH1_TPL0007');
         $this->svc->activate('SCH1_TPL0007');
 
         $active = array_filter(
@@ -276,7 +389,8 @@ class DocTemplateServiceTest extends TestCase
     /** Publishing is not activating — that is a separate, deliberate act. */
     public function test_publish_does_not_activate(): void
     {
-        $this->svc->publish('SCH1_TPL0007', $this->proof());
+        $this->recordProof('SCH1_TPL0007');
+        $this->svc->publish('SCH1_TPL0007');
         $this->assertNull($this->docs['documentTemplates']['SCH1_TPL0007']['activeVersion']);
         $this->assertSame(1, $this->docs['documentTemplates']['SCH1_TPL0009']['activeVersion'],
             'the incumbent keeps serving until someone activates the new one');
@@ -299,7 +413,8 @@ class DocTemplateServiceTest extends TestCase
     public function test_activate_refuses_to_run_without_a_transaction(): void
     {
         $svc = $this->make(false);
-        $svc->publish('SCH1_TPL0007', $this->proof());
+        $this->recordProof('SCH1_TPL0007');
+        $svc->publish('SCH1_TPL0007');
 
         $this->expectException(RuntimeException::class);
         $this->expectExceptionMessageMatches('/requires a transaction/');
@@ -314,7 +429,8 @@ class DocTemplateServiceTest extends TestCase
             'status' => 'draft', 'version' => 1, 'publishedVersion' => 1,
             'activeVersion' => 1, 'lockVersion' => 1,
         ];
-        $this->svc->publish('SCH1_TPL0007', $this->proof());
+        $this->recordProof('SCH1_TPL0007');
+        $this->svc->publish('SCH1_TPL0007');
         $r = $this->svc->activate('SCH1_TPL0007');
 
         $this->assertCount(2, $r['displaced']);
@@ -328,7 +444,8 @@ class DocTemplateServiceTest extends TestCase
 
     public function test_archiving_clears_active_so_no_print_point_resolves_it(): void
     {
-        $this->svc->publish('SCH1_TPL0007', $this->proof());
+        $this->recordProof('SCH1_TPL0007');
+        $this->svc->publish('SCH1_TPL0007');
         $this->svc->activate('SCH1_TPL0007');
         $this->svc->archive('SCH1_TPL0007');
 
@@ -339,7 +456,8 @@ class DocTemplateServiceTest extends TestCase
 
     public function test_every_lifecycle_action_is_audited(): void
     {
-        $this->svc->publish('SCH1_TPL0007', $this->proof());
+        $this->recordProof('SCH1_TPL0007');
+        $this->svc->publish('SCH1_TPL0007');
         $this->svc->activate('SCH1_TPL0007');
         $this->svc->archive('SCH1_TPL0007');
 

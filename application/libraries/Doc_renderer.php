@@ -123,6 +123,38 @@ class Doc_renderer
         ];
     }
 
+    /**
+     * The reproducibility record for a proof: which faces, by CONTENT.
+     *
+     * Hashes the font FILES, not their names. A name proves nothing — Lohit
+     * ships updates, and a face swapped underneath us would reflow a statutory
+     * document while every name in the manifest still matched. The point of the
+     * snapshot is a byte-identical re-render years from now, and that needs to
+     * know exactly which bytes were used.
+     *
+     * @return array<string,string> alias => 'sha256:...' | 'MISSING'
+     */
+    public function fontManifest(): array
+    {
+        $out = [];
+        foreach ($this->fontData() as $alias => $def) {
+            $file = $this->fontDir . '/' . $def['R'];
+            $out[$alias] = is_readable($file)
+                ? 'sha256:' . hash_file('sha256', $file)
+                : 'MISSING';
+        }
+        // dejavusans carries every Latin glyph and is mPDF's own; record the
+        // engine version alongside so the pair identifies it.
+        $out['dejavusans'] = 'mpdf-bundled@' . $this->engineVersion();
+        return $out;
+    }
+
+    /** The PDF engine version that produced a render. */
+    public function engineVersion(): string
+    {
+        return defined('\\Mpdf\\Mpdf::VERSION') ? \Mpdf\Mpdf::VERSION : 'unknown';
+    }
+
     /** Map a template page spec to mPDF constructor config. */
     private function pageConfig(array $page): array
     {
