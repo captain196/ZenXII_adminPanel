@@ -768,6 +768,13 @@ class Classes extends MY_Controller
         // Mints no identity: transfer moves existing students, so SRNO, Student
         // ID and Admission Number are untouched (verified Phase 20.3e-1).
         $casTransferIds = [];
+        // LOAD IT BEFORE THE STATIC CALL. This worked only transitively:
+        // MY_Controller's constructor loads student_write_service, whose file
+        // has a top-level require_once for this class. CI3 has no autoloader
+        // for libraries, so the day that binding moves, the line below becomes
+        // a fatal instead of a guard. Sis does this at every one of its call
+        // sites; this was the one place relying on someone else's include.
+        require_once APPPATH . 'libraries/Section_seat_guard.php';
         if (Section_seat_guard::enabled()) {
             // CI3 has NO autoloader for libraries — both must be loaded here or
             // the first property access is a hard fatal. Classes.php does not

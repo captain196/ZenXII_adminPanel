@@ -590,10 +590,20 @@ class Section_seat_guard
         // forbids, in the one case where the school is large enough for it to
         // hurt most.
         if (count($ops) > 500) {
+            // NOTE FOR WHOEVER HITS THIS: there is currently no supported way to
+            // complete a rollover this large. rollover_session() takes no class
+            // range, so the operator cannot stage it, and splitting here would
+            // produce the partial rollover D21 forbids. Say that plainly rather
+            // than recommending a workflow that does not exist.
+            log_message('error', 'ACC_SEAT_COMMIT_TOO_LARGE ops=' . count($ops)
+                . ' students=' . $studentN . ' destinations=' . count($sectionIds));
             return ['status' => self::FAILURE, 'count' => 0,
-                    'message' => 'This rollover needs ' . count($ops) . ' writes in one atomic commit, '
-                               . 'above the 500 Firestore allows. Roll over in stages — by class range — '
-                               . 'so each stage stays whole. Nothing was changed.'];
+                    'message' => 'This rollover needs ' . count($ops) . ' writes (' . $studentN
+                               . ' pupils across ' . count($sectionIds) . ' sections) in a single atomic '
+                               . 'commit, and Firestore accepts at most 500. Splitting it would move some '
+                               . 'pupils and strand others, which D21 forbids, so nothing was changed. '
+                               . 'This needs a staged rollover the product does not yet offer — report it '
+                               . 'rather than retrying.'];
         }
 
         self::trace('guard.multi', ['dests' => count($sectionIds), 'students' => $studentN, 'ops' => count($ops)]);
