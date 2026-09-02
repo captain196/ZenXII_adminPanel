@@ -9,7 +9,7 @@ starts from evidence rather than from a plan row that says done.
 artifact sat finished on disk, and one accept criterion (P3.6) is still counted as unmet because
 the thing that would prove it does not exist yet. A task list cannot carry that distinction.
 
-**Updated:** 2026-09-02 · **Progress:** 52/58 = 90% — all nine phases opened; **10 of 14 endpoints now live** · Branch `yug_testing`
+**Updated:** 2026-09-02 · **Progress:** 54/58 = 93% build · ~78% production-ready — all nine phases opened; **10 of 14 endpoints now live** · Branch `yug_testing`
 
 **Progress is computed:** `awk -f blueprints/certificates/tools/progress.awk blueprints/certificates/EXECUTION_PLAN_v1.1.md | sort`
 
@@ -55,7 +55,7 @@ firebase emulators:exec --only firestore,storage --project=zenxii-rules-test \
 | Suite | Baseline | Meaning |
 |---|---|---|
 | PHP unit | **4 failures · 27 skipped** | Pre-existing. The skips are cross-repo tests pointing at a hardcoded Windows path from another machine. |
-| Client E2E | **133/133 · 0 page errors** — headless *and* real Chrome 152 | Should be green. Anything less is a regression. |
+| Client E2E | **143/143 · 0 page errors** — headless *and* real Chrome 152 | Should be green. Anything less is a regression. |
 | Rules emulator | **16/16 suites · 404/404** | Green as of 2026-09-02. Previously 5 suites failed: 4 on stale assertions (fixed — see below) and 1 because the storage emulator was never configured. |
 
 ---
@@ -284,6 +284,37 @@ publish. Harmless in today's mock — but when `proof_pdf()` is wired to the cli
 this becomes the codebase's own *phantom success* class, where a cancelled action
 reports as done. Cancel the in-flight proof on close.
 
+### The wiring pass — three production defects (2026-09-02)
+
+Asked for production readiness rather than plan progress, the two zeros were
+client↔server persistence and issuance. Wiring the first found three defects
+that no unit test could have caught, because each lives in the production
+adapter that the tests replace with a double.
+
+| # | Defect | Consequence had it shipped |
+|---|---|---|
+| 1 | **The proof was forgeable.** `publish()` took `hash`, `fontManifest` and `mpdfVersion` from the request body. | The gate only stopped a client that chose to be stopped. The immutable snapshot would record a hash no PDF ever produced — defeating the one thing it exists for. |
+| 2 | **`activate()` called a method that does not exist.** The adapter read `runTransaction()` off `raw_client()`, which returns a `FirestoreRestClient`. | Every activation fatals on the first real click. Activation is what decides which certificate a school legally issues. |
+| 3 | **The transaction was decorative.** Even where the method existed, the closure ignored the `Transaction` object and wrote through the plain helpers. | Writes were never in the transaction. Two concurrent activates could leave two active templates — or none. |
+
+Fixes: the server mints and stores the proof and `publish()` reads the record,
+verifying by **content hash** rather than a flag; activation is rebuilt on
+`:commit` and writes one **complete assignment**, so completeness rather than a
+lock is what makes it safe.
+
+> **The pattern in all three:** the unit tests injected exactly the capability
+> production lacked. A double that is more capable than the real thing tests
+> the double.
+
+**Smoke-verified over HTTP:** all 14 endpoints route and gate — 403 on
+unauthenticated POST, 307 to `admin_login` on GET, no 404s, no 500s, no PHP
+fatals logged.
+
+**Still not verified:** the online path has never run against a live session,
+because signing in is not something I can do. `UAT_SCRIPT.md` is written and
+ready; row **A3** (type, reload, text survives) is the one that proves
+persistence actually works end to end.
+
 ---
 
 ## 2. BUILT BUT NOT PROVEN — the honest column
@@ -372,6 +403,7 @@ denied by SEC-3 whatever the thing under test does.
 
 | Date | Phase | Progress |
 |---|---|---|
+| 2026-09-02 | **Wiring pass** — client connected, 4 endpoints wired, 3 production defects fixed | 54/58 = 93% |
 | 2026-09-02 | **Real-Chrome run** — 3 harness defects fixed; suite now refuses to run hidden | 52/58 = 90% |
 | 2026-09-02 | **Real PDF renders** — P3.6, P7.3, P9.1, P9.3 closed on measurement | 52/58 = 90% |
 | 2026-09-02 | P5.6 report closed; **controller wired — 10/14 endpoints live** | 48/58 = 83% |
