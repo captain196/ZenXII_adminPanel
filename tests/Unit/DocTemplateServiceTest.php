@@ -605,16 +605,135 @@ class DocTemplateServiceTest extends TestCase
      * Archive + P6.7 audit
      * ---------------------------------------------------------------- */
 
-    public function test_archiving_clears_active_so_no_print_point_resolves_it(): void
+    public function test_archiving_an_inactive_template_works_normally(): void
     {
         $this->recordProof('SCH1_TPL0007');
         $this->svc->publish('SCH1_TPL0007');
-        $this->svc->activate('SCH1_TPL0007');
-        $this->svc->archive('SCH1_TPL0007');
+        $this->svc->archive('SCH1_TPL0007');          // never activated
 
         $h = $this->docs['documentTemplates']['SCH1_TPL0007'];
         $this->assertSame('archived', $h['status']);
         $this->assertNull($h['activeVersion']);
+    }
+
+    /* ---------------------------------------------------------------- *
+     * Q2 (operator, 2026-09-03) — REFUSE to archive the active template
+     *
+     * It used to clear activeVersion silently, so an admin tidying a list
+     * could leave the office unable to issue a Transfer Certificate the next
+     * morning, with nothing to explain it. Nobody archives a template
+     * INTENDING to disable a statutory document.
+     * ---------------------------------------------------------------- */
+
+    public function test_archiving_the_active_template_is_refused(): void
+    {
+        $this->recordProof('SCH1_TPL0007');
+        $this->svc->publish('SCH1_TPL0007');
+        $this->svc->activate('SCH1_TPL0007');
+
+        try {
+            $this->svc->archive('SCH1_TPL0007');
+            $this->fail('archiving the active template should be refused');
+        } catch (RuntimeException $e) {
+            $this->assertStringContainsString('ACTIVE template', $e->getMessage());
+            $this->assertStringContainsString('Activate another one first', $e->getMessage(),
+                'the refusal must say how to proceed, not merely that it failed');
+        }
+
+        $h = $this->docs['documentTemplates']['SCH1_TPL0007'];
+        $this->assertSame('draft', $h['status'], 'nothing changed');
+        $this->assertNotNull($h['activeVersion'], 'it is still the active template');
+    }
+
+    public function test_archiving_succeeds_once_another_template_is_activated(): void
+    {
+        $this->recordProof('SCH1_TPL0007');
+        $this->svc->publish('SCH1_TPL0007');
+        $this->svc->activate('SCH1_TPL0007');
+
+        $this->docs['documentTemplates']['SCH1_TPL0009']['publishedVersion'] = 1;
+        $this->svc->activate('SCH1_TPL0009');         // displaces TPL0007
+
+        $this->svc->archive('SCH1_TPL0007');
+        $this->assertSame('archived', $this->docs['documentTemplates']['SCH1_TPL0007']['status']);
+    }
+
+    /* ---------------------------------------------------------------- *
+     * Q1 (operator, 2026-09-03) — ROLLBACK to an earlier published version
+     * ---------------------------------------------------------------- */
+
+    public function test_an_earlier_published_version_can_be_activated(): void
+    {
+        $this->recordProof('SCH1_TPL0007');
+        $this->svc->publish('SCH1_TPL0007');                  // freezes v3
+        $this->recordProof('SCH1_TPL0007');
+        $this->svc->publish('SCH1_TPL0007');                  // freezes v4
+        $this->svc->activate('SCH1_TPL0007');                 // v4 active
+
+        $r = $this->svc->activate('SCH1_TPL0007', 'STA1', 3); // back to v3
+
+        $this->assertSame(3, $r['activeVersion']);
+        $this->assertTrue($r['rollback']);
+        $this->assertSame(3, $this->docs['documentTemplates']['SCH1_TPL0007']['activeVersion']);
+    }
+
+    /**
+     * "Activated v3" three months later reads as a routine act. "Rolled back to
+     * v3" is the sentence somebody needs to find when they ask what happened
+     * that morning.
+     */
+    public function test_a_rollback_is_audited_as_a_rollback(): void
+    {
+        $this->recordProof('SCH1_TPL0007');
+        $this->svc->publish('SCH1_TPL0007');
+        $this->recordProof('SCH1_TPL0007');
+        $this->svc->publish('SCH1_TPL0007');
+        $this->svc->activate('SCH1_TPL0007');
+        $this->svc->activate('SCH1_TPL0007', 'STA1', 3);
+
+        $descs = array_column($this->audit, 2);
+        $this->assertStringContainsString('Rolled back to v3', end($descs));
+    }
+
+    public function test_activating_forward_is_not_labelled_a_rollback(): void
+    {
+        $this->recordProof('SCH1_TPL0007');
+        $this->svc->publish('SCH1_TPL0007');
+        $r = $this->svc->activate('SCH1_TPL0007', 'STA1', 3);   // 3 IS the newest
+
+        $this->assertFalse($r['rollback']);
+        $this->assertStringContainsString('Activated v3', end($this->audit)[2]);
+    }
+
+    /** @dataProvider badVersions */
+    public function test_an_unpublished_version_cannot_be_activated(int $v): void
+    {
+        $this->recordProof('SCH1_TPL0007');
+        $this->svc->publish('SCH1_TPL0007');                  // v3 is the newest
+
+        $this->expectException(RuntimeException::class);
+        $this->expectExceptionMessageMatches('/not a published version/');
+        $this->svc->activate('SCH1_TPL0007', 'STA1', $v);
+    }
+
+    public static function badVersions(): array
+    {
+        return [[0], [-1], [4], [99]];
+    }
+
+    /**
+     * A pointer to a version whose frozen copy is missing is worse than no
+     * pointer: the UI looks ready and nothing can be reproduced from it.
+     */
+    public function test_a_version_whose_snapshot_is_missing_cannot_be_activated(): void
+    {
+        $this->recordProof('SCH1_TPL0007');
+        $this->svc->publish('SCH1_TPL0007');
+        unset($this->docs['documentTemplateVersions']['SCH1_TPL0007_v3']);
+
+        $this->expectException(RuntimeException::class);
+        $this->expectExceptionMessageMatches('/snapshot for v3 is missing/');
+        $this->svc->activate('SCH1_TPL0007', 'STA1', 3);
     }
 
     public function test_every_lifecycle_action_is_audited(): void
@@ -622,6 +741,7 @@ class DocTemplateServiceTest extends TestCase
         $this->recordProof('SCH1_TPL0007');
         $this->svc->publish('SCH1_TPL0007');
         $this->svc->activate('SCH1_TPL0007');
+        $this->docs['documentTemplates']['SCH1_TPL0007']['activeVersion'] = null;
         $this->svc->archive('SCH1_TPL0007');
 
         $actions = array_column($this->audit, 0);

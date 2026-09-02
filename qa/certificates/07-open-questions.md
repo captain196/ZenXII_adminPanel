@@ -1,3 +1,21 @@
+# 07 · Open questions — ANSWERED 2026-09-03
+
+All four business decisions are settled by the operator. Recorded here as the
+decision of record; Q1 and Q2 are implemented, Q3 and Q4 are design-time and
+recorded where whoever builds them will read them.
+
+| # | Decision | Status |
+|---|---|---|
+| Q1 | **Activation IS reversible.** An earlier published version may be activated; logged as a rollback | **IMPLEMENTED** |
+| Q2 | **Archiving the active template is REFUSED** — "activate another one first" | **IMPLEMENTED** |
+| Q3 | **Document Engine owns receipt design (v2).** Both surfaces render from the activated template; the app's on-device generator is retired | Recorded on the `fee_receipt` registry row |
+| Q4 | **Legacy `Certificates.php` stays for now**, removed later. Constraint: the new engine must NOT appear in the sidebar while the legacy one is still there — one RBAC key grants both | Recorded below |
+| Q5 | Access supplied. **I do not enter passwords**, so Phase 5 is executed by a human — which the spec requires anyway | Human-run |
+
+---
+
+## Original questions, for the record
+
 # 07 · Open questions — batched for the human (v3 §2)
 
 Only questions that cannot be answered from source, config, history or reasoning.

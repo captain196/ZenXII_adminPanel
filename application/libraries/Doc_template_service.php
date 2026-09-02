@@ -478,7 +478,21 @@ class Doc_template_service
      * @throws RuntimeException if never published, or if no transaction is
      *         available — see the note below.
      */
-    public function activate(string $docId, string $by = ''): array
+    /**
+     * Make a published version THE active template for its (school, docType).
+     *
+     * @param ?int $version A specific published version to activate. Null means
+     *        the newest. ROLLBACK IS ALLOWED (operator decision, 2026-09-03):
+     *        a school that activates a broken v5 can return to v4 rather than
+     *        having to fix, re-proof, publish and activate a v6 under pressure,
+     *        which is where the second mistake gets made.
+     *
+     *        This costs nothing in audit terms. Rolling back does not erase that
+     *        v5 was ever live — both activations are logged, and the rollback is
+     *        logged AS a rollback. And v4 is already a frozen, proofed snapshot,
+     *        so activating it introduces nothing unverified.
+     */
+    public function activate(string $docId, string $by = '', ?int $version = null): array
     {
         $head = $this->head($docId);
 
@@ -488,6 +502,27 @@ class Doc_template_service
                 "Doc_template_service: '$docId' has never been published, so there is "
                 . 'no frozen version to activate. Publish it first.'
             );
+        }
+
+        $isRollback = false;
+        if ($version !== null) {
+            if ($version < 1 || $version > (int) $published) {
+                throw new RuntimeException(
+                    "Doc_template_service: v$version is not a published version of '$docId'. "
+                    . "Published versions run from v1 to v$published."
+                );
+            }
+            /* The snapshot must actually exist. A pointer to a version whose
+               frozen copy is missing is worse than no pointer at all: the UI
+               looks ready and nothing can be reproduced from it. */
+            if (!($this->store['exists'])(self::VERSION_COLLECTION, $docId . '_v' . $version)) {
+                throw new RuntimeException(
+                    "Doc_template_service: the frozen snapshot for v$version is missing, so "
+                    . 'nothing could be reproduced from it. Refusing to activate it.'
+                );
+            }
+            $isRollback = $version < (int) $published;
+            $published  = $version;
         }
 
         $schoolId = (string) ($head['schoolId'] ?? '');
@@ -569,10 +604,15 @@ class Doc_template_service
             );
         }
 
-        $this->log('activate', $docId, "Activated v$published"
+        /* Logged AS a rollback when it is one. "Activated v4" three months later
+           reads as a routine act; "Rolled back to v4" is the sentence somebody
+           needs to find when they ask what happened that morning. */
+        $this->log('activate', $docId,
+            ($isRollback ? "Rolled back to v$published" : "Activated v$published")
             . ($displaced ? ' (displaced ' . implode(', ', $displaced) . ')' : ''));
 
-        return ['activeVersion' => $published, 'displaced' => $displaced];
+        return ['activeVersion' => $published, 'displaced' => $displaced,
+                'rollback' => $isRollback];
     }
 
     /* ================================================================== *
@@ -583,6 +623,27 @@ class Doc_template_service
     {
         $head = $this->head($docId);
         $this->assertTransition($head['status'] ?? 'draft', 'archived');
+
+        /* REFUSE to archive the template that is currently active (operator
+           decision, 2026-09-03).
+           
+           Nobody archives a template intending to disable a statutory document.
+           Archiving is tidying; stopping issuance is a decision. This used to
+           clear activeVersion silently, so an admin cleaning up a list could
+           leave the office unable to issue a Transfer Certificate the next
+           morning with nothing to explain it.
+           
+           A confirmation dialog was considered and rejected: people click
+           through confirmations *while tidying*, which is exactly the moment
+           they are not reading. */
+        if (($head['activeVersion'] ?? null) !== null) {
+            throw new RuntimeException(
+                'Doc_template_service: this is the ACTIVE template for '
+                . ($head['docType'] ?? 'this document type')
+                . '. Activate another one first — archiving it would leave the school '
+                . 'unable to issue this document, and nothing would say so.'
+            );
+        }
 
         $patch = [
             'status'        => 'archived',

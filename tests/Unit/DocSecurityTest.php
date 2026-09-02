@@ -322,7 +322,7 @@ class DocSecurityTest extends TestCase
     {
         $src = file_get_contents(__DIR__ . '/../../application/controllers/Doc_templates.php');
 
-        $wired = ['get_types', 'get_templates', 'get_template', 'get_blocks',
+        $wired = ['get_types', 'get_templates', 'get_template', 'get_blocks', 'get_versions',
                   'create', 'save', 'validate', 'preview', 'proof_pdf', 'upload_asset',
                   'save_block', 'publish', 'activate', 'archive'];
 
@@ -462,5 +462,28 @@ class DocSecurityTest extends TestCase
                 . 'functions/rbac_modules.json. has_permission() fails closed on an unknown '
                 . 'key, so this would deny everyone with no error to trace.');
         }
+    }
+
+    /**
+     * Every endpoint must declare a capability. _remap() refuses one that does
+     * not — fail-closed — but that turns a missing declaration into a 403 for
+     * everyone rather than an obvious error, so it is worth catching here.
+     */
+    public function test_every_public_endpoint_declares_a_capability(): void
+    {
+        $src = file_get_contents(__DIR__ . '/../../application/controllers/Doc_templates.php');
+
+        preg_match('/const CAPABILITIES = \[(.*?)\n    \];/s', $src, $cm);
+        $this->assertNotEmpty($cm, 'CAPABILITIES map not found');
+        preg_match_all("/'([a-z_]+)'\s*=>/", $cm[1], $declared);
+
+        preg_match_all('/\n    public function ([a-z_][a-zA-Z0-9_]*)\(/', $src, $methods);
+        $public = array_filter($methods[1],
+            fn($m) => !in_array($m, ['__construct', '_remap'], true) && $m[0] !== '_');
+
+        $missing = array_diff($public, $declared[1]);
+        $this->assertSame([], array_values($missing),
+            'endpoint(s) with no declared capability: ' . implode(', ', $missing)
+            . '. _remap() refuses them, so they would 403 for everyone with nothing to trace.');
     }
 }

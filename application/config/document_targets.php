@@ -150,7 +150,17 @@ return [
                       . 'documents that cannot agree: changing the activated template would not '
                       . 'change what a parent downloads, and nobody would be told, because each '
                       . 'surface only ever shows its own. Either the on-device generator is '
-                      . 'retired, or receipts stay out of the Document Engine. Not both.',
+                      . 'retired, or receipts stay out of the Document Engine. Not both. '
+                      . "\n\n"
+                      . 'DECIDED 2026-09-03 (operator): the Document Engine OWNS receipt design, '
+                      . 'as a v2 target. BOTH surfaces render from the activated template — the '
+                      . 'panel and the app — and ReceiptPdfGenerator.kt is RETIRED when this is '
+                      . 'wired, with the app fetching a server-rendered PDF instead of building '
+                      . 'one. Rejected explicitly: engine-for-panel, app-keeps-its-own, which '
+                      . 'would institutionalise the drift. A receipt is a financial record, and '
+                      . 'two versions that can silently diverge is what surfaces badly in an '
+                      . 'audit. v2 regardless of this decision: receipts need repeating '
+                      . 'line-item rows the v1 serializer does not support.',
     ],
 
     'fee_demand_note' => [

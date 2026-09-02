@@ -841,6 +841,7 @@ const srv = {
   templates: docType => api("get_templates", { query: docType ? { docType } : {} }),
   template:  id       => api("get_template",  { query: { templateId: id } }),
   blocks:    type     => api("get_blocks",    { query: type ? { blockType: type } : {} }),
+  versions:  id       => api("get_versions",  { query: { templateId: id } }),
 
   create: (docType, seed) =>
     api("create", { method: "POST", body: { docType, seed } }),
@@ -853,7 +854,8 @@ const srv = {
   proof: id => api("proof_pdf", { method: "POST", body: { templateId: id } }),
 
   publish:  id => api("publish",  { method: "POST", body: { templateId: id } }),
-  activate: id => api("activate", { method: "POST", body: { templateId: id } }),
+  activate: (id, version) => api("activate", { method: "POST",
+    body: version == null ? { templateId: id } : { templateId: id, version: String(version) } }),
   archive:  id => api("archive",  { method: "POST", body: { templateId: id } }),
 
   uploadAsset: file => {
@@ -4010,7 +4012,90 @@ async function activateOnServer(){
   }finally{ if(btn) btn.disabled=false; }
 }
 
-function openHistory(){
+/**
+ * Version history — the REAL versions.
+ *
+ * This panel used to render HARDCODED rows ("v2 · active · sha256:9c41…a2f1")
+ * for every template, whatever had actually been published. That is worse than
+ * showing nothing: it is fabricated audit information in the one place a person
+ * goes to ask "which template produced this certificate?".
+ */
+async function openHistory(){
+  if(!SRV.online) return openHistoryOffline();
+
+  modal("Version history","Loading…",`<p class="note">Reading the frozen versions…</p>`,
+        `<button class="btn" data-close>Close</button>`, true);
+  let data;
+  try { data = await srv.versions(S.tpl.templateId); }
+  catch(e){ closeModal(); return apiFail(e, "Version history"); }
+
+  const rows=(data.versions||[]).map(v=>{
+    if(v.missing){
+      /* Reported, never skipped — a missing snapshot is exactly what makes a
+         version unreproducible, and hiding it hides the only symptom. */
+      return `<li><span class="tl__v">v${v.version}</span><span class="tl__m">
+        <b style="color:var(--bad)">Snapshot missing</b>
+        <span>Nothing can be reproduced from this version.</span></span></li>`;
+    }
+    const canRoll = SRV.can.manage && !v.active;
+    return `<li><span class="tl__v">v${v.version}</span><span class="tl__m">
+      <b>Published${v.active?" · active":""}</b>
+      <span>${esc(v.publishedAt||"—")}${v.publishedBy?" by "+esc(v.publishedBy):""}
+        · ${esc(v.proofPdfHash||"no hash")} · mPDF ${esc(v.mpdfVersion||"?")}
+        · ${esc((v.fontManifest||[]).join(", ")||"no fonts recorded")}</span>
+      ${canRoll?`<button class="btn btn--sm" data-roll="${v.version}">Make v${v.version} active</button>`:""}
+    </span></li>`;
+  }).join("");
+
+  modal("Version history","Every published version is frozen forever",
+    `<ul class="tl">
+      <li><span class="tl__v">v${data.draftVersion}</span><span class="tl__m"><b>Draft — you are here</b>
+        <span>lockVersion ${S.tpl.lockVersion}${S.dirty?" · unsaved changes":""}</span></span></li>
+      ${rows||`<li><span class="tl__m"><b>Nothing published yet</b>
+        <span>Publish this draft to freeze its first version.</span></span></li>`}
+    </ul>
+    <p class="note" style="margin-bottom:0">This is the answer to <b>"show me the exact template that produced this certificate"</b>,
+    asked three years later by somebody who is not you.</p>`,
+    `<button class="btn" data-close>Close</button>`, true);
+
+  document.querySelectorAll("[data-roll]").forEach(b=>{
+    b.onclick=()=>confirmRollback(parseInt(b.dataset.roll,10));
+  });
+}
+
+/**
+ * Rolling back is a real activation, so it gets a real confirmation.
+ *
+ * It is not undoing a mistake quietly — it changes which certificate the school
+ * legally issues, exactly as activating forward does, and it is logged as a
+ * rollback so the question "what happened that morning?" has an answer.
+ */
+function confirmRollback(version){
+  modal("Make v"+version+" active again?",
+    "This is what every print point will resolve.",
+    `<p class="note">v${version} is a frozen, already-proofed version — nothing is re-rendered
+     and nothing is re-checked. The version that is active now stays published and can be
+     activated again later.</p>
+     <p class="note" style="margin-bottom:0">This is recorded as a <b>rollback</b> in the audit log,
+     not as an ordinary activation.</p>`,
+    `<button class="btn" data-close>Cancel</button><span class="spacer"></span>
+     <button class="btn btn--primary" id="rollGo">Make v${version} active</button>`, true);
+
+  const g=$("#rollGo");
+  if(g) g.onclick=async ()=>{
+    g.disabled=true;
+    try{
+      const out=await srv.activate(S.tpl.templateId, version);
+      S.tpl.activeVersion=out.activeVersion;
+      S.active[S.tpl.docType]=S.tpl.templateId;
+      closeModal(); render();
+      toast("Rolled back — every print point now resolves v"+out.activeVersion);
+    }catch(e){ apiFail(e, "Rollback"); }
+    finally{ g.disabled=false; }
+  };
+}
+
+function openHistoryOffline(){
   modal("Version history","Every published version is frozen forever",
     `<ul class="tl">
       <li><span class="tl__v">v${S.tpl.version}</span><span class="tl__m"><b>Draft — you are here</b>

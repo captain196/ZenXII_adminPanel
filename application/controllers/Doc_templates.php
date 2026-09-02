@@ -51,6 +51,7 @@ class Doc_templates extends MY_Controller
         'get_templates'  => 'view',
         'get_template'   => 'view',
         'get_blocks'     => 'view',
+        'get_versions'   => 'view',
         // writes
         'create'         => 'edit',
         'save'           => 'edit',
@@ -325,6 +326,56 @@ class Doc_templates extends MY_Controller
                 throw new RuntimeException('Template not found');
             }
             return ['template' => $t];
+        });
+    }
+
+    /**
+     * The frozen versions of one template — the real version history.
+     *
+     * The designer's history panel previously displayed HARDCODED versions
+     * ("v2 · active · sha256:9c41…a2f1") for every template, regardless of what
+     * had actually been published. That is worse than showing nothing: it is
+     * fabricated audit information in the one place a person goes to ask
+     * "which template produced this certificate?".
+     *
+     * Newest first. The snapshot body is deliberately NOT returned — a list of
+     * twenty versions would carry twenty full documents, and the caller wants
+     * the provenance, not the content.
+     */
+    public function get_versions(): void
+    {
+        $this->_run(function () {
+            $id = $this->safe_path_segment((string) $this->input->get('templateId'), 'templateId');
+
+            $head = $this->fs->get('documentTemplates', $id);
+            if (!is_array($head) || ($head['schoolId'] ?? null) !== $this->school_id) {
+                throw new RuntimeException('Template not found');
+            }
+
+            $rows = [];
+            $highest = (int) ($head['publishedVersion'] ?? 0);
+            for ($v = $highest; $v >= 1; $v--) {
+                $doc = $this->fs->get('documentTemplateVersions', $id . '_v' . $v);
+                if (!is_array($doc) || !$doc) {
+                    // A gap is reported, never skipped: a missing snapshot is
+                    // exactly what makes a version unreproducible.
+                    $rows[] = ['version' => $v, 'missing' => true];
+                    continue;
+                }
+                $rows[] = [
+                    'version'      => $v,
+                    'publishedAt'  => $doc['publishedAt']  ?? null,
+                    'publishedBy'  => $doc['publishedBy']  ?? null,
+                    'proofPdfHash' => $doc['proofPdfHash'] ?? null,
+                    'mpdfVersion'  => $doc['mpdfVersion']  ?? null,
+                    'fontManifest' => array_keys((array) ($doc['fontManifest'] ?? [])),
+                    'active'       => ((int) ($head['activeVersion'] ?? 0)) === $v,
+                ];
+            }
+
+            return ['versions' => $rows,
+                    'draftVersion'  => (int) ($head['version'] ?? 1),
+                    'activeVersion' => $head['activeVersion'] ?? null];
         });
     }
 
@@ -731,7 +782,15 @@ class Doc_templates extends MY_Controller
         $id = $this->safe_path_segment((string) $this->input->post('templateId'), 'templateId');
         log_audit(self::AUDIT_MODULE, 'template.activate_attempt', $id, 'Activate requested');
 
-        $this->_run(fn() => $this->_templates()->activate($id, (string) ($this->staff_id ?? '')));
+        $this->_run(function () use ($id) {
+            /* An explicit version means a ROLLBACK to an earlier published
+               version. Null means the newest. The service validates the number
+               and refuses one whose frozen snapshot is missing. */
+            $v = $this->input->post('version');
+            $version = ($v === null || $v === '') ? null : (int) $v;
+
+            return $this->_templates()->activate($id, (string) ($this->staff_id ?? ''), $version);
+        });
     }
 
     public function archive(): void
