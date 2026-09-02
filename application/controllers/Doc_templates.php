@@ -109,6 +109,23 @@ class Doc_templates extends MY_Controller
         call_user_func_array([$this, $method], $params);
     }
 
+    /**
+     * Who is doing this.
+     *
+     * MY_Controller has NO `staff_id` property — the identity is `admin_id`,
+     * and log_audit() reads the same session key. Every call here previously
+     * passed `$this->staff_id ?? ''`, which resolved to an empty string, so the
+     * immutable snapshot of a statutory certificate recorded NOBODY as its
+     * publisher: `publishedBy: ""`. Observed on the first live publish.
+     *
+     * The snapshot exists to answer "who issued this, and from what", years
+     * later. Half of that question was unanswerable.
+     */
+    private function _actor(): string
+    {
+        return (string) ($this->admin_id ?? '');
+    }
+
     /** Deny consistently for both AJAX and page loads. */
     private function _deny(string $message, int $code): void
     {
@@ -431,7 +448,7 @@ class Doc_templates extends MY_Controller
             }
 
             $r = $this->_templates()->create(
-                (string) $this->school_id, $docType, $seed, (string) ($this->staff_id ?? '')
+                (string) $this->school_id, $docType, $seed, $this->_actor()
             );
             log_audit(self::AUDIT_MODULE, 'template.create', $r['templateId'],
                       "Created $docType template");
@@ -667,7 +684,7 @@ class Doc_templates extends MY_Controller
                 'pages'        => $pages,
                 'pdfPaths'     => $paths,
                 'perLanguage'  => $perLang,
-            ], (string) ($this->staff_id ?? ''));
+            ], $this->_actor());
 
             log_audit(self::AUDIT_MODULE, 'template.proof', $id,
                       'Proof rendered v' . $version . ' — ' . $rec['hash']);
@@ -766,7 +783,7 @@ class Doc_templates extends MY_Controller
             // and the panel uses the Admin SDK so firestore.rules would not
             // catch it.
             $data['schoolId'] = $this->school_id;
-            $b = $this->_blocks()->save($id, $data, (string) ($this->staff_id ?? ''));
+            $b = $this->_blocks()->save($id, $data, $this->_actor());
             return ['version' => $b['version']];
         });
     }
@@ -798,7 +815,7 @@ class Doc_templates extends MY_Controller
                proof_pdf() and publish() verifies what is on record still
                describes the stored design — a caller-supplied proof would let
                anyone publish a snapshot whose hash no PDF ever produced. */
-            $r = $this->_templates()->publish($id, (string) ($this->staff_id ?? ''));
+            $r = $this->_templates()->publish($id, $this->_actor());
             return ['versionId' => $r['versionId'], 'version' => $r['version']];
         });
     }
@@ -816,7 +833,7 @@ class Doc_templates extends MY_Controller
             $v = $this->input->post('version');
             $version = ($v === null || $v === '') ? null : (int) $v;
 
-            return $this->_templates()->activate($id, (string) ($this->staff_id ?? ''), $version);
+            return $this->_templates()->activate($id, $this->_actor(), $version);
         });
     }
 
@@ -826,7 +843,7 @@ class Doc_templates extends MY_Controller
         $id = $this->safe_path_segment((string) $this->input->post('templateId'), 'templateId');
         log_audit(self::AUDIT_MODULE, 'template.archive_attempt', $id, 'Archive requested');
 
-        $this->_run(fn() => $this->_templates()->archive($id, (string) ($this->staff_id ?? '')));
+        $this->_run(fn() => $this->_templates()->archive($id, $this->_actor()));
     }
 
     // ═══════════════════════════════════════════════════════════════════

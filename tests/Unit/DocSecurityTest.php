@@ -486,4 +486,38 @@ class DocSecurityTest extends TestCase
             'endpoint(s) with no declared capability: ' . implode(', ', $missing)
             . '. _remap() refuses them, so they would 403 for everyone with nothing to trace.');
     }
+
+    /**
+     * The actor must come from a property that EXISTS.
+     *
+     * Every call passed `$this->staff_id ?? ''` — and MY_Controller has no
+     * staff_id property at all, so it silently resolved to an empty string.
+     * The immutable snapshot of a statutory certificate recorded nobody as its
+     * publisher: publishedBy: "". Observed on the first live publish. The
+     * snapshot exists to answer "who issued this, and from what"; half of that
+     * question was unanswerable, and `?? ''` is what made it silent.
+     */
+    public function test_the_actor_is_read_from_a_property_that_exists(): void
+    {
+        $src  = file_get_contents(__DIR__ . '/../../application/controllers/Doc_templates.php');
+        $core = file_get_contents(__DIR__ . '/../../application/core/MY_Controller.php');
+
+        /* Strip comments before matching. The docblock explaining this defect
+           necessarily quotes the pattern it forbids, and matched itself. */
+        $src = preg_replace('#/\*.*?\*/|//[^\n]*#s', '', $src);
+
+        $this->assertDoesNotMatchRegularExpression('/\$this->staff_id\s*\?\?/', $src,
+            'Doc_templates reads $this->staff_id, which MY_Controller does not define. '
+            . 'It resolves to "" and the audit trail records nobody.');
+
+        preg_match_all('/\$this->([a-z_]+)\s*\?\?\s*\x27\x27/', $src, $m);
+        foreach (array_unique($m[1]) as $prop) {
+            $this->assertMatchesRegularExpression(
+                '/(protected|public|private)\s+\$' . $prop . '\b|\$this->' . $prop . '\s*=/',
+                $core,
+                "Doc_templates falls back on \$this->$prop, which MY_Controller never sets. "
+                . 'A null-coalesce on a property that does not exist is indistinguishable from a '
+                . 'genuinely empty value.');
+        }
+    }
 }
