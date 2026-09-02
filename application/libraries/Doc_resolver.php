@@ -1,6 +1,8 @@
 <?php
 defined('BASEPATH') or exit('No direct script access allowed');
 
+require_once __DIR__ . '/Doc_rows.php';
+
 /**
  * Doc_resolver — the READ-ONLY seam between the Document Engine and the
  * modules that will one day print.
@@ -57,7 +59,7 @@ class Doc_resolver
         $fs = $ci->fs;
         $this->store = [
             'get'   => fn(string $c, string $id) => $fs->get($c, $id),
-            'query' => fn(string $c, array $w) => $fs->schoolWhere($c, $w),
+            'query' => fn(string $c, array $w) => Doc_rows::map($fs->schoolWhere($c, $w)),
         ];
     }
 

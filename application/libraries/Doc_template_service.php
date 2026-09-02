@@ -1,6 +1,8 @@
 <?php
 defined('BASEPATH') or exit('No direct script access allowed');
 
+require_once __DIR__ . '/Doc_rows.php';
+
 /**
  * Doc_template_service — the template lifecycle. Phase 6.
  *
@@ -88,7 +90,7 @@ class Doc_template_service
             'set'      => fn(string $c, string $id, array $d) => $fs->set($c, $id, $d),
             'update'   => fn(string $c, string $id, array $d) => $fs->update($c, $id, $d),
             'exists'   => fn(string $c, string $id) => $fs->exists($c, $id),
-            'query'    => fn(string $c, array $w) => $fs->schoolWhere($c, $w),
+            'query'    => fn(string $c, array $w) => Doc_rows::map($fs->schoolWhere($c, $w)),
             /* ATOMIC MULTI-DOCUMENT WRITE.
              *
              * This used to read `runTransaction()` off raw_client(). It was

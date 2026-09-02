@@ -310,7 +310,12 @@ class Doc_templates extends MY_Controller
             if ($docType !== '') {
                 $where[] = ['docType', '=', $docType];
             }
-            $rows = $this->fs->schoolWhere('documentTemplates', $where) ?: [];
+            /* Normalised to docId => fields. The raw query returns a LIST of
+               ['id'=>…, 'data'=>…] envelopes, and every client that read this
+               endpoint got a numerically-indexed array whose rows had no
+               name, docType or status on them. */
+            require_once APPPATH . 'libraries/Doc_rows.php';
+            $rows = Doc_rows::map($this->fs->schoolWhere('documentTemplates', $where));
             return ['templates' => $rows];
         });
     }
@@ -325,6 +330,14 @@ class Doc_templates extends MY_Controller
             if (!is_array($t) || ($t['schoolId'] ?? null) !== $this->school_id) {
                 throw new RuntimeException('Template not found');
             }
+            /* Return the DOCUMENT ID explicitly.
+               The stored `templateId` field is the SHORT entity id ("TPL0001"),
+               while every endpoint here takes the full document id
+               ("SCH_..._TPL0001"). A client that assigned the stored document
+               over its own state silently swapped one for the other and then
+               saved against an id that does not exist — which is exactly what
+               happened on the first live run. */
+            $t['_id'] = $id;
             return ['template' => $t];
         });
     }

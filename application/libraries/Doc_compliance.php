@@ -1,6 +1,8 @@
 <?php
 defined('BASEPATH') or exit('No direct script access allowed');
 
+require_once __DIR__ . '/Doc_rows.php';
+
 /**
  * Doc_compliance — authority versions and the re-validation REPORT (P5.6).
  *
@@ -50,7 +52,7 @@ class Doc_compliance
         $fs = $ci->fs;
         $this->store = [
             'get'   => fn(string $c, string $id) => $fs->get($c, $id),
-            'query' => fn(string $c, array $w) => $fs->where($c, $w),
+            'query' => fn(string $c, array $w) => Doc_rows::map($fs->where($c, $w)),
         ];
     }
 

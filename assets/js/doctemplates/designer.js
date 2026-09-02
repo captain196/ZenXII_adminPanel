@@ -889,6 +889,11 @@ let __saveTimer = null;
 function markDirty() {
   S.dirty = true;
   if (!SRV.online) return;
+  /* A save scheduled while create() is still in flight fires against the LOCAL
+     placeholder id and fails with "no template TPL4453" — the template is
+     created fine, and the clerk is told their work was not saved. Observed on
+     the very first real run against a live session. */
+  if (S.creating) return;
   clearTimeout(__saveTimer);
   __saveTimer = setTimeout(() => {
     if (!S.dirty) return;
@@ -904,8 +909,27 @@ window.addEventListener("beforeunload", e => {
   if (SRV.online && S.dirty) { e.preventDefault(); e.returnValue = ""; }
 });
 
+/**
+ * Is this the DOCUMENT id, or the short entity id?
+ *
+ * Two different values are both called `templateId`: the document id
+ * `{schoolId}_{TPL####}` that every endpoint takes, and the stored field
+ * `TPL####`. Sending the short one produces "no template 'TPL0001'" from the
+ * server — a real refusal for a real reason, which reads like the template was
+ * deleted rather than like a client bug. Catch it here, where it is obvious.
+ */
+function assertDocId(id, where) {
+  if (typeof id === "string" && id.indexOf("_") > 0) return id;
+  const msg = "[zxdt] " + where + " was given '" + id + "', which is the SHORT template id. "
+            + "Endpoints take the document id {schoolId}_TPL####.";
+  console.error(msg);
+  toast("Something is wrong with this template's id — nothing was saved. Reload the page.");
+  throw new ApiError(msg, 0, null);
+}
+
 async function srvSaveDraft(silent) {
   if (!SRV.online || !S.tpl || !S.tpl.templateId) return false;
+  try { assertDocId(S.tpl.templateId, "save"); } catch (e) { return false; }
   const patch = {
     name: S.tpl.name, page: S.tpl.page, header: S.tpl.header, footer: S.tpl.footer,
     objects: S.tpl.objects, languages: S.tpl.languages,
@@ -1481,6 +1505,7 @@ function openStarter(st){
  * otherwise lose the lot with no warning that it had never been saved.
  */
 async function createOnServer(st){
+  S.creating = true;
   try{
     const seed={
       name:S.tpl.name, page:S.tpl.page, header:S.tpl.header, footer:S.tpl.footer,
@@ -1496,9 +1521,12 @@ async function createOnServer(st){
     paintStatus(); render();
     toast("Cloned into your school — the starter is never linked live");
   }catch(e){
-    markDirty();
     apiFail(e, "Creating the template");
     toast("NOT SAVED — this template only exists on screen. Fix the error and try again.");
+  }finally{
+    S.creating = false;
+    // Anything edited WHILE create was in flight still needs saving.
+    if (S.dirty) markDirty();
   }
 }
 
@@ -4159,7 +4187,15 @@ async function hydrateFromServer(){
   try{
     const out=await srv.templates("");
     const lib={}, active={};
-    Object.entries(out.templates||{}).forEach(([docId,t])=>{
+    /* Tolerate both shapes. The endpoint normalises now, but a client that
+       silently mis-parses a list as a map shows an empty library — which looks
+       exactly like a school that has no templates. */
+    const raw = out.templates || {};
+    const entries = Array.isArray(raw)
+      ? raw.map(r => [r.id || "", r.data || r])
+      : Object.entries(raw);
+    entries.forEach(([docId,t])=>{
+      if(!docId || !t) return;
       const type=t.docType||"transfer_certificate";
       (lib[type]=lib[type]||[]).push({
         id:docId, name:t.name||docId, starter:t.starterId||null,
@@ -4181,14 +4217,20 @@ async function hydrateFromServer(){
   if(BOOT.templateId){
     try{
       const r=await srv.template(BOOT.templateId);
-      if(r&&r.template){ adoptTemplate(r.template); }
+      if(r&&r.template){ adoptTemplate(r.template, BOOT.templateId); }
     }catch(e){ apiFail(e, "Opening the template"); }
   }
 }
 
 /** Take a stored template document and make it the one on screen. */
-function adoptTemplate(t){
+function adoptTemplate(t, docId){
   S.tpl=Object.assign(starterTC(), t);
+  /* CRITICAL: the stored document carries `templateId` as the SHORT entity id
+     ("TPL0001"), and the assign above has just overwritten the full document id
+     with it. Every endpoint takes the full one, so leaving this would make every
+     save, proof, publish and activate fail with "no template 'TPL0001'" — which
+     is precisely what the first live run did. */
+  S.tpl.templateId = t._id || docId || S.tpl.templateId;
   S.docType=t.docType||S.docType;
   S.lang=t.defaultLanguage||"en";
   S.sel=[]; S.undo=[]; S.redo=[]; S.dirty=false; S.tool="move";
