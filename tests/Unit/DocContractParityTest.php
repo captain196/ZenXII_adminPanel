@@ -141,6 +141,47 @@ class DocContractParityTest extends TestCase
         );
     }
 
+    /**
+     * maxLen must agree too, not just the key set.
+     *
+     * The client shows a capacity hint from maxLen (P4.5) while the server uses
+     * it for the over-length warning (P2.6). If the two drift, the designer
+     * tells a clerk "≈400 characters fit" for a field the server measures
+     * against a different ceiling — advice that is confidently wrong.
+     */
+    public function test_maxlen_agrees_between_client_and_server(): void
+    {
+        preg_match_all(
+            '/\{key:"([\w.]+)"(?:(?!\}).)*?maxLen:(\d+)/s',
+            self::$js,
+            $m,
+            PREG_SET_ORDER
+        );
+        $client = [];
+        foreach ($m as $row) {
+            $client[$row[1]] = (int) $row[2];
+        }
+        $this->assertNotEmpty($client, 'parsed zero maxLen values from designer.js — parser is wrong');
+
+        $server = [];
+        foreach (self::$cfg['doc_merge_fields'] as $k => $f) {
+            if (isset($f['maxLen'])) {
+                $server[$k] = (int) $f['maxLen'];
+            }
+        }
+
+        ksort($client);
+        ksort($server);
+        $this->assertSame(
+            $server,
+            $client,
+            "maxLen has drifted between designer.js and doc_types.php.\n"
+            . 'Only in one side: ' . json_encode(array_merge(
+                array_diff_assoc($server, $client), array_diff_assoc($client, $server)
+            ))
+        );
+    }
+
     /** Same document types, and the same ones disabled / state-gated. */
     public function test_document_type_sets_and_gating_match(): void
     {

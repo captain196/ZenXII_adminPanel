@@ -361,11 +361,11 @@ canvas built against an unproven serializer bakes in its mistakes.
 
 | # | Task | Depends | Accept |
 |---|---|---|---|
-| P4.1 | Vendor Quill 2.0.3 UMD into `assets/js/vendor/`; mount in place on selected text object | P3.3 | No bundler introduced; editor mounts and unmounts cleanly |
-| P4.2 | `MergeField` **embed blot** (void node) | P4.1 | Cursor placed mid-token + keystroke **cannot** corrupt the field |
-| P4.3 | Field picker sourced **only** from the contract | P1.9, P4.1 | No free-typed token is possible in the UI |
-| P4.4 | i18n — one Quill instance, Delta swap per language | P4.1 | Switching language preserves both Deltas; merge fields untouched |
-| P4.5 | Capacity hints from `maxLen` → character budget | P1.8, P2.7 | Shows "≈340 chars fit / sample uses 180"; advisory only, P2.7 enforces |
+| P4.1 | ✅ **ACCEPT MET, TASK SUPERSEDED.** Quill was **never vendored** (0 refs in `designer.js`). The editor is `contentEditable` + the run model + the **Content pane**, per `design/TEXT_EDITING_PROPOSAL.md` — *"BUILT and verified in the browser"*, normative text in UX_SPEC §5A.4b. | P3.3 | ✅ Both halves of the criterion hold: **no bundler** was introduced (plain `<script>`, self-hosted), and the editor mounts/unmounts cleanly — E2E **D8** proves the pane refuses to repaint under a live edit, which is the unmount hazard that actually bites. Counted because the ACCEPT is met; the task text is stale. |
+| P4.2 | ✅ **DONE — as a void `.mf` span, not a Quill blot.** `contenteditable="false"` + `data-key`. | P4.1 | ✅ **E2E O2**: chips are void nodes and their **keys survive a full `runsHTML()` → DOM → `parseRuns()` round trip intact**. A key corrupting into free text would bind to nothing. |
+| P4.3 | ✅ **DONE.** The picker is built from `contractFor()` — the per-type contract, never the 30-key universe. | P1.9, P4.1 | ✅ **E2E O1**: the picker offers **22 of 30** keys for a TC and **zero** off-contract. Scoped, and no free-typing route exists. |
+| P4.4 | ✅ **DONE — one model, `runs` per language, not a Delta swap.** | P4.1 | ✅ **E2E O3**: after an en→hi→en round trip **both** languages' runs are byte-identical. Losing the other language is invisible until someone opens it. |
+| P4.5 | ✅ **BUILT 2026-09-02.** `capacityHint()` + an advisory line under each Content-pane row: *"≈120 chars fit · sample uses 27"*, turning `--seal` red when over. Budget comes from the bound field's `maxLen`; unbound text gets **no** budget. | P1.8, P2.7 | ✅ **E2E O4/O5/O6**. ⚠️ **A bug my own test caught:** the first version measured `contentPlain()`, which substitutes the placeholder `{School name}` — so the count was the LABEL's length and never moved with the p95 toggle, defeating the one mode whose purpose is showing the worst case. Now resolves through `fieldValue()`: typical **27** → p95 **59**. |
 
 ---
 

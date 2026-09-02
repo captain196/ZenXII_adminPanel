@@ -8,35 +8,35 @@
 const PAPER = {A4:[210,297], A5:[148,210], Letter:[215.9,279.4], Legal:[215.9,355.6]};
 
 const CONTRACT = [
-  {key:"school.name",              label:"School name",             sample:"Delhi Public School, Ranchi", p95:"Shri Guru Harkrishan Public Senior Secondary School, Ranchi"},
-  {key:"school.address",           label:"School address",          sample:"South Office Para, Doranda, Ranchi 834002"},
-  {key:"school.affiliationNo",     label:"Affiliation number",      sample:"3430006"},
-  {key:"doc.bookNo",               label:"Book No.",                sample:"14"},
-  {key:"doc.slNo",                 label:"Serial No.",              sample:"0207"},
-  {key:"student.admissionNumber",  label:"Admission number",        sample:"DPSR/2019/0412"},
-  {key:"student.fullName",         label:"Student name",            sample:"Aarav Sharma", p95:"Lakshmi Priyadarshini Venkataraman"},
-  {key:"student.fatherName",       label:"Father's name",           sample:"Rakesh Sharma", p95:"Venkataraman Subrahmanya Iyer"},
-  {key:"student.motherName",       label:"Mother's name",           sample:"Sunita Sharma"},
-  {key:"student.dob",              label:"Date of birth",           sample:"14/08/2011"},
-  {key:"student.dobWords",         label:"Date of birth in words",  sample:"Fourteenth August Two Thousand Eleven"},
-  {key:"tc.dateOfFirstAdmission",  label:"Date of first admission", sample:"02/04/2019"},
-  {key:"tc.lastClassStudied",      label:"Class last studied",      sample:"IX — B"},
-  {key:"attendance.workingDays",   label:"Working days",            sample:"221", calc:"attendance"},
-  {key:"attendance.daysPresent",   label:"Days present",            sample:"198", calc:"attendance"},
-  {key:"result.promotionEligible", label:"Qualified for promotion", sample:"Yes — promoted to Class X", calc:"result"},
+  {key:"school.name",              label:"School name",             sample:"Delhi Public School, Ranchi", p95:"Shri Guru Harkrishan Public Senior Secondary School, Ranchi", maxLen:120},
+  {key:"school.address",           label:"School address",          sample:"South Office Para, Doranda, Ranchi 834002", maxLen:160},
+  {key:"school.affiliationNo",     label:"Affiliation number",      sample:"3430006", maxLen:16},
+  {key:"doc.bookNo",               label:"Book No.",                sample:"14", maxLen:8},
+  {key:"doc.slNo",                 label:"Serial No.",              sample:"0207", maxLen:12},
+  {key:"student.admissionNumber",  label:"Admission number",        sample:"DPSR/2019/0412", maxLen:32},
+  {key:"student.fullName",         label:"Student name",            sample:"Aarav Sharma", p95:"Lakshmi Priyadarshini Venkataraman", maxLen:80},
+  {key:"student.fatherName",       label:"Father's name",           sample:"Rakesh Sharma", p95:"Venkataraman Subrahmanya Iyer", maxLen:80},
+  {key:"student.motherName",       label:"Mother's name",           sample:"Sunita Sharma", maxLen:80},
+  {key:"student.dob",              label:"Date of birth",           sample:"14/08/2011", maxLen:12},
+  {key:"student.dobWords",         label:"Date of birth in words",  sample:"Fourteenth August Two Thousand Eleven", maxLen:96},
+  {key:"tc.dateOfFirstAdmission",  label:"Date of first admission", sample:"02/04/2019", maxLen:12},
+  {key:"tc.lastClassStudied",      label:"Class last studied",      sample:"IX — B", maxLen:24},
+  {key:"attendance.workingDays",   label:"Working days",            sample:"221", calc:"attendance", maxLen:4},
+  {key:"attendance.daysPresent",   label:"Days present",            sample:"198", calc:"attendance", maxLen:4},
+  {key:"result.promotionEligible", label:"Qualified for promotion", sample:"Yes — promoted to Class X", calc:"result", maxLen:64},
   {key:"tc.reasonForLeaving",      label:"Reason for leaving",      sample:"Parent transferred out of station",
-     p95:"Parent transferred out of station on Government service; the family is relocating to Bengaluru with effect from the close of the current academic session, and the pupil will continue his studies at the Kendriya Vidyalaya nearest to the new place of posting as intimated by the guardian in writing"},
-  {key:"tc.conductRemark",         label:"General conduct",         sample:"Good"},
-  {key:"tc.duesPaidUpto",          label:"Fees paid up to",         sample:"March 2026"},
-  {key:"tc.dateOfLeaving",         label:"Date of leaving school",  sample:"31/03/2026"},
-  {key:"doc.issueDate",            label:"Date of issue",           sample:"04/04/2026"},
-  {key:"doc.station",              label:"Station",                 sample:"Ranchi"},
-  {key:"sec.fromDate",             label:"Pupil of this school from", sample:"02/04/2019"},
-  {key:"sec.toDate",               label:"…to",                     sample:"31/03/2026"},
+     p95:"Parent transferred out of station on Government service; the family is relocating to Bengaluru with effect from the close of the current academic session, and the pupil will continue his studies at the Kendriya Vidyalaya nearest to the new place of posting as intimated by the guardian in writing", maxLen:400},
+  {key:"tc.conductRemark",         label:"General conduct",         sample:"Good", maxLen:64},
+  {key:"tc.duesPaidUpto",          label:"Fees paid up to",         sample:"March 2026", maxLen:32},
+  {key:"tc.dateOfLeaving",         label:"Date of leaving school",  sample:"31/03/2026", maxLen:12},
+  {key:"doc.issueDate",            label:"Date of issue",           sample:"04/04/2026", maxLen:12},
+  {key:"doc.station",              label:"Station",                 sample:"Ranchi", maxLen:48},
+  {key:"sec.fromDate",             label:"Pupil of this school from", sample:"02/04/2019", maxLen:12},
+  {key:"sec.toDate",               label:"…to",                     sample:"31/03/2026", maxLen:12},
   {key:"sec.outcome",              label:"Manner of leaving",       sample:"left after having passed from Standard",
-     p95:"was removed from the rolls due to long absence while studying in Standard"},
-  {key:"student.ageAtLeaving",     label:"Age at leaving",          sample:"16", p95:"21", type:"int"},
-  {key:"student.removedFromRolls", label:"Removed from the rolls",  sample:"No",  p95:"Yes", type:"enum"},
+     p95:"was removed from the rolls due to long absence while studying in Standard", maxLen:160},
+  {key:"student.ageAtLeaving",     label:"Age at leaving",          sample:"16", p95:"21", type:"int", maxLen:3},
+  {key:"student.removedFromRolls", label:"Removed from the rolls",  sample:"No",  p95:"Yes", type:"enum", maxLen:8},
   {key:"student.photo",            label:"Student photograph",      sample:"[photo]", type:"image"},
   {key:"doc.verifyQr",             label:"Verification QR",         sample:"[qr]",    type:"image"},
   {key:"doc.isDuplicate",          label:"Issued as a duplicate",   sample:"No",      type:"flag"}
@@ -1610,6 +1610,44 @@ function liveContentRow(){
   return (wrap && a && a.isContentEditable && wrap.contains(a)) ? a : null;
 }
 
+/* P4.5 — capacity hint. ADVISORY ONLY: the real gate is P2.7, which measures
+   the rendered block in mPDF. This is the cheap up-front signal so a clerk is
+   not surprised at proof time, and it is deliberately phrased with "≈" because
+   a character budget cannot know the font, the width or the line height.
+
+   maxLen comes from the contract and is kept identical to the server's copy by
+   DocContractParityTest — if the two drifted, this hint would confidently tell
+   someone a wrong number. */
+function capacityHint(o){
+  if(o.type!=="text") return null;
+  const d=o.content && o.content.i18n && o.content.i18n[langOf(o)];
+  if(!d || !d.runs || !d.runs.length) return null;
+
+  /* The budget belongs to the bound field, not the object. An object with no
+     field is free text the compliance stack does not govern — no budget. */
+  let budget=0, key=null;
+  d.runs.forEach(r=>{
+    if(r.f==null) return;
+    const f=FIELD[r.f];
+    if(f && f.maxLen && f.maxLen>budget){ budget=f.maxLen; key=r.f; }
+  });
+  if(!budget) return null;
+
+  /* What the CURRENT sample actually RENDERS to.
+     NOT contentPlain(): that substitutes the design-time placeholder "{School
+     name}", so the count was the label's length and never moved when the p95
+     toggle did — which defeats the one mode whose entire purpose is showing the
+     worst case. Caught by E2E O5. Resolve through fieldValue(), the same
+     function the canvas previews with. */
+  if(S.data==="off") return {budget, used:null, key, over:false};
+  let used=0;
+  d.runs.forEach(r=>{
+    if(r.f!=null){ const v=fieldValue(r.f); used += v==null ? 0 : String(v).length; }
+    else used += (r.t||"").length;
+  });
+  return {budget, used, key, over: used>budget};
+}
+
 function paintContent(){
   const wrap=$("#contentList"); if(!wrap) return;
   const hint=$("#contentHint");
@@ -1734,6 +1772,19 @@ function paintContent(){
     });
 
     row.appendChild(ed);
+    const cap=capacityHint(o);
+    if(cap){
+      const c=el("div","");
+      c.style.cssText="font-family:var(--font-m);font-size:9px;letter-spacing:.04em;margin-top:3px;"
+        +"color:"+(cap.over?"var(--seal)":"var(--ink4)");
+      c.textContent = "\u2248"+cap.budget+" chars fit \u00b7 "
+        + (cap.used==null ? "no sample data" : "sample uses "+cap.used)
+        + (cap.over ? "  \u2014 over budget, the proof gate will measure it" : "");
+      c.title = "Advisory. The binding budget for "+cap.key+" is "+cap.budget
+        +" characters; the real check is the proof-time overflow gate, which measures the rendered block.";
+      row.appendChild(c);
+    }
+
     wrap.appendChild(row);
   });
 

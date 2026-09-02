@@ -969,6 +969,87 @@ window.ZXDT_E2E = async function (only) {
     return { ok: bad.length === 0, note: bad.length ? "lost: " + bad.join(",") : "all 12 round-tripped" };
   });
 
+  /* ---- O · Phase 4 text and binding ---------------------------------- */
+  G("O · Phase 4 text and binding");
+
+  /* P4.3 — the picker IS the contract. A free-typed token is the mail-merge
+     failure the append-only rule exists to prevent, so the UI must offer no
+     route to one. */
+  await T("O1", "P4.3 — the field picker offers exactly the contract, nothing more", () => {
+    openClassic(true);
+    const declared = contractFor().map(f => f.key).sort();
+    const universe = CONTRACT.map(f => f.key).sort();
+    const scoped = declared.length < universe.length;
+    const offContract = declared.filter(k => !universe.includes(k));
+    return { ok: scoped && offContract.length === 0,
+             note: `picker offers ${declared.length} of ${universe.length}; off-contract ${offContract.length}` };
+  });
+
+  /* P4.2 — a chip is a VOID node. If a keystroke could land inside it the
+     field key would corrupt into free text and bind to nothing. */
+  await T("O2", "P4.2 — merge chips are void nodes and survive a round trip through the DOM", () => {
+    openClassic(true);
+    const o = S.tpl.objects.find(x => (x.content?.i18n?.en?.runs || []).some(r => r.f));
+    if (!o) return { ok: false, note: "no object with a bound field in the starter" };
+    const host = document.createElement("div");
+    host.innerHTML = runsHTML(o.content.i18n.en.runs, false);
+    const chips = host.querySelectorAll(".mf");
+    const allVoid = [...chips].every(c => c.getAttribute("contenteditable") === "false" && c.dataset.key);
+    const back = parseRuns(host);
+    const beforeKeys = o.content.i18n.en.runs.filter(r => r.f).map(r => r.f).join(",");
+    const afterKeys  = back.filter(r => r.f).map(r => r.f).join(",");
+    return { ok: chips.length > 0 && allVoid && beforeKeys === afterKeys,
+             note: `${chips.length} chips, keys ${beforeKeys === afterKeys ? "intact" : "CORRUPTED"}` };
+  });
+
+  /* P4.4 — switching language must preserve BOTH sides. Losing the other
+     language's runs is invisible until someone opens that language. */
+  await T("O3", "P4.4 — a language switch preserves both languages' runs untouched", () => {
+    openClassic(true);
+    S.tpl.languages = ["en", "hi"];
+    const o = S.tpl.objects.find(x => x.content?.i18n?.hi?.runs?.length);
+    if (!o) return { ok: false, note: "starter has no hi content" };
+    const en0 = JSON.stringify(o.content.i18n.en);
+    const hi0 = JSON.stringify(o.content.i18n.hi);
+    S.lang = "hi"; render();
+    S.lang = "en"; render();
+    return { ok: JSON.stringify(o.content.i18n.en) === en0 && JSON.stringify(o.content.i18n.hi) === hi0,
+             note: "en and hi both unchanged after a round trip" };
+  });
+
+  /* P4.5 — the capacity hint. Advisory only; P2.7 is the real gate. */
+  await T("O4", "P4.5 — capacity hint reports the bound field's budget and current usage", () => {
+    openClassic(true);
+    const o = S.tpl.objects.find(x => (x.content?.i18n?.en?.runs || []).some(r => r.f && FIELD[r.f]?.maxLen));
+    if (!o) return { ok: false, note: "no object bound to a field carrying maxLen" };
+    const h = capacityHint(o);
+    return { ok: !!h && h.budget > 0 && h.used >= 0 && !!FIELD[h.key],
+             note: h ? `${h.key}: ≈${h.budget} fit, uses ${h.used}` : "no hint" };
+  });
+
+  /* The hint must MOVE with the sample mode, or p95 stress mode is decorative
+     in the one place it is meant to warn you. */
+  await T("O5", "P4.5 — the hint's usage tracks the p95 stress toggle", () => {
+    openClassic(true);
+    const o = S.tpl.objects.find(x => (x.content?.i18n?.en?.runs || []).some(r => {
+      const f = FIELD[r.f]; return f && f.maxLen && f.p95 && f.p95 !== f.sample; }));
+    if (!o) return { ok: false, note: "no object bound to a field with a distinct p95" };
+    S.data = "typical"; render(); const a = capacityHint(o).used;
+    S.data = "p95";     render(); const b = capacityHint(o).used;
+    S.data = "typical"; render();
+    return { ok: b > a, note: `typical uses ${a}, p95 uses ${b}` };
+  });
+
+  /* An object bound to nothing has no budget — free text the compliance stack
+     does not govern must not be given a fake ceiling. */
+  await T("O6", "P4.5 — an unbound text object gets no capacity hint", () => {
+    openClassic(true);
+    const o = S.tpl.objects.find(x => x.type === "text" &&
+      !(x.content?.i18n?.en?.runs || []).some(r => r.f));
+    if (!o) return { ok: true, note: "starter has no unbound text object — vacuously true" };
+    return { ok: capacityHint(o) === null, note: "no hint on unbound text" };
+  });
+
   const summary = { total: R.length, passed: R.filter(r => r.ok).length, failed: R.filter(r => !r.ok).length };
   return { summary, failures: R.filter(r => !r.ok), all: R };
 };
