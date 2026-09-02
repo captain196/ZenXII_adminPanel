@@ -99,6 +99,101 @@ class Doc_serializer
     }
 
     /* ================================================================== *
+     *  P2.7 — the TWO-TIER page-overflow gate
+     * ================================================================== */
+
+    /**
+     * Find content that will not fit the page. Run at PROOF and PUBLISH time,
+     * never on every preview — tier 2 renders a scratch document per chain.
+     *
+     * WHY TWO TIERS. Gate G0.4 proved `$mpdf->page` NEVER fires for absolutely
+     * positioned content: mPDF silently clips it instead of paginating. On a
+     * Transfer Certificate that means losing the signature block with no error
+     * at all. So tier 1 alone is not merely incomplete, it is blind to the
+     * common case — almost every certificate object is absolute.
+     *
+     *   TIER 1 — the flow region. `pageMode: 'single'` plus a rendered page
+     *            count above 1 means the flowing body spilled. This is the only
+     *            tier `$mpdf->page` can answer.
+     *   TIER 2 — absolute chains. Measure the chain in normal flow on a scratch
+     *            un-paginatable page, then compare its origin plus its measured
+     *            height against the usable page height.
+     *
+     * @param object $renderer anything exposing measureBlock()/wouldOverflow()
+     *                         — injected so this is testable without mPDF.
+     * @return list<array{tier:int,object:string,type:string,message:string}>
+     */
+    public function overflowFindings(
+        array $template,
+        array $data,
+        string $lang,
+        $renderer,
+        array $opts = []
+    ): array {
+        $this->contract = (array) ($opts['contract'] ?? []);
+
+        $page     = (array) ($template['page'] ?? []);
+        $margins  = (array) ($page['marginsMm'] ?? ['t' => 15, 'r' => 15, 'b' => 15, 'l' => 15]);
+        $objects  = $this->visible((array) ($template['objects'] ?? []), $opts);
+        $chains   = $this->chains($objects);
+        $findings = [];
+
+        foreach ($chains as $chain) {
+            $root  = $chain['root'];
+            $wMm   = (float) ($root['wMm'] ?? 180);
+            $html  = $this->emitChain($chain, $data, $lang, $opts, $margins);
+
+            if (!empty($root['flowRegion'])) {
+                // TIER 1. Only meaningful when the template pins itself to one
+                // page; a multi-page template is allowed to flow.
+                // NOT method_exists(): a renderer that cannot answer must fail
+                // LOUDLY. Skipping silently is how tier 1 would have been dead
+                // code in production while the gate still reported "no findings".
+                if (($template['pageMode'] ?? 'flow') === 'single') {
+                    if (!method_exists($renderer, 'pageCount')) {
+                        throw new RuntimeException(
+                            'Doc_serializer: pageMode "single" needs a renderer with pageCount(); '
+                            . get_class($renderer) . ' has none, so tier 1 could not be evaluated.'
+                        );
+                    }
+                    if ($renderer->pageCount($html, $page) > 1) {
+                        $findings[] = [
+                            'tier' => 1, 'object' => (string) $root['id'], 'type' => 'E_PAGE_OVERFLOW',
+                            'message' => 'The flowing body spills onto a second page, but this template '
+                                       . 'is set to a single page.',
+                        ];
+                    }
+                }
+                continue;
+            }
+
+            // TIER 2.
+            if ($renderer->wouldOverflow($html, $page, (float) ($root['yMm'] ?? 0), $wMm)) {
+                $findings[] = [
+                    'tier' => 2, 'object' => (string) $root['id'], 'type' => 'E_PAGE_OVERFLOW',
+                    'message' => "The chain starting at '{$root['id']}' extends past the bottom "
+                               . 'margin. Absolute content does not paginate — mPDF would clip it '
+                               . 'silently, so this blocks rather than warns.',
+                ];
+            }
+        }
+
+        return $findings;
+    }
+
+    /**
+     * Convenience wrapper for callers that want the plan's fail-closed shape.
+     * @throws RuntimeException when anything overflows.
+     */
+    public function assertFits(array $template, array $data, string $lang, $renderer, array $opts = []): void
+    {
+        $f = $this->overflowFindings($template, $data, $lang, $renderer, $opts);
+        if ($f) {
+            throw new RuntimeException('E_PAGE_OVERFLOW: ' . implode(' | ', array_column($f, 'message')));
+        }
+    }
+
+    /* ================================================================== *
      *  Visibility (showWhen) — §9A duplicate marking
      * ================================================================== */
 
@@ -262,7 +357,10 @@ class Doc_serializer
 
         $inner = $this->inner($o, $type, $data, $lang, $opts);
 
-        return '<div class="zx-o zx-' . $this->esc($type) . '" style="' . $css . '">' . $inner . '</div>';
+        // Omit an empty style attribute rather than emitting style="". Cosmetic,
+        // but golden files lock output in — cheaper to be tidy before they exist.
+        $attr = $css === '' ? '' : ' style="' . $css . '"';
+        return '<div class="zx-o zx-' . $this->esc($type) . '"' . $attr . '>' . $inner . '</div>';
     }
 
     /**

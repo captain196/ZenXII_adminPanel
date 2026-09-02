@@ -337,8 +337,8 @@ canvas built against an unproven serializer bakes in its mistakes.
 | P2.4 | ✅ **DONE 2026-09-02.** `pageNumber` emits `{PAGENO}` inside the footer region — never an absolute object, since only the footer band repeats per page. | G0.4 | ✅ Asserted the token and the `zx-footer` placement. |
 | P2.5 | ✅ **DONE 2026-09-02.** Every rule namespaced under `.zx-tpl-{id}`. | — | ✅ The test **parses the emitted `<style>` and asserts every selector starts with the namespace** — it does not grep for a string. Also asserts zero `display:flex` / `display:grid`, which mPDF cannot render. |
 | P2.6 | ✅ **DONE 2026-09-02.** Three distinct failures, kept distinct because they have different owners: `offContract` (template binds a key its docType never declared), `unknown`, `unresolved` (contract fine, data missing). Sample and p95 modes resolve from the contract. | P1.9 | ✅ Unresolved **and empty-string** both throw; off-contract throws; a design-mode chip (`data-key`) can never reach output; p95 verified to actually lengthen the worst-case field. |
-| P2.7 | **Page-overflow gate — TWO TIER** *(rewritten after G0.4)*. **Tier 1 flow region:** `pageMode: single` + `$mpdf->page > 1` ⇒ throw `E_PAGE_OVERFLOW`. **Tier 2 absolute chains:** `Doc_serializer::measureBlock()` renders the chain in flow on a scratch un-paginatable doc, reads the `$mpdf->y` delta, and throws when `topMm + heightMm > pageHeight − bottomMargin`. Tier 1 alone is **insufficient** — G0.4 proved `$mpdf->page` never fires for absolute content. | G0.4 | Long `reasonForLeaving` in an **absolute chain** throws instead of silently dropping the signature block. Test asserts both tiers independently. |
-| P2.8 | Golden-file harness under `tests/doctemplates/` | P2.1 | Every §5.4 emission rule has a fixture; runs in CI |
+| P2.7 | ✅ **DONE 2026-09-02.** `Doc_serializer::overflowFindings()` / `assertFits()`, renderer **injected** so both tiers are testable without mPDF. **Tier 1** flow region via `Doc_renderer::pageCount()` (ADDED — it did not exist, so tier 1 was dead code); **tier 2** absolute chains via `wouldOverflow()`. | G0.4 | ✅ Both tiers asserted **independently**, plus: tier 1 is never consulted for an absolute chain (G0.4), a multi-page template may legitimately flow, and a renderer that cannot answer tier 1 **throws instead of skipping**. ⚠️ **Fixed a live bug in the tier-2 primitive** — see below. |
+| P2.8 | ✅ **DONE 2026-09-02.** `tests/doctemplates/golden/` + `DocSerializerGoldenTest` — one fixture exercising every §5.4 rule at once, in typical / p95 / duplicate modes. Regenerate with `ZXDT_GOLDEN_UPDATE=1`. | P2.1 | ✅ Byte-for-byte. Mutation-tested: a single changed byte (`margin-top`→`margin-TOP`) fails all three. A fourth test asserts the three goldens **differ from each other**, so the sample machinery cannot silently stop switching while all three still pass. |
 
 ---
 
@@ -492,6 +492,43 @@ Halt and re-plan if any occurs:
 | Q9 | `languageFallback` default — `block` or `default` | P7.5 |
 | Q10 | Who owns compliance-profile authoring long-term? | P5.6 |
 | — | **Does issuance enter this build or stay in the next engine?** Currently OUT (`CON-NO_PRINT_IMPL`) | Before Phase 6 |
+
+---
+
+### Phase 2 closed 2026-09-02 — and it fixed a live bug in Doc_renderer
+
+`[FACT|OBSERVED]` **`Doc_renderer::wouldOverflow()` computed the page height wrongly for three of
+the four supported papers.** It read:
+
+```php
+is_array($cfg['format']) ? $cfg['format'][1] : ($orientation === 'L' ? 210.0 : 297.0)  // A4 default
+```
+
+but `self::PAPER` maps names to **strings** (`'A4' => 'A4'`), so `is_array()` was **false for every
+named size** and the A4 fallback ran every time:
+
+| Paper | Real height | Gate used | Effect |
+|---|---|---|---|
+| A5 portrait | 210 mm | 297 mm | **87 mm TOO LENIENT** |
+| Letter portrait | 279.4 mm | 297 mm | 17.6 mm too lenient |
+| Legal portrait | 355.6 mm | 297 mm | 58 mm too strict — false positives |
+
+**Too lenient is the dangerous direction.** This gate is the only thing stopping an over-long field
+clipping the signature block off a Transfer Certificate, and on A5 it was passing content 87 mm past
+the end of the page. Fixed with a `PAPER_MM` table beside `PAPER` so the two cannot drift, plus
+orientation handling the old array branch never had. `DocRendererPageGeometryTest` pins all four
+papers in both orientations and is **mutation-tested** — re-injecting the old expression fails 3 of 6.
+
+**Two more defects the tests caught on their first run**, both silent by nature:
+1. **An anchor cycle dropped objects entirely.** In `a→b→a` every member has a valid anchor, so none
+   becomes a root, the walk never visits them, and they vanish from the document — on a certificate,
+   a statutory field quietly not printing. Now a hard error naming the unreachable ids.
+2. **Tier 1 was dead code.** `overflowFindings()` guarded on `method_exists($renderer,'pageCount')`
+   and `Doc_renderer` had no such method, so the tier silently never ran while the gate still
+   reported "no findings". `pageCount()` added; the guard now **throws** rather than skipping.
+
+**Phase 2 test surface:** `DocSerializerTest` 28 · `DocSerializerGoldenTest` 4 · `DocRendererPageGeometryTest` 6.
+Suite **302 tests, 4 failures, 27 skipped** — the repo's standing baseline, unchanged.
 
 ---
 

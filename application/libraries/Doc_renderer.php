@@ -43,6 +43,19 @@ class Doc_renderer
     /** Paper sizes the engine accepts. Anything else must be explicit [w,h] mm. */
     const PAPER = ['A4' => 'A4', 'A5' => 'A5', 'LETTER' => 'Letter', 'LEGAL' => 'Legal'];
 
+    /**
+     * Real dimensions in mm, portrait [w, h]. PAPER above carries the NAMES
+     * mPDF wants; this carries the measurements we have to reason about
+     * ourselves, because mPDF does not expose them before a document exists.
+     * Kept beside PAPER so the two cannot drift apart.
+     */
+    const PAPER_MM = [
+        'A4'     => [210.0, 297.0],
+        'A5'     => [148.0, 210.0],
+        'LETTER' => [215.9, 279.4],
+        'LEGAL'  => [215.9, 355.6],
+    ];
+
     /** @var CI_Controller */
     private $ci;
 
@@ -224,6 +237,33 @@ class Doc_renderer
     }
 
     /**
+     * How many pages does this HTML actually paginate to?
+     *
+     * TIER 1 of the P2.7 overflow gate. This is the ONLY question
+     * `$mpdf->page` can answer honestly: it counts pages produced by content in
+     * NORMAL FLOW. Gate G0.4 proved it never fires for absolutely-positioned
+     * content, which is why tier 2 (measureBlock) exists and why this method
+     * must never be used to judge an absolute chain.
+     */
+    public function pageCount(string $html, array $page = [], array $opts = []): int
+    {
+        $this->guardImages($html);
+
+        $mpdf = $this->make($page);
+        if (!empty($opts['header'])) {
+            $mpdf->SetHTMLHeader($opts['header']);
+        }
+        if (!empty($opts['footer'])) {
+            $mpdf->SetHTMLFooter($opts['footer']);
+        }
+        $mpdf->WriteHTML($html);
+        $n = (int) $mpdf->page;
+        unset($mpdf);
+
+        return max(1, $n);
+    }
+
+    /**
      * Would this absolutely-positioned chain overflow the page?
      *
      * @param array $page      Template page spec.
@@ -233,12 +273,41 @@ class Doc_renderer
     public function wouldOverflow(string $chainHtml, array $page, float $topMm, float $widthMm): bool
     {
         $cfg      = $this->pageConfig($page);
-        $heightMm = is_array($cfg['format'])
-            ? (float) $cfg['format'][1]
-            : ($cfg['orientation'] === 'L' ? 210.0 : 297.0);   // A4 default
+        $heightMm = $this->pageHeightMm($cfg);
 
         return ($topMm + $this->measureBlock($chainHtml, $widthMm))
              > ($heightMm - (float) $cfg['margin_bottom']);
+    }
+
+    /**
+     * Usable page HEIGHT in mm, honouring paper size AND orientation.
+     *
+     * `[CORRECTED 2026-09-02]` This previously read:
+     *
+     *     is_array($cfg['format']) ? $cfg['format'][1]
+     *                              : ($orientation === 'L' ? 210.0 : 297.0)   // A4 default
+     *
+     * but self::PAPER maps names to STRINGS ('A4' => 'A4'), so is_array() was
+     * false for every named size and the A4 fallback ran always. The result was
+     * wrong for three of the four supported papers:
+     *
+     *   A5 portrait     real 210mm, used 297mm  — 87mm TOO LENIENT
+     *   Letter portrait real 279.4,  used 297    — 17.6mm too lenient
+     *   Legal portrait  real 355.6,  used 297    — 58mm too strict, false positives
+     *
+     * Too lenient is the dangerous direction: this gate is the only thing that
+     * stops an over-long field silently clipping the signature block off a
+     * Transfer Certificate, and on A5 it was passing content 87mm past the page.
+     * The custom `[w,h]` branch was always correct and is preserved.
+     */
+    private function pageHeightMm(array $cfg): float
+    {
+        $dims = is_array($cfg['format'])
+            ? [(float) $cfg['format'][0], (float) $cfg['format'][1]]
+            : (self::PAPER_MM[strtoupper((string) $cfg['format'])] ?? self::PAPER_MM['A4']);
+
+        // Landscape swaps the axes, so height is the SHORT edge.
+        return $cfg['orientation'] === 'L' ? min($dims) : max($dims);
     }
 
     /**

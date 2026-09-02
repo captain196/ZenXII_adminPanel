@@ -386,4 +386,125 @@ class DocSerializerTest extends TestCase
                               ['page' => ['size' => 'A4', 'orientation' => 'landscape']]));
         $this->assertStringContainsString('width:297mm', $land);
     }
+
+    /* ---------------------------------------------------------------- *
+     * P2.7 — the two-tier overflow gate
+     *
+     * A fake renderer is injected so both tiers are exercised without mPDF.
+     * That is the point of the injection: the gate's LOGIC is what these pin —
+     * that tier 2 fires for absolute chains and tier 1 only for the flow
+     * region — while the measurement itself belongs to Doc_renderer and is
+     * covered by DocRendererPageGeometryTest.
+     * ---------------------------------------------------------------- */
+
+    public function test_tier2_blocks_an_absolute_chain_that_runs_past_the_page(): void
+    {
+        $r = new class {
+            public function wouldOverflow($h, $p, $top, $w): bool { return $top > 250; }
+            public function pageCount($h, $p): int { return 1; }
+        };
+
+        $tpl = $this->tpl([
+            $this->text('ok',  [['t' => 'near the top']], ['yMm' => 40]),
+            $this->text('bad', [['t' => 'far down']],     ['yMm' => 280]),
+        ]);
+
+        $f = $this->s->overflowFindings($tpl, [], 'en', $r, ['contract' => $this->contract()]);
+
+        $this->assertCount(1, $f);
+        $this->assertSame(2, $f[0]['tier']);
+        $this->assertSame('bad', $f[0]['object']);
+        $this->assertSame('E_PAGE_OVERFLOW', $f[0]['type']);
+    }
+
+    /**
+     * G0.4: $mpdf->page NEVER fires for absolute content, so tier 1 must not be
+     * asked about it. A tier-1-only gate is blind to almost every certificate
+     * object, which is exactly how a signature block goes missing silently.
+     */
+    public function test_tier1_is_not_consulted_for_absolute_chains(): void
+    {
+        $r = new class {
+            public int $pageCountCalls = 0;
+            public function wouldOverflow($h, $p, $top, $w): bool { return false; }
+            public function pageCount($h, $p): int { $this->pageCountCalls++; return 9; }
+        };
+
+        $tpl = $this->tpl([$this->text('a', [['t' => 'x']])], ['pageMode' => 'single']);
+        $f   = $this->s->overflowFindings($tpl, [], 'en', $r, ['contract' => $this->contract()]);
+
+        $this->assertSame([], $f);
+        $this->assertSame(0, $r->pageCountCalls,
+            'an absolute chain must never be judged by page count');
+    }
+
+    public function test_tier1_blocks_a_single_page_template_whose_flow_region_spills(): void
+    {
+        $r = new class {
+            public function wouldOverflow($h, $p, $top, $w): bool { return false; }
+            public function pageCount($h, $p): int { return 2; }
+        };
+
+        $tpl = $this->tpl([$this->text('body', [['t' => 'long']], ['flowRegion' => true])],
+                          ['pageMode' => 'single']);
+        $f   = $this->s->overflowFindings($tpl, [], 'en', $r, ['contract' => $this->contract()]);
+
+        $this->assertCount(1, $f);
+        $this->assertSame(1, $f[0]['tier']);
+    }
+
+    /** A template that does not pin itself to one page is allowed to flow. */
+    public function test_a_multipage_template_may_flow_onto_a_second_page(): void
+    {
+        $r = new class {
+            public function wouldOverflow($h, $p, $top, $w): bool { return false; }
+            public function pageCount($h, $p): int { return 3; }
+        };
+
+        $tpl = $this->tpl([$this->text('body', [['t' => 'long']], ['flowRegion' => true])]);
+        $this->assertSame([], $this->s->overflowFindings($tpl, [], 'en', $r, ['contract' => $this->contract()]));
+    }
+
+    public function test_assertfits_throws_with_the_planned_error_code(): void
+    {
+        $r = new class {
+            public function wouldOverflow($h, $p, $top, $w): bool { return true; }
+            public function pageCount($h, $p): int { return 1; }
+        };
+
+        $this->expectException(RuntimeException::class);
+        $this->expectExceptionMessageMatches('/E_PAGE_OVERFLOW/');
+        $this->s->assertFits($this->tpl([$this->text('a', [['t' => 'x']])]), [], 'en', $r,
+                             ['contract' => $this->contract()]);
+    }
+
+    /**
+     * A renderer that cannot answer tier 1 must FAIL LOUDLY. The first draft
+     * used method_exists() and skipped silently — Doc_renderer had no
+     * pageCount() at the time, so tier 1 was dead code in production while the
+     * gate still cheerfully reported "no findings".
+     */
+    public function test_a_renderer_that_cannot_answer_tier1_fails_loudly(): void
+    {
+        $blind = new class {
+            public function wouldOverflow($h, $p, $top, $w): bool { return false; }
+        };
+
+        $tpl = $this->tpl([$this->text('body', [['t' => 'x']], ['flowRegion' => true])],
+                          ['pageMode' => 'single']);
+
+        $this->expectException(RuntimeException::class);
+        $this->expectExceptionMessageMatches('/pageCount/');
+        $this->s->overflowFindings($tpl, [], 'en', $blind, ['contract' => $this->contract()]);
+    }
+
+    /** The real renderer must satisfy the contract the gate depends on. */
+    public function test_doc_renderer_exposes_both_gate_primitives(): void
+    {
+        require_once __DIR__ . '/../../application/libraries/Doc_renderer.php';
+        foreach (['pageCount', 'wouldOverflow', 'measureBlock'] as $m) {
+            $this->assertTrue(method_exists(\Doc_renderer::class, $m),
+                "Doc_renderer::$m() is missing — the overflow gate silently loses a tier without it");
+        }
+    }
 }
