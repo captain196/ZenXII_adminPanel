@@ -666,4 +666,91 @@ class DocSerializerTest extends TestCase
         return ['tc.duesPaidUpto' => ['label' => 'Fees paid up to',
                                       'sample' => 'March 2026', 'p95' => 'March 2026']];
     }
+
+    /* ================================================================== *
+     *  The particulars table  (found live, 2026-09-03)
+     *
+     *  The designer stores rows as {"key": "..."}; this method only understood
+     *  rows that were arrays of cells, so every row rendered as <td></td> and
+     *  THE PDF CAME OUT WITHOUT THE PARTICULARS — no admission number, no
+     *  student name, no parentage, no dates — while the canvas showed them all.
+     *  Nothing failed, because empty cells are valid HTML.
+     * ================================================================== */
+
+    public function test_a_keyed_table_row_renders_its_number_label_and_value(): void
+    {
+        $html = $this->s->render($this->tplWithTable(), [], 'en', [
+            'contract' => $this->tableContract(), 'sample' => 'typical',
+        ]);
+
+        $this->assertStringContainsString('Admission number', $html, 'the LABEL must print');
+        $this->assertStringContainsString('DPSR/2019/0412', $html, 'the VALUE must print');
+        $this->assertStringContainsString('Student name', $html);
+        $this->assertStringContainsString('Aarav Sharma', $html);
+    }
+
+    public function test_keyed_rows_are_numbered_in_order(): void
+    {
+        $html = $this->s->render($this->tplWithTable(), [], 'en', [
+            'contract' => $this->tableContract(), 'sample' => 'typical',
+        ]);
+        $this->assertMatchesRegularExpression('/>1\.<.*Admission number/s', $html);
+        $this->assertMatchesRegularExpression('/>2\.<.*Student name/s', $html);
+    }
+
+    /**
+     * The regression that let this ship: a table with rows produced HTML with
+     * no cell content at all. Any future model mismatch fails here.
+     */
+    public function test_a_table_never_renders_rows_with_no_content(): void
+    {
+        $html = $this->s->render($this->tplWithTable(), [], 'en', [
+            'contract' => $this->tableContract(), 'sample' => 'typical',
+        ]);
+        $this->assertSame(0, substr_count($html, '<td></td>'),
+            'a table row rendered with no content — this is exactly how the particulars '
+            . 'vanished from the PDF while the canvas showed them');
+    }
+
+    /** The richer explicit-cell model must keep working. */
+    public function test_an_explicit_cell_row_still_renders(): void
+    {
+        $tpl = $this->tplWithTable();
+        $tpl['objects'][0]['content']['rows'] = [[
+            ['wPct' => 50, 'i18n' => ['en' => ['runs' => [['t' => 'Left cell']]]]],
+            ['wPct' => 50, 'i18n' => ['en' => ['runs' => [['t' => 'Right cell']]]]],
+        ]];
+        $html = $this->s->render($tpl, [], 'en', [
+            'contract' => $this->tableContract(), 'sample' => 'typical',
+        ]);
+        $this->assertStringContainsString('Left cell', $html);
+        $this->assertStringContainsString('Right cell', $html);
+    }
+
+    private function tplWithTable(): array
+    {
+        return [
+            'templateId' => 'TPL1', 'languages' => ['en'], 'defaultLanguage' => 'en',
+            'page' => ['size' => 'A4', 'orientation' => 'portrait'],
+            'objects' => [[
+                'id' => 'tbl', 'type' => 'table', 'name' => 'Particulars',
+                'xMm' => 15, 'yMm' => 60, 'wMm' => 180, 'hMm' => 80,
+                'style' => ['sizePt' => 9, 'lineHeight' => 1.55],
+                'content' => ['rows' => [
+                    ['key' => 'student.admissionNo'],
+                    ['key' => 'student.fullName'],
+                ]],
+            ]],
+        ];
+    }
+
+    private function tableContract(): array
+    {
+        return [
+            'student.admissionNo' => ['label' => 'Admission number',
+                                      'sample' => 'DPSR/2019/0412', 'p95' => 'DPSR/2019/0412'],
+            'student.fullName'    => ['label' => 'Student name',
+                                      'sample' => 'Aarav Sharma', 'p95' => 'Aarav Sharma'],
+        ];
+    }
 }

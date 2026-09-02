@@ -660,7 +660,45 @@ class Doc_serializer
         // Rule 6: tables are permitted; flex and grid are not. mPDF supports
         // neither, and a template that used them would render as a broken stack.
         $html = '<table class="zx-t" cellspacing="0" cellpadding="0" style="width:100%;">';
+        $n = 0;
         foreach ($rows as $row) {
+            /* ---------------------------------------------------------------
+               A NUMBERED PARTICULAR: {"key": "student.admissionNo"}.
+               
+               This is the model the designer actually produces, and this method
+               did not understand it. It expected every row to be an ARRAY OF
+               CELLS carrying their own i18n runs, so `foreach ((array) $row as
+               $cell)` walked {"key": "..."} and got the STRING back; a string
+               has no ['i18n'], the run list came out empty, and each row
+               rendered as <td></td>.
+               
+               The consequence was as bad as it gets here: the canvas drew the
+               particulars and THE PDF DID NOT CONTAIN THEM. A Transfer
+               Certificate printed without admission number, student name,
+               parentage, date of birth or date of leaving is not a Transfer
+               Certificate — and nothing failed, because empty cells are valid
+               HTML. Found by reading the text out of a proof PDF rather than by
+               looking at the screen.
+               
+               Mirrors the designer exactly — number, label, value — because
+               preview and proof disagreeing is the one thing this serializer
+               exists to prevent.
+               --------------------------------------------------------------- */
+            if (isset($row['key'])) {
+                $n++;
+                $key   = (string) $row['key'];
+                $label = (string) ($this->contract[$key]['label'] ?? $key);
+                $value = $this->resolve($key, $o, $data, $opts);
+
+                $html .= '<tr>'
+                    . '<td style="width:6%;vertical-align:top;">' . $n . '.</td>'
+                    . '<td style="width:46%;vertical-align:top;">' . $this->esc($label) . '</td>'
+                    . '<td style="vertical-align:top;border-bottom:1px dotted #2A1C14;">'
+                    . $this->esc($value) . '</td>'
+                    . '</tr>';
+                continue;
+            }
+
             $html .= '<tr>';
             foreach ((array) $row as $cell) {
                 $w     = isset($cell['wPct']) ? 'width:' . (float) $cell['wPct'] . '%;' : '';
