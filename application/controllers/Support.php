@@ -1766,7 +1766,12 @@ class Support extends MY_Controller
             }
 
             header('Content-Type: ' . $type);
-            header('Content-Length: ' . (string) ($info['size'] ?? ''));
+            // Only when known. An empty Content-Length is a malformed header,
+            // and a WRONG one truncates the image at the byte the browser was
+            // promised — worse than omitting it and letting the connection close.
+            if (isset($info['size']) && $info['size'] !== '') {
+                header('Content-Length: ' . (string) $info['size']);
+            }
             header('Content-Disposition: inline; filename="' . $name . '"');
             header('X-Content-Type-Options: nosniff');
             // Private: a shared cache must never hold one family's attachment.
@@ -1776,7 +1781,13 @@ class Support extends MY_Controller
             while (!$stream->eof()) {
                 echo $stream->read(262144);
             }
-            return;
+            // exit, NOT return — matching Superadmin_backups.php:377, the only
+            // other binary responder in this codebase. Returning hands control
+            // back to CodeIgniter, whose output pipeline then appends its own
+            // buffer after the image bytes. With a Content-Length set the browser
+            // truncates and the corruption stays invisible; without one it is a
+            // corrupt image. Neither belongs on an evidence path.
+            exit;
         } catch (\Throwable $e) {
             log_message('error', 'Support::attachment failed for ' . $path . ' — ' . $e->getMessage());
             show_error('Could not load that attachment.', 500);
