@@ -602,8 +602,9 @@ class Section_seat_guard
                                . ' pupils across ' . count($sectionIds) . ' sections) in a single atomic '
                                . 'commit, and Firestore accepts at most 500. Splitting it would move some '
                                . 'pupils and strand others, which D21 forbids, so nothing was changed. '
-                               . 'This needs a staged rollover the product does not yet offer — report it '
-                               . 'rather than retrying.'];
+                               . 'Roll it over in stages instead: repeat the rollover with a class_from/class_to '
+                               . 'range narrow enough to fit, one operator-requested stage at a '
+                               . 'time. Each stage is complete and atomic in itself.'];
         }
 
         self::trace('guard.multi', ['dests' => count($sectionIds), 'students' => $studentN, 'ops' => count($ops)]);

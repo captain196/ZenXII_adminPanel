@@ -3545,6 +3545,40 @@ class School_config extends MY_Controller
         $promoteStudents = (int) $this->input->post('promote_students', TRUE) === 1;
         $setActive       = (int) $this->input->post('set_active',       TRUE) === 1;
 
+        // ── STAGED ROLLOVER — an OPERATOR-REQUESTED bounded range ───────
+        //
+        // D21 keeps one requested rollover all-or-nothing, and
+        // placeStudentGroupsAtomic() therefore REFUSES rather than splits
+        // above Firestore's 500-write commit ceiling. The exact model is
+        //
+        //     writes = promoted pupils + graduations + one marker per
+        //              DISTINCT destination section
+        //
+        // so a school whose whole-school rollover exceeds that had no path
+        // at all. class_from/class_to give the operator one: each request
+        // is a COMPLETE rollover of the classes they named, atomic and
+        // all-or-nothing in itself.
+        //
+        // This is deliberately NOT chunking. Nothing here splits a request,
+        // and nothing continues to the next range on its own — the operator
+        // asks for each stage and sees each result. Omit both bounds and
+        // the behaviour is exactly what it was: the whole school, one
+        // atomic operation.
+        //
+        // The bounds are SOURCE classOrder, inclusive, matching the values
+        // already stored on the student document (foundational classes are
+        // negative, Class 1-12 are 1..12), so no new vocabulary is
+        // introduced and _rolloverNextClass() stays the only place that
+        // knows how a class advances.
+        $rawFrom = $this->input->post('class_from', TRUE);
+        $rawTo   = $this->input->post('class_to',   TRUE);
+        $stageFrom = ($rawFrom === null || $rawFrom === '') ? null : (int) $rawFrom;
+        $stageTo   = ($rawTo   === null || $rawTo   === '') ? null : (int) $rawTo;
+        if ($stageFrom !== null && $stageTo !== null && $stageFrom > $stageTo) {
+            return $this->json_error('The class range is inverted: class_from must not be above class_to.');
+        }
+        $staged = ($stageFrom !== null || $stageTo !== null);
+
         // ── Phase 16.9 (D20) — STUDENT PROMOTION REQUIRES SIS:manage ────
         //
         // THE BYPASS THIS CLOSES — this was a privilege-escalation path, not
@@ -3870,6 +3904,40 @@ class School_config extends MY_Controller
         if ($promoteStudents) {
             $srcStudents = $this->fs->schoolWhere('students', [['session', '==', $from]]);
             $srcStudents = is_array($srcStudents) ? $srcStudents : [];
+
+            // Bound the population HERE and nowhere else. The pre-flight and
+            // the write stage both iterate $srcStudents, so filtering once at
+            // the source makes it impossible for them to disagree about who is
+            // in the stage — the same reason LC-10 put the transition table in
+            // one place. A pupil outside the range is not skipped, not
+            // validated and not counted: they are simply not part of this
+            // operation, and a later stage will move them.
+            if ($staged) {
+                $inStage = [];
+                foreach ($srcStudents as $__row) {
+                    if (!is_array($__row)) continue;
+                    $__d = is_array($__row['data'] ?? null) ? $__row['data'] : [];
+                    $__o = $__d['classOrder'] ?? null;
+                    // A pupil with no usable classOrder cannot be placed in a
+                    // range. Leaving them out of every stage would silently
+                    // strand them, so they stay in the UNBOUNDED run only —
+                    // where rollover already reports them as an explicit skip.
+                    if (!is_numeric($__o)) continue;
+                    $__o = (int) $__o;
+                    if ($stageFrom !== null && $__o < $stageFrom) continue;
+                    if ($stageTo   !== null && $__o > $stageTo)   continue;
+                    $inStage[] = $__row;
+                }
+                $summary['stage_class_from'] = $stageFrom;
+                $summary['stage_class_to']   = $stageTo;
+                $summary['stage_population'] = count($inStage);
+                log_message('error',
+                    "ACC_ROLLOVER_STAGE schoolId={$this->school_id} from={$from} to={$to} "
+                    . 'class_from=' . var_export($stageFrom, true)
+                    . ' class_to=' . var_export($stageTo, true)
+                    . ' population=' . count($inStage) . ' of ' . count($srcStudents));
+                $srcStudents = $inStage;
+            }
 
             // LC-11 — resolved ONCE, here, and handed to every call of
             // _rolloverNextClass() in both the pre-flight and the write loop.
