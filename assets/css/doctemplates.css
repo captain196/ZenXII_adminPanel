@@ -734,3 +734,49 @@
 }
 @keyframes zxWork{ from{background-position:-120px 0} to{background-position:calc(100% + 120px) 0} }
 @media (prefers-reduced-motion:reduce){ .zxdt .is-working{animation:none} }
+
+
+/* ==========================================================================
+   Designer chrome — quieter, with a clear hierarchy
+   ==========================================================================
+   The header carried twelve controls at one weight: a breadcrumb that wrapped,
+   two segmented view toggles, a coverage chip, undo/redo, and three actions.
+   Everything shouted, so nothing led. The rules below do three things: give the
+   template's NAME the weight it deserves, mute anything that is not an action,
+   and put real space between groups.                                        */
+
+/* The document's name is the subject of this screen. */
+.zxdt .crumb__now{ font-size:14.5px; font-weight:650; letter-spacing:-.01em; }
+.zxdt .crumb button{ color:var(--ink3); font-weight:500; }
+.zxdt .crumb button:hover{ color:var(--clay); }
+.zxdt .crumb__sep{ color:var(--ink4); margin:0 2px; }
+/* It used to wrap to two lines mid-phrase ("Transfer / Certificate"). */
+.zxdt .crumb{ display:flex; align-items:center; gap:2px; white-space:nowrap;
+              min-width:0; overflow:hidden; }
+.zxdt .crumb button{ white-space:nowrap; }
+
+/* Breathing room between "look back" and "change the document". */
+.zxdt .topbar__div{ width:1px; height:18px; background:var(--line2); margin:0 4px; opacity:.7; }
+.zxdt .topbar{ gap:10px; }
+
+/* Secondary actions recede; only Publish is filled. */
+.zxdt .btn--ghost{ background:transparent; border-color:transparent; color:var(--ink2); }
+.zxdt .btn--ghost:hover{ background:var(--sunk); border-color:transparent; color:var(--ink1); }
+
+/* View controls: present, quiet, out of the way. */
+.zxdt .viewstrip{ display:inline-flex; align-items:center; gap:7px; }
+.zxdt .viewstrip__lbl{ color:var(--ink4); font-size:10.5px; letter-spacing:.06em;
+                       text-transform:uppercase; }
+.zxdt .seg--sm button{ padding:0 7px; height:20px; font-size:11px; }
+
+/* Panels: fewer hard lines, more space. A wall of 1px borders reads as noise. */
+.zxdt .sect__head{ padding:11px 12px; }
+.zxdt .sect__body{ padding-bottom:12px; }
+.zxdt .rail, .zxdt .insp{ background:var(--panel); }
+.zxdt .layer{ border-radius:6px; }
+.zxdt .layer:hover{ background:var(--sunk); }
+
+/* The status bar is context, not content. */
+.zxdt .bar{ font-size:11.5px; }
+.zxdt .sb{ color:var(--ink3); }
+.zxdt .sb b{ color:var(--ink1); font-weight:600; }

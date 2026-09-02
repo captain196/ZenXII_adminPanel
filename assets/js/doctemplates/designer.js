@@ -1497,33 +1497,63 @@ function paintCrumb(){
   c.insertAdjacentHTML("beforeend",'<button data-go="hub">Certificates</button><span class="crumb__sep">›</span>');
   if(S.screen==="gallery"){ c.insertAdjacentHTML("beforeend",`<span class="crumb__now">${esc(t.name)}</span>`); return; }
   c.insertAdjacentHTML("beforeend",`<button data-go="gallery">${esc(t.name)}</button><span class="crumb__sep">›</span>`);
-  const nm=el("span","crumb__now",esc(S.tpl.name));
+  const nm=el("span","crumb__now",esc(S.tpl.name || (S.loading?"Loading…":"Untitled template")));
   nm.contentEditable="true"; nm.spellcheck=false; nm.id="tplName"; nm.title="Click to rename";
   nm.addEventListener("blur",()=>{ S.tpl.name=nm.textContent.trim()||"Untitled template"; markDirty(); paintStatus(); });
   nm.addEventListener("keydown",e=>{ if(e.key==="Enter"){ e.preventDefault(); nm.blur(); } });
   c.appendChild(nm);
-  c.insertAdjacentHTML("beforeend",`<span class="chip chip--draft" style="margin-left:6px">Draft v${S.tpl.version}</span>`);
+  /* THE STATE, TRUTHFULLY.
+     This said only "Draft v4" — which was true and hid the fact that matters
+     most: version 3 of this same template is LIVE right now. Someone editing it
+     had no way to know from the header that a certificate is being issued from
+     it as they work. */
+  if(S.loading && !S.tpl.name) return;      // nothing true to say about it yet
+  const active = S.tpl.activeVersion != null;
+  const pub    = S.tpl.publishedVersion || null;
+  const ahead  = (S.tpl.version || 1) > (pub || 0);
+
+  if(active)     c.insertAdjacentHTML("beforeend",
+    `<span class="chip chip--active" style="margin-left:8px" title="Every print point resolves this version"><span class="dot"></span>In use · v${S.tpl.activeVersion}</span>`);
+  else if(pub)   c.insertAdjacentHTML("beforeend",
+    `<span class="chip chip--published" style="margin-left:8px"><span class="dot"></span>Published · v${pub}</span>`);
+  else           c.insertAdjacentHTML("beforeend",
+    `<span class="chip chip--draft" style="margin-left:8px"><span class="dot"></span>Draft</span>`);
+
+  if(ahead && (active || pub)) c.insertAdjacentHTML("beforeend",
+    `<span class="chip chip--draft" style="margin-left:6px" title="Publish to make these changes live"><span class="dot"></span>Unpublished changes</span>`);
 }
 function paintTopActions(){
   const a=zq("#topActions"); a.innerHTML="";
   if(S.screen!=="designer") return;
-  const cov=translationCoverage("hi");
+  /* ACTIONS ONLY — things that change the document, in the order they are
+     done: undo/redo, look back, prove, publish. The view toggles moved to the
+     status bar, which is where the other view state already lives. */
   a.innerHTML = `
-    <div class="seg" title="Preview language">
+    <button class="btn btn--ghost btn--ico btn--sm" id="undoBtn" title="Undo — ⌘Z">↺</button>
+    <button class="btn btn--ghost btn--ico btn--sm" id="redoBtn" title="Redo — ⌘⇧Z">↻</button>
+    <span class="topbar__div"></span>
+    <button class="btn btn--ghost btn--sm" id="histBtn">History</button>
+    <button class="btn btn--sm" id="proofBtn">Proof PDF <span class="btn__hint">~2s</span></button>
+    <button class="btn btn--primary btn--sm" id="pubBtn">Publish</button>`;
+}
+
+/** Language, sample data and translation coverage — what you are LOOKING at. */
+function paintViewStrip(){
+  const v=zq("#viewStrip"); if(!v) return;
+  if(S.screen!=="designer"){ v.innerHTML=""; return; }
+  const cov=translationCoverage("hi");
+  v.innerHTML = `
+    <span class="viewstrip__lbl">Preview</span>
+    <div class="seg seg--sm" title="Preview language">
       <button data-lang="en" class="${S.lang==="en"?"is-on":""}">EN</button>
       <button data-lang="hi" class="${S.lang==="hi"?"is-on":""}">हिन्दी</button>
     </div>
-    <span class="chip mono" title="Text objects with content in हिन्दी">${cov.done}/${cov.total} translated</span>
-    <div class="seg" title="Sample data shown on the canvas">
+    <span class="sb mono" title="Text objects with content in हिन्दी">${cov.done}/${cov.total} translated</span>
+    <div class="seg seg--sm" title="Sample data shown on the canvas">
       <button data-data="off"     class="${S.data==="off"?"is-on":""}">Field names</button>
       <button data-data="typical" class="${S.data==="typical"?"is-on":""}">Typical</button>
       <button data-data="p95"     class="${S.data==="p95"?"is-on":""}">p95</button>
-    </div>
-    <button class="btn btn--sm btn--ico" id="undoBtn" title="Undo — ⌘Z">↺</button>
-    <button class="btn btn--sm btn--ico" id="redoBtn" title="Redo — ⌘⇧Z">↻</button>
-    <button class="btn btn--sm" id="histBtn">History</button>
-    <button class="btn btn--sm" id="proofBtn">Proof PDF <span class="btn__hint">~2s</span></button>
-    <button class="btn btn--primary btn--sm" id="pubBtn">Publish</button>`;
+    </div>`;
 }
 function schematic(objs, host){
   host.innerHTML="";
@@ -2893,12 +2923,23 @@ function paintStatus(){
     dt.innerHTML = S.issuance.duplicate ? '<b style="color:var(--seal)">DUPLICATE</b>' : "original";
     dt.title="Preview the document as an original or as a reissued duplicate";
   }
-  zq("#sbData").innerHTML = S.data==="off" ? "Field names"
-    : S.data==="p95" ? '<span class="sb--warn">p95 sample data — the length that breaks layouts</span>' : "Typical sample data";
+  /* The segmented control beside this already says which mode is on, so the
+     sentence only earns its place when it is warning you. */
+  zq("#sbData").innerHTML = S.data==="p95"
+    ? '<span class="sb--warn">p95 — the length that breaks layouts</span>' : "";
   zq("#sbWarn").innerHTML = v.blocking.length
     ? `<span class="sb--warn">${v.blocking.length} blocking · ${v.warnings.length} warnings</span>`
     : '<span class="sb--ok">no blocking findings</span>';
-  zq("#sbSave").innerHTML = S.dirty ? `Unsaved · lockVersion <b>${S.tpl.lockVersion}</b>` : `Saved · lockVersion <b>${S.tpl.lockVersion}</b>`;
+  /* "lockVersion 19" is our word, not the reader's. It answers a question
+     nobody asked and buries the one they did: is my work safe? The number is
+     still there on hover for anyone debugging a conflict. */
+  const save=zq("#sbSave");
+  save.innerHTML = S.dirty
+    ? '<span class="sb--warn">Unsaved changes</span>'
+    : '<span class="sb--ok">All changes saved</span>';
+  save.title = "lockVersion " + S.tpl.lockVersion;
+
+  paintViewStrip();
 }
 function render(){
   paintCrumb(); paintTopActions(); layoutPage(); paintRulers();
@@ -3781,7 +3822,11 @@ zq(".insp").addEventListener("click", e=>{
   if(a==="fwd") return zOrder(1);
   if(a==="back") return zOrder(-1);
 });
-zq("#topActions").addEventListener("click", e=>{
+/* Bound to BOTH containers: the language and sample-data buttons moved to the
+   status bar, and a handler delegated only on #topActions would have silently
+   stopped working the moment they left it. */
+["#topActions","#viewStrip"].forEach(sel=>{ const n=zq(sel); if(n) n.addEventListener("click", onTopAction); });
+function onTopAction(e){
   const b=e.target.closest("button"); if(!b) return;
   if(b.dataset.lang){ commitEdit(); S.lang=b.dataset.lang; render(); toast("Previewing "+LANGS[S.lang].native); }
   if(b.dataset.data){ S.data=b.dataset.data; render();
@@ -3791,7 +3836,7 @@ zq("#topActions").addEventListener("click", e=>{
   if(b.id==="proofBtn") openProof();
   if(b.id==="pubBtn") openPublish();
   if(b.id==="histBtn") openHistory();
-});
+}
 zq("#crumb").addEventListener("click", e=>{
   const b=e.target.closest("button[data-go]"); if(b){ commitEdit(); go(b.dataset.go); }
 });
@@ -4366,11 +4411,26 @@ S.tpl=starterTC();
 if(SRV.online){
   S.lib={}; S.active={}; S.loading=true;
   if(BOOT.docType) S.docType=BOOT.docType;   // land on the right screen immediately
+  if(BOOT.templateId){
+    /* Deep-linking into the designer shows the shell while the real template
+       loads — and the shell is a FIXTURE. Left as-is it announced someone
+       else's template by name and state ("TC — main letterhead · In use · v2")
+       for the seconds the fetch takes. Blank the identity until we know it. */
+    S.tpl.name=""; S.tpl.publishedVersion=null; S.tpl.activeVersion=null; S.tpl.version=1;
+  }
 }else{
   S.lib=JSON.parse(JSON.stringify(LIB));
   S.active=Object.assign({}, ACTIVE);
 }
-paintHub(); go(SRV.online && BOOT.docType && !BOOT.templateId ? "gallery" : "hub");
+/* Land on the screen the URL asked for, immediately.
+   /design/{id} used to show the hub for the several seconds the fetch takes and
+   then jump — so the answer to "where is my template?" was a screen full of
+   other things, followed by a lurch. */
+paintHub();
+go(!SRV.online ? "hub"
+   : BOOT.templateId ? "designer"
+   : BOOT.docType    ? "gallery"
+   : "hub");
 
 /**
  * Replace the built-in fixtures with this school's real templates.

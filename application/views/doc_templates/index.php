@@ -180,7 +180,12 @@ $zxdtBoot = [
               <button class="sect__head" data-sect="sectPage"><span class="sect__caret">▶</span><span>Page</span></button>
               <div class="sect__body" id="pageBody"></div>
             </div>
-            <div class="sect is-open" id="sectComp">
+            <!-- CLOSED by default. This opened onto the full statutory text —
+                 several paragraphs of the RTE Act — before you had selected
+                 anything, so the first thing the panel said was the thing you
+                 were least likely to need. The summary line and its status dot
+                 stay visible; the reasoning is one click away. -->
+            <div class="sect" id="sectComp">
               <button class="sect__head" data-sect="sectComp"><span class="sect__caret">▶</span><span>Compliance</span><span class="spacer"></span><span id="compBadge"></span></button>
               <div class="sect__body" style="padding:0" id="compBody"></div>
             </div>
@@ -195,6 +200,14 @@ $zxdtBoot = [
         </span>
         <span class="sb" id="sbSel">No selection</span>
         <span class="spacer"></span>
+        <!-- VIEW CONTROLS LIVE HERE, not in the header.
+             Language, sample data and translation coverage change what you are
+             LOOKING AT; History, Proof and Publish change the document. Those
+             are different kinds of thing and they were sitting side by side at
+             the same weight in the header, which is most of why that bar felt
+             crowded. This is the bar that already owns view state — zoom,
+             selection, findings — so they belong here. -->
+        <span class="viewstrip" id="viewStrip"></span>
         <span class="sb">Issue as <button class="zoombtn" id="dupToggle"></button></span>
         <span class="sb" id="sbData"></span>
         <span class="sb" id="sbWarn"></span>
