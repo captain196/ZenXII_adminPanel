@@ -57,6 +57,7 @@ $can_manage = isset($can_manage) ? $can_manage : (function_exists('has_permissio
 </div>
 
 <script src="<?= base_url('assets/js/support_desk.js') ?>"></script>
+<?php $this->load->view('support/_csrf'); ?>
 <script>
 (function () {
   'use strict';
@@ -65,6 +66,8 @@ $can_manage = isset($can_manage) ? $can_manage : (function_exists('has_permissio
   var q = '', status = 'active', awaiting = false;
 
   var list = SD.mountList({
+    autoRefresh: true,
+
     rows:     document.getElementById('sdRows'),
     state:    document.getElementById('sdState'),
     more:     document.getElementById('sdMore'),

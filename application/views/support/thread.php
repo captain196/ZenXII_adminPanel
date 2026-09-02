@@ -108,12 +108,11 @@ $ticket_id  = isset($ticket_id)  ? $ticket_id  : '';
 </div>
 
 <script src="<?= base_url('assets/js/support_desk.js') ?>"></script>
+<?php $this->load->view('support/_csrf'); ?>
 <script>
 (function () {
   'use strict';
   SD.base     = '<?= rtrim(base_url(), "/") ?>';
-  SD.csrfName = '<?= $this->security->get_csrf_token_name() ?>';
-  SD.csrfHash = '<?= $this->security->get_csrf_hash() ?>';
 
   var TICKET_ID  = '<?= html_escape($ticket_id) ?>';
   var CAN_EDIT   = <?= $can_edit   ? 'true' : 'false' ?>;
@@ -324,10 +323,22 @@ $ticket_id  = isset($ticket_id)  ? $ticket_id  : '';
     btn.disabled = true;
     var was = btn.textContent;
     btn.textContent = 'Working…';
-    return SD.postJSON(SD.base + url, fields).then(function () {
-      flash(okMsg, 'ok');
+    return SD.postJSON(SD.base + url, fields).then(function (d) {
+      // The server may report that the action did NOT happen while still
+      // answering 200 — reply() does exactly this when the identical body is
+      // already on the thread: no message written, no push, no ledger entry.
+      // Flashing the hardcoded okMsg there would tell a staff member "Reply
+      // sent." when nothing was sent, which is the same class of lie the server
+      // side was just fixed to stop telling. Caught by executing the duplicate
+      // path against a live panel, not by reading the code.
+      var noop = d && (d.duplicate === true || d.appended === false);
+      flash((d && d.message) ? d.message : okMsg, noop ? 'error' : 'ok');
+      // Resolve FALSE on a no-op so clearOnOk keeps the text. The duplicate
+      // message tells the staff member the identical body is already there;
+      // leaving it in the box is what makes "change a word and it sends"
+      // actionable rather than advice about text they no longer have.
       // The write succeeded even if the redraw afterwards does not.
-      return reload().then(function () { return true; }, function () { return true; });
+      return reload().then(function () { return !noop; }, function () { return !noop; });
     }).catch(function (e) {
       // Never claim success on a refused write.
       flash(e.message, 'error');

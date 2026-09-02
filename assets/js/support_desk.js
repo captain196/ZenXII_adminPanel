@@ -70,6 +70,18 @@
               : 'Request failed (' + r.status + ').');
           throw new Error(msg);
         }
+        // Adopt a rotated token from a READ too, exactly as postJSON does.
+        //
+        // Defence in depth against the failure this pairs with: the token is
+        // emitted per-view, and a view that forgets leaves SD.csrfHash as the
+        // empty-string default, so every POST from that page 403s and the
+        // helper blames the user's permissions. Since every Support view loads
+        // data before it can act, adopting the token here means such a page
+        // heals itself on its first read instead of being silently unable to
+        // write. views/support/_csrf.php is the correctness fix; this is the
+        // one that makes forgetting it non-fatal.
+        if (body && body.csrf_token) SD.csrfHash = body.csrf_token;
+
         if (!body || typeof body !== 'object') {
           throw new Error('The server returned an unreadable response.');
         }
@@ -265,10 +277,60 @@
 
     cfg.more.addEventListener('click', function () { load(true); });
 
+    // ── Background refresh ───────────────────────────────────────────────────
+    //
+    // The queue had NO refresh of any kind: staff watching the desk saw a new
+    // ticket only if they happened to reload. Verified live 2026-08-31 —
+    // 30 s idle on /support produced exactly one background request, and it
+    // belonged to the attendance badge poller in the shared header, not to
+    // Support. A support desk that only updates when you press F5 is a desk
+    // that misses tickets.
+    //
+    // This is deliberately the SAME idiom as that badge poller
+    // (views/include/header.php): 30 s, never while the tab is hidden, an
+    // immediate pass when the tab regains focus, and silent on failure.
+    //
+    // The one thing a list must never do is destroy work in progress. So a
+    // background pass only re-renders while the list is PRISTINE — page one,
+    // scrolled to the top, nothing loading. If the user has paged in more rows
+    // or scrolled away, the pass is skipped entirely rather than yanking the
+    // page out from under them; they get the update on their next interaction
+    // or when they come back to the tab. Skipping is not a compromise here:
+    // silently reordering rows under someone's cursor is worse than being
+    // 30 s stale.
+    var POLL_MS = 30000;
+    var pollTimer = null;
+
+    function pristine() {
+      if (loading) return false;
+      if (cursor)  return false;                         // extra pages loaded
+      if (cfg.rows.querySelector('input:checked')) return false;   // a selection
+      var y = window.pageYOffset || document.documentElement.scrollTop || 0;
+      return y < 80;                                     // still at the top
+    }
+
+    function backgroundPass() {
+      if (document.hidden) return;
+      if (!pristine())     return;
+      load(false);
+    }
+
+    function startPolling() {
+      if (pollTimer) return;
+      pollTimer = setInterval(backgroundPass, POLL_MS);
+      document.addEventListener('visibilitychange', function () {
+        if (!document.hidden) backgroundPass();
+      });
+    }
+
+    // Opt-in, so a caller that must not move under the user simply omits it.
+    if (cfg.autoRefresh) startPolling();
+
     return {
       reload:   function () { cursor = null; load(false); },
       loadMore: function () { load(true); },
-      reset:    function () { cursor = null; }
+      reset:    function () { cursor = null; },
+      refresh:  backgroundPass
     };
   };
 

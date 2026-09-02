@@ -229,6 +229,32 @@ class Support extends MY_Controller
         return gmdate('Y-m-d\TH:i:s', $at ?? time()) . '.000Z';
     }
 
+    /**
+     * The same instant as _iso(), typed so the REST encoder emits a Firestore
+     * `timestampValue` rather than a `stringValue`.
+     *
+     * `supportMessages.createdAt` MUST be a Timestamp. The parent app has no
+     * choice about this — firestore.rules forces `createdAt == request.time`
+     * on a client create, and `request.time` is a timestamp. The panel wrote a
+     * string, so a thread held both types at once.
+     *
+     * That is not a cosmetic drift. Firestore orders a mixed-type field BY TYPE
+     * FIRST: every timestamp sorts before every string, whatever the clock says.
+     * A thread therefore rendered as "all parent messages, then all staff
+     * messages" on BOTH surfaces — the app orders createdAt ASC, the panel DESC.
+     *
+     * Verified live 2026-08-31 on TKT_WDMAHQVKBSPP1F0B: a parent reply sent
+     * 29 Aug 02:58 came back SECOND of six, above three staff messages from
+     * 28 Aug — the answer displayed above the question it answered.
+     *
+     * Existing string rows stay mis-ordered until they are converted; see
+     * scripts/backfill_support_message_timestamps.js.
+     */
+    private function _ts_value(?int $at = null): \DateTimeImmutable
+    {
+        return new \DateTimeImmutable('@' . ($at ?? time()));
+    }
+
     private function _ts($v): ?int
     {
         if ($v === null || $v === '') return null;
@@ -925,7 +951,13 @@ class Support extends MY_Controller
     {
         $this->_last_message_duplicate = false;
         $tid  = (string) $t['ticketId'];
-        $now  = $this->_iso();
+        // One instant, two representations: the string feeds the dedupe scope
+        // and the ticket denormals (uniformly string today); the Timestamp is
+        // what actually goes on the message. Deriving both from a single
+        // time() keeps them from drifting a second apart.
+        $at   = time();
+        $now  = $this->_iso($at);
+        $nowT = $this->_ts_value($at);
 
         // B4: an IDEMPOTENT message id, not a fresh random one.
         //
@@ -1026,7 +1058,8 @@ class Support extends MY_Controller
             'senderName' => (string) ($this->admin_name ?? ''),
             'body'       => $body,
             'attachments'=> [],
-            'createdAt'  => $now,
+            // Timestamp, never a string — see _ts_value().
+            'createdAt'  => $nowT,
         ]);
         if (!$ok) return false;
 
@@ -1134,6 +1167,37 @@ class Support extends MY_Controller
 
         $prev = (string) ($t['assignedTo'] ?? '');
         $name = (string) ($staff['name'] ?? $staff['Name'] ?? $staffId);
+
+        // Assigning a ticket to the person who ALREADY holds it is not a state
+        // change, so it must not behave like one. Without this, a retry after a
+        // timed-out assign — the single most likely way this endpoint is called
+        // twice — produced three separate duplicate side effects:
+        //
+        //   · a second TICKET_ASSIGNED push. The dedupe key ends in the
+        //     assignment clock, so the two calls minted DIFFERENT keys and the
+        //     overwrite that normally makes emit_push idempotent never happened.
+        //     Verified live 2026-08-31: sup_asg_..._03:37:08.000Z and
+        //     sup_asg_..._03:37:16.000Z, both delivered to the same assignee.
+        //   · a second audit row, REASSIGNED with from == to — a reassignment
+        //     to nobody new, which is not a fact about the ticket.
+        //   · a second system message, "Reassigned to Amit Verma", visible to
+        //     the PARENT, telling them their ticket moved when it had not.
+        //
+        // Fixing it here rather than at the dedupe key is deliberate. The clock
+        // in the key is CORRECT for a genuine reassignment (A→B→A are distinct
+        // events and each deserves its own notification); what was wrong was
+        // treating a no-op as an event at all. Guarding the entry point makes
+        // every downstream effect idempotent at once, instead of making three
+        // separate mechanisms each defend themselves.
+        if ($prev !== '' && $prev === $staffId) {
+            $this->json_success([
+                'status'    => (string) ($t['status'] ?? 'assigned'),
+                'unchanged' => true,
+                'message'   => 'This ticket is already assigned to ' . $name . '.',
+            ]);
+            return;
+        }
+
         $now  = $this->_iso();
 
         if (!$this->_patch_ticket($t, [
@@ -1661,10 +1725,58 @@ class Support extends MY_Controller
             $object = $this->firebase->getStorageBucket()->object($path);
             if (!$object->exists()) { show_404(); return; }
 
-            // Short TTL: long enough to render, short enough that a URL copied
-            // out of devtools is useless by the time it is pasted anywhere.
-            $url = $object->signedUrl(new \DateTime('+5 minutes'));
-            redirect($url);
+            // STREAM the bytes. Do NOT redirect to a signed URL.
+            //
+            // The previous implementation minted a 5-minute signed URL and
+            // redirected to it. The reasoning recorded here was about the URL as
+            // a CREDENTIAL — "short enough that a URL copied out of devtools is
+            // useless by the time it is pasted anywhere" — and that reasoning was
+            // sound. What it missed is the URL as an IDENTIFIER.
+            //
+            // A GCS signed URL's path IS the object path, and the object path
+            // carries the reporter id:
+            //     schools/{schoolId}/support/{reporterId}/{ticketId}/{n}.jpg
+            // So on an ANONYMOUS ticket the panel withholds the name in every
+            // field it renders — _row() blanks studentName/className/reporterName
+            // server-side, and get_thread blanks senderName on parent-authored
+            // messages — and then the attachment redirect puts STU0012 in the
+            // address bar the moment a staff member opens the photo. Verified:
+            // the generated URL path is
+            //   /graderadmin.appspot.com/schools/SCH_.../support/STU0012/TKT_.../1.jpg
+            //
+            // The reporter id cannot simply be removed from the path: the Storage
+            // rule needs it there, because attachments upload BEFORE the ticket
+            // document exists and so cannot be authorised by a firestore.get().
+            // The owner-in-path design is correct; exposing that path to a third
+            // party is what is wrong. Streaming keeps the path server-side.
+            //
+            // This also removes the bearer-credential exposure entirely rather
+            // than time-boxing it: access stays bound to the panel session and
+            // the RBAC check that has already run above, instead of to a URL that
+            // is valid for anyone holding it. Attachments are capped at 3 per
+            // ticket and 5 MB each by the Storage rule, so the proxy cost is
+            // bounded and small.
+            $info = $object->info();
+            $type = (string) ($info['contentType'] ?? 'application/octet-stream');
+            // Never echo a caller-influenced content type: the upload rule admits
+            // only image/jpeg, so anything else means the object is not what the
+            // ticket claims and is served as a download rather than rendered.
+            if (!in_array($type, ['image/jpeg', 'image/png'], true)) {
+                $type = 'application/octet-stream';
+            }
+
+            header('Content-Type: ' . $type);
+            header('Content-Length: ' . (string) ($info['size'] ?? ''));
+            header('Content-Disposition: inline; filename="' . $name . '"');
+            header('X-Content-Type-Options: nosniff');
+            // Private: a shared cache must never hold one family's attachment.
+            header('Cache-Control: private, max-age=300');
+
+            $stream = $object->downloadAsStream();
+            while (!$stream->eof()) {
+                echo $stream->read(262144);
+            }
+            return;
         } catch (\Throwable $e) {
             log_message('error', 'Support::attachment failed for ' . $path . ' — ' . $e->getMessage());
             show_error('Could not load that attachment.', 500);

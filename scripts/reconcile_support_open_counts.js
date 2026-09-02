@@ -104,6 +104,21 @@ const CAP = 5;
   const stored = new Map();
   for (const doc of counters.docs) {
     const d = doc.data() || {};
+
+    // `supportCounters` holds TWO document shapes, which is easy to miss:
+    //   supportCounters/{schoolId}              → { lastTicketNo }  the ticket
+    //                                             number SEQUENCE
+    //   supportCounters/{schoolId}_{reporterId} → { openCount }     the cap
+    // (functions/supportDesk.js seqRef vs openRef.)
+    //
+    // This reconciler owns openCount ONLY. Today the sequence document is
+    // harmless here — it has no openCount, so want and have are both 0 and it
+    // is never written — but that is luck, not design: it sits in the same
+    // scan, and a single future change to how a missing counter is treated
+    // would have us merge `openCount: 0` onto the document that issues ticket
+    // numbers. Skip it explicitly rather than relying on the arithmetic.
+    if (doc.id === String(d.schoolId || '') || d.lastTicketNo !== undefined) continue;
+
     stored.set(doc.id, Number(d.openCount || 0));
     // A counter with no tickets still needs its ids; take what the document
     // already carries rather than parsing the key.

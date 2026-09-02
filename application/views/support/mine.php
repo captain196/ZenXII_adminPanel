@@ -53,6 +53,7 @@ $has_queue = isset($has_queue) ? $has_queue : (function_exists('has_permission')
 </div>
 
 <script src="<?= base_url('assets/js/support_desk.js') ?>"></script>
+<?php $this->load->view('support/_csrf'); ?>
 <script>
 (function () {
   'use strict';
@@ -61,6 +62,8 @@ $has_queue = isset($has_queue) ? $has_queue : (function_exists('has_permission')
   var status = 'active';
 
   var list = SD.mountList({
+    autoRefresh: true,
+
     rows:     document.getElementById('sdRows'),
     state:    document.getElementById('sdState'),
     more:     document.getElementById('sdMore'),
