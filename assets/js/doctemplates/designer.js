@@ -733,6 +733,208 @@ const S = {
   cmode:"edit"   // Content pane: "edit" (all fields) | "read" (proofread)
 };
 
+/* ==========================================================================
+   1b · SERVER — the one door to the panel
+   ==========================================================================
+
+   The designer used to be entirely self-contained: it booted from the
+   constants above and never spoke to anything, so every template a clerk
+   designed lived until the next reload and no further.
+
+   BOOT comes from the <script id="zxdt-boot"> the view renders. When it is
+   absent — the E2E harness page, which deliberately ships no payload — the
+   designer stays offline and drives its own constants, which is what lets the
+   suite test the state machine without a server. Offline is a TEST condition,
+   never a production fallback: it says so out loud in the console, because a
+   designer that silently stopped saving would look exactly like one that
+   works.                                                                    */
+
+const BOOT = (() => {
+  const el = document.getElementById("zxdt-boot");
+  if (!el) return null;
+  try { return JSON.parse(el.textContent); } catch (e) {
+    console.error("[zxdt] boot payload is not valid JSON — refusing to guess", e);
+    return null;
+  }
+})();
+
+const SRV = {
+  online: !!(BOOT && BOOT.base),
+  base:   BOOT && BOOT.base || "",
+  csrf:   { name: BOOT && BOOT.csrfName || "", hash: BOOT && BOOT.csrfHash || "" },
+  can:    { edit: !!(BOOT && BOOT.canEdit), manage: !!(BOOT && BOOT.canManage) },
+  inflight: 0
+};
+if (!SRV.online) {
+  console.warn("[zxdt] no boot payload — running OFFLINE on built-in fixtures. " +
+               "Nothing you do here is saved. This is the harness mode.");
+}
+
+/** A server call that failed. `code` carries the HTTP status. */
+class ApiError extends Error {
+  constructor(message, code, body) { super(message); this.code = code; this.body = body; }
+}
+
+/**
+ * The only way this file talks to the panel.
+ *
+ * FAILS CLOSED, because fetch() does not reject on 403 or 500 — it resolves
+ * with ok:false, and a helper that forgets to look reports a denied action as
+ * done. That is a bug class this codebase has already been bitten by, so every
+ * one of r.ok, a parseable body, and status !== "error" has to hold before a
+ * caller sees a result. Anything else throws.
+ */
+async function api(action, opts) {
+  opts = opts || {};
+  if (!SRV.online) throw new ApiError("offline: no server to call", 0, null);
+
+  const url = SRV.base + "/" + action + (opts.query ? "?" + new URLSearchParams(opts.query) : "");
+  const init = { method: opts.method || "GET", credentials: "same-origin",
+                 headers: { "X-Requested-With": "XMLHttpRequest" } };
+
+  if (init.method === "POST") {
+    /* CSRF stays ON for these routes. They are NOT in csrf_exclude_uris, and
+       must not be: excluding them would let a forged cross-site POST flip a
+       school's active Transfer Certificate template. */
+    const body = opts.body instanceof FormData ? opts.body : new FormData();
+    if (!(opts.body instanceof FormData)) {
+      Object.entries(opts.body || {}).forEach(([k, v]) =>
+        body.append(k, typeof v === "string" ? v : JSON.stringify(v)));
+    }
+    if (SRV.csrf.name) body.append(SRV.csrf.name, SRV.csrf.hash);
+    init.body = body;
+  }
+
+  SRV.inflight++;
+  let r, body = null;
+  try {
+    r = await fetch(url, init);
+    try { body = await r.json(); } catch (e) { /* handled below */ }
+  } catch (e) {
+    SRV.inflight--;
+    throw new ApiError("Could not reach the server — check your connection.", 0, null);
+  }
+  SRV.inflight--;
+
+  // Keep the rotating token current even on a failure response.
+  if (body && body.csrf_token) SRV.csrf.hash = body.csrf_token;
+
+  if (!r.ok || !body || body.status === "error") {
+    throw new ApiError(
+      (body && body.message) || "The action could not be completed (HTTP " + r.status + ").",
+      r.status, body);
+  }
+  return body.data || {};
+}
+
+/** Report a server failure to the person, never swallow it. */
+function apiFail(e, what) {
+  const msg = e instanceof ApiError ? e.message : String(e && e.message || e);
+  console.error("[zxdt] " + what + " failed", e);
+  toast(what + " failed — " + msg);
+  return null;
+}
+
+/* ---- the calls, one per endpoint ------------------------------------- */
+
+const srv = {
+  templates: docType => api("get_templates", { query: docType ? { docType } : {} }),
+  template:  id       => api("get_template",  { query: { templateId: id } }),
+  blocks:    type     => api("get_blocks",    { query: type ? { blockType: type } : {} }),
+
+  create: (docType, seed) =>
+    api("create", { method: "POST", body: { docType, seed } }),
+
+  save: (id, patch, lockVersion) =>
+    api("save", { method: "POST", body: { templateId: id, patch, lockVersion: String(lockVersion) } }),
+
+  validate: tpl => api("validate", { method: "POST", body: { template: tpl } }),
+
+  proof: id => api("proof_pdf", { method: "POST", body: { templateId: id } }),
+
+  publish:  id => api("publish",  { method: "POST", body: { templateId: id } }),
+  activate: id => api("activate", { method: "POST", body: { templateId: id } }),
+  archive:  id => api("archive",  { method: "POST", body: { templateId: id } }),
+
+  uploadAsset: file => {
+    const fd = new FormData(); fd.append("file", file);
+    return api("upload_asset", { method: "POST", body: fd });
+  }
+};
+
+/**
+ * Persist the current draft.
+ *
+ * A CONFLICT IS NOT AN ERROR TO RETRY. lockVersion moving means another person
+ * saved this template while it was open here; retrying would overwrite work
+ * nobody agreed to lose. Two clerks editing a statutory template are not
+ * editing the same sentence by coincidence. So the save stops, says who has to
+ * decide, and leaves both versions intact.
+ */
+let __saveTimer = null;
+
+/**
+ * Mark the draft changed, and schedule a save.
+ *
+ * Debounced rather than per-keystroke: a save per character would be one
+ * request per letter typed and would make lockVersion churn so fast that a
+ * second person editing could never land a save at all.
+ *
+ * It does NOT save while a modal is open. Publish and activate read the state
+ * the person is looking at, and a save landing underneath a confirmation
+ * dialog would move it after they read it.
+ */
+function markDirty() {
+  S.dirty = true;
+  if (!SRV.online) return;
+  clearTimeout(__saveTimer);
+  __saveTimer = setTimeout(() => {
+    if (!S.dirty) return;
+    const scrim = document.getElementById("scrim");
+    if (scrim && scrim.classList.contains("is-on")) return;   // a dialog is open
+    srvSaveDraft(true);
+  }, 1500);
+}
+
+/* An unsaved draft must never leave quietly. The debounce means there is
+   always a window where the screen is ahead of the server. */
+window.addEventListener("beforeunload", e => {
+  if (SRV.online && S.dirty) { e.preventDefault(); e.returnValue = ""; }
+});
+
+async function srvSaveDraft(silent) {
+  if (!SRV.online || !S.tpl || !S.tpl.templateId) return false;
+  const patch = {
+    name: S.tpl.name, page: S.tpl.page, header: S.tpl.header, footer: S.tpl.footer,
+    objects: S.tpl.objects, languages: S.tpl.languages,
+    defaultLanguage: S.tpl.defaultLanguage
+  };
+  try {
+    const out = await srv.save(S.tpl.templateId, patch, S.tpl.lockVersion || 0);
+    S.tpl.lockVersion = out.lockVersion;
+    S.dirty = false;
+    paintStatus();
+    if (!silent) toast("Saved");
+    return true;
+  } catch (e) {
+    if (e instanceof ApiError && e.code === 409) {
+      modal("Someone else saved this template",
+        "Your changes are still on screen. They have not been saved, and theirs have not been lost.",
+        `<p class="note">This template was changed by someone else while you had it open.
+         Saving now would overwrite their work, so it was stopped.</p>
+         <p class="note" style="margin-bottom:0">Reload to see their version — your unsaved
+         changes will be gone, so copy anything you need first.</p>`,
+        `<button class="btn" data-close>Keep editing (not saved)</button><span class="spacer"></span>
+         <button class="btn btn--primary" id="cfReload">Reload their version</button>`, true);
+      const b = document.getElementById("cfReload");
+      if (b) b.onclick = () => location.reload();
+      return false;
+    }
+    apiFail(e, "Save");
+    return false;
+  }
+}
+
 const TYPES = [
   {id:"transfer_certificate", name:"Transfer Certificate", alias:"School Leaving Certificate · Leaving Certificate", statutory:true},
   {id:"bonafide", name:"Bonafide Certificate", alias:"present-tense · no statutory basis found", statutory:false},
@@ -844,7 +1046,7 @@ function translationCoverage(lang){
 /* command stack — one command per gesture, never one per mousemove */
 function push(label, before, after){
   S.undo.push({label, before, after}); if(S.undo.length>80) S.undo.shift();
-  S.redo.length=0; S.dirty=true;
+  S.redo.length=0; markDirty();
 }
 const snapshot = ()=>JSON.stringify({o:S.tpl.objects, r:S.tpl.regionLang||{}});
 const restore  = j=>{ const d=JSON.parse(j); S.tpl.objects=d.o; S.tpl.regionLang=d.r||{}; };
@@ -1156,7 +1358,7 @@ function paintCrumb(){
   c.insertAdjacentHTML("beforeend",`<button data-go="gallery">${esc(t.name)}</button><span class="crumb__sep">›</span>`);
   const nm=el("span","crumb__now",esc(S.tpl.name));
   nm.contentEditable="true"; nm.spellcheck=false; nm.id="tplName"; nm.title="Click to rename";
-  nm.addEventListener("blur",()=>{ S.tpl.name=nm.textContent.trim()||"Untitled template"; S.dirty=true; paintStatus(); });
+  nm.addEventListener("blur",()=>{ S.tpl.name=nm.textContent.trim()||"Untitled template"; markDirty(); paintStatus(); });
   nm.addEventListener("keydown",e=>{ if(e.key==="Enter"){ e.preventDefault(); nm.blur(); } });
   c.appendChild(nm);
   c.insertAdjacentHTML("beforeend",`<span class="chip chip--draft" style="margin-left:6px">Draft v${S.tpl.version}</span>`);
@@ -1253,14 +1455,49 @@ function openTemplate(row){
 }
 function openStarter(st){
   const t=st.build();
-  t.name=st.name+" (copy)"; t.templateId="TPL"+Math.floor(1000+Math.random()*8999);
+  t.name=st.name+" (copy)";
+  /* Offline the id is a local placeholder. Online the SERVER mints it: a
+     client-chosen id could collide with an existing template and overwrite it,
+     and the random one used here would do exactly that often enough to matter. */
+  t.templateId="TPL"+Math.floor(1000+Math.random()*8999);
   t.status="draft"; t.version=1; t.publishedVersion=null; t.activeVersion=null;
   S.tpl=t; S.lang=t.defaultLanguage||"en";
-  S.sel=[]; S.undo=[]; S.redo=[]; S.proofed=null; S.dirty=true; S.tool="move";
+  S.sel=[]; S.undo=[]; S.redo=[]; S.proofed=null; markDirty(); S.tool="move";
   S.baseline=JSON.parse(JSON.stringify(t.objects));
   S.blockRefs={BLK0001:3}; S.blockIgnored={};
   go("designer");
+  if(SRV.online) return createOnServer(st);
   toast("Cloned into your school — the starter is never linked live");
+}
+
+/**
+ * Register the freshly cloned starter with the server and adopt ITS id.
+ *
+ * Until this returns the template exists only on screen, so the designer is
+ * put in a saving state rather than pretending it is already a real template:
+ * a clerk who edited for ten minutes and then hit a create failure would
+ * otherwise lose the lot with no warning that it had never been saved.
+ */
+async function createOnServer(st){
+  try{
+    const seed={
+      name:S.tpl.name, page:S.tpl.page, header:S.tpl.header, footer:S.tpl.footer,
+      objects:S.tpl.objects, languages:S.tpl.languages,
+      defaultLanguage:S.tpl.defaultLanguage, starterId:st&&st.id||null,
+      complianceLayers:S.tpl.complianceLayers||[]
+    };
+    const out=await srv.create(S.docType, seed);
+    S.tpl.templateId=out.templateId;
+    S.tpl.lockVersion=(out.template&&out.template.lockVersion)||0;
+    S.tpl.version=(out.template&&out.template.version)||1;
+    S.dirty=false;
+    paintStatus(); render();
+    toast("Cloned into your school — the starter is never linked live");
+  }catch(e){
+    markDirty();
+    apiFail(e, "Creating the template");
+    toast("NOT SAVED — this template only exists on screen. Fix the error and try again.");
+  }
 }
 
 function paintGallery(){
@@ -1321,7 +1558,7 @@ function paintGallery(){
     tt.objects=tt.objects.filter(o=>o.region||o.requiredKey);
     tt.templateId="TPL"+Math.floor(1000+Math.random()*8999);
     tt.status="draft"; tt.publishedVersion=null; tt.activeVersion=null;
-    S.tpl=tt; S.sel=[]; S.undo=[]; S.redo=[]; S.proofed=null; S.dirty=true;
+    S.tpl=tt; S.sel=[]; S.undo=[]; S.redo=[]; S.proofed=null; markDirty();
     S.baseline=JSON.parse(JSON.stringify(tt.objects)); go("designer");
   };
   st.appendChild(blank);
@@ -1803,7 +2040,7 @@ function paintContent(){
     ed.addEventListener("input", ()=>{
       arm();
       if(!commitContentRow(ed)) return;
-      S.dirty=true;
+      markDirty();
       layoutPage(); paintStatus();
     });
 
@@ -2391,12 +2628,12 @@ function toggleLayer(id){
     $("#ovrGo").onclick=()=>{
       const why=($("#ovrWhy").value||"").trim();
       if(!why) return toast("A reason is required — an unexplained exclusion is an audit finding", true);
-      S.layerOff[id]=true; S.overrideReason[id]=why; S.dirty=true;
+      S.layerOff[id]=true; S.overrideReason[id]=why; markDirty();
       closeModal(); render(); toast("Excluded "+a.label+" — reason recorded");
     };
     return;
   }
-  S.layerOff[id]=false; delete S.overrideReason[id]; S.dirty=true; render();
+  S.layerOff[id]=false; delete S.overrideReason[id]; markDirty(); render();
   toast("Applied "+a.label+" again");
 }
 
@@ -2437,7 +2674,7 @@ function openBasis(){
   draw();
   $("#bsGo").onclick=()=>{
     S.school={name:S.school.name, board:$("#bsBoard").value, state:$("#bsState").value, stage:$("#bsStage").value};
-    S.layerOff={}; S.overrideReason={}; S.dirty=true;
+    S.layerOff={}; S.overrideReason={}; markDirty();
     closeModal(); render();
     toast("Compliance basis: "+S.school.board+" · "+S.school.state);
   };
@@ -3471,7 +3708,7 @@ function openBlockUpdate(id){
     S.blockRefs[id]=bl.version;
     if(live){ S.tpl.version++; S.proofed=null; toast("Accepted — now editing draft v"+S.tpl.version+". The published version is untouched."); }
     else toast("Accepted — applied to the draft");
-    S.dirty=true; closeModal(); render();
+    markDirty(); closeModal(); render();
   };
 }
 
@@ -3543,6 +3780,7 @@ function openProof(){
     <button class="btn btn--primary" id="proofRun">Render proof</button>`);
   schematic(S.tpl.objects, $("#proofPaper"));
   $("#proofRun").onclick=()=>{
+    if(SRV.online) return proofOnServer();
     const log=$("#proofLog"), bar=$("#proofBar");
     const steps=["Serializing template → HTML (namespaced under .zx-tpl-"+S.tpl.templateId+")",
       "Resolving merge fields against sample data",
@@ -3565,6 +3803,55 @@ function openProof(){
     }, 380*(i+1)));
   };
 }
+/**
+ * Render the proof ON THE SERVER — the real one.
+ *
+ * The draft is SAVED FIRST, deliberately. The server renders from the stored
+ * template, not from anything posted with the request, and publish() later
+ * verifies the proof still describes the stored design. Proofing unsaved edits
+ * would produce a proof of a document that does not exist anywhere.
+ *
+ * The button is disabled while it runs. A proof is seconds of mPDF work, and a
+ * second click would start a second render whose result arrives later and
+ * overwrites the first — the caller would be looking at a hash for a render
+ * they did not watch.
+ */
+async function proofOnServer(){
+  const log=$("#proofLog"), bar=$("#proofBar"), btn=$("#proofRun");
+  const say=t=>{ if(log) log.insertAdjacentHTML("beforeend", `<div>· ${esc(t)}</div>`); };
+  if(btn) btn.disabled=true;
+  if(log) log.innerHTML=""; if(bar) bar.style.width="15%";
+
+  try{
+    if(S.dirty){
+      say("Saving the draft — the server renders what is stored, not what is on screen");
+      if(!await srvSaveDraft(true)){ if(bar) bar.style.width="0"; return; }
+    }
+    say("Rendering "+(S.tpl.languages||["en"]).length+" language(s) at p95 · mPDF");
+    if(bar) bar.style.width="55%";
+
+    const out=await srv.proof(S.tpl.templateId);
+    const pr=out.proof||{};
+    S.proofed={hash:pr.hash, pages:pr.pages, contentHash:pr.contentHash, paths:out.paths||{}};
+    if(bar) bar.style.width="100%";
+    say("Hashed "+pr.pages+" page(s)");
+
+    const kv=$("#proofKv");
+    if(kv) kv.innerHTML=`<div class="kv"><span>Result</span><b style="color:var(--ok)">rendered · ${pr.pages} page(s)</b></div>
+      <div class="kv"><span>Engine</span><b>mPDF ${esc(pr.mpdfVersion||"?")}</b></div>
+      <div class="kv"><span>Content hash</span><b>${esc(pr.hash||"")}</b></div>`;
+    paintCompliance(); paintStatus();
+    toast("Proof rendered — publish is now unlocked");
+  }catch(e){
+    if(bar) bar.style.width="0";
+    say("FAILED — nothing was recorded");
+    /* S.proofed stays null on purpose: a failed proof must NOT unlock publish. */
+    apiFail(e, "Proof");
+  }finally{
+    if(btn) btn.disabled=false;
+  }
+}
+
 function openPublish(){
   const v=validate(), p=prof(), rows=[];
   const unbound=v.blocking.filter(b=>b.type==="unbound"), lh=v.blocking.filter(b=>b.type==="lineheight");
@@ -3614,6 +3901,7 @@ function openPublish(){
      the very next modal asks for it. A label promising activation here would
      be a lie about a legally consequential action. */
   const g=$("#pubGo"); if(g) g.onclick=()=>{
+    if(SRV.online) return publishOnServer();
     S.tpl.publishedVersion=S.tpl.version; S.tpl.version++; S.dirty=false;
     /* publishing freezes a snapshot. It does NOT make it the one that prints —
        that is activation, and it is a separate decision with its own blast radius. */
@@ -3638,12 +3926,90 @@ function openPublish(){
       `<button class="btn" data-close>Leave it published only</button><span class="spacer"></span>
        <button class="btn btn--primary" id="pubAct">Set v${S.tpl.publishedVersion} active</button>`, true);
     $("#pubAct").onclick=()=>{
+      if(SRV.online) return activateOnServer();
       S.active[S.tpl.docType]=S.tpl.templateId;
       S.tpl.activeVersion=S.tpl.publishedVersion;
       closeModal(); render(); toast("Active — every print point now resolves v"+S.tpl.publishedVersion);
     };
   };
 }
+/**
+ * Publish, on the server.
+ *
+ * The server refuses without a proof on record that still describes the stored
+ * design, so the two failures worth catching here are "you changed something
+ * after proofing" and "you never proofed" — both of which must say so plainly
+ * rather than appear to succeed.
+ */
+async function publishOnServer(){
+  const btn=$("#pubGo"); if(btn) btn.disabled=true;
+  try{
+    if(S.dirty && !await srvSaveDraft(true)) return;
+
+    const out=await srv.publish(S.tpl.templateId);
+    S.tpl.publishedVersion=out.version;
+    S.tpl.version=out.version+1;
+    S.dirty=false; S.proofed=null;   // the new draft has no proof of its own
+
+    let row=libOf(S.tpl.docType).find(r=>r.id===S.tpl.templateId);
+    if(!row){ row={id:S.tpl.templateId, name:S.tpl.name, starter:S.tpl.starterId||"tc_cbse"};
+      (S.lib[S.tpl.docType]=S.lib[S.tpl.docType]||[]).push(row); }
+    Object.assign(row,{name:S.tpl.name, status:"published",
+      publishedVersion:out.version, version:S.tpl.version, edited:"just now"});
+
+    const already = S.active[S.tpl.docType]===S.tpl.templateId;
+    S.tpl.activeVersion = already ? out.version : S.tpl.activeVersion;
+    closeModal(); render();
+
+    if(already) return toast("Published v"+out.version+" — it was already active, so it is live now");
+    offerActivation(out.version);
+  }catch(e){
+    apiFail(e, "Publish");
+  }finally{ if(btn) btn.disabled=false; }
+}
+
+/** The activation offer, after a successful publish. */
+function offerActivation(version){
+  const cur=activeTpl(S.tpl.docType);
+  modal("Published v"+version, "Publishing freezes it. Activating is what makes it print.",
+    `<div class="gate">
+       <div class="gate__row gate--pass"><span class="gate__ic">✓</span>
+         <span><b>v${version} is frozen</b><span>Immutable, with its proof hash, font manifest and mPDF version recorded.</span></span></div>
+       <div class="gate__row gate--warn"><span class="gate__ic">▲</span>
+         <span><b>${cur?"“"+esc(cur.name)+"” is still the active template":"Nothing is active for this document type"}</b>
+         <span>${cur?"Nothing prints from your new version until you activate it.":"No print point can resolve this type until something is activated."}</span></span></div>
+     </div>`,
+    `<button class="btn" data-close>Leave it published only</button><span class="spacer"></span>
+     <button class="btn btn--primary" id="pubAct">Set v${version} active</button>`, true);
+  const a=$("#pubAct");
+  if(a) a.onclick=()=> SRV.online ? activateOnServer() : (
+    S.active[S.tpl.docType]=S.tpl.templateId,
+    S.tpl.activeVersion=version, closeModal(), render(),
+    toast("Active — every print point now resolves v"+version));
+}
+
+/**
+ * Activate, on the server.
+ *
+ * The consequential one: activeVersion is the pointer every print point
+ * resolves, so this is what decides which certificate a school legally issues.
+ * The server runs it in a transaction — two concurrent activates must not each
+ * see no incumbent and both win.
+ */
+async function activateOnServer(){
+  const btn=$("#pubAct"); if(btn) btn.disabled=true;
+  try{
+    const out=await srv.activate(S.tpl.templateId);
+    const v=out.activeVersion || S.tpl.publishedVersion;
+    S.active[S.tpl.docType]=S.tpl.templateId;
+    S.tpl.activeVersion=v;
+    closeModal(); render();
+    toast("Active — every print point now resolves v"+v);
+  }catch(e){
+    apiFail(e, "Activate");
+  }finally{ if(btn) btn.disabled=false; }
+}
+
 function openHistory(){
   modal("Version history","Every published version is frozen forever",
     `<ul class="tl">
@@ -3692,3 +4058,60 @@ S.lib=JSON.parse(JSON.stringify(LIB));
 S.active=Object.assign({}, ACTIVE);
 S.tpl=starterTC();
 paintHub(); go("hub");
+
+/**
+ * Replace the built-in fixtures with this school's real templates.
+ *
+ * Runs AFTER the first paint so the page is never blank while the network
+ * answers, and the fixtures above are only ever a first frame — if the load
+ * fails, the library is emptied rather than left showing invented templates
+ * that a clerk could try to activate. Showing someone else's demo data as
+ * their own is worse than showing nothing.
+ */
+async function hydrateFromServer(){
+  if(!SRV.online) return;
+  if(BOOT.schoolName) S.school=Object.assign({}, S.school, {name:BOOT.schoolName});
+  try{
+    const out=await srv.templates("");
+    const lib={}, active={};
+    Object.entries(out.templates||{}).forEach(([docId,t])=>{
+      const type=t.docType||"transfer_certificate";
+      (lib[type]=lib[type]||[]).push({
+        id:docId, name:t.name||docId, starter:t.starterId||null,
+        status:t.status||"draft", version:t.version||1,
+        publishedVersion:t.publishedVersion||null,
+        edited:t.updatedAt||""
+      });
+      if(t.activeVersion!=null) active[type]=docId;
+    });
+    S.lib=lib; S.active=active;
+    if(S.screen==="hub") paintHub(); else render();
+  }catch(e){
+    S.lib={}; S.active={};
+    if(S.screen==="hub") paintHub();
+    apiFail(e, "Loading your templates");
+  }
+
+  /* Deep link: /doc_templates/design/{id} opens that template directly. */
+  if(BOOT.templateId){
+    try{
+      const r=await srv.template(BOOT.templateId);
+      if(r&&r.template){ adoptTemplate(r.template); }
+    }catch(e){ apiFail(e, "Opening the template"); }
+  }
+}
+
+/** Take a stored template document and make it the one on screen. */
+function adoptTemplate(t){
+  S.tpl=Object.assign(starterTC(), t);
+  S.docType=t.docType||S.docType;
+  S.lang=t.defaultLanguage||"en";
+  S.sel=[]; S.undo=[]; S.redo=[]; S.dirty=false; S.tool="move";
+  /* A stored proof only counts while it still describes THIS design — the
+     server checks the same thing at publish time, by content and not by flag. */
+  S.proofed=(t.lastProof&&t.lastProof.hash)?{hash:t.lastProof.hash, contentHash:t.lastProof.contentHash}:null;
+  S.baseline=JSON.parse(JSON.stringify(t.objects||[]));
+  go("designer");
+}
+
+hydrateFromServer();

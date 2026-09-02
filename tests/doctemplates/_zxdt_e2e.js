@@ -1480,6 +1480,116 @@ window.ZXDT_E2E = async function (only) {
              note: missing.length ? "NOT loaded: " + missing.join(",") : "deva + taml loaded" };
   });
 
+  /* ==================================================================
+     U · the SERVER layer — fail-closed
+
+     The designer now persists through api(). Everything downstream of it
+     assumes one thing: that a call which did not succeed THROWS. fetch()
+     does not reject on 403 or 500 — it resolves with ok:false — so a helper
+     that forgets to look reports a denied action as done. This codebase has
+     already been bitten by that, so it is pinned here.
+
+     Runs with fetch stubbed and SRV flipped online, then puts both back.
+     ================================================================== */
+  G("U · server layer (fail-closed)");
+
+  const realFetch = window.fetch;
+  const srvWas = { online: SRV.online, base: SRV.base, name: SRV.csrf.name, hash: SRV.csrf.hash };
+  const stub = (resp) => { window.fetch = async (url, init) => { stub.last = { url, init }; return resp(url, init); }; };
+  const jsonRes = (status, body) => ({
+    ok: status >= 200 && status < 300, status,
+    json: async () => body
+  });
+  const goOnline = () => { SRV.online = true; SRV.base = "/mock"; SRV.csrf.name = "csrf_test_name"; SRV.csrf.hash = "TOKEN123"; };
+  const restore = () => { window.fetch = realFetch; Object.assign(SRV, { online: srvWas.online, base: srvWas.base });
+                          SRV.csrf.name = srvWas.name; SRV.csrf.hash = srvWas.hash; };
+
+  await T("U1", "an HTTP 500 THROWS even though it carries a JSON body", async () => {
+    goOnline(); stub(() => jsonRes(500, { status: "success", data: { ok: true } }));
+    try { await api("get_templates"); return { ok: false, note: "returned instead of throwing" }; }
+    catch (e) { return { ok: e instanceof ApiError && e.code === 500, note: "code " + e.code }; }
+    finally { restore(); }
+  });
+
+  /* The phantom-success case exactly: HTTP 200, and the body says it failed. */
+  await T("U2", "a 200 carrying {status:'error'} THROWS", async () => {
+    goOnline(); stub(() => jsonRes(200, { status: "error", message: "You do not have permission" }));
+    try { await api("publish", { method: "POST", body: {} }); return { ok: false, note: "reported success on a denial" }; }
+    catch (e) { return { ok: /permission/.test(e.message), note: e.message }; }
+    finally { restore(); }
+  });
+
+  await T("U3", "a body that is not JSON THROWS rather than being treated as empty", async () => {
+    goOnline();
+    window.fetch = async () => ({ ok: true, status: 200, json: async () => { throw new Error("not json"); } });
+    try { await api("get_templates"); return { ok: false, note: "accepted a non-JSON body" }; }
+    catch (e) { return { ok: true, note: e.message.slice(0, 40) }; }
+    finally { restore(); }
+  });
+
+  await T("U4", "every POST carries the CSRF token", async () => {
+    goOnline(); stub(() => jsonRes(200, { status: "success", data: {} }));
+    await api("activate", { method: "POST", body: { templateId: "X" } });
+    const fd = stub.last.init.body;
+    const ok = fd instanceof FormData && fd.get("csrf_test_name") === "TOKEN123";
+    restore();
+    return { ok, note: ok ? "token present" : "NO CSRF TOKEN — these routes are not excluded, so this would 403" };
+  });
+
+  await T("U5", "a rotated CSRF token from the response is adopted", async () => {
+    goOnline(); stub(() => jsonRes(200, { status: "success", data: {}, csrf_token: "ROTATED" }));
+    await api("save", { method: "POST", body: {} });
+    const ok = SRV.csrf.hash === "ROTATED";
+    restore();
+    return { ok, note: ok ? "adopted" : "still " + srvWas.hash };
+  });
+
+  /* The one that matters most: a proof that FAILED must not unlock publish. */
+  await T("U6", "a failed proof leaves publish blocked", async () => {
+    goOnline(); openClassic(false);
+    S.proofed = null; S.dirty = false;
+    stub(() => jsonRes(500, { status: "error", message: "mPDF ran out of memory" }));
+    openProof(); $("#proofRun").click();
+    await sleep(400);
+    const unlocked = !!S.proofed;
+    const stillBlocked = has(bt(validate()), "noproof");
+    closeModal(); restore();
+    return { ok: !unlocked && stillBlocked,
+             note: unlocked ? "A FAILED PROOF UNLOCKED PUBLISH" : "still blocked" };
+  });
+
+  await T("U7", "a save conflict does NOT clear the dirty flag", async () => {
+    goOnline(); openClassic(false);
+    S.tpl.templateId = "SCH1_TPL0007"; S.tpl.lockVersion = 3; S.dirty = true;
+    stub(() => jsonRes(409, { status: "error", message: "Someone else saved this template" }));
+    const saved = await srvSaveDraft(true);
+    const ok = saved === false && S.dirty === true;
+    closeModal(); restore();
+    return { ok, note: ok ? "kept dirty" : "dirty=" + S.dirty + " saved=" + saved };
+  });
+
+  await T("U8", "a successful save adopts the server's lockVersion", async () => {
+    goOnline(); openClassic(false);
+    S.tpl.templateId = "SCH1_TPL0007"; S.tpl.lockVersion = 3; S.dirty = true;
+    stub(() => jsonRes(200, { status: "success", data: { lockVersion: 4 } }));
+    const saved = await srvSaveDraft(true);
+    const ok = saved === true && S.tpl.lockVersion === 4 && S.dirty === false;
+    restore();
+    return { ok, note: "lockVersion " + S.tpl.lockVersion + " dirty=" + S.dirty };
+  });
+
+  await T("U9", "offline, api() refuses rather than pretending", async () => {
+    SRV.online = false;
+    try { await api("get_templates"); return { ok: false, note: "pretended to call a server" }; }
+    catch (e) { return { ok: /offline/.test(e.message), note: e.message }; }
+    finally { restore(); }
+  });
+
+  await T("U10", "the harness itself is genuinely OFFLINE, or nothing above proved anything", () => {
+    return { ok: SRV.online === false && window.fetch === realFetch,
+             note: "online=" + SRV.online + " fetch restored=" + (window.fetch === realFetch) };
+  });
+
   document.removeEventListener("visibilitychange", __watch);
   if (__wentHidden || document.visibilityState !== "visible") {
     throw new Error(
