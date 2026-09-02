@@ -1068,11 +1068,22 @@ function templateState(row, isActive){
   const published = row.publishedVersion || null;
   const hasDraft  = (row.version || 1) > (published || 0);
 
-  if(isActive) return {
-    key:"active", label:"In use", tone:"active",
-    detail:`Version ${published} is what every print point resolves`,
-    unsaved: hasDraft ? "You have unpublished changes" : null
-  };
+  if(isActive){
+    const live = row.activeVersion || published;
+    /* A THIRD STATE THE CARD USED TO HIDE: published, but NOT the one in use.
+       You can publish v4 while v3 is still live — publishing deliberately does
+       not activate. The card only knew "in use" and "draft", so v4 was
+       invisible: the screen kept saying v3 and the work looked lost. */
+    const waiting = published && published > live;
+    return {
+      key:"active", label:"In use", tone:"active",
+      detail: waiting
+        ? `Version ${live} is in use · version ${published} is published and waiting`
+        : `Version ${live} is what every print point resolves`,
+      waiting: waiting ? published : null,
+      unsaved: hasDraft ? "You have unpublished changes" : null
+    };
+  }
   if(published) return {
     key:"ready", label:"Ready — not in use", tone:"published",
     detail:`Version ${published} is published but nothing resolves it`,
@@ -1512,8 +1523,14 @@ function paintCrumb(){
   const pub    = S.tpl.publishedVersion || null;
   const ahead  = (S.tpl.version || 1) > (pub || 0);
 
-  if(active)     c.insertAdjacentHTML("beforeend",
-    `<span class="chip chip--active" style="margin-left:8px" title="Every print point resolves this version"><span class="dot"></span>In use · v${S.tpl.activeVersion}</span>`);
+  if(active){
+    c.insertAdjacentHTML("beforeend",
+      `<span class="chip chip--active" style="margin-left:8px" title="Every print point resolves this version"><span class="dot"></span>In use · v${S.tpl.activeVersion}</span>`);
+    /* Published but not live — the state that made a published version look
+       lost, because the header kept naming the older one. */
+    if(pub && pub > S.tpl.activeVersion) c.insertAdjacentHTML("beforeend",
+      `<span class="chip chip--published" style="margin-left:6px" title="Published, but not what prints yet — activate it from History"><span class="dot"></span>v${pub} published, not live</span>`);
+  }
   else if(pub)   c.insertAdjacentHTML("beforeend",
     `<span class="chip chip--published" style="margin-left:8px"><span class="dot"></span>Published · v${pub}</span>`);
   else           c.insertAdjacentHTML("beforeend",
@@ -1716,6 +1733,7 @@ function paintGallery(){
     /* ONE chip. Three chips carrying three version numbers is what made this
        unreadable — the reader has to work out which number matters. */
     const chips = `<span class="chip chip--${st.tone}"><span class="dot"></span>${st.label}</span>`
+      + (st.waiting?`<span class="chip chip--published"><span class="dot"></span>v${st.waiting} published, not live</span>`:"")
       + (st.unsaved?`<span class="chip chip--draft"><span class="dot"></span>Unpublished changes</span>`:"");
     mine.appendChild(card({
       name:row.name,
@@ -1724,6 +1742,9 @@ function paintGallery(){
       onclick:()=>openTemplate(row),
       actions:`<div style="display:flex;gap:6px;margin-top:8px">
         <button class="btn btn--sm" data-open="${row.id}">Open</button>
+        ${st.waiting
+          ? `<button class="btn btn--primary btn--sm" data-act="${row.id}">Make v${st.waiting} live</button>`
+          : ""}
         ${isActive
           ? `<button class="btn btn--sm" data-deact="${row.id}" style="color:var(--warn);border-color:var(--warn)">Deactivate</button>`
           : (row.publishedVersion
@@ -4475,6 +4496,11 @@ async function hydrateFromServer(){
         id:docId, name:t.name||docId, starter:t.starterId||null,
         status:t.status||"draft", version:t.version||1,
         publishedVersion:t.publishedVersion||null,
+        /* activeVersion was dropped here, so a card could not tell WHICH
+           version is live — it fell back to the newest published one and
+           announced "version 4 is what every print point resolves" while v3 was
+           actually printing. The one number the card exists to report. */
+        activeVersion:t.activeVersion!=null?t.activeVersion:null,
         edited:t.updatedAt||""
       });
       if(t.activeVersion!=null) active[type]=docId;
