@@ -96,7 +96,16 @@
 .zxdt .mono{font-family:var(--font-m);font-variant-numeric:tabular-nums}
 .zxdt .spacer{flex:1 1 auto;min-width:6px}
 /* ── shell ──────────────────────────────────────────────────────────────── */
-.zxdt .app{display:flex;flex-direction:column;height:100vh;min-height:520px}
+/* Height of the CONTENT AREA, not of the window.
+   `100vh` was right when this was a standalone prototype that owned the page.
+   Inside the panel it is 58px too tall — the fixed header's worth — which
+   pushed the bottom status bar off the screen. --zx-chrome is set from the
+   panel's real header height so this does not hardcode a number that will
+   drift the next time the header changes. */
+.zxdt{--zx-chrome:58px}
+.zxdt .app{display:flex;flex-direction:column;height:calc(100vh - var(--zx-chrome));min-height:520px}
+/* The panel drops the sidebar below this width, so the designer gets it all. */
+@media (max-width:767px){ .zxdt-wrap{margin-left:0} }
 .zxdt .topbar{
   flex:0 0 auto;display:flex;align-items:center;gap:10px;height:52px;padding:0 12px;
   background:var(--panel);border-bottom:1px solid var(--line);box-shadow:var(--sh1);z-index:40;

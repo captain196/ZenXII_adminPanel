@@ -38,6 +38,18 @@ $zxdtBoot = [
      routes are NOT in csrf_exclude_uris, and must not be (gate G0.7). -->
 <script type="application/json" id="zxdt-boot"><?= json_encode($zxdtBoot, JSON_UNESCAPED_SLASHES | JSON_UNESCAPED_UNICODE) ?></script>
 
+<!-- INSIDE .content-wrapper, like every other view in this panel.
+
+     Without it, #zxdt-root was a direct child of .wrapper — a SIBLING of the
+     fixed header and the fixed sidebar. Both are out of flow, so nothing pushed
+     the designer down or across: it started at 0,0 and the panel chrome sat on
+     top of it. The designer's own topbar (Proof PDF, Publish, History) rendered
+     at y=0..52 underneath a 58px header and was completely unreachable, and the
+     layers rail sat under the 248px sidebar.
+
+     It looked like a z-index problem and was not; the element was simply in the
+     wrong place in the document. -->
+<div class="content-wrapper zxdt-wrap">
 <div class="zxdt" id="zxdt-root">
   <div class="app">
     <header class="topbar">
@@ -203,5 +215,6 @@ $zxdtBoot = [
   </div>
   <div class="toast" id="toast"></div>
 </div><!-- /.zxdt -->
+</div><!-- /.content-wrapper -->
 
 <script src="<?= base_url('assets/js/doctemplates/designer.js') ?>"></script>

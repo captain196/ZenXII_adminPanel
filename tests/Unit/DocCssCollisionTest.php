@@ -103,4 +103,51 @@ class DocCssCollisionTest extends TestCase
                 . 'with position:fixed and z-index:1050');
         }
     }
+
+    /**
+     * The designer must live inside `.content-wrapper`, like every other view.
+     *
+     * It did not, and the symptom read as a z-index problem when it was not:
+     * `#zxdt-root` was a direct child of `.wrapper`, a SIBLING of the fixed
+     * header and the fixed sidebar. Both are out of flow, so nothing pushed the
+     * designer down or across — it started at 0,0 and the panel chrome sat on
+     * top of it. The designer's own topbar (Proof PDF, Publish, History)
+     * rendered at y=0..52 underneath a 58px header and was unreachable, the
+     * layers rail sat under the 248px sidebar, and the left tab strip
+     * (Layers/Insert/Fields/Blocks/Content) was hidden entirely.
+     */
+    public function test_the_designer_view_sits_inside_the_panel_content_wrapper(): void
+    {
+        $view = file_get_contents(__DIR__ . '/../../application/views/doc_templates/index.php');
+
+        $wrapAt = strpos($view, 'class="content-wrapper');
+        $rootAt = strpos($view, 'id="zxdt-root"');
+
+        $this->assertNotFalse($wrapAt,
+            'doc_templates/index.php does not open a .content-wrapper. Every other view in '
+            . 'this panel does, and it is what applies the fixed header and sidebar offsets.');
+        $this->assertNotFalse($rootAt, '#zxdt-root not found');
+        $this->assertLessThan($rootAt, $wrapAt,
+            '.content-wrapper must OPEN before #zxdt-root, or the designer is not inside it');
+        $this->assertStringContainsString('/.content-wrapper', $view,
+            '.content-wrapper is opened but never closed');
+    }
+
+    /**
+     * The designer sizes to the CONTENT AREA, not the window. A bare 100vh was
+     * right when this was a standalone prototype and is 58px too tall inside
+     * the panel — it pushed the status bar off the bottom of the screen.
+     */
+    public function test_the_designer_shell_excludes_the_panel_chrome_from_its_height(): void
+    {
+        $css = file_get_contents(__DIR__ . '/../../assets/css/doctemplates.css');
+
+        preg_match('/\.zxdt \.app\{([^}]*)\}/', $css, $m);
+        $this->assertNotEmpty($m, '.zxdt .app rule not found');
+        $this->assertStringNotContainsString('height:100vh', $m[1],
+            '.zxdt .app uses the full viewport height. Inside the panel that is taller than '
+            . 'the content area by the fixed header, and the status bar falls off the screen.');
+        $this->assertStringContainsString('--zx-chrome', $m[1],
+            'the shell height must subtract the panel chrome via --zx-chrome');
+    }
 }
