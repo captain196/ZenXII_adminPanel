@@ -1,0 +1,24 @@
+<!doctype html><meta charset="utf-8">
+<link rel="stylesheet" href="/assets/css/doctemplates.css">
+<style>body{margin:0}.probe{position:absolute;visibility:hidden}</style>
+<div id="host"></div><pre id="OUT">running</pre>
+<script>
+const MM = 96/25.4;
+const CASES = {
+  "latin-1line": '<div style="width:180mm;font-size:10pt;line-height:1.4;font-family:dejavusans">Transfer Certificate</div>',
+  "latin-4line": '<div style="width:180mm;font-size:10pt;line-height:1.4;font-family:dejavusans">A<br>B<br>C<br>D</div>',
+  "deva-1line":  '<div style="width:180mm;font-size:12pt;line-height:1.5;font-family:lohitdeva">स्थानांतरण प्रमाणपत्र</div>',
+  "taml-1line":  '<div style="width:180mm;font-size:12pt;line-height:1.5;font-family:lohittaml">இடமாற்றுச் சான்றிதழ்</div>'
+};
+(async () => {
+  try { await document.fonts.ready; } catch (e) {}
+  const out = {};
+  for (const [k, html] of Object.entries(CASES)) {
+    const d = document.createElement("div");
+    d.className = "probe"; d.innerHTML = html;
+    document.getElementById("host").appendChild(d);
+    out[k] = +(d.firstElementChild.getBoundingClientRect().height / MM).toFixed(3);
+  }
+  document.getElementById("OUT").textContent = "MEASURE:" + JSON.stringify(out);
+})();
+</script>

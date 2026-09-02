@@ -70,7 +70,14 @@ class Doc_renderer
 
     public function __construct(array $config = [])
     {
-        $this->ci = &get_instance();
+        /* CI is not required by this class. The old `$this->ci = &get_instance()`
+           was assigned and NEVER READ — a single unused line that nonetheless
+           made the renderer unconstructible outside a CodeIgniter request, which
+           is why every PDF behaviour here had to be tested by reflection or not
+           at all. Guarded rather than deleted so a future need still has it. */
+        if (function_exists('get_instance')) {
+            $this->ci = &get_instance();
+        }
 
         $this->fontDir = rtrim($config['fontDir'] ?? (FCPATH . 'assets/fonts/lohit'), '/');
         $this->tempDir = rtrim($config['tempDir'] ?? (APPPATH . 'cache/mpdf'), '/');

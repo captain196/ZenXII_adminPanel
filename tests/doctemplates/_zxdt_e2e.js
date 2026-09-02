@@ -1357,6 +1357,63 @@ window.ZXDT_E2E = async function (only) {
     return { ok: bad.length === 0, note: bad.length ? bad.join(", ") : "all text objects set line-height" };
   });
 
+  /* ---- T · P7.3 preview/proof agreement ---------------------------------
+     The accept is "preview and proof agree within the G0.5 tolerance". That is
+     a MEASURED comparison, so these numbers are mPDF's, produced by
+     Doc_renderer::measureBlock() on byte-identical HTML and committed here as
+     the baseline. Measured 2026-09-02; max divergence was 0.011mm.
+
+     This is the test that would catch @font-face regressing: without a web face
+     the browser falls back to a system font and these heights move immediately,
+     while the PDF does not. ---------------------------------------------- */
+  G("T · P7.3 preview vs proof");
+
+  const MPDF_MM = {
+    "latin-1line": 4.939, "latin-4line": 19.756,
+    "deva-1line": 6.350,  "taml-1line": 6.350
+  };
+  const PROBE_HTML = {
+    "latin-1line": '<div style="width:180mm;font-size:10pt;line-height:1.4;font-family:dejavusans">Transfer Certificate</div>',
+    "latin-4line": '<div style="width:180mm;font-size:10pt;line-height:1.4;font-family:dejavusans">A<br>B<br>C<br>D</div>',
+    "deva-1line":  '<div style="width:180mm;font-size:12pt;line-height:1.5;font-family:lohitdeva">स्थानांतरण प्रमाणपत्र</div>',
+    "taml-1line":  '<div style="width:180mm;font-size:12pt;line-height:1.5;font-family:lohittaml">இடமாற்றுச் சான்றிதழ்</div>'
+  };
+
+  await T("T1", "P7.3 — browser height matches mPDF within the G0.5 tolerance", async () => {
+    try { await document.fonts.ready; } catch (e) {}
+    const MM = 96 / 25.4, host = document.createElement("div");
+    host.style.cssText = "position:absolute;visibility:hidden;left:-9999px";
+    document.body.appendChild(host);
+
+    const rows = [];
+    for (const [k, html] of Object.entries(PROBE_HTML)) {
+      const d = document.createElement("div");
+      d.innerHTML = html; host.appendChild(d);
+      const mm = d.firstElementChild.getBoundingClientRect().height / MM;
+      rows.push({ k, chrome: +mm.toFixed(3), mpdf: MPDF_MM[k], diff: Math.abs(mm - MPDF_MM[k]) });
+    }
+    host.remove();
+
+    /* 0.25mm, not 0.011mm. The measurement is stable to ~0.01 but a hairline
+       threshold would fail on a Chrome point-release rounding change and teach
+       everyone to ignore it. 0.25mm is far tighter than the ~2x divergence
+       G0.5 found WITHOUT an explicit line-height, so it still catches the
+       failure this exists for. */
+    const worst = rows.reduce((a, r) => r.diff > a.diff ? r : a, rows[0]);
+    return { ok: worst.diff < 0.25,
+             note: `worst ${worst.k}: mPDF ${worst.mpdf} vs Chrome ${worst.chrome} = ${worst.diff.toFixed(3)}mm` };
+  });
+
+  /* The guard on the guard: if the Lohit faces are not actually loaded, the
+     Indic probes fall back to a system font and T1 would compare the wrong
+     thing while still possibly passing. */
+  await T("T2", "P7.3 — the Indic faces are genuinely loaded before comparison", async () => {
+    try { await document.fonts.ready; } catch (e) {}
+    const missing = ["lohitdeva", "lohittaml"].filter(f => !document.fonts.check(`12px "${f}"`));
+    return { ok: missing.length === 0,
+             note: missing.length ? "NOT loaded: " + missing.join(",") : "deva + taml loaded" };
+  });
+
   const summary = { total: R.length, passed: R.filter(r => r.ok).length, failed: R.filter(r => !r.ok).length };
   return { summary, failures: R.filter(r => !r.ok), all: R };
 };

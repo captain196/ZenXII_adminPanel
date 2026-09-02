@@ -9,7 +9,7 @@ starts from evidence rather than from a plan row that says done.
 artifact sat finished on disk, and one accept criterion (P3.6) is still counted as unmet because
 the thing that would prove it does not exist yet. A task list cannot carry that distinction.
 
-**Updated:** 2026-09-02 · **Progress:** 48/58 = 83% — all nine phases opened; **10 of 14 endpoints now live** · Branch `yug_testing`
+**Updated:** 2026-09-02 · **Progress:** 52/58 = 90% — all nine phases opened; **10 of 14 endpoints now live** · Branch `yug_testing`
 
 **Progress is computed:** `awk -f blueprints/certificates/tools/progress.awk blueprints/certificates/EXECUTION_PLAN_v1.1.md | sort`
 
@@ -28,7 +28,7 @@ ZXDT_GOLDEN_UPDATE=1 vendor/bin/phpunit --testsuite Unit --filter Golden
 #   ^ regenerates. THEN READ THE DIFF. A golden regenerated without reading the
 #     diff records the bug as the new truth and goes green forever after.
 
-# Client E2E — 131 cases, needs the local server + headless Chrome
+# Client E2E — 133 cases, needs the local server + headless Chrome
 php -S localhost:8080                                     # from the repo root
 "/Applications/Google Chrome.app/Contents/MacOS/Google Chrome" \
   --headless=new --disable-gpu --virtual-time-budget=200000 \
@@ -55,7 +55,7 @@ firebase emulators:exec --only firestore,storage --project=zenxii-rules-test \
 | Suite | Baseline | Meaning |
 |---|---|---|
 | PHP unit | **4 failures · 27 skipped** | Pre-existing. The skips are cross-repo tests pointing at a hardcoded Windows path from another machine. |
-| Client E2E | **131/131 · 0 page errors** | Should be green. Anything less is a regression. |
+| Client E2E | **133/133 · 0 page errors** | Should be green. Anything less is a regression. |
 | Rules emulator | **16/16 suites · 404/404** | Green as of 2026-09-02. Previously 5 suites failed: 4 on stale assertions (fixed — see below) and 1 because the storage emulator was never configured. |
 
 ---
@@ -224,6 +224,29 @@ firebase emulators:exec --only firestore,storage --project=zenxii-rules-test \
 | **Nothing auto-invalidates** — asserted two ways | The report mutates nothing, **and** the class exposes no `set/save/update/apply/invalidate/…` method at all |
 | Evidence is the **best** across applied layers, never averaged | Averaging would let two Level-C citations present as Level-B |
 
+### Real PDF renders — four rows that were "blocked" and were not (2026-09-02)
+
+`Doc_renderer` was thought untestable because it needed CodeIgniter. It needed it for **one line** —
+`$this->ci = &get_instance()`, assigned and never read. Guarding that made every PDF behaviour
+directly testable, and four accept criteria closed on measurement rather than argument.
+
+| What | Proven by |
+|---|---|
+| **P3.6** — an authored position survives into the PDF | A block at **45.5 mm fits on A4, 290 mm does not**, judged by mPDF's own y-delta |
+| **P7.3** — preview and proof agree | Byte-identical HTML in **both engines**: worst divergence **0.011 mm** (latin 4.939/4.936 · 19.756/19.745 · Devanagari & Tamil 6.350/6.350) |
+| **P9.1** — per-script rendering | All 7 Indic scripts **rasterised** and checked for ink, with a **blank-page control** |
+| **P9.3** — caps trip | `MAX_PAGES` and `pageMode:'single'` both throw `E_PAGE_OVERFLOW` on real renders |
+
+> ⚠️ **P9.1's blocker was misattributed.** The plan said "no PDF→PNG on the Ohio box" — but a
+> per-script render suite runs in **CI**, never in production, and `pdftoppm` is present there.
+>
+> ⚠️ **The ink check needs its control.** "There is ink on the page" proves nothing without a blank
+> page to calibrate against. It catches the blank-or-tofu failure a byte-level font check cannot: the
+> PDF is valid, embeds the right face, and is unreadable.
+>
+> ⚠️ **T2 guards T1.** If the Lohit faces are not actually loaded, the browser measures a system-font
+> fallback and the agreement test compares the wrong thing while possibly still passing.
+
 ---
 
 ## 2. BUILT BUT NOT PROVEN — the honest column
@@ -312,6 +335,7 @@ denied by SEC-3 whatever the thing under test does.
 
 | Date | Phase | Progress |
 |---|---|---|
+| 2026-09-02 | **Real PDF renders** — P3.6, P7.3, P9.1, P9.3 closed on measurement | 52/58 = 90% |
 | 2026-09-02 | P5.6 report closed; **controller wired — 10/14 endpoints live** | 48/58 = 83% |
 | 2026-09-02 | Phase 9 — security surface built; **serializer image guard was missing** (1/7) | 47/58 = 81% |
 | 2026-09-02 | Phase 8 — block service built, offer model proven, starter gaps signalled (3/3) | 46/58 = 79% |
