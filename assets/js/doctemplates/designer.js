@@ -974,9 +974,18 @@ async function srvSaveDraft(silent) {
   if (!SRV.online || !S.tpl || !S.tpl.templateId) return false;
   // Nothing to save for a template that was never created on the server.
   if (!isPersistedId(S.tpl.templateId, "save")) return false;
+  /* Strip the preview data URL. It exists so the canvas can show the image the
+     instant it is dropped; the stored document references the uploaded path
+     instead. Persisting it would fail the XSS filter, bloat the document and
+     still not render. */
+  const objects = (S.tpl.objects || []).map(o => {
+    if (!o.asset || !o.asset.dataUrl) return o;
+    const asset = Object.assign({}, o.asset); delete asset.dataUrl;
+    return Object.assign({}, o, {asset});
+  });
   const patch = {
     name: S.tpl.name, page: S.tpl.page, header: S.tpl.header, footer: S.tpl.footer,
-    objects: S.tpl.objects, languages: S.tpl.languages,
+    objects, languages: S.tpl.languages,
     defaultLanguage: S.tpl.defaultLanguage
   };
   try {
@@ -3254,6 +3263,8 @@ function readAsset(file){
 }
 function applyAsset(o, a, keepBox){
   o.asset=a; o.bindKey=null;
+  /* content.src is what the SERVER reads. o.asset is preview-only. */
+  if(a.src){ o.content=Object.assign({}, o.content, {src:a.src}); }
   if(!keepBox){
     const ratio=a.hPx/a.wPx;
     o.hMm=Math.max(4, Math.round(o.wMm*ratio*10)/10);
@@ -3267,6 +3278,27 @@ async function dropFiles(files, atMm, targetId){
     let a;
     try{ a=await readAsset(list[i]); }
     catch(msg){ toast(String(msg), true); continue; }
+    /* UPLOAD IT. The asset carries a base64 data: URL for instant on-screen
+       preview, and that is ALL it is for — it must never be what gets saved:
+         · the panel XSS-filters every POST, and CI neutralises "data:", which
+           mangles the JSON so the save fails with the misleading
+           "patch must be a JSON object";
+         · Firestore documents cap at 1 MiB, and a couple of embedded crests
+           would approach it;
+         · Doc_serializer::guardSrc() rejects data: by design, so it could never
+           render into a PDF anyway.
+       upload_asset() stores the bytes once, under their own content hash, and
+       hands back a school-relative path — which is what the renderer wants. */
+    if(SRV.online){
+      try{
+        const up=await srv.uploadAsset(list[i]);
+        a.src=up.src; a.wPx=up.width||a.wPx; a.hPx=up.height||a.hPx;
+      }catch(e){
+        apiFail(e, "Uploading "+list[i].name);
+        toast("Not placed — the image could not be uploaded, so it was not added.");
+        continue;                       // never place an image we cannot render
+      }
+    }
     const before=snapshot();
     if(targetId){                       /* Figma's drop-to-replace */
       const o=obj(targetId);
