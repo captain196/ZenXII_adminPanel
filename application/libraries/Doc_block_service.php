@@ -93,6 +93,17 @@ class Doc_block_service
      */
     public function save(string $docId, array $data, string $by = ''): array
     {
+        /* A block id is caller-supplied. Overwriting another school's block
+           would both destroy it and hijack it into this school's library, since
+           schoolId is reassigned below. Same reasoning as
+           Doc_template_service::head(): the Admin SDK bypasses firestore.rules. */
+        $existing = ($this->store['get'])(self::COLLECTION, $docId);
+        if (is_array($existing) && $existing
+            && isset($data['schoolId'])
+            && ($existing['schoolId'] ?? null) !== $data['schoolId']) {
+            throw new RuntimeException("Doc_block_service: no block '$docId'");
+        }
+
         foreach (['schoolId', 'blockType'] as $k) {
             if (empty($data[$k])) {
                 throw new InvalidArgumentException("Doc_block_service: '$k' is required");

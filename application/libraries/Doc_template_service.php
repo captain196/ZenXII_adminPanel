@@ -62,9 +62,19 @@ class Doc_template_service
      * With no params the CI3 Firestore service is adapted. Production passes
      * nothing; tests pass a fake.
      */
+    /**
+     * The tenant every operation must belong to.
+     *
+     * Set from the SESSION by the controller, never from a request. Null means
+     * "unscoped", which is only ever correct in a test.
+     */
+    private ?string $schoolId = null;
+
     public function __construct(array $params = [])
     {
-        $this->audit = $params['audit'] ?? null;
+        $this->audit    = $params['audit'] ?? null;
+        $this->schoolId = isset($params['schoolId']) && $params['schoolId'] !== ''
+            ? (string) $params['schoolId'] : null;
 
         if (!empty($params['store'])) {
             $this->store = $params['store'];
@@ -590,10 +600,35 @@ class Doc_template_service
      *  Helpers
      * ================================================================== */
 
+    /**
+     * Load a template head, and REFUSE it if it belongs to another school.
+     *
+     * The tenant check lives here rather than only in the controller because
+     * every lifecycle method funnels through this one function, and it was
+     * missing from four of them — save, publish, activate and archive each took
+     * a caller-supplied templateId and acted on it with no ownership check at
+     * all. `safe_path_segment()` validates the CHARACTERS of an id; it says
+     * nothing about who owns it.
+     *
+     * That is not caught anywhere downstream: the panel uses the Firebase Admin
+     * SDK, which bypasses firestore.rules entirely, so the rules that correctly
+     * gate mobile clients never see these writes. Ids are
+     * `{schoolId}_{entityId}` and template numbers run sequentially from
+     * TPL0001, so a target is guessable once a schoolId is known.
+     *
+     * The consequence was not a leak but sabotage: activating another school's
+     * template changes which certificate that school legally issues, and
+     * archiving theirs removes their ability to issue one at all.
+     */
     private function head(string $docId): array
     {
         $head = ($this->store['get'])(self::HEAD_COLLECTION, $docId);
         if (!is_array($head) || !$head) {
+            throw new RuntimeException("Doc_template_service: no template '$docId'");
+        }
+        if ($this->schoolId !== null && ($head['schoolId'] ?? null) !== $this->schoolId) {
+            // Deliberately the SAME message as "not found". Confirming that an
+            // id exists in another tenant is itself a disclosure.
             throw new RuntimeException("Doc_template_service: no template '$docId'");
         }
         return $head;

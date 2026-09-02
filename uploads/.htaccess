@@ -1,0 +1,43 @@
+# Document Engine proof PDFs must never be fetched over HTTP.
+#
+# proof_pdf() writes to uploads/{schoolId}/doctemplates/_proofs/ with a
+# PREDICTABLE name: {schoolId}_TPL####_v{n}_{lang}.pdf. Apache serves static
+# files before CodeIgniter is reached — the front-controller rewrite is guarded
+# by `RewriteCond %{REQUEST_FILENAME} !-f` — so those files were reachable with
+# no session, no login and no RBAC check by anyone who could guess a schoolId
+# and a template number. A rendered certificate carries the school's letterhead,
+# crest and signature graphics, which is a forgery kit for a legal-document
+# product.
+#
+# Assets (uploads/**/doctemplates/assets/) are deliberately still served: the
+# designer previews them by URL in the browser, and their names are the file's
+# own sha256, so they are not enumerable. Serving them through an authenticated
+# action instead is the better answer and is recorded in
+# qa/certificates/14-unknown-risk-register.md.
+<FilesMatch "\.pdf$">
+    <IfModule mod_authz_core.c>
+        Require all denied
+    </IfModule>
+    <IfModule !mod_authz_core.c>
+        Order allow,deny
+        Deny from all
+    </IfModule>
+</FilesMatch>
+
+# Nothing under uploads/ is ever executable. Everything here is user-supplied,
+# and upload_asset() content-sniffs, but defence in depth is cheap and the
+# consequence of being wrong once is remote code execution.
+<FilesMatch "\.(php|php[0-9]?|phtml|phar|pl|py|cgi|sh|htaccess)$">
+    <IfModule mod_authz_core.c>
+        Require all denied
+    </IfModule>
+    <IfModule !mod_authz_core.c>
+        Order allow,deny
+        Deny from all
+    </IfModule>
+</FilesMatch>
+<IfModule mod_php.c>
+    php_flag engine off
+</IfModule>
+Options -Indexes -ExecCGI
+AddType text/plain .php .phtml .phar

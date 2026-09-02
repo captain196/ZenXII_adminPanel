@@ -256,7 +256,12 @@ class Doc_templates extends MY_Controller
     private function _templates(): Doc_template_service
     {
         if (!isset($this->doctpl)) {
-            $this->load->library('doc_template_service', null, 'doctpl');
+            /* The tenant is handed to the service from the SESSION, so that
+               every lifecycle method is ownership-checked in ONE place rather
+               than in each endpoint — which is how save, publish, activate and
+               archive came to have no check at all. */
+            $this->load->library('doc_template_service',
+                ['schoolId' => (string) $this->school_id], 'doctpl');
         }
         return $this->doctpl;
     }

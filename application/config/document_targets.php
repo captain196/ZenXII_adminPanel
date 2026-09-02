@@ -63,7 +63,7 @@ return [
 
     'transfer_certificate' => [
         'docType'    => 'transfer_certificate',
-        'module'     => 'Students',
+        'module'     => 'SIS',
         'surface'    => 'panel',
         'mountHint'  => 'Student profile → Documents; and the exit/withdrawal flow',
         'entity'     => 'student',
@@ -73,12 +73,24 @@ return [
         'wired'      => false,
         'note'       => 'Issued at exit. The no-dues gate is deliberately NOT a default: '
                       . 'courts have gutted it, and it must never apply to classes I-VIII. '
-                      . 'Per-state configurable when issuance lands.',
+                      . 'Per-state configurable when issuance lands. '
+                      . "\n\n"
+                      . 'COLLISION, READ BEFORE WIRING: A REAL TC ISSUANCE ALREADY EXISTS. '
+                      . 'Sis.php::issue_tc() checks outstanding dues across fees, library, '
+                      . 'hostel and transport; DISABLES the student\'s Firebase Auth account; '
+                      . 'removes them from the RTDB roster; syncs the change to both apps; '
+                      . 'blanks attendance from that date; recomputes section strength; and '
+                      . 'writes a TC_ISSUED history entry. Its numbering is already atomic '
+                      . '(Firestore_service::nextSchoolCounter with the same \'tc\' series '
+                      . 'named on this row). A document-only TC issued here would either '
+                      . 'duplicate those side effects or, far worse, let a student be issued a '
+                      . 'Transfer Certificate while remaining enrolled, authenticated and on '
+                      . 'the roster. This row must MOUNT ON that workflow, never beside it.',
     ],
 
     'bonafide' => [
         'docType'    => 'bonafide',
-        'module'     => 'Students',
+        'module'     => 'SIS',
         'surface'    => 'panel',
         'mountHint'  => 'Student profile → Documents',
         'entity'     => 'student',
@@ -92,7 +104,7 @@ return [
 
     'character' => [
         'docType'    => 'character',
-        'module'     => 'Students',
+        'module'     => 'SIS',
         'surface'    => 'panel',
         'mountHint'  => 'Student profile → Documents',
         'entity'     => 'student',
@@ -113,7 +125,7 @@ return [
 
     'fee_receipt' => [
         'docType'    => 'fee_receipt',
-        'module'     => 'Fee_management',
+        'module'     => 'Fees',
         'surface'    => 'panel',
         'mountHint'  => 'Accounts → Fee collection → a posted payment row, and the '
                       . 'payment-success screen immediately after collection',
@@ -143,7 +155,7 @@ return [
 
     'fee_demand_note' => [
         'docType'    => 'fee_demand_note',
-        'module'     => 'Fee_management',
+        'module'     => 'Fees',
         'surface'    => 'panel',
         'mountHint'  => 'Accounts → Outstanding → bulk generate for a class',
         'entity'     => 'feeDemand',
@@ -161,7 +173,7 @@ return [
 
     'staff_experience_letter' => [
         'docType'    => 'staff_experience_letter',
-        'module'     => 'Staff',
+        'module'     => 'HR',
         'surface'    => 'panel',
         'mountHint'  => 'Staff profile → Documents; and the exit/relieving flow',
         'entity'     => 'staff',
@@ -176,7 +188,7 @@ return [
 
     'staff_salary_slip' => [
         'docType'    => 'staff_salary_slip',
-        'module'     => 'Payroll',
+        'module'     => 'HR',
         'surface'    => 'panel',
         'mountHint'  => 'Payroll → a finalised month → per-staff row',
         'entity'     => 'payrollRun',
@@ -195,7 +207,7 @@ return [
 
     'parent_document_locker' => [
         'docType'    => '*',
-        'module'     => 'Students',
+        'module'     => 'SIS',
         'surface'    => 'parent_app',
         'mountHint'  => 'Parent app → child → Documents: a list of what was ISSUED to them',
         'entity'     => 'issuedDocument',

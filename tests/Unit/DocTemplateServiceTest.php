@@ -105,6 +105,7 @@ class DocTemplateServiceTest extends TestCase
             } : null,
         ];
         return new Doc_template_service([
+            'schoolId' => 'SCH1',
             'store' => $store,
             'audit' => function ($a, $e, $desc) { $this->audit[] = [$a, $e, $desc]; },
         ]);
@@ -452,6 +453,72 @@ class DocTemplateServiceTest extends TestCase
         $this->assertCount(2, $r['displaced']);
         $active = array_filter($this->docs['documentTemplates'], fn($t) => ($t['activeVersion'] ?? null) !== null);
         $this->assertCount(1, $active);
+    }
+
+    /* ---------------------------------------------------------------- *
+     * TENANT ISOLATION — A8 · P0-1
+     *
+     * save(), publish(), activate() and archive() each took a caller-supplied
+     * templateId and acted on it with NO ownership check. safe_path_segment()
+     * validates the characters of an id; it says nothing about who owns it.
+     * Nothing downstream caught it either: the panel uses the Admin SDK, which
+     * bypasses firestore.rules entirely, so the rules that correctly gate
+     * mobile clients never see these writes.
+     *
+     * The consequence was sabotage rather than leakage — activating another
+     * school's template changes which certificate that school legally issues,
+     * and archiving theirs removes their ability to issue one at all.
+     * ---------------------------------------------------------------- */
+
+    /** @dataProvider lifecycleActions */
+    public function test_no_lifecycle_action_touches_another_school_s_template(string $action): void
+    {
+        $this->docs['documentTemplates']['SCH2_TPL0001'] = [
+            'schoolId' => 'SCH2', 'templateId' => 'TPL0001', 'docType' => 'transfer_certificate',
+            'status' => 'draft', 'version' => 1, 'publishedVersion' => 1,
+            'activeVersion' => 1, 'lockVersion' => 0,
+        ];
+        $before = $this->docs['documentTemplates']['SCH2_TPL0001'];
+
+        try {
+            match ($action) {
+                'save'     => $this->svc->save('SCH2_TPL0001', ['name' => 'hijacked'], 0),
+                'publish'  => $this->svc->publish('SCH2_TPL0001', 'ATTACKER'),
+                'activate' => $this->svc->activate('SCH2_TPL0001', 'ATTACKER'),
+                'archive'  => $this->svc->archive('SCH2_TPL0001', 'ATTACKER'),
+            };
+            $this->fail("$action acted on another school's template");
+        } catch (\RuntimeException $e) {
+            $this->assertStringContainsString('no template', $e->getMessage(),
+                'the refusal must not confirm that the id exists in another tenant');
+        }
+
+        $this->assertSame($before, $this->docs['documentTemplates']['SCH2_TPL0001'],
+            "$action modified another school's template");
+    }
+
+    public static function lifecycleActions(): array
+    {
+        return [['save'], ['publish'], ['activate'], ['archive']];
+    }
+
+    /**
+     * The refusal is deliberately worded exactly like "not found". Saying
+     * "that belongs to another school" confirms the id exists, which is itself
+     * a disclosure and hands an attacker an enumeration oracle.
+     */
+    public function test_a_foreign_id_and_a_missing_id_are_indistinguishable(): void
+    {
+        $this->docs['documentTemplates']['SCH2_TPL0001'] = ['schoolId' => 'SCH2', 'status' => 'draft'];
+
+        $msgs = [];
+        foreach (['SCH2_TPL0001', 'SCH1_TPL9999'] as $id) {
+            try { $this->svc->archive($id); } catch (\RuntimeException $e) {
+                $msgs[] = str_replace($id, '{id}', $e->getMessage());
+            }
+        }
+        $this->assertCount(2, $msgs);
+        $this->assertSame($msgs[0], $msgs[1], 'the two refusals must be identical');
     }
 
     /* ---------------------------------------------------------------- *

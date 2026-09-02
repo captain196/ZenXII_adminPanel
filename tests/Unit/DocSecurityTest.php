@@ -368,4 +368,99 @@ class DocSecurityTest extends TestCase
             . "{status:'success'}, so the caller — and the person who clicked — cannot tell "
             . 'it from a real result. If this is deliberate, it needs to fail loudly instead.');
     }
+
+    /* ================================================================== *
+     *  A8 · P0-2 and P1 — exposure and image scoping
+     * ================================================================== */
+
+    /**
+     * Proof PDFs must not be fetchable over HTTP.
+     *
+     * They are written to uploads/{schoolId}/doctemplates/_proofs/ with a
+     * PREDICTABLE name, and Apache serves static files before CodeIgniter is
+     * reached — the front-controller rewrite is guarded by `!-f`. So they were
+     * reachable with no session and no RBAC by anyone who could guess a
+     * schoolId and a template number. A rendered certificate carries the
+     * school's letterhead, crest and signature graphics.
+     */
+    public function test_uploads_denies_web_access_to_rendered_pdfs(): void
+    {
+        $ht = __DIR__ . '/../../uploads/.htaccess';
+        $this->assertFileExists($ht, 'uploads/ has no .htaccess — proof PDFs are web-readable');
+
+        $src = file_get_contents($ht);
+        $this->assertMatchesRegularExpression('/FilesMatch\s+"[^"]*\\\.pdf/i', $src,
+            'uploads/.htaccess does not deny .pdf');
+        $this->assertMatchesRegularExpression('/Require all denied|Deny from all/i', $src);
+    }
+
+    public function test_uploads_never_executes_php(): void
+    {
+        $src = file_get_contents(__DIR__ . '/../../uploads/.htaccess');
+        $this->assertStringContainsString('php', $src,
+            'everything under uploads/ is user-supplied; script execution must be off');
+        $this->assertStringContainsString('-Indexes', $src, 'directory listing must be off');
+    }
+
+    /**
+     * The renderer must have NO default image root.
+     *
+     * It used to seed the entire uploads tree, and allowImageRoot() only
+     * appends — so the per-tenant scoping the controller performs was a no-op:
+     * the broad root already satisfied every check, and a template author at
+     * one school could embed a file from another school's uploads directory
+     * into their own PDF.
+     */
+    public function test_the_renderer_has_no_default_image_root(): void
+    {
+        $src = file_get_contents(__DIR__ . '/../../application/libraries/Doc_renderer.php');
+
+        $this->assertDoesNotMatchRegularExpression(
+            '/\$this->imageRoots\[\]\s*=\s*rtrim\(\s*FCPATH\s*\.\s*.uploads./',
+            $src,
+            'Doc_renderer seeds the whole uploads tree as an image root again. That makes '
+            . 'the controller\'s per-tenant allowImageRoot() call a no-op, because '
+            . 'allowImageRoot() appends rather than replaces.');
+    }
+
+    public function test_the_service_is_handed_its_tenant_from_the_session(): void
+    {
+        $src = file_get_contents(__DIR__ . '/../../application/controllers/Doc_templates.php');
+
+        // Single-quoted on purpose: a double-quoted PHP string interpolates
+        // $this->school_id, and the test then reads its own property instead.
+        $this->assertStringContainsString(
+            '$this->load->library(\'doc_template_service\',', $src,
+            'the lifecycle service must be constructed by the controller');
+        $this->assertStringContainsString(
+            '[\'schoolId\' => (string) $this->school_id]', $src,
+            'the service must be handed the SESSION school id, so every lifecycle method is '
+            . 'ownership-checked in ONE place rather than in each endpoint — which is how '
+            . 'save, publish, activate and archive came to have no check at all');
+    }
+
+    /**
+     * Every print point must name a module that actually exists in the RBAC
+     * catalogue. Mine did not: the registry shipped Fee_management, Students,
+     * Staff and Payroll, none of which are real keys. has_permission() does a
+     * bare map lookup and fails closed on an unknown key, so wiring against
+     * them would have denied EVERYONE, silently, with nothing to debug.
+     */
+    public function test_every_print_point_names_a_real_rbac_module(): void
+    {
+        $targets = include __DIR__ . '/../../application/config/document_targets.php';
+        $json = json_decode(file_get_contents(__DIR__ . '/../../functions/rbac_modules.json'), true);
+
+        $known = [];
+        array_walk_recursive($json, function ($v) use (&$known) {
+            if (is_string($v)) { $known[$v] = true; }
+        });
+
+        foreach ($targets as $key => $t) {
+            $this->assertArrayHasKey($t['module'], $known,
+                "print point '$key' names RBAC module '{$t['module']}', which is not in "
+                . 'functions/rbac_modules.json. has_permission() fails closed on an unknown '
+                . 'key, so this would deny everyone with no error to trace.');
+        }
+    }
 }

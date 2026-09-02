@@ -86,8 +86,16 @@ class Doc_renderer
             throw new RuntimeException('Doc_renderer: temp dir not writable: ' . $this->tempDir);
         }
 
-        // Default image root. Callers scope this per tenant via allowImageRoot().
-        $this->imageRoots[] = rtrim(FCPATH . 'uploads', '/');
+        /* NO DEFAULT IMAGE ROOT.
+         *
+         * This used to seed the ENTIRE uploads tree, and allowImageRoot() only
+         * ever appends — so the per-tenant scoping the controller performs was a
+         * no-op: the broad root already satisfied every check. A template author
+         * at one school could reference a file under another school's uploads
+         * directory and have mPDF embed it into their own PDF.
+         *
+         * Empty means nothing resolves, and guardImages() says so plainly rather
+         * than rendering a document with a missing picture. */
     }
 
     /**
@@ -360,6 +368,15 @@ class Doc_renderer
     {
         if (!preg_match_all('/<img\b[^>]*\bsrc\s*=\s*("|\')(.*?)\1/i', $html, $m)) {
             return;
+        }
+        if (!$this->imageRoots) {
+            // Fail closed, and say WHY. "outside permitted roots" when there are
+            // no roots at all sends the reader looking for the wrong bug.
+            throw new RuntimeException(
+                'E_IMAGE_SOURCE: this document contains images but no image root was '
+                . 'permitted. Call allowImageRoot() with the tenant\'s own storage path '
+                . 'before rendering — there is deliberately no default.'
+            );
         }
         foreach ($m[2] as $src) {
             $src = html_entity_decode(trim($src), ENT_QUOTES, 'UTF-8');
