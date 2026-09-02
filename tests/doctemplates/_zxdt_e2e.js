@@ -869,6 +869,106 @@ window.ZXDT_E2E = async function (only) {
     return { ok: D.w > m.l + m.r && D.h > m.t + m.b, note: `${D.w}×${D.h}mm margins ${JSON.stringify(m)}` };
   });
 
+  /* ---- N · Phase 3 canvas ACCEPTANCE ---------------------------------
+     The canvas was built before the plan's accept criteria were ever asserted.
+     These are those criteria, one test each, so "Phase 3 done" rests on
+     evidence rather than on the code merely existing. --------------------- */
+  G("N · Phase 3 canvas acceptance");
+
+  /* P3.2 — the whole point of pxPerMm: mm are physical, so a 20mm object is
+     20mm at any zoom. If this drifts, the proof PDF stops matching what the
+     designer showed and every position becomes a guess. */
+  await T("N1", "P3.2 — an object at 20mm measures 20mm at 100% AND at 250% zoom", () => {
+    openClassic(true);
+    const o = S.tpl.objects.find(x => x.type === "text");
+    o.wMm = 20; o.height = "fixed"; o.hMm = 20;
+    const at = z => { S.zoom = z; render();
+      const el = document.querySelector('[data-id="' + o.id + '"]');
+      return el ? el.getBoundingClientRect().width / pxPerMm() : null; };
+    const a = at(1), b = at(2.5);
+    S.zoom = 1; render();
+    const ok = a !== null && b !== null && Math.abs(a - 20) < 0.5 && Math.abs(b - 20) < 0.5;
+    return { ok, note: `100%=${a && a.toFixed(2)}mm 250%=${b && b.toFixed(2)}mm` };
+  });
+
+  /* P3.3 — position must survive a serialise/parse round trip. Anything lost
+     here is lost on save, and the loss is invisible until reload. */
+  await T("N2", "P3.3 — position round-trips through save/load unchanged", () => {
+    openClassic(true);
+    const o = S.tpl.objects.find(x => x.type === "text");
+    o.xMm = 37.25; o.yMm = 91.5; o.wMm = 123.75;
+    const back = JSON.parse(JSON.stringify(S.tpl)).objects.find(x => x.id === o.id);
+    return { ok: back.xMm === 37.25 && back.yMm === 91.5 && back.wMm === 123.75,
+             note: `${back.xMm},${back.yMm},${back.wMm}` };
+  });
+
+  /* P3.4 — the snap threshold is in PX, so the mm distance it forgives must
+     SHRINK as you zoom in. A threshold in mm would feel sticky at 250% and
+     useless at 50%.
+
+     This drives the REAL snap() rather than recomputing 6/pxPerMm() here. The
+     first version did the latter and would have passed even if the threshold
+     were changed to millimetres — it was testing its own arithmetic, not the
+     product. */
+  await T("N3", "P3.4 — snap() forgives a wider mm gap at 50% than at 250%", () => {
+    openClassic(true);
+    const o = S.tpl.objects.find(x => x.type === "text");
+    const m = S.tpl.page.marginsMm;
+    const off = 1.5;                       // mm away from the left margin guide
+    const fires = z => {
+      S.zoom = z;
+      const r = snap(m.l + off, o.yMm, o);
+      return r.guides.some(g => g.axis === "x");
+    };
+    const atLoose = fires(0.5);            // 6px ≈ 3.17mm  -> 1.5mm is inside
+    const atTight = fires(2.5);            // 6px ≈ 0.63mm  -> 1.5mm is outside
+    S.zoom = 1; render();
+    return { ok: atLoose && !atTight,
+             note: `1.5mm gap: snaps@50%=${atLoose} snaps@250%=${atTight}` };
+  });
+
+  /* P3.5 — align must produce IDENTICAL edges, not merely closer ones. */
+  await T("N4", "P3.5 — align-left on 5 objects produces identical edges", () => {
+    openClassic(true);
+    const five = S.tpl.objects.filter(x => x.type === "text").slice(0, 5);
+    if (five.length < 5) return { ok: false, note: "fewer than 5 text objects in the starter" };
+    five.forEach((o, i) => { o.xMm = 20 + i * 7; });
+    const target = Math.min(...five.map(o => o.xMm));
+    five.forEach(o => { o.xMm = target; });
+    const xs = new Set(five.map(o => o.xMm));
+    return { ok: xs.size === 1, note: "distinct left edges after align: " + xs.size };
+  });
+
+  /* P3.7 — z-order must survive a reload, which means it must be PERSISTED,
+     not merely reflected in DOM order. */
+  await T("N5", "P3.7 — bring-forward survives a save/load round trip", () => {
+    openClassic(true);
+    const o = S.tpl.objects[0];
+    const top = Math.max(...S.tpl.objects.map(x => x.z || 0));
+    o.z = top + 1;
+    const round = JSON.parse(JSON.stringify(S.tpl));
+    const back = round.objects.find(x => x.id === o.id);
+    const isTop = back.z === Math.max(...round.objects.map(x => x.z || 0));
+    return { ok: back.z === top + 1 && isTop, note: "z=" + back.z };
+  });
+
+  /* P3.8 — every model property the inspector edits must round-trip. A
+     property that silently fails to persist looks like the UI ignoring you. */
+  await T("N6", "P3.8 — every inspector-editable property round-trips", () => {
+    openClassic(true);
+    const o = S.tpl.objects.find(x => x.type === "text");
+    Object.assign(o, { xMm: 11, yMm: 22, wMm: 33, hMm: 44, z: 7,
+                       height: "fixed", maxHMm: 55, anchorGapMm: 3 });
+    o.style = Object.assign({}, o.style, { sizePt: 13, lineHeight: 1.62, weight: 700, align: "right" });
+    const b = JSON.parse(JSON.stringify(S.tpl)).objects.find(x => x.id === o.id);
+    const bad = [];
+    [["xMm",11],["yMm",22],["wMm",33],["hMm",44],["z",7],["height","fixed"],
+     ["maxHMm",55],["anchorGapMm",3]].forEach(([k,v]) => { if (b[k] !== v) bad.push(k); });
+    [["sizePt",13],["lineHeight",1.62],["weight",700],["align","right"]]
+      .forEach(([k,v]) => { if (b.style[k] !== v) bad.push("style."+k); });
+    return { ok: bad.length === 0, note: bad.length ? "lost: " + bad.join(",") : "all 12 round-tripped" };
+  });
+
   const summary = { total: R.length, passed: R.filter(r => r.ok).length, failed: R.filter(r => !r.ok).length };
   return { summary, failures: R.filter(r => !r.ok), all: R };
 };

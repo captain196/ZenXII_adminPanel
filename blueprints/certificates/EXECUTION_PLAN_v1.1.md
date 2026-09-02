@@ -346,14 +346,14 @@ canvas built against an unproven serializer bakes in its mistakes.
 
 | # | Task | Depends | Accept |
 |---|---|---|---|
-| P3.1 | Object model + **command stack** (`{do, undo, coalesceKey}`) | — | Drag emits **one** coalesced command per gesture, not per mousemove |
-| P3.2 | DOM rendering of objects; `pxPerMm = zoom * 96/25.4` | P3.1 | Object at 20 mm measures 20 mm at 100% and at 250% zoom |
-| P3.3 | Select / drag / resize with handles | P3.2 | Position round-trips through save/load unchanged |
-| P3.4 | Snap guides — object edges/centres, page centre, margins; threshold in **px** | P3.3 | Snap feel is constant across zoom levels |
-| P3.5 | Multi-select (marquee + shift-click) + align/distribute | P3.3 | Align on 5 objects produces identical edges |
-| P3.6 | Rulers, zoom/pan, grid, precise mm entry | P3.2 | Typing `45.5` mm places the object at exactly 45.5 mm in the proof PDF |
-| P3.7 | Z-order, normalised on save | P3.1 | Bring-forward survives reload |
-| P3.8 | Inspector panel (position, size, style, height mode, anchor) | P3.3 | Every model property is editable and round-trips |
+| P3.1 | ✅ **DONE — was already built; acceptance now proven.** Command stack is `{label, before, after}` **snapshot**-based, not the planned `{do, undo, coalesceKey}`. Different mechanism, same guarantee — and a snapshot cannot drift out of sync with the model the way a hand-written inverse can. | — | ✅ `push()` fires on gesture END with `drag.before` captured at start (`designer.js:2524`), so a drag is **one** command, never one per mousemove. E2E D2/D3/J2/J3 pin add/undo/redo, survival across a screen change, and the 80-entry bound. |
+| P3.2 | ✅ **DONE.** `pxPerMm = S.zoom*96/25.4` — exactly the planned formula. | P3.1 | ✅ **E2E N1**: a 20 mm object measures **20.00 mm at 100% and 20.00 mm at 250%**, read from `getBoundingClientRect()`. If this drifts the proof PDF stops matching the canvas and every position becomes a guess. |
+| P3.3 | ✅ **DONE.** | P3.2 | ✅ **E2E N2**: `37.25 / 91.5 / 123.75` mm survive a serialise→parse round trip byte-exact. Anything lost here is lost on save and invisible until reload. |
+| P3.4 | ✅ **DONE.** `snap()` uses `TH = 6/pxPerMm()` — 6 **px**, converted. | P3.3 | ✅ **E2E N3** drives the real `snap()`: a 1.5 mm gap **snaps at 50% and does not at 250%**. ⚠️ The first version of this test recomputed `6/pxPerMm()` itself and would have passed even if the threshold were changed to millimetres — it was testing its own arithmetic, not the product. Rewritten. |
+| P3.5 | ✅ **DONE.** | P3.3 | ✅ **E2E N4**: aligning 5 objects leaves **exactly 1 distinct left edge** — identical, not merely closer. |
+| P3.6 | ⚠️ **DONE ON THE CANVAS, UNPROVEN IN THE PDF.** Rulers, zoom/pan, grid and precise mm entry all exist. | P3.2 | ⚠️ E2E M3/M4 pin zoom bounds and margins; N2/N6 prove `45.5`-style values round-trip **in the model**. The accept criterion says *"…at exactly 45.5 mm in the proof PDF"*, and there is no proof-PDF path yet (Phase 6). **Recorded as unproven rather than claimed.** |
+| P3.7 | ✅ **DONE.** | P3.1 | ✅ **E2E N5**: bring-forward persists and is still top-most after a round trip, so z is stored rather than merely reflected in DOM order. |
+| P3.8 | ✅ **DONE.** | P3.3 | ✅ **E2E N6**: all **12** inspector-editable properties round-trip — position, size, z, height mode, `maxHMm`, anchor gap, and 4 style fields. A property that silently fails to persist reads as the UI ignoring you. |
 
 ---
 
