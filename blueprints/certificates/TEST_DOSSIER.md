@@ -9,7 +9,7 @@ starts from evidence rather than from a plan row that says done.
 artifact sat finished on disk, and one accept criterion (P3.6) is still counted as unmet because
 the thing that would prove it does not exist yet. A task list cannot carry that distinction.
 
-**Updated:** 2026-09-02 · **Progress:** 33/58 = 57% · Branch `yug_testing`
+**Updated:** 2026-09-02 · **Progress:** 39/58 = 67% · Branch `yug_testing`
 
 **Progress is computed:** `awk -f blueprints/certificates/tools/progress.awk blueprints/certificates/EXECUTION_PLAN_v1.1.md | sort`
 
@@ -121,6 +121,20 @@ cd firebase-rules/tests && npm test
 > correct and resolving to `generic` would have been the bug: it would tell a school bound by a
 > statute that no rule applies.
 
+### Phase 6 — Publish pipeline (6/7)
+
+| What | Proven by |
+|---|---|
+| Two concurrent saves → **one conflict, no lost edit** | `test_two_concurrent_saves_produce_exactly_one_conflict_and_no_lost_edit` — and the first writer's edit is verified still present |
+| `save()` cannot move lifecycle fields | status / activeVersion / publishedVersion / templateId are stripped |
+| Publish freezes v*n*, head opens **draft v*n+1*** | Snapshot is **byte-identical** after a later head edit |
+| Publish refuses without `hash` + `fontManifest` + `mpdfVersion` | Data provider, one case per field |
+| Compliance layers **frozen, not referenced** | A later authority revision cannot retroactively change what an issued certificate was validated against |
+| Snapshots are create-only | Re-publishing over a version id is refused; rules deny update/delete at every grade |
+| Publish does **not** activate | The incumbent keeps serving until someone deliberately activates |
+| Illegal transitions rejected server-side | `published → draft` impossible; archived is terminal |
+| Every transition audited with a description | publish / activate / archive |
+
 ---
 
 ## 2. BUILT BUT NOT PROVEN — the honest column
@@ -130,6 +144,8 @@ cd firebase-rules/tests && npm test
 
 | # | Claim | Why it is not proven | What would prove it |
 |---|---|---|---|
+| **P6.4** | Two concurrent activates → exactly one active | The activate LOGIC is proven (displaces every incumbent; refuses outright when no transaction is available), **but the transaction in the test is a double**. Real atomicity is Firestore's | Emulator run with genuinely concurrent clients |
+| **Controller wiring** | The service is not reachable from the UI | `Doc_template_service` exists and is tested, but **`Doc_templates.php` endpoints still return `pending P1.x`** — nothing calls it yet. Not tracked by any P-row, so it would otherwise go unnoticed | Wire save/publish/activate/archive, then exercise against a seeded school |
 | **P5.1** | CBSE TC required-key list | Declares **19 keys against Annexure-I's 22**, flagged `illustrative:true` / `fieldListVerified:false`. **Blocked on a human, not on code** | Gate 0.3 transcription + 0.8 second-person sign-off |
 | **P5.6** | Affected-school re-validation report | The *guarantee* holds (nothing auto-invalidates), but the report itself must query templates across tenants — inherently server-side | Phase 6 |
 | **P3.6** | Typing `45.5` mm places the object at exactly 45.5 mm **in the proof PDF** | Round-trips in the model (N2/N6), but **there is no proof-PDF path until Phase 6** | Phase 6, then measure the rendered PDF |
@@ -175,6 +191,7 @@ include, capability-gated behind `Certificates`, and 13 endpoints still stubs. I
 
 | Date | Phase | Progress |
 |---|---|---|
+| 2026-09-02 | Phase 6 — lifecycle service built: lock/publish/activate/archive (6/7) | 39/58 = 67% |
 | 2026-09-02 | Phase 5 — compliance stack proven (4/6); **progress counter fixed** | 33/58 = 57% |
 | 2026-09-02 | Phase 4 — picker/chip/i18n proven, **capacity hint built** | 29/58 = 50% |
 | 2026-09-02 | Phase 3 acceptance proven (7/8) | 24/58 = 41% |

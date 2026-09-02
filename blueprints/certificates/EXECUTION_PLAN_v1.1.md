@@ -386,13 +386,13 @@ canvas built against an unproven serializer bakes in its mistakes.
 
 | # | Task | Depends | Accept |
 |---|---|---|---|
-| P6.1 | `documentTemplateVersions` immutable snapshots — **create-only** | P1.3 | No update/delete path exists for anyone, including platform admin |
-| P6.2 | Proof PDF + `proofPdfHash` + **`fontManifest` + `mpdfVersion`** | P1.5, P2.* | A snapshot records the exact faces and engine used |
-| P6.3 | Publish transition: freeze snapshot, set `publishedVersion` | P6.1 | Editing a published template mutates the **head** to `draft v+1`; snapshot untouched |
-| P6.4 | Activate — **transactional**, exactly one active per (school, docType) | P6.3 | Two concurrent activates → exactly one active. Asserted by test. |
-| P6.5 | `lockVersion` optimistic concurrency | — | Two concurrent saves → exactly one conflict, never a silent overwrite |
-| P6.6 | Lifecycle state machine enforced server-side | P6.3 | Illegal transitions rejected |
-| P6.7 | Audit events on every lifecycle action (via P1.7) | P1.7 | Every transition appears in the existing Audit Logs viewer |
+| P6.1 | ✅ **DONE.** No update/delete path exists in `Doc_template_service`, and `firestore.rules` denies both for **everyone** at every grade. Publishing over an existing version id is refused outright. | P1.3 | ✅ `DocTemplateServiceTest` — `test_publishing_over_an_existing_version_is_refused` + the rules suite's *"no grade unlocks it"* pair. |
+| P6.2 | ✅ **DONE.** The snapshot records `proofPdfHash`, `fontManifest` and `mpdfVersion`, and publish **refuses** without all three. | P1.5, P2.* | ✅ A snapshot that cannot name the faces and engine that produced it cannot be re-rendered years later, which is the entire point of keeping it. Tested per-field via a data provider. |
+| P6.3 | ✅ **DONE.** Publish freezes v*n* and the head opens **draft v*n+1***. | P6.1 | ✅ `test_editing_after_publish_touches_the_head_and_not_the_snapshot` — the frozen version is **byte-identical** after a later head edit. Compliance layers are **frozen, not referenced**, so a later authority revision cannot retroactively change what an issued certificate was validated against. |
+| P6.4 | ⚠️ **LOGIC DONE, ATOMICITY UNPROVEN.** Runs inside `runTransaction()` and **refuses to run at all** when no transaction is available — a non-transactional activate looks identical when it works and yields two active templates when it races. Displaces **every** incumbent, so a past double-active heals rather than persisting. | P6.3 | ⚠️ 4 tests incl. *"displaces every incumbent, not just the first"*. **But the transaction is a DOUBLE.** The accept says *"two concurrent activates → exactly one active"*; real atomicity is Firestore's and needs the emulator with genuinely concurrent clients. **Not counted.** |
+| P6.5 | ✅ **DONE.** | — | ✅ `test_two_concurrent_saves_produce_exactly_one_conflict_and_no_lost_edit` — the second writer is refused **and the first writer's edit is still there**. Deliberately a refusal, not a merge: two clerks editing a statutory template are not editing the same sentence by coincidence. `save()` also cannot move `status`/`activeVersion`/`publishedVersion`/`templateId`. |
+| P6.6 | ✅ **DONE — server-side.** `draft→{published,archived}`, `published→archived`, `archived` terminal. | P6.3 | ✅ A published head **can never revert to draft**, or the snapshot would outlive its own head. Errors name both states and the legal set, so the log is diagnosable. |
+| P6.7 | ✅ **DONE.** Every transition calls `log_audit('DocTemplates', …)` — the existing viewer, not a fourth audit store. | P1.7 | ✅ `test_every_lifecycle_action_is_audited` asserts publish/activate/archive all land **and that each carries a non-empty description**. |
 
 ---
 
