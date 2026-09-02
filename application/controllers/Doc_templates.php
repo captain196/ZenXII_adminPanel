@@ -607,6 +607,12 @@ class Doc_templates extends MY_Controller
                     'contract'    => $this->_contract()->get($docType),
                     'sample'      => $mode,
                     'isDuplicate' => (bool) $this->input->post('isDuplicate'),
+                    /* Browser sink. mPDF-only placeholders must resolve to what
+                       the reader will actually see — the preview footer printed
+                       the literal characters "{PAGENO}" where the PDF shows a
+                       page number. proof_pdf() passes nothing and gets the PDF
+                       form, because the default favours the legal artifact. */
+                    'forPdf'      => false,
                 ]),
                 'lang'   => $lang,
                 'sample' => $mode,

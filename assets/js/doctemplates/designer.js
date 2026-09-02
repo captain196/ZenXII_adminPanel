@@ -1044,6 +1044,12 @@ const TYPES = [
    headline. A school administrator thinks "is this the one we issue?", not
    "which integer is the active pointer?".                                   */
 
+/* Object types are stored as identifiers and were shown as identifiers —
+   the inspector chip read "PAGENUMBER". Say it the way a person would. */
+const TYPE_LABEL = {text:"Text", image:"Image", shape:"Line", table:"Table",
+                    qr:"QR code", pageNumber:"Page number"};
+const typeLabel = t => TYPE_LABEL[t] || String(t||"");
+
 function relTime(iso){
   if(!iso) return "just now";
   const t = Date.parse(iso);
@@ -1529,15 +1535,19 @@ function paintCrumb(){
     /* Published but not live — the state that made a published version look
        lost, because the header kept naming the older one. */
     if(pub && pub > S.tpl.activeVersion) c.insertAdjacentHTML("beforeend",
-      `<span class="chip chip--published" style="margin-left:6px" title="Published, but not what prints yet — activate it from History"><span class="dot"></span>v${pub} published, not live</span>`);
+      `<span class="chip chip--published" style="margin-left:6px" title="Published, but not what prints yet — activate it from History"><span class="dot"></span>v${pub} ready</span>`);
   }
   else if(pub)   c.insertAdjacentHTML("beforeend",
     `<span class="chip chip--published" style="margin-left:8px"><span class="dot"></span>Published · v${pub}</span>`);
   else           c.insertAdjacentHTML("beforeend",
     `<span class="chip chip--draft" style="margin-left:8px"><span class="dot"></span>Draft</span>`);
 
+  /* The third pill said "Unpublished changes" and pushed the header to three
+     long badges. The status bar already reports save state continuously, and
+     the gallery card — where there is room — still spells it out. Here it is a
+     short one. */
   if(ahead && (active || pub)) c.insertAdjacentHTML("beforeend",
-    `<span class="chip chip--draft" style="margin-left:6px" title="Publish to make these changes live"><span class="dot"></span>Unpublished changes</span>`);
+    `<span class="chip chip--draft" style="margin-left:6px" title="You are editing draft v${S.tpl.version}; publish to make it live"><span class="dot"></span>draft v${S.tpl.version}</span>`);
 }
 function paintTopActions(){
   const a=zq("#topActions"); a.innerHTML="";
@@ -2206,7 +2216,7 @@ function paintContent(){
     row.appendChild(lab);
 
     if(o.type!=="text"){
-      const na=el("div","", esc(o.type)+" — not text");
+      const na=el("div","", typeLabel(o.type).toLowerCase()+" — not text");
       na.style.cssText="font-size:11px;color:var(--ink4);padding:5px 7px;border:1px dashed var(--line);"
         +"border-radius:var(--r-xs);background:var(--sunk)";
       na.onclick=()=>{ S.sel=[o.id]; render(); };
@@ -2347,7 +2357,7 @@ function paintInspector(){
   }
   const o=obj(S.sel[0]), st=o.style||{}, req=o.requiredKey;
   badge.innerHTML = req ? '<span class="chip chip--statutory"><span class="dot"></span>Required</span>'
-                        : `<span class="chip">${esc(o.type)}</span>`;
+                        : `<span class="chip">${esc(typeLabel(o.type))}</span>`;
   const lhBad = (o.type==="text"||o.type==="table") && (st.lineHeight==null||st.lineHeight==="");
   B.innerHTML = alignRow() + `
     <div class="row row--1"><div class="inp"><label>Name</label><input data-p="name" value="${esc(o.name||o.id)}"></div></div>

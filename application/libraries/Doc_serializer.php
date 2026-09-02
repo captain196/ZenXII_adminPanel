@@ -468,9 +468,23 @@ class Doc_serializer
                 return $this->runs($o, $data, $lang, $opts, $template);
 
             case 'pageNumber':
-                // Rule P2.4: never an absolute object. mPDF substitutes {PAGENO}
-                // in the footer band, which is the only way it repeats per page.
-                return '{PAGENO}';
+                /* Rule P2.4: never an absolute object. mPDF substitutes
+                   {PAGENO} in the footer band, which is the only way it repeats
+                   per page.
+                   
+                   THE BROWSER DOES NOT. It has no idea what {PAGENO} means, so
+                   the preview printed the literal characters "{PAGENO}" in the
+                   footer where the PDF shows a number — one serializer, two
+                   sinks, and one of them lying about what prints. Caught by
+                   diffing the preview text against the text extracted from the
+                   proof PDF, not by looking at either one alone.
+                   
+                   The preview renders a single page, so "1" is what that page
+                   would genuinely carry.
+                   DEFAULTS TO THE PDF. The PDF is the legal artifact; a
+                   caller that forgets the flag must get the correct document,
+                   not the correct preview. */
+                return ($opts['forPdf'] ?? true) ? '{PAGENO}' : '1';
 
             case 'shape':
                 return '';

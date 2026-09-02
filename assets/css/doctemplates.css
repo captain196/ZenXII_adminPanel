@@ -808,3 +808,23 @@
    which is most of why these panels read as loose and unaligned. */
 .zxdt label{ margin-bottom:0; font-weight:500; max-width:none; }
 .zxdt .inp label{ color:var(--ink3); }
+
+
+/* ==========================================================================
+   Legibility and fit
+   ========================================================================== */
+
+/* The rail labels were 8px — below any readable floor, and these are the only
+   labels telling you what the five panels are. */
+.zxdt .tabstrip button{ width:44px; height:46px; }
+.zxdt .tabstrip button span,
+.zxdt .tabstrip button i{ font-size:10px; letter-spacing:.01em; }
+
+/* A <select> narrower than its longest option truncates mid-word: "single —
+   one page, overflow is an". Let the control size to the panel and show the
+   whole value on hover; the long-form explanation lives under the field. */
+.zxdt .insp select{ width:100%; min-width:0; text-overflow:ellipsis; }
+
+/* Panel help text was set at the same size and colour as the values it
+   explains, so a three-line paragraph read as content rather than as a note. */
+.zxdt .insp .note{ font-size:11px; line-height:1.5; color:var(--ink3); }
