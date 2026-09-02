@@ -780,3 +780,31 @@
 .zxdt .bar{ font-size:11.5px; }
 .zxdt .sb{ color:var(--ink3); }
 .zxdt .sb b{ color:var(--ink1); font-weight:600; }
+
+
+/* ==========================================================================
+   Bootstrap's clearfix pseudo-elements are GRID ITEMS
+   ==========================================================================
+   `.row:before/:after { content:" "; display:table }` is Bootstrap's float
+   clearfix. Harmless in a float layout — but inside a GRID container a
+   pseudo-element is a grid item, so every one of our two-column rows silently
+   gained two invisible cells.
+
+   ::before took cell 1, which pushed "Size" into the right-hand column,
+   "Orientation" onto the next row's left, "Margin top" right again — the
+   staggered, floating-looking zigzag in the Page panel. Measured: a .row with
+   exactly TWO children rendering its first child at column 2.
+
+   This is the third distinct way the same shared class name has bitten:
+   the negative margin, then position/inset on .modal, now this. A class named
+   `.row` inside a page that loads Bootstrap inherits whatever Bootstrap does to
+   `.row`, including things that have no visible effect until the layout mode
+   changes underneath them. */
+.zxdt .row::before, .zxdt .row::after{ content:none; display:none; }
+
+/* Bootstrap also styles bare `label`: display:inline-block, margin-bottom:5px,
+   font-weight:700. We set display and never reset the other two, so every field
+   in every panel carried 5px of stray gap and a heavier label than intended —
+   which is most of why these panels read as loose and unaligned. */
+.zxdt label{ margin-bottom:0; font-weight:500; max-width:none; }
+.zxdt .inp label{ color:var(--ink3); }

@@ -150,4 +150,60 @@ class DocCssCollisionTest extends TestCase
         $this->assertStringContainsString('--zx-chrome', $m[1],
             'the shell height must subtract the panel chrome via --zx-chrome');
     }
+
+    /**
+     * A shared class name also inherits the global sheet's PSEUDO-ELEMENTS.
+     *
+     * Bootstrap clearfixes `.row` with `:before/:after { content:" " }`. That is
+     * inert in a float layout and destructive in ours: a pseudo-element inside a
+     * grid container IS a grid item, so every two-column row gained two
+     * invisible cells and the fields rendered in a staggered zigzag — "Size" in
+     * the right column, "Orientation" on the next row's left.
+     *
+     * The property-level check could not see this, because the collision is not
+     * a property on `.row` at all.
+     */
+    public function test_shared_class_names_neutralise_global_pseudo_elements(): void
+    {
+        $css = file_get_contents($this->root() . 'assets/css/doctemplates.css');
+        preg_match_all('/\.zxdt \.([a-z][a-z0-9_-]*)\s*\{/', $css, $m);
+        $mine = array_unique($m[1]);
+
+        $problems = [];
+        foreach (self::GLOBAL_SHEETS as $rel) {
+            $path = $this->root() . $rel;
+            if (!is_file($path)) { continue; }
+            $global = file_get_contents($path);
+
+            foreach ($mine as $cls) {
+                // does the global sheet give this class a content-bearing pseudo?
+                $re = '/\.' . preg_quote($cls, '/') . ':(?:before|after)[^{}]*\{[^}]*content\s*:/';
+                if (!preg_match($re, $global)) { continue; }
+
+                // do we neutralise it?
+                $ours = '/\.zxdt \.' . preg_quote($cls, '/')
+                      . '::?(?:before|after)[^{}]*\{[^}]*content\s*:\s*none/';
+                if (!preg_match($ours, $css)) {
+                    $problems[] = ".$cls — " . basename($rel) . " gives it a ::before/::after with "
+                                . 'content, and .zxdt does not set content:none';
+                }
+            }
+        }
+
+        $this->assertSame([], $problems,
+            "A global sheet's clearfix pseudo-elements are inherited by our class of the same "
+            . "name. Inside a grid or flex container they become ITEMS and shift the layout:\n  - "
+            . implode("\n  - ", $problems));
+    }
+
+    /** The specific one that was broken, pinned by name. */
+    public function test_row_neutralises_the_bootstrap_clearfix(): void
+    {
+        $css = file_get_contents($this->root() . 'assets/css/doctemplates.css');
+        $this->assertMatchesRegularExpression(
+            '/\.zxdt \.row::before[^{}]*\{[^}]*content\s*:\s*none/',
+            $css,
+            '.zxdt .row must cancel bootstrap\'s clearfix pseudo-elements — inside our grid they '
+            . 'are extra cells, and they staggered every two-column panel row');
+    }
 }
