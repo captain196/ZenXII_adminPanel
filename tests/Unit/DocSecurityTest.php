@@ -305,4 +305,60 @@ class DocSecurityTest extends TestCase
         $this->assertSame([], $m[0],
             'a failure was RETURNED rather than thrown — the caller would render it as content');
     }
+
+    /* ---------------------------------------------------------------- *
+     * Controller wiring — the gap no plan row tracks
+     * ---------------------------------------------------------------- */
+
+    /**
+     * The services were fully tested while NOTHING CALLED THEM. That gap falls
+     * between P1.6 (controller + routes) and Phase 6 (service), so no plan row
+     * owns it and it would go unnoticed precisely because both sides look done.
+     *
+     * This pins which endpoints are live, so the number can only move
+     * deliberately.
+     */
+    public function test_the_wired_endpoints_no_longer_return_a_pending_stub(): void
+    {
+        $src = file_get_contents(__DIR__ . '/../../application/controllers/Doc_templates.php');
+
+        $wired = ['get_types', 'get_templates', 'get_template', 'get_blocks',
+                  'save', 'save_block', 'publish', 'activate', 'archive', 'preview'];
+
+        foreach ($wired as $name) {
+            $i = strpos($src, "public function $name(): void");
+            $this->assertNotFalse($i, "endpoint '$name' has gone missing");
+
+            $j    = strpos($src, 'public function', $i + 20);
+            $body = substr($src, $i, ($j === false ? strlen($src) : $j) - $i);
+
+            $this->assertStringNotContainsString("'pending'", $body,
+                "endpoint '$name' regressed to a stub — the service is tested but unreachable again");
+        }
+    }
+
+    /** The still-stubbed ones, named so the remaining work stays visible. */
+    public function test_the_remaining_stubs_are_exactly_the_known_four(): void
+    {
+        $src = file_get_contents(__DIR__ . '/../../application/controllers/Doc_templates.php');
+
+        $stubs = [];
+        preg_match_all('/public function ([a-z_][a-zA-Z0-9_]*)\(\): void/', $src, $m, PREG_OFFSET_CAPTURE);
+        foreach ($m[1] as $k => [$name, $_]) {
+            $i    = $m[0][$k][1];
+            $j    = strpos($src, 'public function', $i + 20);
+            $body = substr($src, $i, ($j === false ? strlen($src) : $j) - $i);
+            if (str_contains($body, "'pending'")) {
+                $stubs[] = $name;
+            }
+        }
+        sort($stubs);
+
+        $this->assertSame(
+            ['create', 'proof_pdf', 'upload_asset', 'validate'],
+            $stubs,
+            'the set of unwired endpoints changed. If one was wired, add it to the list above; '
+            . 'if one regressed, that is a real loss of function.'
+        );
+    }
 }

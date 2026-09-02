@@ -9,7 +9,7 @@ starts from evidence rather than from a plan row that says done.
 artifact sat finished on disk, and one accept criterion (P3.6) is still counted as unmet because
 the thing that would prove it does not exist yet. A task list cannot carry that distinction.
 
-**Updated:** 2026-09-02 · **Progress:** 47/58 = 81% — ALL NINE PHASES OPENED · Branch `yug_testing`
+**Updated:** 2026-09-02 · **Progress:** 48/58 = 83% — all nine phases opened; **10 of 14 endpoints now live** · Branch `yug_testing`
 
 **Progress is computed:** `awk -f blueprints/certificates/tools/progress.awk blueprints/certificates/EXECUTION_PLAN_v1.1.md | sort`
 
@@ -204,6 +204,17 @@ cd firebase-rules/tests && npm test
 | P9.5 restore drill | **B4 — no test school** | Ingredients exist: P6.2 freezes hash + fontManifest + mpdfVersion precisely so a re-render can be checked |
 | P9.7 UAT | **B4 + a human** | **This is the row that decides whether the module is really finished.** Nothing in the plan substitutes for it |
 
+### Phase 5 addendum — P5.6 re-validation report (closed 2026-09-02)
+
+| What | Proven by |
+|---|---|
+| The report lists only templates **behind** the current version | `DocComplianceTest` |
+| An **excluded** layer is not reported | The school has a written reason on file |
+| **Active first** — what print points resolve today | A stale draft harms nobody until published |
+| An unknown authority **throws** | "0 affected" for a non-existent id reads as reassurance |
+| **Nothing auto-invalidates** — asserted two ways | The report mutates nothing, **and** the class exposes no `set/save/update/apply/invalidate/…` method at all |
+| Evidence is the **best** across applied layers, never averaged | Averaging would let two Level-C citations present as Level-B |
+
 ---
 
 ## 2. BUILT BUT NOT PROVEN — the honest column
@@ -215,7 +226,7 @@ cd firebase-rules/tests && npm test
 |---|---|---|---|
 | **P7.3** | Preview and proof agree within the G0.5 tolerance | The switcher works and both languages' runs are preserved, but the accept demands a **measured comparison of a rendered PDF against the canvas**. `@font-face` removes the largest known cause of disagreement; it does not demonstrate the tolerance | Phase 6's proof-PDF path, then measure |
 | **P6.4** | Two concurrent activates → exactly one active | The activate LOGIC is proven (displaces every incumbent; refuses outright when no transaction is available), **but the transaction in the test is a double**. Real atomicity is Firestore's | Emulator run with genuinely concurrent clients |
-| **Controller wiring** | The service is not reachable from the UI | `Doc_template_service` exists and is tested, but **`Doc_templates.php` endpoints still return `pending P1.x`** — nothing calls it yet. Not tracked by any P-row, so it would otherwise go unnoticed | Wire save/publish/activate/archive, then exercise against a seeded school |
+| **Controller wiring** | ✅ **10 of 14 endpoints wired 2026-09-02** — get_types, get_templates, get_template, get_blocks, save, save_block, publish, activate, archive, preview. `DocSecurityTest` pins the live set **and** the stub set, so neither can move by accident. **Still stubs: `create`, `validate`, `preview`→ wired, `proof_pdf`, `upload_asset`** | The four remaining need numbering (`create`), the validation matrix ported server-side (`validate`), storage writes (`proof_pdf`, `upload_asset`) | Exercise against a seeded school — needs B4 |
 | **P5.1** | CBSE TC required-key list | Declares **19 keys against Annexure-I's 22**, flagged `illustrative:true` / `fieldListVerified:false`. **Blocked on a human, not on code** | Gate 0.3 transcription + 0.8 second-person sign-off |
 | **P5.6** | Affected-school re-validation report | The *guarantee* holds (nothing auto-invalidates), but the report itself must query templates across tenants — inherently server-side | Phase 6 |
 | **P3.6** | Typing `45.5` mm places the object at exactly 45.5 mm **in the proof PDF** | Round-trips in the model (N2/N6), but **there is no proof-PDF path until Phase 6** | Phase 6, then measure the rendered PDF |
@@ -261,6 +272,7 @@ include, capability-gated behind `Certificates`, and 13 endpoints still stubs. I
 
 | Date | Phase | Progress |
 |---|---|---|
+| 2026-09-02 | P5.6 report closed; **controller wired — 10/14 endpoints live** | 48/58 = 83% |
 | 2026-09-02 | Phase 9 — security surface built; **serializer image guard was missing** (1/7) | 47/58 = 81% |
 | 2026-09-02 | Phase 8 — block service built, offer model proven, starter gaps signalled (3/3) | 46/58 = 79% |
 | 2026-09-02 | Phase 7 — **`@font-face` built in both surfaces**, languageFallback honoured (4/5) | 43/58 = 74% |

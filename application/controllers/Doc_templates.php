@@ -252,19 +252,85 @@ class Doc_templates extends MY_Controller
         return $this->doccontract;
     }
 
+    /** Lazily loaded lifecycle service (Phase 6). */
+    private function _templates(): Doc_template_service
+    {
+        if (!isset($this->doctpl)) {
+            $this->load->library('doc_template_service', null, 'doctpl');
+        }
+        return $this->doctpl;
+    }
+
+    /** Lazily loaded block service (P8.1). */
+    private function _blocks(): Doc_block_service
+    {
+        if (!isset($this->docblock)) {
+            $this->load->library('doc_block_service', null, 'docblock');
+        }
+        return $this->docblock;
+    }
+
+    /**
+     * One place where a service exception becomes an HTTP response.
+     *
+     * The typed E_ codes (P9.3) are what the client branches on; the message is
+     * for a human. A failure NEVER returns 200 with an empty payload — that is
+     * the phantom-success trap this repo has been bitten by before, and on a
+     * denied publish it would report "done" for something that did not happen.
+     */
+    private function _run(callable $fn): void
+    {
+        try {
+            $this->json_success(['data' => $fn()]);
+        } catch (InvalidArgumentException $e) {
+            $this->json_error($e->getMessage(), 422);
+        } catch (RuntimeException $e) {
+            $msg  = $e->getMessage();
+            $code = str_starts_with($msg, 'E_CONFLICT') ? 409 : 422;
+            log_message('error', 'Doc_templates: ' . $msg);
+            $this->json_error($msg, $code);
+        } catch (Throwable $e) {
+            // Never leak an internal message for an unexpected failure.
+            log_message('error', 'Doc_templates UNEXPECTED: ' . $e->getMessage());
+            $this->json_error('The action could not be completed.', 500);
+        }
+    }
+
     public function get_templates(): void
     {
-        $this->json_success(['data' => ['templates' => [], 'pending' => 'P1.1']]);
+        $this->_run(function () {
+            $docType = (string) $this->input->get('docType');
+            $where   = [['schoolId', '=', $this->school_id]];
+            if ($docType !== '') {
+                $where[] = ['docType', '=', $docType];
+            }
+            $rows = $this->fs->schoolWhere('documentTemplates', $where) ?: [];
+            return ['templates' => $rows];
+        });
     }
 
     public function get_template(): void
     {
-        $this->json_success(['data' => ['template' => null, 'pending' => 'P1.1']]);
+        $this->_run(function () {
+            $id = $this->safe_path_segment((string) $this->input->get('templateId'), 'templateId');
+            $t = $this->fs->get('documentTemplates', $id);
+            // Tenant check on the way OUT as well as in the rules — the panel
+            // uses the Admin SDK, which bypasses firestore.rules entirely.
+            if (!is_array($t) || ($t['schoolId'] ?? null) !== $this->school_id) {
+                throw new RuntimeException('Template not found');
+            }
+            return ['template' => $t];
+        });
     }
 
     public function get_blocks(): void
     {
-        $this->json_success(['data' => ['blocks' => [], 'pending' => 'P8.1']]);
+        $this->_run(fn() => [
+            'blocks' => array_values($this->_blocks()->listFor(
+                (string) $this->school_id,
+                ($this->input->get('blockType') ?: null)
+            )),
+        ]);
     }
 
     // ═══════════════════════════════════════════════════════════════════
@@ -280,7 +346,21 @@ class Doc_templates extends MY_Controller
     public function save(): void
     {
         if (!$this->_require_post()) return;
-        $this->json_success(['data' => ['pending' => 'P1.x']]);
+        $this->_run(function () {
+            $id   = $this->safe_path_segment((string) $this->input->post('templateId'), 'templateId');
+            $lock = $this->input->post('lockVersion');
+            if ($lock === null || $lock === '') {
+                // Without the caller's lockVersion there is no optimistic
+                // concurrency at all — a missing one must not default to "wins".
+                throw new InvalidArgumentException('id and lockVersion are required');
+            }
+            $patch = json_decode((string) $this->input->post('patch'), true);
+            if (!is_array($patch)) {
+                throw new InvalidArgumentException('patch must be a JSON object');
+            }
+            $out = $this->_templates()->save($id, $patch, (int) $lock);
+            return ['lockVersion' => $out['lockVersion']];
+        });
     }
 
     public function validate(): void
@@ -289,10 +369,45 @@ class Doc_templates extends MY_Controller
         $this->json_success(['data' => ['pending' => 'P5.x']]);
     }
 
+    /**
+     * Serialize a template to HTML — the SAME string the PDF path renders.
+     *
+     * There is deliberately no second "preview serializer". If the two ever
+     * diverged the preview would be lying about what prints, and a certificate
+     * is a legal record (IMPLEMENTATION_ARCHITECTURE §5.3).
+     *
+     * Sample mode is the default: previewing with real student data would put a
+     * named minor's record on screen for anyone designing a layout.
+     */
     public function preview(): void
     {
         if (!$this->_require_post()) return;
-        $this->json_success(['data' => ['pending' => 'P2.x']]);
+
+        $this->_run(function () {
+            $tpl = json_decode((string) $this->input->post('template'), true);
+            if (!is_array($tpl)) {
+                throw new InvalidArgumentException('template must be a JSON object');
+            }
+
+            $docType = (string) ($tpl['docType'] ?? '');
+            $lang    = (string) ($this->input->post('lang') ?: ($tpl['defaultLanguage'] ?? 'en'));
+            $mode    = (string) ($this->input->post('sample') ?: 'typical');
+            if (!in_array($mode, ['typical', 'p95'], true)) {
+                throw new InvalidArgumentException("sample must be 'typical' or 'p95'");
+            }
+
+            $this->load->library('doc_serializer', null, 'docser');
+
+            return [
+                'html' => $this->docser->render($tpl, [], $lang, [
+                    'contract'    => $this->_contract()->get($docType),
+                    'sample'      => $mode,
+                    'isDuplicate' => (bool) $this->input->post('isDuplicate'),
+                ]),
+                'lang'   => $lang,
+                'sample' => $mode,
+            ];
+        });
     }
 
     public function proof_pdf(): void
@@ -310,7 +425,21 @@ class Doc_templates extends MY_Controller
     public function save_block(): void
     {
         if (!$this->_require_post()) return;
-        $this->json_success(['data' => ['pending' => 'P8.1']]);
+        $id = $this->safe_path_segment((string) $this->input->post('blockId'), 'blockId');
+
+        $this->_run(function () use ($id) {
+            $data = json_decode((string) $this->input->post('block'), true);
+            if (!is_array($data)) {
+                throw new InvalidArgumentException('block must be a JSON object');
+            }
+            // schoolId comes from the SESSION, never the request body. A
+            // client-supplied one would let a caller write into another tenant,
+            // and the panel uses the Admin SDK so firestore.rules would not
+            // catch it.
+            $data['schoolId'] = $this->school_id;
+            $b = $this->_blocks()->save($id, $data, (string) ($this->staff_id ?? ''));
+            return ['version' => $b['version']];
+        });
     }
 
     // ═══════════════════════════════════════════════════════════════════
@@ -318,12 +447,31 @@ class Doc_templates extends MY_Controller
     //  Each is legally consequential and therefore audited.
     // ═══════════════════════════════════════════════════════════════════
 
+    /**
+     * Freeze the current draft as an immutable version.
+     *
+     * Publishing does NOT activate. That is a separate act with a separate
+     * capability grade, because activeVersion is the pointer every print point
+     * resolves — moving it changes what the school legally issues.
+     *
+     * The *_attempt audit event is kept and still fires BEFORE the work: it
+     * records that someone asked, which survives even when the attempt then
+     * fails. The service logs the successful transition separately (P6.7).
+     */
     public function publish(): void
     {
         if (!$this->_require_post()) return;
         $id = $this->safe_path_segment((string) $this->input->post('templateId'), 'templateId');
         log_audit(self::AUDIT_MODULE, 'template.publish_attempt', $id, 'Publish requested');
-        $this->json_success(['data' => ['pending' => 'P6.3']]);
+
+        $this->_run(function () use ($id) {
+            $proof = json_decode((string) $this->input->post('proof'), true);
+            if (!is_array($proof)) {
+                throw new InvalidArgumentException('proof is required');
+            }
+            $r = $this->_templates()->publish($id, $proof, (string) ($this->staff_id ?? ''));
+            return ['versionId' => $r['versionId'], 'version' => $r['version']];
+        });
     }
 
     public function activate(): void
@@ -331,7 +479,8 @@ class Doc_templates extends MY_Controller
         if (!$this->_require_post()) return;
         $id = $this->safe_path_segment((string) $this->input->post('templateId'), 'templateId');
         log_audit(self::AUDIT_MODULE, 'template.activate_attempt', $id, 'Activate requested');
-        $this->json_success(['data' => ['pending' => 'P6.4']]);
+
+        $this->_run(fn() => $this->_templates()->activate($id, (string) ($this->staff_id ?? '')));
     }
 
     public function archive(): void
@@ -339,7 +488,8 @@ class Doc_templates extends MY_Controller
         if (!$this->_require_post()) return;
         $id = $this->safe_path_segment((string) $this->input->post('templateId'), 'templateId');
         log_audit(self::AUDIT_MODULE, 'template.archive_attempt', $id, 'Archive requested');
-        $this->json_success(['data' => ['pending' => 'P6.x']]);
+
+        $this->_run(fn() => $this->_templates()->archive($id, (string) ($this->staff_id ?? '')));
     }
 
     // ═══════════════════════════════════════════════════════════════════
