@@ -8,8 +8,63 @@
    client state machine, which is what currently exists. */
 
 window.ZXDT_E2E = async function (only) {
+  /* REFUSE to run in a hidden tab.
+
+     Measured on one machine, one build, one minute: 133/133 with the tab
+     visible, and 129-131/133 with it backgrounded — and the FAILING SET MOVED
+     between runs (J1/K1/K2 once, D7/D8 another, K1 a third). Chrome treats a
+     non-visible tab differently for timers and for live-element behaviour, and
+     several tests here depend on both.
+
+     Every one of those failures reads like a real defect: "published v1,
+     active=false", "proof did not complete". Someone would spend a day chasing
+     an activation bug that does not exist. A suite that reports plausible
+     nonsense is worse than one that will not run, so this refuses rather than
+     reports. Bring the tab to the front and run it again. */
+  if (typeof document !== "undefined" && document.visibilityState !== "visible") {
+    throw new Error(
+      "ZXDT_E2E: this tab is " + document.visibilityState + ". Several tests depend on " +
+      "timer and live-element behaviour that Chrome changes for non-visible tabs, and the " +
+      "failures it produces look like real activation and proof bugs. Bring the tab to the " +
+      "front and run again."
+    );
+  }
+
   const R = [];
   const sleep = ms => new Promise(r => setTimeout(r, ms));
+
+  /* Run a proof and wait for THIS run to finish.
+
+     Two ways to get this wrong, and the suite hit both:
+
+     1. A fixed 2.6s wait. The proof is currently a client-side mock — five
+        chained 380ms setTimeouts landing at ~1.9s — so a fixed wait is a guess,
+        and any slowdown makes it return early.
+
+     2. Polling `until S.proofed` — which is what replaced (1) and was WORSE.
+        S.proofed can already be set when the click happens, so the wait
+        satisfied itself instantly, never observed the render, and let publish
+        and activate run against a half-finished proof. The evidence was the
+        clock: the first run after a page load took 7.5s where a warm run took
+        17.5s, and reported four failures (D7, D8, J1, K2) that read like real
+        activation bugs and were not.
+
+     A wait must observe the TRANSITION, not the state. So clear the flag
+     first, then wait for it to become set — and report honestly if it never
+     does, rather than sailing on. */
+  async function runProof(ms = 9000) {
+    S.proofed = null;                 // so we cannot satisfy ourselves with a stale one
+    openProof();
+    const btn = $("#proofRun");
+    if (!btn) return false;
+    btn.click();
+    const t0 = Date.now();
+    while (!(S.proofed && S.proofed.hash)) {
+      if (Date.now() - t0 > ms) return false;
+      await sleep(60);
+    }
+    return true;
+  }
   let group = "";
   const G = g => { group = g; };
 
@@ -416,9 +471,8 @@ window.ZXDT_E2E = async function (only) {
   await T("F2", "running a proof sets a content hash and unlocks publish", async () => {
     openClassic(false);
     const blockedBefore = has(bt(validate()), "noproof");
-    openProof(); $("#proofRun").click();
-    await sleep(2600);
-    const ok = !!(S.proofed && S.proofed.hash) && !has(bt(validate()), "noproof");
+    const done = await runProof();
+    const ok = done && !!(S.proofed && S.proofed.hash) && !has(bt(validate()), "noproof");
     closeModal();
     return { ok: blockedBefore && ok, note: S.proofed ? S.proofed.hash : "no hash" };
   });
@@ -617,7 +671,8 @@ window.ZXDT_E2E = async function (only) {
     const t = firstText(); S.sel = [t.id];
     addObject("text", 30, 200, 60, 8);
     S.proofed = null;
-    openProof(); $("#proofRun").click(); await sleep(2600); closeModal();
+    if (!await runProof()) { closeModal(); return { ok: false, note: "proof never completed" }; }
+    closeModal();
     const v = validate();
     if (v.blocking.length) { return { ok: false, note: "blocked: " + bt(v).join(",") }; }
     openPublish();
@@ -691,8 +746,9 @@ window.ZXDT_E2E = async function (only) {
       openStarter(st);
       if (S.screen !== "designer") return { ok: false, note: "did not open designer" };
 
-      openProof(); $("#proofRun").click(); await sleep(2600); closeModal();
-      if (!S.proofed) return { ok: false, note: "proof did not complete" };
+      const proofOk = await runProof();
+      closeModal();
+      if (!proofOk || !S.proofed) return { ok: false, note: "proof did not complete" };
 
       const v = validate();
       if (v.blocking.length)

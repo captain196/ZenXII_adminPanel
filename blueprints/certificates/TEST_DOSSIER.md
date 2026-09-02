@@ -55,7 +55,7 @@ firebase emulators:exec --only firestore,storage --project=zenxii-rules-test \
 | Suite | Baseline | Meaning |
 |---|---|---|
 | PHP unit | **4 failures · 27 skipped** | Pre-existing. The skips are cross-repo tests pointing at a hardcoded Windows path from another machine. |
-| Client E2E | **133/133 · 0 page errors** | Should be green. Anything less is a regression. |
+| Client E2E | **133/133 · 0 page errors** — headless *and* real Chrome 152 | Should be green. Anything less is a regression. |
 | Rules emulator | **16/16 suites · 404/404** | Green as of 2026-09-02. Previously 5 suites failed: 4 on stale assertions (fixed — see below) and 1 because the storage emulator was never configured. |
 
 ---
@@ -247,6 +247,35 @@ directly testable, and four accept criteria closed on measurement rather than ar
 > ⚠️ **T2 guards T1.** If the Lohit faces are not actually loaded, the browser measures a system-font
 > fallback and the agreement test compares the wrong thing while possibly still passing.
 
+### Real-Chrome session — three harness defects, no product defects (2026-09-02)
+
+The suite had only ever run in **headless** Chrome. Running it in the user's real
+Chrome 152 immediately reported failures — `published v1, active=false`,
+`proof did not complete` — that read exactly like activation bugs. **None of them
+were.** All three causes were in the harness, and all three are now fixed.
+
+| # | Defect | Why it mattered |
+|---|---|---|
+| 1 | **The suite ran STALE code.** A plain `<script src>` let Chrome serve a cached copy while the file on disk had already changed. | Runs were comparing two different builds. It also contaminated my own first two explanations of the failures — I proposed background-timer throttling, then "the first run after a page load", and **both were wrong**. |
+| 2 | **A fixed 2.6 s wait for the proof**, then — worse — a poll `until S.proofed`. | The proof mock is five chained 380 ms timers. Polling *until* a flag is set satisfies itself instantly when the flag is **already** set, so publish and activate ran against a half-finished proof. The clock gave it away: a run took **7.5 s** where a correct run takes **17.5 s**. A wait must observe the **transition**, not the state. |
+| 3 | **The suite reported confidently from a hidden tab.** | 133/133 visible; **129–131/133 hidden, and the failing set moved between runs** (J1/K1/K2, then D7/D8, then K1). Someone would lose a day to an activation bug that does not exist. |
+
+**The fix for #3 is refusal, not tolerance.** `ZXDT_E2E` now throws if
+`document.visibilityState !== 'visible'`. Proven in **both** directions — it
+fires on a backgrounded tab with the message above, and stays silent under
+`--headless=new`, where the suite still reports **133/133, 0 page errors**.
+
+> **The lesson worth keeping:** every one of these produced *plausible* failures.
+> A harness that reports nonsense confidently is worse than one that refuses to
+> run — and a wait that can be satisfied by a stale flag is not a wait.
+
+**Product finding, recorded not fixed.** `openProof()`'s handler schedules five
+`setTimeout`s and retains no timer ids; `closeModal()` cancels nothing. An
+**abandoned** proof therefore still lands and still sets the hash that unlocks
+publish. Harmless in today's mock — but when `proof_pdf()` is wired to the client
+this becomes the codebase's own *phantom success* class, where a cancelled action
+reports as done. Cancel the in-flight proof on close.
+
 ---
 
 ## 2. BUILT BUT NOT PROVEN — the honest column
@@ -335,6 +364,7 @@ denied by SEC-3 whatever the thing under test does.
 
 | Date | Phase | Progress |
 |---|---|---|
+| 2026-09-02 | **Real-Chrome run** — 3 harness defects fixed; suite now refuses to run hidden | 52/58 = 90% |
 | 2026-09-02 | **Real PDF renders** — P3.6, P7.3, P9.1, P9.3 closed on measurement | 52/58 = 90% |
 | 2026-09-02 | P5.6 report closed; **controller wired — 10/14 endpoints live** | 48/58 = 83% |
 | 2026-09-02 | Phase 9 — security surface built; **serializer image guard was missing** (1/7) | 47/58 = 81% |

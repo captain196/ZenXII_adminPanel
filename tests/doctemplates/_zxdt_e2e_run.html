@@ -179,5 +179,14 @@
 <pre id="E2E_OUT">PENDING</pre>
 <script>window.__ERRS=[];window.addEventListener("error",e=>__ERRS.push(e.message));window.addEventListener("unhandledrejection",e=>__ERRS.push("REJECT: "+e.reason));</script>
 <script src="/assets/js/doctemplates/designer.js"></script>
-<script src="/tests/doctemplates/_zxdt_e2e.js"></script>
+<!-- Load the suite with a cache-buster.
+
+     A plain <script src> let Chrome serve a CACHED copy of the suite while the
+     file on disk had already changed — so a run could report on code that was
+     edited minutes earlier, and the results looked like flaky product
+     behaviour instead of two different builds being compared. A test harness
+     that silently runs stale tests is worse than no harness: it is confidently
+     wrong. document.write keeps this a classic script in the same top-level
+     scope, which is how it reaches designer.js's const/let globals at all. -->
+<script>document.write('<script src="/tests/doctemplates/_zxdt_e2e.js?v=' + Date.now() + '"><\/script>');</script>
 <script>(async()=>{const o=document.getElementById("E2E_OUT");try{const r=await ZXDT_E2E();r.pageErrors=window.__ERRS;o.textContent="E2E_JSON:"+JSON.stringify(r);}catch(e){o.textContent="SUITE_THREW: "+(e&&e.stack||e);}})();</script>
