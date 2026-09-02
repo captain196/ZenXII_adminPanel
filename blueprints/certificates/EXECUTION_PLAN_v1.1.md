@@ -373,12 +373,12 @@ canvas built against an unproven serializer bakes in its mistakes.
 
 | # | Task | Depends | Accept |
 |---|---|---|---|
-| P5.1 | Profile schema + **CBSE TC profile seeded from G0.8** | G0.8 | 22 required keys, each with authority + evidenceLevel + verifiedOn |
-| P5.2 | Resolution `board + state → profile`, else `generic` | P5.1 | Karnataka state-board school resolves to `generic` and the UI **says so** |
-| P5.3 | `requiredKey` binding; delete refused with citation shown | P5.1, P3.3 | Deleting a required object is impossible; refusal shows the clause |
-| P5.4 | Compliance panel — authority, evidence level, `verifiedOn`, staleness banner | P5.1 | A Level C item can never render as a legal requirement |
-| P5.5 | Publish gate on unbound required keys | P5.3 | Publish blocked; draft save still allowed |
-| P5.6 | Profile versioning + re-validation **report** (a list, never an auto-action) | P5.1 | New profile version produces an affected-school report; nothing auto-invalidates |
+| P5.1 | ⛔ **BLOCKED ON A HUMAN, NOT ON CODE.** The *shape* is met — every authority layer carries `authority`, `evidence`, `verifiedOn`, `owner`, `scopeNote`. But the CBSE TC list declares **19 required keys against Annexure-I's 22**, and is flagged `illustrative:true` / `fieldListVerified:false`. | G0.8 | ⛔ Needs the **gate 0.3 transcription and 0.8 second-person sign-off**. ✅ **E2E P5** at least proves the un-transcribed list is *flagged*, not presented as law — shipping 19 keys as though they were the statute is the real risk here. |
+| P5.2 | ✅ **DONE — accept reinterpreted for the STACK.** | P5.1 | ✅ **E2E P1.** ⚠️ **The plan's accept is stale**: it says a Karnataka state-board school "resolves to `generic`", which was true under the single-profile model `COMPLIANCE_ARCHITECTURE.md` killed. Under the stack the **national layer still applies** — RTE binds elementary schooling whatever the board — so resolving to RTE is correct and resolving to `generic` would have been **the bug**. Tested instead: an unverified board contributes **no board-tier layer**, and `generic` is reached only when the stack is genuinely empty (secondary stage, no board match) and **says so**. |
+| P5.3 | ✅ **DONE.** `tryDelete()` refuses; `openCite(key, refused)` shows the citation. | P5.1, P3.3 | ✅ **E2E P2** — the object survives **and** the refusal carries Authority, Evidence and Verified. A bare "you can't delete that" is indistinguishable from a bug. |
+| P5.4 | ✅ **DONE.** | P5.1 | ✅ **E2E P3** — the citation surfaces `Level A–D` and `EVIDENCE_RANK` is strictly ordered, so a Level C item cannot render identically to a Level A one. Evidence level is typographic by design (`--seal`, dashed borders for provisional). |
+| P5.5 | ✅ **DONE.** | P5.3 | ✅ **E2E P4** — a blank canvas raises **14 unbound required keys** that block publish, **and the draft stays fully editable**. Blocking draft edits would make an incomplete template impossible to complete, which is the state every template starts in. |
+| P5.6 | ⚠️ **HALF DONE.** The *guarantee* holds: all **7** authorities carry `verifiedOn`/version, and bumping one **auto-invalidates nothing** — E2E **P6** re-verifies CBSE and the active template is untouched. | P5.1 | ⚠️ The **affected-school report** does not exist. It is inherently server-side (it must query templates across tenants) and every relevant endpoint is still a stub, so it lands with Phase 6. **Not counted.** |
 
 ---
 

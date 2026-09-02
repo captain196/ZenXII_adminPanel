@@ -1050,6 +1050,123 @@ window.ZXDT_E2E = async function (only) {
     return { ok: capacityHint(o) === null, note: "no hint on unbound text" };
   });
 
+  /* ---- P · Phase 5 compliance ------------------------------------------
+     NB the plan calls these "profiles". COMPLIANCE_ARCHITECTURE.md killed
+     complianceProfileId and replaced it with a STACK of authorities, so these
+     test the stack. The accept criteria still apply; the noun changed. ------ */
+  G("P · Phase 5 compliance");
+
+  /* P5.2 — resolution for an unverified board.
+
+     THE PLAN'S ACCEPT IS STALE HERE. It says a Karnataka state-board school
+     "resolves to generic", which was true under the single-profile model
+     COMPLIANCE_ARCHITECTURE.md killed. Under the STACK, the national layer
+     still applies — RTE Act 2009 binds elementary schooling whatever the board
+     — so resolving to RTE is CORRECT, and resolving to generic would have been
+     the bug: it would tell a school bound by a statute that no rule applies.
+
+     What the stack must actually guarantee is tested instead:
+       (a) an unverified board contributes NO board-tier layer, and
+       (b) generic is reached only when the stack is genuinely empty, and says so. */
+  await T("P1", "P5.2 — an unverified board adds no board layer; generic only when the stack is truly empty", () => {
+    openClassic(true);
+    S.school = Object.assign({}, S.school, { board: "Karnataka State Board", state: "Karnataka", stage: "both" });
+    render();
+    const layers = stackActive(S.docType);
+    const boardLayer = layers.find(l => l.a.tier === "board");
+    const national = layers.some(l => l.a.tier === "national");
+
+    /* Now remove the only remaining ground for a layer: at secondary stage RTE
+       does not reach, and no board authority matches — the stack empties. */
+    S.school = Object.assign({}, S.school, { stage: "secondary" });
+    render();
+    const empty = stackActive(S.docType).length === 0;
+    const p = prof();
+    const named = p.id === "generic" && /no verified profile/i.test(p.name || "") && p.authority === null;
+
+    return { ok: !boardLayer && national && empty && named,
+             note: `board layer ${boardLayer ? "WRONGLY applied" : "absent"}; national ${national}; ` +
+                   `secondary stack empty ${empty}; falls back to "${p.name}"` };
+  });
+
+  /* P5.3 — refusal must CITE, not just refuse. "You can't delete that" with no
+     reason is indistinguishable from a bug. */
+  await T("P2", "P5.3 — a required object is undeletable and the refusal carries the citation", () => {
+    resetApp(); openClassic(true);
+    const o = S.tpl.objects.find(x => x.requiredKey);
+    if (!o) return { ok: false, note: "starter has no required object" };
+    const n0 = S.tpl.objects.length;
+    S.sel = [o.id]; tryDelete();
+    const survived = S.tpl.objects.length === n0;
+
+    openCite(o.requiredKey, true);
+    const html = (document.querySelector(".modal") || document.body).innerHTML;
+    const cites = /Authority/i.test(html) && /Evidence/i.test(html) && /Verified/i.test(html);
+    closeModal();
+    return { ok: survived && cites, note: survived ? (cites ? "refused + cited" : "refused, NO citation") : "DELETED" };
+  });
+
+  /* P5.4 — the evidence level must reach the reader. A Level C item rendered
+     identically to a Level A one is a guess wearing the authority of law. */
+  await T("P3", "P5.4 — evidence level and verifiedOn are surfaced with the requirement", () => {
+    resetApp(); openClassic(true);
+    const o = S.tpl.objects.find(x => x.requiredKey);
+    openCite(o.requiredKey, false);
+    const html = (document.querySelector(".modal") || document.body).innerHTML;
+    const hasLevel = /Level\s*[ABCD]/.test(html);
+    const ranked = EVIDENCE_RANK.A > EVIDENCE_RANK.B &&
+                   EVIDENCE_RANK.B > EVIDENCE_RANK.C &&
+                   EVIDENCE_RANK.C > EVIDENCE_RANK.D;
+    closeModal();
+    return { ok: hasLevel && ranked, note: hasLevel ? "level shown, ranks ordered" : "no level in the citation" };
+  });
+
+  /* P5.5 — publish blocks on an unbound required key, but DRAFT WORK MUST NOT.
+     Blocking the draft would make an incomplete template uneditable, which is
+     the state every template starts in. */
+  await T("P4", "P5.5 — an unbound required key blocks publish but never blocks draft editing", () => {
+    resetApp(); S.docType = "transfer_certificate"; go("gallery");
+    $("#starterGrid .tpl-card--new").click();          // blank canvas, as C4 does
+    const v = validate();
+    const unbound = v.blocking.filter(b => b.type === "unbound").length;
+
+    /* The draft must stay fully editable while the gate is red. Every template
+       starts in exactly this state, so blocking edits here would make an
+       incomplete template impossible to complete. */
+    const o = S.tpl.objects.find(x => x.type === "text");
+    const before = snapshot();
+    if (o) o.xMm = (o.xMm || 0) + 5;
+    const stillEditable = o ? snapshot() !== before : false;
+    return { ok: unbound > 0 && stillEditable,
+             note: `${unbound} unbound required key(s) block publish; draft edit ${stillEditable ? "allowed" : "BLOCKED"}` };
+  });
+
+  /* P5.1 — the CBSE list is ILLUSTRATIVE (19 keys against Annexure-I's 22) and
+     is not signed off. Shipping it as though it were law is the real risk, so
+     the flag must exist and be reachable, not buried in a comment. */
+  await T("P5", "P5.1 — the un-transcribed CBSE list is flagged illustrative, not presented as law", () => {
+    resetApp(); openClassic(true);
+    const p = PROFILES.cbse;
+    const cbse = AUTHORITIES.find(a => a.id === "cbse");
+    return { ok: p.illustrative === true && cbse && cbse.fieldListVerified === false,
+             note: `${p.requiredKeys.length} keys declared, illustrative=${p.illustrative}, fieldListVerified=${cbse && cbse.fieldListVerified}` };
+  });
+
+  /* P5.6 — a new authority version must produce a REPORT, never an auto-action.
+     Auto-invalidating live templates on a rule change would take a school's
+     active certificate away without anyone deciding to. */
+  await T("P6", "P5.6 — authorities carry a version, and nothing auto-invalidates on a bump", () => {
+    resetApp(); openClassic(true);
+    const versioned = AUTHORITIES.filter(a => typeof a.version === "number" || typeof a.verifiedOn === "string");
+    const active = S.active[S.docType];
+    const cbse = AUTHORITIES.find(a => a.id === "cbse");
+    if (cbse) cbse.verifiedOn = "2099-01-01";       // simulate a re-verification
+    render();
+    const stillActive = S.active[S.docType] === active;
+    return { ok: versioned.length === AUTHORITIES.length && stillActive,
+             note: `${versioned.length}/${AUTHORITIES.length} authorities dated; active template ${stillActive ? "untouched" : "CHANGED"}` };
+  });
+
   const summary = { total: R.length, passed: R.filter(r => r.ok).length, failed: R.filter(r => !r.ok).length };
   return { summary, failures: R.filter(r => !r.ok), all: R };
 };

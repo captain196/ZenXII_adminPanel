@@ -9,7 +9,9 @@ starts from evidence rather than from a plan row that says done.
 artifact sat finished on disk, and one accept criterion (P3.6) is still counted as unmet because
 the thing that would prove it does not exist yet. A task list cannot carry that distinction.
 
-**Updated:** 2026-09-02 · **Progress:** 29/58 = 50% · Branch `yug_testing`
+**Updated:** 2026-09-02 · **Progress:** 33/58 = 57% · Branch `yug_testing`
+
+**Progress is computed:** `awk -f blueprints/certificates/tools/progress.awk blueprints/certificates/EXECUTION_PLAN_v1.1.md | sort`
 
 ---
 
@@ -26,7 +28,7 @@ ZXDT_GOLDEN_UPDATE=1 vendor/bin/phpunit --testsuite Unit --filter Golden
 #   ^ regenerates. THEN READ THE DIFF. A golden regenerated without reading the
 #     diff records the bug as the new truth and goes green forever after.
 
-# Client E2E — 114 cases, needs the local server + headless Chrome
+# Client E2E — 120 cases, needs the local server + headless Chrome
 php -S localhost:8080                                     # from the repo root
 "/Applications/Google Chrome.app/Contents/MacOS/Google Chrome" \
   --headless=new --disable-gpu --virtual-time-budget=200000 \
@@ -44,7 +46,7 @@ cd firebase-rules/tests && npm test
 | Suite | Baseline | Meaning |
 |---|---|---|
 | PHP unit | **4 failures · 27 skipped** | Pre-existing. The skips are cross-repo tests pointing at a hardcoded Windows path from another machine. |
-| Client E2E | **114/114 · 0 page errors** | Should be green. Anything less is a regression. |
+| Client E2E | **120/120 · 0 page errors** | Should be green. Anything less is a regression. |
 | Rules emulator | **4 suites fail** | **Stale assertions**, verified: each asserts a *client* admin write that SEC-3 wave3/wave4 deliberately removed. Not a break. |
 
 ---
@@ -103,6 +105,22 @@ cd firebase-rules/tests && npm test
 > (`design/TEXT_EDITING_PROPOSAL.md`, built and verified). P4.1's *accept* is met — no bundler, clean
 > mount/unmount — while its *task text* is stale. Anyone testing should not go looking for Quill.
 
+### Phase 5 — Compliance (4/6)
+
+| What | Proven by |
+|---|---|
+| An unverified board adds **no board-tier layer**; `generic` only when the stack is genuinely empty, and it **says so** | E2E **P1** |
+| A required object is undeletable **and the refusal cites** Authority / Evidence / Verified | E2E **P2** |
+| Evidence level reaches the reader; `EVIDENCE_RANK` strictly ordered | E2E **P3** |
+| 14 unbound required keys block publish **while the draft stays editable** | E2E **P4** |
+| Nothing auto-invalidates when an authority is re-verified | E2E **P6** |
+
+> ⚠️ **The plan's P5.2 accept is stale.** It says a Karnataka state-board school "resolves to
+> generic" — true under the single-profile model that `COMPLIANCE_ARCHITECTURE.md` killed. Under the
+> stack, **RTE Act 2009 still binds elementary schooling whatever the board**, so resolving to RTE is
+> correct and resolving to `generic` would have been the bug: it would tell a school bound by a
+> statute that no rule applies.
+
 ---
 
 ## 2. BUILT BUT NOT PROVEN — the honest column
@@ -112,6 +130,8 @@ cd firebase-rules/tests && npm test
 
 | # | Claim | Why it is not proven | What would prove it |
 |---|---|---|---|
+| **P5.1** | CBSE TC required-key list | Declares **19 keys against Annexure-I's 22**, flagged `illustrative:true` / `fieldListVerified:false`. **Blocked on a human, not on code** | Gate 0.3 transcription + 0.8 second-person sign-off |
+| **P5.6** | Affected-school re-validation report | The *guarantee* holds (nothing auto-invalidates), but the report itself must query templates across tenants — inherently server-side | Phase 6 |
 | **P3.6** | Typing `45.5` mm places the object at exactly 45.5 mm **in the proof PDF** | Round-trips in the model (N2/N6), but **there is no proof-PDF path until Phase 6** | Phase 6, then measure the rendered PDF |
 | **P2.3** | The flow region paginates with a repeating header/footer | Emission is asserted (no `position:absolute`); **multi-page pagination has never been rendered** | A real mPDF render of a body longer than one page |
 | **Fonts** | Indic scripts shape correctly | Gate 0 verified Lohit registers and 8 subsets embed — **on fixtures, not on a real certificate** | Render a TC in Hindi/Tamil and read it |
@@ -144,7 +164,10 @@ include, capability-gated behind `Certificates`, and 13 endpoints still stubs. I
 5. **A helper may measure the wrong thing.** The capacity hint first used `contentPlain()`, which
    substitutes the design-time placeholder `{School name}` — so it counted the LABEL's length and
    never moved with the p95 toggle. It looked right and was inert. Resolve through `fieldValue()`.
-6. **Judge against the baselines in §0**, not against zero.
+6. **Even the progress counter can lie.** The first one counted any row *containing* a checkmark,
+   so a blocked task whose evidence column reads "✅ E2E P5 at least proves…" counted as done and
+   inflated Phase 5 to 5/6. Only a ✅ that **opens** the task cell counts — see `tools/progress.awk`.
+7. **Judge against the baselines in §0**, not against zero.
 
 ---
 
@@ -152,6 +175,7 @@ include, capability-gated behind `Certificates`, and 13 endpoints still stubs. I
 
 | Date | Phase | Progress |
 |---|---|---|
+| 2026-09-02 | Phase 5 — compliance stack proven (4/6); **progress counter fixed** | 33/58 = 57% |
 | 2026-09-02 | Phase 4 — picker/chip/i18n proven, **capacity hint built** | 29/58 = 50% |
 | 2026-09-02 | Phase 3 acceptance proven (7/8) | 24/58 = 41% |
 | 2026-09-02 | Phase 2 closed — serializer + overflow gate + goldens | 17/58 = 29% |
