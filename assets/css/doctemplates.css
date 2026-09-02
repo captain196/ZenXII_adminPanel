@@ -461,7 +461,17 @@
   font-size:11px;color:var(--ink2);display:grid;place-items:center;
 }
 .zxdt .alignrow button:hover{border-color:var(--clay);background:var(--clay-dim);color:var(--clay)}
-.zxdt .row{display:grid;grid-template-columns:1fr 1fr;gap:8px;margin-bottom:8px}
+/* `.row` IS BOOTSTRAP'S GRID ROW, and the panel loads Bootstrap globally.
+   Scoping under .zxdt raises specificity, so every property we DECLARE wins —
+   but bootstrap.min.css also sets `margin:0 -15px` on .row, and a property we
+   never mention is never overridden. The result: every inspector row sat 3px
+   outside its panel (12px padding minus a 15px pull) and the first character of
+   each left-column label was sliced off — "NAME" rendered as "AME".
+
+   This is the .att-grid collision again, exactly: a generic class name shared
+   with a global utility. Reset the margins explicitly rather than renaming,
+   because the same leak would reach any future .row here. */
+.zxdt .row{display:grid;grid-template-columns:1fr 1fr;gap:8px;margin:0 0 8px}
 .zxdt .row--3{grid-template-columns:1fr 1fr 1fr}
 .zxdt .row--1{grid-template-columns:1fr}
 .zxdt .inp{display:flex;flex-direction:column;gap:3px;min-width:0}
@@ -557,7 +567,14 @@
 .zxdt .scrim{position:fixed;inset:0;background:rgba(23,16,12,.55);backdrop-filter:blur(3px);z-index:80;display:none;align-items:center;justify-content:center;padding:24px}
 .zxdt .scrim.is-on{display:flex;animation:zxdt-fade .18s ease}
 @keyframes zxdt-fade{from{opacity:0}to{opacity:1}}
-.zxdt .modal{background:var(--panel);border:1px solid var(--line2);border-radius:var(--r);box-shadow:var(--sh2);width:min(720px,100%);max-height:calc(100vh - 48px);display:flex;flex-direction:column;overflow:hidden}
+/* `.modal` IS ALSO BOOTSTRAP'S — and this one was visibly broken on the panel.
+   bootstrap.min.css sets `.modal{position:fixed;top:0;right:0;bottom:0;left:0;
+   z-index:1050;display:none}`. We override `display`, so dialogs opened at all
+   and the bug hid in plain sight — but we never mentioned position, inset or
+   z-index, so every dialog was pinned to the TOP-LEFT CORNER of the viewport
+   instead of centred in its scrim. Measured live: left:0, top:0, z-index 1050.
+   The E2E harness never saw it because the harness page does not load Bootstrap. */
+.zxdt .modal{position:static;inset:auto;z-index:auto;background:var(--panel);border:1px solid var(--line2);border-radius:var(--r);box-shadow:var(--sh2);width:min(720px,100%);max-height:calc(100vh - 48px);display:flex;flex-direction:column;overflow:hidden}
 .zxdt .modal--sm{width:min(470px,100%)}
 .zxdt .modal__head{padding:15px 18px;border-bottom:1px solid var(--line);display:flex;align-items:center;gap:11px}
 .zxdt .modal__head h3{font-family:var(--font-d);font-size:16px;font-weight:800;letter-spacing:-.02em;margin:0}

@@ -501,7 +501,21 @@ class Doc_templates extends MY_Controller
                 }
             }
 
-            /* 3 — contract-level checks on a sample bundle: off-contract keys
+            /* 3 — an image object with no source.
+                   The serializer refuses to render one, so without this the
+                   only symptom is a proof that fails after the fact. The
+                   shipped Annexure-I starter carries a School crest object,
+                   so every new TC template hits this until a crest is
+                   uploaded — found on the first live run. */
+            foreach ($this->_objects($tpl) as $o) {
+                if (($o['type'] ?? '') === 'image' && empty($o['content']['src'])) {
+                    $warnings[] = ['type' => 'nosrc', 'id' => (string) ($o['id'] ?? '?'),
+                                   'message' => 'Image "' . ($o['name'] ?? $o['id'] ?? 'object')
+                                              . '" has no picture yet — it will not appear on the document'];
+                }
+            }
+
+            /* 4 — contract-level checks on a sample bundle: off-contract keys
                    and over-length values. Over-length is a WARNING by design —
                    maxLen is our own estimate, and the real gate measures the
                    rendered block. */

@@ -104,7 +104,7 @@ class Doc_serializer
         $tplId   = (string) ($template['templateId'] ?? 'TPL');
         $ns      = 'zx-tpl-' . preg_replace('/[^A-Za-z0-9_-]/', '', $tplId);
         $page    = (array) ($template['page'] ?? []);
-        $objects = $this->visible((array) ($template['objects'] ?? []), $opts);
+        $objects = $this->visible((array) ($template['objects'] ?? []), $opts, $data);
 
         [$w, $h]  = $this->pageMm($page);
         $margins  = (array) ($page['marginsMm'] ?? ['t' => 15, 'r' => 15, 'b' => 15, 'l' => 15]);
@@ -167,7 +167,7 @@ class Doc_serializer
 
         $page     = (array) ($template['page'] ?? []);
         $margins  = (array) ($page['marginsMm'] ?? ['t' => 15, 'r' => 15, 'b' => 15, 'l' => 15]);
-        $objects  = $this->visible((array) ($template['objects'] ?? []), $opts);
+        $objects  = $this->visible((array) ($template['objects'] ?? []), $opts, $data);
         $chains   = $this->chains($objects);
         $findings = [];
 
@@ -235,15 +235,51 @@ class Doc_serializer
      * KER r.22 / TNER r.44 / CBSE r.8(vi) require on a reissue. It is issuance
      * state rather than merge data, but it resolves like a field.
      */
-    private function visible(array $objects, array $opts): array
+    private function visible(array $objects, array $opts, array $data = []): array
     {
         $dup = !empty($opts['isDuplicate']);
-        return array_values(array_filter($objects, function ($o) use ($dup) {
+
+        return array_values(array_filter($objects, function ($o) use ($dup, $opts, $data) {
             $when = $o['showWhen'] ?? null;
-            if ($when === null)              return true;
-            if ($when === 'doc.isDuplicate') return $dup;
+            if ($when === null)               return true;
+            if ($when === 'doc.isDuplicate')  return $dup;
             if ($when === '!doc.isDuplicate') return !$dup;
-            throw new RuntimeException("Doc_serializer: unknown showWhen '$when' on {$o['id']}");
+
+            /* A CONTRACT FIELD: show this object only when that field resolves
+               to something.
+               
+               This branch was missing, and the designer offers it on every
+               contract field — the inspector literally reads "Only when
+               '<label>' has a value". The shipped Annexure-I starter uses it
+               (the "Checked by" signature appears only where dues are
+               recorded), so the default Transfer Certificate starter could not
+               be proofed AT ALL: the render threw
+               "unknown showWhen 'tc.duesPaidUpto'".
+               
+               Preview and proof disagreeing is the one thing this serializer
+               exists to prevent — the preview showed the object, the PDF path
+               refused the document. */
+            if (isset($this->contract[$when])) {
+                $def = $this->contract[$when];
+                $sample = $opts['sample'] ?? false;
+
+                if ($sample !== false) {
+                    $v = ($sample === 'p95')
+                        ? ($def['p95'] ?? $def['sample'] ?? null)
+                        : ($def['sample'] ?? null);
+                } else {
+                    $v = $data[$when] ?? null;
+                }
+                return $v !== null && $v !== '';
+            }
+
+            /* Still fail closed on a genuinely unknown condition. An object
+               that silently defaulted to visible could put a signature block on
+               a certificate that was never meant to carry one. */
+            throw new RuntimeException(
+                "Doc_serializer: unknown showWhen '$when' on {$o['id']}. It is neither "
+                . 'doc.isDuplicate nor a field this document type declares.'
+            );
         }));
     }
 
@@ -442,7 +478,24 @@ class Doc_serializer
             case 'image':
                 $src = (string) (($o['content']['src'] ?? '') ?: '');
                 if ($src === '') {
-                    throw new RuntimeException("Doc_serializer: image '{$o['id']}' has no src");
+                    /* SKIP, do not throw.
+                    
+                       An image object with no picture chosen is an ABSENT
+                       decoration, not a correctness failure — unlike an
+                       unresolved merge field, which would print a blank where a
+                       statutory value belongs and must always throw.
+                    
+                       Throwing here made every shipped starter unproofable: all
+                       of them carry a School crest placeholder, so no school
+                       could publish a Transfer Certificate until it uploaded a
+                       crest, and the only symptom was a proof that failed after
+                       the design work was done. A certificate that cannot be
+                       produced at all is a worse outcome than one without a
+                       decorative crest.
+                    
+                       It is still surfaced: validate() reports it as a warning,
+                       so nobody publishes a blank crest box unknowingly. */
+                    return '';
                 }
                 return '<img src="' . $this->esc($this->guardSrc($src, $o)) . '" style="width:100%;">';
 

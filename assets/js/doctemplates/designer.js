@@ -888,6 +888,15 @@ let __saveTimer = null;
  */
 function markDirty() {
   S.dirty = true;
+  /* ANY design change invalidates the proof, because the server decides
+     publishability by hashing the design and comparing it to the hash recorded
+     when the proof was rendered.
+     
+     Without this the two disagreed: the server correctly REFUSED a publish
+     after an edit, but the client left the Publish button enabled and the
+     person saw no refusal at all — observed live. A gate the server enforces
+     and the UI does not reflect is a gate people learn to distrust. */
+  S.proofed = null;
   if (!SRV.online) return;
   /* A save scheduled while create() is still in flight fires against the LOCAL
      placeholder id and fails with "no template TPL4453" — the template is
@@ -994,8 +1003,15 @@ const activeTpl = id=>libOf(id).find(t=>t.id===S.active[id]) || null;
 /* ==========================================================================
    3 · helpers
    ========================================================================== */
-const $  = (s,r=document)=>r.querySelector(s);
-const $$ = (s,r=document)=>[...r.querySelectorAll(s)];
+/* NOT named `$`.
+   These were `$` and `$$`, declared as top-level `const` in a classic script —
+   which puts them in the GLOBAL LEXICAL SCOPE, where they shadow window.$ for
+   every classic script that loads after. On the panel page that broke the
+   panel's own inline code: `$.ajaxSetup is not a function`, and custom.js
+   threw, because the page's jQuery calls resolved to this helper instead.
+   Same footgun class as the .att-grid utility collision. */
+const zq  = (s,r=document)=>r.querySelector(s);
+const zqa = (s,r=document)=>[...r.querySelectorAll(s)];
 const el = (t,c,h)=>{const n=document.createElement(t); if(c)n.className=c; if(h!=null)n.innerHTML=h; return n;};
 const esc = s=>String(s).replace(/[&<>"]/g,c=>({"&":"&amp;","<":"&lt;",">":"&gt;",'"':"&quot;"}[c]));
 const pxPerMm = ()=>S.zoom*96/25.4;
@@ -1020,7 +1036,7 @@ function evalMm(v, fallback){
   }catch(e){ return fallback; }
 }
 function toast(msg, seal){
-  const t=$("#toast"); t.className="toast is-on"+(seal?" toast--seal":""); t.textContent=msg;
+  const t=zq("#toast"); t.className="toast is-on"+(seal?" toast--seal":""); t.textContent=msg;
   clearTimeout(toast._t); toast._t=setTimeout(()=>t.className="toast",3200);
 }
 function fieldValue(key){
@@ -1174,18 +1190,18 @@ const regionTop = o=>{
   return o.region==="footer" ? (P.h-S.tpl.page.marginsMm.b)*k : 0;
 };
 const resolvedY = o=> o._y!=null ? o._y : o.yMm;
-const nodeFor   = id=> $('.obj[data-id="'+id+'"]');
+const nodeFor   = id=> zq('.obj[data-id="'+id+'"]');
 
 function layoutPage(){
   /* A render while editing would wipe the contenteditable node and lose the
      keystrokes with it — so harvest the live DOM into the model first. */
   if(S.editing){
     const en=nodeFor(S.editing), eo=obj(S.editing);
-    if(en&&eo){ const ei=$(".obj__in",en);
+    if(en&&eo){ const ei=zq(".obj__in",en);
       if(ei && ei.isContentEditable) eo.content.i18n[langOf(eo)]={runs:parseRuns(ei)}; }
   }
-  const P=$("#page"), k=pxPerMm(), m=S.tpl.page.marginsMm, D=pageDims();
-  $("#stage").style.width=(D.w*k)+"px";
+  const P=zq("#page"), k=pxPerMm(), m=S.tpl.page.marginsMm, D=pageDims();
+  zq("#stage").style.width=(D.w*k)+"px";
   P.style.width=(D.w*k)+"px"; P.style.height=(D.h*k)+"px"; P.innerHTML="";
 
   const grid=el("div","page__grid"+(S.grid?" is-on":""));
@@ -1217,7 +1233,7 @@ function layoutPage(){
   });
   S.measured={}; S.clamped={};
   S.tpl.objects.forEach(o=>{
-    const inner=$(".obj__in",nodes[o.id]);
+    const inner=zq(".obj__in",nodes[o.id]);
     let h = o.height==="auto" ? Math.max(o.hMm, inner.getBoundingClientRect().height/k) : o.hMm;
     /* Figma's fourth resizing state: a ceiling on top of hug/auto. Without it
        an over-long statutory field pushes the signature block off the sheet. */
@@ -1258,7 +1274,7 @@ function layoutPage(){
       n.appendChild(el("span","badge-if","IF"));
     }
     if(o.height==="fixed"){
-      const inner=$(".obj__in",n);
+      const inner=zq(".obj__in",n);
       if(inner.scrollHeight>inner.clientHeight+2){ n.classList.add("is-over"); n.appendChild(el("span","badge-over","OVERFLOW")); }
     }
     if(S.sel.includes(o.id) && S.sel.length===1 && !o.locked && S.editing!==o.id)
@@ -1301,7 +1317,7 @@ function layoutPage(){
 let caretOffset=null;
 function readCaret(){
   const n=nodeFor(S.editing); if(!n) return;
-  const inner=$(".obj__in",n), sel=getSelection();
+  const inner=zq(".obj__in",n), sel=getSelection();
   if(!sel.rangeCount || !inner.contains(sel.anchorNode)) return;
   const r=sel.getRangeAt(0).cloneRange();
   r.selectNodeContents(inner); r.setEnd(sel.anchorNode, sel.anchorOffset);
@@ -1309,7 +1325,7 @@ function readCaret(){
 }
 function restoreCaret(){
   const n=nodeFor(S.editing); if(!n) return;
-  const inner=$(".obj__in",n);
+  const inner=zq(".obj__in",n);
   inner.focus({preventScroll:true});
   const want=caretOffset==null?Infinity:caretOffset;
   let seen=0, done=false;
@@ -1348,7 +1364,7 @@ function buildObject(o){
 }
 
 function paintRulers(){
-  const k=pxPerMm(), D=pageDims(), H=$("#rulerH"), V=$("#rulerV");
+  const k=pxPerMm(), D=pageDims(), H=zq("#rulerH"), V=zq("#rulerV");
   H.style.width=(D.w*k)+"px"; V.style.height=(D.h*k)+"px";
   H.innerHTML=""; V.innerHTML="";
   const step = S.zoom<0.5 ? 20 : 10;
@@ -1367,16 +1383,16 @@ function paintRulers(){
    ========================================================================== */
 function go(screen){
   S.screen=screen;
-  $$(".screen").forEach(s=>s.classList.remove("is-on"));
-  $("#screen-"+screen).classList.add("is-on");
-  hideCtxbar(); $("#ctxmenu").classList.remove("is-on");
+  zqa(".screen").forEach(s=>s.classList.remove("is-on"));
+  zq("#screen-"+screen).classList.add("is-on");
+  hideCtxbar(); zq("#ctxmenu").classList.remove("is-on");
   paintCrumb(); paintTopActions();
   if(screen==="hub") paintHub();
   if(screen==="gallery") paintGallery();
   if(screen==="designer"){ render(); requestAnimationFrame(zoomFit); }
 }
 function paintCrumb(){
-  const c=$("#crumb"); c.innerHTML="";
+  const c=zq("#crumb"); c.innerHTML="";
   const t=TYPES.find(x=>x.id===S.docType);
   if(S.screen==="hub"){ c.innerHTML='<span class="crumb__now">Certificates</span>'; return; }
   c.insertAdjacentHTML("beforeend",'<button data-go="hub">Certificates</button><span class="crumb__sep">›</span>');
@@ -1390,7 +1406,7 @@ function paintCrumb(){
   c.insertAdjacentHTML("beforeend",`<span class="chip chip--draft" style="margin-left:6px">Draft v${S.tpl.version}</span>`);
 }
 function paintTopActions(){
-  const a=$("#topActions"); a.innerHTML="";
+  const a=zq("#topActions"); a.innerHTML="";
   if(S.screen!=="designer") return;
   const cov=translationCoverage("hi");
   a.innerHTML = `
@@ -1426,7 +1442,7 @@ function schematic(objs, host){
   });
 }
 function paintHub(){
-  const g=$("#typeGrid"), o=$("#typeGridOff"); g.innerHTML=""; o.innerHTML="";
+  const g=zq("#typeGrid"), o=zq("#typeGridOff"); g.innerHTML=""; o.innerHTML="";
   TYPES.filter(typeEnabled).forEach(t=>{
     const basis=typeBasis(t), act=activeTpl(t.id), n=libOf(t.id).length;
     const c=el("button","type-card");
@@ -1448,7 +1464,7 @@ function paintHub(){
         ${act?'<span class="chip chip--active"><span class="dot"></span>Active</span>'
              :'<span class="chip chip--draft">No active template</span>'}
       </div>`;
-    if(act){ const prev=S.docType; S.docType=t.id; schematic(buildTpl(act).objects, $(".glyph",c)); S.docType=prev; }
+    if(act){ const prev=S.docType; S.docType=t.id; schematic(buildTpl(act).objects, zq(".glyph",c)); S.docType=prev; }
     c.onclick=()=>{ S.docType=t.id; go("gallery"); };
     g.appendChild(c);
   });
@@ -1533,12 +1549,12 @@ async function createOnServer(st){
 function paintGallery(){
   const t=TYPES.find(x=>x.id===S.docType), basis=typeBasis(t);
   const rows=libOf(S.docType), starters=startersFor(S.docType), act=activeTpl(S.docType);
-  $("#galEyebrow").textContent=t.name;
-  $("#galSub").innerHTML = act
+  zq("#galEyebrow").textContent=t.name;
+  zq("#galSub").innerHTML = act
     ? `Every print point resolves <b>${esc(act.name)}</b> (v${act.publishedVersion}). Exactly one template is active per document type — activating another replaces it everywhere at once.`
     : `<b>Nothing is active for this type yet.</b> A template must be published, then activated, before any print point can resolve it.`;
 
-  const mine=$("#mineGrid"), st=$("#starterGrid"); mine.innerHTML=""; st.innerHTML="";
+  const mine=zq("#mineGrid"), st=zq("#starterGrid"); mine.innerHTML=""; st.innerHTML="";
 
   const card=(o)=>{
     const c=el("div","tpl-card");
@@ -1547,8 +1563,8 @@ function paintGallery(){
       <div class="tpl-card__meta">${esc(o.meta)}</div>
       <div style="display:flex;gap:5px;flex-wrap:wrap;margin-top:auto">${o.chips||""}</div>
       ${o.actions||""}</div>`;
-    schematic(o.objects, $(".tpl-card__thumb",c));
-    const th=$(".tpl-card__thumb",c), nm=$(".tpl-card__name",c);
+    schematic(o.objects, zq(".tpl-card__thumb",c));
+    const th=zq(".tpl-card__thumb",c), nm=zq(".tpl-card__name",c);
     th.style.cursor="pointer"; nm.style.cursor="pointer";
     th.onclick=o.onclick; nm.onclick=o.onclick;
     return c;
@@ -1650,12 +1666,12 @@ function openActivate(id){
      <p class="note" style="margin-bottom:0">Certificates already issued are unaffected — each one records the template version that produced it, and that record never changes.</p>`,
     `<button class="btn" data-close>Cancel</button><span class="spacer"></span>
      <button class="btn btn--primary" id="actGo">Set active</button>`);
-  $("#actGo").onclick=()=>{
+  zq("#actGo").onclick=()=>{
     S.active[S.docType]=id; closeModal(); paintGallery();
     toast(row.name+" is now the template every print point resolves");
   };
 }
-$("#mineGrid").addEventListener("click", e=>{
+zq("#mineGrid").addEventListener("click", e=>{
   const b=e.target.closest("button[data-act],button[data-deact],button[data-open]"); if(!b) return;
   if(b.dataset.open) return openTemplate(libOf(S.docType).find(r=>r.id===b.dataset.open));
   if(b.dataset.act) return openActivate(b.dataset.act);
@@ -1665,7 +1681,7 @@ $("#mineGrid").addEventListener("click", e=>{
       `<p style="margin-top:0;font-size:12.5px;line-height:1.6">With no active template, every print point for <b>${esc(t.name)}</b> fails closed — it refuses to render rather than falling back to some other template. That is the correct behaviour, and it is also a visible outage for the office.</p>`,
       `<button class="btn" data-close>Cancel</button><span class="spacer"></span>
        <button class="btn btn--primary" id="deactGo" style="background:var(--warn);border-color:var(--warn)">Deactivate anyway</button>`, true);
-    $("#deactGo").onclick=()=>{ delete S.active[S.docType]; closeModal(); paintGallery();
+    zq("#deactGo").onclick=()=>{ delete S.active[S.docType]; closeModal(); paintGallery();
       toast("Deactivated — this document type has no active template", true); };
   }
 });
@@ -1685,7 +1701,7 @@ function enterEdit(id, clientX, clientY){
   S.editing=id; S.sel=[id]; caretOffset=null;
   render();
   const n=nodeFor(id); if(!n) return;
-  const inner=$(".obj__in",n);
+  const inner=zq(".obj__in",n);
   inner.focus({preventScroll:true});
   if(clientX!=null && document.caretRangeFromPoint){
     const r=document.caretRangeFromPoint(clientX, clientY);
@@ -1697,7 +1713,7 @@ function commitEdit(){
   if(!S.editing) return;
   const o=obj(S.editing), n=nodeFor(S.editing);
   if(o && n){
-    const inner=$(".obj__in",n);
+    const inner=zq(".obj__in",n);
     inner.contentEditable="false";
     o.content.i18n[langOf(o)]={runs:parseRuns(inner)};
     if(!o.name || o.name===o.id) o.name=plainText(o).slice(0,26)||o.id;
@@ -1714,7 +1730,7 @@ function plainText(o){
 function insertField(key){
   const o=S.sel.length===1?obj(S.sel[0]):null;
   if(S.editing && o){
-    const inner=$(".obj__in",nodeFor(S.editing));
+    const inner=zq(".obj__in",nodeFor(S.editing));
     const sel=getSelection();
     /* the picker modal steals focus, so put the caret back where it was
        before inserting — otherwise every field lands at the end */
@@ -1754,16 +1770,16 @@ function insertField(key){
 }
 function exec(cmd){
   if(!S.editing) return;
-  $(".obj__in",nodeFor(S.editing)).focus();
+  zq(".obj__in",nodeFor(S.editing)).focus();
   document.execCommand(cmd,false,null);
   paintCtxbar();
 }
 
 /* ── floating context toolbar (Canva) ──────────────────────────────────── */
-function showCtxbar(){ paintCtxbar(); $("#ctxbar").classList.add("is-on"); positionCtxbar(); }
-function hideCtxbar(){ $("#ctxbar").classList.remove("is-on"); }
+function showCtxbar(){ paintCtxbar(); zq("#ctxbar").classList.add("is-on"); positionCtxbar(); }
+function hideCtxbar(){ zq("#ctxbar").classList.remove("is-on"); }
 function positionCtxbar(){
-  const bar=$("#ctxbar");
+  const bar=zq("#ctxbar");
   if(!bar.classList.contains("is-on")) return;
   if(S.sel.length===0){ hideCtxbar(); return; }
   const rects=S.sel.map(nodeFor).filter(Boolean).map(n=>n.getBoundingClientRect());
@@ -1777,7 +1793,7 @@ function positionCtxbar(){
   bar.style.left=x+"px"; bar.style.top=y+"px";
 }
 function paintCtxbar(){
-  const bar=$("#ctxbar");
+  const bar=zq("#ctxbar");
   if(S.sel.length===0){ hideCtxbar(); return; }
   if(S.sel.length>1){
     bar.innerHTML=`<button data-align="left" title="Align left">⇤</button>
@@ -1818,8 +1834,8 @@ function paintCtxbar(){
     <span class="div"></span>
     <button data-act="del" title="Delete">🗑</button>`;
 }
-$("#ctxbar").addEventListener("mousedown", e=>{ if(!e.target.closest("input,select")) e.preventDefault(); });
-$("#ctxbar").addEventListener("click", e=>{
+zq("#ctxbar").addEventListener("mousedown", e=>{ if(!e.target.closest("input,select")) e.preventDefault(); });
+zq("#ctxbar").addEventListener("click", e=>{
   const b=e.target.closest("button"); if(!b) return;
   const o=S.sel.length===1?obj(S.sel[0]):null;
   if(b.dataset.exec) return exec(b.dataset.exec);
@@ -1844,7 +1860,7 @@ $("#ctxbar").addEventListener("click", e=>{
     i.click();
   }
 });
-$("#ctxbar").addEventListener("change", e=>{
+zq("#ctxbar").addEventListener("change", e=>{
   const t=e.target, o=S.sel.length===1?obj(S.sel[0]):null;
   if(!t.dataset.p || !o) return;
   const before=snapshot();
@@ -1860,7 +1876,7 @@ function openFieldPicker(){
     `<div class="hintline" style="margin-bottom:10px">A field is inserted as one atomic chip. A caret cannot land inside it, and one backspace removes it whole — so a merge token can never be half-typed or misspelled.</div>
      <div id="pickList" style="max-height:46vh;overflow:auto"></div>`,
     `<button class="btn" data-close>Cancel</button>`, true);
-  const L=$("#pickList");
+  const L=zq("#pickList");
   contractFor().forEach(f=>{
     const b=el("button","field");
     b.innerHTML=`<span class="field__col"><span class="field__lbl">${esc(f.label)}</span>
@@ -1931,7 +1947,7 @@ function commitContentRow(ed){
 
 /* The row the user is typing in right now, or null. */
 function liveContentRow(){
-  const wrap=$("#contentList"), a=document.activeElement;
+  const wrap=zq("#contentList"), a=document.activeElement;
   return (wrap && a && a.isContentEditable && wrap.contains(a)) ? a : null;
 }
 
@@ -1974,8 +1990,8 @@ function capacityHint(o){
 }
 
 function paintContent(){
-  const wrap=$("#contentList"); if(!wrap) return;
-  const hint=$("#contentHint");
+  const wrap=zq("#contentList"); if(!wrap) return;
+  const hint=zq("#contentHint");
 
   /* Never rebuild underneath a live edit. innerHTML="" would destroy the
      focused node mid-keystroke and the edit would vanish into a detached
@@ -2086,7 +2102,7 @@ function paintContent(){
       const after=snapshot();
       const changed = before!=null && before!==after;
       if(changed) push("Edit text — "+(o.name||o.id), before, after);
-      const wrap=$("#contentList");
+      const wrap=zq("#contentList");
       if(changed || (wrap && wrap._deferred)) render();
     });
     /* Enter commits rather than inserting a paragraph: these are single fields
@@ -2119,7 +2135,7 @@ function paintContent(){
 }
 
 function paintLayers(){
-  const L=$("#layerList"); L.innerHTML="";
+  const L=zq("#layerList"); L.innerHTML="";
   const groups=[["header","Header region"],["body","Body"],["footer","Footer region"]];
   groups.forEach(([g,label])=>{
     const items=S.tpl.objects.filter(o=>(o.region||"body")===g).sort((a,b)=>(b.z||0)-(a.z||0));
@@ -2152,7 +2168,7 @@ function paintLayers(){
    9 · INSPECTOR
    ========================================================================== */
 function paintInspector(){
-  const B=$("#objBody"), badge=$("#objBadge");
+  const B=zq("#objBody"), badge=zq("#objBadge");
   if(S.sel.length===0){
     badge.innerHTML="";
     B.innerHTML=`<div class="empty-insp"><div class="empty-insp__ic">⌖</div>
@@ -2306,7 +2322,7 @@ function paintInspector(){
       <button class="btn btn--sm" data-act="del" style="color:var(--seal);border-color:var(--seal-ring)">Delete</button></div>`;
 
   if(o.type==="table"){
-    const RL=$("#rowList");
+    const RL=zq("#rowList");
     o.content.rows.forEach((r,i)=>{
       const row=el("div","rowitem");
       row.innerHTML=`<select data-row="${i}">${contractFor().map(f=>`<option value="${f.key}" ${r.key===f.key?"selected":""}>${esc(f.label)}</option>`).join("")}</select>
@@ -2330,7 +2346,7 @@ function alignRow(){
 }
 function paintPagePanel(){
   const p=S.tpl.page;
-  $("#pageBody").innerHTML=`
+  zq("#pageBody").innerHTML=`
     <div class="row">
       <div class="inp"><label>Size</label><select data-page="size">
         ${Object.keys(PAPER).map(s=>`<option ${p.size===s?"selected":""}>${s}</option>`).join("")}</select></div>
@@ -2362,6 +2378,16 @@ function paintPagePanel(){
    ========================================================================== */
 function validate(){
   const p=prof(), bound=boundKeys(), blocking=[], warnings=[];
+  /* An image with no source. The serializer REFUSES to render one, so without
+     this the first symptom is a proof that fails after all the work is done —
+     and the shipped Annexure-I starter carries a School crest object, so every
+     new Transfer Certificate template hits it until a crest is uploaded. Found
+     on the first live run. Kept identical to the server's check in
+     Doc_templates::validate(). */
+  S.tpl.objects.forEach(o=>{
+    if(o.type==="image" && !(o.content && o.content.src))
+      warnings.push({type:"nosrc", id:o.id, name:o.name||o.id});
+  });
   p.requiredKeys.forEach(k=>{ if(!bound.has(k)) blocking.push({type:"unbound", key:k}); });
   S.tpl.objects.filter(o=>o.type==="text"||o.type==="table").forEach(o=>{
     if(o.style && (o.style.lineHeight==null||o.style.lineHeight==="")) blocking.push({type:"lineheight", id:o.id});
@@ -2445,12 +2471,12 @@ function validate(){
   return {blocking, warnings};
 }
 function paintCompliance(){
-  const C=$("#compBody"), v=validate(), bound=boundKeys();
+  const C=zq("#compBody"), v=validate(), bound=boundKeys();
   const st=resolveStack(), on=st.filter(l=>!l.off);
   const req=requiredKeysOf(), done=req.filter(k=>bound.has(k)).length;
   const sc=S.school;
 
-  $("#compBadge").innerHTML = !on.length ? '<span class="chip">Not checked</span>'
+  zq("#compBadge").innerHTML = !on.length ? '<span class="chip">Not checked</span>'
     : (v.blocking.length ? `<span class="chip chip--statutory"><span class="dot"></span>${v.blocking.length} blocking</span>`
                          : '<span class="chip chip--active"><span class="dot"></span>Clear</span>');
 
@@ -2474,7 +2500,7 @@ function paintCompliance(){
     <div id="lyrs"></div>
     <div id="rulesList" class="rules"></div>`;
 
-  const LY=$("#lyrs");
+  const LY=zq("#lyrs");
   st.forEach(l=>{
     const w=el("div","lyr"+(l.off?" is-off":""));
     const keys=(l.rule.requiredKeys||[]).length;
@@ -2532,7 +2558,7 @@ function paintCompliance(){
     LY.appendChild(w);
   }
 
-  const L=$("#rulesList");
+  const L=zq("#rulesList");
   v.blocking.filter(b=>b.type==="wrongInstrument").forEach(w=>{
     const b=el("button","rule rule--bad");
     b.innerHTML=`<span class="rule__ic">✕</span><span class="rule__main">
@@ -2616,9 +2642,9 @@ function paintCompliance(){
     L.appendChild(f);
   }
 
-  $$("[data-route]",C).forEach(b=>b.onclick=()=>routeTo(b.dataset.route));
-  $("#basisBtn").onclick=openBasis;
-  $$(".lyr__sw",LY).forEach(sw=>sw.onclick=()=>toggleLayer(sw.dataset.layer));
+  zqa("[data-route]",C).forEach(b=>b.onclick=()=>routeTo(b.dataset.route));
+  zq("#basisBtn").onclick=openBasis;
+  zqa(".lyr__sw",LY).forEach(sw=>sw.onclick=()=>toggleLayer(sw.dataset.layer));
 }
 
 /* take the clerk to the document type the rule says they should be issuing */
@@ -2655,8 +2681,8 @@ function toggleLayer(id){
        <p class="note" style="margin-bottom:0">The reason is stored with the template and shown on every rule it suppresses. Compliance profiles themselves remain editable by the platform super-admin only — a school can exclude a layer here, it cannot rewrite one.</p>`,
       `<button class="btn" data-close>Cancel</button><span class="spacer"></span>
        <button class="btn btn--primary" id="ovrGo">Exclude ${esc(a.label)}</button>`, true);
-    $("#ovrGo").onclick=()=>{
-      const why=($("#ovrWhy").value||"").trim();
+    zq("#ovrGo").onclick=()=>{
+      const why=(zq("#ovrWhy").value||"").trim();
       if(!why) return toast("A reason is required — an unexplained exclusion is an audit finding", true);
       S.layerOff[id]=true; S.overrideReason[id]=why; markDirty();
       closeModal(); render(); toast("Excluded "+a.label+" — reason recorded");
@@ -2684,9 +2710,9 @@ function openBasis(){
     `<button class="btn" data-close>Cancel</button><span class="spacer"></span>
      <button class="btn btn--primary" id="bsGo">Apply</button>`);
   const draw=()=>{
-    const sc2={board:$("#bsBoard").value, state:$("#bsState").value, stage:$("#bsStage").value};
+    const sc2={board:zq("#bsBoard").value, state:zq("#bsState").value, stage:zq("#bsStage").value};
     const st=resolveStack(S.docType, sc2);
-    const P=$("#bsPreview"); P.innerHTML="";
+    const P=zq("#bsPreview"); P.innerHTML="";
     st.forEach(l=>{
       const d=el("div","kv");
       d.innerHTML=`<span><span class="tier tier--${l.a.tier}">${l.a.tier==="board"?"Central board":l.a.tier}</span>
@@ -2700,10 +2726,10 @@ function openBasis(){
     }
     if(!st.length) P.appendChild(el("div","note","No authority we hold reaches this document type for this school. The template is not compliance-checked."));
   };
-  ["#bsBoard","#bsState","#bsStage"].forEach(id=>$(id).onchange=draw);
+  ["#bsBoard","#bsState","#bsStage"].forEach(id=>zq(id).onchange=draw);
   draw();
-  $("#bsGo").onclick=()=>{
-    S.school={name:S.school.name, board:$("#bsBoard").value, state:$("#bsState").value, stage:$("#bsStage").value};
+  zq("#bsGo").onclick=()=>{
+    S.school={name:S.school.name, board:zq("#bsBoard").value, state:zq("#bsState").value, stage:zq("#bsStage").value};
     S.layerOff={}; S.overrideReason={}; markDirty();
     closeModal(); render();
     toast("Compliance basis: "+S.school.board+" · "+S.school.state);
@@ -2711,7 +2737,7 @@ function openBasis(){
 }
 
 function paintBlocks(){
-  const L=$("#blockList"); if(!L) return;
+  const L=zq("#blockList"); if(!L) return;
   const IC={letterhead:"▤",signature:"✎",seal:"◎"};
   L.innerHTML="";
   BLOCKS.forEach(bl=>{
@@ -2726,9 +2752,9 @@ function paintBlocks(){
   });
 }
 function paintFieldList(){
-  const L=$("#fieldList"); L.innerHTML="";
+  const L=zq("#fieldList"); L.innerHTML="";
   const dt=(S.tpl&&S.tpl.docType)||S.docType, ty=TYPES.find(t=>t.id===dt);
-  const cn=$("#ctName"), cc=$("#ctCount");
+  const cn=zq("#ctName"), cc=zq("#ctCount");
   if(cn) cn.textContent=ty?ty.name:"this document type";
   if(cc) cc.textContent=contractFor(dt).length+" fields";
   const bound=boundKeys(), req=new Set(prof().requiredKeys);
@@ -2746,24 +2772,24 @@ function paintFieldList(){
 }
 function paintStatus(){
   const v=validate();
-  $("#zoomVal").textContent=Math.round(S.zoom*100)+"%";
-  if(S.editing) $("#sbSel").innerHTML=`<b>Editing</b> ${esc(obj(S.editing).name||S.editing)} — Esc to finish`;
+  zq("#zoomVal").textContent=Math.round(S.zoom*100)+"%";
+  if(S.editing) zq("#sbSel").innerHTML=`<b>Editing</b> ${esc(obj(S.editing).name||S.editing)} — Esc to finish`;
   else if(S.sel.length===1){
     const o=obj(S.sel[0]);
-    $("#sbSel").innerHTML=`<b>${esc(o.name||o.id)}</b> · ${mm(o.xMm)},${mm(resolvedY(o))} mm · ${mm(o.wMm)}×${mm(S.measured[o.id]||o.hMm)} mm${o.anchorTo?` · anchored to <b>${esc((obj(o.anchorTo)||{}).name||o.anchorTo)}</b>`:""}`;
-  } else if(S.sel.length>1) $("#sbSel").innerHTML=`<b>${S.sel.length}</b> objects selected`;
-  else $("#sbSel").textContent="No selection";
-  const dt=$("#dupToggle");
+    zq("#sbSel").innerHTML=`<b>${esc(o.name||o.id)}</b> · ${mm(o.xMm)},${mm(resolvedY(o))} mm · ${mm(o.wMm)}×${mm(S.measured[o.id]||o.hMm)} mm${o.anchorTo?` · anchored to <b>${esc((obj(o.anchorTo)||{}).name||o.anchorTo)}</b>`:""}`;
+  } else if(S.sel.length>1) zq("#sbSel").innerHTML=`<b>${S.sel.length}</b> objects selected`;
+  else zq("#sbSel").textContent="No selection";
+  const dt=zq("#dupToggle");
   if(dt){
     dt.innerHTML = S.issuance.duplicate ? '<b style="color:var(--seal)">DUPLICATE</b>' : "original";
     dt.title="Preview the document as an original or as a reissued duplicate";
   }
-  $("#sbData").innerHTML = S.data==="off" ? "Field names"
+  zq("#sbData").innerHTML = S.data==="off" ? "Field names"
     : S.data==="p95" ? '<span class="sb--warn">p95 sample data — the length that breaks layouts</span>' : "Typical sample data";
-  $("#sbWarn").innerHTML = v.blocking.length
+  zq("#sbWarn").innerHTML = v.blocking.length
     ? `<span class="sb--warn">${v.blocking.length} blocking · ${v.warnings.length} warnings</span>`
     : '<span class="sb--ok">no blocking findings</span>';
-  $("#sbSave").innerHTML = S.dirty ? `Unsaved · lockVersion <b>${S.tpl.lockVersion}</b>` : `Saved · lockVersion <b>${S.tpl.lockVersion}</b>`;
+  zq("#sbSave").innerHTML = S.dirty ? `Unsaved · lockVersion <b>${S.tpl.lockVersion}</b>` : `Saved · lockVersion <b>${S.tpl.lockVersion}</b>`;
 }
 function render(){
   paintCrumb(); paintTopActions(); layoutPage(); paintRulers();
@@ -2776,30 +2802,30 @@ function render(){
    ========================================================================== */
 function setTool(t){
   S.tool=t;
-  $$("#toolbar button").forEach(b=>b.classList.toggle("is-on", b.dataset.tool===t));
-  const d=$("#desk");
+  zqa("#toolbar button").forEach(b=>b.classList.toggle("is-on", b.dataset.tool===t));
+  const d=zq("#desk");
   d.classList.toggle("is-pan", t==="hand");
   d.classList.toggle("is-place", !["move","hand"].includes(t));
 }
-$("#toolbar").addEventListener("click", e=>{
+zq("#toolbar").addEventListener("click", e=>{
   const b=e.target.closest("button[data-tool]"); if(b){ commitEdit(); setTool(b.dataset.tool); }
 });
 
 let drag=null, spaceDown=false;
 
 /* keep the stored caret current so a render can put it back */
-["keyup","click","input"].forEach(ev=>$("#page").addEventListener(ev, ()=>{ if(S.editing) readCaret(); }));
+["keyup","click","input"].forEach(ev=>zq("#page").addEventListener(ev, ()=>{ if(S.editing) readCaret(); }));
 
-$("#page").addEventListener("dblclick", e=>{
+zq("#page").addEventListener("dblclick", e=>{
   const n=e.target.closest(".obj"); if(!n) return;
   const o=obj(n.dataset.id);
   if(o && o.type==="text") enterEdit(o.id, e.clientX, e.clientY);
   else if(o && o.type==="image" && !o.bindKey) pickFile(o.id);
 });
 
-$("#page").addEventListener("mousedown", e=>{
+zq("#page").addEventListener("mousedown", e=>{
   if(e.button!==0) return;
-  const k=pxPerMm(), rect=$("#page").getBoundingClientRect();
+  const k=pxPerMm(), rect=zq("#page").getBoundingClientRect();
   const mx=(e.clientX-rect.left)/k, my=(e.clientY-rect.top)/k;
 
   if(spaceDown || S.tool==="hand") return;               /* pan handled on the desk */
@@ -2851,7 +2877,7 @@ $("#page").addEventListener("mousedown", e=>{
 
 window.addEventListener("mousemove", e=>{
   if(!drag){ if(e.altKey && S.sel.length===1) measureTo(e); else clearMeas(); return; }
-  const k=pxPerMm(), P=$("#page"), rect=P.getBoundingClientRect();
+  const k=pxPerMm(), P=zq("#page"), rect=P.getBoundingClientRect();
   clearGuides();
 
   if(drag.mode==="move"){
@@ -2934,7 +2960,7 @@ function snap(x,y,o){
   return {dx,dy,guides};
 }
 function drawGuides(gs){
-  const k=pxPerMm(), P=$("#page");
+  const k=pxPerMm(), P=zq("#page");
   gs.forEach(g=>{
     const n=el("div","guide"), l=el("div","guide__lbl",esc(g.lbl));
     if(g.axis==="x"){ n.style.cssText=`left:${g.at*k}px;top:0;width:1px;height:100%`; l.style.cssText=`left:${g.at*k+4}px;top:6px`; }
@@ -2942,8 +2968,8 @@ function drawGuides(gs){
     P.appendChild(n); P.appendChild(l);
   });
 }
-const clearGuides=()=>$$(".guide,.guide__lbl").forEach(g=>g.remove());
-const clearMeas  =()=>$$(".meas,.meas__lbl").forEach(g=>g.remove());
+const clearGuides=()=>zqa(".guide,.guide__lbl").forEach(g=>g.remove());
+const clearMeas  =()=>zqa(".meas,.meas__lbl").forEach(g=>g.remove());
 
 /* alt + hover = measure from the selection to whatever is under the cursor */
 function measureTo(e){
@@ -2951,7 +2977,7 @@ function measureTo(e){
   const n=e.target.closest(".obj"); if(!n) return;
   const b=obj(n.dataset.id), a=obj(S.sel[0]);
   if(!b||!a||a.id===b.id) return;
-  const k=pxPerMm(), P=$("#page");
+  const k=pxPerMm(), P=zq("#page");
   const box=o=>({x:o.xMm, y:resolvedY(o)+regionTop(o)/k, w:o.wMm, h:S.measured[o.id]||o.hMm});
   const A=box(a), B=box(b);
   const add=(css,cls)=>{ const d=el("div",cls); d.style.cssText=css; P.appendChild(d); };
@@ -2975,21 +3001,21 @@ function measureTo(e){
 }
 
 /* desk pan + zoom */
-const desk=$("#desk");
+const desk=zq("#desk");
 let pan=null, gdrag=null;
 
 /* drag a guide out of a ruler (Figma) */
-["#rulerH","#rulerV"].forEach(sel=>$(sel).addEventListener("mousedown", e=>{
+["#rulerH","#rulerV"].forEach(sel=>zq(sel).addEventListener("mousedown", e=>{
   if(e.button!==0) return;
   const axis = sel==="#rulerH" ? "v" : "h";
-  const k=pxPerMm(), r=$("#page").getBoundingClientRect();
+  const k=pxPerMm(), r=zq("#page").getBoundingClientRect();
   const at = axis==="v" ? (e.clientX-r.left)/k : (e.clientY-r.top)/k;
   S.guides[axis].push(Math.max(0,mm(at)));
   gdrag={axis, idx:S.guides[axis].length-1, fresh:true};
   layoutPage(); e.preventDefault(); e.stopPropagation();
 }));
 /* grab an existing guide */
-$("#page").addEventListener("mousedown", e=>{
+zq("#page").addEventListener("mousedown", e=>{
   const g=e.target.closest(".rguide"); if(!g) return;
   gdrag={axis:g.dataset.axis, idx:+g.dataset.idx};
   e.preventDefault(); e.stopPropagation();
@@ -3014,7 +3040,7 @@ desk.addEventListener("mousedown", e=>{
 });
 window.addEventListener("mousemove", e=>{
   if(gdrag){
-    const k=pxPerMm(), r=$("#page").getBoundingClientRect(), D=pageDims();
+    const k=pxPerMm(), r=zq("#page").getBoundingClientRect(), D=pageDims();
     const at = gdrag.axis==="v" ? (e.clientX-r.left)/k : (e.clientY-r.top)/k;
     S.guides[gdrag.axis][gdrag.idx]=mm(at);
     layoutPage();
@@ -3024,7 +3050,7 @@ window.addEventListener("mousemove", e=>{
     const l=el("div","guide__lbl", (off?"release to remove — ":"")+mm(at)+" mm");
     l.style.cssText = gdrag.axis==="v"
       ? `left:${at*k+5}px;top:8px` : `top:${at*k+5}px;left:8px`;
-    $("#page").appendChild(l);
+    zq("#page").appendChild(l);
     return;
   }
   if(!pan) return;
@@ -3054,9 +3080,9 @@ function zoomFit(){
   S.zoom=Math.max(.25,Math.min(1.6, Math.min(h/(D.h*96/25.4), w/(D.w*96/25.4))));
   layoutPage(); paintRulers(); paintStatus();
 }
-$("#zoomIn").onclick =()=>{ S.zoom=Math.min(3,S.zoom+.1); layoutPage(); paintRulers(); paintStatus(); };
-$("#zoomOut").onclick=()=>{ S.zoom=Math.max(.25,S.zoom-.1); layoutPage(); paintRulers(); paintStatus(); };
-$("#zoomFit").onclick=zoomFit;
+zq("#zoomIn").onclick =()=>{ S.zoom=Math.min(3,S.zoom+.1); layoutPage(); paintRulers(); paintStatus(); };
+zq("#zoomOut").onclick=()=>{ S.zoom=Math.max(.25,S.zoom-.1); layoutPage(); paintRulers(); paintStatus(); };
+zq("#zoomFit").onclick=zoomFit;
 function zoomToSelection(){
   if(!S.sel.length) return zoomFit();
   const k0=pxPerMm();
@@ -3066,7 +3092,7 @@ function zoomToSelection(){
   const h=Math.max(...bs.map(b=>b.y+b.h))-Math.min(...bs.map(b=>b.y));
   S.zoom=Math.max(.25,Math.min(3, Math.min((desk.clientWidth-160)/(w*96/25.4), (desk.clientHeight-160)/(h*96/25.4))));
   layoutPage(); paintRulers(); paintStatus();
-  const k=pxPerMm(), pr=$("#page").getBoundingClientRect(), dr=desk.getBoundingClientRect();
+  const k=pxPerMm(), pr=zq("#page").getBoundingClientRect(), dr=desk.getBoundingClientRect();
   const cx=(Math.min(...bs.map(b=>b.x))+w/2)*k, cy=(Math.min(...bs.map(b=>b.y))+h/2)*k;
   desk.scrollLeft += (pr.left-dr.left)+cx-desk.clientWidth/2;
   desk.scrollTop  += (pr.top-dr.top)+cy-desk.clientHeight/2;
@@ -3234,7 +3260,7 @@ function openSignaturePad(targetId){
      <p class="note" style="margin-bottom:0">This is still an <b>image</b> of a signature. It carries no status under the IT Act 2000 — s.3 means a DSC, s.3A means a Second-Schedule electronic signature such as Aadhaar eSign. Authenticity on this document is carried by the verification QR.</p>`,
     `<button class="btn" data-close>Cancel</button><span class="spacer"></span>
      <button class="btn btn--primary" id="sigUse">Use this signature</button>`);
-  const c=$("#sigpad"), x=c.getContext("2d");
+  const c=zq("#sigpad"), x=c.getContext("2d");
   x.lineWidth=6; x.lineCap="round"; x.lineJoin="round"; x.strokeStyle="#16233a";
   let drawing=false, drew=false, last=null;
   const pt=e=>{ const r=c.getBoundingClientRect();
@@ -3243,8 +3269,8 @@ function openSignaturePad(targetId){
   c.addEventListener("pointermove", e=>{ if(!drawing) return;
     const p=pt(e); x.beginPath(); x.moveTo(last.x,last.y); x.lineTo(p.x,p.y); x.stroke(); last=p; });
   ["pointerup","pointerleave","pointercancel"].forEach(ev=>c.addEventListener(ev,()=>drawing=false));
-  $("#sigClear").onclick=()=>{ x.clearRect(0,0,c.width,c.height); drew=false; };
-  $("#sigUse").onclick=()=>{
+  zq("#sigClear").onclick=()=>{ x.clearRect(0,0,c.width,c.height); drew=false; };
+  zq("#sigUse").onclick=()=>{
     if(!drew) return toast("Nothing drawn yet", true);
     /* crop to the ink so the box matches the signature, not the pad */
     const d=x.getImageData(0,0,c.width,c.height).data;
@@ -3280,7 +3306,7 @@ function pickFile(targetId){
   i.click();
 }
 (function wireDnD(){
-  const d=$("#desk");
+  const d=zq("#desk");
   let depth=0;
   const hasFiles=e=>e.dataTransfer && [...e.dataTransfer.types].includes("Files");
   d.addEventListener("dragenter", e=>{ if(!hasFiles(e))return; e.preventDefault(); depth++; d.classList.add("is-dropping"); });
@@ -3288,16 +3314,16 @@ function pickFile(targetId){
   d.addEventListener("dragover", e=>{
     if(!hasFiles(e))return; e.preventDefault(); e.dataTransfer.dropEffect="copy";
     const n=e.target.closest(".obj");
-    $$(".obj.is-drop").forEach(x=>x.classList.remove("is-drop"));
+    zqa(".obj.is-drop").forEach(x=>x.classList.remove("is-drop"));
     if(n && obj(n.dataset.id) && obj(n.dataset.id).type==="image") n.classList.add("is-drop");
   });
   d.addEventListener("drop", e=>{
     if(!hasFiles(e))return; e.preventDefault(); depth=0;
     d.classList.remove("is-dropping");
-    $$(".obj.is-drop").forEach(x=>x.classList.remove("is-drop"));
+    zqa(".obj.is-drop").forEach(x=>x.classList.remove("is-drop"));
     const n=e.target.closest(".obj");
     const tgt = n && obj(n.dataset.id) && obj(n.dataset.id).type==="image" ? n.dataset.id : null;
-    const k=pxPerMm(), r=$("#page").getBoundingClientRect();
+    const k=pxPerMm(), r=zq("#page").getBoundingClientRect();
     dropFiles(e.dataTransfer.files, {x:mm((e.clientX-r.left)/k), y:mm((e.clientY-r.top)/k)}, tgt);
   });
   /* paste an image straight onto the page */
@@ -3321,13 +3347,13 @@ window.addEventListener("keydown", e=>{
   const t=e.target;
   const typing = S.editing || (t && t.matches && t.matches("input,select,textarea,[contenteditable='true']"));
 
-  if(e.code==="Space" && !typing){ spaceDown=true; $("#desk").classList.add("is-pan"); }
+  if(e.code==="Space" && !typing){ spaceDown=true; zq("#desk").classList.add("is-pan"); }
   /* Escape is staged: never destroys work, always reaches a neutral state */
   if(e.key==="Escape"){
-    if($("#scrim").classList.contains("is-on")) return closeModal();
+    if(zq("#scrim").classList.contains("is-on")) return closeModal();
     /* an open drawer is the frontmost thing on screen, so Esc dismisses it
        before it touches the selection underneath */
-    if($(".rail").classList.contains("is-open") || $(".insp").classList.contains("is-open"))
+    if(zq(".rail").classList.contains("is-open") || zq(".insp").classList.contains("is-open"))
       return closeDrawers();
     if(S.editing){ commitEdit(); return; }          // 1 · commit, stay selected
     if(S.sel.length){ S.sel=[]; hideCtxbar(); render(); return; }   // 2 · deselect
@@ -3366,8 +3392,8 @@ window.addEventListener("keydown", e=>{
     else { S.zoom=1; layoutPage(); paintRulers(); paintStatus(); }
     return;
   }
-  if(meta && (e.key==="="||e.key==="+")){ e.preventDefault(); $("#zoomIn").click(); return; }
-  if(meta && e.key==="-"){ e.preventDefault(); $("#zoomOut").click(); return; }
+  if(meta && (e.key==="="||e.key==="+")){ e.preventDefault(); zq("#zoomIn").click(); return; }
+  if(meta && e.key==="-"){ e.preventDefault(); zq("#zoomOut").click(); return; }
   if(meta && e.key.toLowerCase()==="z"){ e.preventDefault(); e.shiftKey?redo():undo(); return; }
   if(meta && e.key.toLowerCase()==="y"){ e.preventDefault(); redo(); return; }
   if(meta && e.key.toLowerCase()==="d"){ e.preventDefault(); duplicateSel(); return; }
@@ -3396,22 +3422,22 @@ window.addEventListener("keydown", e=>{
   }
 });
 window.addEventListener("keyup", e=>{
-  if(e.code==="Space"){ spaceDown=false; if(S.tool!=="hand") $("#desk").classList.remove("is-pan"); }
+  if(e.code==="Space"){ spaceDown=false; if(S.tool!=="hand") zq("#desk").classList.remove("is-pan"); }
   if(e.key==="Alt") clearMeas();
 });
 
 /* ==========================================================================
    14 · CONTEXT MENU
    ========================================================================== */
-const cm=$("#ctxmenu");
-$("#page").addEventListener("contextmenu", e=>{
+const cm=zq("#ctxmenu");
+zq("#page").addEventListener("contextmenu", e=>{
   e.preventDefault();
   const n=e.target.closest(".obj");
   if(n && !S.sel.includes(n.dataset.id)){ S.sel=[n.dataset.id]; render(); showCtxbar(); }
   const o=S.sel.length===1?obj(S.sel[0]):null;
   /* everything under the cursor, topmost first — the only way to reach an
      object that is underneath another, or one that is locked */
-  const k=pxPerMm(), pr=$("#page").getBoundingClientRect();
+  const k=pxPerMm(), pr=zq("#page").getBoundingClientRect();
   const px=(e.clientX-pr.left)/k, py=(e.clientY-pr.top)/k;
   const under=S.tpl.objects.filter(x=>{
     const oy=resolvedY(x)+regionTop(x)/k;
@@ -3479,24 +3505,24 @@ const railIsDrawer = ()=>matchMedia("(max-width:1020px)").matches;
 const inspIsDrawer = ()=>matchMedia("(max-width:760px)").matches;
 
 function drawerScrim(){
-  let s=$(".zxdt .drawer-scrim") || $(".drawer-scrim");
-  if(!s){ s=el("div","drawer-scrim"); $(".dz").appendChild(s);
+  let s=zq(".zxdt .drawer-scrim") || zq(".drawer-scrim");
+  if(!s){ s=el("div","drawer-scrim"); zq(".dz").appendChild(s);
     s.addEventListener("click", ()=>closeDrawers()); }
   return s;
 }
 function syncScrim(){
-  const open = $(".rail").classList.contains("is-open") || $(".insp").classList.contains("is-open");
+  const open = zq(".rail").classList.contains("is-open") || zq(".insp").classList.contains("is-open");
   drawerScrim().classList.toggle("is-on", open);
 }
 function closeDrawers(){
-  $(".rail").classList.remove("is-open");
-  $(".insp").classList.remove("is-open");
+  zq(".rail").classList.remove("is-open");
+  zq(".insp").classList.remove("is-open");
   syncScrim();
 }
 function openRailDrawer(){
   if(!railIsDrawer()) return;
-  $(".insp").classList.remove("is-open");
-  $(".rail").classList.add("is-open");
+  zq(".insp").classList.remove("is-open");
+  zq(".rail").classList.add("is-open");
   syncScrim();
 }
 /* Leaving drawer mode must not strand an `is-open` class on a panel that is
@@ -3505,21 +3531,21 @@ function openRailDrawer(){
 matchMedia("(max-width:1020px)").addEventListener("change", closeDrawers);
 matchMedia("(max-width:760px)").addEventListener("change", closeDrawers);
 
-$("#tabstrip").addEventListener("click", e=>{
+zq("#tabstrip").addEventListener("click", e=>{
   const b=e.target.closest("button"); if(!b) return;
-  const alreadyShowing = b.classList.contains("is-on") && $(".rail").classList.contains("is-open");
-  $$("#tabstrip button").forEach(t=>t.classList.toggle("is-on", t===b));
-  $$(".rail__pane").forEach(p=>p.classList.toggle("is-on", p.dataset.pane===b.dataset.pane));
-  $("#railHead").textContent={layers:"Layers",insert:"Insert",fields:"Merge fields",blocks:"Reusable blocks",content:"Content"}[b.dataset.pane];
+  const alreadyShowing = b.classList.contains("is-on") && zq(".rail").classList.contains("is-open");
+  zqa("#tabstrip button").forEach(t=>t.classList.toggle("is-on", t===b));
+  zqa(".rail__pane").forEach(p=>p.classList.toggle("is-on", p.dataset.pane===b.dataset.pane));
+  zq("#railHead").textContent={layers:"Layers",insert:"Insert",fields:"Merge fields",blocks:"Reusable blocks",content:"Content"}[b.dataset.pane];
   /* in drawer mode the tabstrip is the only way back in, so it must open —
      and tapping the tab of the pane already showing closes it again */
   if(railIsDrawer()){ alreadyShowing ? closeDrawers() : openRailDrawer(); }
 });
 
-$("#inspBtn").addEventListener("click", ()=>{
-  const insp=$(".insp");
+zq("#inspBtn").addEventListener("click", ()=>{
+  const insp=zq(".insp");
   if(insp.classList.contains("is-open")) return closeDrawers();
-  $(".rail").classList.remove("is-open");
+  zq(".rail").classList.remove("is-open");
   insp.classList.add("is-open");
   syncScrim();
 });
@@ -3529,23 +3555,23 @@ $("#inspBtn").addEventListener("click", ()=>{
    button, sat far from the object, and was the least discoverable of four doors
    into the same mode. It now opens the mode-free route instead. */
 function openContentFor(id){
-  const tab=$('#tabstrip button[data-pane="content"]'); if(tab) tab.click();
+  const tab=zq('#tabstrip button[data-pane="content"]'); if(tab) tab.click();
   S.cmode="edit";
-  $$("#contentMode button").forEach(t=>t.classList.toggle("is-on", t.dataset.cmode==="edit"));
+  zqa("#contentMode button").forEach(t=>t.classList.toggle("is-on", t.dataset.cmode==="edit"));
   paintContent();
-  const box=$(`#contentList [data-cid="${id}"]`);
+  const box=zq(`#contentList [data-cid="${id}"]`);
   if(box){ box.scrollIntoView({block:"center"}); box.focus(); }
   else toast("That object has no editable text");
 }
 
-$("#contentMode").addEventListener("click", e=>{
+zq("#contentMode").addEventListener("click", e=>{
   const b=e.target.closest("button[data-cmode]"); if(!b) return;
   S.cmode=b.dataset.cmode;
-  $$("#contentMode button").forEach(t=>t.classList.toggle("is-on", t===b));
+  zqa("#contentMode button").forEach(t=>t.classList.toggle("is-on", t===b));
   paintContent();
 });
 
-$(".rail").addEventListener("click", e=>{
+zq(".rail").addEventListener("click", e=>{
   const b=e.target.closest("button"); if(!b) return;
   if(b.dataset.add) addObject(b.dataset.add);
   if(b.dataset.review) return openBlockUpdate(b.dataset.review);
@@ -3556,7 +3582,7 @@ $(".rail").addEventListener("click", e=>{
   if(b.id==="gridBtn"){ S.grid=!S.grid; layoutPage(); toast("Grid "+(S.grid?"on":"off")); }
   if(b.id==="anchorBtn"){ S.anchors=!S.anchors; layoutPage(); toast("Anchor chains "+(S.anchors?"shown":"hidden")); }
 });
-$(".insp").addEventListener("change", e=>{
+zq(".insp").addEventListener("change", e=>{
   const t=e.target;
   if(t.dataset.p){
     const o=obj(S.sel[0]); if(!o) return;
@@ -3588,7 +3614,7 @@ $(".insp").addEventListener("change", e=>{
     push("Page setup", before, snapshot()); render();
   }
 });
-$(".insp").addEventListener("click", e=>{
+zq(".insp").addEventListener("click", e=>{
   const b=e.target.closest("button"); if(!b) return;
   const o=S.sel.length===1?obj(S.sel[0]):null;
   if(b.dataset.delrow!=null && o){ const before=snapshot(); o.content.rows.splice(+b.dataset.delrow,1);
@@ -3623,7 +3649,7 @@ $(".insp").addEventListener("click", e=>{
   if(a==="fwd") return zOrder(1);
   if(a==="back") return zOrder(-1);
 });
-$("#topActions").addEventListener("click", e=>{
+zq("#topActions").addEventListener("click", e=>{
   const b=e.target.closest("button"); if(!b) return;
   if(b.dataset.lang){ commitEdit(); S.lang=b.dataset.lang; render(); toast("Previewing "+LANGS[S.lang].native); }
   if(b.dataset.data){ S.data=b.dataset.data; render();
@@ -3634,17 +3660,17 @@ $("#topActions").addEventListener("click", e=>{
   if(b.id==="pubBtn") openPublish();
   if(b.id==="histBtn") openHistory();
 });
-$("#crumb").addEventListener("click", e=>{
+zq("#crumb").addEventListener("click", e=>{
   const b=e.target.closest("button[data-go]"); if(b){ commitEdit(); go(b.dataset.go); }
 });
-$$(".sect__head").forEach(h=>h.onclick=()=>$("#"+h.dataset.sect).classList.toggle("is-open"));
-$("#keysBtn").onclick=openKeys;
-$("#dupToggle").onclick=()=>{
+zqa(".sect__head").forEach(h=>h.onclick=()=>zq("#"+h.dataset.sect).classList.toggle("is-open"));
+zq("#keysBtn").onclick=openKeys;
+zq("#dupToggle").onclick=()=>{
   S.issuance.duplicate=!S.issuance.duplicate; render();
   toast(S.issuance.duplicate ? "Previewing as a duplicate — the statutory mark must appear"
                              : "Previewing as an original");
 };
-$("#themeBtn").onclick=()=>{
+zq("#themeBtn").onclick=()=>{
   const r=document.documentElement;
   const cur=r.getAttribute("data-theme")||(matchMedia("(prefers-color-scheme:dark)").matches?"dark":"light");
   r.setAttribute("data-theme", cur==="dark"?"light":"dark");
@@ -3656,13 +3682,13 @@ window.addEventListener("resize", ()=>{ if(S.screen==="designer"){ layoutPage();
    16 · MODALS
    ========================================================================== */
 function modal(title, sub, body, foot, small){
-  $("#mTitle").textContent=title; $("#mSub").textContent=sub||"";
-  $("#mBody").innerHTML=body; $("#mFoot").innerHTML=foot||"";
-  $("#modal").classList.toggle("modal--sm", !!small);
-  $("#scrim").classList.add("is-on");
+  zq("#mTitle").textContent=title; zq("#mSub").textContent=sub||"";
+  zq("#mBody").innerHTML=body; zq("#mFoot").innerHTML=foot||"";
+  zq("#modal").classList.toggle("modal--sm", !!small);
+  zq("#scrim").classList.add("is-on");
 }
-const closeModal=()=>$("#scrim").classList.remove("is-on");
-$("#scrim").addEventListener("click", e=>{ if(e.target.id==="scrim"||e.target.closest("[data-close]")) closeModal(); });
+const closeModal=()=>zq("#scrim").classList.remove("is-on");
+zq("#scrim").addEventListener("click", e=>{ if(e.target.id==="scrim"||e.target.closest("[data-close]")) closeModal(); });
 
 function openKeys(){
   const K=[["V / H","Move · Hand"],["T / B / I / L / Q","Text · Table · Image · Rule · QR"],
@@ -3730,11 +3756,11 @@ function openBlockUpdate(id){
      <button class="btn" data-close>Decide later</button>
      <button class="btn btn--primary" id="blkAccept">Accept${live?" — creates draft v"+(S.tpl.version+1):""}</button>`);
   const head=S.tpl.objects.filter(o=>o.region==="header");
-  schematic(head, $("#cmpA"));
-  schematic(head, $("#cmpB"));
-  [...$("#cmpB").children].slice(1,3).forEach(i=>i.className="chg");
-  $("#blkIgnore").onclick=()=>{ S.blockIgnored[id]=true; closeModal(); render(); toast("Update ignored — the badge will stay quiet"); };
-  $("#blkAccept").onclick=()=>{
+  schematic(head, zq("#cmpA"));
+  schematic(head, zq("#cmpB"));
+  [...zq("#cmpB").children].slice(1,3).forEach(i=>i.className="chg");
+  zq("#blkIgnore").onclick=()=>{ S.blockIgnored[id]=true; closeModal(); render(); toast("Update ignored — the badge will stay quiet"); };
+  zq("#blkAccept").onclick=()=>{
     S.blockRefs[id]=bl.version;
     if(live){ S.tpl.version++; S.proofed=null; toast("Accepted — now editing draft v"+S.tpl.version+". The published version is untouched."); }
     else toast("Accepted — applied to the draft");
@@ -3787,8 +3813,8 @@ function openCompare(){
        : `<p class="note" style="margin-bottom:0">Nothing has changed since v${S.tpl.activeVersion}.</p>`}
      <p class="note" style="margin-bottom:0">"What changed since the version that is live?" is the question a Principal asks before approving. It is the moment of legal exposure in this module, so it should not require opening two windows and squinting.</p>`,
     `<button class="btn" data-close>Close</button>`);
-  paint($("#cmpL"), base, {changed:d.changed, added:[], removed:d.removed});
-  paint($("#cmpR"), cur,  {changed:d.changed, added:d.added, removed:[]});
+  paint(zq("#cmpL"), base, {changed:d.changed, added:[], removed:d.removed});
+  paint(zq("#cmpR"), cur,  {changed:d.changed, added:d.added, removed:[]});
 }
 
 function openProof(){
@@ -3808,10 +3834,10 @@ function openProof(){
     so a difference between them is a bug, not a style choice.</p>`,
    `<button class="btn" data-close>Close</button><span class="spacer"></span>
     <button class="btn btn--primary" id="proofRun">Render proof</button>`);
-  schematic(S.tpl.objects, $("#proofPaper"));
-  $("#proofRun").onclick=()=>{
+  schematic(S.tpl.objects, zq("#proofPaper"));
+  zq("#proofRun").onclick=()=>{
     if(SRV.online) return proofOnServer();
-    const log=$("#proofLog"), bar=$("#proofBar");
+    const log=zq("#proofLog"), bar=zq("#proofBar");
     const steps=["Serializing template → HTML (namespaced under .zx-tpl-"+S.tpl.templateId+")",
       "Resolving merge fields against sample data",
       "Registering fonts — lohitdeva, dejavusans · useOTL 0xFF",
@@ -3824,7 +3850,7 @@ function openProof(){
       if(i===steps.length-1){
         const hash="sha256:"+Math.random().toString(16).slice(2,10)+"a41f9c2e"+Math.random().toString(16).slice(2,6);
         S.proofed={hash};
-        $("#proofKv").innerHTML=`<div class="kv"><span>Result</span><b style="color:var(--ok)">rendered · 1 page</b></div>
+        zq("#proofKv").innerHTML=`<div class="kv"><span>Result</span><b style="color:var(--ok)">rendered · 1 page</b></div>
           <div class="kv"><span>Peak memory</span><b>84 MB</b></div>
           <div class="kv"><span>Render time</span><b>1.9 s</b></div>
           <div class="kv"><span>Content hash</span><b>${hash}</b></div>`;
@@ -3847,7 +3873,7 @@ function openProof(){
  * they did not watch.
  */
 async function proofOnServer(){
-  const log=$("#proofLog"), bar=$("#proofBar"), btn=$("#proofRun");
+  const log=zq("#proofLog"), bar=zq("#proofBar"), btn=zq("#proofRun");
   const say=t=>{ if(log) log.insertAdjacentHTML("beforeend", `<div>· ${esc(t)}</div>`); };
   if(btn) btn.disabled=true;
   if(log) log.innerHTML=""; if(bar) bar.style.width="15%";
@@ -3866,7 +3892,7 @@ async function proofOnServer(){
     if(bar) bar.style.width="100%";
     say("Hashed "+pr.pages+" page(s)");
 
-    const kv=$("#proofKv");
+    const kv=zq("#proofKv");
     if(kv) kv.innerHTML=`<div class="kv"><span>Result</span><b style="color:var(--ok)">rendered · ${pr.pages} page(s)</b></div>
       <div class="kv"><span>Engine</span><b>mPDF ${esc(pr.mpdfVersion||"?")}</b></div>
       <div class="kv"><span>Content hash</span><b>${esc(pr.hash||"")}</b></div>`;
@@ -3930,7 +3956,7 @@ function openPublish(){
      Activation is a separate decision with its own blast radius (§9.2c), and
      the very next modal asks for it. A label promising activation here would
      be a lie about a legally consequential action. */
-  const g=$("#pubGo"); if(g) g.onclick=()=>{
+  const g=zq("#pubGo"); if(g) g.onclick=()=>{
     if(SRV.online) return publishOnServer();
     S.tpl.publishedVersion=S.tpl.version; S.tpl.version++; S.dirty=false;
     /* publishing freezes a snapshot. It does NOT make it the one that prints —
@@ -3955,7 +3981,7 @@ function openPublish(){
        </div>`,
       `<button class="btn" data-close>Leave it published only</button><span class="spacer"></span>
        <button class="btn btn--primary" id="pubAct">Set v${S.tpl.publishedVersion} active</button>`, true);
-    $("#pubAct").onclick=()=>{
+    zq("#pubAct").onclick=()=>{
       if(SRV.online) return activateOnServer();
       S.active[S.tpl.docType]=S.tpl.templateId;
       S.tpl.activeVersion=S.tpl.publishedVersion;
@@ -3972,7 +3998,7 @@ function openPublish(){
  * rather than appear to succeed.
  */
 async function publishOnServer(){
-  const btn=$("#pubGo"); if(btn) btn.disabled=true;
+  const btn=zq("#pubGo"); if(btn) btn.disabled=true;
   try{
     if(S.dirty && !await srvSaveDraft(true)) return;
 
@@ -4011,7 +4037,7 @@ function offerActivation(version){
      </div>`,
     `<button class="btn" data-close>Leave it published only</button><span class="spacer"></span>
      <button class="btn btn--primary" id="pubAct">Set v${version} active</button>`, true);
-  const a=$("#pubAct");
+  const a=zq("#pubAct");
   if(a) a.onclick=()=> SRV.online ? activateOnServer() : (
     S.active[S.tpl.docType]=S.tpl.templateId,
     S.tpl.activeVersion=version, closeModal(), render(),
@@ -4027,7 +4053,7 @@ function offerActivation(version){
  * see no incumbent and both win.
  */
 async function activateOnServer(){
-  const btn=$("#pubAct"); if(btn) btn.disabled=true;
+  const btn=zq("#pubAct"); if(btn) btn.disabled=true;
   try{
     const out=await srv.activate(S.tpl.templateId);
     const v=out.activeVersion || S.tpl.publishedVersion;
@@ -4109,7 +4135,7 @@ function confirmRollback(version){
     `<button class="btn" data-close>Cancel</button><span class="spacer"></span>
      <button class="btn btn--primary" id="rollGo">Make v${version} active</button>`, true);
 
-  const g=$("#rollGo");
+  const g=zq("#rollGo");
   if(g) g.onclick=async ()=>{
     g.disabled=true;
     try{
@@ -4138,8 +4164,8 @@ function openHistoryOffline(){
     `<button class="btn" data-close>Close</button>
      <button class="btn" id="cmpBtn">Compare with active</button><span class="spacer"></span>
      <button class="btn" id="conflictDemo">Simulate a concurrent edit</button>`, true);
-  $("#conflictDemo").onclick=openConflict;
-  $("#cmpBtn").onclick=openCompare;
+  zq("#conflictDemo").onclick=openConflict;
+  zq("#cmpBtn").onclick=openCompare;
 }
 function openConflict(){
   modal("This template changed while you were editing","Someone else saved first",
@@ -4160,7 +4186,7 @@ function openConflict(){
       : `<button class="btn" data-close>Keep editing</button><span class="spacer"></span>
          <button class="btn" id="cflReview">Review changes</button>
          <button class="btn" data-close>Save mine over theirs</button>`), true);
-  const rv=$("#cflReview"); if(rv) rv.onclick=()=>{ closeModal(); openCompare(); };
+  const rv=zq("#cflReview"); if(rv) rv.onclick=()=>{ closeModal(); openCompare(); };
 }
 
 /* ==========================================================================

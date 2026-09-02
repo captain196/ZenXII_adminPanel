@@ -65,7 +65,7 @@ window.ZXDT_E2E = async function (only) {
   async function runProof(ms = 9000) {
     S.proofed = null;                 // so we cannot satisfy ourselves with a stale one
     openProof();
-    const btn = $("#proofRun");
+    const btn = zq("#proofRun");
     if (!btn) return false;
     btn.click();
     const t0 = Date.now();
@@ -154,7 +154,7 @@ window.ZXDT_E2E = async function (only) {
   });
   await T("A6", "hub card names the active template per type", () => {
     resetApp();
-    return { ok: /TPL0007|Annexure|Transfer/i.test($("#typeGrid").textContent) };
+    return { ok: /TPL0007|Annexure|Transfer/i.test(zq("#typeGrid").textContent) };
   });
 
   /* ===================================================================== */
@@ -170,11 +170,11 @@ window.ZXDT_E2E = async function (only) {
   });
   await T("B2", "'nothing active' copy shows when the type has no active template", () => {
     resetApp(); S.docType = "character"; go("gallery");
-    return { ok: /Nothing is active/i.test($("#galSub").textContent) };
+    return { ok: /Nothing is active/i.test(zq("#galSub").textContent) };
   });
   await T("B3", "active template named when one is active", () => {
     resetApp(); S.docType = "transfer_certificate"; go("gallery");
-    return { ok: /Every print point resolves/i.test($("#galSub").textContent) };
+    return { ok: /Every print point resolves/i.test(zq("#galSub").textContent) };
   });
   await T("B4", "starters filter by board", () => {
     resetApp({ board: "CBSE" });  const a = startersFor("transfer_certificate").map(s => s.id);
@@ -189,23 +189,23 @@ window.ZXDT_E2E = async function (only) {
   });
   await T("B6", "blank-canvas card present", () => {
     resetApp(); S.docType = "transfer_certificate"; go("gallery");
-    return { ok: !!$("#starterGrid .tpl-card--new") };
+    return { ok: !!zq("#starterGrid .tpl-card--new") };
   });
   await T("B7", "'Set active' disabled for a never-published template", () => {
     resetApp();
     S.lib.character = [{ id: "TPLX", name: "Never published", starter: "conduct",
                          status: "draft", version: 1, publishedVersion: null }];
     S.docType = "character"; go("gallery");
-    const btn = $("#mineGrid button[disabled]");
+    const btn = zq("#mineGrid button[disabled]");
     return { ok: !!btn, note: btn ? btn.title : "no disabled button" };
   });
   await T("B8", "a type with no starter tells you to start blank", () => {
     resetApp({ board: "ICSE" }); S.docType = "school_education_certificate"; go("gallery");
-    return { ok: /blank canvas/i.test($("#starterGrid").textContent) };
+    return { ok: /blank canvas/i.test(zq("#starterGrid").textContent) };
   });
   await T("B9", "the active template shows Deactivate, not Set active", () => {
     resetApp(); S.docType = "transfer_certificate"; go("gallery");
-    return { ok: !!$("#mineGrid [data-deact]") && !$(`#mineGrid [data-act="${S.active.transfer_certificate}"]`) };
+    return { ok: !!zq("#mineGrid [data-deact]") && !zq(`#mineGrid [data-act="${S.active.transfer_certificate}"]`) };
   });
 
   /* ===================================================================== */
@@ -233,14 +233,14 @@ window.ZXDT_E2E = async function (only) {
   await T("C4", "blank canvas keeps only region/required objects", () => {
     resetApp(); S.docType = "transfer_certificate"; go("gallery");
     const before = STARTERS.find(s => s.id === "tc_cbse").build().objects.length;
-    $("#starterGrid .tpl-card--new").click();
+    zq("#starterGrid .tpl-card--new").click();
     return { ok: S.screen === "designer" && S.tpl.objects.every(o => o.region || o.requiredKey)
                  && S.tpl.objects.length <= before && S.dirty === true,
              note: `${before} → ${S.tpl.objects.length}` };
   });
   await T("C5", "blank canvas is a fresh draft identity", () => {
     resetApp(); S.docType = "transfer_certificate"; go("gallery");
-    $("#starterGrid .tpl-card--new").click();
+    zq("#starterGrid .tpl-card--new").click();
     return { ok: S.tpl.name === "Untitled template" && S.tpl.version === 1
                  && S.tpl.publishedVersion === null && S.tpl.activeVersion === null };
   });
@@ -262,7 +262,7 @@ window.ZXDT_E2E = async function (only) {
         S.docType = t.id;
         try {
           go("gallery");
-          const n = $("#starterGrid .tpl-card--new");
+          const n = zq("#starterGrid .tpl-card--new");
           if (!n) { bad.push(state + "/" + t.id + ":no blank card"); return; }
           n.click();
           if (S.screen !== "designer") bad.push(state + "/" + t.id + ":did not open");
@@ -318,9 +318,9 @@ window.ZXDT_E2E = async function (only) {
   });
   await T("D7", "Content pane commits on input, one undo entry per burst", async () => {
     openClassic();
-    $('#tabstrip button[data-pane="content"]').click();
+    zq('#tabstrip button[data-pane="content"]').click();
     paintContent();
-    const row = $$("#contentList [data-cid]").find(r => obj(r.dataset.cid).type === "text");
+    const row = zqa("#contentList [data-cid]").find(r => obj(r.dataset.cid).type === "text");
     const id = row.dataset.cid;
     const M = () => JSON.stringify(obj(id).content.i18n[langOf(obj(id))].runs);
     const m0 = M(), u0 = S.undo.length;
@@ -337,25 +337,25 @@ window.ZXDT_E2E = async function (only) {
   });
   await T("D8", "Content pane refuses to repaint under a live edit", async () => {
     openClassic();
-    $('#tabstrip button[data-pane="content"]').click(); paintContent();
-    const row = $$("#contentList [data-cid]").find(r => obj(r.dataset.cid).type === "text");
+    zq('#tabstrip button[data-pane="content"]').click(); paintContent();
+    const row = zqa("#contentList [data-cid]").find(r => obj(r.dataset.cid).type === "text");
     row.appendChild(document.createTextNode(" MID"));
     row.dispatchEvent(new InputEvent("input", { bubbles: true }));
     await sleep(30);
     const real = liveContentRow; liveContentRow = () => row;
     render(); await sleep(40);
-    const survived = document.contains(row) && $("#contentList")._deferred === true;
+    const survived = document.contains(row) && zq("#contentList")._deferred === true;
     liveContentRow = real;
     row.dispatchEvent(new FocusEvent("blur")); await sleep(60);
-    return { ok: survived && $("#contentList")._deferred === false };
+    return { ok: survived && zq("#contentList")._deferred === false };
   });
   await T("D9", "Read mode has no editable nodes", () => {
     openClassic();
-    $('#tabstrip button[data-pane="content"]').click();
+    zq('#tabstrip button[data-pane="content"]').click();
     S.cmode = "read"; paintContent();
-    const n = $$('#contentList [contenteditable="true"]').length;
+    const n = zqa('#contentList [contenteditable="true"]').length;
     S.cmode = "edit"; paintContent();
-    return { ok: n === 0 && $$("#contentList [data-cid]").length > 0, note: n + " editable in read" };
+    return { ok: n === 0 && zqa("#contentList [data-cid]").length > 0, note: n + " editable in read" };
   });
   await T("D10", "insertField adds an atomic chip and binds the key", () => {
     openClassic();
@@ -396,7 +396,7 @@ window.ZXDT_E2E = async function (only) {
   });
   await T("E3", "blank canvas blocks on unbound required fields", () => {
     resetApp(); S.docType = "transfer_certificate"; go("gallery");
-    $("#starterGrid .tpl-card--new").click();
+    zq("#starterGrid .tpl-card--new").click();
     S.proofed = { hash: "x" };
     const v = validate();
     return { ok: bt(v).filter(t => t === "unbound").length > 0, note: bt(v).filter(t => t === "unbound").length + " unbound" };
@@ -476,7 +476,7 @@ window.ZXDT_E2E = async function (only) {
   G("F · proof");
   await T("F1", "proof modal opens and schematics the page", () => {
     openClassic(false); openProof();
-    return { ok: $("#scrim").classList.contains("is-on") && !!$("#proofPaper") && !!$("#proofRun") };
+    return { ok: zq("#scrim").classList.contains("is-on") && !!zq("#proofPaper") && !!zq("#proofRun") };
   });
   await T("F2", "running a proof sets a content hash and unlocks publish", async () => {
     openClassic(false);
@@ -492,14 +492,14 @@ window.ZXDT_E2E = async function (only) {
   await T("G1", "publish is blocked while any blocking finding stands", () => {
     openClassic(false);              // no proof
     openPublish();
-    const btn = $("#pubGo");
+    const btn = zq("#pubGo");
     const ok = !!btn && btn.disabled;
     closeModal();
     return { ok, note: btn ? "disabled=" + btn.disabled : "no button" };
   });
   await T("G2", "publish is offered when the template is clean", () => {
     openClassic(true); openPublish();
-    const btn = $("#pubGo");
+    const btn = zq("#pubGo");
     const ok = !!btn && !btn.disabled;
     closeModal();
     return { ok, note: btn ? "disabled=" + btn.disabled : "no button" };
@@ -507,7 +507,7 @@ window.ZXDT_E2E = async function (only) {
   await T("G3", "publishing freezes the version and opens a new draft", () => {
     openClassic(true);
     const v0 = S.tpl.version;
-    openPublish(); $("#pubGo").click();
+    openPublish(); zq("#pubGo").click();
     const ok = S.tpl.publishedVersion === v0 && S.tpl.version === v0 + 1 && S.dirty === false;
     closeModal();
     return { ok, note: `v${v0} → published ${S.tpl.publishedVersion}, draft ${S.tpl.version}` };
@@ -515,7 +515,7 @@ window.ZXDT_E2E = async function (only) {
   await T("G4", "publishing does NOT activate (publish ≠ activate)", () => {
     openClassic(true);
     S.active.transfer_certificate = "TPL0007";       // something else is active
-    openPublish(); $("#pubGo").click();
+    openPublish(); zq("#pubGo").click();
     const ok = S.active.transfer_certificate === "TPL0007" && S.tpl.activeVersion === null;
     closeModal();
     return { ok, note: "active stayed " + S.active.transfer_certificate };
@@ -523,17 +523,17 @@ window.ZXDT_E2E = async function (only) {
   await T("G5", "after publishing, an explicit activation step is offered", () => {
     openClassic(true);
     S.active.transfer_certificate = "TPL0007";
-    openPublish(); $("#pubGo").click();
-    const ok = !!$("#pubAct") && /Publishing freezes it/i.test($("#mSub").textContent);
+    openPublish(); zq("#pubGo").click();
+    const ok = !!zq("#pubAct") && /Publishing freezes it/i.test(zq("#mSub").textContent);
     closeModal();
-    return { ok, note: $("#mTitle").textContent };
+    return { ok, note: zq("#mTitle").textContent };
   });
   await T("G6", "taking that step makes it the active template", () => {
     openClassic(true);
     S.active.transfer_certificate = "TPL0007";
-    openPublish(); $("#pubGo").click();
+    openPublish(); zq("#pubGo").click();
     const pv = S.tpl.publishedVersion;
-    $("#pubAct").click();
+    zq("#pubAct").click();
     const ok = S.active.transfer_certificate === "TPL7777" && S.tpl.activeVersion === pv;
     closeModal();
     return { ok, note: "active=" + S.active.transfer_certificate + " v" + S.tpl.activeVersion };
@@ -541,8 +541,8 @@ window.ZXDT_E2E = async function (only) {
   await T("G7", "publishing an already-active template goes live immediately", () => {
     openClassic(true);
     S.active.transfer_certificate = "TPL7777";       // this template is already active
-    openPublish(); $("#pubGo").click();
-    const ok = S.tpl.activeVersion === S.tpl.publishedVersion && !$("#pubAct");
+    openPublish(); zq("#pubGo").click();
+    const ok = S.tpl.activeVersion === S.tpl.publishedVersion && !zq("#pubAct");
     closeModal();
     return { ok, note: "activeVersion=" + S.tpl.activeVersion };
   });
@@ -550,7 +550,7 @@ window.ZXDT_E2E = async function (only) {
     openClassic(true);
     S.tpl.templateId = "TPLNEW1"; S.tpl.name = "Brand new";
     const n0 = libOf("transfer_certificate").length;
-    openPublish(); $("#pubGo").click(); closeModal();
+    openPublish(); zq("#pubGo").click(); closeModal();
     const row = libOf("transfer_certificate").find(r => r.id === "TPLNEW1");
     return { ok: !!row && libOf("transfer_certificate").length === n0 + 1
                  && row.status === "published" && row.publishedVersion === 3,
@@ -558,7 +558,7 @@ window.ZXDT_E2E = async function (only) {
   });
   await T("G9", "the publish gate lists a pass row for every satisfied contract", () => {
     openClassic(true); openPublish();
-    const passes = $$("#mBody .gate--pass").length, fails = $$("#mBody .gate--fail").length;
+    const passes = zqa("#mBody .gate--pass").length, fails = zqa("#mBody .gate--fail").length;
     closeModal();
     return { ok: passes >= 3 && fails === 0, note: `${passes} pass / ${fails} fail` };
   });
@@ -566,10 +566,10 @@ window.ZXDT_E2E = async function (only) {
     openClassic(false);
     const t = firstText(); t.style.lineHeight = null;
     openPublish();
-    const txt = $("#mBody").textContent;
-    const ok = /line height/i.test(txt) && /proof/i.test(txt) && $$("#mBody .gate--fail").length >= 2;
+    const txt = zq("#mBody").textContent;
+    const ok = /line height/i.test(txt) && /proof/i.test(txt) && zqa("#mBody .gate--fail").length >= 2;
     closeModal();
-    return { ok, note: $$("#mBody .gate--fail").length + " fail rows" };
+    return { ok, note: zqa("#mBody .gate--fail").length + " fail rows" };
   });
 
   /* ===================================================================== */
@@ -579,7 +579,7 @@ window.ZXDT_E2E = async function (only) {
     const other = libOf("transfer_certificate").find(r => r.id !== S.active.transfer_certificate && r.publishedVersion);
     if (!other) return { ok: true, note: "no second published template to test with" };
     openActivate(other.id);
-    const ok = /Replaces/i.test($("#mBody").textContent);
+    const ok = /Replaces/i.test(zq("#mBody").textContent);
     closeModal();
     return { ok };
   });
@@ -593,28 +593,28 @@ window.ZXDT_E2E = async function (only) {
   await T("H3", "deactivating asks first, then leaves it published but not active", () => {
     resetApp(); S.docType = "transfer_certificate"; go("gallery");
     const id = S.active.transfer_certificate;
-    const btn = $(`#mineGrid [data-deact="${id}"]`);
+    const btn = zq(`#mineGrid [data-deact="${id}"]`);
     if (!btn) return { ok: false, note: "no deactivate button" };
     btn.click();
-    const asked = /Deactivate\?/i.test($("#mTitle").textContent) && !!$("#deactGo")
+    const asked = /Deactivate\?/i.test(zq("#mTitle").textContent) && !!zq("#deactGo")
                   && S.active.transfer_certificate === id;   // not yet acted
-    $("#deactGo").click();
+    zq("#deactGo").click();
     const row = libOf("transfer_certificate").find(r => r.id === id);
     return { ok: asked && S.active.transfer_certificate === undefined && row && row.status === "published",
              note: `confirmed=${asked} activeNow=${S.active.transfer_certificate}` };
   });
   await T("H4", "with nothing active the gallery says so and print points fail closed", () => {
     resetApp(); S.docType = "transfer_certificate"; go("gallery");
-    $(`#mineGrid [data-deact="${S.active.transfer_certificate}"]`).click();
-    $("#deactGo").click();
-    return { ok: /Nothing is active/i.test($("#galSub").textContent) };
+    zq(`#mineGrid [data-deact="${S.active.transfer_certificate}"]`).click();
+    zq("#deactGo").click();
+    return { ok: /Nothing is active/i.test(zq("#galSub").textContent) };
   });
 
   /* ---- copy-vs-behaviour checks -------------------------------------- */
   await T("H5", "blank card does not promise required objects it drops", () => {
     resetApp(); S.docType = "transfer_certificate"; go("gallery");
-    const txt = $("#starterGrid .tpl-card--new").textContent.replace(/\s+/g, " ").trim();
-    $("#starterGrid .tpl-card--new").click();
+    const txt = zq("#starterGrid .tpl-card--new").textContent.replace(/\s+/g, " ").trim();
+    zq("#starterGrid .tpl-card--new").click();
     S.proofed = { hash: "x" };
     const v = validate();
     const unbound = v.blocking.filter(b => b.type === "unbound").length;
@@ -626,21 +626,21 @@ window.ZXDT_E2E = async function (only) {
   });
   await T("H5b", "a blank canvas cannot be published until its gaps are filled", () => {
     resetApp(); S.docType = "transfer_certificate"; go("gallery");
-    $("#starterGrid .tpl-card--new").click();
+    zq("#starterGrid .tpl-card--new").click();
     S.proofed = { hash: "x" };
     openPublish();
-    const btn = $("#pubGo"), disabled = !!btn && btn.disabled;
-    const txt = $("#mBody").textContent;
-    const namesGaps = /unbound|not bound|required field/i.test(txt) || $$("#mBody .gate--fail").length > 0;
+    const btn = zq("#pubGo"), disabled = !!btn && btn.disabled;
+    const txt = zq("#mBody").textContent;
+    const namesGaps = /unbound|not bound|required field/i.test(txt) || zqa("#mBody .gate--fail").length > 0;
     closeModal();
-    return { ok: disabled && namesGaps, note: `disabled=${disabled} failRows=${$$("#mBody .gate--fail").length}` };
+    return { ok: disabled && namesGaps, note: `disabled=${disabled} failRows=${zqa("#mBody .gate--fail").length}` };
   });
   await T("H6", "COPY: the publish button's label matches what it does", () => {
     openClassic(true);
     S.active.transfer_certificate = "TPL0007";
     openPublish();
-    const label = $("#pubGo").textContent.trim();
-    $("#pubGo").click();
+    const label = zq("#pubGo").textContent.trim();
+    zq("#pubGo").click();
     const activated = S.active.transfer_certificate === "TPL7777";
     closeModal();
     return { ok: /set active/i.test(label) === activated,
@@ -651,24 +651,24 @@ window.ZXDT_E2E = async function (only) {
   G("I · history, compare, conflict");
   await T("I1", "history opens and lists frozen versions", () => {
     openClassic(true); openHistory();
-    const ok = /Version history/i.test($("#mTitle").textContent) && $$("#mBody .tl li").length >= 2;
+    const ok = /Version history/i.test(zq("#mTitle").textContent) && zqa("#mBody .tl li").length >= 2;
     closeModal(); return { ok };
   });
   await T("I2", "compare against the baseline reports the edits made", () => {
     openClassic(true);
     firstText().xMm += 12;
     openCompare();
-    const ok = $("#mBody").textContent.length > 0;
+    const ok = zq("#mBody").textContent.length > 0;
     closeModal(); return { ok };
   });
   await T("I3", "conflict modal opens", () => {
     openClassic(true); openConflict();
-    const ok = $("#scrim").classList.contains("is-on") && $("#mBody").textContent.length > 0;
+    const ok = zq("#scrim").classList.contains("is-on") && zq("#mBody").textContent.length > 0;
     closeModal(); return { ok };
   });
   await T("I4", "keyboard-shortcuts modal opens", () => {
     openClassic(true); openKeys();
-    const ok = $("#mBody").textContent.length > 0;
+    const ok = zq("#mBody").textContent.length > 0;
     closeModal(); return { ok };
   });
 
@@ -686,10 +686,10 @@ window.ZXDT_E2E = async function (only) {
     const v = validate();
     if (v.blocking.length) { return { ok: false, note: "blocked: " + bt(v).join(",") }; }
     openPublish();
-    if ($("#pubGo").disabled) { closeModal(); return { ok: false, note: "publish disabled" }; }
-    $("#pubGo").click();
+    if (zq("#pubGo").disabled) { closeModal(); return { ok: false, note: "publish disabled" }; }
+    zq("#pubGo").click();
     const pv = S.tpl.publishedVersion;
-    if ($("#pubAct")) $("#pubAct").click();
+    if (zq("#pubAct")) zq("#pubAct").click();
     closeModal();
     return { ok: S.active.transfer_certificate === S.tpl.templateId && S.tpl.activeVersion === pv,
              note: `published v${pv}, active=${S.active.transfer_certificate}` };
@@ -765,11 +765,11 @@ window.ZXDT_E2E = async function (only) {
         return { ok: false, note: "blocked: " + [...new Set(v.blocking.map(b => b.type + (b.key ? ":" + b.key : "")))].join(", ") };
 
       openPublish();
-      const btn = $("#pubGo");
+      const btn = zq("#pubGo");
       if (!btn || btn.disabled) { closeModal(); return { ok: false, note: "publish button disabled" }; }
       btn.click();
       const pv = S.tpl.publishedVersion;
-      if ($("#pubAct")) $("#pubAct").click();
+      if (zq("#pubAct")) zq("#pubAct").click();
       closeModal();
 
       const active = S.active[c.type] === S.tpl.templateId;
@@ -785,16 +785,16 @@ window.ZXDT_E2E = async function (only) {
       TYPES.filter(typeEnabled).forEach(ty => {
         S.docType = ty.id;
         go("gallery");
-        const card = $("#starterGrid .tpl-card--new");
+        const card = zq("#starterGrid .tpl-card--new");
         if (!card) { bad.push(state + "/" + ty.id + ":no blank card"); return; }
         card.click();
         S.proofed = { hash: "x" };
         const v = validate();
         if (!v.blocking.length) return;          // legitimately complete
         openPublish();
-        const btn = $("#pubGo");
+        const btn = zq("#pubGo");
         if (!btn || !btn.disabled) bad.push(state + "/" + ty.id + ":publish not blocked");
-        if ($$("#mBody .gate--fail").length === 0) bad.push(state + "/" + ty.id + ":no failure rows shown");
+        if (zqa("#mBody .gate--fail").length === 0) bad.push(state + "/" + ty.id + ":no failure rows shown");
         closeModal();
       });
     });
@@ -856,11 +856,11 @@ window.ZXDT_E2E = async function (only) {
     openClassic(true);
     const id = stackActive()[0].a.id;
     toggleLayer(id);
-    $("#ovrWhy").value = "";
-    $("#ovrGo").click();
+    zq("#ovrWhy").value = "";
+    zq("#ovrGo").click();
     const stillOn = !S.layerOff[id];              // refused without a reason
-    $("#ovrWhy").value = "written exemption on file";
-    $("#ovrGo").click();
+    zq("#ovrWhy").value = "written exemption on file";
+    zq("#ovrGo").click();
     const nowOff = !!S.layerOff[id] && !!S.overrideReason[id];
     closeModal();
     return { ok: stillOn && nowOff, note: "reason=" + S.overrideReason[id] };
@@ -1192,7 +1192,7 @@ window.ZXDT_E2E = async function (only) {
      the state every template starts in. */
   await T("P4", "P5.5 — an unbound required key blocks publish but never blocks draft editing", () => {
     resetApp(); S.docType = "transfer_certificate"; go("gallery");
-    $("#starterGrid .tpl-card--new").click();          // blank canvas, as C4 does
+    zq("#starterGrid .tpl-card--new").click();          // blank canvas, as C4 does
     const v = validate();
     const unbound = v.blocking.filter(b => b.type === "unbound").length;
 
@@ -1388,7 +1388,7 @@ window.ZXDT_E2E = async function (only) {
   await T("R6", "P8.3 — a starter short of the active stack names the gap on its card", () => {
     resetApp(); S.docType = "transfer_certificate"; go("gallery");
     const gap = starterGap(STARTERS.find(s => s.id === "tc_plain"));
-    const grid = $("#starterGrid").textContent;
+    const grid = zq("#starterGrid").textContent;
     const named = gap.every(k => grid.includes((FIELD[k] || {}).label || k));
     return { ok: gap.length > 0 && named && /Needs \d+ more field/.test(grid),
              note: `gap ${gap.join(",")} — ${named ? "named on the card" : "NOT named"}` };
@@ -1549,7 +1549,7 @@ window.ZXDT_E2E = async function (only) {
     goOnline(); openClassic(false);
     S.proofed = null; S.dirty = false;
     stub(() => jsonRes(500, { status: "error", message: "mPDF ran out of memory" }));
-    openProof(); $("#proofRun").click();
+    openProof(); zq("#proofRun").click();
     await sleep(400);
     const unlocked = !!S.proofed;
     const stillBlocked = has(bt(validate()), "noproof");

@@ -600,4 +600,70 @@ class DocSerializerTest extends TestCase
         $this->expectExceptionMessageMatches("/no 'en' fallback either/");
         $this->s->render($tpl, [], 'hi', ['contract' => $this->contract()]);
     }
+
+    /* ================================================================== *
+     *  showWhen on a CONTRACT FIELD  (found live, 2026-09-03)
+     *
+     *  The designer offers this on every contract field — the inspector reads
+     *  "Only when '<label>' has a value" — and the shipped Annexure-I starter
+     *  uses it for the "Checked by" signature. The serializer only understood
+     *  doc.isDuplicate and threw on everything else, so the DEFAULT Transfer
+     *  Certificate starter could not be proofed at all.
+     * ================================================================== */
+
+    public function test_an_object_gated_on_a_field_appears_when_that_field_resolves(): void
+    {
+        $html = $this->s->render($this->tplWithShowWhen('tc.duesPaidUpto'), [], 'en', [
+            'contract' => $this->gateContract(), 'sample' => 'typical',
+        ]);
+        $this->assertSame(1, substr_count($html, 'zx-o zx-text'),
+            'the gated object must be rendered when its field has a value');
+    }
+
+    public function test_an_object_gated_on_an_empty_field_is_omitted(): void
+    {
+        $contract = $this->gateContract();
+        $contract['tc.duesPaidUpto']['sample'] = '';      // nothing recorded
+
+        $html = $this->s->render($this->tplWithShowWhen('tc.duesPaidUpto'), [], 'en', [
+            'contract' => $contract, 'sample' => 'typical',
+        ]);
+        $this->assertSame(0, substr_count($html, 'zx-o zx-text'),
+            'the gated object must be omitted when its field resolves to nothing');
+    }
+
+    /**
+     * Still fail closed on a condition nobody declared. An object that silently
+     * defaulted to visible could put a signature block on a certificate that
+     * was never meant to carry one.
+     */
+    public function test_a_showWhen_naming_nothing_the_contract_declares_still_throws(): void
+    {
+        $this->expectException(\RuntimeException::class);
+        $this->expectExceptionMessageMatches('/unknown showWhen/');
+        $this->s->render($this->tplWithShowWhen('tc.notAThing'), [], 'en', [
+            'contract' => $this->gateContract(), 'sample' => 'typical',
+        ]);
+    }
+
+    private function tplWithShowWhen(string $when): array
+    {
+        return [
+            'templateId' => 'TPL1', 'languages' => ['en'], 'defaultLanguage' => 'en',
+            'page' => ['size' => 'A4', 'orientation' => 'portrait'],
+            'objects' => [[
+                'id' => 'gated-object', 'type' => 'text', 'name' => 'Gated',
+                'xMm' => 10, 'yMm' => 10, 'wMm' => 100, 'hMm' => 8,
+                'showWhen' => $when,
+                'style' => ['sizePt' => 9, 'lineHeight' => 1.4],
+                'content' => ['i18n' => ['en' => ['runs' => [['text' => 'gated-object']]]]],
+            ]],
+        ];
+    }
+
+    private function gateContract(): array
+    {
+        return ['tc.duesPaidUpto' => ['label' => 'Fees paid up to',
+                                      'sample' => 'March 2026', 'p95' => 'March 2026']];
+    }
 }
