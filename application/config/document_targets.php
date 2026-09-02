@@ -127,7 +127,18 @@ return [
                       . 'whoever wires it: a receipt number is allocated ONCE per payment and '
                       . 'never reallocated on reprint, and a reprint must be marked DUPLICATE. '
                       . 'The legacy RTDB Certificates.php counter is read-increment-write and '
-                      . 'mints duplicate numbers under concurrency — do not copy it.',
+                      . 'mints duplicate numbers under concurrency — do not copy it. '
+                      . "\n\n"
+                      . 'CONFLICT, SETTLE THIS BEFORE WIRING: the PARENT APP ALREADY RENDERS '
+                      . 'FEE RECEIPTS ON THE DEVICE. ZenXII_Parent util/ReceiptPdfGenerator.kt '
+                      . 'builds a receipt PDF from FeeReceiptDoc with its own hardcoded layout — '
+                      . 'header, itemised breakdown, and a Cashier/Accountant/Principal signature '
+                      . 'row — reached from ui/fees/ReceiptDetailScreen.kt. Wiring this print '
+                      . 'point without retiring that generator gives one school TWO receipt '
+                      . 'documents that cannot agree: changing the activated template would not '
+                      . 'change what a parent downloads, and nobody would be told, because each '
+                      . 'surface only ever shows its own. Either the on-device generator is '
+                      . 'retired, or receipts stay out of the Document Engine. Not both.',
     ],
 
     'fee_demand_note' => [
