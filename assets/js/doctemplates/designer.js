@@ -903,6 +903,9 @@ function markDirty() {
      created fine, and the clerk is told their work was not saved. Observed on
      the very first real run against a live session. */
   if (S.creating) return;
+  /* Nor for a template that has no server document yet — the hub seeds S.tpl
+     with a starter purely so it has something to draw. */
+  if (!S.tpl || !isPersistedId(S.tpl.templateId, "autosave")) return;
   clearTimeout(__saveTimer);
   __saveTimer = setTimeout(() => {
     if (!S.dirty) return;
@@ -915,7 +918,14 @@ function markDirty() {
 /* An unsaved draft must never leave quietly. The debounce means there is
    always a window where the screen is ahead of the server. */
 window.addEventListener("beforeunload", e => {
-  if (SRV.online && S.dirty) { e.preventDefault(); e.returnValue = ""; }
+  /* Only for a REAL template with real unsaved work.
+     S.dirty can be true for a template that has no server document — the hub
+     seeds one to draw with — and warning "you have unsaved changes" about
+     something that was never going to be saved teaches people to click through
+     the warning, which is the one dialog that must not become noise. */
+  if (SRV.online && S.dirty && S.tpl && isPersistedId(S.tpl.templateId, "unload")) {
+    e.preventDefault(); e.returnValue = "";
+  }
 });
 
 /**
@@ -927,18 +937,43 @@ window.addEventListener("beforeunload", e => {
  * server — a real refusal for a real reason, which reads like the template was
  * deleted rather than like a client bug. Catch it here, where it is obvious.
  */
-function assertDocId(id, where) {
-  if (typeof id === "string" && id.indexOf("_") > 0) return id;
-  const msg = "[zxdt] " + where + " was given '" + id + "', which is the SHORT template id. "
-            + "Endpoints take the document id {schoolId}_TPL####.";
-  console.error(msg);
-  toast("Something is wrong with this template's id — nothing was saved. Reload the page.");
-  throw new ApiError(msg, 0, null);
+/**
+ * Is this a SERVER-BACKED template, or one that only exists on screen?
+ *
+ * `S.tpl` is never empty: BOOT seeds it with a starter so the hub has something
+ * to draw, and openStarter() fills it with a local placeholder id before
+ * create() has returned. Neither of those is persisted, and neither should ever
+ * be saved.
+ *
+ * This started life as a hard assertion that toasted "Something is wrong with
+ * this template's id" — which was right for the bug it was written for (the
+ * short id being sent instead of the document id) and WRONG as a user-facing
+ * message, because it fires in the perfectly ordinary state of sitting on the
+ * hub with no template open. A diagnostic aimed at me was alarming the person
+ * using the product.
+ *
+ * So: a quiet predicate. Not persisted means there is nothing to save, which is
+ * not an error and must not look like one. The genuine developer mistake —
+ * holding a persisted template under its SHORT id — still logs loudly, because
+ * that one silently does nothing when it should have saved.
+ */
+function isPersistedId(id, where) {
+  if (typeof id !== "string" || id === "") return false;
+  if (id.indexOf("_") > 0) return true;                 // {schoolId}_TPL####
+
+  if (/^TPL\d+$/.test(id) && S.screen === "designer" && S.tpl && S.tpl.publishedVersion != null) {
+    // A template that HAS been published is server-backed, so a short id here
+    // means something overwrote the document id. That is the real bug.
+    console.error("[zxdt] " + where + " has the SHORT id '" + id + "' for a template that is "
+                + "already published. Endpoints take {schoolId}_TPL####.");
+  }
+  return false;
 }
 
 async function srvSaveDraft(silent) {
   if (!SRV.online || !S.tpl || !S.tpl.templateId) return false;
-  try { assertDocId(S.tpl.templateId, "save"); } catch (e) { return false; }
+  // Nothing to save for a template that was never created on the server.
+  if (!isPersistedId(S.tpl.templateId, "save")) return false;
   const patch = {
     name: S.tpl.name, page: S.tpl.page, header: S.tpl.header, footer: S.tpl.footer,
     objects: S.tpl.objects, languages: S.tpl.languages,
