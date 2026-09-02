@@ -189,4 +189,20 @@
      wrong. document.write keeps this a classic script in the same top-level
      scope, which is how it reaches designer.js's const/let globals at all. -->
 <script>document.write('<script src="/tests/doctemplates/_zxdt_e2e.js?v=' + Date.now() + '"><\/script>');</script>
-<script>(async()=>{const o=document.getElementById("E2E_OUT");try{const r=await ZXDT_E2E();r.pageErrors=window.__ERRS;o.textContent="E2E_JSON:"+JSON.stringify(r);}catch(e){o.textContent="SUITE_THREW: "+(e&&e.stack||e);}})();</script>
+<!-- Auto-run. ZXDT_E2E REFUSES to run in a hidden tab, because the failures a
+     hidden tab produces look like real activation bugs. That refusal is right
+     for an explicit call, but wrong here: the page often loads while its window
+     is behind another, and a developer would get a refusal instead of a result.
+     So WAIT for the tab to become visible, then run. Headless already reports
+     visible, so it starts immediately and CI is unaffected. -->
+<script>(async()=>{
+  const o=document.getElementById("E2E_OUT");
+  if(document.visibilityState!=="visible"){
+    o.textContent="WAITING — this tab is hidden. The suite needs a visible tab; bring it to the front.";
+    await new Promise(r=>document.addEventListener("visibilitychange",function h(){
+      if(document.visibilityState==="visible"){document.removeEventListener("visibilitychange",h);r();}
+    }));
+  }
+  try{const r=await ZXDT_E2E();r.pageErrors=window.__ERRS;o.textContent="E2E_JSON:"+JSON.stringify(r);}
+  catch(e){o.textContent="SUITE_THREW: "+(e&&e.stack||e);}
+})();</script>

@@ -30,6 +30,16 @@ window.ZXDT_E2E = async function (only) {
     );
   }
 
+  /* The check above is only a check at the START. If the tab is hidden PART WAY
+     through — the user switches away while it runs, which takes ~17s — the
+     remaining tests produce the same plausible nonsense. So watch throughout
+     and refuse to hand back numbers that were gathered while nobody was
+     looking. Reporting "I cannot vouch for this run" is the honest answer;
+     reporting 130/133 is not. */
+  let __wentHidden = false;
+  const __watch = () => { if (document.visibilityState !== "visible") __wentHidden = true; };
+  document.addEventListener("visibilitychange", __watch);
+
   const R = [];
   const sleep = ms => new Promise(r => setTimeout(r, ms));
 
@@ -1469,6 +1479,15 @@ window.ZXDT_E2E = async function (only) {
     return { ok: missing.length === 0,
              note: missing.length ? "NOT loaded: " + missing.join(",") : "deva + taml loaded" };
   });
+
+  document.removeEventListener("visibilitychange", __watch);
+  if (__wentHidden || document.visibilityState !== "visible") {
+    throw new Error(
+      "ZXDT_E2E: the tab was hidden PART WAY through this run, so these results cannot be " +
+      "trusted — hidden runs produce failures that look like real activation and proof bugs. " +
+      "Discarding them rather than reporting them. Run again with the tab left in front."
+    );
+  }
 
   const summary = { total: R.length, passed: R.filter(r => r.ok).length, failed: R.filter(r => !r.ok).length };
   return { summary, failures: R.filter(r => !r.ok), all: R };

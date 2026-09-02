@@ -260,6 +260,14 @@ were.** All three causes were in the harness, and all three are now fixed.
 | 2 | **A fixed 2.6 s wait for the proof**, then — worse — a poll `until S.proofed`. | The proof mock is five chained 380 ms timers. Polling *until* a flag is set satisfies itself instantly when the flag is **already** set, so publish and activate ran against a half-finished proof. The clock gave it away: a run took **7.5 s** where a correct run takes **17.5 s**. A wait must observe the **transition**, not the state. |
 | 3 | **The suite reported confidently from a hidden tab.** | 133/133 visible; **129–131/133 hidden, and the failing set moved between runs** (J1/K1/K2, then D7/D8, then K1). Someone would lose a day to an activation bug that does not exist. |
 
+**The guard is checked at the start AND throughout.** A start-only check has a
+hole: the run takes ~17 s, so a user who switches away mid-run gets the same
+plausible nonsense from the remaining tests. `ZXDT_E2E` now watches
+`visibilitychange` for the whole run and **discards** results gathered while the
+tab was hidden — "I cannot vouch for this run" is the honest answer; 130/133 is
+not. The auto-run in the harness page **waits** for visibility instead of
+refusing, since the page often loads behind another window.
+
 **The fix for #3 is refusal, not tolerance.** `ZXDT_E2E` now throws if
 `document.visibilityState !== 'visible'`. Proven in **both** directions — it
 fires on a backgrounded tab with the message above, and stays silent under
