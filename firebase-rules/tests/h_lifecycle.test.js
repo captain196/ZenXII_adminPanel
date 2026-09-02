@@ -87,6 +87,16 @@ function authedDb(schoolId, role) {
     .firestore();
 }
 
+/* A context whose uid IS the seeded student's id.
+   Needed because the WRITE probe below had to change — see the comment on the
+   prefLang tests. The students self-service clause keys on
+   `request.auth.uid == resource.data.studentId`. */
+function studentDb(schoolId, studentId) {
+  return env
+    .authenticatedContext(studentId, { school_id: schoolId, role: 'student' })
+    .firestore();
+}
+
 beforeAll(async () => {
   env = await initializeTestEnvironment({
     projectId: PROJECT_ID,
@@ -116,14 +126,21 @@ describe('H-LIFECYCLE H1 — gate matrix', () => {
       await assertSucceeds(db.doc('students/STU0001_TEST').get());
     });
 
-    test('role=admin → write students/{doc} ALLOWED', async () => {
-      const db = authedDb(SCHOOL_ID, 'admin');
+    /* WRITE PROBE CHANGED 2026-09-02, and the assertion was NOT flipped.
+       This asserted `role=admin -> write students ALLOWED`. SEC-3 wave3 then
+       made `students` server-only — "blanket admin write denied; the two
+       self-service `allow update` clauses below remain and are the ONLY client
+       write path" — so an admin write is now denied in EVERY lifecycle state.
+
+       Flipping this to assertFails would have made it pass while proving
+       nothing: it would have been denied by SEC-3 whatever the lifecycle said,
+       so the lifecycle axis would no longer be tested at all. The probe is
+       therefore a write that is STILL client-reachable and still routes through
+       isSameSchool() -> tenantActive(): a student updating their own prefLang. */
+    test('a self-service write is ALLOWED (probes tenantActive on the write path)', async () => {
+      const db = studentDb(SCHOOL_ID, 'STU0001');
       await assertSucceeds(
-        db.doc('students/STU0002_TEST').set({
-          schoolId: SCHOOL_ID,
-          studentId: 'STU0002',
-          name: 'New Test Student',
-        })
+        db.doc('students/STU0001_TEST').update({ prefLang: 'hi', updatedAt: 'test' })
       );
     });
   });
@@ -137,13 +154,24 @@ describe('H-LIFECYCLE H1 — gate matrix', () => {
       await assertFails(db.doc('students/STU0001_TEST').get());
     });
 
-    test('role=admin → write students/{doc} DENIED', async () => {
+    /* Same probe as the allowed half, so the two halves differ ONLY in the
+       lifecycle state — which is what makes this a gate test rather than two
+       unrelated assertions. */
+    test('a self-service write is DENIED (tenantActive closes the write path)', async () => {
+      const db = studentDb(SCHOOL_ID, 'STU0001');
+      await assertFails(
+        db.doc('students/STU0001_TEST').update({ prefLang: 'hi', updatedAt: 'test' })
+      );
+    });
+
+    /* The blanket admin write is denied here too — but by SEC-3, not by the
+       lifecycle gate. Kept as a separate, honestly-named assertion so nobody
+       later mistakes it for lifecycle coverage. */
+    test('a blanket admin write is denied — by SEC-3, independent of lifecycle', async () => {
       const db = authedDb(SCHOOL_ID, 'admin');
       await assertFails(
         db.doc('students/STU0002_TEST').set({
-          schoolId: SCHOOL_ID,
-          studentId: 'STU0002',
-          name: 'Blocked Write',
+          schoolId: SCHOOL_ID, studentId: 'STU0002', name: 'Blocked Write',
         })
       );
     });

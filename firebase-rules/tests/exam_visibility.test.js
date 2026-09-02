@@ -142,9 +142,18 @@ describe('EXAM-LIFECYCLE Phase 2 — /exams visibility matrix', () => {
     );
   });
 
-  test('admin → write exam ALLOWED', async () => {
+  /* REWRITTEN 2026-09-02. This asserted `admin -> write exam ALLOWED`, which
+     SEC-3 wave4 made impossible: "server-only. Exam definitions. No client
+     writes." The panel writes exams through the Admin SDK, which bypasses
+     rules entirely, so the behaviour this asserted is no longer a supported
+     contract — it is not a regression.
+
+     Not simply deleted: the CURRENT contract is worth pinning, because
+     "server-only" is exactly the kind of tightening a future edit relaxes by
+     accident while trying to fix an unrelated 403. */
+  test('exams are server-only — a client write is denied even for an admin', async () => {
     const db = authedDb(SCHOOL_ID, 'admin');
-    await assertSucceeds(
+    await assertFails(
       db.doc(`exams/${SCHOOL_ID}_EX_NEW`).set({
         schoolId: SCHOOL_ID, session: SESSION, examId: 'EX_NEW',
         status: 'Draft', startDate: '2025-12-09',

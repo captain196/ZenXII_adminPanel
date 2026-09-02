@@ -1,7 +1,25 @@
 {
+  "_comment": [
+    "Test-local emulator config. It OVERRIDES ../firebase.json because the CLI",
+    "resolves the nearest config to the CWD, and npm test runs from here.",
+    "",
+    "The storage block was MISSING, and the symptom did not look like a config",
+    "problem: support_storage_attachments.test.js failed 21 times with",
+    "ECONNREFUSED 127.0.0.1:9199, which reads as a broken test rather than an",
+    "emulator that was never started. `emulators:exec --only firestore,storage`",
+    "printed 'Not starting the storage emulator' and carried on.",
+    "",
+    "storage.rules here is a SYMLINK to ../storage.rules \u2014 the CLI refuses a path that climbs out of what it treats as the project dir, and duplicating a 30KB ruleset would guarantee the copy drifts."
+  ],
+  "storage": {
+    "rules": "storage.rules"
+  },
   "emulators": {
     "firestore": {
       "port": 18080
+    },
+    "storage": {
+      "port": 9199
     }
   }
 }

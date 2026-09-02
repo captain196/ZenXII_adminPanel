@@ -34,11 +34,20 @@ php -S localhost:8080                                     # from the repo root
   --headless=new --disable-gpu --virtual-time-budget=200000 \
   --dump-dom http://localhost:8080/tests/doctemplates/_zxdt_e2e_run.html
 
-# Firestore rules — emulator
-cd firebase-rules/tests && npm test
-#   ⚠ USE --testTimeout=60000. The ruleset is ~3,000 lines and
-#     initializeTestEnvironment now exceeds Jest's default 5s hook timeout,
+# Firestore rules — emulator  (16 suites, 404 tests, ALL GREEN)
+cd firebase-rules/tests
+firebase emulators:exec --only firestore,storage --project=zenxii-rules-test \
+  "npx jest --runInBand --forceExit --testTimeout=60000"
+#
+#   ⚠ TWO FLAGS THAT ARE NOT OPTIONAL, and `npm test` sets NEITHER:
+#
+#   --testTimeout=60000  the ruleset is ~3,000 lines and
+#     initializeTestEnvironment exceeds Jest's default 5s HOOK timeout,
 #     cascading into ~170 PHANTOM failures that look catastrophic and are not.
+#
+#   --only firestore,storage  without the storage emulator,
+#     support_storage_attachments fails 21 times with ECONNREFUSED :9199,
+#     which reads as a broken test rather than an emulator never started.
 ```
 
 ### Baselines — judge a change against these, not against zero
@@ -47,7 +56,7 @@ cd firebase-rules/tests && npm test
 |---|---|---|
 | PHP unit | **4 failures · 27 skipped** | Pre-existing. The skips are cross-repo tests pointing at a hardcoded Windows path from another machine. |
 | Client E2E | **131/131 · 0 page errors** | Should be green. Anything less is a regression. |
-| Rules emulator | **4 suites fail** | **Stale assertions**, verified: each asserts a *client* admin write that SEC-3 wave3/wave4 deliberately removed. Not a break. |
+| Rules emulator | **16/16 suites · 404/404** | Green as of 2026-09-02. Previously 5 suites failed: 4 on stale assertions (fixed — see below) and 1 because the storage emulator was never configured. |
 
 ---
 
@@ -242,6 +251,37 @@ cd firebase-rules/tests && npm test
 Phases 5–9: compliance, publish pipeline, language, blocks and starters, hardening.
 **29 of 58 tasks.** The Certificate Designer currently ships **dormant** — not linked from any nav
 include, capability-gated behind `Certificates`, and 13 endpoints still stubs. It goes out inert.
+
+---
+
+## 3A. The rules suite went green on 2026-09-02 — how, and why it matters
+
+It had **5 failing suites / 30 failing tests**. None was a rules defect.
+
+**One was pure configuration.** `tests/firebase.json` is a SECOND config that overrides
+`../firebase.json` (the CLI resolves the nearest one to the CWD, and `npm test` runs from `tests/`).
+It pinned firestore to port 18080 but declared **no storage emulator at all**, so
+`support_storage_attachments` — 21 tests — could never run. The symptom was `ECONNREFUSED :9199`,
+which reads as a broken test. Fixed by adding the storage block plus a **symlink**
+`tests/storage.rules → ../storage.rules`, because the CLI refuses a rules path that climbs out of
+what it treats as the project directory, and duplicating a 30 KB ruleset would guarantee drift.
+
+**Four were stale assertions — and the fix was NOT to flip them.**
+
+Each asserted a *client* admin write that SEC-3 wave3/wave4 deliberately removed. Flipping
+`assertSucceeds` → `assertFails` would have made them green while proving nothing: the write is now
+denied by SEC-3 whatever the thing under test does.
+
+| Suite | What it is actually for | Fix |
+|---|---|---|
+| `h_lifecycle` | that `tenantActive()` gates the write path | **Probe changed** to a student's own `prefLang` write — still client-reachable, still routes through `tenantActive()`. Both halves now differ *only* in lifecycle state, which is what makes it a gate test |
+| `fold_isadmin` | that `isAdmin()` resolves for legacy / Super Admin / folded admin | **Probe changed** `subjects` → `locations`, which is still `isAdmin() && isSameSchoolWrite()` |
+| `exam_visibility` | exam **read** gating; the write test was incidental | **Inverted and renamed** to pin "exams are server-only" — worth keeping, because that is the kind of tightening a future edit relaxes by accident |
+| `staff_preflang` | the narrow prefLang self-service clause | **Inverted and renamed.** It is the safety rail for the clause above it: `staff` holds role, staff_roles, department and status — the RBAC grant itself |
+
+> **The general lesson for this dossier:** when a test fails because the contract changed, ask what
+> the test was *for* before touching the assertion. Three of these four needed a different **probe**,
+> not a different **expectation**.
 
 ---
 

@@ -240,11 +240,22 @@ describe('staff — read/write posture unchanged (no regression)', () => {
     );
   });
 
-  test('admin can still write arbitrary staff fields', async () => {
+  /* REWRITTEN 2026-09-02. This asserted an admin could still write arbitrary
+     staff fields from a client. SEC-3 wave3 removed that: `staff` is now
+     server-only apart from the narrow prefLang clause this suite exists to
+     test. The panel writes staff through the Admin SDK and bypasses rules, so
+     the removed authorization was one nothing exercised.
+
+     Inverted rather than deleted, because it is the SAFETY RAIL for the clause
+     above it: prefLang is a self-service write on a collection holding role,
+     staff_roles, department and status — the RBAC grant itself. If a future
+     edit widened the write arm to make some admin flow work, this is what would
+     catch it. */
+  test('staff is otherwise server-only — an admin cannot write arbitrary fields', async () => {
     const admin = env
       .authenticatedContext('STA_ADMIN', { school_id: SCHOOL, role: 'Admin' })
       .firestore();
-    await assertSucceeds(
+    await assertFails(
       admin.doc(docPath(SCHOOL, STA_B)).update({ department: 'Physics', role: 'HOD' })
     );
   });

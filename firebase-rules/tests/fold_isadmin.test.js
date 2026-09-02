@@ -56,9 +56,17 @@ beforeEach(async () => {
 function asUser(uid, role) {
   return env.authenticatedContext(uid, { school_id: SCHOOL, role }).firestore();
 }
-// The isAdmin()-gated write under test.
+/* The isAdmin()-gated write under test.
+   PROBE CHANGED 2026-09-02, subjects -> locations, and the assertions were NOT
+   flipped. SEC-3 wave4 made `subjects` server-only ("Subject catalogue. No
+   client writes"), so the old probe is denied for EVERY caller — which would
+   have made these tests pass as assertFails while proving nothing about
+   isAdmin() at all.
+   `locations` is still gated exactly as intended:
+       allow create, update: if isAdmin() && isSameSchoolWrite();
+   so it exercises the isAdmin() fold, which is what this suite is for. */
 function writeSubject(db) {
-  return db.doc(`subjects/${SCHOOL}_S1`).set({ schoolId: SCHOOL, name: 'Maths' });
+  return db.doc(`locations/${SCHOOL}_L1`).set({ schoolId: SCHOOL, name: 'Main Block' });
 }
 
 describe('FOLD isAdmin() — legacy role arm still works', () => {
