@@ -148,6 +148,9 @@
 .zxdt .chip--draft{background:var(--warn-dim);color:var(--warn);border-color:transparent}
 .zxdt .chip--published{background:var(--info-dim);color:var(--info);border-color:transparent}
 .zxdt .chip--active{background:var(--ok-dim);color:var(--ok);border-color:transparent}
+/* The "edited …" line is context, not the headline. It was competing with the
+   template's name at the same weight while carrying a raw ISO timestamp. */
+.zxdt .tpl-card__when{color:var(--ink3);font-size:11px}
 .zxdt .chip--statutory{background:var(--seal-dim);color:var(--seal);border-color:transparent}
 .zxdt .dot{width:7px;height:7px;border-radius:50%;background:currentColor;flex:0 0 auto}
 .zxdt .seg{display:flex;border:1px solid var(--line2);border-radius:var(--r-xs);overflow:hidden;background:var(--raised);flex:0 0 auto}

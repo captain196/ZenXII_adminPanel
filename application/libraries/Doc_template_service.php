@@ -190,7 +190,9 @@ class Doc_template_service
                 'schoolId'         => $schoolId,
                 'templateId'       => $templateId,
                 'docType'          => $docType,
-                'name'             => (string) ($seed['name'] ?? 'Untitled template'),
+                'name'             => $this->uniqueName(
+                                          (string) ($seed['name'] ?? 'Untitled template'),
+                                          $existing),
                 'status'           => 'draft',
                 'version'          => 1,
                 'lockVersion'      => 0,
@@ -221,6 +223,43 @@ class Doc_template_service
             'Doc_template_service: could not mint a free template id after 50 attempts '
             . "from TPL" . sprintf('%04d', $max + 1) . '. Refusing to overwrite an existing template.'
         );
+    }
+
+    /**
+     * Make the name distinguishable from the school's existing templates.
+     *
+     * Every starter clone was called "<starter> (copy)", so a school that tried
+     * two variants ended up with two templates named identically, side by side
+     * in the same list, with the same schematic thumbnail. There was no way to
+     * tell which was which — including for the person deciding which one to
+     * activate, which is the one decision in this module that must not be a
+     * guess.
+     *
+     * Appends " 2", " 3" and so on, the way a file manager does. It does NOT
+     * try to be clever about what the difference is — only the author knows
+     * that, and they can rename it.
+     */
+    private function uniqueName(string $wanted, array $existing): string
+    {
+        $wanted = trim($wanted) !== '' ? trim($wanted) : 'Untitled template';
+
+        $taken = [];
+        foreach ($existing as $row) {
+            $n = trim((string) ($row['name'] ?? ''));
+            if ($n !== '') {
+                $taken[mb_strtolower($n)] = true;
+            }
+        }
+        if (!isset($taken[mb_strtolower($wanted)])) {
+            return $wanted;
+        }
+        for ($i = 2; $i <= 99; $i++) {
+            $try = $wanted . ' ' . $i;
+            if (!isset($taken[mb_strtolower($try)])) {
+                return $try;
+            }
+        }
+        return $wanted . ' ' . date('Y-m-d H:i');
     }
 
     /* ================================================================== *

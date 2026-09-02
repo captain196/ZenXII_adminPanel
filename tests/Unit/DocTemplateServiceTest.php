@@ -778,4 +778,33 @@ class DocTemplateServiceTest extends TestCase
         $this->assertSame($viaRead['contentHash'], $viaSupplied['contentHash']);
         $this->assertSame($viaRead['version'], $viaSupplied['version']);
     }
+
+    /**
+     * Two templates with the same name are indistinguishable in the list, and
+     * the person choosing which one to activate cannot tell them apart. Every
+     * starter clone was called "<starter> (copy)", so this happened the second
+     * time anyone tried a variant.
+     */
+    public function test_a_duplicate_name_is_made_unique_on_create(): void
+    {
+        $a = $this->svc->create('SCH1', 'bonafide', ['name' => 'Bonafide (copy)'], 'STA1');
+        $b = $this->svc->create('SCH1', 'bonafide', ['name' => 'Bonafide (copy)'], 'STA1');
+        $c = $this->svc->create('SCH1', 'bonafide', ['name' => 'Bonafide (copy)'], 'STA1');
+
+        $this->assertSame('Bonafide (copy)',   $a['head']['name']);
+        $this->assertSame('Bonafide (copy) 2', $b['head']['name']);
+        $this->assertSame('Bonafide (copy) 3', $c['head']['name']);
+    }
+
+    public function test_a_name_that_is_already_distinct_is_left_alone(): void
+    {
+        $r = $this->svc->create('SCH1', 'bonafide', ['name' => 'Bonafide — Hindi'], 'STA1');
+        $this->assertSame('Bonafide — Hindi', $r['head']['name']);
+    }
+
+    public function test_an_empty_name_still_gets_something_readable(): void
+    {
+        $r = $this->svc->create('SCH1', 'bonafide', ['name' => '   '], 'STA1');
+        $this->assertSame('Untitled template', $r['head']['name']);
+    }
 }

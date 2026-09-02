@@ -730,7 +730,8 @@ const S = {
   undo:[], redo:[], proofed:null, dirty:false, measured:{}, hidden:{},
   clamped:{}, blockRefs:{BLK0001:3}, blockIgnored:{}, baseline:null, issuance:{duplicate:false},
   school:null, layerOff:{}, overrideReason:{}, lib:null, active:null,
-  cmode:"edit"   // Content pane: "edit" (all fields) | "read" (proofread)
+  cmode:"edit",  // Content pane: "edit" (all fields) | "read" (proofread)
+  loading:false  // true while the real library is still being fetched
 };
 
 /* ==========================================================================
@@ -1029,6 +1030,60 @@ const TYPES = [
   {id:"migration", name:"Migration Certificate", alias:"board-issued — never merged with a TC", disabled:true},
   {id:"fee_receipt", name:"Fee Receipt", alias:"needs repeating rows — v2", disabled:true}
 ];
+/* ==========================================================================
+   Reading a template's state in plain words
+   ==========================================================================
+
+   These screens were showing three different version numbers on one card
+   ("published v3 · draft v4", plus chips "Active · v3" and "Draft v4") and raw
+   machine timestamps ("2026-09-02T20:02:55+00:00"). Every number was correct
+   and the card was still unreadable: nothing told you, in words, what the
+   template IS or whether the change you just made is live.
+
+   So: one status, said plainly, with the version as a detail rather than the
+   headline. A school administrator thinks "is this the one we issue?", not
+   "which integer is the active pointer?".                                   */
+
+function relTime(iso){
+  if(!iso) return "just now";
+  const t = Date.parse(iso);
+  if(isNaN(t)) return String(iso);          // already human, or unparseable
+  const secs = Math.round((Date.now()-t)/1000);
+  if(secs < 60)    return "just now";
+  if(secs < 3600)  return Math.floor(secs/60)+" min ago";
+  if(secs < 86400) { const h=Math.floor(secs/3600); return h+(h===1?" hour ago":" hours ago"); }
+  if(secs < 172800) return "yesterday";
+  if(secs < 604800) return Math.floor(secs/86400)+" days ago";
+  return new Date(t).toLocaleDateString(undefined,{day:"numeric",month:"short",year:"numeric"});
+}
+
+/**
+ * One state per template, in the words a person would use.
+ *
+ * `unsaved` is deliberately separate from the state: a template can be in use
+ * AND have edits nobody has published, and hiding that is how somebody changes
+ * a certificate and never notices it did not take effect.
+ */
+function templateState(row, isActive){
+  const published = row.publishedVersion || null;
+  const hasDraft  = (row.version || 1) > (published || 0);
+
+  if(isActive) return {
+    key:"active", label:"In use", tone:"active",
+    detail:`Version ${published} is what every print point resolves`,
+    unsaved: hasDraft ? "You have unpublished changes" : null
+  };
+  if(published) return {
+    key:"ready", label:"Ready — not in use", tone:"published",
+    detail:`Version ${published} is published but nothing resolves it`,
+    unsaved: hasDraft ? "You have unpublished changes" : null
+  };
+  return {
+    key:"draft", label:"Draft", tone:"draft",
+    detail:"Never published — it cannot be issued yet", unsaved:null
+  };
+}
+
 function typeEnabled(t){
   if(t.disabled) return false;
   if(t.requiresState) return S.school.state===t.requiresState;
@@ -1497,8 +1552,8 @@ function paintHub(){
       </div>
       <div class="type-card__meta">
         <div class="type-card__row"><span>Compliance basis</span><b>${esc(basis.label)}</b></div>
-        <div class="type-card__row"><span>Active template</span><b>${act?esc(act.name):"— none —"}</b></div>
-        <div class="type-card__row"><span>Templates</span><b>${n}${n?" · "+esc(libOf(t.id)[0].edited||"just now"):""}</b></div>
+        <div class="type-card__row"><span>Active template</span><b>${S.loading?"…":(act?esc(act.name):"— none —")}</b></div>
+        <div class="type-card__row"><span>Templates</span><b>${S.loading?"…":(n===0?"none yet":n+(n===1?" template":" templates")+" · edited "+esc(relTime(libOf(t.id)[0].edited)))}</b></div>
       </div>
       <div style="display:flex;gap:6px;flex-wrap:wrap">
         ${t.statutory?'<span class="chip chip--statutory"><span class="dot"></span>Statutory format</span>'
@@ -1594,7 +1649,9 @@ function paintGallery(){
   const t=TYPES.find(x=>x.id===S.docType), basis=typeBasis(t);
   const rows=libOf(S.docType), starters=startersFor(S.docType), act=activeTpl(S.docType);
   zq("#galEyebrow").textContent=t.name;
-  zq("#galSub").innerHTML = act
+  zq("#galSub").innerHTML = S.loading
+    ? `Checking which template is active…`
+    : act
     ? `Every print point resolves <b>${esc(act.name)}</b> (v${act.publishedVersion}). Exactly one template is active per document type — activating another replaces it everywhere at once.`
     : `<b>Nothing is active for this type yet.</b> A template must be published, then activated, before any print point can resolve it.`;
 
@@ -1605,6 +1662,7 @@ function paintGallery(){
     c.innerHTML=`<div class="tpl-card__thumb"></div><div class="tpl-card__body">
       <div class="tpl-card__name">${esc(o.name)}</div>
       <div class="tpl-card__meta">${esc(o.meta)}</div>
+      ${o.when?`<div class="tpl-card__when">Edited ${esc(o.when)}</div>`:""}
       <div style="display:flex;gap:5px;flex-wrap:wrap;margin-top:auto">${o.chips||""}</div>
       ${o.actions||""}</div>`;
     schematic(o.objects, zq(".tpl-card__thumb",c));
@@ -1615,16 +1673,23 @@ function paintGallery(){
   };
 
   if(!rows.length)
-    mine.appendChild(el("div","note","No templates of this type yet. Start from a starter below, or from a blank page — then publish it and set it active."));
+    /* "You have none" and "I have not looked yet" are different answers, and
+       showing the first while the second is true is how someone concludes their
+       work is gone. */
+    mine.appendChild(el("div","note", S.loading
+      ? "Loading your templates…"
+      : "No templates of this type yet. Start from a starter below, or from a blank page — then publish it and set it active."));
 
   rows.forEach(row=>{
     const isActive = S.active[S.docType]===row.id;
-    const chips = (isActive?'<span class="chip chip--active"><span class="dot"></span>Active · v'+row.publishedVersion+'</span>':"")
-      + (row.status==="published"&&!isActive?'<span class="chip chip--published"><span class="dot"></span>Published v'+row.publishedVersion+'</span>':"")
-      + (row.version>(row.publishedVersion||0)?'<span class="chip chip--draft"><span class="dot"></span>Draft v'+row.version+'</span>':"");
+    const st = templateState(row, isActive);
+    /* ONE chip. Three chips carrying three version numbers is what made this
+       unreadable — the reader has to work out which number matters. */
+    const chips = `<span class="chip chip--${st.tone}"><span class="dot"></span>${st.label}</span>`
+      + (st.unsaved?`<span class="chip chip--draft"><span class="dot"></span>Unpublished changes</span>`:"");
     mine.appendChild(card({
       name:row.name,
-      meta:(row.publishedVersion?`published v${row.publishedVersion} · `:"")+`draft v${row.version} · edited ${row.edited||"just now"}`,
+      meta: st.detail, when: relTime(row.edited),
       chips, objects:buildTpl(row).objects,
       onclick:()=>openTemplate(row),
       actions:`<div style="display:flex;gap:6px;margin-top:8px">
@@ -4282,10 +4347,30 @@ function openConflict(){
    17 · BOOT
    ========================================================================== */
 S.school=Object.assign({}, SCHOOL_DEFAULT);
-S.lib=JSON.parse(JSON.stringify(LIB));
-S.active=Object.assign({}, ACTIVE);
 S.tpl=starterTC();
-paintHub(); go("hub");
+
+/* NEVER SHOW THE FIXTURES TO A REAL SCHOOL.
+   
+   These constants exist so the offline harness has something to drive. Online
+   they were painted first and replaced a few seconds later once the real
+   templates arrived — so the screen opened showing "TC — main letterhead ·
+   ACTIVE" and "2 templates · edited 2 days ago" for a school that has neither,
+   and then quietly changed under the reader.
+   
+   That is worse than a slow screen. A slow screen makes you wait; this one
+   answered your question wrongly and corrected itself only if you were still
+   looking. Every read here costs ~2s from a dev machine, so the window was
+   wide enough to act on.
+   
+   Online we start EMPTY and say we are loading. */
+if(SRV.online){
+  S.lib={}; S.active={}; S.loading=true;
+  if(BOOT.docType) S.docType=BOOT.docType;   // land on the right screen immediately
+}else{
+  S.lib=JSON.parse(JSON.stringify(LIB));
+  S.active=Object.assign({}, ACTIVE);
+}
+paintHub(); go(SRV.online && BOOT.docType && !BOOT.templateId ? "gallery" : "hub");
 
 /**
  * Replace the built-in fixtures with this school's real templates.
@@ -4296,6 +4381,20 @@ paintHub(); go("hub");
  * that a clerk could try to activate. Showing someone else's demo data as
  * their own is worse than showing nothing.
  */
+/**
+ * Repaint whatever screen is showing.
+ *
+ * render() only draws the DESIGNER, so hydrating while the gallery was open
+ * left it on "Loading your templates…" forever — the data had arrived and
+ * nothing redrew it. go() already knows the per-screen painter; this is the
+ * same mapping without the navigation side effects.
+ */
+function repaintScreen(){
+  if(S.screen==="hub")     return paintHub();
+  if(S.screen==="gallery") return paintGallery();
+  render();
+}
+
 async function hydrateFromServer(){
   if(!SRV.online) return;
   if(BOOT.schoolName) S.school=Object.assign({}, S.school, {name:BOOT.schoolName});
@@ -4320,15 +4419,21 @@ async function hydrateFromServer(){
       });
       if(t.activeVersion!=null) active[type]=docId;
     });
-    S.lib=lib; S.active=active;
-    if(S.screen==="hub") paintHub(); else render();
+    S.lib=lib; S.active=active; S.loading=false;
+    repaintScreen();
   }catch(e){
-    S.lib={}; S.active={};
-    if(S.screen==="hub") paintHub();
+    S.lib={}; S.active={}; S.loading=false;
+    repaintScreen();
     apiFail(e, "Loading your templates");
   }
 
-  /* Deep link: /doc_templates/design/{id} opens that template directly. */
+  /* DEEP LINKS.
+     /doc_templates/gallery/{type} and /design/{id} both used to land on the
+     hub, because BOOT.screen and BOOT.docType were never read — go("hub") ran
+     unconditionally. So a bookmark, a browser Back, or a link someone pasted
+     always dropped you at the top and you had to navigate in again, which is
+     most of what "I cannot find what I saved" feels like. */
+  /* /doc_templates/design/{id} opens that template directly. */
   if(BOOT.templateId){
     try{
       const r=await srv.template(BOOT.templateId);
