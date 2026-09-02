@@ -9,7 +9,7 @@ starts from evidence rather than from a plan row that says done.
 artifact sat finished on disk, and one accept criterion (P3.6) is still counted as unmet because
 the thing that would prove it does not exist yet. A task list cannot carry that distinction.
 
-**Updated:** 2026-09-02 · **Progress:** 43/58 = 74% · Branch `yug_testing`
+**Updated:** 2026-09-02 · **Progress:** 46/58 = 79% · Branch `yug_testing`
 
 **Progress is computed:** `awk -f blueprints/certificates/tools/progress.awk blueprints/certificates/EXECUTION_PLAN_v1.1.md | sort`
 
@@ -28,7 +28,7 @@ ZXDT_GOLDEN_UPDATE=1 vendor/bin/phpunit --testsuite Unit --filter Golden
 #   ^ regenerates. THEN READ THE DIFF. A golden regenerated without reading the
 #     diff records the bug as the new truth and goes green forever after.
 
-# Client E2E — 125 cases, needs the local server + headless Chrome
+# Client E2E — 131 cases, needs the local server + headless Chrome
 php -S localhost:8080                                     # from the repo root
 "/Applications/Google Chrome.app/Contents/MacOS/Google Chrome" \
   --headless=new --disable-gpu --virtual-time-budget=200000 \
@@ -46,7 +46,7 @@ cd firebase-rules/tests && npm test
 | Suite | Baseline | Meaning |
 |---|---|---|
 | PHP unit | **4 failures · 27 skipped** | Pre-existing. The skips are cross-repo tests pointing at a hardcoded Windows path from another machine. |
-| Client E2E | **125/125 · 0 page errors** | Should be green. Anything less is a regression. |
+| Client E2E | **131/131 · 0 page errors** | Should be green. Anything less is a regression. |
 | Rules emulator | **4 suites fail** | **Stale assertions**, verified: each asserts a *client* admin write that SEC-3 wave3/wave4 deliberately removed. Not a break. |
 
 ---
@@ -155,6 +155,28 @@ cd firebase-rules/tests && npm test
 > The picker also offered only **3 of 7** Lohit families; a template could legitimately reference
 > `lohitgujr` and nobody could select it.
 
+### Phase 8 — Blocks and starters (3/3)
+
+| What | Proven by |
+|---|---|
+| A block version bump **mutates no template** | `test_bumping_a_block_version_mutates_no_template` + E2E **R1** |
+| `offersFor()` is a **report** — it writes nothing | Lists only templates behind, with pinned/available |
+| Accepting moves **only that** template's pin | And is **refused on a published head** |
+| Declining is sticky; accepting clears it | Server test + E2E **R2** |
+| An unscoped block is refused | No `schoolId`/`blockType` → `InvalidArgumentException` |
+| `boundKeys()` reports what a block **imposes** | Across all languages — the one-way block→contract coupling, checkable |
+| All 7 starters gate-clean, no off-contract key, all `line-height` set | E2E **R3/R4/R5** |
+| A starter short of the active stack **names the gap on its card** | E2E **R6** |
+
+> ⚠️ **P8.2's accept is stale and following it would be a bug.** It says edits "propagate to
+> referencing templates"; that contradicts `COLLECTION_SHAPES` §4 and was resolved by
+> `FIGMA_ARCHITECTURE_STUDY` with the library model — **offered, never pushed**. Pushing would
+> silently alter a template a principal already approved.
+>
+> ⚠️ **`tc_plain` under CBSE is short `doc.bookNo` + `doc.slNo` BY DESIGN.** It is the *generic* TC
+> and those are CBSE artifacts. The bug was offering it with no warning; the card now names the gap
+> before the choice.
+
 ---
 
 ## 2. BUILT BUT NOT PROVEN — the honest column
@@ -212,6 +234,7 @@ include, capability-gated behind `Certificates`, and 13 endpoints still stubs. I
 
 | Date | Phase | Progress |
 |---|---|---|
+| 2026-09-02 | Phase 8 — block service built, offer model proven, starter gaps signalled (3/3) | 46/58 = 79% |
 | 2026-09-02 | Phase 7 — **`@font-face` built in both surfaces**, languageFallback honoured (4/5) | 43/58 = 74% |
 | 2026-09-02 | Phase 6 — lifecycle service built: lock/publish/activate/archive (6/7) | 39/58 = 67% |
 | 2026-09-02 | Phase 5 — compliance stack proven (4/6); **progress counter fixed** | 33/58 = 57% |

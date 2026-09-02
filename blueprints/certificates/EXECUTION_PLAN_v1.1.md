@@ -412,9 +412,9 @@ canvas built against an unproven serializer bakes in its mistakes.
 
 | # | Task | Depends | Accept |
 |---|---|---|---|
-| P8.1 | `reusableBlocks` collection + service | P1.1 | Block saves and lists |
-| P8.2 | Insert block; edits propagate to referencing templates | P8.1, P3.5 | Editing a letterhead updates every template that references it |
-| P8.3 | Author starter templates: TC/Bonafide/Character × (CBSE, generic) | P5.1, P2.* | Every starter publishes cleanly and passes its own compliance gate |
+| P8.1 | ✅ **BUILT 2026-09-02.** `Doc_block_service` — `listFor` (school-scoped, optionally by type), `get`, `save` (create = v1, edit = version bump), `boundKeys`. Injected store, as Phase 6. | P1.1 | ✅ 13 tests. A block without `schoolId`/`blockType` is **refused** — an unscoped block would be offered to every tenant. `boundKeys()` reports **what the block imposes across all languages**, so the one-way block→contract coupling is checkable rather than discovered at publish. |
+| P8.2 | ✅ **DONE — as the OFFER model, which is the RESOLUTION of a contradiction in the plan itself.** | P8.1, P3.5 | ✅ **The accept is stale.** "Edits propagate to referencing templates" contradicts `COLLECTION_SHAPES` §4 (*"published versions: no update, no delete — ever"*); `FIGMA_ARCHITECTURE_STUDY` resolved it with Figma's library model — an update is **OFFERED**, never pushed, because pushing silently alters a template a principal already approved. Server: `offersFor()` is a **report** that writes nothing; `acceptOffer()` moves **only** that template's pin and is **refused on a published head**; declining is sticky and accepting clears it. Client: E2E **R1/R2** — a version bump leaves the template untouched and the pin held. |
+| P8.3 | ✅ **DONE — 7 starters, more than the 6 the plan asked for** (adds `sec_ker`, `lc_5a`, `study`). | P5.1, P2.* | ✅ E2E **R3/R4/R5** across **every** starter: gate-clean, no off-contract key, and an explicit `line-height` on every text object. ⚠️ **One expected gap, now signalled:** `tc_plain` under CBSE is short `doc.bookNo` + `doc.slNo`. That is **correct** — it is the *generic* TC and those are CBSE artifacts; adding them would stop it being generic. What was wrong was offering it with no warning. The gallery card now names the gap **before** the choice (E2E **R6**), the same reasoning as "Set active" being disabled with *"Publish it first"*. |
 
 ---
 

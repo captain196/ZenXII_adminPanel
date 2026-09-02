@@ -1242,6 +1242,121 @@ window.ZXDT_E2E = async function (only) {
     return { ok: bad.length === 0, note: bad.length ? bad.join(", ") : "all statutory starters block" };
   });
 
+  /* ---- R · Phase 8 blocks and starters ---------------------------------- */
+  G("R · Phase 8 blocks and starters");
+
+  /* P8.2 — the plan's accept says "editing a letterhead UPDATES every template
+     that references it". FIGMA_ARCHITECTURE_STUDY found that this contradicts
+     COLLECTION_SHAPES §4 ("published versions: no update, no delete — ever")
+     and resolved it with the library model: an update is OFFERED, never pushed.
+     Pushing would silently alter a template a principal already approved. */
+  await T("R1", "P8.2 — a block version bump is OFFERED, never pushed into the template", () => {
+    openClassic(true);
+    const bl = BLOCKS[0];
+    const before = JSON.stringify(S.tpl.objects);
+    const pinned = S.blockRefs[bl.id];
+
+    bl.version++;                                  // publisher ships a new version
+    S.blockIgnored[bl.id] = false;
+    render();
+
+    const unchanged = JSON.stringify(S.tpl.objects) === before;
+    const stillPinned = S.blockRefs[bl.id] === pinned;
+    const offered = bl.version > S.blockRefs[bl.id] && !S.blockIgnored[bl.id];
+    return { ok: unchanged && stillPinned && offered,
+             note: `template ${unchanged ? "untouched" : "MUTATED"}; pin ${stillPinned ? "held" : "MOVED"}; offer ${offered}` };
+  });
+
+  /* Declining an offer must be sticky, or the badge nags forever and the
+     designer learns to ignore the one signal that matters. */
+  await T("R2", "P8.2 — declining a block update is remembered", () => {
+    openClassic(true);
+    const bl = BLOCKS[0];
+    bl.version++; S.blockIgnored[bl.id] = false; render();
+    const offeredBefore = bl.version > S.blockRefs[bl.id] && !S.blockIgnored[bl.id];
+
+    S.blockIgnored[bl.id] = true; render();        // decline
+    const offeredAfter = bl.version > S.blockRefs[bl.id] && !S.blockIgnored[bl.id];
+    return { ok: offeredBefore && !offeredAfter, note: `offered ${offeredBefore} -> ${offeredAfter}` };
+  });
+
+  /* P8.3 — EVERY starter, not just the six the K group walks. A starter that
+     cannot pass its own compliance gate is a trap: it is the fastest route into
+     the designer and the one a clerk will pick. */
+  await T("R3", "P8.3 — every starter builds and passes its own compliance gate", () => {
+    const bad = [];
+    STARTERS.forEach(st => {
+      resetApp();
+      const type = TYPES.find(t => t.id === st.docType);
+      if (type && type.requiresState) {
+        S.school = Object.assign({}, S.school, { state: type.requiresState });
+      }
+      S.docType = st.docType;
+      S.tpl = st.build();
+      S.proofed = { hash: "sha256:test" };
+      const v = validate();
+      const blocking = (v.blocking || []).filter(b => b.type !== "noproof");
+      if (blocking.length) {
+        /* Name the KEYS, not just the finding type. "unbound/unbound" tells you
+           nothing; "unbound:attendance.workingDays" tells you whether the
+           starter is under-specified or the school's profile simply demands
+           more than a generic starter carries. */
+        const detail = blocking.map(b => b.type + (b.key ? ":" + b.key : "")).join(" ");
+        bad.push(`${st.id}[${S.school.board}] ${detail}`);
+      }
+    });
+    /* tc_plain under CBSE is EXPECTED to be short two fields and that is not a
+       defect: it is the GENERIC transfer certificate, and CBSE's pre-printed
+       Book No. / Sl. No. are CBSE artifacts. Adding them would stop it being
+       generic. What was wrong was offering it with no warning — see R6. */
+    const expected = ["tc_plain[CBSE] unbound:doc.bookNo unbound:doc.slNo"];
+    const unexpected = bad.filter(b => !expected.includes(b));
+    return { ok: unexpected.length === 0,
+             note: unexpected.length ? unexpected.join(" · ")
+                                     : `${STARTERS.length} starters; ${bad.length} known-and-signalled gap(s)` };
+  });
+
+  /* P8.3 — a starter that cannot satisfy the active stack must SAY SO on the
+     card, before it is chosen. The gap surfacing at publish, several screens
+     later, as two red rows is the trap this closes. */
+  await T("R6", "P8.3 — a starter short of the active stack names the gap on its card", () => {
+    resetApp(); S.docType = "transfer_certificate"; go("gallery");
+    const gap = starterGap(STARTERS.find(s => s.id === "tc_plain"));
+    const grid = $("#starterGrid").textContent;
+    const named = gap.every(k => grid.includes((FIELD[k] || {}).label || k));
+    return { ok: gap.length > 0 && named && /Needs \d+ more field/.test(grid),
+             note: `gap ${gap.join(",")} — ${named ? "named on the card" : "NOT named"}` };
+  });
+
+  /* Every starter must declare only keys its own contract allows — the
+     off-contract failure, checked across the whole starter set at once. */
+  await T("R4", "P8.3 — no starter binds a key its own document type does not declare", () => {
+    const bad = [];
+    STARTERS.forEach(st => {
+      resetApp();
+      S.docType = st.docType;
+      S.tpl = st.build();
+      const off = offContractKeys();
+      if (off.length) bad.push(`${st.id}:${off.join(",")}`);
+    });
+    return { ok: bad.length === 0, note: bad.length ? bad.join(" · ") : "all clean" };
+  });
+
+  /* Every starter must carry an explicit line-height on every text object —
+     G0.5, blocking. Without it mPDF and the browser disagree by up to 2x. */
+  await T("R5", "P8.3 — every text object in every starter has an explicit line-height", () => {
+    const bad = [];
+    STARTERS.forEach(st => {
+      const t = st.build();
+      t.objects.forEach(o => {
+        if (o.type === "text" && !(o.style && typeof o.style.lineHeight === "number")) {
+          bad.push(`${st.id}/${o.id}`);
+        }
+      });
+    });
+    return { ok: bad.length === 0, note: bad.length ? bad.join(", ") : "all text objects set line-height" };
+  });
+
   const summary = { total: R.length, passed: R.filter(r => r.ok).length, failed: R.filter(r => !r.ok).length };
   return { summary, failures: R.filter(r => !r.ok), all: R };
 };

@@ -1325,12 +1325,41 @@ function paintGallery(){
     S.baseline=JSON.parse(JSON.stringify(tt.objects)); go("designer");
   };
   st.appendChild(blank);
-  starters.forEach(x=>st.appendChild(card({
-    name:x.name, meta:x.meta, chips:'<span class="chip">Starter · cloned on use</span>',
-    objects:x.build().objects, onclick:()=>openStarter(x)
-  })));
+  starters.forEach(x=>{
+    const gap=starterGap(x);
+    const chips='<span class="chip">Starter · cloned on use</span>'
+      + (gap.length
+          ? `<span class="chip" style="color:var(--seal);border-color:var(--seal)" title="${esc(gap.join(", "))}">`
+            + `Needs ${gap.length} more field${gap.length>1?"s":""} for ${esc(S.school.board)}</span>`
+          : "");
+    st.appendChild(card({
+      name:x.name,
+      meta:x.meta + (gap.length ? " · still to bind: "+esc(gap.map(k=>(FIELD[k]||{label:k}).label).join(", ")) : ""),
+      chips, objects:x.build().objects, onclick:()=>openStarter(x)
+    }));
+  });
   if(!starters.length)
     st.appendChild(el("div","note","No starter is written for this document type under "+esc(S.school.board)+" · "+esc(S.school.state)+" yet. Start from a blank canvas."));
+}
+
+/* P8.3 — what will this starter STILL need under the active compliance stack?
+   A generic starter is not wrong for carrying fewer fields: tc_plain omits
+   CBSE's pre-printed Book No. / Sl. No. precisely because they are CBSE
+   artifacts, and adding them would stop it being generic. What IS wrong is
+   offering it to a CBSE school with no warning and letting the gap surface at
+   publish, several screens later, as two red rows.
+
+   So the gap is named on the card, before the choice — the same reasoning as
+   "Set active" being disabled with "Publish it first" rather than failing on
+   click. */
+function starterGap(x){
+  const keep={docType:S.docType, tpl:S.tpl};
+  try{
+    S.docType=x.docType; S.tpl=x.build();
+    const bound=boundKeys(), req=requiredKeysOf();
+    return req.filter(k=>!bound.has(k));
+  }catch(e){ return []; }
+  finally{ S.docType=keep.docType; S.tpl=keep.tpl; }
 }
 
 /* ── activation — the act that makes a template the one that prints ───── */
