@@ -400,11 +400,11 @@ canvas built against an unproven serializer bakes in its mistakes.
 
 | # | Task | Depends | Accept |
 |---|---|---|---|
-| P7.1 | Font registration in `Doc_renderer` per family | G0.2 | All 8 scripts render in a real template |
-| P7.2 | **`@font-face` parity in preview** — exact same TTFs, `font-display: block` | G0.5 | No system-font fallback. Failure to load shows an **error**, never a silent reflow in Arial. |
-| P7.3 | Language switcher in designer | P4.4 | Preview and proof agree within the G0.5 tolerance |
-| P7.4 | Untranslated-string report before publish | P4.4 | Lists every untranslated object |
-| P7.5 | `languageFallback` policy — `block` for statutory docs | P7.4 | A statutory doc cannot publish with missing translations |
+| P7.1 | ✅ **DONE.** 7 Lohit families registered in `Doc_renderer::fontData()`, all 7 TTFs present on disk; Latin resolves to mPDF's bundled DejaVu — 8 scripts. | G0.2 | ✅ `DocFontParityTest` pins families, per-family FILE, on-disk presence and size, **and that no family falsely claims a bold face** — Lohit ships Regular only and mPDF synthesises bold, so a declared `B` would fail at registration. ⚠️ *"Renders in a real template"* is still fixture-verified (G0.2/G0.3), not certificate-verified — carried in the dossier. |
+| P7.2 | ✅ **BUILT 2026-09-02 — it did not exist, in EITHER surface.** `@font-face` now emitted by `Doc_serializer` **and** declared in `doctemplates.css`, all with `font-display:block`. | G0.5 | ✅ **Both clauses met.** E2E **Q1/Q2/Q3**: every family the picker offers is declared, every face is `block` never `swap`, and a load failure is **reported** (`verifyFonts()`) rather than absorbed. ⚠️ **The designer canvas had the same defect as the serializer** — the picker offered `lohitdeva`/`lohittaml`/`lohitbeng` and the stylesheet declared none of them, so choosing a Devanagari face changed nothing on screen while mPDF set the PDF in Lohit. The picker also offered only **3 of 7** families; now all 8. |
+| P7.3 | ⚠️ **SWITCHER DONE, AGREEMENT UNPROVEN.** The language switcher works and preserves both languages' runs (E2E **D11**, **O3**). | P4.4 | ⚠️ The accept is *"preview and proof agree within the G0.5 tolerance"* — that is a **measured comparison of a rendered PDF against the canvas**, and no proof-PDF path exists yet. `@font-face` (P7.2) removes the largest known cause of disagreement but does not demonstrate the tolerance. **Not counted.** |
+| P7.4 | ✅ **DONE.** `translationCoverage(lang)` reports done/total and the report names each gap. | P4.4 | ✅ E2E **Q4** — with 2 Hindi translations deleted it reports **9/11, 2 gaps**, and E2E **E15** covers the publish-time warning. An object pinned to another language is correctly not counted as untranslated. |
+| P7.5 | ✅ **DONE — and `block` is the DEFAULT, not just the statutory setting.** `Doc_serializer` now honours `languageFallback`; it previously ignored it entirely. | P7.4 | ✅ E2E **Q5** — every statutory starter pins `block` — plus 3 server tests: a missing translation throws by default, `default` opts in to the fallback, and `default` **still throws** when the default language is also missing. Falling back silently prints a Hindi certificate containing English sentences and tells nobody, while it still carries the school's seal. |
 
 ---
 

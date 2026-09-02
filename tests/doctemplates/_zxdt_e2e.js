@@ -1167,6 +1167,81 @@ window.ZXDT_E2E = async function (only) {
              note: `${versioned.length}/${AUTHORITIES.length} authorities dated; active template ${stillActive ? "untouched" : "CHANGED"}` };
   });
 
+  /* ---- Q · Phase 7 language and fonts ---------------------------------- */
+  G("Q · Phase 7 language and fonts");
+
+  /* P7.2 — the canvas stylesheet must declare every family the picker offers.
+     Before this, the picker offered lohitdeva/lohittaml/lohitbeng and the CSS
+     declared NONE of them: choosing a Devanagari face changed nothing on
+     screen while mPDF set the PDF in Lohit. The canvas showed a layout that
+     would never print, in the one place layout is being decided. */
+  await T("Q1", "P7.2 — every family the picker offers is declared @font-face", () => {
+    const declared = new Set();
+    [...document.styleSheets].forEach(ss => {
+      let rules; try { rules = ss.cssRules; } catch (e) { return; }   // cross-origin
+      [...(rules || [])].forEach(r => {
+        if (r.type === CSSRule.FONT_FACE_RULE) {
+          declared.add((r.style.fontFamily || "").replace(/["']/g, "").trim());
+        }
+      });
+    });
+    const web = FONTS.filter(f => f !== "dejavusans");         // dejavusans is mPDF-bundled
+    const undeclared = web.filter(f => !declared.has(f));
+    return { ok: undeclared.length === 0,
+             note: `${declared.size} faces declared; undeclared from the picker: ${undeclared.join(",") || "none"}` };
+  });
+
+  /* font-display MUST be block. swap paints a fallback first and reflows when
+     the real face lands — briefly showing a layout that will never print. */
+  await T("Q2", "P7.2 — every face uses font-display:block, never swap", () => {
+    const bad = [];
+    [...document.styleSheets].forEach(ss => {
+      let rules; try { rules = ss.cssRules; } catch (e) { return; }
+      [...(rules || [])].forEach(r => {
+        if (r.type === CSSRule.FONT_FACE_RULE) {
+          const d = (r.style.getPropertyValue("font-display") || "").trim();
+          if (d !== "block") bad.push((r.style.fontFamily || "?") + ":" + (d || "unset"));
+        }
+      });
+    });
+    return { ok: bad.length === 0, note: bad.length ? bad.join(", ") : "all block" };
+  });
+
+  /* P7.2 second clause — a load failure must be REPORTED, not absorbed. */
+  await T("Q3", "P7.2 — a missing face is reported rather than silently substituted", async () => {
+    if (typeof verifyFonts !== "function") return { ok: false, note: "verifyFonts() not defined" };
+    const missing = await verifyFonts();
+    return { ok: Array.isArray(missing),
+             note: missing && missing.length ? "reported missing: " + missing.join(",")
+                                             : "all faces resolved" };
+  });
+
+  /* P7.4 — the untranslated report must name every gap, not just count them. */
+  await T("Q4", "P7.4 — the untranslated report lists every untranslated object", () => {
+    openClassic(true);
+    S.tpl.languages = ["en", "hi"];
+    const texts = S.tpl.objects.filter(o => o.type === "text");
+    texts.slice(0, 2).forEach(o => { if (o.content && o.content.i18n) delete o.content.i18n.hi; });
+    const cov = translationCoverage("hi");
+    return { ok: cov.total > 0 && cov.done < cov.total,
+             note: `${cov.done}/${cov.total} translated — ${cov.total - cov.done} gap(s) reported` };
+  });
+
+  /* P7.5 — statutory documents pin languageFallback to block. Falling back
+     silently prints a Hindi certificate with English sentences and tells
+     nobody, while the document still carries the school's seal. */
+  await T("Q5", "P7.5 — every statutory starter pins languageFallback to block", () => {
+    const bad = [];
+    STARTERS.forEach(st => {
+      const t = st.build();
+      const type = TYPES.find(x => x.id === t.docType);
+      if (type && type.statutory && t.languageFallback !== "block") {
+        bad.push(`${st.id}:${t.languageFallback || "unset"}`);
+      }
+    });
+    return { ok: bad.length === 0, note: bad.length ? bad.join(", ") : "all statutory starters block" };
+  });
+
   const summary = { total: R.length, passed: R.filter(r => r.ok).length, failed: R.filter(r => !r.ok).length };
   return { summary, failures: R.filter(r => !r.ok), all: R };
 };

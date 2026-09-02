@@ -7,6 +7,35 @@
    ========================================================================== */
 const PAPER = {A4:[210,297], A5:[148,210], Letter:[215.9,279.4], Legal:[215.9,355.6]};
 
+/* P7.2 — the embeddable faces, identical to Doc_serializer::FONT_FACES,
+   Doc_renderer::fontData() and the @font-face block in doctemplates.css.
+   DocFontParityTest pins those three; this list is what the picker offers.
+   It previously offered only 3 of the 7 Lohit families, so a template could
+   legitimately reference lohitgujr and no one could select it. */
+const FONTS = ["dejavusans","lohitdeva","lohitbeng","lohitgujr","lohitknda",
+               "lohitmlym","lohittaml","lohittelu"];
+
+/* Failure to load must show an ERROR, never a silent reflow in a system font.
+   A silent fallback is the worst outcome here: the canvas looks fine, the
+   designer positions against metrics that will never print, and the divergence
+   only surfaces on a real certificate. document.fonts.load() resolves even when
+   the face is unavailable, so each family is checked with .check() afterwards. */
+async function verifyFonts(){
+  if(!document.fonts || !document.fonts.load) return;
+  const missing=[];
+  for(const f of FONTS){
+    if(f==="dejavusans") continue;            // mPDF-bundled; no web face
+    try{ await document.fonts.load(`12px "${f}"`); }catch(e){}
+    if(!document.fonts.check(`12px "${f}"`)) missing.push(f);
+  }
+  if(missing.length){
+    toast("Font failed to load: "+missing.join(", ")
+         +" — the canvas is NOT showing what will print. Do not trust the layout.", true);
+    console.error("[doctemplates] font load failed:", missing);
+  }
+  return missing;
+}
+
 const CONTRACT = [
   {key:"school.name",              label:"School name",             sample:"Delhi Public School, Ranchi", p95:"Shri Guru Harkrishan Public Senior Secondary School, Ranchi", maxLen:120},
   {key:"school.address",           label:"School address",          sample:"South Office Para, Doranda, Ranchi 834002", maxLen:160},
@@ -1471,7 +1500,7 @@ function paintCtxbar(){
     bar.innerHTML=`
       ${o.type==="text"?`<button data-act="${isEd?"done":"edit"}" title="${isEd?"Finish editing — Esc":"Edit text — Enter or double-click"}" class="${isEd?"is-on":""}">${isEd?"✓":"✎"}</button><span class="div"></span>`:""}
       <select data-p="style.fontFamily" title="Font">
-        ${["dejavusans","lohitdeva","lohittaml","lohitbeng"].map(f=>`<option ${st.fontFamily===f?"selected":""}>${f}</option>`).join("")}
+        ${FONTS.map(f=>`<option ${st.fontFamily===f?"selected":""}>${f}</option>`).join("")}
       </select>
       <input type="number" step="0.5" min="4" data-p="style.sizePt" value="${st.sizePt||9}" title="Size (pt)">
       <span class="div"></span>

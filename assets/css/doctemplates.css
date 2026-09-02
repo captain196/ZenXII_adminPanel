@@ -1,3 +1,24 @@
+/* ── Lohit faces — P7.2, preview/print parity ─────────────────────────────
+   THE DESIGNER CANVAS HAD THE SAME DEFECT THE SERIALIZER DID. The font picker
+   offers lohitdeva / lohittaml / lohitbeng and this stylesheet declared none of
+   them, so choosing a Devanagari face changed nothing on screen while mPDF set
+   the PDF in Lohit. The canvas showed a layout that would never print — in the
+   one place a designer is deciding layout.
+
+   Identical to Doc_serializer::FONT_FACES and Doc_renderer::fontData();
+   DocFontParityTest pins all three together.
+
+   font-display:block, not swap — swap paints a fallback first and reflows when
+   the real face arrives, which on a certificate means briefly seeing a layout
+   that will never be printed. A short blank beats a confident wrong render. */
+@font-face{font-family:'lohitdeva';src:url('/assets/fonts/lohit/Lohit-Devanagari.ttf') format('truetype');font-weight:400;font-style:normal;font-display:block}
+@font-face{font-family:'lohitbeng';src:url('/assets/fonts/lohit/Lohit-Bengali.ttf') format('truetype');font-weight:400;font-style:normal;font-display:block}
+@font-face{font-family:'lohitgujr';src:url('/assets/fonts/lohit/Lohit-Gujarati.ttf') format('truetype');font-weight:400;font-style:normal;font-display:block}
+@font-face{font-family:'lohitknda';src:url('/assets/fonts/lohit/Lohit-Kannada.ttf') format('truetype');font-weight:400;font-style:normal;font-display:block}
+@font-face{font-family:'lohitmlym';src:url('/assets/fonts/lohit/Lohit-Malayalam.ttf') format('truetype');font-weight:400;font-style:normal;font-display:block}
+@font-face{font-family:'lohittaml';src:url('/assets/fonts/lohit/Lohit-Tamil.ttf') format('truetype');font-weight:400;font-style:normal;font-display:block}
+@font-face{font-family:'lohittelu';src:url('/assets/fonts/lohit/Lohit-Telugu.ttf') format('truetype');font-weight:400;font-style:normal;font-display:block}
+
 /* ============================================================================
    ZenXii Certificate Designer — interactive design prototype  v2
    Tokens from the live panel (tools/css/header-inline.css).

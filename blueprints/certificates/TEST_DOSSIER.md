@@ -9,7 +9,7 @@ starts from evidence rather than from a plan row that says done.
 artifact sat finished on disk, and one accept criterion (P3.6) is still counted as unmet because
 the thing that would prove it does not exist yet. A task list cannot carry that distinction.
 
-**Updated:** 2026-09-02 · **Progress:** 39/58 = 67% · Branch `yug_testing`
+**Updated:** 2026-09-02 · **Progress:** 43/58 = 74% · Branch `yug_testing`
 
 **Progress is computed:** `awk -f blueprints/certificates/tools/progress.awk blueprints/certificates/EXECUTION_PLAN_v1.1.md | sort`
 
@@ -28,7 +28,7 @@ ZXDT_GOLDEN_UPDATE=1 vendor/bin/phpunit --testsuite Unit --filter Golden
 #   ^ regenerates. THEN READ THE DIFF. A golden regenerated without reading the
 #     diff records the bug as the new truth and goes green forever after.
 
-# Client E2E — 120 cases, needs the local server + headless Chrome
+# Client E2E — 125 cases, needs the local server + headless Chrome
 php -S localhost:8080                                     # from the repo root
 "/Applications/Google Chrome.app/Contents/MacOS/Google Chrome" \
   --headless=new --disable-gpu --virtual-time-budget=200000 \
@@ -46,7 +46,7 @@ cd firebase-rules/tests && npm test
 | Suite | Baseline | Meaning |
 |---|---|---|
 | PHP unit | **4 failures · 27 skipped** | Pre-existing. The skips are cross-repo tests pointing at a hardcoded Windows path from another machine. |
-| Client E2E | **120/120 · 0 page errors** | Should be green. Anything less is a regression. |
+| Client E2E | **125/125 · 0 page errors** | Should be green. Anything less is a regression. |
 | Rules emulator | **4 suites fail** | **Stale assertions**, verified: each asserts a *client* admin write that SEC-3 wave3/wave4 deliberately removed. Not a break. |
 
 ---
@@ -135,6 +135,26 @@ cd firebase-rules/tests && npm test
 | Illegal transitions rejected server-side | `published → draft` impossible; archived is terminal |
 | Every transition audited with a description | publish / activate / archive |
 
+### Phase 7 — Language and fonts (4/5)
+
+| What | Proven by |
+|---|---|
+| Every family the picker offers is declared `@font-face` | E2E **Q1** — 7 faces, none undeclared |
+| Every face is `font-display:block`, never `swap` | E2E **Q2** |
+| A font load failure is **reported**, not absorbed | E2E **Q3** + `verifyFonts()` |
+| The untranslated report names every gap | E2E **Q4** — 9/11, 2 gaps |
+| Every statutory starter pins `languageFallback: block` | E2E **Q5** |
+| The server honours `block` / `default` | 3 `DocSerializerTest` cases, incl. `default` still throwing when the default language is also missing |
+| Preview and PDF declare the **same faces, same files** | `DocFontParityTest` — and no family falsely claims a bold face |
+
+> ⚠️ **`@font-face` did not exist in EITHER surface before this.** The serializer emitted
+> `font-family:lohitdeva` that the browser had no face for, **and the designer canvas had the same
+> defect**: the picker offered `lohitdeva`/`lohittaml`/`lohitbeng` while `doctemplates.css` declared
+> none of them. Choosing a Devanagari face changed nothing on screen while mPDF set the PDF in Lohit
+> — the canvas showed a layout that would never print, in the one place layout is being decided.
+> The picker also offered only **3 of 7** Lohit families; a template could legitimately reference
+> `lohitgujr` and nobody could select it.
+
 ---
 
 ## 2. BUILT BUT NOT PROVEN — the honest column
@@ -144,6 +164,7 @@ cd firebase-rules/tests && npm test
 
 | # | Claim | Why it is not proven | What would prove it |
 |---|---|---|---|
+| **P7.3** | Preview and proof agree within the G0.5 tolerance | The switcher works and both languages' runs are preserved, but the accept demands a **measured comparison of a rendered PDF against the canvas**. `@font-face` removes the largest known cause of disagreement; it does not demonstrate the tolerance | Phase 6's proof-PDF path, then measure |
 | **P6.4** | Two concurrent activates → exactly one active | The activate LOGIC is proven (displaces every incumbent; refuses outright when no transaction is available), **but the transaction in the test is a double**. Real atomicity is Firestore's | Emulator run with genuinely concurrent clients |
 | **Controller wiring** | The service is not reachable from the UI | `Doc_template_service` exists and is tested, but **`Doc_templates.php` endpoints still return `pending P1.x`** — nothing calls it yet. Not tracked by any P-row, so it would otherwise go unnoticed | Wire save/publish/activate/archive, then exercise against a seeded school |
 | **P5.1** | CBSE TC required-key list | Declares **19 keys against Annexure-I's 22**, flagged `illustrative:true` / `fieldListVerified:false`. **Blocked on a human, not on code** | Gate 0.3 transcription + 0.8 second-person sign-off |
@@ -191,6 +212,7 @@ include, capability-gated behind `Certificates`, and 13 endpoints still stubs. I
 
 | Date | Phase | Progress |
 |---|---|---|
+| 2026-09-02 | Phase 7 — **`@font-face` built in both surfaces**, languageFallback honoured (4/5) | 43/58 = 74% |
 | 2026-09-02 | Phase 6 — lifecycle service built: lock/publish/activate/archive (6/7) | 39/58 = 67% |
 | 2026-09-02 | Phase 5 — compliance stack proven (4/6); **progress counter fixed** | 33/58 = 57% |
 | 2026-09-02 | Phase 4 — picker/chip/i18n proven, **capacity hint built** | 29/58 = 50% |

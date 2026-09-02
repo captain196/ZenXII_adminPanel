@@ -39,6 +39,39 @@ class Doc_serializer
     /** Object types that carry no text and therefore no line-height duty. */
     private const NON_TEXT = ['image', 'shape', 'qr', 'pageNumber'];
 
+    /**
+     * P7.2 — the SAME faces the renderer registers, declared for the browser.
+     *
+     * Without these the preview is a lie. The serializer emits
+     * `font-family:lohitdeva`; mPDF has that family registered, the BROWSER does
+     * not, so the preview silently reflows in a system font while the PDF sets
+     * in Lohit — different metrics, different line breaks, different page
+     * count. G0.5 measured exactly this class of divergence at up to 2x on
+     * Tamil, and the whole "one serializer, two sinks" rule exists to stop it.
+     *
+     * Mirrors Doc_renderer::fontData(). DocFontParityTest asserts the two stay
+     * identical, because a family registered on one side only is the same
+     * silent fallback in a new disguise.
+     */
+    private const FONT_FACES = [
+        'lohitdeva' => 'Lohit-Devanagari.ttf',
+        'lohitbeng' => 'Lohit-Bengali.ttf',
+        'lohitgujr' => 'Lohit-Gujarati.ttf',
+        'lohitknda' => 'Lohit-Kannada.ttf',
+        'lohitmlym' => 'Lohit-Malayalam.ttf',
+        'lohittaml' => 'Lohit-Tamil.ttf',
+        'lohittelu' => 'Lohit-Telugu.ttf',
+    ];
+
+    /** Web root for the faces above. Overridable for a CDN or a sub-path deploy. */
+    private string $fontBase = '/assets/fonts/lohit';
+
+    public function setFontBase(string $base): self
+    {
+        $this->fontBase = rtrim($base, '/');
+        return $this;
+    }
+
     /** @var array<string,array> merge-field contract for the active docType */
     private array $contract = [];
 
@@ -90,7 +123,7 @@ class Doc_serializer
             }
             $html .= '<div class="zx-region zx-' . $region . '">';
             foreach ($inRegion as $chain) {
-                $html .= $this->emitChain($chain, $data, $lang, $opts, $margins);
+                $html .= $this->emitChain($chain, $data, $lang, $opts, $margins, $template);
             }
             $html .= '</div>';
         }
@@ -141,7 +174,7 @@ class Doc_serializer
         foreach ($chains as $chain) {
             $root  = $chain['root'];
             $wMm   = (float) ($root['wMm'] ?? 180);
-            $html  = $this->emitChain($chain, $data, $lang, $opts, $margins);
+            $html  = $this->emitChain($chain, $data, $lang, $opts, $margins, $template);
 
             if (!empty($root['flowRegion'])) {
                 // TIER 1. Only meaningful when the template pins itself to one
@@ -300,7 +333,7 @@ class Doc_serializer
      *  Emission
      * ================================================================== */
 
-    private function emitChain(array $chain, array $data, string $lang, array $opts, array $margins): string
+    private function emitChain(array $chain, array $data, string $lang, array $opts, array $margins, array $template = []): string
     {
         $root = $chain['root'];
 
@@ -317,9 +350,9 @@ class Doc_serializer
         $style .= 'z-index:' . (int) ($root['z'] ?? 1) . ';';
 
         $html = '<div class="zx-chain" style="' . $style . '">';
-        $html .= $this->emitObject($root, $data, $lang, $opts, true);
+        $html .= $this->emitObject($root, $data, $lang, $opts, true, $template);
         foreach ($chain['members'] as $m) {
-            $html .= $this->emitObject($m, $data, $lang, $opts, false);
+            $html .= $this->emitObject($m, $data, $lang, $opts, false, $template);
         }
         return $html . '</div>';
     }
@@ -328,7 +361,7 @@ class Doc_serializer
      * @param bool $isRoot the root's own box is the container; members are
      *                     block children carrying only their gap as margin-top.
      */
-    private function emitObject(array $o, array $data, string $lang, array $opts, bool $isRoot): string
+    private function emitObject(array $o, array $data, string $lang, array $opts, bool $isRoot, array $template = []): string
     {
         $type = (string) ($o['type'] ?? 'text');
         $st   = (array) ($o['style'] ?? []);
@@ -355,7 +388,7 @@ class Doc_serializer
             $css .= 'color:' . $this->colour($st['colour']) . ';';
         }
 
-        $inner = $this->inner($o, $type, $data, $lang, $opts);
+        $inner = $this->inner($o, $type, $data, $lang, $opts, $template);
 
         // Omit an empty style attribute rather than emitting style="". Cosmetic,
         // but golden files lock output in — cheaper to be tidy before they exist.
@@ -392,11 +425,11 @@ class Doc_serializer
         return $css;
     }
 
-    private function inner(array $o, string $type, array $data, string $lang, array $opts): string
+    private function inner(array $o, string $type, array $data, string $lang, array $opts, array $template = []): string
     {
         switch ($type) {
             case 'text':
-                return $this->runs($o, $data, $lang, $opts);
+                return $this->runs($o, $data, $lang, $opts, $template);
 
             case 'pageNumber':
                 // Rule P2.4: never an absolute object. mPDF substitutes {PAGENO}
@@ -427,14 +460,38 @@ class Doc_serializer
      *  Runs → HTML  (rules 7 + 8, and the fail-closed rule)
      * ================================================================== */
 
-    private function runs(array $o, array $data, string $lang, array $opts): string
+    private function runs(array $o, array $data, string $lang, array $opts, array $template = []): string
     {
         $runs = $o['content']['i18n'][$lang]['runs'] ?? null;
+
         if ($runs === null) {
-            throw new RuntimeException(
-                "Doc_serializer: object '{$o['id']}' has no '$lang' content. "
-                . 'The template declares that language, so this is a gap, not a fallback.'
-            );
+            /* P7.5 — languageFallback: 'block' | 'default'.
+             *
+             * STATUTORY DOCUMENTS USE 'block', and the default here is 'block'
+             * rather than 'default' on purpose. Falling back silently prints a
+             * Hindi transfer certificate with English sentences in it and tells
+             * nobody — the reader cannot know a translation was missing, and the
+             * document still carries the school's seal. An error at design time
+             * is recoverable; a bilingual legal record in a parent's hand is not.
+             *
+             * 'default' exists for non-statutory documents where a partial
+             * translation genuinely beats no document, and it is opt-IN.
+             */
+            $policy = (string) ($template['languageFallback'] ?? 'block');
+            $fallbackLang = (string) ($template['defaultLanguage'] ?? 'en');
+
+            if ($policy === 'default' && $fallbackLang !== $lang) {
+                $runs = $o['content']['i18n'][$fallbackLang]['runs'] ?? null;
+            }
+
+            if ($runs === null) {
+                throw new RuntimeException(
+                    "Doc_serializer: object '{$o['id']}' has no '$lang' content"
+                    . ($policy === 'default' ? " and no '$fallbackLang' fallback either" : '')
+                    . ". The template declares that language, so this is a gap, not a fallback"
+                    . ($policy === 'block' ? " (languageFallback is 'block')" : '') . '.'
+                );
+            }
         }
 
         $out = '';
@@ -542,8 +599,8 @@ class Doc_serializer
         [$w, $h] = $this->pageMm($page);
         $m = (array) ($page['marginsMm'] ?? ['t' => 15, 'r' => 15, 'b' => 15, 'l' => 15]);
 
-        return
-            ".$ns{position:relative;width:{$w}mm;min-height:{$h}mm;margin:0;padding:0;"
+        return $this->fontFaceCss()
+          . ".$ns{position:relative;width:{$w}mm;min-height:{$h}mm;margin:0;padding:0;"
           . 'box-sizing:border-box;font-family:dejavusans;color:#000;}'
           . ".$ns .zx-region{position:relative;}"
           . ".$ns .zx-chain{box-sizing:border-box;}"
@@ -556,6 +613,26 @@ class Doc_serializer
     /* ================================================================== *
      *  Helpers
      * ================================================================== */
+
+    /**
+     * `@font-face` for every Lohit family, with `font-display: block`.
+     *
+     * `block` and not `swap` on purpose: swap paints the text in a fallback
+     * face first and reflows when the real one arrives, which on a certificate
+     * means the designer briefly sees a layout that will never be printed. Block
+     * shows nothing until the real face is there — for a legal document, a
+     * short blank is better than a confident wrong rendering.
+     */
+    private function fontFaceCss(): string
+    {
+        $out = '';
+        foreach (self::FONT_FACES as $family => $file) {
+            $out .= "@font-face{font-family:'{$family}';"
+                  . "src:url('{$this->fontBase}/{$file}') format('truetype');"
+                  . 'font-weight:400;font-style:normal;font-display:block;}';
+        }
+        return $out;
+    }
 
     private function pageMm(array $page): array
     {

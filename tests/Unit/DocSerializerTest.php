@@ -196,12 +196,26 @@ class DocSerializerTest extends TestCase
         $css = $m[1] ?? '';
 
         $this->assertNotSame('', $css);
+
+        /* @font-face is an AT-RULE, not a selector. It declares a font family
+           by name and matches no elements, so it cannot leak style into a host
+           page or inherit from one — the two failures this test exists to
+           catch. It is skipped explicitly rather than by loosening the
+           assertion, so a genuinely bare selector still fails. */
+        $checked = 0;
         foreach (array_filter(explode('}', $css)) as $rule) {
             if (trim($rule) === '') continue;
             $sel = trim(explode('{', $rule)[0]);
+            if ($sel === '' || str_starts_with($sel, '@') || str_starts_with($sel, 'src:')) {
+                continue;                        // at-rule, or its descriptors
+            }
+            $checked++;
             $this->assertStringStartsWith('.zx-tpl-TPL0007', $sel,
                 "bare or foreign selector leaked: '$sel'");
         }
+        $this->assertGreaterThan(0, $checked,
+            'no selectors were checked — the parser skipped everything, which would '
+            . 'make this test pass vacuously');
     }
 
     /** mPDF supports neither. A template using them previews fine and prints broken. */
@@ -506,5 +520,84 @@ class DocSerializerTest extends TestCase
             $this->assertTrue(method_exists(\Doc_renderer::class, $m),
                 "Doc_renderer::$m() is missing — the overflow gate silently loses a tier without it");
         }
+    }
+
+    /* ---------------------------------------------------------------- *
+     * P7.2 — @font-face parity, P7.5 — languageFallback
+     * ---------------------------------------------------------------- */
+
+    /**
+     * Without @font-face the browser has no `lohitdeva`, so the preview reflows
+     * in a system font while mPDF sets in Lohit. The preview would be lying
+     * about what prints — the exact divergence "one serializer, two sinks"
+     * exists to prevent.
+     */
+    public function test_font_faces_are_declared_for_the_browser(): void
+    {
+        $html = $this->render($this->tpl([$this->text('a', [['t' => 'x']])]));
+
+        $this->assertStringContainsString('@font-face', $html);
+        $this->assertStringContainsString("font-family:'lohitdeva'", $html);
+        $this->assertStringContainsString('/assets/fonts/lohit/Lohit-Devanagari.ttf', $html);
+    }
+
+    /**
+     * `block`, not `swap`. Swap paints a fallback face first and reflows when
+     * the real one arrives — on a certificate that means the designer briefly
+     * sees a layout that will never be printed.
+     */
+    public function test_font_display_is_block_so_no_fallback_is_ever_painted(): void
+    {
+        $html = $this->render($this->tpl([$this->text('a', [['t' => 'x']])]));
+
+        $this->assertStringContainsString('font-display:block', $html);
+        $this->assertStringNotContainsString('font-display:swap', $html);
+    }
+
+    public function test_the_font_base_path_is_overridable_for_a_subpath_deploy(): void
+    {
+        $this->s->setFontBase('https://cdn.example.com/f/');
+        $html = $this->render($this->tpl([$this->text('a', [['t' => 'x']])]));
+        $this->assertStringContainsString("https://cdn.example.com/f/Lohit-Tamil.ttf", $html);
+    }
+
+    /**
+     * P7.5 — the default is `block`, deliberately. Falling back silently prints
+     * a Hindi certificate with English sentences in it and tells nobody, while
+     * the document still carries the school's seal.
+     */
+    public function test_a_missing_translation_blocks_by_default(): void
+    {
+        $o = $this->text('a', [['t' => 'english only']]);
+        $tpl = $this->tpl([$o], ['languages' => ['en', 'hi'], 'defaultLanguage' => 'en']);
+
+        $this->expectException(RuntimeException::class);
+        $this->expectExceptionMessageMatches("/languageFallback is 'block'/");
+        $this->s->render($tpl, [], 'hi', ['contract' => $this->contract()]);
+    }
+
+    /** `default` is opt-IN, for non-statutory documents. */
+    public function test_language_fallback_default_falls_back_to_the_default_language(): void
+    {
+        $o = $this->text('a', [['t' => 'english only']]);
+        $tpl = $this->tpl([$o], ['languages' => ['en', 'hi'], 'defaultLanguage' => 'en',
+                                 'languageFallback' => 'default']);
+
+        $html = $this->s->render($tpl, [], 'hi', ['contract' => $this->contract()]);
+        $this->assertStringContainsString('english only', $html);
+    }
+
+    /** Even under `default`, a gap with no fallback content still throws. */
+    public function test_fallback_default_still_throws_when_the_default_language_is_also_missing(): void
+    {
+        $o = $this->text('a', [['t' => 'x']]);
+        unset($o['content']['i18n']['en']);
+        $o['content']['i18n']['ta'] = ['runs' => [['t' => 'tamil']]];
+        $tpl = $this->tpl([$o], ['languages' => ['en', 'hi'], 'defaultLanguage' => 'en',
+                                 'languageFallback' => 'default']);
+
+        $this->expectException(RuntimeException::class);
+        $this->expectExceptionMessageMatches("/no 'en' fallback either/");
+        $this->s->render($tpl, [], 'hi', ['contract' => $this->contract()]);
     }
 }
