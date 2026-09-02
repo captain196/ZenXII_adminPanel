@@ -51,3 +51,12 @@ $config['atomic_capacity_enabled'] = true;
  * interleave between them. One capacity decision must equal one atomic commit.
  */
 $config['capacity_group_max_students'] = 499;
+
+/*
+| Maximum writes in ONE atomic placement commit. Firestore accepts 500, which
+| is the default. A rollover needing more REFUSES — it is never split, because
+| a split is the partial rollover D21 forbids; the operator stages it with
+| class_from/class_to instead. Lower it only to exercise that refusal in a
+| test environment.
+*/
+$config['capacity_commit_max_writes'] = 500;

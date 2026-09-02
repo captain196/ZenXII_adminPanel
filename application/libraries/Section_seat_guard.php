@@ -124,6 +124,25 @@ class Section_seat_guard
         return (bool) $v;
     }
 
+    /**
+     * Max writes in ONE atomic commit. Firestore accepts 500; the value is
+     * configurable for the same reason groupMaxStudents() is — so the refusal
+     * branch can be exercised without a 500-pupil fixture, and so a future
+     * platform change is a config edit rather than a code hunt. It is a
+     * CEILING, never a licence to split: exceeding it refuses.
+     */
+    public static function commitMaxWrites(): int
+    {
+        $CI = &get_instance();
+        try {
+            $CI->config->load('capacity_cas', false, true);
+            $n = (int) $CI->config->item('capacity_commit_max_writes');
+            return $n > 0 ? $n : 500;
+        } catch (\Throwable $e) {
+            return 500;
+        }
+    }
+
     /** Max student writes per destination group (499 + 1 marker = 500). */
     public static function groupMaxStudents(): int
     {
@@ -589,18 +608,19 @@ class Section_seat_guard
         // split: splitting would produce exactly the partial rollover D21
         // forbids, in the one case where the school is large enough for it to
         // hurt most.
-        if (count($ops) > 500) {
+        $__ceiling = self::commitMaxWrites();
+        if (count($ops) > $__ceiling) {
             // NOTE FOR WHOEVER HITS THIS: there is currently no supported way to
             // complete a rollover this large. rollover_session() takes no class
             // range, so the operator cannot stage it, and splitting here would
             // produce the partial rollover D21 forbids. Say that plainly rather
             // than recommending a workflow that does not exist.
-            log_message('error', 'ACC_SEAT_COMMIT_TOO_LARGE ops=' . count($ops)
+            log_message('error', 'ACC_SEAT_COMMIT_TOO_LARGE ceiling=' . $__ceiling . ' ops=' . count($ops)
                 . ' students=' . $studentN . ' destinations=' . count($sectionIds));
             return ['status' => self::FAILURE, 'count' => 0,
                     'message' => 'This rollover needs ' . count($ops) . ' writes (' . $studentN
                                . ' pupils across ' . count($sectionIds) . ' sections) in a single atomic '
-                               . 'commit, and Firestore accepts at most 500. Splitting it would move some '
+                               . 'commit, and at most ' . $__ceiling . ' are accepted. Splitting it would move some '
                                . 'pupils and strand others, which D21 forbids, so nothing was changed. '
                                . 'Roll it over in stages instead: repeat the rollover with a class_from/class_to '
                                . 'range narrow enough to fit, one operator-requested stage at a '
