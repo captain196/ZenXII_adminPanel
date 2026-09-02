@@ -23,6 +23,7 @@ use RuntimeException;
 class DocTemplateServiceTest extends TestCase
 {
     private array $docs;
+    private array $commits = [];
     private array $audit;
     private Doc_template_service $svc;
 
@@ -57,6 +58,7 @@ class DocTemplateServiceTest extends TestCase
             'documentTemplateVersions' => [],
         ];
         $this->audit = [];
+        $this->commits = [];
         $this->svc   = $this->make();
     }
 
@@ -82,11 +84,25 @@ class DocTemplateServiceTest extends TestCase
                 }
                 return $out;
             },
-            // A transaction double: runs the closure. Enough to prove the code
-            // goes THROUGH the transaction path; the atomicity itself is
-            // Firestore's and cannot be asserted here — see the note on
-            // test_activate_refuses_to_run_without_a_transaction.
-            'transact' => $withTransaction ? fn(callable $fn) => $fn() : null,
+            /* An atomic-commit double. It applies every op or none, which is
+               what `:commit` guarantees, and RECORDS the ops so a test can
+               assert the batch was a COMPLETE assignment — that is the
+               property activation's safety rests on, and it is checkable here
+               even though Firestore's atomicity itself is not. */
+            'commit' => $withTransaction ? function (array $ops) {
+                $this->commits[] = $ops;
+                foreach ($ops as $op) {
+                    $c = $op['collection']; $id = $op['docId'];
+                    if (($op['precondition']['exists'] ?? null) === true && !isset($this->docs[$c][$id])) {
+                        return false;                       // all-or-nothing
+                    }
+                }
+                foreach ($ops as $op) {
+                    $c = $op['collection']; $id = $op['docId'];
+                    $this->docs[$c][$id] = array_merge($this->docs[$c][$id] ?? [], $op['data']);
+                }
+                return true;
+            } : null,
         ];
         return new Doc_template_service([
             'store' => $store,
@@ -410,14 +426,14 @@ class DocTemplateServiceTest extends TestCase
      * when it works and produces two active templates when it races — silent,
      * rare, and legally consequential.
      */
-    public function test_activate_refuses_to_run_without_a_transaction(): void
+    public function test_activate_refuses_to_run_without_an_atomic_write(): void
     {
         $svc = $this->make(false);
         $this->recordProof('SCH1_TPL0007');
         $svc->publish('SCH1_TPL0007');
 
         $this->expectException(RuntimeException::class);
-        $this->expectExceptionMessageMatches('/requires a transaction/');
+        $this->expectExceptionMessageMatches('/requires an atomic multi-document write/');
         $svc->activate('SCH1_TPL0007');
     }
 
@@ -436,6 +452,86 @@ class DocTemplateServiceTest extends TestCase
         $this->assertCount(2, $r['displaced']);
         $active = array_filter($this->docs['documentTemplates'], fn($t) => ($t['activeVersion'] ?? null) !== null);
         $this->assertCount(1, $active);
+    }
+
+    /* ---------------------------------------------------------------- *
+     * P6.4 / P9.2 — activation is ONE COMPLETE ASSIGNMENT
+     *
+     * The old implementation ran a closure inside runTransaction() and wrote
+     * through the plain, non-transactional helpers — so the writes were never
+     * in the transaction. Worse, raw_client() returns a FirestoreRestClient,
+     * which has no runTransaction() at all, so every real activate would have
+     * fatalled. Neither showed up here, because the double supplied a
+     * transaction the production adapter could not.
+     *
+     * Safety now comes from COMPLETENESS, not from a lock: every batch names
+     * the winner and nulls every other template, so two concurrent activates
+     * cannot interleave into a half-state.
+     * ---------------------------------------------------------------- */
+
+    public function test_activation_is_a_single_atomic_commit(): void
+    {
+        $this->docs['documentTemplates']['SCH1_TPL0007']['publishedVersion'] = 2;
+        $this->svc->activate('SCH1_TPL0007', 'STA1');
+
+        $this->assertCount(1, $this->commits,
+            'activation must be ONE all-or-nothing write. Two writes can interleave.');
+    }
+
+    public function test_the_batch_names_the_winner_and_nulls_every_incumbent(): void
+    {
+        $this->docs['documentTemplates']['SCH1_TPL0007']['publishedVersion'] = 2;
+        $this->svc->activate('SCH1_TPL0007', 'STA1');
+
+        $ops = $this->commits[0];
+        $byId = array_column($ops, null, 'docId');
+
+        $this->assertSame(2, $byId['SCH1_TPL0007']['data']['activeVersion'], 'the winner is set');
+        $this->assertNull($byId['SCH1_TPL0009']['data']['activeVersion'], 'the incumbent is nulled');
+        $this->assertSame(['exists' => true], $byId['SCH1_TPL0007']['precondition'],
+            'never activate a template that has since been deleted');
+    }
+
+    /**
+     * Whichever of two concurrent activates commits second is the final one,
+     * and exactly one template is active either way. Run both orderings.
+     */
+    public function test_two_concurrent_activates_leave_exactly_one_active(): void
+    {
+        foreach ([['SCH1_TPL0007', 'SCH1_TPL0009'], ['SCH1_TPL0009', 'SCH1_TPL0007']] as [$first, $second]) {
+            $this->setUp();
+            $this->docs['documentTemplates']['SCH1_TPL0007']['publishedVersion'] = 2;
+            $this->docs['documentTemplates']['SCH1_TPL0009']['publishedVersion'] = 1;
+
+            $this->svc->activate($first, 'STA1');
+            $this->svc->activate($second, 'STA2');
+
+            $active = array_keys(array_filter(
+                $this->docs['documentTemplates'],
+                fn($t) => ($t['docType'] ?? null) === 'transfer_certificate'
+                          && ($t['activeVersion'] ?? null) !== null
+            ));
+            $this->assertSame([$second], $active,
+                "after $first then $second, exactly one template is active and it is the last one");
+        }
+    }
+
+    /** A rejected commit must change NOTHING — the incumbent stays active. */
+    public function test_a_rejected_activation_leaves_the_incumbent_alone(): void
+    {
+        $this->docs['documentTemplates']['SCH1_TPL0009']['activeVersion'] = 1;
+        $this->docs['documentTemplates']['SCH1_TPL0007']['publishedVersion'] = 2;
+        unset($this->docs['documentTemplates']['SCH1_TPL0007']);   // deleted under us
+
+        try {
+            $this->svc->activate('SCH1_TPL0007', 'STA1');
+            $this->fail('activating a deleted template should not succeed');
+        } catch (RuntimeException $e) {
+            // head() refuses first, which is the earlier and better refusal.
+        }
+
+        $this->assertSame(1, $this->docs['documentTemplates']['SCH1_TPL0009']['activeVersion'],
+            'the previously active template is untouched');
     }
 
     /* ---------------------------------------------------------------- *

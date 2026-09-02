@@ -79,11 +79,25 @@ class Doc_template_service
             'update'   => fn(string $c, string $id, array $d) => $fs->update($c, $id, $d),
             'exists'   => fn(string $c, string $id) => $fs->exists($c, $id),
             'query'    => fn(string $c, array $w) => $fs->schoolWhere($c, $w),
-            // google/cloud-firestore is vendored and raw_client() exposes it, so
-            // a real transaction is available. Null means the caller gets the
-            // documented compare-and-swap fallback instead — see activate().
-            'transact' => method_exists($fs, 'raw_client') && $fs->raw_client()
-                ? fn(callable $fn) => $fs->raw_client()->runTransaction($fn)
+            /* ATOMIC MULTI-DOCUMENT WRITE.
+             *
+             * This used to read `runTransaction()` off raw_client(). It was
+             * wrong twice over. raw_client() returns a FirestoreRestClient —
+             * google/cloud-firestore is vendored but this app never uses it —
+             * and that class HAS NO runTransaction(), so every activate would
+             * have fatalled on the first real click. And even where the method
+             * had existed, the closure ignored the Transaction object it is
+             * handed and wrote through the plain non-transactional helpers, so
+             * the writes would not have been in the transaction anyway.
+             *
+             * What the REST client does have is `:commit` — all-or-nothing
+             * across documents, the same primitive the fee-accounting CAS
+             * loops already rely on. That is enough for what activate needs.
+             * Null means no atomic write is available, and activate refuses. */
+            'commit' => method_exists($fs, 'raw_client')
+                        && is_object($fs->raw_client())
+                        && method_exists($fs->raw_client(), 'commitBatch')
+                ? fn(array $ops) => $fs->raw_client()->commitBatch($ops)
                 : null,
         ];
     }
@@ -469,53 +483,81 @@ class Doc_template_service
         $schoolId = (string) ($head['schoolId'] ?? '');
         $docType  = (string) ($head['docType']  ?? '');
 
-        $apply = function () use ($docId, $schoolId, $docType, $published, $head) {
-            // Displace every incumbent for this (school, docType) — plural on
-            // purpose. If a past bug ever left two active, this heals it rather
-            // than assuming there is at most one.
-            $siblings = ($this->store['query'])(self::HEAD_COLLECTION, [
-                ['schoolId', '=', $schoolId],
-                ['docType',  '=', $docType],
-            ]) ?: [];
+        /* Build the COMPLETE assignment for this (school, docType) and commit
+           it in ONE all-or-nothing write.
 
-            $displaced = [];
-            foreach ($siblings as $sid => $row) {
-                $sid = is_string($sid) ? $sid : (string) ($row['_id'] ?? '');
-                if ($sid === '' || $sid === $docId) {
-                    continue;
-                }
-                if (($row['activeVersion'] ?? null) !== null) {
-                    ($this->store['update'])(self::HEAD_COLLECTION, $sid, [
-                        'activeVersion' => null,
-                        'updatedAt'     => $this->now(),
-                    ]);
-                    $displaced[] = $sid;
-                }
-            }
+           Completeness is what makes it safe, not a lock. Every batch names
+           the winner AND nulls every other template, so two concurrent
+           activates cannot interleave into a half-state: each commit is a
+           whole, self-consistent answer, and whichever lands second is the
+           final one. The invariant that matters — exactly one active template
+           per document type — holds after either ordering.
 
-            ($this->store['update'])(self::HEAD_COLLECTION, $docId, [
+           A partial write is what would break it: template A nulled by one
+           request and template B never set by the other leaves a school with
+           NO active template and a print button that resolves nothing. That is
+           precisely what ":commit" being atomic prevents. */
+        $siblings = ($this->store['query'])(self::HEAD_COLLECTION, [
+            ['schoolId', '=', $schoolId],
+            ['docType',  '=', $docType],
+        ]) ?: [];
+
+        $ops = [[
+            'op'         => 'set',
+            'collection' => self::HEAD_COLLECTION,
+            'docId'      => $docId,
+            'merge'      => true,
+            'data'       => [
                 'activeVersion' => $published,
                 'lockVersion'   => (int) ($head['lockVersion'] ?? 0) + 1,
                 'updatedAt'     => $this->now(),
-            ]);
+            ],
+            // Never activate a template that has since been deleted.
+            'precondition' => ['exists' => true],
+        ]];
 
-            return $displaced;
-        };
+        $displaced = [];
+        foreach ($siblings as $sid => $row) {
+            $sid = is_string($sid) ? $sid : (string) ($row['_id'] ?? '');
+            if ($sid === '' || $sid === $docId) {
+                continue;
+            }
+            // Plural on purpose: if a past bug ever left two active, this heals
+            // it rather than assuming there is at most one.
+            if (($row['activeVersion'] ?? null) === null) {
+                continue;
+            }
+            $ops[] = [
+                'op'         => 'set',
+                'collection' => self::HEAD_COLLECTION,
+                'docId'      => $sid,
+                'merge'      => true,
+                'data'       => ['activeVersion' => null, 'updatedAt' => $this->now()],
+            ];
+            $displaced[] = $sid;
+        }
 
-        $transact = $this->store['transact'] ?? null;
-        if (!is_callable($transact)) {
-            // Refuse rather than degrade. A non-transactional activate looks
-            // identical when it works and produces two active templates when it
-            // races — the failure is silent, rare, and legally consequential.
+        $commit = $this->store['commit'] ?? null;
+        if (!is_callable($commit)) {
+            // Refuse rather than degrade. A non-atomic activate looks identical
+            // when it works and leaves a school with two active templates — or
+            // none — when it races. The failure is silent, rare, and legally
+            // consequential: every print point resolves activeVersion.
             throw new RuntimeException(
-                'Doc_template_service: activate requires a transaction and none is '
-                . 'available. Refusing to run non-transactionally: a race would leave '
-                . 'two active templates for one document type, and every print point '
-                . 'resolves activeVersion.'
+                'Doc_template_service: activate requires an atomic multi-document write '
+                . 'and none is available. Refusing to run non-atomically: a race would '
+                . 'leave two active templates for one document type, or none at all, and '
+                . 'every print point resolves activeVersion.'
             );
         }
 
-        $displaced = $transact($apply);
+        if (($commit)($ops) !== true) {
+            throw new RuntimeException(
+                'Doc_template_service: the activation write was rejected, so NOTHING '
+                . 'changed — the previously active template is still the active one. '
+                . 'This is the safe outcome; try again.'
+            );
+        }
 
         $this->log('activate', $docId, "Activated v$published"
             . ($displaced ? ' (displaced ' . implode(', ', $displaced) . ')' : ''));
