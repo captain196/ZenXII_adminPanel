@@ -444,16 +444,58 @@ class Doc_serializer
                 if ($src === '') {
                     throw new RuntimeException("Doc_serializer: image '{$o['id']}' has no src");
                 }
-                return '<img src="' . $this->esc($src) . '" style="width:100%;">';
+                return '<img src="' . $this->esc($this->guardSrc($src, $o)) . '" style="width:100%;">';
 
             case 'qr':
                 $src = (string) (($o['content']['src'] ?? '') ?: '');
-                return $src === '' ? '' : '<img src="' . $this->esc($src) . '" style="width:100%;">';
+                return $src === '' ? '' : '<img src="' . $this->esc($this->guardSrc($src, $o)) . '" style="width:100%;">';
 
             case 'table':
                 return $this->table($o, $data, $lang, $opts);
         }
         throw new RuntimeException("Doc_serializer: unknown object type '$type' on '{$o['id']}'");
+    }
+
+    /**
+     * P9.6 — reject an image reference that is not a plain storage path.
+     *
+     * `Doc_renderer::guardImages()` already does this on the PDF path, and this
+     * is NOT redundant with it: THE BROWSER PREVIEW NEVER PASSES THROUGH THE
+     * RENDERER. Without a guard here, a template carrying
+     * `content.src = "https://tracker.example/p.gif"` renders that image in the
+     * designer — a request to a third party from the school's browser, made by
+     * a document nobody thought was networked — and `data:text/html,…` would be
+     * worse. mPDF fetches remote images server-side, so on the PDF path the same
+     * value is an SSRF primitive; the renderer catches that. This catches the
+     * half the renderer never sees.
+     *
+     * Enforced HERE rather than in the UI because the UI is not a security
+     * boundary: a template can arrive from an import, a starter, or another
+     * session's write.
+     */
+    private function guardSrc(string $src, array $o): string
+    {
+        $s = html_entity_decode(trim($src), ENT_QUOTES, 'UTF-8');
+
+        // Any scheme at all. `javascript:` and `data:` carry no "//" so a
+        // "scheme://" test alone misses them, which is how these usually slip.
+        if (preg_match('#^[a-z][a-z0-9+.-]*:#i', $s)) {
+            throw new RuntimeException(
+                "Doc_serializer: image '{$o['id']}' uses a scheme-qualified src ("
+                . substr($s, 0, 40) . '). Only plain storage paths are permitted.'
+            );
+        }
+        if (str_contains($s, '..')) {
+            throw new RuntimeException(
+                "Doc_serializer: image '{$o['id']}' src traverses parent directories"
+            );
+        }
+        if (str_starts_with($s, '//')) {
+            throw new RuntimeException(
+                "Doc_serializer: image '{$o['id']}' uses a protocol-relative src"
+            );
+        }
+        return $s;
     }
 
     /* ================================================================== *

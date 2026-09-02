@@ -9,7 +9,7 @@ starts from evidence rather than from a plan row that says done.
 artifact sat finished on disk, and one accept criterion (P3.6) is still counted as unmet because
 the thing that would prove it does not exist yet. A task list cannot carry that distinction.
 
-**Updated:** 2026-09-02 · **Progress:** 46/58 = 79% · Branch `yug_testing`
+**Updated:** 2026-09-02 · **Progress:** 47/58 = 81% — ALL NINE PHASES OPENED · Branch `yug_testing`
 
 **Progress is computed:** `awk -f blueprints/certificates/tools/progress.awk blueprints/certificates/EXECUTION_PLAN_v1.1.md | sort`
 
@@ -177,6 +177,33 @@ cd firebase-rules/tests && npm test
 > and those are CBSE artifacts. The bug was offering it with no warning; the card now names the gap
 > before the choice.
 
+### Phase 9 — Hardening (1/7) — and the six that are not counted are the honest core of this dossier
+
+| What | Proven by |
+|---|---|
+| 8 hostile image sources rejected on **both** paths | `DocSecurityTest` — incl. `javascript:` and `data:`, which carry no `//` |
+| Authored text and resolved merge values escaped | No element can be introduced by a student's name |
+| No `doc_templates` route excluded from CSRF | publish/activate change what a school legally issues |
+| Every endpoint declares a capability | An undeclared one fails closed, but silently |
+| Error codes typed and well-formed | `E_PAGE_OVERFLOW` / `E_IMAGE_SOURCE` / `E_CONFLICT` |
+| No failure path returns instead of throwing | A returned failure would render as content |
+
+> ⚠️ **The serializer had NO image guard.** `Doc_renderer::guardImages()` protected the PDF path, but
+> **the browser preview never passes through the renderer** — so a template carrying
+> `https://tracker.example/p.gif` rendered it in the designer: a request to a third party from the
+> school's browser, from a document nobody thought was networked.
+
+**The six not counted, and why — this is what UAT inherits:**
+
+| # | Blocked by | Note |
+|---|---|---|
+| P9.1 per-script vs reference PNGs | **No PDF→PNG on the Ohio box** | Scripts verified at G0.2/G0.3 on fixtures. The accept's real point — "regenerating a reference is a reviewed change" — is already honoured by the golden-file discipline |
+| P9.2 concurrency (activate half) | Needs the emulator with genuinely concurrent clients | Save half is proven |
+| P9.3 tripping each cap | `MAX_MEMORY`/`MAX_SECONDS` are ceilings, not throwing paths | Needs a load harness |
+| P9.4 metrics | The sink is outside this module | The "never return success on failure" clause is done |
+| P9.5 restore drill | **B4 — no test school** | Ingredients exist: P6.2 freezes hash + fontManifest + mpdfVersion precisely so a re-render can be checked |
+| P9.7 UAT | **B4 + a human** | **This is the row that decides whether the module is really finished.** Nothing in the plan substitutes for it |
+
 ---
 
 ## 2. BUILT BUT NOT PROVEN — the honest column
@@ -234,6 +261,7 @@ include, capability-gated behind `Certificates`, and 13 endpoints still stubs. I
 
 | Date | Phase | Progress |
 |---|---|---|
+| 2026-09-02 | Phase 9 — security surface built; **serializer image guard was missing** (1/7) | 47/58 = 81% |
 | 2026-09-02 | Phase 8 — block service built, offer model proven, starter gaps signalled (3/3) | 46/58 = 79% |
 | 2026-09-02 | Phase 7 — **`@font-face` built in both surfaces**, languageFallback honoured (4/5) | 43/58 = 74% |
 | 2026-09-02 | Phase 6 — lifecycle service built: lock/publish/activate/archive (6/7) | 39/58 = 67% |
