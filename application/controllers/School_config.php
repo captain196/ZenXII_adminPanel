@@ -3545,6 +3545,83 @@ class School_config extends MY_Controller
         $promoteStudents = (int) $this->input->post('promote_students', TRUE) === 1;
         $setActive       = (int) $this->input->post('set_active',       TRUE) === 1;
 
+        // ── Phase 16.9 (D20) — STUDENT PROMOTION REQUIRES SIS:manage ────
+        //
+        // THE BYPASS THIS CLOSES — this was a privilege-escalation path, not
+        // merely an inconsistency:
+        //
+        //   Sis::execute_promotion()      → _require_role(…, 'SIS', 'manage')
+        //   Classes::transfer_students()  → _require_role(…, 'SIS', 'manage')   (Phase 16.1, D16)
+        //   THIS endpoint with promote_students=1 → 'Configuration', 'manage'
+        //
+        // The canonical promotion endpoint denies a Configuration-only
+        // administrator, but this one performed the SAME student movement —
+        // changing className, section and session on every student, and
+        // graduating Class 12 to Alumni — under a configuration permission.
+        // An operator blocked at the front door could walk in through the
+        // rollover screen.
+        //
+        // Operator decision 2026-08-15 (Option A): SESSION STRUCTURE stays
+        // under Configuration:manage — creating next year's classes, sections
+        // and capacities is genuinely configuration. MOVING STUDENTS requires
+        // SIS:manage, matching every other student-movement path.
+        //
+        // WHY AN EMPTY $allowed ARRAY: _require_role() falls back to a legacy
+        // ROLE-NAME allow-list for users who do not hold the module at all.
+        // Passing self::ADMIN_ROLES here would let a Configuration-only admin
+        // pass on their role NAME and defeat the entire check. `[]` makes the
+        // graded capability the sole authority — the established pattern in
+        // Entitlements.php. Super Admin / School Super Admin still bypass by
+        // design, unchanged.
+        //
+        // PLACED BEFORE ANY WRITE — and before the target session is added to
+        // sessions[] — so a denied caller cannot leave a half-created session
+        // behind. json_error() exits, so this genuinely terminates.
+        if ($promoteStudents) {
+            $this->_require_role([], 'rollover_promote_students', 'SIS', 'manage');
+        }
+
+        // ── Phase 16.8 (SEC-16) — OPERATOR-EDITED TARGET CAPACITY ───────
+        //
+        // The preview (Phase 16.7) shows the capacity each section will carry
+        // forward; this lets the administrator CHANGE it before confirming,
+        // e.g. 5-C moving from 50 to 45 next year. Without it the only route
+        // was to roll over and then re-edit each section afterwards, which
+        // means the wrong capacity is briefly live and enforced.
+        //
+        // Shape: section_capacities[<className>|<section>] = <int>
+        // keyed on the SAME canonical class/section strings the preview
+        // returns, so the operator can only address sections the preview
+        // actually offered.
+        //
+        // ⚠ APPLIES TO NEWLY CREATED SECTIONS ONLY. A section that already
+        // exists in the target session is SKIPPED by the copy loop below and
+        // is NOT re-written here — that non-destructive rule was established
+        // in Phase 16.7 and editing an existing section remains the job of
+        // Section Settings. Rollover must never silently overwrite a capacity
+        // the operator already set for next year.
+        $capacityOverrides = [];
+        $rawCaps = $this->input->post('section_capacities', TRUE);
+        if (is_array($rawCaps)) {
+            foreach ($rawCaps as $k => $v) {
+                $key = trim((string) $k);
+                if ($key === '') continue;
+                // Reject anything that is not a non-negative whole number.
+                // 0 is legitimate and means "leave unconfigured" — the
+                // canonical resolver then supplies the default (D17). No
+                // upper bound is imposed: no source establishes a maximum
+                // section size, and inventing one would be a business rule.
+                if (!is_scalar($v)) continue;
+                $s = trim((string) $v);
+                if ($s === '' || !preg_match('/^\d+$/', $s)) {
+                    return $this->json_error(
+                        "Capacity for '{$key}' must be a whole number (0 means 'not configured')."
+                    );
+                }
+                $capacityOverrides[mb_strtolower($key)] = (int) $s;
+            }
+        }
+
         if (!preg_match('/^\d{4}-\d{2}$/', $from) || !preg_match('/^\d{4}-\d{2}$/', $to)) {
             return $this->json_error('Both from_session and to_session must be in YYYY-YY format.');
         }
@@ -3707,10 +3784,51 @@ class School_config extends MY_Controller
                 $section   = (string) ($d['section']   ?? '');
                 if ($className === '' || $section === '') { $summary['sections_skipped']++; continue; }
 
-                $newDocId = "{$schoolId}_{$to}_{$className}_{$section}";
+                // Phase 16.7 (SEC-2 family) — canonical doc-id. The hand-built
+                // form happened to match, because className/section arrive
+                // already normalised from the source document, but every other
+                // section writer was moved onto the helper in Phases 16.4–16.5
+                // precisely so no site can drift. This is the last one.
+                $newDocId = $this->fs->sectionDocId($className, $section, $to);
                 if (isset($existingIds[$newDocId])) {
                     $summary['sections_skipped']++;
                     continue;
+                }
+
+                // ── Phase 16.7 (SEC-13) — CARRY THE CONFIGURED CAPACITY ─────
+                //
+                // THE DEFECT THIS CLOSES: this copy rebuilt the section
+                // document field by field and simply OMITTED `maxStrength`.
+                // Every rolled-over section was therefore created with NO
+                // configured capacity, and the canonical resolver
+                // (MY_Controller::_sectionCapacity) fell back to its default
+                // of 40. A school that had carefully set
+                //     5-A = 30 · 5-B = 40 · 5-C = 50
+                // silently became 40 · 40 · 40 in the new session — the exact
+                // harm SEC-3 was raised to prevent. The rollover feature
+                // existed; it was dropping the one field that mattered.
+                //
+                // Capacity is carried as a STARTING VALUE, not a permanent
+                // rule: Section Settings remains editable in the target
+                // session, and external sources do NOT establish automatic
+                // capacity carry-forward as standard practice (Phase 16.6
+                // research) — so this is a ZenX product choice, deliberately
+                // pre-filling what the school already told us rather than
+                // resetting it to a number they never chose.
+                //
+                // 0 / missing / invalid is written as 0, NOT as 40: the
+                // canonical resolver owns the default, and baking 40 into the
+                // stored document would turn "never configured" into
+                // "explicitly configured as 40" and hide it from the operator.
+                $srcCapacity = (int) ($d['maxStrength'] ?? $d['max_strength'] ?? 0);
+                if ($srcCapacity < 0) $srcCapacity = 0;
+
+                // Phase 16.8 (SEC-16) — the operator's edited value wins over
+                // the carried-forward source capacity, for NEW sections only.
+                $capKey = mb_strtolower("{$className}|{$section}");
+                if (array_key_exists($capKey, $capacityOverrides)) {
+                    $srcCapacity = $capacityOverrides[$capKey];
+                    $summary['capacities_edited'] = ($summary['capacities_edited'] ?? 0) + 1;
                 }
 
                 $newDoc = [
@@ -3722,14 +3840,8 @@ class School_config extends MY_Controller
                     'sectionKey'   => "{$className}/{$section}",
                     'classTeacher' => '',          // reset; re-assign in new session
                     'classTeacherId' => '',
+                    'maxStrength'  => $srcCapacity,
                     'session'      => $to,
-                    // CARRY THE CONFIGURED CAPACITY. Omitted, the new session's
-                    // sections have no maxStrength at all, and _sectionCapacity()
-                    // then falls back to its 40 default — so every section a school
-                    // had deliberately sized silently became 40 seats the moment it
-                    // rolled over, and every capacity decision downstream was made
-                    // against a number nobody configured.
-                    'maxStrength'  => (int) ($d['maxStrength'] ?? $d['max_strength'] ?? 0),
                     'studentCount' => 0,
                     'updatedAt'    => date('c'),
                 ];
@@ -3756,72 +3868,337 @@ class School_config extends MY_Controller
         //      consecutive failure rate exceeds 10 — protects against a
         //      Firestore-side outage silently halving the school roster.
         if ($promoteStudents) {
-            // ── ROLLOVER SECTION-CAPACITY POLICY (tenant-configurable) ──────
-            //
-            // WHY THIS IS A POLICY AND NOT A CONSTANT.
-            // Annual rollover is the one placement workflow where schools
-            // legitimately differ. In mainstream SIS practice (PowerSchool's
-            // EOY, for example) rollover advances a pupil's GRADE, and seat
-            // limits are enforced later, at scheduling — because grade and
-            // section are separate records there. In ZenX they are not: fee
-            // structures live at feeStructures/{school}_{session}_{class}_{section}
-            // and every attendance roster is a (class, section, session)
-            // query, so a pupil advanced WITHOUT a section would be billed
-            // nothing and appear on no register. That is the STU0004-11
-            // "Active with zero demands" incident, which is why this method
-            // does not offer an unassigned-advancement mode: the state is not
-            // safely representable in this schema today.
-            //
-            // What differs legitimately is what a school wants to happen when
-            // a destination section would overflow:
-            //
-            //   'report'  (DEFAULT) — advance the cohort, but detect the
-            //             overflow and report it. This preserves today's
-            //             outcome for every existing tenant, so no school's
-            //             rollover behaviour changes underneath it, while
-            //             making the overage explicit and auditable instead
-            //             of silent. It also matches what schools actually
-            //             do: a class of 45 is not held back because Class
-            //             7A is configured for 40 — the school re-sections
-            //             or raises the cap.
-            //
-            //   'enforce' — treat maxStrength as a hard seat limit. A
-            //             destination whose group does not fit is advanced
-            //             NOT AT ALL; those pupils stay intact in the source
-            //             session and are reported for manual re-sectioning.
-            //             All-or-nothing per destination, never a partial
-            //             cohort: taking "the first N that fit" would split a
-            //             class on Firestore result order, which is arbitrary
-            //             and unexplainable to a parent.
-            //
-            // Overflow is never resolved by auto-spilling into another
-            // section: sections carry their own fee structures, so moving a
-            // pupil to 7B instead of 7A changes what they are billed. That is
-            // an operator decision, not something rollover may infer.
-            $capPolicy = 'report';
-            $__rp = $fsSchool['rolloverPolicy'] ?? null;
-            if (is_array($__rp)) {
-                $__raw = strtolower(trim((string) ($__rp['sectionCapacity'] ?? '')));
-                if (in_array($__raw, ['report', 'enforce'], true)) $capPolicy = $__raw;
-            }
-            $summary['capacity_policy']    = $capPolicy;
-            $summary['capacity_overflows'] = [];
-
             $srcStudents = $this->fs->schoolWhere('students', [['session', '==', $from]]);
             $srcStudents = is_array($srcStudents) ? $srcStudents : [];
 
-            $consecFails = 0;
-            $consecCap   = 10;
+            // LC-11 — resolved ONCE, here, and handed to every call of
+            // _rolloverNextClass() in both the pre-flight and the write loop.
+            // Resolving it separately in each place is precisely how the two
+            // would come to disagree about who graduates, which is the failure
+            // LC-10 exists to make impossible.
+            $terminalOrder = $this->_terminalClassOrder();
+            log_message('info', "ACC_ROLLOVER_TERMINAL_CLASS schoolId={$this->school_id} "
+                . "terminalClassOrder={$terminalOrder}");
 
-            // ── PASS 1 — CLASSIFY ONLY. No writes. ──────────────────────────
-            // Every seat decision needs the whole incoming group for its
-            // destination, so the transition has to be known for all pupils
-            // before any of them is written. Deciding per pupil, as this
-            // method used to, cannot see the group at all.
-            $graduates = [];
-            $groups    = [];
-            $foundationalNext  = [-5 => -4, -4 => -3, -3 => -2, -2 => -1, -1 => 1];
-            $foundationalLabel = [-4 => 'Class Pre-Nursery', -3 => 'Class Nursery', -2 => 'Class LKG', -1 => 'Class UKG', 1 => 'Class 1st'];
+            // ══ Phase 17 (SEC-17) — ALL-OR-NOTHING PROMOTION PRE-FLIGHT ══
+            //
+            // THE DEFECT THIS CLOSES: this loop moved students with NEITHER
+            // the capacity guard NOR the roll-collision guard that
+            // Sis::execute_promotion() applies. Rollover could therefore
+            // overfill a destination section, or create duplicate Roll
+            // Numbers where the destination already held students —
+            // producing exactly the lifecycle state the normal promotion
+            // screen refuses.
+            //
+            // D21 (operator decision 2026-08-15): ALL-OR-NOTHING. If ANY
+            // student in the set would violate capacity or roll uniqueness,
+            // the ENTIRE promotion is refused and NO student is moved. A
+            // per-student skip would leave a school half-promoted — some
+            // children in the new session, some stranded in the old — which
+            // is materially worse to unpick than a clean refusal.
+            //
+            // Deliberately NOT a check inside the write loop: by the time the
+            // loop reaches a violating student, earlier students are already
+            // written. Validation must complete BEFORE the first write.
+            //
+            // ── READ COST ────────────────────────────────────────────────
+            // O(destination sections), NOT O(students):
+            //   • occupancy + rolls come from the SINGLE request-memoised
+            //     student snapshot (_cachedStudentDocsForRollCheck), already
+            //     warm — 1 read total, shared with every other guard;
+            //   • capacity is one `sections` read per DISTINCT destination,
+            //     memoised by _sectionCapacity() per session|class|section.
+            // Destination rosters are indexed into in-memory maps ONCE, so
+            // the per-student checks are O(1) lookups rather than repeated
+            // scans (calling _rollNoConflict() per student would have been
+            // O(students²) CPU over the snapshot).
+            //
+            // ── STALENESS ────────────────────────────────────────────────
+            // The memoised snapshot is taken before any write. Because we
+            // abort before writing, it cannot go stale mid-validation. The
+            // running projection below accounts for students planned earlier
+            // in THIS batch, which the snapshot cannot see.
+            $plan            = [];   // [studentId => ['label','order','section','roll','name']]
+            $incomingPerDest = [];   // destKey => count planned this run
+            $capacityIssues  = [];
+            $rollIssues      = [];
+            $destRollOwner   = [];   // destKey => [lcRoll => existing student label]
+            $batchRollOwner  = [];   // destKey => [lcRoll => incoming student label]
+            $destSeen        = [];   // destKey => ['label'=>…, 'section'=>…]
+
+            foreach ($srcStudents as $row) {
+                if (!is_array($row)) continue;
+                $sd  = is_array($row['data'] ?? null) ? $row['data'] : [];
+                $sid = (string) ($row['id'] ?? ($sd['id'] ?? ''));
+                if ($sid === '') continue;
+                if (($sd['status'] ?? 'Active') !== 'Active') continue;
+                // Already promoted by a prior partial attempt — the write loop
+                // skips these, so the pre-flight must too or it would
+                // double-count them against capacity and refuse a legitimate
+                // resume.
+                if (((string) ($sd['session'] ?? '')) === $to) continue;
+
+                $next = $this->_rolloverNextClass($sd['classOrder'] ?? null, $terminalOrder);
+                // Alumni has no destination section; unmappable rows are
+                // skipped by the write loop. Neither consumes a seat.
+                if ($next['kind'] !== 'promote') continue;
+
+                $section = trim((string) ($sd['section'] ?? ''));
+                $destKey = mb_strtolower("{$next['label']}|{$section}");
+                $destSeen[$destKey] = ['label' => $next['label'], 'section' => $section];
+
+                $plan[$sid] = [
+                    'label'   => $next['label'],
+                    'order'   => $next['order'],
+                    'section' => $section,
+                    'roll'    => trim((string) ($sd['rollNo'] ?? $sd['Roll No'] ?? '')),
+                    'name'    => (string) ($sd['name'] ?? $sd['Name'] ?? $sid),
+                ];
+                $incomingPerDest[$destKey] = ($incomingPerDest[$destKey] ?? 0) + 1;
+            }
+
+            // Index each destination's EXISTING roster once — repeaters,
+            // students already admitted into the target session, and anyone
+            // promoted by an earlier partial run all legitimately occupy
+            // seats and hold rolls.
+            foreach ($destSeen as $destKey => $dest) {
+                if ($dest['section'] === '') continue;
+                foreach ($this->_filterSectionRoster(
+                    $this->_cachedStudentDocsForRollCheck(),
+                    $dest['label'], $dest['section'], $to
+                ) as $r) {
+                    $d = is_array($r) ? ($r['data'] ?? $r) : [];
+                    if (!is_array($d)) continue;
+                    $roll = trim((string) ($d['rollNo'] ?? $d['Roll No'] ?? ''));
+                    if ($roll === '') continue;
+                    $destRollOwner[$destKey][mb_strtolower($roll)] =
+                        (string) ($d['name'] ?? $d['Name'] ?? ($d['studentId'] ?? 'an existing student'));
+                }
+            }
+
+            // Capacity — canonical semantics (Phase 16.5 D17): configured
+            // positive value wins, unset/zero/invalid means 40, withdrawn
+            // students free their seat, TARGET session only.
+            // ── ORDERING: VERSION BEFORE OCCUPANCY ──────────────────────────
+            // Each destination's version must be captured BEFORE the occupancy
+            // that decides it. Captured after, a placement landing in between
+            // leaves this decision holding a version NEWER than the roster it
+            // was made against, so the commit passes honestly on a stale
+            // decision. These versions are the preconditions the atomic commit
+            // below rides on.
+            $destVersions = [];
+            foreach ($destSeen as $destKey => $dest) {
+                if ($dest['section'] === '') continue;
+                $destVersions[$destKey] = $this->_sectionDecisionVersion(
+                    $dest['label'], $dest['section'], $to
+                );
+            }
+
+            foreach ($destSeen as $destKey => $dest) {
+                if ($dest['section'] === '') continue;
+                $incoming = (int) ($incomingPerDest[$destKey] ?? 0);
+                if ($incoming < 1) continue;
+                // FRESH, not the memoised roster: the occupancy a CAS protects
+                // must be read AFTER the version above. Served from the shared
+                // snapshot the count can predate the version, and the commit
+                // then passes honestly on a count that was already stale when
+                // the version was taken.
+                $over = $this->_sectionCapacityExceeded(
+                    $dest['label'], $dest['section'], $to, $incoming, '', /* fresh */ true
+                );
+                if ($over !== null) {
+                    $cls = trim(preg_replace('/^Class\s+/i', '', $dest['label']));
+                    $sec = trim(preg_replace('/^Section\s+/i', '', $dest['section']));
+                    $capacityIssues[] = sprintf(
+                        '%s-%s: %d student(s) would occupy %d seat(s) (already %d active)',
+                        $cls, $sec, $incoming, (int) $over['capacity'], (int) $over['current']
+                    );
+                }
+            }
+
+            // Roll numbers — School+Session+Class+Section, case-insensitive,
+            // alphanumeric-safe (string comparison, never a numeric cast).
+            // Nothing is renumbered and no roll is cleared: the operator
+            // resolves the conflict and retries.
+            foreach ($plan as $sid => $p) {
+                if ($p['roll'] === '' || $p['section'] === '') continue;
+                $destKey = mb_strtolower("{$p['label']}|{$p['section']}");
+                $lc      = mb_strtolower($p['roll']);
+                $cls     = trim(preg_replace('/^Class\s+/i', '', $p['label']));
+                $sec     = trim(preg_replace('/^Section\s+/i', '', $p['section']));
+
+                if (isset($destRollOwner[$destKey][$lc])) {
+                    $rollIssues[] = "{$cls}-{$sec} Roll {$p['roll']}: {$p['name']} conflicts with "
+                                  . "{$destRollOwner[$destKey][$lc]} already in that section";
+                    continue;
+                }
+                if (isset($batchRollOwner[$destKey][$lc])) {
+                    $rollIssues[] = "{$cls}-{$sec} Roll {$p['roll']}: {$p['name']} and "
+                                  . "{$batchRollOwner[$destKey][$lc]} would both arrive with the same roll";
+                    continue;
+                }
+                $batchRollOwner[$destKey][$lc] = $p['name'];
+            }
+
+            // ── LC-7 · THE DESTINATION CLASS MUST ACTUALLY EXIST ─────────
+            //
+            // THE DEFECT THIS CLOSES. `_rolloverNextClass()` sends classOrder
+            // 12 to Alumni and EVERY other numeric class to classOrder + 1.
+            // That arm is hardcoded to 12, but a school's classes are
+            // CONFIGURED, in `schools.classes` — a school ending at Class 10
+            // is an ordinary tenant, not an edge case.
+            //
+            // For such a school the terminal cohort never graduates. It falls
+            // into the +1 arm and is promoted into the class ABOVE the
+            // school's last one — a class the school does not configure. The
+            // two guards above could not see it: capacity reads a `sections`
+            // record that does not exist for an unconfigured class, so the
+            // default (40) applies and nothing objects, and an empty
+            // destination has no rolls to collide with.
+            //
+            // Measured, not assumed: `scripts/graduation_policy_readonly.js`
+            // against live data found 2 of 3 tenanted schools terminate below
+            // Class 12, one of them with 12 active students sitting in its
+            // terminal class right now.
+            //
+            // ── WHY THIS IS A GUARD AND NOT A POLICY ─────────────────────
+            // It does NOT decide that the terminal cohort should graduate.
+            // Whether a school ending at Class 10 wants those students
+            // graduated, or is opening a Class 11 next year and wants them
+            // promoted, is the school's decision and cannot be derived from
+            // anything ZenX stores. What IS derivable — and what this asserts
+            // — is that moving a student into a class the school has not
+            // configured is never the intended outcome of either choice.
+            //
+            // All-or-nothing, matching D21: a per-student skip would strand
+            // the terminal cohort in the old session while everyone else
+            // moved, which is materially worse to unpick than a refusal that
+            // says exactly what to do.
+            //
+            // FAILS OPEN on an unreadable or unconfigured class list, mirroring
+            // this file's established fail-open-on-absence idiom: a school that
+            // has never configured `classes` must not be newly unable to roll
+            // over, and an infrastructure blip must not look like a policy.
+            $unconfiguredIssues = [];
+            // Explicit, matching Academic.php's idiom: this library is not
+            // autoloaded, and CI's loader does not make its statics available.
+            // Without this the call below is a fatal Error, and it would only
+            // surface the first time an operator ran a rollover.
+            require_once APPPATH . 'libraries/Entity_firestore_sync.php';
+            $cfgSchoolDoc  = $this->fs->get('schools', $this->fs->schoolId());
+            $cfgClassesRaw = (is_array($cfgSchoolDoc['classes'] ?? null)) ? $cfgSchoolDoc['classes'] : [];
+            if (!empty($cfgClassesRaw)) {
+                // Both sides go through the canonical normaliser before being
+                // compared. They are NOT written the same way: `classes` holds
+                // "Nursery" and "Class 10th", while _rolloverNextClass() emits
+                // "Class Nursery" and "Class 11th". A raw string comparison
+                // would report every foundational class as unconfigured.
+                $configured = [];
+                foreach ($cfgClassesRaw as $c) {
+                    $label = is_string($c)
+                        ? $c
+                        : (string) (is_array($c) ? ($c['className'] ?? $c['name'] ?? $c['label'] ?? '') : '');
+                    if (trim($label) === '') continue;
+                    $norm = Entity_firestore_sync::normalizeClassSection($label, '');
+                    if (($norm['className'] ?? '') !== '') {
+                        $configured[mb_strtolower($norm['className'])] = true;
+                    }
+                }
+
+                if (!empty($configured)) {
+                    $unconfiguredCount = [];
+                    foreach ($plan as $sid => $p) {
+                        $norm = Entity_firestore_sync::normalizeClassSection($p['label'], '');
+                        $key  = mb_strtolower((string) ($norm['className'] ?? $p['label']));
+                        if (isset($configured[$key])) continue;
+                        $unconfiguredCount[$p['label']] = ($unconfiguredCount[$p['label']] ?? 0) + 1;
+                    }
+                    foreach ($unconfiguredCount as $label => $n) {
+                        $unconfiguredIssues[] = sprintf(
+                            '%d student(s) would move into %s, which this school does not '
+                            . 'configure as a class', $n, $label
+                        );
+                    }
+                }
+            }
+
+            if (!empty($capacityIssues) || !empty($rollIssues) || !empty($unconfiguredIssues)) {
+                $parts = ['Promotion blocked — no students were promoted.'];
+                if (!empty($unconfiguredIssues)) {
+                    $parts[] = 'Unconfigured destination: '
+                             . implode('; ', array_slice($unconfiguredIssues, 0, 10))
+                             . (count($unconfiguredIssues) > 10
+                                 ? ' …and ' . (count($unconfiguredIssues) - 10) . ' more' : '')
+                             . '. Add the class under Classes & Sections if these students '
+                             . 'continue, or move them out of their current class first if '
+                             . 'they are leaving the school.';
+                }
+                if (!empty($capacityIssues)) {
+                    $parts[] = 'Capacity: ' . implode('; ', array_slice($capacityIssues, 0, 10))
+                             . (count($capacityIssues) > 10 ? ' …and ' . (count($capacityIssues) - 10) . ' more' : '');
+                }
+                if (!empty($rollIssues)) {
+                    $parts[] = 'Roll Number conflicts: ' . implode('; ', array_slice($rollIssues, 0, 10))
+                             . (count($rollIssues) > 10 ? ' …and ' . (count($rollIssues) - 10) . ' more' : '');
+                }
+                log_message('error', sprintf(
+                    'ACC_ROLLOVER_PROMOTION_BLOCKED schoolId=%s from=%s to=%s capacity_issues=%d '
+                    . 'roll_issues=%d unconfigured_issues=%d planned=%d',
+                    $this->school_id, $from, $to, count($capacityIssues), count($rollIssues),
+                    count($unconfiguredIssues), count($plan)
+                ));
+                // Audit the REFUSAL explicitly so history can never imply a
+                // promotion happened. studentsPromoted is 0 by construction —
+                // no write has occurred.
+                log_audit('Configuration', 'rollover_promotion_blocked', $to,
+                    "Promotion refused for {$from} → {$to}: validation failed",
+                    ['entityType' => 'session_rollover', 'meta' => [
+                        'fromSession'      => $from,
+                        'toSession'        => $to,
+                        'outcome'          => 'blocked',
+                        'studentsPromoted' => 0,
+                        'plannedStudents'  => count($plan),
+                        'capacityIssues'   => count($capacityIssues),
+                        'rollIssues'       => count($rollIssues),
+                        // LC-7 — recorded separately so a refusal caused by an
+                        // unconfigured destination is never read back as a
+                        // capacity problem, which would send the operator to
+                        // the wrong screen.
+                        'unconfiguredIssues' => count($unconfiguredIssues),
+                    ]]);
+                return $this->json_error(implode(' | ', $parts), 409);
+            }
+            // ══ END PRE-FLIGHT — every write below is now known safe ══════
+
+            // ══ WRITE STAGE — ONE ATOMIC COMMIT (D21) ═══════════════════════
+            //
+            // D21 says the rollover is all-or-nothing: if any pupil would fail a
+            // required validation, NO pupil moves. The pre-flight above proves
+            // that up front — but a pre-flight alone cannot deliver it. Between
+            // the check and the writes an admission, a transfer or a promotion
+            // can take the last seat in a destination, and a per-pupil write
+            // loop would then move some children and strand others. That is a
+            // half-promoted school: exactly the state D21 exists to prevent,
+            // and exactly what a read-then-write check produced elsewhere in
+            // this programme (three concurrent transfers put five pupils into a
+            // three-seat section).
+            //
+            // So every write goes in ONE Firestore commit: every promoted
+            // pupil, every graduation, and one CAS marker per destination
+            // section carrying the version captured BEFORE the occupancy that
+            // decided it. Firestore applies the per-write preconditions
+            // independently and rolls the whole commit back if any is stale, so
+            // a seat taken underneath us refuses the entire rollover with
+            // nothing written — which is what D21 asks for.
+            //
+            // Graduations ride in the same commit. A graduation releases a seat
+            // and consumes none, so it needs no marker — but D21 covers it too:
+            // a blocked rollover must not quietly graduate Class 12 either.
+            $looseWrites  = [];
+            $byDest       = [];
+            $graduatedN   = 0;
+            $promotedN    = 0;
+            $schoolPrefix = $schoolId . '_';
 
             foreach ($srcStudents as $row) {
                 if (!is_array($row)) {
@@ -3849,10 +4226,10 @@ class School_config extends MY_Controller
                     $summary['students_skipped']++;
                     continue;
                 }
-                // Idempotent resume: skip students already in the target
-                // session (a prior partial attempt promoted them). They still
-                // count toward destination occupancy — the fresh count below
-                // reads them — so a resumed run cannot double-fill a section.
+                // Idempotent resume: skip students already in the target session
+                // (a prior partial attempt promoted them). They still count
+                // toward destination occupancy — the pre-flight indexed them —
+                // so a resumed run cannot double-fill a section.
                 if (((string) ($stuData['session'] ?? '')) === $to) {
                     $summary['students_skipped']++;
                     log_message('error',
@@ -3862,120 +4239,159 @@ class School_config extends MY_Controller
                 }
 
                 // THE DOC ID IS NOT THE STUDENT ID. schoolWhere() returns the
-                // full document id ({school}_{student}); placeStudentGroup()
+                // full document id ({school}_{student}); the seat authority
                 // takes a BARE student id and applies the school prefix itself.
                 // Passing the doc id through wrote SCH_X_SCH_X_STU1203 — a
-                // SECOND document, so the pupil existed in both sessions at
-                // once. Graduation keeps using the doc id because it goes
-                // straight to fs->update().
+                // SECOND document, so the pupil existed in both sessions at once.
                 $stuKey = trim((string) ($stuData['studentId'] ?? ''));
                 if ($stuKey === '') {
-                    $__pfx  = $schoolId . '_';
-                    $stuKey = (strpos($stuId, $__pfx) === 0)
-                        ? substr($stuId, strlen($__pfx))
+                    $stuKey = (strpos($stuId, $schoolPrefix) === 0)
+                        ? substr($stuId, strlen($schoolPrefix))
                         : $stuId;
                 }
 
-                $order = $stuData['classOrder'] ?? null;
+                // LC-10 — resolved through the one transition table, the same
+                // call the pre-flight made, so validation and write can never
+                // disagree about where a pupil is going.
+                $next = $this->_rolloverNextClass($stuData['classOrder'] ?? null, $terminalOrder);
 
-                // Class 12 → Alumni. A graduation RELEASES a seat and consumes
-                // none, so it needs no capacity decision and stays a direct
-                // per-pupil write — the same rule change_status follows.
-                if ($order === 12 || (is_numeric($order) && (int)$order === 12)) {
-                    $graduates[$stuId] = true;
-                    continue;
-                }
-
-                $nextLabel = '';
-                $nextOrder = null;
-                if (is_numeric($order) && (int)$order >= 1 && (int)$order <= 11) {
-                    $nextOrder = (int)$order + 1;
-                    $nextLabel = 'Class ' . $nextOrder . (in_array($nextOrder, [11, 12], true) ? 'th' : $this->_ordinal($nextOrder));
-                } elseif (is_numeric($order) && isset($foundationalNext[(int)$order])) {
-                    $nextOrder = $foundationalNext[(int)$order];
-                    $nextLabel = $foundationalLabel[$nextOrder] ?? '';
-                    if ($nextLabel === '') {
-                        $summary['students_skipped']++;
-                        log_message('error',
-                            "ACC_ROLLOVER_SKIP schoolId={$this->school_id} reason=no_foundational_label "
-                            . "id={$stuId} classOrder={$order}");
-                        continue;
-                    }
-                } else {
-                    $summary['students_skipped']++;
-                    log_message('error',
-                        "ACC_ROLLOVER_SKIP schoolId={$this->school_id} reason=unknown_classOrder "
-                        . "id={$stuId} classOrder=" . var_export($order, true));
-                    continue;
-                }
-
-                // The section is carried, never re-derived: rollover advances a
-                // class, it does not re-section anybody.
-                $destSection = (string) ($stuData['section'] ?? '');
-                $key = $nextLabel . '|' . $destSection;
-                if (!isset($groups[$key])) {
-                    $groups[$key] = [
-                        'class'    => $nextLabel,
-                        'section'  => $destSection,
-                        'order'    => $nextOrder,
-                        'students' => [],
-                    ];
-                }
-                $groups[$key]['students'][$stuKey] = [
-                    'name' => (string) ($stuData['Name'] ?? $stuData['name'] ?? $stuId),
-                ];
-            }
-
-            // ── PASS 2a — GRADUATIONS (seat release, no capacity decision) ──
-            foreach (array_keys($graduates) as $stuId) {
-                try {
-                    $this->fs->update('students', $stuId, [
+                if ($next['kind'] === 'alumni') {
+                    $looseWrites[] = ['studentId' => $stuKey, 'data' => [
                         'status'        => 'Alumni',
                         'graduatedFrom' => $from,
                         'updatedAt'     => date('c'),
-                    ]);
-                    $summary['students_graduated']++;
-                    $consecFails = 0;
-                } catch (\Exception $e) {
-                    $consecFails++;
-                    $msg = "Student {$stuId} graduate: " . $e->getMessage();
-                    $summary['errors'][]      = $msg;
-                    $summary['failed_rows'][] = ['id' => $stuId, 'kind' => 'graduate', 'reason' => $e->getMessage()];
-                    log_message('error',
-                        "ACC_ROLLOVER_FAIL schoolId={$this->school_id} id={$stuId} "
-                        . "kind=graduate err=" . $e->getMessage());
-                    if ($consecFails >= $consecCap) break;
+                    ]];
+                    $graduatedN++;
+                    continue;
                 }
-            }
 
-            // ── PASS 2b — ONE GUARDED, ATOMIC COMMIT PER DESTINATION ────────
-            if ($consecFails < $consecCap) {
-                foreach ($groups as $g) {
-                    $res = $this->_rolloverPlaceGroup($g, $to, $from, $capPolicy, $summary);
-                    if ($res === 'placed') {
-                        $summary['students_promoted'] += count($g['students']);
-                        $consecFails = 0;
+                if ($next['kind'] === 'promote') {
+                    // The pre-flight validated $plan. A promote with no plan
+                    // entry means the two disagreed — refuse rather than write
+                    // an unvalidated placement.
+                    if (!isset($plan[$stuId])) {
+                        $summary['students_skipped']++;
+                        $summary['failed_rows'][] = [
+                            'id' => $stuId, 'kind' => 'promote',
+                            'reason' => 'not present in the validated plan',
+                        ];
+                        log_message('error',
+                            "ACC_ROLLOVER_SKIP schoolId={$this->school_id} reason=not_in_plan id={$stuId}");
                         continue;
                     }
-                    if ($res === 'refused') {
-                        // A capacity refusal is a decision, not a failure: the
-                        // pupils are untouched and the operator is told which
-                        // destination to re-section. It must not trip the
-                        // consecutive-failure circuit breaker.
-                        $summary['students_skipped'] += count($g['students']);
-                        continue;
-                    }
-                    $consecFails++;
-                    $summary['students_skipped'] += count($g['students']);
-                    if ($consecFails >= $consecCap) break;
+                    $p       = $plan[$stuId];
+                    $destKey = mb_strtolower("{$p['label']}|{$p['section']}");
+                    $byDest[$destKey][] = ['studentId' => $stuKey, 'data' => [
+                        'session'      => $to,
+                        'className'    => $p['label'],
+                        'section'      => $p['section'],
+                        'classOrder'   => $p['order'],
+                        'sectionKey'   => "{$p['label']}/{$p['section']}",
+                        'status'       => 'Active',
+                        'promotedFrom' => $from,
+                        'updatedAt'    => date('c'),
+                    ]];
+                    $promotedN++;
+                    continue;
                 }
-            }
 
-            if ($consecFails >= $consecCap) {
-                $summary['errors'][]  = "Aborted promotion loop after {$consecCap} consecutive failures.";
+                $summary['students_skipped']++;
                 log_message('error',
-                    "ACC_ROLLOVER_ABORT schoolId={$this->school_id} consec_fails={$consecFails} "
-                    . "promoted_before_abort={$summary['students_promoted']}");
+                    "ACC_ROLLOVER_SKIP schoolId={$this->school_id} reason=" . ($next['reason'] ?? 'unknown')
+                    . " id={$stuId} classOrder=" . var_export($stuData['classOrder'] ?? null, true));
+            }
+
+            if ($promotedN > 0 || $graduatedN > 0) {
+                // CI3 has no autoloader for libraries — both must be loaded
+                // before the first property access or it is a hard fatal.
+                $this->load->library('entity_firestore_sync', null, 'entity_sync');
+                $this->load->library('section_seat_guard', null, 'seatGuard');
+                $this->seatGuard->init($this->fs, $this->firebase,
+                    (string) $this->school_id, (string) ($this->admin_id ?? 'system'));
+
+                $placed = false;
+                $lastRes = ['status' => '', 'message' => ''];
+                for ($attempt = 1; $attempt <= self::ROLLOVER_SEAT_ATTEMPTS; $attempt++) {
+                    if ($attempt > 1) {
+                        // A CONFLICT means a competing placement committed first,
+                        // so the capacity decision is stale, not wrong. Re-decide
+                        // against the destinations as they are NOW — version
+                        // first, then a FRESH count — and try again. If a seat is
+                        // genuinely gone, D21 refuses the whole rollover, which is
+                        // the answer the operator should get.
+                        $stillOver = [];
+                        foreach ($destSeen as $dk => $dest) {
+                            if ($dest['section'] === '') continue;
+                            $destVersions[$dk] = $this->_sectionDecisionVersion(
+                                $dest['label'], $dest['section'], $to
+                            );
+                            $inc = (int) ($incomingPerDest[$dk] ?? 0);
+                            if ($inc < 1) continue;
+                            $ov = $this->_sectionCapacityExceeded(
+                                $dest['label'], $dest['section'], $to, $inc, '', /* fresh */ true
+                            );
+                            if ($ov !== null) {
+                                $cls = trim(preg_replace('/^Class\s+/i', '', $dest['label']));
+                                $sec = trim(preg_replace('/^Section\s+/i', '', $dest['section']));
+                                $stillOver[] = sprintf(
+                                    '%s-%s: %d student(s) would occupy %d seat(s) (already %d active)',
+                                    $cls, $sec, $inc, (int) $ov['capacity'], (int) $ov['current']
+                                );
+                            }
+                        }
+                        if (!empty($stillOver)) {
+                            log_audit('Configuration', 'rollover_promotion_blocked', $to, [
+                                'from' => $from, 'to' => $to, 'outcome' => 'blocked',
+                                'stage' => 'post_conflict_recheck',
+                                'capacityIssues' => count($stillOver),
+                            ]);
+                            return $this->json_error(
+                                'Promotion blocked — no students were promoted. Capacity: '
+                                . implode('; ', array_slice($stillOver, 0, 10)), 409);
+                        }
+                    }
+
+                    $destinations = [];
+                    foreach ($byDest as $dk => $students) {
+                        $destinations[] = [
+                            'classNode'       => $destSeen[$dk]['label'],
+                            'sectionNode'     => $destSeen[$dk]['section'],
+                            'session'         => $to,
+                            'decisionVersion' => (string) ($destVersions[$dk] ?? ''),
+                            'students'        => $students,
+                        ];
+                    }
+
+                    $lastRes = $this->seatGuard->placeStudentGroupsAtomic(
+                        $this->entity_sync, $destinations, $looseWrites
+                    );
+                    if (($lastRes['status'] ?? '') === Section_seat_guard::PLACED) { $placed = true; break; }
+                    // Only CONFLICT is retryable. FAILURE means the outcome is
+                    // unknown, and re-committing an unknown outcome is how
+                    // duplicate placements are made.
+                    if (($lastRes['status'] ?? '') !== Section_seat_guard::CONFLICT) break;
+                }
+
+                if (!$placed) {
+                    $summary['errors'][] = (string) ($lastRes['message'] ?? 'The rollover could not be committed.');
+                    log_message('error',
+                        "ACC_ROLLOVER_FAIL schoolId={$this->school_id} stage=atomic_commit "
+                        . "status=" . ($lastRes['status'] ?? '?') . " dests=" . count($byDest)
+                        . " students=" . ($promotedN + $graduatedN));
+                    log_audit('Configuration', 'rollover_promotion_blocked', $to, [
+                        'from' => $from, 'to' => $to, 'outcome' => 'blocked',
+                        'stage' => 'atomic_commit', 'status' => $lastRes['status'] ?? '?',
+                    ]);
+                    return $this->json_error(
+                        'Promotion blocked — no students were promoted. '
+                        . ($lastRes['message'] ?? ''), 409);
+                }
+
+                $summary['students_promoted']  += $promotedN;
+                $summary['students_graduated'] += $graduatedN;
+                log_message('error',
+                    "ACC_ROLLOVER_COMMIT schoolId={$this->school_id} dests=" . count($byDest)
+                    . " promoted={$promotedN} graduated={$graduatedN} atomic=1");
             }
         }
 
@@ -4112,8 +4528,47 @@ class School_config extends MY_Controller
             . "promoted={$summary['students_promoted']} graduated={$summary['students_graduated']} "
             . "skipped={$summary['students_skipped']} errors=" . count($summary['errors']));
 
+        // Phase 16.8 (SEC-14 — verified present, quality-improved).
+        //
+        // ⚠ CORRECTION TO THE PHASE 16.7 REPORT: that report claimed rollover
+        // wrote NO audit record. It was wrong — this call has always existed.
+        // My 16.7 grep window stopped at line ~3960 and this sits well below
+        // it. Rollover has been audited all along, via the same canonical
+        // log_audit() helper this controller already uses 30 times.
+        //
+        // The one real weakness: the summary was JSON-stuffed into the
+        // free-text DESCRIPTION, so it could be read by a human but not
+        // queried or aggregated. log_audit() accepts a structured $context
+        // array, so the operational facts now go there — who rolled what,
+        // how many sections and students moved, and whether the operator
+        // edited any capacity on the way through (SEC-16).
+        //
+        // Actor, role, tenant, IP and timestamp are added by log_audit()
+        // itself and are deliberately NOT duplicated here.
         log_audit('Configuration', 'rollover_session', $to,
-            "Rolled over {$from} → {$to} (status={$intentStatus}): " . json_encode($summary));
+            "Rolled over {$from} → {$to} (status={$intentStatus})",
+            [
+                // ⚠ log_audit() persists ONLY `appId`, `entityType` and `meta`
+                // from $context — any other top-level key is silently
+                // DISCARDED. Verified in helpers/audit_helper.php before
+                // writing this: a flat payload here would have looked correct
+                // and stored nothing.
+                'entityType' => 'session_rollover',
+                'meta' => [
+                    'fromSession'        => $from,
+                    'toSession'          => $to,
+                    'status'             => $intentStatus,
+                    'sectionsCopied'     => (int) ($summary['sections_copied']    ?? 0),
+                    'sectionsSkipped'    => (int) ($summary['sections_skipped']   ?? 0),
+                    'capacitiesEdited'   => (int) ($summary['capacities_edited']  ?? 0),
+                    'promotionRequested' => $promoteStudents ? 1 : 0,
+                    'studentsPromoted'   => (int) ($summary['students_promoted']  ?? 0),
+                    'studentsGraduated'  => (int) ($summary['students_graduated'] ?? 0),
+                    'studentsSkipped'    => (int) ($summary['students_skipped']   ?? 0),
+                    'errorCount'         => count($summary['errors'] ?? []),
+                    'setActive'          => $setActive ? 1 : 0,
+                ],
+            ]);
 
         $parts = [];
         if ($summary['sections_copied'])    $parts[] = $summary['sections_copied']    . ' sections copied';
@@ -4121,6 +4576,30 @@ class School_config extends MY_Controller
         if ($summary['students_graduated']) $parts[] = $summary['students_graduated'] . ' graduated to Alumni';
         $msg = 'Rollover ' . $from . ' → ' . $to . ' complete: ' . (empty($parts) ? 'no changes' : implode(', ', $parts)) . '.';
         if ($setActive) $msg .= ' Active session is now ' . $to . '.';
+
+        // ── LC-14 · SAY THAT THE PROMOTED STUDENTS OWE NOTHING YET ───────
+        //
+        // Rollover moves students; it deliberately does NOT raise fee demands
+        // for the destination session, and that is correct — the new session's
+        // fee structures may not exist yet, and admission is itself fail-closed
+        // on them. Generating demands here would either fail or invent amounts.
+        //
+        // What was missing is TELLING anyone. The success message read
+        // "12 sections copied, 3 students promoted" and stopped, leaving every
+        // promoted student Active in the new session owing nothing, with no
+        // indication that a further step is required. The codebase names that
+        // state as the danger ("Active-with-zero-demands") and the promotion
+        // path guards it with a deferred regeneration job; this path has no
+        // such job, so the operator IS the recovery mechanism and has to know.
+        //
+        // Confirmed at runtime on the emulator: after a rollover promoting 4
+        // students, `promote_jobs` was empty and every demand still belonged
+        // to the source session.
+        if ($summary['students_promoted'] > 0) {
+            $msg .= ' Promoted students have no fee demands in ' . $to
+                 . ' yet — set up the fee structure for ' . $to
+                 . ' and generate demands, or they will show as owing nothing.';
+        }
         if ($coupledNotice !== '') $msg = $coupledNotice . $msg;
 
         $this->json_success([
@@ -5233,146 +5712,122 @@ class School_config extends MY_Controller
         ]);
     }
 
+
     /**
-     * Place one rollover destination group through the canonical seat
-     * authority — the same one save_admission, change_status, enroll_student,
-     * _runStudentImport, execute_promotion and Classes::transfer_students use.
+     * The school's terminal classOrder — the class a student completes school
+     * from — derived from `schools.classes`.
      *
-     * The group is every pupil advancing into ONE (class, section) of the
-     * target session, so it is exactly the shape placeStudentGroup() takes:
-     * N student writes plus one CAS marker in a single atomic commit. Either
-     * the whole destination advances or none of it does, so a rollover can
-     * never leave half a class in last year's session.
+     * Derived, never assumed: this is the school's own declaration of what it
+     * runs, and it has to maintain it anyway to have sections and capacities.
+     * A school opening a Class 11 next year configures it first, which moves
+     * its terminal class before any rollover sees it.
      *
-     * ORDERING. The destination version is captured BEFORE the occupancy it
-     * protects, and the occupancy is read FRESH rather than from the memoised
-     * roster. Taken the other way round — or from a cached count — a placement
-     * landing in between leaves this decision stale while the commit still
-     * passes honestly, which is precisely how three concurrent transfers put
-     * five pupils into a three-seat section during this programme.
+     * Returns 12 when the list is missing, unreadable or yields no orderable
+     * class, so an unconfigured tenant behaves exactly as it did before
+     * LC-11 rather than graduating its whole roll.
      *
-     * RETRY. Only a genuine CONFLICT is retried, and a retry re-decides from a
-     * new version and a new count. A FAILURE outcome is unknown, and
-     * re-issuing an unknown outcome is how duplicate placements are made.
-     *
-     * @param  array  $g         ['class', 'section', 'order', 'students' => [id => ['name']]]
-     * @param  string $to        target session
-     * @param  string $from      source session (recorded as promotedFrom)
-     * @param  string $capPolicy 'report' | 'enforce'
-     * @param  array  $summary   by reference — overflow/refusal reporting
-     * @return string 'placed' | 'refused' | 'failed'
+     * Both label conventions are handled by normalising through
+     * `Entity_firestore_sync`: `schools.classes` stores "Nursery" and
+     * "Class 10th", and only the normaliser maps both onto a classOrder.
      */
-    private function _rolloverPlaceGroup(array $g, string $to, string $from, string $capPolicy, array &$summary): string
+    private function _terminalClassOrder(): int
     {
-        require_once APPPATH . 'libraries/Section_seat_guard.php';
+        require_once APPPATH . 'libraries/Entity_firestore_sync.php';
+        try {
+            $doc = $this->fs->get('schools', $this->fs->schoolId());
+        } catch (\Throwable $e) {
+            log_message('error', 'terminal class resolve failed: ' . $e->getMessage());
+            return 12;
+        }
+        $raw = (is_array($doc) && is_array($doc['classes'] ?? null)) ? $doc['classes'] : [];
+        $max = null;
+        foreach ($raw as $c) {
+            $label = is_string($c)
+                ? $c
+                : (string) (is_array($c) ? ($c['className'] ?? $c['name'] ?? $c['label'] ?? '') : '');
+            if (trim($label) === '') continue;
+            $n = Entity_firestore_sync::normalizeClassSection($label, '');
+            $ord = $n['classOrder'] ?? null;
+            if ($ord === null || !is_numeric($ord)) continue;
+            if ($max === null || (int) $ord > $max) $max = (int) $ord;
+        }
+        return $max === null ? 12 : $max;
+    }
 
-        $destClass   = (string) $g['class'];
-        $destSection = (string) $g['section'];
-        $ids         = array_keys($g['students']);
-        $want        = count($ids);
-        if ($want === 0) return 'placed';
-
-        // A pupil with no section cannot be placed: there is no seat to take
-        // and no roster to appear on. Report rather than invent a section.
-        if ($destSection === '') {
-            $summary['failed_rows'][] = [
-                'id'     => implode(',', $ids),
-                'kind'   => 'promote',
-                'reason' => "no section on source record for destination {$destClass}",
-            ];
-            log_message('error',
-                "ACC_ROLLOVER_NO_SECTION schoolId={$this->school_id} class={$destClass} count={$want}");
-            return 'refused';
+    /**
+     * Phase 17 (SEC-17) — canonical class transition for session rollover.
+     *
+     * Extracted so the PRE-FLIGHT and the WRITE LOOP resolve a student's
+     * destination through ONE implementation. If the pre-flight computed a
+     * destination even slightly differently it would validate capacity and
+     * roll numbers for a section the write never touches — the validation
+     * would be worthless while looking correct.
+     *
+     * Returns:
+     *   ['kind' => 'alumni']                          Class 12 → Alumni (no destination section)
+     *   ['kind' => 'promote', 'label' => …, 'order' => …]
+     *   ['kind' => 'skip',   'reason' => …]           unknown / unmappable classOrder
+     *
+     * Pure: no reads, no writes, no side effects.
+     */
+    private function _rolloverNextClass($order, $terminalOrder = 12): array
+    {
+        // ── LC-11 · COMPLETION HAPPENS AT THE SCHOOL'S LAST CLASS ────────
+        //
+        // This arm was hardcoded to classOrder 12. A school's classes are
+        // CONFIGURED, in `schools.classes`, and a school ending at Class 10 is
+        // an ordinary tenant — measured on live data, 2 of 3 tenanted schools
+        // terminate below Class 12, one of them with 12 active students in its
+        // terminal class.
+        //
+        // For those schools nobody ever completed schooling: the terminal
+        // cohort fell into the +1 arm below and was promoted into a class the
+        // school does not have.
+        //
+        // ── THIS IS NOT AN INVENTED POLICY ───────────────────────────────
+        // UDISE+, the Government of India system every one of these schools
+        // must already file into, records exactly three exits — "Left with
+        // TC", "Dropout", and "Passed Out" — and applies "Passed Out" at the
+        // school's OWN terminal class, naming Class 10 alongside Class 12. It
+        // does not hardcode a grade. The same separation appears in mature
+        // SIS products generally, where graduation is a distinct terminal exit
+        // code rather than a kind of withdrawal.
+        //
+        // So the model ZenX already has (status 'Alumni' + `graduatedFrom`) is
+        // correct; only the constant was wrong. `$terminalOrder` is the
+        // school's highest CONFIGURED classOrder — the school's own
+        // declaration of what it runs, which it must maintain anyway to have
+        // sections and capacities.
+        //
+        // Defaults to 12, so a caller that cannot determine the configuration
+        // behaves exactly as before rather than graduating an entire school.
+        //
+        // Strict equality on purpose. A student stamped ABOVE the terminal
+        // class is not silently graduated; they fall through to the promote
+        // arm and are refused by the unconfigured-destination guard, which
+        // reports the problem instead of hiding it behind a graduation.
+        $t = (is_numeric($terminalOrder) && (int) $terminalOrder !== 0) ? (int) $terminalOrder : 12;
+        if (is_numeric($order) && (int) $order === $t) {
+            return ['kind' => 'alumni'];
         }
 
-        // CI3 has no autoloader for libraries — both must be loaded before the
-        // first property access or it is a hard fatal. School_config does not
-        // otherwise use either one.
-        $this->load->library('entity_firestore_sync', null, 'entity_sync');
-        $this->load->library('section_seat_guard', null, 'seatGuard');
-        $this->seatGuard->init($this->fs, $this->firebase,
-            (string) $this->school_id, (string) ($this->admin_id ?? 'system'));
-
-        $payload = [];
-        foreach ($g['students'] as $stuId => $info) {
-            $payload[] = ['studentId' => (string) $stuId, 'data' => [
-                'Name'         => (string) ($info['name'] ?? $stuId),
-                'name'         => (string) ($info['name'] ?? $stuId),
-                'session'      => $to,
-                'className'    => $destClass,
-                'section'      => $destSection,
-                'classOrder'   => $g['order'],
-                'sectionKey'   => "{$destClass}/{$destSection}",
-                'status'       => 'Active',
-                'promotedFrom' => $from,
-                'updatedAt'    => date('c'),
-            ]];
+        if (is_numeric($order) && (int) $order >= 1 && (int) $order <= 11) {
+            $nextNum   = (int) $order + 1;
+            $nextLabel = 'Class ' . $nextNum
+                       . (in_array($nextNum, [11, 12], true) ? 'th' : $this->_ordinal($nextNum));
+            return ['kind' => 'promote', 'label' => $nextLabel, 'order' => $nextNum];
         }
 
-        for ($attempt = 1; $attempt <= self::ROLLOVER_SEAT_ATTEMPTS; $attempt++) {
-            $version = $this->_sectionDecisionVersion($destClass, $destSection, $to);
-            $cap     = $this->_sectionCapacity($destClass, $destSection, $to);
-            $now     = $this->_sectionActiveCountFresh($destClass, $destSection, $to);
-            $over    = ($now + $want) - $cap;
-
-            if ($cap > 0 && $over > 0) {
-                $record = [
-                    'class'     => $destClass,
-                    'section'   => $destSection,
-                    'capacity'  => $cap,
-                    'current'   => $now,
-                    'incoming'  => $want,
-                    'over'      => $over,
-                    'policy'    => $capPolicy,
-                    'advanced'  => ($capPolicy !== 'enforce'),
-                ];
-                $summary['capacity_overflows'][] = $record;
-                log_message('error',
-                    "ACC_ROLLOVER_OVERCAP schoolId={$this->school_id} dest={$destClass}/{$destSection} "
-                    . "session={$to} capacity={$cap} current={$now} incoming={$want} over={$over} "
-                    . "policy={$capPolicy} advanced=" . ($capPolicy !== 'enforce' ? '1' : '0'));
-
-                if ($capPolicy === 'enforce') {
-                    $summary['failed_rows'][] = [
-                        'id'     => implode(',', $ids),
-                        'kind'   => 'promote',
-                        'reason' => "{$destClass} {$destSection} would exceed capacity "
-                                  . "({$now}/{$cap}, {$want} incoming) — not advanced",
-                    ];
-                    return 'refused';
-                }
-            }
-
-            $res = $this->seatGuard->placeStudentGroup(
-                $this->entity_sync, $payload, $destClass, $destSection, $to, $version
-            );
-            $status = (string) ($res['status'] ?? '');
-            if ($status === Section_seat_guard::PLACED) return 'placed';
-            if ($status !== Section_seat_guard::CONFLICT) {
-                $summary['errors'][]      = "Rollover group {$destClass}/{$destSection}: "
-                                          . ($res['message'] ?? 'placement failed');
-                $summary['failed_rows'][] = [
-                    'id'     => implode(',', $ids),
-                    'kind'   => 'promote',
-                    'reason' => (string) ($res['message'] ?? 'placement failed'),
-                ];
-                log_message('error',
-                    "ACC_ROLLOVER_FAIL schoolId={$this->school_id} dest={$destClass}/{$destSection} "
-                    . "kind=group status={$status} err=" . ($res['message'] ?? ''));
-                return 'failed';
-            }
+        $foundationalNext  = [-5 => -4, -4 => -3, -3 => -2, -2 => -1, -1 => 1];
+        $foundationalLabel = [-4 => 'Class Pre-Nursery', -3 => 'Class Nursery',
+                              -2 => 'Class LKG', -1 => 'Class UKG', 1 => 'Class 1st'];
+        if (is_numeric($order) && isset($foundationalNext[(int) $order])) {
+            $nextOrder = $foundationalNext[(int) $order];
+            $nextLabel = $foundationalLabel[$nextOrder] ?? '';
+            if ($nextLabel === '') return ['kind' => 'skip', 'reason' => 'no_foundational_label'];
+            return ['kind' => 'promote', 'label' => $nextLabel, 'order' => $nextOrder];
         }
 
-        $summary['errors'][]      = "Rollover group {$destClass}/{$destSection}: "
-                                  . "destination kept changing under us; not advanced.";
-        $summary['failed_rows'][] = [
-            'id'     => implode(',', $ids),
-            'kind'   => 'promote',
-            'reason' => 'seat conflict after ' . self::ROLLOVER_SEAT_ATTEMPTS . ' attempts',
-        ];
-        log_message('error',
-            "ACC_ROLLOVER_CONFLICT schoolId={$this->school_id} dest={$destClass}/{$destSection} "
-            . "attempts=" . self::ROLLOVER_SEAT_ATTEMPTS);
-        return 'failed';
+        return ['kind' => 'skip', 'reason' => 'unknown_classOrder'];
     }
 }

@@ -454,4 +454,167 @@ class Section_seat_guard
             'attempts' => $attempts,
         ];
     }
+
+    /**
+     * Place students into MANY destination sections in ONE atomic commit.
+     *
+     * ── WHY THIS EXISTS SEPARATELY FROM placeStudentGroup() ─────────────────
+     * placeStudentGroup() is all-or-nothing for ONE destination, which is the
+     * right shape for admission, transfer and promotion: those operations have
+     * a single destination, so the group IS the operation.
+     *
+     * Session rollover does not. It moves an entire school at once, into as
+     * many destinations as the school has sections, and operator decision D21
+     * (2026-08-15) makes the whole rollover all-or-nothing: if ANY pupil would
+     * violate capacity or roll uniqueness, NO pupil moves. Committing one
+     * destination at a time cannot express that — the third destination's CAS
+     * can lose after the first two have already been written, leaving a school
+     * half-promoted, which is the exact state D21 exists to prevent.
+     *
+     * So this takes every destination together: all student writes, plus ONE
+     * CAS marker per destination section, each carrying its own decision
+     * version, in a single Firestore commit.
+     *
+     * ── THE CAPABILITY THIS RELIES ON ───────────────────────────────────────
+     * A Firestore commit applies independent per-write `currentDocument`
+     * preconditions and rolls the WHOLE commit back if any one of them is
+     * stale. Runtime-proven on the emulator rather than assumed: a commit of
+     * one student write + a fresh marker + a stale marker returned HTTP 400
+     * FAILED_PRECONDITION with the fresh marker absent and the student
+     * unchanged; the same commit with both versions fresh applied everything.
+     *
+     * ── ORDERING (the rule this whole programme is built on) ────────────────
+     * Each destination's version must be captured BEFORE the occupancy that
+     * decided it, and that occupancy must be read fresh. The caller owns both;
+     * this method refuses a destination with no version rather than committing
+     * one that nothing protects.
+     *
+     * @param object $entitySync Entity_firestore_sync
+     * @param array  $destinations Each: ['classNode','sectionNode','session',
+     *                             'decisionVersion','students'=>[['studentId','data'],…]]
+     * @param array  $looseWrites  Student writes needing NO seat — graduations
+     *                             release a seat and consume none — carried in
+     *                             the same commit so D21 covers them too.
+     *                             Each: ['studentId','data'].
+     * @return array{status:string,message:string,count:int}
+     */
+    public function placeStudentGroupsAtomic($entitySync, array $destinations, array $looseWrites = []): array
+    {
+        $ops        = [];
+        $studentN   = 0;
+        $sectionIds = [];
+
+        foreach ($destinations as $d) {
+            $classNode   = trim((string) ($d['classNode']   ?? ''));
+            $sectionNode = trim((string) ($d['sectionNode'] ?? ''));
+            $session     = trim((string) ($d['session']     ?? ''));
+            $version     = trim((string) ($d['decisionVersion'] ?? ''));
+            $students    = is_array($d['students'] ?? null) ? $d['students'] : [];
+            if (empty($students)) continue;
+
+            if ($classNode === '' || $sectionNode === '' || $session === '') {
+                return ['status' => self::FAILURE, 'count' => 0,
+                        'message' => 'Incomplete destination identity. Nothing was changed.'];
+            }
+            // Fail closed. A destination with no version has nothing proving its
+            // capacity decision was still true at commit time.
+            if ($version === '') {
+                return ['status' => self::FAILURE, 'count' => 0,
+                        'message' => "ACC_SEAT_NO_DECISION_VERSION for {$classNode}/{$sectionNode}. "
+                                   . 'Nothing was changed.'];
+            }
+
+            $sectionDocId = $this->fs->sectionDocId($classNode, $sectionNode, $session);
+            if (isset($sectionIds[$sectionDocId])) {
+                // Two markers on one document would make the second precondition
+                // fail against the first's own write.
+                return ['status' => self::FAILURE, 'count' => 0,
+                        'message' => "Destination {$classNode}/{$sectionNode} listed twice. "
+                                   . 'Nothing was changed.'];
+            }
+            $sectionIds[$sectionDocId] = true;
+
+            foreach ($students as $s) {
+                $sid  = (string) ($s['studentId'] ?? '');
+                $data = is_array($s['data'] ?? null) ? $s['data'] : [];
+                if ($sid === '') continue;
+                $built = $entitySync->buildStudentDoc($sid, $data);
+                if (!is_array($built) || empty($built['docId'])) {
+                    return ['status' => self::FAILURE, 'count' => 0,
+                            'message' => "Could not prepare the record for student {$sid}. "
+                                       . 'Nothing was changed.'];
+                }
+                $ops[] = ['collection' => 'students', 'docId' => $built['docId'],
+                          'data' => $built['doc'], 'merge' => true];
+                $studentN++;
+            }
+
+            $ops[] = [
+                'op'           => 'update',
+                'collection'   => 'sections',
+                'docId'        => $sectionDocId,
+                'merge'        => true,
+                // Microsecond time plus a nonce: an identical value is a no-op,
+                // updateTime would not advance, and the next commit's
+                // precondition would still pass. That defect gave one section an
+                // occupancy of five on a capacity of two.
+                'data'         => [self::MARKER_FIELD => sprintf(
+                    '%s.%06d#%s', date('c'), (int) ((microtime(true) - (int) microtime(true)) * 1e6),
+                    bin2hex(random_bytes(6))
+                )],
+                'precondition' => ['updateTime' => $version],
+            ];
+        }
+
+        foreach ($looseWrites as $s) {
+            $sid  = (string) ($s['studentId'] ?? '');
+            $data = is_array($s['data'] ?? null) ? $s['data'] : [];
+            if ($sid === '') continue;
+            $built = $entitySync->buildStudentDoc($sid, $data);
+            if (!is_array($built) || empty($built['docId'])) {
+                return ['status' => self::FAILURE, 'count' => 0,
+                        'message' => "Could not prepare the record for student {$sid}. "
+                                   . 'Nothing was changed.'];
+            }
+            $ops[] = ['collection' => 'students', 'docId' => $built['docId'],
+                      'data' => $built['doc'], 'merge' => true];
+            $studentN++;
+        }
+
+        if (empty($ops)) {
+            return ['status' => self::PLACED, 'message' => '', 'count' => 0];
+        }
+
+        // Firestore commits at most 500 writes. This must REFUSE rather than
+        // split: splitting would produce exactly the partial rollover D21
+        // forbids, in the one case where the school is large enough for it to
+        // hurt most.
+        if (count($ops) > 500) {
+            return ['status' => self::FAILURE, 'count' => 0,
+                    'message' => 'This rollover needs ' . count($ops) . ' writes in one atomic commit, '
+                               . 'above the 500 Firestore allows. Roll over in stages — by class range — '
+                               . 'so each stage stays whole. Nothing was changed.'];
+        }
+
+        self::trace('guard.multi', ['dests' => count($sectionIds), 'students' => $studentN, 'ops' => count($ops)]);
+
+        try {
+            $last = $this->firebase->firestoreCommitBatchStatus($ops);
+        } catch (\Throwable $e) {
+            return ['status' => self::FAILURE, 'count' => 0,
+                    'message' => 'The rollover could not be committed: ' . $e->getMessage()];
+        }
+
+        $status = (string) ($last['status'] ?? '');
+        if ($status === 'SUCCESS') {
+            return ['status' => self::PLACED, 'message' => '', 'count' => $studentN];
+        }
+        if ($status === 'PRECONDITION_CONFLICT') {
+            return ['status' => self::CONFLICT, 'count' => 0,
+                    'message' => 'A destination section changed while the rollover was being prepared. '
+                               . 'No pupil was moved.'];
+        }
+        return ['status' => self::FAILURE, 'count' => 0,
+                'message' => (string) ($last['message'] ?? 'The rollover could not be committed.')];
+    }
 }
