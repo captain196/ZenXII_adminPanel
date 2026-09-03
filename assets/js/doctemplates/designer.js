@@ -1075,6 +1075,20 @@ const TYPE_LABEL = {text:"Text", image:"Image", shape:"Line", table:"Table",
                     qr:"QR code", pageNumber:"Page number"};
 const typeLabel = t => TYPE_LABEL[t] || String(t||"");
 
+/**
+ * A stored asset path -> a URL the browser can fetch.
+ *
+ * Paths are stored school-relative ("uploads/SCH_x/doctemplates/assets/ab12.png")
+ * because that is what the PDF renderer resolves against the filesystem. The
+ * browser needs it ROOT-relative: left as-is on /doc_templates/design/... it
+ * would resolve to /doc_templates/uploads/... and 404.
+ */
+function assetUrl(src){
+  const s=String(src||"");
+  if(/^(https?:)?\/\//.test(s) || s.startsWith("data:")) return s;   // already absolute
+  return s.startsWith("/") ? s : "/" + s;
+}
+
 function relTime(iso){
   if(!iso) return "just now";
   const t = Date.parse(iso);
@@ -1308,8 +1322,21 @@ function objectHTML(o, forEdit){
       const v=fieldValue(o.bindKey);
       return `<div class="ph">${esc((FIELD[o.bindKey]||{}).label||o.bindKey)}${v==null?"":" · per document"}</div>`;
     }
+    /* Freshly dropped: the in-memory data URL, so it appears the instant you
+       drop it, before the upload has finished. */
     if(o.asset && o.asset.dataUrl)
       return `<img class="asset-img" src="${o.asset.dataUrl}" alt="">`;
+    /* SAVED: the uploaded path. This branch was missing, and it is why an
+       image vanished from the canvas after a reload.
+    
+       The canvas only ever rendered asset.dataUrl — the preview copy — and I
+       stopped persisting that copy when images began uploading properly, so
+       there was nothing left to draw from. The picture was saved, stored under
+       its content hash, and printed correctly in every proof PDF; the one place
+       it did not appear was the screen where you had just put it. Worse than
+       losing it, because everything downstream said it was fine. */
+    if(o.content && o.content.src)
+      return `<img class="asset-img" src="${assetUrl(o.content.src)}" alt="">`;
     const k=ASSET_KINDS[o.assetKind]||{label:o.content.label||"image"};
     return `<div class="ph">${esc(k.label)}<br><span style="opacity:.7">drop a file</span></div>`;
   }
