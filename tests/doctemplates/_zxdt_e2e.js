@@ -1590,6 +1590,80 @@ window.ZXDT_E2E = async function (only) {
              note: "online=" + SRV.online + " fetch restored=" + (window.fetch === realFetch) };
   });
 
+  /* ==================================================================
+     V · three-way merge
+
+     Figma's finding is that most concurrent edits touch DIFFERENT objects, so
+     the merge — not the dialog — is the common path. If this is wrong, the
+     product silently loses somebody's work, which is the one outcome worse
+     than an annoying prompt.
+     ================================================================== */
+  G("V · merge (collaboration)");
+
+  const O = (id, x) => ({ id, type:"text", name:id, xMm:x, yMm:10, wMm:50, hMm:6,
+                          style:{sizePt:9,lineHeight:1.4}, content:{i18n:{en:{runs:[{t:id}]}}} });
+
+  await T("V1", "edits to different objects merge, and both survive", () => {
+    const base   = [O("a",1), O("b",2), O("c",3)];
+    const mine   = [O("a",99), O("b",2), O("c",3)];      // I moved a
+    const theirs = [O("a",1),  O("b",88), O("c",3)];     // they moved b
+    const r = mergeObjects(base, mine, theirs);
+    const m = Object.fromEntries(r.merged.map(o=>[o.id,o]));
+    return { ok: r.overlap.length===0 && m.a.xMm===99 && m.b.xMm===88 && m.c.xMm===3,
+             note: `overlap=${r.overlap.length} a=${m.a.xMm} b=${m.b.xMm}` };
+  });
+
+  await T("V2", "the same object changed on both sides is reported, not guessed", () => {
+    const base   = [O("a",1), O("b",2)];
+    const mine   = [O("a",99), O("b",2)];
+    const theirs = [O("a",77), O("b",2)];
+    const r = mergeObjects(base, mine, theirs);
+    return { ok: r.overlap.length===1 && r.overlap[0]==="a", note:"overlap "+r.overlap.join(",") };
+  });
+
+  /* The dangerous direction: their work vanishing without anyone being told. */
+  await T("V3", "an object only THEY added is kept", () => {
+    const r = mergeObjects([O("a",1)], [O("a",1)], [O("a",1), O("z",5)]);
+    return { ok: r.merged.some(o=>o.id==="z"), note:"ids "+r.merged.map(o=>o.id).join(",") };
+  });
+
+  await T("V4", "an object only I added is kept", () => {
+    const r = mergeObjects([O("a",1)], [O("a",1), O("y",7)], [O("a",1)]);
+    return { ok: r.merged.some(o=>o.id==="y"), note:"ids "+r.merged.map(o=>o.id).join(",") };
+  });
+
+  await T("V5", "an object they deleted stays deleted when I did not touch it", () => {
+    const r = mergeObjects([O("a",1), O("b",2)], [O("a",1), O("b",2)], [O("a",1)]);
+    return { ok: !r.merged.some(o=>o.id==="b"), note:"ids "+r.merged.map(o=>o.id).join(",") };
+  });
+
+  /* A delete on one side and an edit on the other is a genuine disagreement,
+     and resolving it silently either way loses a decision somebody made. */
+  await T("V6", "they deleted what I edited — reported as an overlap", () => {
+    const r = mergeObjects([O("a",1), O("b",2)], [O("a",1), O("b",55)], [O("a",1)]);
+    return { ok: r.overlap.includes("b"), note:"overlap "+r.overlap.join(",") };
+  });
+
+  await T("V7", "identical edits on both sides are not a conflict", () => {
+    const r = mergeObjects([O("a",1)], [O("a",42)], [O("a",42)]);
+    return { ok: r.overlap.length===0, note:"overlap "+r.overlap.length };
+  });
+
+  await T("V8", "no changes at all merges to what is stored", () => {
+    const base=[O("a",1),O("b",2)];
+    const r = mergeObjects(base, base, base);
+    return { ok: r.overlap.length===0 && r.merged.length===2 };
+  });
+
+  await T("V9", "order follows what is stored, so a merge does not reshuffle the page", () => {
+    const base   = [O("a",1), O("b",2), O("c",3)];
+    const theirs = [O("c",3), O("a",1), O("b",2)];       // they reordered
+    const mine   = [O("a",1), O("b",9), O("c",3)];       // I edited b
+    const r = mergeObjects(base, mine, theirs);
+    return { ok: r.merged.map(o=>o.id).join(",")==="c,a,b",
+             note: r.merged.map(o=>o.id).join(",") };
+  });
+
   document.removeEventListener("visibilitychange", __watch);
   if (__wentHidden || document.visibilityState !== "visible") {
     throw new Error(

@@ -53,6 +53,9 @@ class Doc_templates extends MY_Controller
         'get_blocks'     => 'view',
         'get_versions'   => 'view',
         'version_pdf'    => 'view',
+        'presence'       => 'view',
+        'leave'          => 'view',
+        'duplicate'      => 'edit',
         // writes
         'create'         => 'edit',
         'save'           => 'edit',
@@ -483,6 +486,96 @@ class Doc_templates extends MY_Controller
         header('X-Content-Type-Options: nosniff');
         readfile($file);
         exit;
+    }
+
+    /**
+     * Heartbeat: record that I am here, and report who else is.
+     *
+     * One call does both. At Firestore's cross-region latency a separate
+     * "who else" read would double the cost of something that runs every
+     * minute.
+     */
+    public function presence(): void
+    {
+        if (!$this->_require_post()) return;
+
+        $this->_run(function () {
+            $id = $this->safe_path_segment((string) $this->input->post('templateId'), 'templateId');
+            return $this->_presence()->heartbeat(
+                (string) $this->school_id, $id, $this->_actor(),
+                (string) ($this->session->userdata('admin_name') ?: $this->_actor())
+            );
+        });
+    }
+
+    /** Best-effort departure; rides on a page-unload beacon. */
+    public function leave(): void
+    {
+        if (!$this->_require_post()) return;
+
+        $this->_run(function () {
+            $id = $this->safe_path_segment((string) $this->input->post('templateId'), 'templateId');
+            return ['left' => $this->_presence()->leave(
+                (string) $this->school_id, $id, $this->_actor())];
+        });
+    }
+
+    /**
+     * Take my own copy — the escape hatch, and the branch.
+     *
+     * Available at any time and offered at every collision, so there is always
+     * an exit that keeps the work. The copy is a fresh draft: never published,
+     * never active, and carrying nothing of the original's lifecycle.
+     */
+    public function duplicate(): void
+    {
+        if (!$this->_require_post()) return;
+
+        $this->_run(function () {
+            $id = $this->safe_path_segment((string) $this->input->post('templateId'), 'templateId');
+
+            $src = $this->fs->get('documentTemplates', $id);
+            if (!is_array($src) || ($src['schoolId'] ?? null) !== $this->school_id) {
+                throw new RuntimeException('Template not found');
+            }
+
+            /* Objects may be supplied by the caller — that is the whole point
+               when this is reached from a conflict: the copy must carry what is
+               ON THEIR SCREEN, not what is stored, or duplicating to rescue
+               your work would save someone else's instead. */
+            $objects = json_decode((string) $this->input->post('objects'), true);
+            $seed = [
+                'name'             => (string) ($this->input->post('name')
+                                      ?: (($src['name'] ?? 'Template') . ' (copy)')),
+                'page'             => $src['page']   ?? [],
+                'header'           => $src['header'] ?? [],
+                'footer'           => $src['footer'] ?? [],
+                'objects'          => is_array($objects) ? $objects : ($src['objects'] ?? []),
+                'languages'        => $src['languages'] ?? ['en'],
+                'defaultLanguage'  => $src['defaultLanguage'] ?? 'en',
+                'contractRef'      => $src['contractRef'] ?? null,
+                'complianceBasis'  => $src['complianceBasis']  ?? [],
+                'complianceLayers' => $src['complianceLayers'] ?? [],
+                'starterId'        => $src['starterId'] ?? null,
+                'copiedFrom'       => $id,
+            ];
+
+            $r = $this->_templates()->create(
+                (string) $this->school_id, (string) ($src['docType'] ?? ''), $seed, $this->_actor());
+
+            log_audit(self::AUDIT_MODULE, 'template.duplicate', $r['templateId'],
+                      'Copied from ' . $id);
+
+            return ['templateId' => $r['templateId'], 'template' => $r['head']];
+        });
+    }
+
+    private function _presence(): Doc_presence
+    {
+        if (!isset($this->docpres)) {
+            $this->load->library('doc_presence', null, 'docpres');
+        }
+        return $this->docpres;
     }
 
     public function get_blocks(): void

@@ -888,3 +888,9 @@
    them out of the dialog. */
 .zxdt .tl__acts{ display:flex; gap:6px; margin-top:6px; flex-wrap:wrap; }
 .zxdt .tl__acts a.btn{ text-decoration:none; display:inline-flex; align-items:center; }
+
+/* Presence: informative, never alarming. Someone else being here is normal. */
+.zxdt .chip--live{ background:var(--info-dim); color:var(--info); border-color:transparent; }
+.zxdt .chip--live .dot{ animation:zxPulse 2s ease-in-out infinite; }
+@keyframes zxPulse{ 0%,100%{opacity:1} 50%{opacity:.35} }
+@media (prefers-reduced-motion:reduce){ .zxdt .chip--live .dot{ animation:none } }

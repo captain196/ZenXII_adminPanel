@@ -732,8 +732,11 @@ const S = {
   school:null, layerOff:{}, overrideReason:{}, lib:null, active:null,
   cmode:"edit",  // Content pane: "edit" (all fields) | "read" (proofread)
   loading:false, // true while the real library is still being fetched
-  conflict:false,      // a save was refused; stop attempting until reload
-  conflictShown:false  // the dialog is shown once, not once per attempt
+  conflict:false,      // a save was refused; stop attempting until resolved
+  conflictShown:false, // the dialog is shown once, not once per attempt
+  others:[],           // who else has this template open
+  readOnly:false,      // opened to look; saves are not scheduled
+  serverBase:null      // objects as loaded — the three-way merge base
 };
 
 /* ==========================================================================
@@ -862,6 +865,10 @@ const srv = {
   archive:  id => api("archive",  { method: "POST", body: { templateId: id } }),
   deactivate: id => api("deactivate", { method: "POST", body: { templateId: id } }),
   remove:   id => api("delete",     { method: "POST", body: { templateId: id } }),
+  presence: id => api("presence",   { method: "POST", body: { templateId: id } }),
+  leave:    id => api("leave",      { method: "POST", body: { templateId: id } }),
+  duplicate: (id, objects, name) => api("duplicate", { method: "POST",
+    body: { templateId: id, objects, name } }),
 
   uploadAsset: file => {
     const fd = new FormData(); fd.append("file", file);
@@ -912,6 +919,7 @@ function markDirty() {
      further attempt with ours fails the same way, and re-attempting is what
      turned one dialog into an endless one. */
   if (S.conflict) return;
+  if (S.readOnly) return;          // opened to look, not to edit
   /* Nor for a template that has no server document yet — the hub seeds S.tpl
      with a starter purely so it has something to draw. */
   if (!S.tpl || !isPersistedId(S.tpl.templateId, "autosave")) return;
@@ -979,6 +987,262 @@ function isPersistedId(id, where) {
   return false;
 }
 
+/* ==========================================================================
+   Collaboration — presence, merge, and a copy that always rescues your work
+   ==========================================================================
+
+   Modelled on what Figma actually concluded, not on what it looks like from
+   outside. They rejected general CRDTs: with every edit passing through one
+   server, last-writer-wins PER OBJECT is both correct and simple, because most
+   concurrent edits touch different objects. The expensive part of a collision
+   is not resolving it — it is the surprise.
+
+   So three things, in the order they matter:
+     1. say who else is here BEFORE any work is done
+     2. merge automatically when two people touched different objects
+     3. when they touched the same one, ask about THAT object, and always offer
+        a copy so nobody's work is the price of the decision                  */
+
+/**
+ * Someone else already has this open — say so before a single edit is made.
+ *
+ * Three doors, and none of them costs anybody their work:
+ *   look      — read the design without joining the fray
+ *   together  — edit; different objects merge silently, the same object asks
+ *   my copy   — branch, exactly as Figma's branching does for a design file
+ */
+async function offerRoomChoice(){
+  if(!SRV.online || !S.tpl) return;
+  let others=[];
+  try{ others = (await srv.presence(S.tpl.templateId)).others || []; }
+  catch(e){ return; }              // never block opening a template on this
+  S.others = others; paintPresence();
+  if(!others.length) return startPresence();
+
+  const who = others.map(o=>o.userName).join(", ");
+  const ago = others[0].secondsAgo < 60 ? "just now"
+            : Math.round(others[0].secondsAgo/60) + " min ago";
+
+  return new Promise(resolve=>{
+    modal(who + (others.length===1?" has":" have") + " this open",
+      "Seen " + ago + ". Nothing is locked — this is so you can decide now rather than find out later.",
+      `<p class="note">Editing together is usually fine: changes to <b>different</b> parts of the
+       template merge on their own, and you are only asked when you have both changed the same
+       thing.</p>
+       <p class="note" style="margin-bottom:0">Doing something substantial, or not sure? Take your
+       own copy and merge it later — nobody's work is at stake either way.</p>`,
+      `<button class="btn" id="rcLook">Just look</button>
+       <button class="btn" id="rcCopy">Work on my own copy</button><span class="spacer"></span>
+       <button class="btn btn--primary" id="rcEdit">Edit together</button>`, true);
+
+    const done = fn => { closeModal(); resolve(fn && fn()); };
+
+    zq("#rcEdit").onclick = ()=> done(()=>{ startPresence(); });
+
+    zq("#rcLook").onclick = ()=> done(()=>{
+      /* Read-only is enforced by not scheduling saves, and said out loud in the
+         status bar — a mode you cannot see is a mode you will forget you are in. */
+      S.readOnly = true; paintStatus();
+      toast("Looking only — nothing you change here will be saved");
+      startPresence();
+    });
+
+    zq("#rcCopy").onclick = async ()=>{
+      const b=zq("#rcCopy"); b.disabled=true;
+      try{
+        const out = await srv.duplicate(S.tpl.templateId, S.tpl.objects, S.tpl.name + " (my copy)");
+        await hydrateFromServer();
+        if(out.template) adoptTemplate(out.template, out.templateId);
+        done(()=> toast("Working on your own copy — merge it back when you are ready"));
+      }catch(e){ apiFail(e, "Making a copy"); b.disabled=false; }
+    };
+  });
+}
+
+let __presenceTimer = null;
+
+/**
+ * Tell the server I am here, every minute, and learn who else is.
+ *
+ * A minute is chosen against the freshness window on the server (90s): long
+ * enough that the cost is nothing, short enough that a colleague appears while
+ * it still matters. Stops when the designer is closed, because a heartbeat for
+ * a template nobody is looking at is a lie.
+ */
+function startPresence(){
+  stopPresence();
+  if(!SRV.online || !S.tpl || !isPersistedId(S.tpl.templateId, "presence")) return;
+  const beat = async () => {
+    if(S.screen!=="designer") return stopPresence();
+    try{
+      const r = await srv.presence(S.tpl.templateId);
+      S.others = r.others || [];
+      paintPresence();
+    }catch(e){ /* presence is a courtesy; never interrupt the work for it */ }
+  };
+  beat();
+  __presenceTimer = setInterval(beat, 60000);
+}
+function stopPresence(){ if(__presenceTimer){ clearInterval(__presenceTimer); __presenceTimer=null; } }
+
+/** A quiet marker in the header; it earns attention only when someone is there. */
+function paintPresence(){
+  const host = zq("#zxPresence"); if(!host) return;
+  const o = S.others || [];
+  if(!o.length){ host.innerHTML=""; host.title=""; return; }
+  const names = o.map(p=>p.userName).join(", ");
+  host.innerHTML = `<span class="chip chip--live" title="${esc(names)} also has this open">
+      <span class="dot"></span>${o.length===1?esc(o[0].userName):o.length+" others"} here</span>`;
+}
+
+/* Leaving is best effort: browsers may drop an unload request, and the server's
+   freshness window is what actually retires a session. */
+window.addEventListener("pagehide", ()=>{
+  if(SRV.online && S.tpl && isPersistedId(S.tpl.templateId,"leave")){
+    const fd=new FormData();
+    fd.append("templateId", S.tpl.templateId);
+    if(SRV.csrf.name) fd.append(SRV.csrf.name, SRV.csrf.hash);
+    try{ navigator.sendBeacon(SRV.base + "/leave", fd); }catch(e){}
+  }
+});
+
+/** Objects as they were when this template was loaded — the merge base. */
+function snapshotBase(){
+  S.serverBase = JSON.parse(JSON.stringify(S.tpl && S.tpl.objects || []));
+}
+
+const byId = list => Object.fromEntries((list||[]).map(o=>[o.id,o]));
+const same  = (a,b) => JSON.stringify(a) === JSON.stringify(b);
+
+/**
+ * Which object ids differ between two sets — added, removed or changed.
+ */
+function changedIds(base, next){
+  const B=byId(base), N=byId(next), ids=new Set([...Object.keys(B),...Object.keys(N)]);
+  return [...ids].filter(id => !same(B[id], N[id]));
+}
+
+/**
+ * Three-way merge at OBJECT granularity.
+ *
+ * Object, not property: a template has around sixteen objects and each is
+ * small, so an object is the unit a person actually thinks in ("the crest",
+ * "the reason line"). Property-level merging would resolve more collisions
+ * automatically and produce objects neither author would recognise.
+ */
+function mergeObjects(base, mine, theirs){
+  const mineChanged   = new Set(changedIds(base, mine));
+  const theirsChanged = new Set(changedIds(base, theirs));
+  const B=byId(base), M=byId(mine), T=byId(theirs);
+
+  /* Touching the same object is not by itself a disagreement. If we both made
+     the SAME change — two people fixing one typo, or the same block accepted
+     twice — there is nothing to choose between, and asking would be asking
+     somebody to arbitrate between two identical answers. Only differing values
+     are a real overlap. */
+  const overlap = [...mineChanged].filter(id => theirsChanged.has(id) && !same(M[id], T[id]));
+  const ids = [...new Set([...Object.keys(T), ...Object.keys(M)])];
+
+  const merged = ids.map(id=>{
+    if (mineChanged.has(id) && !theirsChanged.has(id)) return M[id];
+    if (theirsChanged.has(id) && !mineChanged.has(id)) return T[id];
+    return M[id] || T[id] || B[id];        // untouched, or overlapping
+  }).filter(Boolean);
+
+  /* Order follows THEIRS, since that is what is stored; anything I added goes
+     after. Two people reordering the same list is itself an overlap. */
+  const order = Object.keys(T);
+  merged.sort((a,b)=>{
+    const ia=order.indexOf(a.id), ib=order.indexOf(b.id);
+    return (ia<0?1e6:ia) - (ib<0?1e6:ib);
+  });
+
+  return { merged, overlap, mineChanged:[...mineChanged], theirsChanged:[...theirsChanged] };
+}
+
+/**
+ * A save was refused. Fetch what is stored, three-way merge, and only involve
+ * the person if we genuinely touched the same object.
+ */
+async function resolveConflict(silent){
+  let stored;
+  try { stored = (await srv.template(S.tpl.templateId)).template; }
+  catch(e){ apiFail(e, "Checking the current version"); S.conflict=true; paintStatus(); return false; }
+
+  const base = S.serverBase || [];
+  const { merged, overlap, theirsChanged } = mergeObjects(base, S.tpl.objects||[], stored.objects||[]);
+
+  if (!overlap.length) {
+    /* Disjoint edits. Take both, keep going, and SAY SO — a silent merge is
+       indistinguishable from having lost their changes. */
+    S.tpl.objects = merged;
+    S.tpl.lockVersion = stored.lockVersion;
+    snapshotBase();
+    const who = stored.updatedBy ? " with " + stored.updatedBy + "'s changes" : "";
+    const ok = await srvSaveDraft(true);
+    if (ok) {
+      toast("Merged" + who + " — " + theirsChanged.length + " object(s) of theirs, yours kept");
+      render();
+    }
+    return ok;
+  }
+
+  /* A real collision, on a named object. */
+  S.conflict = true; paintStatus();
+  if (S.conflictShown) return false;
+  S.conflictShown = true;
+
+  const M = Object.fromEntries((S.tpl.objects||[]).map(o=>[o.id,o]));
+  const T = Object.fromEntries((stored.objects||[]).map(o=>[o.id,o]));
+  const rows = overlap.map(id=>`<li><b>${esc(objLabel(M[id]||T[id]))}</b></li>`).join("");
+  const who  = stored.updatedBy || "someone else";
+
+  modal("You and " + who + " edited the same thing",
+    overlap.length + (overlap.length===1?" object":" objects") + " changed on both sides. Everything else merged cleanly.",
+    `<ul style="margin:0 0 10px 18px;font-size:12.5px;line-height:1.7">${rows}</ul>
+     <p class="note">Keeping yours overwrites theirs on those objects only — the rest of their
+     work is already merged in either way.</p>
+     <p class="note" style="margin-bottom:0">Not sure? Take a copy. Nothing is lost, and you can
+     compare the two side by side.</p>`,
+    `<button class="btn" id="cfTheirs">Keep theirs</button>
+     <button class="btn" id="cfCopy">Save mine as a copy</button><span class="spacer"></span>
+     <button class="btn btn--primary" id="cfMine">Keep mine</button>`, true);
+
+  const finish = () => { S.conflict=false; S.conflictShown=false; snapshotBase(); paintStatus(); };
+
+  const mine = zq("#cfMine");
+  if (mine) mine.onclick = async ()=>{
+    S.tpl.objects = merged;                    // merged already prefers mine on overlap
+    S.tpl.lockVersion = stored.lockVersion;
+    closeModal(); finish();
+    if (await srvSaveDraft(true)) { toast("Saved — your version kept on " + overlap.length + " object(s)"); render(); }
+  };
+
+  const theirs = zq("#cfTheirs");
+  if (theirs) theirs.onclick = ()=>{
+    adoptTemplate(stored, S.tpl.templateId);
+    closeModal(); finish();
+    toast("Took " + who + "'s version");
+  };
+
+  const copy = zq("#cfCopy");
+  if (copy) copy.onclick = async ()=>{
+    copy.disabled = true;
+    try{
+      const out = await srv.duplicate(S.tpl.templateId, S.tpl.objects, S.tpl.name + " (my copy)");
+      closeModal(); finish();
+      toast("Copied to “" + (out.template && out.template.name) + "” — nothing was overwritten");
+      await hydrateFromServer();
+      if (out.template) adoptTemplate(out.template, out.templateId);
+    }catch(e){ apiFail(e, "Copying"); copy.disabled=false; }
+  };
+
+  return false;
+}
+
+/** A person-facing name for an object, for the conflict list. */
+const objLabel = o => (o && (o.name || o.id)) || "an object";
+
 async function srvSaveDraft(silent) {
   if (!SRV.online || !S.tpl || !S.tpl.templateId) return false;
   // Nothing to save for a template that was never created on the server.
@@ -1006,35 +1270,14 @@ async function srvSaveDraft(silent) {
     return true;
   } catch (e) {
     if (e instanceof ApiError && e.code === 409) {
-      /* STOP SAVING, AND ASK ONCE.
+      /* MERGE FIRST, ASK ONLY IF WE COLLIDED.
       
-         This used to show the dialog and return — leaving S.dirty true, so the
-         next debounced autosave fired, conflicted again, and reopened it. Every
-         keystroke queued another copy. Dismissing it did nothing except buy a
-         second and a half, which is not a choice, it is a nag.
-      
-         A conflict is not transient: the stored lockVersion has moved and every
-         further save with this one WILL fail. So enter a conflicted state, stop
-         attempting, and say so persistently in the status bar rather than
-         interrupting again. The person keeps editing — nothing is taken away —
-         but the screen stops pretending a save is coming. */
-      S.conflict = true;
-      paintStatus();
-      if (S.conflictShown) return false;      // one dialog, not one per attempt
-      S.conflictShown = true;
-
-      modal("Someone else saved this template",
-        "Your changes are still on screen. They have not been saved, and theirs have not been lost.",
-        `<p class="note">This template was changed by someone else while you had it open.
-         Saving now would overwrite their work, so it was stopped — and it will keep being
-         stopped, so nothing here is saving until this is resolved.</p>
-         <p class="note" style="margin-bottom:0">Reload to see their version — your unsaved
-         changes will be gone, so copy anything you need first.</p>`,
-        `<button class="btn" data-close>Keep editing (nothing will save)</button><span class="spacer"></span>
-         <button class="btn btn--primary" id="cfReload">Reload their version</button>`, true);
-      const b = document.getElementById("cfReload");
-      if (b) b.onclick = () => location.reload();
-      return false;
+         This used to stop dead and offer a reload that threw your work away —
+         for any collision at all, including the common case where two people
+         edited entirely different parts of the template. Figma's finding is
+         that most concurrent edits touch different objects; refusing all of
+         them equally is what made a rare, real problem feel constant. */
+      return await resolveConflict(silent);
     }
     apiFail(e, "Save");
     return false;
@@ -1609,6 +1852,9 @@ function paintTopActions(){
      done: undo/redo, look back, prove, publish. The view toggles moved to the
      status bar, which is where the other view state already lives. */
   a.innerHTML = `
+    <span id="zxPresence"></span>
+    <button class="btn btn--ghost btn--sm" id="saveBtn" title="Save now — edits also save on their own">Save</button>
+    <span class="topbar__div"></span>
     <button class="btn btn--ghost btn--ico btn--sm" id="undoBtn" title="Undo — ⌘Z">↺</button>
     <button class="btn btn--ghost btn--ico btn--sm" id="redoBtn" title="Redo — ⌘⇧Z">↻</button>
     <span class="topbar__div"></span>
@@ -1740,6 +1986,11 @@ async function openTemplate(row){
   try{
     const r=await srv.template(row.id);
     adoptTemplate(r.template, row.id);
+    /* ASK BEFORE THE WORK, NOT AFTER IT.
+       The optimistic lock is correct and it speaks far too late — you meet your
+       colleague in a dialog whose least-bad option is to discard twenty minutes.
+       One read at open time turns that into a choice, while it is still free. */
+    await offerRoomChoice();
   }catch(e){
     apiFail(e, "Opening “"+(row.name||row.id)+"”");
     S.loading=false;
@@ -3177,7 +3428,9 @@ function paintStatus(){
      nobody asked and buries the one they did: is my work safe? The number is
      still there on hover for anyone debugging a conflict. */
   const save=zq("#sbSave");
-  save.innerHTML = S.conflict
+  save.innerHTML = S.readOnly
+    ? '<span class="sb--warn">Looking only — changes are not saved</span>'
+    : S.conflict
     ? '<span class="sb--warn">Not saving — someone else changed this template · reload</span>'
     : S.dirty
     ? '<span class="sb--warn">Unsaved changes</span>'
@@ -4081,6 +4334,24 @@ function onTopAction(e){
   if(b.id==="proofBtn") openProof();
   if(b.id==="pubBtn") openPublish();
   if(b.id==="histBtn") openHistory();
+  if(b.id==="saveBtn") saveNow();
+}
+
+/**
+ * Save, on purpose.
+ *
+ * Autosave stays — but Figma can omit a Save button because its sync is
+ * bulletproof, and ours is a debounced POST that can be refused. Hiding the
+ * control while the guarantee is weaker is a bluff, and the person paying for
+ * it is the one who closes a tab believing their work is safe.
+ */
+async function saveNow(){
+  const b=zq("#saveBtn"); if(b) b.disabled=true;
+  try{
+    if(!SRV.online){ toast("Offline — nothing is being saved"); return; }
+    if(!S.dirty && !S.conflict){ toast("Already saved"); return; }
+    if(await srvSaveDraft(true)) toast("Saved");
+  } finally { if(b) b.disabled=false; paintStatus(); }
 }
 zq("#crumb").addEventListener("click", e=>{
   const b=e.target.closest("button[data-go]"); if(b){ commitEdit(); go(b.dataset.go); }
@@ -4821,6 +5092,8 @@ function adoptTemplate(t, docId){
      server checks the same thing at publish time, by content and not by flag. */
   S.proofed=(t.lastProof&&t.lastProof.hash)?{hash:t.lastProof.hash, contentHash:t.lastProof.contentHash}:null;
   S.baseline=JSON.parse(JSON.stringify(t.objects||[]));
+  snapshotBase();          // the version I am editing against, for merging
+  S.conflict=false; S.conflictShown=false; S.readOnly=false;
   go("designer");
 }
 
