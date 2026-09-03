@@ -894,3 +894,7 @@
 .zxdt .chip--live .dot{ animation:zxPulse 2s ease-in-out infinite; }
 @keyframes zxPulse{ 0%,100%{opacity:1} 50%{opacity:.35} }
 @media (prefers-reduced-motion:reduce){ .zxdt .chip--live .dot{ animation:none } }
+
+/* Evidence level chips were 9px — under the 10px floor the rest of the module
+   now holds to, and they carry a compliance grade, not decoration. */
+.zxdt .lvl{ font-size:10px; }

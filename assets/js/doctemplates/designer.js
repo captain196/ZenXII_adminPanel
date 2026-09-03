@@ -1265,6 +1265,18 @@ async function srvSaveDraft(silent) {
     const out = await srv.save(S.tpl.templateId, patch, S.tpl.lockVersion || 0);
     S.tpl.lockVersion = out.lockVersion;
     S.dirty = false;
+    /* ADVANCE THE MERGE BASE.
+    
+       The base is "what the server had when I last agreed with it". Leaving it
+       at load time meant every edit I successfully saved afterwards still
+       counted as a difference from the base — so on the next collision it
+       appeared as changed on BOTH sides (mine, and theirs because the server
+       now has it) and was reported as a conflict against myself.
+    
+       Caught by the merge test: a colleague touched only "Title", and the
+       dialog accused us of both editing "Reason for leaving" — an object I had
+       edited and saved twenty seconds earlier, alone. */
+    snapshotBase();
     paintStatus();
     if (!silent) toast("Saved");
     return true;
@@ -3431,7 +3443,11 @@ function paintStatus(){
   save.innerHTML = S.readOnly
     ? '<span class="sb--warn">Looking only — changes are not saved</span>'
     : S.conflict
-    ? '<span class="sb--warn">Not saving — someone else changed this template · reload</span>'
+    /* "reload" was the remedy when a conflict was terminal. It is not any
+       more — the dialog merges what it can and offers Keep mine / Keep theirs /
+       Save as a copy — so telling someone to reload now points them at the one
+       action that still throws work away. */
+    ? '<span class="sb--warn">Paused — resolve the overlap to carry on saving</span>'
     : S.dirty
     ? '<span class="sb--warn">Unsaved changes</span>'
     : '<span class="sb--ok">All changes saved</span>';

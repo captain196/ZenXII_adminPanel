@@ -1649,6 +1649,18 @@ window.ZXDT_E2E = async function (only) {
     return { ok: r.overlap.length===0, note:"overlap "+r.overlap.length };
   });
 
+  /* The base must track what the server had at my LAST AGREEMENT with it, not
+     at load. Otherwise my own saved edits read as changed on both sides and the
+     next collision accuses me of conflicting with myself. */
+  await T("V10", "an edit I already saved is not a conflict later", () => {
+    const base   = [O("a",1), O("b",2)];
+    const afterMySave = [O("a",50), O("b",2)];      // I edited a, and it saved
+    // base advances to what I saved; they then change b only
+    const theirs = [O("a",50), O("b",99)];
+    const r = mergeObjects(afterMySave, afterMySave, theirs);
+    return { ok: r.overlap.length===0, note:"overlap "+r.overlap.join(",") };
+  });
+
   await T("V8", "no changes at all merges to what is stored", () => {
     const base=[O("a",1),O("b",2)];
     const r = mergeObjects(base, base, base);
