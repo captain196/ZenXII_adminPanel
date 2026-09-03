@@ -1709,10 +1709,17 @@ function paintGallery(){
   zq("#galSub").innerHTML = S.loading
     ? `Checking which template is active…`
     : act
-    ? `Every print point resolves <b>${esc(act.name)}</b> (v${act.publishedVersion}). Exactly one template is active per document type — activating another replaces it everywhere at once.`
+    /* activeVersion, NOT publishedVersion. This sentence said "resolves … (v4)"
+       while the row beneath it correctly said "In use · v3" — the same
+       substitution that made the card claim the newest published version was
+       live. A page that contradicts itself two lines apart is worse than one
+       that says nothing: the reader cannot tell which half to believe. */
+    ? `Every print point resolves <b>${esc(act.name)}</b> (v${act.activeVersion ?? act.publishedVersion}). Exactly one template is active per document type — activating another replaces it everywhere at once.`
     : `<b>Nothing is active for this type yet.</b> A template must be published, then activated, before any print point can resolve it.`;
 
   const mine=zq("#mineGrid"), st=zq("#starterGrid"); mine.innerHTML=""; st.innerHTML="";
+  /* Saved templates render as a LIST; the starters below stay a card grid. */
+  mine.classList.add("is-list");
 
   const card=(o)=>{
     const c=el("div","tpl-card");
@@ -1737,31 +1744,57 @@ function paintGallery(){
       ? "Loading your templates…"
       : "No templates of this type yet. Start from a starter below, or from a blank page — then publish it and set it active."));
 
+  /* YOUR TEMPLATES IS A LIST, NOT A WALL OF CARDS.
+  
+     As cards it was unusable at the width the panel gives us: three status
+     chips stacked one per line, the third action button CLIPPED OFF the card
+     edge, the descriptive line set in the MONO face so prose read like code,
+     and 40% of the card spent on a schematic thumbnail that looks the same for
+     every template of a type — so the one thing a card is for, telling two
+     templates apart, it could not do.
+  
+     A school has a handful of templates per type and needs to scan them:
+     which is live, what changed, what do I do next. A row answers that in one
+     line and leaves room for the actions. Starters below stay as cards — there
+     the preview IS the difference between them. */
   rows.forEach(row=>{
     const isActive = S.active[S.docType]===row.id;
     const st = templateState(row, isActive);
-    /* ONE chip. Three chips carrying three version numbers is what made this
-       unreadable — the reader has to work out which number matters. */
-    const chips = `<span class="chip chip--${st.tone}"><span class="dot"></span>${st.label}</span>`
-      + (st.waiting?`<span class="chip chip--published"><span class="dot"></span>v${st.waiting} published, not live</span>`:"")
-      + (st.unsaved?`<span class="chip chip--draft"><span class="dot"></span>Unpublished changes</span>`:"");
-    mine.appendChild(card({
-      name:row.name,
-      meta: st.detail, when: relTime(row.edited),
-      chips, objects:buildTpl(row).objects,
-      onclick:()=>openTemplate(row),
-      actions:`<div style="display:flex;gap:6px;margin-top:8px">
-        <button class="btn btn--sm" data-open="${row.id}">Open</button>
+
+    const r = el("div","tpl-row" + (isActive?" is-live":""));
+    r.innerHTML = `
+      <div class="tpl-row__thumb"></div>
+      <div class="tpl-row__main">
+        <div class="tpl-row__top">
+          <span class="tpl-row__name">${esc(row.name)}</span>
+          <span class="chip chip--${st.tone}"><span class="dot"></span>${st.label}${
+            st.key==="active"&&row.activeVersion?" · v"+row.activeVersion:""}</span>
+          ${st.waiting?`<span class="chip chip--published"><span class="dot"></span>v${st.waiting} ready</span>`:""}
+          ${st.unsaved?`<span class="chip chip--draft"><span class="dot"></span>draft v${row.version}</span>`:""}
+        </div>
+        <div class="tpl-row__detail">${esc(st.detail)}</div>
+        <div class="tpl-row__when">Edited ${esc(relTime(row.edited))}</div>
+      </div>
+      <div class="tpl-row__acts">
         ${st.waiting
           ? `<button class="btn btn--primary btn--sm" data-act="${row.id}">Make v${st.waiting} live</button>`
-          : ""}
-        ${isActive
-          ? `<button class="btn btn--sm" data-deact="${row.id}" style="color:var(--warn);border-color:var(--warn)">Deactivate</button>`
-          : (row.publishedVersion
-              ? `<button class="btn btn--primary btn--sm" data-act="${row.id}">Set active</button>`
-              : `<button class="btn btn--sm" disabled title="Publish it first">Set active</button>`)}
-      </div>`
-    }));
+          : (!isActive && row.publishedVersion
+              ? `<button class="btn btn--primary btn--sm" data-act="${row.id}">Make live</button>`
+              /* A never-published template shows the action DISABLED rather
+                 than hiding it. Offering nothing leaves the reader to work out
+                 why this row has fewer buttons than the one above it; a
+                 disabled control with a reason says what is missing. My first
+                 pass omitted it, and the suite caught the omission. */
+              : (!isActive
+                  ? `<button class="btn btn--sm" disabled title="Publish this template first — only a published version can go live">Make live</button>`
+                  : ""))}
+        <button class="btn btn--sm" data-open="${row.id}">Open</button>
+        ${isActive?`<button class="btn btn--ghost btn--sm" data-deact="${row.id}">Deactivate</button>`:""}
+      </div>`;
+    schematic(buildTpl(row).objects, zq(".tpl-row__thumb", r));
+    zq(".tpl-row__name", r).onclick = () => openTemplate(row);
+    zq(".tpl-row__thumb", r).onclick = () => openTemplate(row);
+    mine.appendChild(r);
   });
 
   const blank=el("button","tpl-card tpl-card--new");

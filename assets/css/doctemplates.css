@@ -828,3 +828,58 @@
 /* Panel help text was set at the same size and colour as the values it
    explains, so a three-line paragraph read as content rather than as a note. */
 .zxdt .insp .note{ font-size:11px; line-height:1.5; color:var(--ink3); }
+
+
+/* ==========================================================================
+   Your templates — a list you can scan
+   ==========================================================================
+   Replaces the card grid for saved templates. The cards failed at the panel's
+   real width: chips wrapped one per line, the last action clipped off the edge,
+   and the thumbnail — identical for every template of a type — took the space
+   that should have carried the answer. */
+.zxdt .tpl-row{
+  display:grid; grid-template-columns:44px minmax(0,1fr) auto;
+  gap:14px; align-items:center;
+  padding:12px 14px; margin-bottom:8px;
+  background:var(--panel); border:1px solid var(--line); border-radius:var(--r-sm);
+  transition:border-color var(--ease), background var(--ease);
+}
+.zxdt .tpl-row:hover{ border-color:var(--line2); background:var(--raised); }
+/* The live one is the answer to the only question this screen asks. */
+.zxdt .tpl-row.is-live{ border-left:3px solid var(--ok); }
+
+.zxdt .tpl-row__thumb{
+  position:relative; width:44px; height:60px; cursor:pointer;
+  background:var(--paper); border:1px solid var(--line); border-radius:3px; overflow:hidden;
+}
+.zxdt .tpl-row__thumb i{ position:absolute; background:rgba(42,28,20,.16); }
+.zxdt .tpl-row__thumb i.req{ background:rgba(188,90,60,.5); }
+.zxdt .tpl-row__thumb i.rule{ background:rgba(188,90,60,.65); }
+
+.zxdt .tpl-row__main{ min-width:0; }
+.zxdt .tpl-row__top{ display:flex; align-items:center; gap:7px; flex-wrap:wrap; margin-bottom:3px; }
+.zxdt .tpl-row__name{
+  font-size:14px; font-weight:650; letter-spacing:-.01em; cursor:pointer;
+  overflow:hidden; text-overflow:ellipsis; white-space:nowrap; max-width:100%;
+}
+.zxdt .tpl-row__name:hover{ color:var(--clay); }
+/* Prose in the PROSE face. This was set in the mono family, which made a plain
+   English sentence look like a code fragment. */
+.zxdt .tpl-row__detail{ font-family:var(--font-b); font-size:12px; color:var(--ink2); }
+.zxdt .tpl-row__when{ font-size:11px; color:var(--ink4); margin-top:2px; }
+
+/* Actions sit on one line and never clip — that is what the third column is
+   for, and why the middle column is minmax(0,1fr) rather than 1fr. */
+.zxdt .tpl-row__acts{ display:flex; align-items:center; gap:6px; flex-shrink:0; }
+
+@media (max-width:860px){
+  .zxdt .tpl-row{ grid-template-columns:44px minmax(0,1fr); }
+  .zxdt .tpl-row__acts{ grid-column:1 / -1; justify-content:flex-end; }
+}
+
+
+/* #mineGrid is a CARD grid — auto-fill columns sized for a preview tile. Rows
+   dropped into it inherited the card cell, so each stretched to 418px and its
+   actions ran outside the cell. The saved-templates list opts out of the grid
+   entirely; the starters below keep it. */
+.zxdt .gal-grid.is-list{ display:block; }
