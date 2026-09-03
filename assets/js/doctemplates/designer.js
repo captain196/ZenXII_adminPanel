@@ -4475,19 +4475,31 @@ async function openHistory(){
         <span>Nothing can be reproduced from this version.</span></span></li>`;
     }
     const canRoll = SRV.can.manage && !v.active;
+    const hash=(v.proofPdfHash||"");
+    const langs=v.pdfLangs||[];
+    /* SHOW IT BEFORE ASKING ANYONE TO MAKE IT LIVE. History could only
+       activate a version; there was no way to look at one first, which is the
+       wrong way round for a document a school is legally answerable for.
+       The frozen PDF is already on disk — this just opens it. */
+    const view = langs.map(l=>
+      `<a class="btn btn--sm" target="_blank" rel="noopener"
+          href="${SRV.base}/version_pdf?templateId=${encodeURIComponent(S.tpl.templateId)}&version=${v.version}&lang=${encodeURIComponent(l)}"
+       >View${langs.length>1?" ("+esc(l.toUpperCase())+")":" PDF"}</a>`).join("");
     return `<li><span class="tl__v">v${v.version}</span><span class="tl__m">
-      <b>Published${v.active?" · active":""}</b>
-      <span>${esc(v.publishedAt||"—")}${v.publishedBy?" by "+esc(v.publishedBy):""}
-        · ${esc(v.proofPdfHash||"no hash")} · mPDF ${esc(v.mpdfVersion||"?")}
-        · ${esc((v.fontManifest||[]).join(", ")||"no fonts recorded")}</span>
-      ${canRoll?`<button class="btn btn--sm" data-roll="${v.version}">Make v${v.version} active</button>`:""}
+      <b>Published${v.active?" · in use":""}</b>
+      <span>${esc(relTime(v.publishedAt))}${v.publishedBy?" by "+esc(v.publishedBy):""}
+        · mPDF ${esc(v.mpdfVersion||"?")}
+        · ${(v.fontManifest||[]).length} fonts
+        · <span class="mono" title="${esc(hash)}">${esc(hash.slice(0,19))}…</span></span>
+      <span class="tl__acts">${view}${
+        canRoll?`<button class="btn btn--sm" data-roll="${v.version}">Make v${v.version} active</button>`:""}</span>
     </span></li>`;
   }).join("");
 
   modal("Version history","Every published version is frozen forever",
     `<ul class="tl">
       <li><span class="tl__v">v${data.draftVersion}</span><span class="tl__m"><b>Draft — you are here</b>
-        <span>lockVersion ${S.tpl.lockVersion}${S.dirty?" · unsaved changes":""}</span></span></li>
+        <span title="lockVersion ${S.tpl.lockVersion}">${S.dirty?"Unsaved changes":"All changes saved"} · not published yet</span></span></li>
       ${rows||`<li><span class="tl__m"><b>Nothing published yet</b>
         <span>Publish this draft to freeze its first version.</span></span></li>`}
     </ul>

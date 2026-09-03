@@ -52,6 +52,7 @@ class Doc_templates extends MY_Controller
         'get_template'   => 'view',
         'get_blocks'     => 'view',
         'get_versions'   => 'view',
+        'version_pdf'    => 'view',
         // writes
         'create'         => 'edit',
         'save'           => 'edit',
@@ -395,6 +396,11 @@ class Doc_templates extends MY_Controller
                 }
                 $rows[] = [
                     'version'      => $v,
+                    /* Older snapshots were frozen before the proof record kept
+                       its file paths, so fall back to the naming convention
+                       proof_pdf() uses. A version published months ago should
+                       still be viewable. */
+                    'pdfLangs'     => $this->_versionPdfLangs($id, $v, $doc),
                     'publishedAt'  => $doc['publishedAt']  ?? null,
                     'publishedBy'  => $doc['publishedBy']  ?? null,
                     'proofPdfHash' => $doc['proofPdfHash'] ?? null,
@@ -408,6 +414,74 @@ class Doc_templates extends MY_Controller
                     'draftVersion'  => (int) ($head['version'] ?? 1),
                     'activeVersion' => $head['activeVersion'] ?? null];
         });
+    }
+
+    /**
+     * Stream the frozen PDF for one published version.
+     *
+     * History could only ever ACTIVATE a version — there was no way to look at
+     * one first. "Make this the certificate my school issues" was offered
+     * without "show me what it is", which is the wrong way round for a
+     * statutory document.
+     *
+     * Served through here rather than as a static file because
+     * uploads/.htaccess denies .pdf: a rendered certificate carries the
+     * school's letterhead, crest and signatures, and those must not be
+     * fetchable by anyone who can guess a filename. This checks the session,
+     * the capability and the tenant first.
+     */
+    /** Which languages have a readable PDF on disk for this version. */
+    private function _versionPdfLangs(string $id, int $v, array $doc): array
+    {
+        $out = [];
+        foreach (array_keys((array) ($doc['proofPdfPaths'] ?? [])) as $l) {
+            $out[$l] = true;
+        }
+        $dir = FCPATH . 'uploads/' . $this->school_id . '/doctemplates/_proofs/';
+        foreach ((array) ($doc['snapshot']['languages'] ?? ['en']) as $l) {
+            $l = preg_replace('/[^a-z]/', '', strtolower((string) $l));
+            if ($l !== '' && is_readable($dir . basename($id) . '_v' . $v . '_' . $l . '.pdf')) {
+                $out[$l] = true;
+            }
+        }
+        return array_keys($out);
+    }
+
+    public function version_pdf(): void
+    {
+        $id   = $this->safe_path_segment((string) $this->input->get('templateId'), 'templateId');
+        $ver  = (int) $this->input->get('version');
+        $lang = preg_replace('/[^a-z]/', '', strtolower((string) $this->input->get('lang'))) ?: 'en';
+
+        $head = $this->fs->get('documentTemplates', $id);
+        if (!is_array($head) || ($head['schoolId'] ?? null) !== $this->school_id) {
+            show_404();
+            return;
+        }
+
+        $snap = $this->fs->get('documentTemplateVersions', $id . '_v' . $ver);
+        $rel  = $snap['proofPdfPaths'][$lang] ?? null;
+        if (!$rel) {
+            // Snapshot predates paths being recorded — use the convention.
+            $rel = 'uploads/' . $this->school_id . '/doctemplates/_proofs/'
+                 . basename($id) . '_v' . $ver . '_' . $lang . '.pdf';
+        }
+
+        /* The stored path is ours, but treat it as untrusted anyway: resolve it
+           and require the result to sit inside THIS school's proof directory. */
+        $root = realpath(FCPATH . 'uploads/' . $this->school_id . '/doctemplates/_proofs');
+        $file = realpath(FCPATH . $rel);
+        if ($root === false || $file === false || !str_starts_with($file, $root . DIRECTORY_SEPARATOR)) {
+            show_404();
+            return;
+        }
+
+        header('Content-Type: application/pdf');
+        header('Content-Disposition: inline; filename="' . basename($file) . '"');
+        header('Content-Length: ' . filesize($file));
+        header('X-Content-Type-Options: nosniff');
+        readfile($file);
+        exit;
     }
 
     public function get_blocks(): void

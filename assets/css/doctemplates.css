@@ -883,3 +883,8 @@
    actions ran outside the cell. The saved-templates list opts out of the grid
    entirely; the starters below keep it. */
 .zxdt .gal-grid.is-list{ display:block; }
+
+/* History rows: the actions sit on their own line so a long hash never pushes
+   them out of the dialog. */
+.zxdt .tl__acts{ display:flex; gap:6px; margin-top:6px; flex-wrap:wrap; }
+.zxdt .tl__acts a.btn{ text-decoration:none; display:inline-flex; align-items:center; }

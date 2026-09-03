@@ -431,6 +431,14 @@ class Doc_template_service
             'fontManifest' => $proof['fontManifest'],
             'mpdfVersion'  => (string) $proof['mpdfVersion'],
             'pages'        => (int) ($proof['pages'] ?? 0),
+            /* WHERE THE RENDERED FILES ARE.
+               proof_pdf() writes one PDF per language and passes their paths,
+               and this record dropped them — so publish() froze a snapshot with
+               'proofPdfPaths' => [], and a published version could never be
+               shown to anybody. The snapshot names the hash, the fonts and the
+               engine, and then could not produce the document itself. */
+            'pdfPaths'     => (array) ($proof['pdfPaths'] ?? []),
+            'perLanguage'  => (array) ($proof['perLanguage'] ?? []),
             'validation'   => $proof['validation'] ?? ['blocking' => [], 'warnings' => []],
             'version'      => (int) ($head['version'] ?? 1),
             'renderedBy'   => $by,
