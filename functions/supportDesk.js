@@ -110,19 +110,46 @@ function ms(v) {
  *   Without it this query throws FAILED_PRECONDITION and the desk is never
  *   notified — silently, because a push that is never emitted logs nothing.
  */
+/** The fan-out ceiling. Recipients beyond this are NOT notified. */
+const DESK_RECIPIENT_CAP = 50;
+
+/**
+ * Staff who hold the Support module, capped — and NOISY about the cap.
+ *
+ * R5: this returned `.limit(50)` with no truncation signal, so at a school with
+ * 51+ Support holders, staff member 51 onward never learned a ticket existed and
+ * nothing anywhere said so. The desk looks healthy; a slice of it is simply deaf.
+ *
+ * Probing one PAST the cap is what makes truncation detectable at all: with
+ * `.limit(50)` a full page and an overflowing page are indistinguishable. The
+ * extra document is read and discarded.
+ *
+ * Same principle as R20 — the mechanism was correct and the failure was
+ * unobservable — so the signal is both logged AND carried onto the pushRequest
+ * document, where it is queryable after the fact rather than only visible to
+ * whoever happened to read the logs that day.
+ */
 async function deskRecipients(schoolId) {
   try {
     const snap = await db.collection('staffCapabilities')
       .where('schoolId', '==', schoolId)
       .where('modules', 'array-contains', 'Support')
-      .limit(50)
+      .limit(DESK_RECIPIENT_CAP + 1)          // +1 = the truncation probe
       .get();
-    return snap.docs.map((d) => d.id);
+    const ids = snap.docs.map((d) => d.id);
+    if (ids.length > DESK_RECIPIENT_CAP) {
+      const kept = ids.slice(0, DESK_RECIPIENT_CAP);
+      logger.error('[support] desk fan-out TRUNCATED — staff beyond the cap are not notified', {
+        schoolId, cap: DESK_RECIPIENT_CAP, atLeast: ids.length, notified: kept.length,
+      });
+      return { ids: kept, truncated: true };
+    }
+    return { ids, truncated: false };
   } catch (e) {
     logger.error('[support] deskRecipients failed — is the staffCapabilities index deployed?', {
       schoolId, error: e.message,
     });
-    return [];
+    return { ids: [], truncated: false };
   }
 }
 
@@ -228,7 +255,7 @@ exports.onSupportTicketCreated = onDocumentCreated(
 
     // ── notify the desk ──────────────────────────────────────────────────
     const lane = String(t.lane || 'normal');
-    const recipients = await deskRecipients(schoolId);
+    const { ids: recipients, truncated: deskTruncated } = await deskRecipients(schoolId);
     if (!recipients.length) {
       logger.warn('[support] no desk recipients — nobody holds the Support module', { schoolId });
       return;
@@ -241,6 +268,9 @@ exports.onSupportTicketCreated = onDocumentCreated(
     const confidential = lane !== 'normal';
     await emitPush(schoolId, 'TICKET_RAISED', `sup_new_${ticketId}`, {
       recipientStaffIds: recipients,
+      // Queryable after the fact: pushRequests where recipientsTruncated == true
+      // is the list of tickets some of the desk was never told about.
+      ...(deskTruncated ? { recipientsTruncated: true, recipientCap: DESK_RECIPIENT_CAP } : {}),
       ticketId,
       subject:       confidential ? 'A confidential report was submitted' : String(t.subject || ''),
       category:      confidential ? '' : String(t.category || ''),
@@ -383,14 +413,14 @@ exports.onSupportMessageCreated = onDocumentCreated(
     const assignee = String(t.assignedTo || '');
     if (reopened) {
       await emitPush(schoolId, 'TICKET_REOPENED', `sup_reo_${snap.id}`, {
-        recipientStaffIds: assignee ? [assignee] : await deskRecipients(schoolId),
+        recipientStaffIds: assignee ? [assignee] : (await deskRecipients(schoolId)).ids,
         ticketId,
       });
       return;
     }
 
     await emitPush(schoolId, 'TICKET_REPLIED', `sup_prep_${snap.id}`, {
-      recipientIds: assignee ? [assignee] : await deskRecipients(schoolId),
+      recipientIds: assignee ? [assignee] : (await deskRecipients(schoolId)).ids,
       ticketId,
       senderName: String(m.senderName || 'Parent'),
       preview:    String(m.body || '').slice(0, 160),

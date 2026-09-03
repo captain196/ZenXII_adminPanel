@@ -3298,6 +3298,38 @@ service cloud.firestore {
         // C-03: entries are FILENAMES; the full path is derived server-side.
         && (!('attachments' in request.resource.data)
             || request.resource.data.attachments.size() <= 3)
+        // R15: SIZE AND TAXONOMY BOUNDS. Before this the only ceiling on a
+        // ticket was Firestore's ~1 MB per-field limit, so a client could store
+        // a 100 KB subject or an arbitrary category string — both confirmed by
+        // execution (tests/support_desk_input_bounds.test.js, SD-T2-014).
+        //
+        // The numbers are NOT invented here; they mirror what the other layers
+        // already enforce, so the three surfaces cannot disagree:
+        //   subject  200  — a one-line summary; the panel truncates far earlier
+        //   body    5000  — exactly _text('body', 5000) on the staff side
+        //
+        // NO MINIMUM is enforced here, deliberately. SupportViewModel.canSubmit
+        // requires 5 characters for the OPENING message, but a reply legitimately
+        // runs shorter — the live thread on ticket #1 contains a two-character
+        // "Ok" — so a server-side minimum would deny real messages. The client
+        // minimum guards the compose form; it is not a data invariant.
+        // Subject is optional in the app, so it has no floor either.
+        //
+        // An enormous complaint still occupies one of the parent's five cap
+        // slots, which is what makes an unbounded create an abuse vector rather
+        // than a cosmetic one.
+        && request.resource.data.subject.size() <= 200
+        && (!('body' in request.resource.data)
+            || request.resource.data.body.size() <= 5000)
+        // An ALLOWLIST, matching SupportFirestoreRepository.categoryLabel()
+        // exactly. NOTE THE COUPLING: adding a category to the app now requires
+        // a rules deploy too, and shipping the app first denies every create in
+        // that category. That cost is accepted because 'conduct' carries routing
+        // meaning — a category is not merely a label here.
+        && request.resource.data.category in [
+             'fees', 'transport', 'academics', 'attendance', 'exams',
+             'certificates', 'health', 'app', 'conduct'
+           ]
         && underCap();
 
       // C-01 + C-02: the parent has no update path. Reopen happens in
@@ -3323,6 +3355,15 @@ service cloud.firestore {
         && request.resource.data.senderId   == request.auth.uid
         && request.resource.data.reporterId == request.auth.uid
         && request.resource.data.createdAt  == request.time
+        // R15: bound the body. No predicate touched its length before, so the
+        // only ceiling was Firestore's ~1 MB field limit — a ~100 KB message was
+        // accepted (SD-T2-015). 5000 mirrors _text('body', 5000) on the staff
+        // side, so a parent and a staff member are held to the same limit.
+        // Attachments on a MESSAGE were likewise uncapped while a TICKET was
+        // capped at 3 (SD-T2-020) — same module, same uploader, two limits.
+        && request.resource.data.body.size() <= 5000
+        && (!('attachments' in request.resource.data)
+            || request.resource.data.attachments.size() <= 3)
         && exists(/databases/$(database)/documents/supportTickets/$(request.resource.data.schoolId + '_' + request.resource.data.ticketId))
         && get(/databases/$(database)/documents/supportTickets/$(request.resource.data.schoolId + '_' + request.resource.data.ticketId)).data.reporterId == request.auth.uid
         // A CLOSED ticket takes no further messages. This rule previously read

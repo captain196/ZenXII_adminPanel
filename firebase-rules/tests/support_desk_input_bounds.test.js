@@ -67,7 +67,7 @@ afterAll(async () => { if (env) await env.cleanup(); });
 beforeEach(async () => { await env.clearFirestore(); await seed(0); });
 
 describe('SD-T2-014 — no server-side length or category validation on a ticket', () => {
-  test('CURRENT: an empty subject and a whitespace-only body are accepted', async () => {
+  test('an empty subject is still accepted — there is deliberately no minimum', async () => {
     // The staff side runs _text() with min/max bounds. The parent side has no
     // equivalent, so a blank complaint reaches the queue and occupies a slot.
     await assertSucceeds(
@@ -76,15 +76,15 @@ describe('SD-T2-014 — no server-side length or category validation on a ticket
     );
   });
 
-  test('CURRENT: a ~100KB subject is accepted — no length predicate exists', async () => {
-    await assertSucceeds(
+  test('R15: a ~100KB subject is now REFUSED (cap 200)', async () => {
+    await assertFails(
       parent().doc(`supportTickets/${SCHOOL}_TKT_BOUNDSHUGE00001`)
         .set(ticket('TKT_BOUNDSHUGE00001', { subject: 'x'.repeat(100000) }))
     );
   });
 
-  test('CURRENT: an arbitrary category string is accepted — no allowlist', async () => {
-    await assertSucceeds(
+  test('R15: an arbitrary category is now REFUSED (allowlist of 9)', async () => {
+    await assertFails(
       parent().doc(`supportTickets/${SCHOOL}_TKT_BOUNDSCAT000001`)
         .set(ticket('TKT_BOUNDSCAT000001', { category: 'zzz_not_a_real_category' }))
     );
@@ -117,15 +117,16 @@ describe('SD-T2-015 / SD-T2-020 — message body length and attachment count', (
     ...extra,
   });
 
-  test('SD-T2-015 CURRENT: a ~100KB message body is accepted', async () => {
-    await assertSucceeds(
+  test('R15: a ~100KB message body is now REFUSED (cap 5000)', async () => {
+    await assertFails(
       parent().collection('supportMessages').add(message({ body: 'y'.repeat(100000) }))
     );
   });
 
-  test('SD-T2-020 CURRENT: 6 attachments on a MESSAGE are accepted', async () => {
-    // supportTickets caps attachments at 3; supportMessages has no cap at all.
-    await assertSucceeds(
+  test('R15: 6 attachments on a MESSAGE are now REFUSED (cap 3, matching a ticket)', async () => {
+    // Both are capped at 3 now. They were not: a ticket was capped and a
+    // message was not, in the same module with the same uploader.
+    await assertFails(
       parent().collection('supportMessages')
         .add(message({ attachments: ['1.jpg','2.jpg','3.jpg','4.jpg','5.jpg','6.jpg'] }))
     );
