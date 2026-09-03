@@ -858,6 +858,7 @@ const srv = {
   activate: (id, version) => api("activate", { method: "POST",
     body: version == null ? { templateId: id } : { templateId: id, version: String(version) } }),
   archive:  id => api("archive",  { method: "POST", body: { templateId: id } }),
+  deactivate: id => api("deactivate", { method: "POST", body: { templateId: id } }),
 
   uploadAsset: file => {
     const fd = new FormData(); fd.append("file", file);
@@ -1773,7 +1774,8 @@ function paintGallery(){
           ${st.unsaved?`<span class="chip chip--draft"><span class="dot"></span>draft v${row.version}</span>`:""}
         </div>
         <div class="tpl-row__detail">${esc(st.detail)}</div>
-        <div class="tpl-row__when">Edited ${esc(relTime(row.edited))}</div>
+        <div class="tpl-row__when">Edited ${esc(relTime(row.edited))}${
+          row.editedBy?` by ${esc(row.editedBy)}`:""}</div>
       </div>
       <div class="tpl-row__acts">
         ${st.waiting
@@ -1869,9 +1871,35 @@ function openActivate(id){
      <p class="note" style="margin-bottom:0">Certificates already issued are unaffected — each one records the template version that produced it, and that record never changes.</p>`,
     `<button class="btn" data-close>Cancel</button><span class="spacer"></span>
      <button class="btn btn--primary" id="actGo">Set active</button>`);
-  zq("#actGo").onclick=()=>{
-    S.active[S.docType]=id; closeModal(); paintGallery();
-    toast(row.name+" is now the template every print point resolves");
+  zq("#actGo").onclick=async ()=>{
+    /* THIS ONLY EVER UPDATED LOCAL STATE.
+    
+       It set S.active, repainted, and announced "is now the template every
+       print point resolves" — without calling the server. Nothing was
+       persisted, so the change survived until the next reload and then
+       vanished, while the toast had already said the certificate was live.
+       That is the phantom-success class in its most consequential form: the one
+       action here that decides what a school legally issues, reporting done
+       when nothing happened.
+    
+       The designer's publish flow went through activateOnServer(); this
+       button, the one on the list, did not. */
+    const b=zq("#actGo"); if(b) b.disabled=true;
+    try{
+      if(SRV.online){
+        const out=await srv.activate(id);
+        S.active[S.docType]=id;
+        const r=libOf(S.docType).find(x=>x.id===id);
+        if(r) r.activeVersion=out.activeVersion ?? r.publishedVersion;
+      }else{
+        S.active[S.docType]=id;
+      }
+      closeModal(); paintGallery();
+      toast(row.name+" is now the template every print point resolves");
+    }catch(e){
+      apiFail(e, "Making it live");
+      if(b) b.disabled=false;
+    }
   };
 }
 zq("#mineGrid").addEventListener("click", e=>{
@@ -1884,8 +1912,24 @@ zq("#mineGrid").addEventListener("click", e=>{
       `<p style="margin-top:0;font-size:12.5px;line-height:1.6">With no active template, every print point for <b>${esc(t.name)}</b> fails closed — it refuses to render rather than falling back to some other template. That is the correct behaviour, and it is also a visible outage for the office.</p>`,
       `<button class="btn" data-close>Cancel</button><span class="spacer"></span>
        <button class="btn btn--primary" id="deactGo" style="background:var(--warn);border-color:var(--warn)">Deactivate anyway</button>`, true);
-    zq("#deactGo").onclick=()=>{ delete S.active[S.docType]; closeModal(); paintGallery();
-      toast("Deactivated — this document type has no active template", true); };
+    zq("#deactGo").onclick=async ()=>{
+      /* Same defect as activation: this deleted the client's own copy of the
+         pointer and announced the type deactivated, with no server call behind
+         it. It came back on the next reload — after somebody had been told a
+         school had stopped issuing a statutory document. */
+      const g=zq("#deactGo"); if(g) g.disabled=true;
+      try{
+        if(SRV.online) await srv.deactivate(b.dataset.deact);
+        delete S.active[S.docType];
+        const r=libOf(S.docType).find(x=>x.id===b.dataset.deact);
+        if(r) r.activeVersion=null;
+        closeModal(); paintGallery();
+        toast("Deactivated — this document type has no active template", true);
+      }catch(e){
+        apiFail(e, "Deactivating");
+        if(g) g.disabled=false;
+      }
+    };
   }
 });
 
@@ -3911,12 +3955,31 @@ zq("#dupToggle").onclick=()=>{
   toast(S.issuance.duplicate ? "Previewing as a duplicate — the statutory mark must appear"
                              : "Previewing as an original");
 };
-zq("#themeBtn").onclick=()=>{
-  const r=document.documentElement;
-  const cur=r.getAttribute("data-theme")||(matchMedia("(prefers-color-scheme:dark)").matches?"dark":"light");
-  r.setAttribute("data-theme", cur==="dark"?"light":"dark");
-  if(S.screen==="designer") layoutPage();
-};
+/* THEME: one control per page, speaking one vocabulary.
+   
+   The panel's day/night switch writes data-theme="day"|"night", and this
+   module's CSS already reads exactly that. This button wrote "dark"|"light" —
+   a third vocabulary nothing on the page understands. Clicking it left the
+   document in a theme neither the panel chrome nor the designer recognised, so
+   appearance silently fell back to the OS preference and the panel's own
+   switch stopped agreeing with the page. It also explains why toggling did
+   nothing visible here.
+   
+   Inside the panel the button is REMOVED — the panel already has a theme
+   switch, and two controls for one setting is how they drift apart. It stays
+   for the standalone harness, where nothing else provides one, and there it
+   now speaks day/night like everything else. */
+(function(){
+  const btn=zq("#themeBtn"); if(!btn) return;
+  if(SRV.online){ btn.remove(); return; }
+  btn.onclick=()=>{
+    const r=document.documentElement;
+    const cur=r.getAttribute("data-theme")
+      || (matchMedia("(prefers-color-scheme:dark)").matches?"night":"day");
+    r.setAttribute("data-theme", cur==="night"?"day":"night");
+    if(S.screen==="designer") layoutPage();
+  };
+})();
 window.addEventListener("resize", ()=>{ if(S.screen==="designer"){ layoutPage(); positionCtxbar(); } });
 
 /* ==========================================================================
@@ -4544,7 +4607,8 @@ async function hydrateFromServer(){
            announced "version 4 is what every print point resolves" while v3 was
            actually printing. The one number the card exists to report. */
         activeVersion:t.activeVersion!=null?t.activeVersion:null,
-        edited:t.updatedAt||""
+        edited:t.updatedAt||"",
+        editedBy:t.updatedBy||t.createdBy||""
       });
       if(t.activeVersion!=null) active[type]=docId;
     });

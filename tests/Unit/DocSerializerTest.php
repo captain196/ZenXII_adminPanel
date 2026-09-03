@@ -753,4 +753,29 @@ class DocSerializerTest extends TestCase
                                       'sample' => 'Aarav Sharma', 'p95' => 'Aarav Sharma'],
         ];
     }
+
+    /**
+     * One serializer, two sinks — and only one of them understands {PAGENO}.
+     *
+     * mPDF substitutes it per page; the browser prints the characters. So the
+     * preview footer read "{PAGENO}" where the PDF shows a number. Found by
+     * diffing preview text against text extracted from the proof PDF, which is
+     * a check neither one alone can make.
+     */
+    public function test_the_page_number_is_a_placeholder_for_mpdf_and_a_number_for_the_browser(): void
+    {
+        $tpl = ['templateId'=>'TPL1','languages'=>['en'],'defaultLanguage'=>'en',
+                'page'=>['size'=>'A4','orientation'=>'portrait'],
+                'objects'=>[['id'=>'pn','type'=>'pageNumber','name'=>'Page number',
+                             'xMm'=>15,'yMm'=>280,'wMm'=>180,'hMm'=>5,
+                             'style'=>['sizePt'=>8,'lineHeight'=>1.2],'content'=>[]]]];
+
+        $pdf = $this->s->render($tpl, [], 'en', ['contract'=>[], 'sample'=>'typical', 'forPdf'=>true]);
+        $this->assertStringContainsString('{PAGENO}', $pdf, 'mPDF needs the placeholder');
+
+        $web = $this->s->render($tpl, [], 'en', ['contract'=>[], 'sample'=>'typical', 'forPdf'=>false]);
+        $this->assertStringNotContainsString('{PAGENO}', $web,
+            'the browser prints the characters literally — the preview must not show them');
+        $this->assertStringContainsString('1', $web);
+    }
 }

@@ -276,7 +276,13 @@ class Doc_template_service
      *
      * @throws RuntimeException on conflict, or on saving a non-draft.
      */
-    public function save(string $docId, array $patch, int $expectedLockVersion): array
+    /**
+     * @param string $by Who is saving. Recorded as updatedBy, because
+     *        "edited 4 hours ago" answers half the question a second person
+     *        asks when they open a shared template — the other half is WHO,
+     *        and without it a change nobody remembers making has no owner.
+     */
+    public function save(string $docId, array $patch, int $expectedLockVersion, string $by = ''): array
     {
         $head = $this->head($docId);
 
@@ -296,13 +302,18 @@ class Doc_template_service
             );
         }
 
-        // Never let a caller move lifecycle fields through save().
-        foreach (['status', 'publishedVersion', 'activeVersion', 'templateId', 'schoolId'] as $k) {
+        // Never let a caller move lifecycle fields through save(), and never
+        // let one claim to be somebody else.
+        foreach (['status', 'publishedVersion', 'activeVersion', 'templateId', 'schoolId',
+                  'updatedBy', 'createdBy'] as $k) {
             unset($patch[$k]);
         }
 
         $patch['lockVersion'] = $stored + 1;
         $patch['updatedAt']   = $this->now();
+        if ($by !== '') {
+            $patch['updatedBy'] = $by;
+        }
         ($this->store['update'])(self::HEAD_COLLECTION, $docId, $patch);
 
         return $patch;
@@ -510,6 +521,7 @@ class Doc_template_service
             'version'          => $version + 1,
             'lockVersion'      => (int) ($head['lockVersion'] ?? 0) + 1,
             'updatedAt'        => $this->now(),
+            'updatedBy'        => $by,
         ];
         ($this->store['update'])(self::HEAD_COLLECTION, $docId, $headPatch);
 
@@ -669,6 +681,49 @@ class Doc_template_service
 
         return ['activeVersion' => $published, 'displaced' => $displaced,
                 'rollback' => $isRollback];
+    }
+
+    /**
+     * Stop issuing this document type — clear the active pointer.
+     *
+     * The UI has always offered "Deactivate" and there was no server operation
+     * behind it: the client deleted its own copy of the pointer, repainted, and
+     * announced the type deactivated. Nothing was persisted, so it came back on
+     * reload — after the person had been told a school had stopped issuing a
+     * statutory document.
+     *
+     * Deliberately a distinct act from archive(), which refuses while a
+     * template is active. This is how you say "stop issuing this type" without
+     * throwing the template away.
+     */
+    public function deactivate(string $docId, string $by = ''): array
+    {
+        $head = $this->head($docId);
+
+        if (($head['activeVersion'] ?? null) === null) {
+            throw new RuntimeException(
+                "Doc_template_service: '$docId' is not the active template, so there is "
+                . 'nothing to deactivate.'
+            );
+        }
+
+        $was = (int) $head['activeVersion'];
+        $patch = [
+            'activeVersion' => null,
+            'lockVersion'   => (int) ($head['lockVersion'] ?? 0) + 1,
+            'updatedAt'     => $this->now(),
+            'updatedBy'     => $by,
+        ];
+        ($this->store['update'])(self::HEAD_COLLECTION, $docId, $patch);
+
+        /* Logged with what it COST. "Deactivated" three months later does not
+           convey that every print point for this document type began failing
+           closed at that moment. */
+        $this->log('deactivate', $docId,
+            "Deactivated v$was — no template is active for "
+            . ($head['docType'] ?? 'this type') . ' until one is set');
+
+        return $patch;
     }
 
     /* ================================================================== *

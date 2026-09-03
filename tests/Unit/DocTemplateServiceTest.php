@@ -807,4 +807,53 @@ class DocTemplateServiceTest extends TestCase
         $r = $this->svc->create('SCH1', 'bonafide', ['name' => '   '], 'STA1');
         $this->assertSame('Untitled template', $r['head']['name']);
     }
+
+    /* ---------------------------------------------------------------- *
+     * Deactivate — the UI offered it for a long time with nothing behind it
+     * ---------------------------------------------------------------- */
+
+    public function test_deactivate_clears_the_active_pointer(): void
+    {
+        $this->recordProof('SCH1_TPL0007');
+        $this->svc->publish('SCH1_TPL0007');
+        $this->svc->activate('SCH1_TPL0007');
+
+        $this->svc->deactivate('SCH1_TPL0007', 'STA1');
+
+        $this->assertNull($this->docs['documentTemplates']['SCH1_TPL0007']['activeVersion']);
+        $this->assertSame('STA1', $this->docs['documentTemplates']['SCH1_TPL0007']['updatedBy']);
+    }
+
+    public function test_deactivating_something_that_is_not_active_is_refused(): void
+    {
+        $this->expectException(RuntimeException::class);
+        $this->expectExceptionMessageMatches('/nothing to deactivate/');
+        $this->svc->deactivate('SCH1_TPL0007', 'STA1');
+    }
+
+    /** The log must carry the consequence, not just the verb. */
+    public function test_deactivate_is_audited_with_what_it_costs(): void
+    {
+        $this->recordProof('SCH1_TPL0007');
+        $this->svc->publish('SCH1_TPL0007');
+        $this->svc->activate('SCH1_TPL0007');
+        $this->svc->deactivate('SCH1_TPL0007', 'STA1');
+
+        $last = end($this->audit);
+        $this->assertSame('deactivate', $last[0]);
+        $this->assertStringContainsString('no template is active', $last[2]);
+    }
+
+    public function test_a_save_records_who_made_it(): void
+    {
+        $this->svc->save('SCH1_TPL0007', ['name' => 'Renamed'], 17, 'SSA0011');
+        $this->assertSame('SSA0011', $this->docs['documentTemplates']['SCH1_TPL0007']['updatedBy']);
+    }
+
+    /** A caller must not be able to claim to be somebody else. */
+    public function test_a_caller_cannot_set_updatedBy_through_the_patch(): void
+    {
+        $this->svc->save('SCH1_TPL0007', ['name' => 'X', 'updatedBy' => 'SOMEONE_ELSE'], 17, 'SSA0011');
+        $this->assertSame('SSA0011', $this->docs['documentTemplates']['SCH1_TPL0007']['updatedBy']);
+    }
 }

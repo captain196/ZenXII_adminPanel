@@ -64,6 +64,7 @@ class Doc_templates extends MY_Controller
         'publish'        => 'manage',
         'activate'       => 'manage',
         'archive'        => 'manage',
+        'deactivate'     => 'manage',
     ];
 
     public function __construct()
@@ -472,7 +473,7 @@ class Doc_templates extends MY_Controller
             if (!is_array($patch)) {
                 throw new InvalidArgumentException('patch must be a JSON object');
             }
-            $out = $this->_templates()->save($id, $patch, (int) $lock);
+            $out = $this->_templates()->save($id, $patch, (int) $lock, $this->_actor());
             return ['lockVersion' => $out['lockVersion']];
         });
     }
@@ -842,6 +843,21 @@ class Doc_templates extends MY_Controller
 
             return $this->_templates()->activate($id, $this->_actor(), $version);
         });
+    }
+
+    /**
+     * Clear the active pointer for this document type.
+     *
+     * The UI offered this from the start with no endpoint behind it — the
+     * client deleted its own copy of the pointer and said it was done.
+     */
+    public function deactivate(): void
+    {
+        if (!$this->_require_post()) return;
+        $id = $this->safe_path_segment((string) $this->input->post('templateId'), 'templateId');
+        log_audit(self::AUDIT_MODULE, 'template.deactivate_attempt', $id, 'Deactivate requested');
+
+        $this->_run(fn() => $this->_templates()->deactivate($id, $this->_actor()));
     }
 
     public function archive(): void
