@@ -31,7 +31,29 @@ $zxdtBoot = [
     'base'        => rtrim(base_url(), '/') . '/doc_templates',
 ];
 ?>
-<link rel="stylesheet" href="<?= base_url('assets/css/doctemplates.css') ?>">
+<?php
+/* CACHE-BUST BY FILE MTIME.
+ *
+ * These were plain URLs, so a browser that had loaded the designer once kept
+ * serving it from cache no matter how many times the file changed underneath.
+ * Someone testing a fix would be running the code from before it, hitting bugs
+ * that no longer existed and reporting them in good faith — which is exactly
+ * what happened: a save was refused by a tab running a build from before the
+ * lockVersion fix, while the same action succeeded in a freshly loaded one.
+ *
+ * The E2E harness got this treatment hours earlier, for the same reason, and
+ * this page was left out — so the ONE place it mattered to a person was the one
+ * place still stale.
+ *
+ * mtime, not a hand-maintained version: a number nobody has to remember to
+ * bump cannot be forgotten. */
+$zxAsset = function (string $rel) {
+    $abs = FCPATH . $rel;
+    $v   = @filemtime($abs) ?: time();
+    return base_url($rel) . '?v=' . $v;
+};
+?>
+<link rel="stylesheet" href="<?= $zxAsset('assets/css/doctemplates.css') ?>">
 
 <!-- Boot payload. The designer reads this instead of hardcoding anything.
      csrfHash travels here so api.js can attach the token to every POST — the
@@ -230,4 +252,4 @@ $zxdtBoot = [
 </div><!-- /.zxdt -->
 </div><!-- /.content-wrapper -->
 
-<script src="<?= base_url('assets/js/doctemplates/designer.js') ?>"></script>
+<script src="<?= $zxAsset('assets/js/doctemplates/designer.js') ?>"></script>

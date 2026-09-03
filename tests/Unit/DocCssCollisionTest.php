@@ -206,4 +206,29 @@ class DocCssCollisionTest extends TestCase
             '.zxdt .row must cancel bootstrap\'s clearfix pseudo-elements — inside our grid they '
             . 'are extra cells, and they staggered every two-column panel row');
     }
+
+    /**
+     * The designer's own assets must be cache-busted.
+     *
+     * With plain URLs a browser keeps serving the build it loaded first, so a
+     * person testing a fix runs the code from before it and reports bugs that
+     * were already gone. That is not hypothetical — a save was refused in a tab
+     * holding a pre-fix build while the same action succeeded in a fresh one,
+     * and it cost a round trip to work out.
+     */
+    public function test_the_designer_assets_are_cache_busted(): void
+    {
+        $view = file_get_contents(__DIR__ . '/../../application/views/doc_templates/index.php');
+
+        foreach (['designer.js', 'doctemplates.css'] as $asset) {
+            $this->assertDoesNotMatchRegularExpression(
+                '/(?:src|href)="<\?=\s*base_url\(\x27[^\x27]*' . preg_quote($asset, '/') . '\x27\)\s*\?>"/',
+                $view,
+                "$asset is linked with a bare base_url(), so browsers will keep serving a "
+                . 'stale copy after every change. Append a version.');
+        }
+        $this->assertStringContainsString('filemtime', $view,
+            'the version should come from the file itself — a number nobody has to remember '
+            . 'to bump cannot be forgotten');
+    }
 }
