@@ -4278,7 +4278,23 @@ async function proofOnServer(){
   try{
     if(S.dirty){
       say("Saving the draft — the server renders what is stored, not what is on screen");
-      if(!await srvSaveDraft(true)){ if(bar) bar.style.width="0"; return; }
+      if(!await srvSaveDraft(true)){
+        /* SAY WHY IT STOPPED.
+           The proof must render what is STORED, so a refused save means there
+           is nothing new to render — correct, but this used to reset the bar to
+           zero and return in silence, so pressing Render Proof simply did
+           nothing and there was no way to tell whether it was broken, slow, or
+           refusing. */
+        if(bar){ bar.style.width="0"; bar.classList.remove("is-working"); }
+        say(S.conflict
+          ? "STOPPED — this template was changed elsewhere, so your edits are not saved and "
+            + "there is nothing new to render. Reload to pick up the current version."
+          : "STOPPED — the draft could not be saved, and a proof can only render what is saved.");
+        toast(S.conflict
+          ? "Not proofed — reload to get the current version of this template"
+          : "Not proofed — the draft could not be saved", true);
+        return;
+      }
     }
     const langs=(S.tpl.languages||["en"]).length;
     say("Rendering "+langs+" language(s) at p95 · mPDF");
