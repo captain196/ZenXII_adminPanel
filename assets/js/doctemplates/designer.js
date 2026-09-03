@@ -1697,12 +1697,56 @@ function buildTpl(row){
   t.activeVersion = (S.active[t.docType]===row.id) ? row.publishedVersion : null;
   return t;
 }
-function openTemplate(row){
-  S.tpl=buildTpl(row);
-  S.lang=row.lang||"en"; S.sel=[]; S.undo=[]; S.redo=[]; S.proofed=null; S.dirty=false; S.tool="move";
-  S.baseline=JSON.parse(JSON.stringify(S.tpl.objects));
-  S.blockRefs={BLK0001:3}; S.blockIgnored={};
+/**
+ * Open a saved template — by FETCHING IT.
+ *
+ * This used to do `S.tpl = buildTpl(row)`: rebuild a template from the summary
+ * row plus the STARTER FIXTURE it was cloned from, and never ask the server for
+ * the document. So pressing Open in the list gave you the starter's content
+ * instead of your saved design — no uploaded logo, none of your edits, none of
+ * your Hindi — and a lockVersion belonging to whatever was loaded before.
+ *
+ * That is why every save then conflicted ("you read lockVersion 17, it is now
+ * 2" — a token from a different template entirely), why Render Proof did
+ * nothing, and why the work looked lost: it was never loaded.
+ *
+ * And it was one successful save away from being much worse. Had the token
+ * happened to match, saving would have written the STARTER'S objects over the
+ * real template and destroyed the design.
+ *
+ * Only the deep link (/design/{id}) ever fetched the document, which is exactly
+ * why it worked in testing while the list did not — every check I ran went in
+ * through the URL.
+ */
+async function openTemplate(row){
+  if(!row) return;
+
+  if(!SRV.online){                       // harness: the fixtures are the data
+    S.tpl=buildTpl(row);
+    S.lang=row.lang||"en"; S.sel=[]; S.undo=[]; S.redo=[]; S.proofed=null; S.dirty=false; S.tool="move";
+    S.baseline=JSON.parse(JSON.stringify(S.tpl.objects));
+    S.blockRefs={BLK0001:3}; S.blockIgnored={};
+    return go("designer");
+  }
+
+  /* Show the shell straight away — a 2s fetch behind a frozen list reads as a
+     dead click — but with NO identity until the real one arrives, so it never
+     announces a template it has not got. */
+  S.tpl=starterTC(); S.tpl.name=""; S.tpl.templateId=row.id;
+  S.tpl.publishedVersion=null; S.tpl.activeVersion=null; S.tpl.lockVersion=null;
+  S.loading=true; S.sel=[]; S.undo=[]; S.redo=[]; S.proofed=null; S.dirty=false; S.tool="move";
   go("designer");
+
+  try{
+    const r=await srv.template(row.id);
+    adoptTemplate(r.template, row.id);
+  }catch(e){
+    apiFail(e, "Opening “"+(row.name||row.id)+"”");
+    S.loading=false;
+    go("gallery");                       // never sit on a template we could not load
+  }
+  S.loading=false;
+  render();
 }
 function openStarter(st){
   const t=st.build();
