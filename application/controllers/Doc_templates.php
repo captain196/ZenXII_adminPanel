@@ -66,6 +66,7 @@ class Doc_templates extends MY_Controller
         'activate'       => 'manage',
         'archive'        => 'manage',
         'deactivate'     => 'manage',
+        'delete'         => 'manage',
     ];
 
     public function __construct()
@@ -939,6 +940,19 @@ class Doc_templates extends MY_Controller
         log_audit(self::AUDIT_MODULE, 'template.deactivate_attempt', $id, 'Deactivate requested');
 
         $this->_run(fn() => $this->_templates()->deactivate($id, $this->_actor()));
+    }
+
+    /**
+     * Delete a never-published draft. The service refuses anything else — a
+     * published version is the record of what an issued certificate said.
+     */
+    public function delete(): void
+    {
+        if (!$this->_require_post()) return;
+        $id = $this->safe_path_segment((string) $this->input->post('templateId'), 'templateId');
+        log_audit(self::AUDIT_MODULE, 'template.delete_attempt', $id, 'Delete requested');
+
+        $this->_run(fn() => $this->_templates()->delete($id, $this->_actor()));
     }
 
     public function archive(): void

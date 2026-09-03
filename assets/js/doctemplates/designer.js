@@ -861,6 +861,7 @@ const srv = {
     body: version == null ? { templateId: id } : { templateId: id, version: String(version) } }),
   archive:  id => api("archive",  { method: "POST", body: { templateId: id } }),
   deactivate: id => api("deactivate", { method: "POST", body: { templateId: id } }),
+  remove:   id => api("delete",     { method: "POST", body: { templateId: id } }),
 
   uploadAsset: file => {
     const fd = new FormData(); fd.append("file", file);
@@ -1843,6 +1844,11 @@ function paintGallery(){
                   : ""))}
         <button class="btn btn--sm" data-open="${row.id}">Open</button>
         ${isActive?`<button class="btn btn--ghost btn--sm" data-deact="${row.id}">Deactivate</button>`:""}
+        ${(!isActive && !row.publishedVersion && SRV.can.manage)
+          /* Only a never-published draft. Anything with a published version
+             carries the record of what certificates issued from it said, so it
+             is archived, not deleted — and the server enforces that too. */
+          ?`<button class="btn btn--ghost btn--sm" data-del="${row.id}" title="Delete this draft">Delete</button>`:""}
       </div>`;
     schematic(buildTpl(row).objects, zq(".tpl-row__thumb", r));
     zq(".tpl-row__name", r).onclick = () => openTemplate(row);
@@ -1902,6 +1908,35 @@ function starterGap(x){
 }
 
 /* ── activation — the act that makes a template the one that prints ───── */
+/**
+ * Delete a draft.
+ *
+ * Named plainly and confirmed once. The dialog says what CANNOT be recovered
+ * rather than asking "are you sure?" — a question nobody answers no to.
+ */
+function openDelete(id){
+  const row=libOf(S.docType).find(x=>x.id===id); if(!row) return;
+  modal("Delete “"+row.name+"”?",
+    "This draft was never published, so nothing was ever issued from it.",
+    `<p class="note">The design and everything in it goes for good. Uploaded images stay
+     in your school's asset store — they are shared, and other templates may use them.</p>
+     <p class="note" style="margin-bottom:0">A template that HAS been published cannot be
+     deleted: each published version is the record of what a certificate issued from it
+     actually said. Those are archived instead.</p>`,
+    `<button class="btn" data-close>Keep it</button><span class="spacer"></span>
+     <button class="btn btn--primary" id="delGo" style="background:var(--warn);border-color:var(--warn)">Delete draft</button>`, true);
+  const g=zq("#delGo");
+  if(g) g.onclick=async ()=>{
+    g.disabled=true;
+    try{
+      if(SRV.online) await srv.remove(id);
+      S.lib[S.docType]=libOf(S.docType).filter(x=>x.id!==id);
+      closeModal(); paintGallery();
+      toast("Deleted “"+row.name+"”");
+    }catch(e){ apiFail(e, "Deleting"); g.disabled=false; }
+  };
+}
+
 function openActivate(id){
   const row=libOf(S.docType).find(r=>r.id===id), cur=activeTpl(S.docType);
   const t=TYPES.find(x=>x.id===S.docType);
@@ -1954,8 +1989,13 @@ function openActivate(id){
   };
 }
 zq("#mineGrid").addEventListener("click", e=>{
-  const b=e.target.closest("button[data-act],button[data-deact],button[data-open]"); if(!b) return;
+  /* The selector gates which buttons reach the branches below. A branch added
+     without adding its attribute here is dead code that fails SILENTLY —
+     clicking did nothing at all, no error, no dialog. */
+  const b=e.target.closest("button[data-act],button[data-deact],button[data-open],button[data-del]");
+  if(!b) return;
   if(b.dataset.open) return openTemplate(libOf(S.docType).find(r=>r.id===b.dataset.open));
+  if(b.dataset.del) return openDelete(b.dataset.del);
   if(b.dataset.act) return openActivate(b.dataset.act);
   if(b.dataset.deact){
     const t=TYPES.find(x=>x.id===S.docType);

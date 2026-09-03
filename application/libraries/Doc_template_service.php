@@ -90,6 +90,15 @@ class Doc_template_service
             'set'      => fn(string $c, string $id, array $d) => $fs->set($c, $id, $d),
             'update'   => fn(string $c, string $id, array $d) => $fs->update($c, $id, $d),
             'exists'   => fn(string $c, string $id) => $fs->exists($c, $id),
+            /* Firestore_service exposes no delete; the REST client underneath
+               does. Null when neither is available, and delete() then refuses
+               rather than reporting a removal that did not happen. */
+            'delete'   => method_exists($fs, 'delete')
+                ? fn(string $c, string $id) => $fs->delete($c, $id)
+                : (method_exists($fs, 'raw_client') && is_object($fs->raw_client())
+                   && method_exists($fs->raw_client(), 'deleteDocument')
+                    ? fn(string $c, string $id) => $fs->raw_client()->deleteDocument($c, $id)
+                    : null),
             'query'    => fn(string $c, array $w) => Doc_rows::map($fs->schoolWhere($c, $w)),
             /* ATOMIC MULTI-DOCUMENT WRITE.
              *
@@ -736,6 +745,58 @@ class Doc_template_service
             . ($head['docType'] ?? 'this type') . ' until one is set');
 
         return $patch;
+    }
+
+    /**
+     * Delete a draft outright — only one that was NEVER published.
+     *
+     * The rule is not squeamishness about deletion, it is about what a
+     * published version IS. Each frozen snapshot is the record of what a
+     * certificate issued from it actually said; an issued Transfer Certificate
+     * points at one, and courts and boards ask years later. Deleting a template
+     * that has any published version would delete that answer.
+     *
+     * So: never published and not active -> gone, genuinely. Otherwise
+     * archive(), which keeps the history and takes it out of the way.
+     *
+     * @throws RuntimeException naming which of the two rules stopped it, and
+     *         what to do instead — a refusal that does not say that is just a
+     *         locked door.
+     */
+    public function delete(string $docId, string $by = ''): array
+    {
+        $head = $this->head($docId);
+
+        if (($head['activeVersion'] ?? null) !== null) {
+            throw new RuntimeException(
+                'Doc_template_service: this is the ACTIVE template for '
+                . ($head['docType'] ?? 'this document type')
+                . '. Deactivate it first — deleting what every print point resolves would '
+                . 'stop the school issuing this document.'
+            );
+        }
+
+        if (($head['publishedVersion'] ?? null) !== null) {
+            throw new RuntimeException(
+                'Doc_template_service: this template has published version(s), and each one '
+                . 'is the record of what a certificate issued from it actually said. Deleting '
+                . 'it would delete that record. Archive it instead — it disappears from the '
+                . 'list and the history survives.'
+            );
+        }
+
+        if (!is_callable($this->store['delete'] ?? null)) {
+            throw new RuntimeException(
+                'Doc_template_service: no delete is available in this store. Refusing to '
+                . 'pretend the template was removed.'
+            );
+        }
+
+        ($this->store['delete'])(self::HEAD_COLLECTION, $docId);
+        $this->log('delete', $docId,
+            'Deleted draft "' . ($head['name'] ?? $docId) . '" — never published');
+
+        return ['deleted' => $docId, 'name' => $head['name'] ?? ''];
     }
 
     /* ================================================================== *

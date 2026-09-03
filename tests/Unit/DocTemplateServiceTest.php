@@ -73,6 +73,7 @@ class DocTemplateServiceTest extends TestCase
                 return true;
             },
             'exists' => fn($c, $id) => isset($this->docs[$c][$id]),
+            'delete' => function ($c, $id) { unset($this->docs[$c][$id]); return true; },
             'query'  => function ($c, $where) {
                 $out = [];
                 foreach ($this->docs[$c] as $id => $row) {
@@ -917,5 +918,80 @@ class DocTemplateServiceTest extends TestCase
         $this->assertSame('Edited after publishing',
             $this->docs['documentTemplates']['SCH1_TPL0007']['name']);
         $this->assertSame($r['head']['lockVersion'] + 1, $out['lockVersion']);
+    }
+
+    /* ---------------------------------------------------------------- *
+     * Delete — only a draft that was never published
+     *
+     * Each published version is the record of what a certificate issued from
+     * it actually said. An issued Transfer Certificate points at one, and
+     * boards and courts ask years later. Deleting a template with published
+     * versions would delete that answer.
+     * ---------------------------------------------------------------- */
+
+    public function test_a_never_published_draft_is_deleted(): void
+    {
+        $this->docs['documentTemplates']['SCH1_TPL0007']['publishedVersion'] = null;
+        $this->docs['documentTemplates']['SCH1_TPL0007']['activeVersion']    = null;
+
+        $r = $this->svc->delete('SCH1_TPL0007', 'STA1');
+
+        $this->assertSame('SCH1_TPL0007', $r['deleted']);
+        $this->assertArrayNotHasKey('SCH1_TPL0007', $this->docs['documentTemplates']);
+    }
+
+    public function test_a_published_template_is_never_deleted(): void
+    {
+        $this->docs['documentTemplates']['SCH1_TPL0007']['publishedVersion'] = 2;
+        $this->docs['documentTemplates']['SCH1_TPL0007']['activeVersion']    = null;
+
+        try {
+            $this->svc->delete('SCH1_TPL0007', 'STA1');
+            $this->fail('a published template must not be deletable');
+        } catch (RuntimeException $e) {
+            $this->assertStringContainsString('record of what a certificate issued', $e->getMessage());
+            $this->assertStringContainsString('Archive it instead', $e->getMessage(),
+                'a refusal must say what to do instead');
+        }
+        $this->assertArrayHasKey('SCH1_TPL0007', $this->docs['documentTemplates']);
+    }
+
+    public function test_the_active_template_is_never_deleted(): void
+    {
+        $this->docs['documentTemplates']['SCH1_TPL0007']['publishedVersion'] = null;
+        $this->docs['documentTemplates']['SCH1_TPL0007']['activeVersion']    = 2;
+
+        $this->expectException(RuntimeException::class);
+        $this->expectExceptionMessageMatches('/Deactivate it first/');
+        $this->svc->delete('SCH1_TPL0007', 'STA1');
+    }
+
+    /** Never report a removal that did not happen. */
+    public function test_delete_refuses_when_the_store_cannot_delete(): void
+    {
+        $svc = new Doc_template_service([
+            'schoolId' => 'SCH1',
+            'store' => ['get' => fn($c,$i) => $this->docs[$c][$i] ?? null,
+                        'set' => fn() => true, 'update' => fn() => true,
+                        'exists' => fn() => true, 'query' => fn() => [],
+                        'commit' => null, 'delete' => null],
+        ]);
+        $this->docs['documentTemplates']['SCH1_TPL0007']['publishedVersion'] = null;
+        $this->docs['documentTemplates']['SCH1_TPL0007']['activeVersion']    = null;
+
+        $this->expectException(RuntimeException::class);
+        $this->expectExceptionMessageMatches('/no delete is available/');
+        $svc->delete('SCH1_TPL0007', 'STA1');
+    }
+
+    public function test_a_delete_is_audited_with_the_name(): void
+    {
+        $this->docs['documentTemplates']['SCH1_TPL0007']['publishedVersion'] = null;
+        $this->docs['documentTemplates']['SCH1_TPL0007']['activeVersion']    = null;
+        $this->svc->delete('SCH1_TPL0007', 'STA1');
+
+        $last = end($this->audit);
+        $this->assertSame('delete', $last[0]);
+        $this->assertStringContainsString('TC', $last[2], 'the log must name what went');
     }
 }
