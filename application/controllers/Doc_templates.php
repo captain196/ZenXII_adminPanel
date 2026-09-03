@@ -824,7 +824,14 @@ class Doc_templates extends MY_Controller
                describes the stored design — a caller-supplied proof would let
                anyone publish a snapshot whose hash no PDF ever produced. */
             $r = $this->_templates()->publish($id, $this->_actor());
-            return ['versionId' => $r['versionId'], 'version' => $r['version']];
+            /* lockVersion moves on every lifecycle write. Without returning it
+               the client keeps the stale one and its next autosave conflicts —
+               which presented as an "someone else saved this" dialog that
+               reappeared after every keystroke, for a single user working
+               alone. */
+            return ['versionId'   => $r['versionId'],
+                    'version'     => $r['version'],
+                    'lockVersion' => $r['head']['lockVersion'] ?? null];
         });
     }
 

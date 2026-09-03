@@ -731,7 +731,9 @@ const S = {
   clamped:{}, blockRefs:{BLK0001:3}, blockIgnored:{}, baseline:null, issuance:{duplicate:false},
   school:null, layerOff:{}, overrideReason:{}, lib:null, active:null,
   cmode:"edit",  // Content pane: "edit" (all fields) | "read" (proofread)
-  loading:false  // true while the real library is still being fetched
+  loading:false, // true while the real library is still being fetched
+  conflict:false,      // a save was refused; stop attempting until reload
+  conflictShown:false  // the dialog is shown once, not once per attempt
 };
 
 /* ==========================================================================
@@ -905,6 +907,10 @@ function markDirty() {
      created fine, and the clerk is told their work was not saved. Observed on
      the very first real run against a live session. */
   if (S.creating) return;
+  /* Nor once a save has conflicted: the stored lockVersion has moved, every
+     further attempt with ours fails the same way, and re-attempting is what
+     turned one dialog into an endless one. */
+  if (S.conflict) return;
   /* Nor for a template that has no server document yet — the hub seeds S.tpl
      with a starter purely so it has something to draw. */
   if (!S.tpl || !isPersistedId(S.tpl.templateId, "autosave")) return;
@@ -999,13 +1005,31 @@ async function srvSaveDraft(silent) {
     return true;
   } catch (e) {
     if (e instanceof ApiError && e.code === 409) {
+      /* STOP SAVING, AND ASK ONCE.
+      
+         This used to show the dialog and return — leaving S.dirty true, so the
+         next debounced autosave fired, conflicted again, and reopened it. Every
+         keystroke queued another copy. Dismissing it did nothing except buy a
+         second and a half, which is not a choice, it is a nag.
+      
+         A conflict is not transient: the stored lockVersion has moved and every
+         further save with this one WILL fail. So enter a conflicted state, stop
+         attempting, and say so persistently in the status bar rather than
+         interrupting again. The person keeps editing — nothing is taken away —
+         but the screen stops pretending a save is coming. */
+      S.conflict = true;
+      paintStatus();
+      if (S.conflictShown) return false;      // one dialog, not one per attempt
+      S.conflictShown = true;
+
       modal("Someone else saved this template",
         "Your changes are still on screen. They have not been saved, and theirs have not been lost.",
         `<p class="note">This template was changed by someone else while you had it open.
-         Saving now would overwrite their work, so it was stopped.</p>
+         Saving now would overwrite their work, so it was stopped — and it will keep being
+         stopped, so nothing here is saving until this is resolved.</p>
          <p class="note" style="margin-bottom:0">Reload to see their version — your unsaved
          changes will be gone, so copy anything you need first.</p>`,
-        `<button class="btn" data-close>Keep editing (not saved)</button><span class="spacer"></span>
+        `<button class="btn" data-close>Keep editing (nothing will save)</button><span class="spacer"></span>
          <button class="btn btn--primary" id="cfReload">Reload their version</button>`, true);
       const b = document.getElementById("cfReload");
       if (b) b.onclick = () => location.reload();
@@ -3042,7 +3066,9 @@ function paintStatus(){
      nobody asked and buries the one they did: is my work safe? The number is
      still there on hover for anyone debugging a conflict. */
   const save=zq("#sbSave");
-  save.innerHTML = S.dirty
+  save.innerHTML = S.conflict
+    ? '<span class="sb--warn">Not saving — someone else changed this template · reload</span>'
+    : S.dirty
     ? '<span class="sb--warn">Unsaved changes</span>'
     : '<span class="sb--ok">All changes saved</span>';
   save.title = "lockVersion " + S.tpl.lockVersion;
@@ -4331,6 +4357,9 @@ async function publishOnServer(){
     const out=await srv.publish(S.tpl.templateId);
     S.tpl.publishedVersion=out.version;
     S.tpl.version=out.version+1;
+    /* Adopt the new lockVersion. Publishing bumps it server-side, and holding
+       the old one made the very next autosave conflict. */
+    if(out.lockVersion!=null) S.tpl.lockVersion=out.lockVersion;
     S.dirty=false; S.proofed=null;   // the new draft has no proof of its own
 
     let row=libOf(S.tpl.docType).find(r=>r.id===S.tpl.templateId);
@@ -4385,6 +4414,7 @@ async function activateOnServer(){
     const v=out.activeVersion || S.tpl.publishedVersion;
     S.active[S.tpl.docType]=S.tpl.templateId;
     S.tpl.activeVersion=v;
+    if(out.lockVersion!=null) S.tpl.lockVersion=out.lockVersion;
     closeModal(); render();
     toast("Active — every print point now resolves v"+v);
   }catch(e){
@@ -4467,6 +4497,7 @@ function confirmRollback(version){
     try{
       const out=await srv.activate(S.tpl.templateId, version);
       S.tpl.activeVersion=out.activeVersion;
+      if(out.lockVersion!=null) S.tpl.lockVersion=out.lockVersion;
       S.active[S.tpl.docType]=S.tpl.templateId;
       closeModal(); render();
       toast("Rolled back — every print point now resolves v"+out.activeVersion);

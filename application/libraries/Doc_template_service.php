@@ -680,7 +680,11 @@ class Doc_template_service
             . ($displaced ? ' (displaced ' . implode(', ', $displaced) . ')' : ''));
 
         return ['activeVersion' => $published, 'displaced' => $displaced,
-                'rollback' => $isRollback];
+                'rollback' => $isRollback,
+                /* The caller must be told the new lockVersion. Every lifecycle
+                   write bumps it, and a client still holding the old one
+                   conflicts on its very next autosave. */
+                'lockVersion' => (int) ($head['lockVersion'] ?? 0) + 1];
     }
 
     /**

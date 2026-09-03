@@ -856,4 +856,66 @@ class DocTemplateServiceTest extends TestCase
         $this->svc->save('SCH1_TPL0007', ['name' => 'X', 'updatedBy' => 'SOMEONE_ELSE'], 17, 'SSA0011');
         $this->assertSame('SSA0011', $this->docs['documentTemplates']['SCH1_TPL0007']['updatedBy']);
     }
+
+    /* ---------------------------------------------------------------- *
+     * Every lifecycle write must report the new lockVersion
+     *
+     * They all bump it. A client that keeps the old one conflicts on its very
+     * next autosave — which surfaced as a "someone else saved this template"
+     * dialog reappearing after every keystroke, for a single person working
+     * alone, because publish had silently moved the token underneath them.
+     * ---------------------------------------------------------------- */
+
+    public function test_publish_reports_the_new_lock_version(): void
+    {
+        $before = $this->docs['documentTemplates']['SCH1_TPL0007']['lockVersion'];
+        $this->recordProof('SCH1_TPL0007');
+        $r = $this->svc->publish('SCH1_TPL0007', 'STA1');
+
+        $this->assertSame($before + 1, $r['head']['lockVersion']);
+        $this->assertSame($r['head']['lockVersion'],
+            $this->docs['documentTemplates']['SCH1_TPL0007']['lockVersion'],
+            'what publish reports must be what was stored');
+    }
+
+    public function test_activate_reports_the_new_lock_version(): void
+    {
+        $this->recordProof('SCH1_TPL0007');
+        $this->svc->publish('SCH1_TPL0007');
+        $before = $this->docs['documentTemplates']['SCH1_TPL0007']['lockVersion'];
+
+        $r = $this->svc->activate('SCH1_TPL0007', 'STA1');
+
+        $this->assertSame($before + 1, $r['lockVersion']);
+        $this->assertSame($r['lockVersion'],
+            $this->docs['documentTemplates']['SCH1_TPL0007']['lockVersion']);
+    }
+
+    public function test_deactivate_reports_the_new_lock_version(): void
+    {
+        $this->recordProof('SCH1_TPL0007');
+        $this->svc->publish('SCH1_TPL0007');
+        $this->svc->activate('SCH1_TPL0007');
+        $before = $this->docs['documentTemplates']['SCH1_TPL0007']['lockVersion'];
+
+        $r = $this->svc->deactivate('SCH1_TPL0007', 'STA1');
+        $this->assertSame($before + 1, $r['lockVersion']);
+    }
+
+    /**
+     * The whole point, end to end: publish then save with the lockVersion
+     * publish handed back, and it must NOT conflict.
+     */
+    public function test_saving_after_a_publish_does_not_conflict(): void
+    {
+        $this->recordProof('SCH1_TPL0007');
+        $r = $this->svc->publish('SCH1_TPL0007', 'STA1');
+
+        $out = $this->svc->save('SCH1_TPL0007', ['name' => 'Edited after publishing'],
+                                $r['head']['lockVersion'], 'STA1');
+
+        $this->assertSame('Edited after publishing',
+            $this->docs['documentTemplates']['SCH1_TPL0007']['name']);
+        $this->assertSame($r['head']['lockVersion'] + 1, $out['lockVersion']);
+    }
 }
