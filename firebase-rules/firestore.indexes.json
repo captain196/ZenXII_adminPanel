@@ -3438,6 +3438,28 @@
       ]
     },
     {
+      "collectionGroup": "supportMessages",
+      "queryScope": "COLLECTION",
+      "fields": [
+        {
+          "fieldPath": "schoolId",
+          "order": "ASCENDING"
+        },
+        {
+          "fieldPath": "ticketId",
+          "order": "ASCENDING"
+        },
+        {
+          "fieldPath": "reporterId",
+          "order": "ASCENDING"
+        },
+        {
+          "fieldPath": "createdAt",
+          "order": "DESCENDING"
+        }
+      ]
+    },
+    {
       "_comment": "Support Desk P0 (2026-08-25) - parent to school ticketing. DEPLOY-PENDING, not yet deployed. 5/8 closeStaleTickets scheduled CF: status=='resolved' AND reopenableUntil < now (defect C-11). Its absence is SILENT - that sweep emits no push by design, so a missing index presents as a function that has never once succeeded.",
       "collectionGroup": "supportTickets",
       "queryScope": "COLLECTION",
