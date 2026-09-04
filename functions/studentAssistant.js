@@ -99,6 +99,63 @@ const MAX_HISTORY_CHARS = 2000;
 // writes NOTHING to support* collections — it hands the student to the
 // screen that already files tickets correctly, with the rules cap, the
 // reporter identity and the push chain that module owns.
+/**
+ * The categories a support ticket may carry. Must stay equal to the allowlist in
+ * firestore.rules (supportTickets create) — a value outside it is denied at write
+ * time, which the student only discovers after typing their whole complaint.
+ *
+ * Deliberately EXCLUDES 'other': the app offers that chip but the rules do not
+ * allow it. That is a live defect in the Support module, and this file should not
+ * paper over it by emitting a value it knows will be rejected.
+ */
+/**
+ * "Today", in the timezone the students actually live in.
+ *
+ * Cloud Functions run in UTC and every school on this platform is in India, so a
+ * plain `new Date()` is up to 5h30m behind the student. Observed live on
+ * 2026-09-05 at 00:44 IST: the assistant answered "Today is Friday, 4 September"
+ * and served FRIDAY'S TIMETABLE on a Saturday. Between midnight and 05:30 IST
+ * every date in this file was a day early — the timetable, the attendance month
+ * on a month boundary, and the daily quota window.
+ *
+ * Shifting the epoch and then reading it as if it were UTC yields the IST
+ * wall-clock date, which is exactly what the calendar-date callers want.
+ */
+/**
+ * Is this homework still outstanding for the student?
+ *
+ * Mirrors HomeworkViewModel.isOverdue/isCompleted in the Parent app exactly, so
+ * the two surfaces cannot disagree — which they did. Observed live 2026-09-05:
+ * the dashboard said "1 task pending" and showed an ENGLISH assignment due
+ * 27 July flagged OVERDUE, while the assistant answered "you have no current
+ * pending homework". The tool returned title/subject/description/dueDate and NOT
+ * `studentStatus`, so the model could not tell the student still owed it and
+ * reasonably read July dates as old news. Telling a child they owe nothing when
+ * they have overdue work is the least acceptable answer this tool can give.
+ *
+ * dueDate contract, copied from the app: a time-bearing ISO string is used as
+ * written; a bare YYYY-MM-DD means END OF DAY IST, not midnight — so work due
+ * "today" is not already overdue that morning.
+ */
+const DONE_STATES = ['complete', 'submitted', 'done', 'reviewed'];
+
+function homeworkState(h) {
+  const status = String(h.studentStatus || 'pending').toLowerCase().trim();
+  if (DONE_STATES.includes(status)) return { studentStatus: status, overdue: false };
+  const raw = String(h.dueDate || '').trim();
+  if (!raw) return { studentStatus: status, overdue: false };
+  const due = raw.includes('T') ? new Date(raw) : new Date(`${raw}T23:59:59+05:30`);
+  return { studentStatus: status, overdue: !isNaN(due.getTime()) && due.getTime() < Date.now() };
+}
+
+const IST_OFFSET_MS = 5.5 * 60 * 60 * 1000;
+const schoolNow = () => new Date(Date.now() + IST_OFFSET_MS);
+const schoolDateKey = () => schoolNow().toISOString().slice(0, 10);
+const WEEKDAYS = ['Sunday', 'Monday', 'Tuesday', 'Wednesday', 'Thursday', 'Friday', 'Saturday'];
+
+const SUPPORT_CATEGORIES = ['fees', 'transport', 'academics', 'attendance',
+  'exams', 'certificates', 'health', 'app', 'conduct'];
+
 const SUPPORT_COMPOSE_ROUTE = 'support_compose';
 
 // Collection names mirror ZenXII_Parent util/Constants.kt (object Firestore).
@@ -136,15 +193,23 @@ function resolveIdentity(request) {
   const claimStudentId = String(t.student_id || t.studentId || '').trim();
   const role = String(t.role || '').toLowerCase();
 
-  // Multi-child households: the app's active-child switcher changes only local
-  // state and never re-mints the token, so the `student_id` claim keeps naming
-  // the FIRST child. Left alone, the assistant answers about child A — by name —
-  // while the app displays child B.
+  // The client may nominate which child it is asking about; the server authorises
+  // that choice against the `student_ids` claim. Authorisation still comes from
+  // the token (Z2) — only the *selection among already-authorised children* comes
+  // from the request, and a studentId outside the claim is refused.
   //
-  // The client may therefore nominate which child it is asking about, but the
-  // server authorises that choice against the `student_ids` claim. Authorisation
-  // still comes from the token (Z2); only the *selection among already-authorised
-  // children* comes from the request. A studentId outside the claim is refused.
+  // HONEST STATUS (verified 2026-09-04): this branch never executes in production.
+  // `Firebase.php` (~:820, :858) always seeds `student_ids` as `[student_id]`, no
+  // caller passes a multi-element array, and the Parent app has NO child switcher —
+  // `AssistantRepository` sends `tokenManager.user.userId`, i.e. the login identity,
+  // which IS the claim. So `requested === claimStudentId` on every real call.
+  //
+  // An earlier version of this comment claimed the code fixed a live "answers about
+  // the wrong child" bug. It does not, because there is no switcher for it to
+  // correct. Keep the code: it fails CLOSED and is the right shape for when a
+  // switcher lands. But note the latent risk it guards — `Auth_claims_backfill.php`
+  // re-emits whatever `student_ids` array a token already carries, so any token that
+  // ever acquires a multi-element array makes sibling nomination live immediately.
   const authorised = Array.isArray(t.student_ids)
     ? t.student_ids.map((x) => String(x).trim()).filter(Boolean)
     : (claimStudentId ? [claimStudentId] : []);
@@ -224,7 +289,8 @@ async function loadContext(schoolId, studentId) {
  * when one user behaves unlike the average.
  */
 async function consumeQuota(schoolId, studentId) {
-  const day = new Date().toISOString().slice(0, 10); // UTC day
+  const day = schoolDateKey();   // IST day: the cap must reset at midnight IST,
+                                // not at 05:30 IST, which is mid-morning at school
   const ref = db().doc(`${C.ASSISTANT_QUOTA}/${schoolId}_${studentId}_${day}`);
   await db().runTransaction(async (tx) => {
     const snap = await tx.get(ref);
@@ -256,7 +322,7 @@ async function consumeQuota(schoolId, studentId) {
  */
 async function refundQuota(schoolId, studentId) {
   try {
-    const day = new Date().toISOString().slice(0, 10);
+    const day = schoolDateKey();
     const ref = db().doc(`${C.ASSISTANT_QUOTA}/${schoolId}_${studentId}_${day}`);
     await db().runTransaction(async (tx) => {
       const snap = await tx.get(ref);
@@ -323,7 +389,12 @@ const TOOLS = [
     parametersJsonSchema: { type: 'object', properties: {}, required: [] },
   },
   {
-    name: 'raise_helpdesk_ticket',
+    // Named for what it DOES. It was `raise_helpdesk_ticket`, and the name is the
+    // strongest signal the model gets — it files nothing, so three separate prose
+    // guards existed only to argue with its own name. The guards are KEPT anyway:
+    // telling a child their complaint was filed when it was not is the highest-
+    // consequence failure this feature has, and belt-and-braces is cheap there.
+    name: 'draft_support_request',
     description:
       'Prepare a support request and hand the student to the Support screen to send it — for ' +
       'example a lost ID card, a transport problem, or a record that looks wrong. Use ONLY for ' +
@@ -335,7 +406,13 @@ const TOOLS = [
       properties: {
         category: {
           type: 'string',
-          enum: ['records', 'fees', 'transport', 'facilities', 'academics', 'other'],
+          // EXACTLY the values firestore.rules accepts on a supportTicket create.
+          // Three taxonomies had drifted: this enum, the app's picker, and the
+          // rules allowlist. The model could emit 'records' and 'facilities',
+          // which the app has no chip for — and the fallback was 'other', which
+          // the RULES REJECT, so wiring this through naively would have
+          // auto-selected the one value guaranteed to fail on send.
+          enum: SUPPORT_CATEGORIES,
           description: 'Which area the problem belongs to.',
         },
         subject: { type: 'string', description: 'A short one-line summary of the problem.' },
@@ -350,6 +427,20 @@ const TOOLS = [
 const TOOL_IMPL = {
   async get_attendance_summary(ctx, input) {
     const key = monthKey(input.month);
+
+    // attendanceSummary is keyed {schoolId}_{studentId}_{YYYY-MM} — it carries no
+    // session dimension, so unlike every other tool here there is no `session`
+    // filter available to add. And `month` is the ONE model-authored argument in
+    // this file, so without this clamp a student could ask "my attendance in April
+    // 2025" and be shown a PREVIOUS session's record, narrated as their current
+    // one. That matters most for a repeating student, and the comment above this
+    // table asserting all tools are scoped twice made it invisible to review.
+    const years = sessionYears(ctx.session);
+    const year = Number(key.slice(0, 4));
+    if (!years || year < years[0] || year > years[1]) {
+      return { found: false, month: key, outOfSession: true, session: ctx.session };
+    }
+
     const snap = await db()
       .doc(`${C.ATTENDANCE_SUMMARY}/${ctx.schoolId}_${ctx.studentId}_${key}`)
       .get();
@@ -382,11 +473,15 @@ const TOOL_IMPL = {
     return {
       items: q.docs.map((d) => {
         const h = d.data() || {};
+        const state = homeworkState(h);
         return {
           title: h.title ?? null,
           subject: h.subject ?? null,
           description: h.description ?? null,
           dueDate: h.dueDate ?? null,
+          // Without these two the model cannot tell "old" from "still owed".
+          studentStatus: state.studentStatus,
+          overdue: state.overdue,
         };
       }),
     };
@@ -499,7 +594,7 @@ const TOOL_IMPL = {
   //
   // So v1 guides instead of writing. Re-enable only by calling the Support
   // Desk's own creation path, agreed with whoever owns that module.
-  async raise_helpdesk_ticket(ctx, input) {
+  async draft_support_request(ctx, input) {
     const subject = String(input.subject || '').trim().slice(0, 200);
     const details = String(input.details || '').trim().slice(0, 2000);
     if (!subject) return { handoff: false, reason: 'A subject is required.' };
@@ -513,7 +608,12 @@ const TOOL_IMPL = {
       buttonLabel: 'Open Support',
       suggestedSubject: subject,
       suggestedDetails: details,
-      category: String(input.category || 'other'),
+      // Empty rather than a guess when the model gives something unusable. Blank
+      // leaves Send disabled and the student picks a chip — no worse than today.
+      // A WRONG category routes their complaint to the wrong desk silently, and
+      // 'other' would be denied outright at write time.
+      category: SUPPORT_CATEGORIES.includes(String(input.category || '').trim())
+        ? String(input.category).trim() : '',
       guidance:
         'Tell the student you have prepared this for them and that tapping "Open Support" will ' +
         'take them to the Support screen to send it. Say what the subject line will be. Do NOT ' +
@@ -533,6 +633,26 @@ const TOOL_IMPL = {
  * Accepts either form from the model and normalises, because the model may
  * still phrase a month in prose. Anything unparseable falls back to now.
  */
+/**
+ * The calendar years an academic session can legitimately cover.
+ *
+ * `currentSession` is free text a school types, so this tolerates "2026-2027",
+ * "2026-27", "2026/27" and a bare "2026". An academic session spans at most two
+ * calendar years, so the span is clamped to that regardless of what was typed.
+ * Returns null when nothing year-shaped is present, and the caller then refuses
+ * rather than guessing.
+ */
+function sessionYears(session) {
+  const m = String(session || '').match(/(\d{4})\s*[-\u2013/]?\s*(\d{2,4})?/);
+  if (!m) return null;
+  const a = Number(m[1]);
+  let b = a;
+  if (m[2]) b = m[2].length === 2 ? Number(String(a).slice(0, 2) + m[2]) : Number(m[2]);
+  if (b < a) b = a;
+  if (b - a > 1) b = a + 1;
+  return [a, b];
+}
+
 function monthKey(input) {
   const MONTHS = ['january', 'february', 'march', 'april', 'may', 'june',
     'july', 'august', 'september', 'october', 'november', 'december'];
@@ -572,14 +692,16 @@ Format numbers the way a person would read them aloud. Give dates as "12 August"
 
 When a tool returns nothing, say clearly that there is nothing recorded, and suggest what the student can do — usually asking their class teacher or the school office. Do not invent a reason for the absence of data.
 
+When you show homework, an item with overdue true is STILL OWED however old its due date is — say so plainly and lead with it. Never answer that nothing is pending while any item has overdue true; the app's own dashboard counts those, and a student told they owe nothing when they have overdue work will simply not do it.
+
 When you show attendance, the day-by-day record uses single letters: P is present, A is absent, L is leave, H is holiday, T is a school trip and V is vacation. Translate these for the student rather than showing the raw letters.
 
 When you show fees, be careful and neutral. Money is sensitive and a parent may be reading over the student's shoulder. State what is recorded as due and what is recorded as paid, and if something looks unclear, suggest they check with the school office rather than drawing a conclusion.
 
-When you show results, report only what is recorded as published. Do not estimate a grade, predict a result, rank the student, or comment on whether a mark is good or bad unless the student asks for your view, and even then keep it encouraging and short.
+When you show results, report only what is recorded as published. Do not estimate a grade, predict a result, rank the student, or comment on whether a mark is good or bad. If the student asks what you think of a mark, say that judging their work is their teacher's to do, and offer to prepare a message to the school if they want to discuss it.
 
 ## Filing a ticket
-Only prepare a support request when the student has a problem that a person at the school must act on and that you cannot resolve from their records. Describe what you are about to prepare and get their agreement first. Keep the subject line short and factual. Put the problem in the student's own words in the details. Once prepared, tell them to tap "Open Support" to review and send it — and be explicit that it has NOT been sent yet. Never say a ticket has been created, raised, filed or sent. Do not promise a timeframe or an outcome.
+Only prepare a support request when the student has a problem that a person at the school must act on and that you cannot resolve from their records. Describe what you are about to prepare and get their agreement first. Keep the subject line short and factual. Put the problem in the student's own words in the details. Once prepared, tell them to tap the support button shown under your message to review and send it — describe it by position, never by an English label, because the button is translated into the student's language and quoting "Open Support" at a Hindi or Tamil speaker names something they cannot see. Be explicit that it has NOT been sent yet. Never say a ticket has been created, raised, filed or sent. Do not promise a timeframe or an outcome.
 
 ## Language
 Reply in the language the student writes in. If they write in Hindi, Gujarati, Marathi, Tamil or Telugu, answer in that language, keeping the same brevity. Keep proper nouns, subject names, class and section labels exactly as they appear in the records rather than translating them.
@@ -595,7 +717,6 @@ exports.studentAssistant = onCall(
   async (request) => {
     const { schoolId, studentId, role } = resolveIdentity(request);
     const ctx = await loadContext(schoolId, studentId);
-    await consumeQuota(schoolId, studentId);
 
     // The client sends prior turns so the conversation is stateless server-side.
     const history = Array.isArray(request.data && request.data.messages)
@@ -611,6 +732,13 @@ exports.studentAssistant = onCall(
       throw new HttpsError('invalid-argument',
         `That message is too long. Please shorten it to under ${MAX_MESSAGE_CHARS} characters.`);
     }
+
+    // Charge only AFTER the message is known to be answerable. Consuming first
+    // meant a rejected message — empty, or one character over the limit — still
+    // cost a unit, with no refund on either throw. Ten pastes of an over-long
+    // draft locked a student out for the rest of the day having been answered
+    // zero times, and the day rolls over at 00:00 UTC, i.e. 05:30 IST: mid-morning.
+    await consumeQuota(schoolId, studentId);
 
     // Per-request context lives in the USER turn, never in the cached system
     // prompt. Note it carries no ids — only what the model needs to phrase an
@@ -704,8 +832,28 @@ exports.studentAssistant = onCall(
       if (calls.length === 0) {
         const text = String(response.text || '').trim();
 
+        // finishReason was never inspected. A generation stopped by the output cap
+        // or by a safety filter still arrives with usable-looking prose in
+        // response.text, so a balance truncated mid-sentence was returned to the
+        // child as a finished answer AND logged ok:true — the audit row said it
+        // went fine. Anything other than STOP is not an answer we should present.
+        const finish = String(
+          (response.candidates && response.candidates[0] && response.candidates[0].finishReason) || 'STOP'
+        ).toUpperCase();
+        const clean = finish === 'STOP' || finish === 'FINISH_REASON_UNSPECIFIED';
+
         await writeLog({ ctx, role, question, toolsUsed, iterations,
-          usageIn, usageOut, cacheRead, cacheWrite, ok: true });
+          usageIn, usageOut, cacheRead, cacheWrite, ok: clean,
+          error: clean ? undefined : `finishReason=${finish}` });
+
+        if (!clean) {
+          // Refund: the student never got an answer they can rely on.
+          await refundQuota(ctx.schoolId, ctx.studentId);
+          logger.warn('studentAssistant: unusable generation', {
+            schoolId: ctx.schoolId, studentId: ctx.studentId, finish, iterations });
+          throw new HttpsError('unavailable',
+            'That answer came out incomplete. Please ask again, or ask for one thing at a time.');
+        }
 
         return {
           reply: text || "I couldn't work that out. Please try asking a different way.",
@@ -812,4 +960,4 @@ async function writeLog(o) {
 // Exposed ONLY so the local harness (_smoke_assistant.js) can drive the
 // prompt, the tool schemas and the dispatch table without deploying or
 // touching Firestore. Nothing in the request path reads this.
-exports._test = { SYSTEM_PROMPT, TOOLS, TOOL_IMPL, MODEL, compositeSectionKey, monthKey };
+exports._test = { SYSTEM_PROMPT, TOOLS, TOOL_IMPL, MODEL, compositeSectionKey, monthKey, sessionYears };
