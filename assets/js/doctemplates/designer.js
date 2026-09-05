@@ -68,7 +68,46 @@ const CONTRACT = [
   {key:"student.removedFromRolls", label:"Removed from the rolls",  sample:"No",  p95:"Yes", type:"enum", maxLen:8},
   {key:"student.photo",            label:"Student photograph",      sample:"[photo]", type:"image"},
   {key:"doc.verifyQr",             label:"Verification QR",         sample:"[qr]",    type:"image"},
-  {key:"doc.isDuplicate",          label:"Issued as a duplicate",   sample:"No",      type:"flag"}
+  {key:"doc.isDuplicate",          label:"Issued as a duplicate",   sample:"No",      type:"flag"},
+
+  /* Fee receipt. Not a certificate: no authority prescribes its wording, and
+     its substance is a LIST whose length the payment decides, not the designer.
+     receipt.items is therefore type "list" — the only field here that binds to
+     a table rather than to a run of text. */
+  {key:"receipt.no",               label:"Receipt number",          sample:"RCT/2026-27/004182", maxLen:24},
+  {key:"receipt.date",             label:"Receipt date",            sample:"03/09/2026", maxLen:12},
+  {key:"receipt.session",          label:"Session",                 sample:"2026-27", maxLen:12},
+  {key:"receipt.forPeriod",        label:"Paid for",                sample:"April \u2013 June 2026",
+     p95:"April, May, June, July, August and September 2026 (arrears of the previous session included)", maxLen:120},
+  {key:"receipt.mode",             label:"Payment mode",            sample:"UPI", maxLen:24},
+  {key:"receipt.txnId",            label:"Transaction reference",   sample:"UPI/426512890043",
+     p95:"UPI/426512890043/HDFC0000123/2026-09-03T11:42:19+05:30", maxLen:64},
+  {key:"receipt.collectedBy",      label:"Collected by",            sample:"A. Sharma (Accounts)", maxLen:48},
+  {key:"receipt.items",            label:"Fee items",               type:"list",
+     itemFields:[
+       {key:"item.head",   label:"Particulars", maxLen:48},
+       {key:"item.period", label:"Period",      maxLen:24},
+       {key:"item.amount", label:"Amount",      maxLen:14, align:"right"}
+     ],
+     sample:[
+       {"item.head":"Tuition fee",   "item.period":"Apr\u2013Jun 2026", "item.amount":"12,600.00"},
+       {"item.head":"Transport fee", "item.period":"Apr\u2013Jun 2026", "item.amount":"4,500.00"}
+     ],
+     p95:[
+       {"item.head":"Tuition fee",             "item.period":"Apr\u2013Sep 2026", "item.amount":"25,200.00"},
+       {"item.head":"Transport fee \u2014 Route 7","item.period":"Apr\u2013Sep 2026","item.amount":"9,000.00"},
+       {"item.head":"Hostel and mess",         "item.period":"Apr\u2013Sep 2026", "item.amount":"48,000.00"},
+       {"item.head":"Laboratory and computer", "item.period":"2026-27",      "item.amount":"3,200.00"},
+       {"item.head":"Examination fee",         "item.period":"Term I",       "item.amount":"1,800.00"},
+       {"item.head":"Library and reading room","item.period":"2026-27",      "item.amount":"900.00"},
+       {"item.head":"Arrears carried forward", "item.period":"2025-26",      "item.amount":"7,450.00"}
+     ]},
+  {key:"receipt.gross",            label:"Gross amount",            sample:"17,100.00", p95:"95,550.00", maxLen:16, align:"right"},
+  {key:"receipt.discount",         label:"Concession",              sample:"1,000.00",  p95:"0.00", maxLen:16, align:"right"},
+  {key:"receipt.fine",             label:"Late fee",                sample:"0.00",      maxLen:16, align:"right"},
+  {key:"receipt.netPaid",          label:"Net amount paid",         sample:"16,100.00", p95:"95,550.00", maxLen:16, align:"right"},
+  {key:"receipt.amountInWords",    label:"Amount in words",         sample:"Rupees Sixteen Thousand One Hundred only",
+     p95:"Rupees Ninety Five Thousand Five Hundred and Fifty only", maxLen:160}
 ];
 const FIELD = Object.fromEntries(CONTRACT.map(f=>[f.key,f]));
 
@@ -94,14 +133,23 @@ const CONTRACTS = {
     "student.photo"],
   character:["doc.isDuplicate","school.name","school.address","school.affiliationNo","student.fullName","student.fatherName",
     "tc.lastClassStudied","tc.conductRemark","tc.dateOfLeaving","doc.issueDate"],
-  study:["school.name","student.fullName","student.fatherName","tc.lastClassStudied","doc.issueDate"]
+  study:["school.name","student.fullName","student.fatherName","tc.lastClassStudied","doc.issueDate"],
+  fee_receipt:["doc.isDuplicate","school.name","school.address",
+    "receipt.no","receipt.date","receipt.session",
+    "student.admissionNumber","student.fullName","tc.lastClassStudied",
+    "receipt.items","receipt.netPaid","receipt.amountInWords",
+    "receipt.mode","receipt.collectedBy"]
 };
 /* NOTE (found by this check on its first run): a reusable block imposes its
    bound keys on EVERY document type that uses it. The shared letterhead binds
    school.affiliationNo, so every contract whose starter uses that block must
    declare it. Blocks and contracts are coupled, and the coupling is one-way. */
 function contractFor(docType){
-  const keys=CONTRACTS[docType||(S.tpl&&S.tpl.docType)||S.docType];
+  const t = docType||(S.tpl&&S.tpl.docType)||S.docType;
+  /* A custom document is held to no external prescription — the school IS the
+     authority — so every field we hold is on offer. See Doc_contract::keysFor. */
+  if(isCustomType(t)) return CONTRACT;
+  const keys=CONTRACTS[t];
   return keys ? keys.map(k=>FIELD[k]).filter(Boolean) : CONTRACT;
 }
 /* a key a template uses that its own contract does not declare — the
@@ -699,6 +747,96 @@ function pruneLanguages(t){
   return t;
 }
 
+/**
+ * A fee receipt.
+ *
+ * Not a certificate, and shaped by that: no board prescribes its wording, and
+ * its body is a REPEATING table over receipt.items rather than a fixed list of
+ * particulars. Everything below the items — totals, amount in words — is
+ * anchored to the table, because the table's height is decided by the payment
+ * and not by the designer.
+ */
+function starterFeeReceipt(){
+  const S9={sizePt:9, lineHeight:1.5, colour:"#14100D"};
+  return {
+    templateId:"TPL_RCT", name:"Fee receipt", docType:"fee_receipt",
+    status:"draft", version:1, publishedVersion:null, activeVersion:null, lockVersion:0,
+    languages:["en"], defaultLanguage:"en",
+    page:{size:"A4", orientation:"portrait", marginsMm:{t:18,r:15,b:16,l:15}, pageMode:"single"},
+    header:[], footer:[],
+    objects:[
+      {id:"r_logo", name:"School crest", region:"header", type:"image",
+       xMm:15,yMm:10,wMm:18,hMm:18, z:1, height:"fixed", content:{label:"School crest"}, style:{}},
+      {id:"r_name", name:"School name", region:"header", type:"text",
+       xMm:38,yMm:11,wMm:157,hMm:8, z:2, height:"auto", requiredKey:"school.name",
+       style:{sizePt:13, lineHeight:1.25, weight:700, align:"left", colour:"#14100D"},
+       content:{i18n:{en:T({f:"school.name"})}}},
+      {id:"r_addr", name:"Address line", region:"header", type:"text",
+       xMm:38,yMm:20,wMm:157,hMm:6, z:2, height:"auto", requiredKey:"school.address",
+       style:{sizePt:8, lineHeight:1.4, align:"left", colour:"#6B5346"},
+       content:{i18n:{en:T({f:"school.address"})}}},
+      {id:"r_rule", name:"Letterhead rule", region:"header", type:"shape",
+       xMm:15,yMm:31,wMm:180,hMm:0.6, z:1, height:"fixed",
+       content:{shape:"line"}, style:{colour:"#BC5A3C"}},
+
+      {id:"r_dup", name:"Duplicate mark", type:"text",
+       xMm:120,yMm:36,wMm:75,hMm:6, z:4, height:"auto",
+       showWhen:"doc.isDuplicate", isDuplicateMark:true,
+       style:{sizePt:11, lineHeight:1.2, weight:700, align:"right", colour:"#BC5A3C", track:".18em"},
+       content:{i18n:{en:T({t:"DUPLICATE"})}}},
+      {id:"r_title", name:"Title", type:"text",
+       xMm:15,yMm:38,wMm:180,hMm:8, z:3, height:"auto",
+       style:{sizePt:12, lineHeight:1.3, weight:700, align:"center", colour:"#14100D", track:".08em"},
+       content:{i18n:{en:T({t:"FEE RECEIPT"})}}},
+
+      {id:"r_meta", name:"Receipt number and date", type:"text",
+       xMm:15,yMm:50,wMm:180,hMm:6, z:3, height:"auto",
+       style:S9, content:{i18n:{en:T({t:"Receipt No.  "},{f:"receipt.no"},
+                                     {t:"          Date: "},{f:"receipt.date"},
+                                     {t:"          Session: "},{f:"receipt.session"})}}},
+      {id:"r_who", name:"Received from", type:"text",
+       xMm:15,yMm:58,wMm:180,hMm:6, z:3, height:"auto",
+       style:S9, content:{i18n:{en:T({t:"Received with thanks from "},{f:"student.fullName"},
+                                     {t:"  (Adm. No. "},{f:"student.admissionNumber"},
+                                     {t:", Class "},{f:"tc.lastClassStudied"},{t:")"})}}},
+
+      /* THE REASON THIS TYPE COULD NOT BE BUILT UNTIL NOW. */
+      {id:"r_items", name:"Fee items", type:"table",
+       xMm:15,yMm:68,wMm:180,hMm:40, z:3, height:"auto",
+       style:S9,
+       content:{repeatOver:"receipt.items", showHeader:true, columns:[
+         {key:"item.head",   wPct:52},
+         {key:"item.period", wPct:26},
+         {key:"item.amount", wPct:22, align:"right"}]}},
+
+      /* Anchored, because the table's height is a property of the payment. */
+      {id:"r_net", name:"Net amount paid", type:"text",
+       xMm:15,yMm:0,wMm:180,hMm:6, z:3, height:"auto",
+       anchorTo:"r_items", anchorGapMm:4, requiredKey:"receipt.netPaid",
+       style:{sizePt:10, lineHeight:1.4, weight:700, align:"right", colour:"#14100D"},
+       content:{i18n:{en:T({t:"Net amount paid:  "},{f:"receipt.netPaid"})}}},
+      {id:"r_words", name:"Amount in words", type:"text",
+       xMm:15,yMm:0,wMm:180,hMm:6, z:3, height:"auto",
+       anchorTo:"r_net", anchorGapMm:2, requiredKey:"receipt.amountInWords",
+       style:S9, content:{i18n:{en:T({f:"receipt.amountInWords"})}}},
+      {id:"r_mode", name:"Payment mode", type:"text",
+       xMm:15,yMm:0,wMm:180,hMm:6, z:3, height:"auto",
+       anchorTo:"r_words", anchorGapMm:4, requiredKey:"receipt.mode",
+       style:S9, content:{i18n:{en:T({t:"Paid by "},{f:"receipt.mode"},
+                                     {t:"          Collected by: "},{f:"receipt.collectedBy"})}}},
+      {id:"r_note", name:"Computer generated note", type:"text",
+       xMm:15,yMm:0,wMm:180,hMm:6, z:3, height:"auto",
+       anchorTo:"r_mode", anchorGapMm:8,
+       style:{sizePt:7.5, lineHeight:1.4, align:"center", colour:"#9E8578"},
+       content:{i18n:{en:T({t:"This is a computer-generated receipt. Please retain it for your records."})}}},
+
+      {id:"r_page", name:"Page number", region:"footer", type:"pageNumber",
+       xMm:15,yMm:4,wMm:180,hMm:5, z:1, height:"fixed", content:{format:"Page {n} of {t}"},
+       style:{sizePt:7.5, lineHeight:1.3, align:"center", colour:"#9E8578"}}
+    ]
+  };
+}
+
 const STARTERS = [
   {id:"lc_5a", docType:"leaving_certificate_5a", name:"Leaving Certificate — Form 5A",
    meta:"Kerala · r.17(3) · field list not retrieved", states:["Kerala"], build:()=>pruneLanguages(starterForm5A())},
@@ -711,7 +849,10 @@ const STARTERS = [
   {id:"bonafide",  docType:"bonafide", name:"Classic bonafide",
    meta:"no statutory basis found · free format", boards:null, build:()=>pruneLanguages(starterBonafide())},
   {id:"conduct",   docType:"character", name:"Conduct and character",
-   meta:"TNER r.34 / App. 5-B shape", boards:null, build:()=>pruneLanguages(starterConduct())}
+   meta:"TNER r.34 / App. 5-B shape", boards:null, build:()=>pruneLanguages(starterConduct())},
+  {id:"fee_rct",   docType:"fee_receipt", name:"Itemised fee receipt",
+   meta:"repeating line items · totals anchored below", boards:null,
+   build:()=>pruneLanguages(starterFeeReceipt())}
 ];
 function startersFor(docType){
   const sc=S.school;
@@ -768,7 +909,22 @@ const SRV = {
   online: !!(BOOT && BOOT.base),
   base:   BOOT && BOOT.base || "",
   csrf:   { name: BOOT && BOOT.csrfName || "", hash: BOOT && BOOT.csrfHash || "" },
-  can:    { edit: !!(BOOT && BOOT.canEdit), manage: !!(BOOT && BOOT.canManage) },
+  /* THE CAPABILITY GRADE, and one helper that answers every question about it.
+   *
+   * The client used to carry two booleans and consult them in exactly two
+   * places — Delete and version Rollback. Publish, Make live, Deactivate,
+   * Archive, Duplicate, Save and New document all rendered for everybody,
+   * including a view-grade user who could press them and receive nothing but a
+   * generic failure toast from the server.
+   *
+   * Client gating is NEVER the security boundary — `_remap()` fail-closes on
+   * the server for all 24 endpoints and that is what actually protects the
+   * data. This is about not offering a person an action that cannot work, and
+   * about a read grade that can genuinely read. */
+  can:    { view:   true,                                  // reaching this page proves it
+            edit:   !!(BOOT && BOOT.canEdit),
+            manage: !!(BOOT && BOOT.canManage) },
+  grade:  (BOOT && BOOT.grade) || "view",
   inflight: 0
 };
 if (!SRV.online) {
@@ -843,7 +999,21 @@ function apiFail(e, what) {
 
 /* ---- the calls, one per endpoint ------------------------------------- */
 
+/**
+ * Does the caller hold at least this grade?
+ *
+ * `view < edit < manage`, matching rbac_level_rank() on the server so the two
+ * cannot disagree about what "edit" outranks.
+ */
+const RANK = { view: 1, edit: 2, manage: 3 };
+function may(level){ return (RANK[SRV.grade] || 1) >= (RANK[level] || 1); }
+
+/** Read-only is the default posture for anyone below `edit`. */
+const readOnly = () => !may("edit");
+
 const srv = {
+  types:     ()     => api("get_types",      { query: {} }),
+  seedStandard: () => api("seed_standard",   { method: "POST", body: {} }),
   templates: docType => api("get_templates", { query: docType ? { docType } : {} }),
   template:  id       => api("get_template",  { query: { templateId: id } }),
   blocks:    type     => api("get_blocks",    { query: type ? { blockType: type } : {} }),
@@ -1309,7 +1479,7 @@ const TYPES = [
   {id:"study", name:"Study Certificate", alias:"retrospective, year-by-year · A.P. G.O.P. 646",
    requiresState:"Andhra Pradesh", statutory:true},
   {id:"migration", name:"Migration Certificate", alias:"board-issued — never merged with a TC", disabled:true},
-  {id:"fee_receipt", name:"Fee Receipt", alias:"needs repeating rows — v2", disabled:true}
+  {id:"fee_receipt", name:"Fee Receipt", alias:"financial record · itemised, no statutory format", statutory:false}
 ];
 /* ==========================================================================
    Reading a template's state in plain words
@@ -1396,12 +1566,83 @@ function templateState(row, isActive){
   };
 }
 
+/* ══════════════════════════════════════════════════════════════════════════
+   CUSTOM DOCUMENT TYPES
+
+   A school invents a document — "Sports Day Participation", "Fee Concession
+   Letter" — names it, and designs it. Each one becomes its OWN document type,
+   `custom:{slug}`, not a shared "Custom" bucket.
+
+   That is the whole design decision, and it is worth stating why: the module's
+   central invariant is exactly ONE ACTIVE TEMPLATE PER DOCUMENT TYPE. A shared
+   bucket would mean activating the Sports Day certificate silently deactivates
+   the Fee Concession letter — two unrelated documents fighting over one live
+   slot, with nothing on screen to explain it. Minting a type per document keeps
+   every existing rule working untouched: one active, one gallery, one hub card,
+   one contract.
+
+   The type is DISCOVERED from the templates themselves. There is no separate
+   registry to fall out of step: a custom type exists exactly as long as a
+   template of it does, because creating the document is what creates the type.
+   ══════════════════════════════════════════════════════════════════════════ */
+const CUSTOM_PREFIX = "custom:";
+const isCustomType = t => typeof t === "string" && /^custom:[a-z0-9](?:[a-z0-9_]{0,38}[a-z0-9])?$/.test(t);
+
+/** What a person typed → a type id. Mirrors Doc_contract::customTypeFor. */
+function customTypeFor(title){
+  const slug = String(title||"").toLowerCase()
+    .replace(/[^a-z0-9]+/g, "_").replace(/^_+|_+$/g, "").slice(0, 40).replace(/^_+|_+$/g, "");
+  return slug ? CUSTOM_PREFIX + slug : "";
+}
+
+/**
+ * Every custom type this school has, newest activity first.
+ *
+ * Read out of the library rather than a list of its own. The title comes from
+ * the stored docTitle; the slug is only a fallback, because it cannot reproduce
+ * what was typed — "custom:sports_day" does not remember "Sports Day".
+ */
+function customTypes(){
+  return Object.keys(S.lib||{}).filter(isCustomType).map(id=>{
+    const rows=S.lib[id]||[];
+    const titled=rows.find(r=>r.docTitle);
+    return {
+      id, name: (titled&&titled.docTitle) || customTitleOf(id),
+      alias: "Your own document · free format", statutory:false, custom:true
+    };
+  }).sort((a,b)=>a.name.localeCompare(b.name));
+}
+const customTitleOf = id => {
+  const s = String(id).slice(CUSTOM_PREFIX.length).replace(/_/g," ");
+  return s.charAt(0).toUpperCase()+s.slice(1);
+};
+/** The type record for whatever is on screen — built-in OR custom. */
+function typeOf(id){
+  const built=TYPES.find(t=>t.id===id);
+  if(built) return built;
+  if(!isCustomType(id)) return null;
+
+  const known=customTypes().find(t=>t.id===id);
+  if(known) return known;
+
+  /* A type created THIS SECOND is not in the library yet — the library is only
+     reloaded from the server. Without this the breadcrumb showed the slug read
+     back as a title ("Sports day participation") at the exact moment the person
+     had just typed "Sports Day Participation", which reads as the product
+     mangling their name. The template on screen still carries the real one. */
+  const live=(S.tpl && S.tpl.docType===id && S.tpl.docTitle) ? S.tpl.docTitle : customTitleOf(id);
+  return {id, name:live, alias:"Your own document · free format", statutory:false, custom:true};
+}
+
 function typeEnabled(t){
   if(t.disabled) return false;
   if(t.requiresState) return S.school.state===t.requiresState;
   return true;
 }
 function typeBasis(t){
+  /* Nothing prescribes a document the school invented, so "Not checked" would
+     be misleading — it implies a rule exists that we have not verified. */
+  if(t && (t.custom || isCustomType(t.id))) return {label:"Your own format", evidence:null};
   const st=stackActive(t.id);
   if(!st.length) return {label:"Not checked", evidence:null};
   const best=st.slice().sort((x,y)=>(EVIDENCE_RANK[y.a.evidence]||0)-(EVIDENCE_RANK[x.a.evidence]||0))[0];
@@ -1458,6 +1699,33 @@ function fieldValue(key){
   if(key==="doc.isDuplicate") return S.issuance.duplicate ? "Yes" : "";
   return S.data==="p95" ? (f.p95||f.sample) : f.sample;
 }
+/**
+ * A REPEATING table binds one list field and draws a row per item; an ordinary
+ * table binds one field per row and its length is fixed at design time.
+ *
+ * Two different objects wearing one type. Every place that reached for
+ * content.rows had to learn the difference, because on a repeating table that
+ * array does not exist — and reading .length off undefined would have taken the
+ * whole canvas down, not just the table.
+ */
+function isRepeat(o){ return !!(o && o.type==="table" && o.content && o.content.repeatOver); }
+function listColumns(o){
+  const f=FIELD[o.content.repeatOver];
+  const declared=(f&&f.itemFields)||[];
+  const chosen=(o.content.columns||[]).map(c=>{
+    const spec=declared.find(x=>x.key===c.key)||{key:c.key,label:c.key};
+    return {key:c.key, label:spec.label, maxLen:spec.maxLen,
+            wPct:c.wPct, align:c.align||spec.align||"left"};
+  });
+  return chosen.length ? chosen : declared.map(x=>({...x, wPct:null}));
+}
+function listRows(o){
+  const f=FIELD[o.content.repeatOver];
+  if(!f) return [];
+  if(S.data==="off") return [];
+  return (S.data==="p95" ? (f.p95||f.sample) : f.sample) || [];
+}
+
 function boundKeys(){
   const set=new Set();
   /* Only languages the template DECLARES can bind the contract. A run in a
@@ -1469,7 +1737,8 @@ function boundKeys(){
      UI could not show, in a language the template did not have. */
   const langs=(S.tpl && S.tpl.languages) || null;
   for(const o of S.tpl.objects){
-    if(o.type==="table") o.content.rows.forEach(r=>set.add(r.key));
+    if(isRepeat(o)) set.add(o.content.repeatOver);
+    else if(o.type==="table") (o.content.rows||[]).forEach(r=>set.add(r.key));
     else if(o.content&&o.content.i18n)
       for(const L of Object.keys(o.content.i18n)){
         if(langs && !langs.includes(L)) continue;
@@ -1480,7 +1749,8 @@ function boundKeys(){
 }
 function objectForKey(key){
   for(const o of S.tpl.objects){
-    if(o.type==="table" && o.content.rows.some(r=>r.key===key)) return o;
+    if(isRepeat(o) && o.content.repeatOver===key) return o;
+    if(o.type==="table" && (o.content.rows||[]).some(r=>r.key===key)) return o;
     if(o.content&&o.content.i18n)
       for(const L of Object.keys(o.content.i18n))
         if(o.content.i18n[L].runs.some(r=>r.f===key)) return o;
@@ -1498,6 +1768,12 @@ function translationCoverage(lang){
 }
 /* command stack — one command per gesture, never one per mousemove */
 function push(label, before, after){
+  /* THE BACKSTOP. Every canvas mutation records itself here before it can be
+     saved. Guarding the individual entry points is the readable defence; this
+     is the one that holds when a future path forgets to. A reader's stray
+     interaction dies here instead of becoming a dirty document that then tries
+     to save and fails with a generic error. */
+  if (readOnly()) return;
   S.undo.push({label, before, after}); if(S.undo.length>80) S.undo.shift();
   S.redo.length=0; markDirty();
 }
@@ -1565,8 +1841,23 @@ function objectHTML(o, forEdit){
     if(!d) return `<span style="opacity:.35">— untranslated —</span>`;
     return runsHTML(d.runs, forEdit?false:S.data!=="off") || "&#8203;";
   }
+  if(isRepeat(o)){
+    const cols=listColumns(o), rows=listRows(o);
+    const w=c=>c.wPct?` style="width:${c.wPct}%"`:"";
+    const head=o.content.showHeader===false ? "" :
+      `<tr class="rpt__h">${cols.map(c=>`<th${w(c)} class="ta-${c.align}">${esc(c.label)}</th>`).join("")}</tr>`;
+    /* Field-names mode draws ONE specimen row of column labels rather than no
+       rows at all. An empty frame would show a designer a table that looks
+       broken while it is merely unbound. */
+    const body = rows.length
+      ? rows.map(r=>`<tr>${cols.map(c=>`<td class="ta-${c.align}">${esc(r[c.key]==null?"":r[c.key])}</td>`).join("")}</tr>`).join("")
+      : `<tr class="rpt__spec">${cols.map(c=>`<td class="ta-${c.align}"><span class="mf">${esc(c.label)}</span></td>`).join("")}</tr>`;
+    return `<table class="rpt"><colgroup>${cols.map(c=>`<col${w(c)}>`).join("")}</colgroup>`+
+      `${head}${body}</table>`+
+      (rows.length>1?`<div class="rpt__note">${rows.length} rows · one per ${esc((FIELD[o.content.repeatOver]||{}).label||"item")}</div>`:"");
+  }
   if(o.type==="table"){
-    return o.content.rows.map((r,i)=>{
+    return (o.content.rows||[]).map((r,i)=>{
       const f=FIELD[r.key]||{label:r.key};
       return `<div class="tblrow"><span class="tblrow__n">${i+1}.</span>`+
         `<span class="tblrow__l">${esc(f.label)}</span>`+
@@ -1615,6 +1906,27 @@ const regionTop = o=>{
 };
 const resolvedY = o=> o._y!=null ? o._y : o.yMm;
 const nodeFor   = id=> zq('.obj[data-id="'+id+'"]');
+
+/**
+ * Coalesce layout work onto one animation frame.
+ *
+ * `layoutPage()` tears the page down and rebuilds every object, then forces a
+ * reflow per object to measure it. It is called from ~20 places — including
+ * every keystroke while editing text and every mousemove during a drag or
+ * resize. On a template with many objects that is a full rebuild per input
+ * event, all but the last of which is thrown away before the browser paints.
+ *
+ * Requesting a frame collapses a burst into a single rebuild at the moment the
+ * browser is about to paint anyway, which is the only one whose result anybody
+ * ever sees. Callers that must measure IMMEDIATELY afterwards still call
+ * layoutPage() directly, so nothing that depends on fresh measurements changes.
+ */
+let __layoutQueued = false;
+function layoutSoon(){
+  if (__layoutQueued) return;
+  __layoutQueued = true;
+  requestAnimationFrame(() => { __layoutQueued = false; layoutPage(); });
+}
 
 function layoutPage(){
   /* A render while editing would wipe the contenteditable node and lose the
@@ -1817,9 +2129,13 @@ function go(screen){
 }
 function paintCrumb(){
   const c=zq("#crumb"); c.innerHTML="";
-  const t=TYPES.find(x=>x.id===S.docType);
-  if(S.screen==="hub"){ c.innerHTML='<span class="crumb__now">Certificates</span>'; return; }
-  c.insertAdjacentHTML("beforeend",'<button data-go="hub">Certificates</button><span class="crumb__sep">›</span>');
+  /* typeOf, never TYPES.find. A custom type is not in TYPES, so this returned
+     undefined and the very next line threw on `t.name` — inside render(),
+     which meant the designer opened COMPLETELY BLANK: no page, no layers, no
+     error the user could see. The template was fine; nothing had drawn it. */
+  const t=typeOf(S.docType) || {name:"Document"};
+  if(S.screen==="hub"){ c.innerHTML='<span class="crumb__now">Documents</span>'; return; }
+  c.insertAdjacentHTML("beforeend",'<button data-go="hub">Documents</button><span class="crumb__sep">›</span>');
   if(S.screen==="gallery"){ c.insertAdjacentHTML("beforeend",`<span class="crumb__now">${esc(t.name)}</span>`); return; }
   c.insertAdjacentHTML("beforeend",`<button data-go="gallery">${esc(t.name)}</button><span class="crumb__sep">›</span>`);
   const nm=el("span","crumb__now",esc(S.tpl.name || (S.loading?"Loading…":"Untitled template")));
@@ -1863,16 +2179,21 @@ function paintTopActions(){
   /* ACTIONS ONLY — things that change the document, in the order they are
      done: undo/redo, look back, prove, publish. The view toggles moved to the
      status bar, which is where the other view state already lives. */
+  /* GRADED. Every control here changes the document or its lifecycle, so each
+     one states the grade it needs. A view-grade reader keeps History — looking
+     back at what was published is reading, not writing. */
   a.innerHTML = `
     <span id="zxPresence"></span>
-    <button class="btn btn--ghost btn--sm" id="saveBtn" title="Save now — edits also save on their own">Save</button>
+    ${readOnly()
+      ? `<span class="chip chip--ro" title="You have view access to Documents. You can read every template and its published versions; changing them needs edit access.">Read only</span>`
+      : `<button class="btn btn--ghost btn--sm" id="saveBtn" title="Save now — edits also save on their own">Save</button>
     <span class="topbar__div"></span>
     <button class="btn btn--ghost btn--ico btn--sm" id="undoBtn" title="Undo — ⌘Z">↺</button>
-    <button class="btn btn--ghost btn--ico btn--sm" id="redoBtn" title="Redo — ⌘⇧Z">↻</button>
+    <button class="btn btn--ghost btn--ico btn--sm" id="redoBtn" title="Redo — ⌘⇧Z">↻</button>`}
     <span class="topbar__div"></span>
     <button class="btn btn--ghost btn--sm" id="histBtn">History</button>
-    <button class="btn btn--sm" id="proofBtn">Proof PDF <span class="btn__hint">~2s</span></button>
-    <button class="btn btn--primary btn--sm" id="pubBtn">Publish</button>`;
+    ${may("edit") ? `<button class="btn btn--sm" id="proofBtn">Proof PDF <span class="btn__hint">~2s</span></button>` : ""}
+    ${may("manage") ? `<button class="btn btn--primary btn--sm" id="pubBtn">Publish</button>` : ""}`;
 }
 
 /** Language, sample data and translation coverage — what you are LOOKING at. */
@@ -1893,45 +2214,113 @@ function paintViewStrip(){
       <button data-data="p95"     class="${S.data==="p95"?"is-on":""}">p95</button>
     </div>`;
 }
+/**
+ * Draw a template as rectangles.
+ *
+ * Accepts EITHER a full object array (the designer has one in memory) or the
+ * geometry-only rows the list endpoint now sends — five numbers an object
+ * instead of the whole document. The list used to ship every template's
+ * complete content so that this function could read xMm off it: 456 KB on one
+ * real school, on every hub load, to draw grey boxes.
+ */
 function schematic(objs, host){
   host.innerHTML="";
   const D={w:210,h:297};
-  objs.forEach(o=>{
+  (objs||[]).forEach(o=>{
+    // normalise the two shapes into one
+    const g = ("x" in o) ? o
+      : {x:o.xMm, y:o.yMm, w:o.wMm, h:o.hMm, t:o.type,
+         r:!!o.requiredKey, g:o.region, s:(o.content&&o.content.shape)==="seal"};
     const i=el("i");
-    i.className = o.requiredKey ? "req" : (o.type==="shape"?"rule":"");
-    const yOff = o.region==="footer" ? (D.h-16) : 0;
-    i.style.left=(o.xMm/D.w*100)+"%";
-    i.style.top=((o.yMm+yOff)/D.h*100)+"%";
-    i.style.width=(o.wMm/D.w*100)+"%";
-    i.style.height=Math.max(0.6,(o.hMm/D.h*100))+"%";
-    if(o.type==="shape"&&o.content.shape==="seal") i.style.borderRadius="50%";
+    i.className = g.r ? "req" : (g.t==="shape" ? "rule" : "");
+    const yOff = g.g==="footer" ? (D.h-16) : 0;
+    i.style.left=((g.x||0)/D.w*100)+"%";
+    i.style.top=(((g.y||0)+yOff)/D.h*100)+"%";
+    i.style.width=((g.w||0)/D.w*100)+"%";
+    i.style.height=Math.max(0.6,((g.h||0)/D.h*100))+"%";
+    if(g.s) i.style.borderRadius="50%";
     host.appendChild(i);
   });
 }
+/**
+ * The one line the card exists for: can this school print this document today?
+ *
+ * Ordered by what the reader needs first. "Live" is the answer; the version and
+ * the draft count are context for it. A type with no templates at all says so
+ * plainly rather than reporting "0 templates" beside "no active template" and
+ * making the reader assemble the meaning from two negatives.
+ */
+function typeStateLine(t, act, n){
+  if (S.loading) return `<em>Checking…</em>`;
+  if (!n)        return `<em>Not set up yet</em>`;
+
+  const drafts = n - (act ? 1 : 0);
+  const more   = drafts > 0 ? ` <em>· ${drafts} other${drafts>1?"s":""}</em>` : "";
+  if (act) {
+    const v = act.activeVersion ?? act.publishedVersion;
+    return `Live${v!=null?` · v${v}`:""} <em>· ${esc(act.name)}</em>${more}`;
+  }
+  const edited = libOf(t.id)[0] && libOf(t.id)[0].edited;
+  return `Not live <em>· ${n} draft${n>1?"s":""}${edited?" · edited "+esc(relTime(edited)):""}</em>`;
+}
+
+/**
+ * A banner that stays, for a failure that must not be mistaken for emptiness.
+ * Removed on the next successful load, never on a timer.
+ */
+function paintLoadError(){
+  const host = zq("#typeGrid");
+  if (!host) return;
+  const prev = document.getElementById("zxLoadErr");
+  if (prev) prev.remove();
+  if (!S.loadError) return;
+
+  const b = el("div", "loaderr");
+  b.id = "zxLoadErr";
+  b.innerHTML = `<div><b>Your documents could not be loaded.</b>
+      <div class="loaderr__why">${esc(S.loadError)}</div>
+      <div class="loaderr__why">This is not the same as having none — nothing has been lost.</div></div>
+    <button class="btn btn--sm" id="zxRetry">Try again</button>`;
+  host.parentNode.insertBefore(b, host);
+  zq("#zxRetry").onclick = async () => {
+    S.loadError = null; S.loading = true; paintLoadError(); repaintScreen();
+    await hydrateFromServer();
+  };
+}
+
 function paintHub(){
+  paintLoadError();
   const g=zq("#typeGrid"), o=zq("#typeGridOff"); g.innerHTML=""; o.innerHTML="";
+  paintCustomTypes();
   TYPES.filter(typeEnabled).forEach(t=>{
     const basis=typeBasis(t), act=activeTpl(t.id), n=libOf(t.id).length;
     const c=el("button","type-card");
+    /* NINE things competed here: a title, an alias, a thumbnail, three
+       label/value rows and three chips — and three of them said the same thing
+       twice. "Active template: — none —" and a NO ACTIVE TEMPLATE chip are one
+       fact; "Compliance basis", "Statutory format" and "Level A" are one idea.
+       The card now answers the only question a reader actually opens it with —
+       CAN THIS SCHOOL PRINT THIS TODAY? — on one line, with provenance quieter
+       beneath it. Same information, four elements instead of nine. */
     c.innerHTML=`
       <div class="type-card__top">
-        <div><div class="type-card__name">${esc(t.name)}</div><div class="type-card__sub">${esc(t.alias)}</div></div>
+        <div style="min-width:0">
+          <div class="type-card__name">
+            <span class="type-card__dot type-card__dot--${act?"live":"draft"}"></span>${esc(t.name)}</div>
+          <div class="type-card__sub" title="${esc(t.alias)}">${esc(t.alias)}</div>
+        </div>
         <div class="glyph"></div>
       </div>
-      <div class="type-card__meta">
-        <div class="type-card__row"><span>Compliance basis</span><b>${esc(basis.label)}</b></div>
-        <div class="type-card__row"><span>Active template</span><b>${S.loading?"…":(act?esc(act.name):"— none —")}</b></div>
-        <div class="type-card__row"><span>Templates</span><b>${S.loading?"…":(n===0?"none yet":n+(n===1?" template":" templates")+" · edited "+esc(relTime(libOf(t.id)[0].edited)))}</b></div>
-      </div>
-      <div style="display:flex;gap:6px;flex-wrap:wrap">
-        ${t.statutory?'<span class="chip chip--statutory"><span class="dot"></span>Statutory format</span>'
-                    :'<span class="chip">Free format</span>'}
-        ${basis.evidence?`<span class="lvl lvl--${basis.evidence}">Level ${basis.evidence}</span>`
-                        :'<span class="chip">Not checked</span>'}
-        ${act?'<span class="chip chip--active"><span class="dot"></span>Active</span>'
-             :'<span class="chip chip--draft">No active template</span>'}
+      <div>
+        <div class="type-card__state">${typeStateLine(t, act, n)}</div>
+        <div class="type-card__basis">
+          <span class="${t.statutory?"type-card__stat":""}">${t.statutory?"Statutory":"Free format"}</span>
+          <span class="sep">·</span><span>${esc(basis.label)}</span>
+          ${basis.evidence?`<span class="sep">·</span><span class="lvl lvl--${basis.evidence}">Level ${basis.evidence}</span>`:""}
+        </div>
       </div>`;
-    if(act){ const prev=S.docType; S.docType=t.id; schematic(buildTpl(act).objects, zq(".glyph",c)); S.docType=prev; }
+    if(act){ const prev=S.docType; S.docType=t.id;
+             schematic(act.shapes || buildTpl(act).objects, zq(".glyph",c)); S.docType=prev; }
     c.onclick=()=>{ S.docType=t.id; go("gallery"); };
     g.appendChild(c);
   });
@@ -1946,8 +2335,208 @@ function paintHub(){
   });
 }
 
+/**
+ * The school's own document types, plus the way to make another.
+ *
+ * The "New document" card is deliberately in this section and not beside the
+ * prescribed forms: a Transfer Certificate and a Sports Day certificate are not
+ * the same kind of thing, and putting them in one grid would suggest the school
+ * may invent a TC or that the prescribed list is merely a starting point.
+ */
+function paintCustomTypes(){
+  const grid=zq("#typeGridCustom"); if(!grid) return;
+  grid.innerHTML="";
+
+  customTypes().forEach(t=>{
+    const act=activeTpl(t.id), n=libOf(t.id).length;
+    const c=el("button","type-card");
+    c.innerHTML=`
+      <div class="type-card__top">
+        <div style="min-width:0">
+          <div class="type-card__name">
+            <span class="type-card__dot type-card__dot--${act?"live":"draft"}"></span>${esc(t.name)}</div>
+          <div class="type-card__sub" title="${esc(t.alias)}">${esc(t.alias)}</div>
+        </div>
+        <div class="glyph"></div>
+      </div>
+      <div>
+        <div class="type-card__state">${typeStateLine(t, act, n)}</div>
+        <div class="type-card__basis">
+          <span>Your own format</span>
+          <span class="sep">·</span><span>all ${CONTRACT.length} fields</span>
+        </div>
+      </div>`;
+    if(act){ const prev=S.docType; S.docType=t.id;
+             schematic(act.shapes || buildTpl(act).objects, zq(".glyph",c)); S.docType=prev; }
+    c.onclick=()=>{ S.docType=t.id; go("gallery"); };
+    grid.appendChild(c);
+  });
+
+  if(!may("edit")) return;              // creating a document type is an edit action
+  const add=el("button","type-card type-card--new");
+  /* Matches the rebuilt cards rather than the old label/value rows — an
+     invitation should not be heavier than the things it sits beside. */
+  add.innerHTML=`
+    <div class="type-card__top">
+      <div style="min-width:0">
+        <div class="type-card__name">＋ New document</div>
+        <div class="type-card__sub">Name it, then design it on a blank page</div>
+      </div>
+    </div>
+    <div>
+      <div class="type-card__basis">
+        <span>Your own format</span><span class="sep">·</span><span>all ${CONTRACT.length} fields</span>
+      </div>
+    </div>`;
+  add.onclick=newCustomDocument;
+  grid.appendChild(add);
+}
+
+/**
+ * Ask for a name, then open a blank page of a brand-new document type.
+ *
+ * The name is asked FIRST and cannot be skipped, because it is not decoration:
+ * it mints the type id, and the id is what every template, active slot and
+ * print point of this document will be keyed on forever. "Untitled" would mint
+ * `custom:untitled` and quietly merge the next unnamed document into the same
+ * type — and the same single active slot.
+ */
+async function newCustomDocument(){
+  if (refuse("edit", "Creating a document")) return;
+  const name = await askName();
+  if(name===null) return;
+
+  const id = customTypeFor(name);
+  if(!id){
+    toast("That name has no letters or digits in it, so it cannot name a document type.", true);
+    return;
+  }
+  if(customTypes().some(t=>t.id===id) || TYPES.some(t=>t.id===id)){
+    /* Not an error — take them to the one that exists. Two documents of the
+       same name are the same document type, which is the point. */
+    S.docType=id; go("gallery");
+    toast("“"+name+"” already exists — here are its templates");
+    return;
+  }
+
+  S.docType=id;
+  const t=blankTemplate(id, name);
+  S.tpl=t; S.lang="en"; S.sel=[]; S.undo=[]; S.redo=[]; S.proofed=null; S.tool="move";
+  S.baseline=JSON.parse(JSON.stringify(t.objects));
+  S.blockRefs={BLK0001:1}; S.blockIgnored={};
+  markDirty(); go("designer");
+  if(SRV.online) return createOnServer(null, {docTitle:name});
+  toast("“"+name+"” created — it is yours to design");
+}
+
+/**
+ * A blank page that is not empty: letterhead, title, and a page number.
+ *
+ * A genuinely empty canvas is a worse starting point than it sounds — the
+ * school's name and address belong on every document it issues, and rebuilding
+ * the letterhead by hand each time is both tedious and how two documents end up
+ * disagreeing about the school's own address.
+ */
+function blankTemplate(docType, title){
+  return {
+    templateId:"TPL"+Math.floor(1000+Math.random()*8999),
+    name:title, docType, docTitle:title,
+    status:"draft", version:1, publishedVersion:null, activeVersion:null, lockVersion:0,
+    languages:["en"], defaultLanguage:"en",
+    page:{size:"A4", orientation:"portrait", marginsMm:{t:18,r:15,b:16,l:15}, pageMode:"single"},
+    header:[], footer:[],
+    objects:[
+      {id:"c_logo", name:"School crest", region:"header", type:"image",
+       xMm:15,yMm:10,wMm:18,hMm:18, z:1, height:"fixed", content:{label:"School crest"}, style:{}},
+      {id:"c_name", name:"School name", region:"header", type:"text",
+       xMm:38,yMm:11,wMm:157,hMm:8, z:2, height:"auto", requiredKey:"school.name",
+       style:{sizePt:13, lineHeight:1.25, weight:700, align:"left", colour:"#14100D"},
+       content:{i18n:{en:T({f:"school.name"})}}},
+      {id:"c_addr", name:"Address line", region:"header", type:"text",
+       xMm:38,yMm:20,wMm:157,hMm:6, z:2, height:"auto", requiredKey:"school.address",
+       style:{sizePt:8, lineHeight:1.4, align:"left", colour:"#6B5346"},
+       content:{i18n:{en:T({f:"school.address"})}}},
+      {id:"c_rule", name:"Letterhead rule", region:"header", type:"shape",
+       xMm:15,yMm:31,wMm:180,hMm:0.6, z:1, height:"fixed",
+       content:{shape:"line"}, style:{colour:"#BC5A3C"}},
+      {id:"c_title", name:"Title", type:"text",
+       xMm:15,yMm:44,wMm:180,hMm:9, z:3, height:"auto",
+       style:{sizePt:13, lineHeight:1.3, weight:700, align:"center", colour:"#14100D", track:".08em"},
+       content:{i18n:{en:T({t:String(title||"").toUpperCase()})}}},
+      {id:"c_body", name:"Body", type:"text",
+       xMm:15,yMm:60,wMm:180,hMm:12, z:3, height:"auto",
+       style:{sizePt:10.5, lineHeight:1.55, align:"left", colour:"#14100D"},
+       content:{i18n:{en:T({t:"Write the wording here. Insert a field from the panel on the right wherever the document should name a student, a class or a date."})}}},
+      {id:"c_date", name:"Date of issue", type:"text",
+       xMm:15,yMm:0,wMm:180,hMm:6, z:3, height:"auto",
+       anchorTo:"c_body", anchorGapMm:10, requiredKey:"doc.issueDate",
+       style:{sizePt:10, lineHeight:1.4, align:"left", colour:"#14100D"},
+       content:{i18n:{en:T({t:"Date: "},{f:"doc.issueDate"})}}},
+      {id:"c_sign", name:"Signature", type:"text",
+       xMm:130,yMm:0,wMm:65,hMm:8, z:3, height:"auto",
+       anchorTo:"c_date", anchorGapMm:22,
+       style:{sizePt:9.5, lineHeight:1.4, weight:600, align:"center", colour:"#14100D"},
+       content:{i18n:{en:T({t:"Principal"})}}},
+      {id:"c_page", name:"Page number", region:"footer", type:"pageNumber",
+       xMm:15,yMm:4,wMm:180,hMm:5, z:1, height:"fixed", content:{format:"Page {n} of {t}"},
+       style:{sizePt:7.5, lineHeight:1.3, align:"center", colour:"#9E8578"}}
+    ]
+  };
+}
+
+/** A one-field dialog. Resolves to the trimmed name, or null if dismissed. */
+function askName(){
+  return new Promise(resolve=>{
+    let settled=false;
+    const done = v => { if(settled) return; settled=true; closeModal(); resolve(v); };
+
+    modal("Name this document", "It becomes a document type of its own — its own templates, its own active version",
+      `<div class="row row--1">
+         <label for="newDocName">What is this document called?</label>
+         <input id="newDocName" type="text" maxlength="60" autocomplete="off"
+                placeholder="Sports Day Participation Certificate">
+       </div>
+       <p class="note" id="newDocHint" style="margin:6px 0 0">Use the name the school uses. It appears on the hub and cannot be changed later without creating a new type.</p>`,
+      `<button class="btn" data-close>Cancel</button>
+       <button class="btn btn--primary" id="newDocGo">Create</button>`, true);
+
+    const inp=zq("#newDocName"), go=zq("#newDocGo"), hint=zq("#newDocHint");
+    const check = () => {
+      const v=inp.value.trim(), id=customTypeFor(v);
+      go.disabled = !id;
+      hint.textContent = !v ? "Use the name the school uses. It appears on the hub and cannot be changed later without creating a new type."
+        : !id ? "That has no letters or digits in it, so it cannot name a document type."
+        : (customTypes().some(t=>t.id===id)||TYPES.some(t=>t.id===id))
+          ? "You already have a document called that — Create will open it."
+          : "Will be created as a new document type.";
+    };
+    inp.addEventListener("input", check);
+    inp.addEventListener("keydown", e=>{ if(e.key==="Enter" && inp.value.trim()) done(inp.value.trim()); });
+    go.onclick = () => { const v=inp.value.trim(); if(v && customTypeFor(v)) done(v); };
+    check(); setTimeout(()=>inp.focus(), 30);
+
+    /* Dismissing the dialog any other way — the scrim, Escape, the Cancel
+       button — must still settle the promise, or newCustomDocument() waits
+       forever and the next click does nothing. */
+    const scrim=zq("#scrim");
+    const watch=new MutationObserver(()=>{ if(!scrim.classList.contains("is-on")) { obsStop(); done(null); } });
+    const obsStop=()=>watch.disconnect();
+    watch.observe(scrim, {attributes:true, attributeFilter:["class"]});
+  });
+}
+
 /* a library row -> a full template object */
 function buildTpl(row){
+  /* A custom type has no starter, and STARTERS[0] is a Transfer Certificate —
+     so without this the hub and gallery would draw a TC thumbnail for a Sports
+     Day certificate, and Open (offline) would hand back a TC's objects. */
+  if(isCustomType(row.docType||S.docType)){
+    const t=blankTemplate(row.docType||S.docType, row.docTitle||customTitleOf(row.docType||S.docType));
+    t.templateId=row.id; t.name=row.name;
+    t.status=row.status; t.version=row.version; t.publishedVersion=row.publishedVersion;
+    t.activeVersion=(S.active[t.docType]===row.id) ? row.publishedVersion : null;
+    return t;
+  }
   const st=STARTERS.find(x=>x.id===row.starter) || STARTERS[0];
   const t=st.build();
   t.templateId=row.id; t.name=row.name;
@@ -2012,6 +2601,7 @@ async function openTemplate(row){
   render();
 }
 function openStarter(st){
+  if (refuse("edit", "Starting a new template")) return;
   const t=st.build();
   t.name=st.name+" (copy)";
   /* Offline the id is a local placeholder. Online the SERVER mints it: a
@@ -2036,15 +2626,15 @@ function openStarter(st){
  * a clerk who edited for ten minutes and then hit a create failure would
  * otherwise lose the lot with no warning that it had never been saved.
  */
-async function createOnServer(st){
+async function createOnServer(st, extra){
   S.creating = true;
   try{
-    const seed={
+    const seed=Object.assign({
       name:S.tpl.name, page:S.tpl.page, header:S.tpl.header, footer:S.tpl.footer,
       objects:S.tpl.objects, languages:S.tpl.languages,
       defaultLanguage:S.tpl.defaultLanguage, starterId:st&&st.id||null,
       complianceLayers:S.tpl.complianceLayers||[]
-    };
+    }, extra||{});
     const out=await srv.create(S.docType, seed);
     S.tpl.templateId=out.templateId;
     S.tpl.lockVersion=(out.template&&out.template.lockVersion)||0;
@@ -2063,7 +2653,13 @@ async function createOnServer(st){
 }
 
 function paintGallery(){
-  const t=TYPES.find(x=>x.id===S.docType), basis=typeBasis(t);
+  /* The "Starters" heading is wrong for a custom document — there are none and
+     never will be — so the label is set here rather than fixed in the markup. */
+  /* typeOf, not TYPES.find — a custom type is not in TYPES, and the old lookup
+     returned undefined, so opening a custom document's gallery threw on
+     `t.name` and left the screen on the last one drawn. */
+  const t=typeOf(S.docType), basis=typeBasis(t);
+  if(!t){ toast("That document type no longer exists", true); return go("hub"); }
   const rows=libOf(S.docType), starters=startersFor(S.docType), act=activeTpl(S.docType);
   zq("#galEyebrow").textContent=t.name;
   zq("#galSub").innerHTML = S.loading
@@ -2139,44 +2735,66 @@ function paintGallery(){
       <div class="tpl-row__acts">
         ${st.waiting
           ? `<button class="btn btn--primary btn--sm" data-act="${row.id}">Make v${st.waiting} live</button>`
-          : (!isActive && row.publishedVersion
+          : (!isActive && row.publishedVersion && may("manage")
               ? `<button class="btn btn--primary btn--sm" data-act="${row.id}">Make live</button>`
               /* A never-published template shows the action DISABLED rather
                  than hiding it. Offering nothing leaves the reader to work out
                  why this row has fewer buttons than the one above it; a
                  disabled control with a reason says what is missing. My first
                  pass omitted it, and the suite caught the omission. */
-              : (!isActive
+              : (!isActive && may("manage")
                   ? `<button class="btn btn--sm" disabled title="Publish this template first — only a published version can go live">Make live</button>`
                   : ""))}
         <button class="btn btn--sm" data-open="${row.id}">Open</button>
-        ${isActive?`<button class="btn btn--ghost btn--sm" data-deact="${row.id}">Deactivate</button>`:""}
-        ${(!isActive && !row.publishedVersion && SRV.can.manage)
+        ${(isActive && may("manage"))?`<button class="btn btn--ghost btn--sm" data-deact="${row.id}">Deactivate</button>`:""}
+        ${(!isActive && row.publishedVersion && may("manage"))
+          /* THE ACTION THE DELETE DIALOG PROMISED AND NEVER OFFERED.
+             Deleting a published template is refused — correctly, its versions
+             are the record of what was issued — and the refusal told the reader
+             to "archive it instead". Nothing performed that: `srv.archive`
+             existed with zero callers, so a published template could never be
+             removed from the gallery by any action a user could take, and the
+             list grew forever. */
+          ?`<button class="btn btn--ghost btn--sm" data-arch="${row.id}" title="Retire this template — it leaves the list, its published versions and their record survive">Archive</button>`:""}
+        ${(!isActive && !row.publishedVersion && may("manage"))
           /* Only a never-published draft. Anything with a published version
              carries the record of what certificates issued from it said, so it
              is archived, not deleted — and the server enforces that too. */
           ?`<button class="btn btn--ghost btn--sm" data-del="${row.id}" title="Delete this draft">Delete</button>`:""}
       </div>`;
-    schematic(buildTpl(row).objects, zq(".tpl-row__thumb", r));
+    /* The template's OWN geometry when the list carried it — the starter is
+       only a fallback now, and it was never what the row actually looked like. */
+    schematic(row.shapes || buildTpl(row).objects, zq(".tpl-row__thumb", r));
     zq(".tpl-row__name", r).onclick = () => openTemplate(row);
     zq(".tpl-row__thumb", r).onclick = () => openTemplate(row);
     mine.appendChild(r);
   });
 
+  const sl=zq("#starterLabel");
+  if(sl) sl.textContent = isCustomType(S.docType)
+    ? "Start a new template" : "Starters — cloned into your school, never linked";
+
+  if(may("edit")){
   const blank=el("button","tpl-card tpl-card--new");
   blank.innerHTML=`<div class="tpl-card__thumb">＋</div><div class="tpl-card__body">
     <div class="tpl-card__name">Blank canvas</div>
     <div class="tpl-card__meta">A4 portrait · letterhead and page furniture only</div></div>`;
   blank.onclick=()=>{
-    const base=starters[0]||STARTERS.find(x=>x.docType===S.docType)||STARTERS[0];
-    const tt=base.build(); tt.name="Untitled template"; tt.version=1;
-    tt.objects=tt.objects.filter(o=>o.region||o.requiredKey);
+    /* For a custom type there is no starter to strip back to page furniture —
+       and STARTERS[0] is a Transfer Certificate, so the old fallback would have
+       seeded a custom document with a TC's required objects. */
+    const tt = isCustomType(S.docType)
+      ? blankTemplate(S.docType, t.name)
+      : (()=>{ const base=starters[0]||STARTERS.find(x=>x.docType===S.docType)||STARTERS[0];
+               const b=base.build(); b.objects=b.objects.filter(o=>o.region||o.requiredKey); return b; })();
+    tt.name="Untitled template"; tt.version=1;
     tt.templateId="TPL"+Math.floor(1000+Math.random()*8999);
     tt.status="draft"; tt.publishedVersion=null; tt.activeVersion=null;
     S.tpl=tt; S.sel=[]; S.undo=[]; S.redo=[]; S.proofed=null; markDirty();
     S.baseline=JSON.parse(JSON.stringify(tt.objects)); go("designer");
   };
   st.appendChild(blank);
+  }
   starters.forEach(x=>{
     const gap=starterGap(x);
     const chips='<span class="chip">Starter · cloned on use</span>'
@@ -2187,11 +2805,19 @@ function paintGallery(){
     st.appendChild(card({
       name:x.name,
       meta:x.meta + (gap.length ? " · still to bind: "+esc(gap.map(k=>(FIELD[k]||{label:k}).label).join(", ")) : ""),
-      chips, objects:x.build().objects, onclick:()=>openStarter(x)
+      chips, objects:x.build().objects,
+      onclick:()=> may("edit") ? openStarter(x)
+                               : toast("Starting a new template needs edit access to Documents.", true)
     }));
   });
   if(!starters.length)
-    st.appendChild(el("div","note","No starter is written for this document type under "+esc(S.school.board)+" · "+esc(S.school.state)+" yet. Start from a blank canvas."));
+    /* For a CUSTOM document the board and state are beside the point: nobody
+       will ever write a starter for a document only this school issues, and
+       saying "not written yet under CBSE · Jharkhand" implies one is coming and
+       blames a rule that does not apply. */
+    st.appendChild(el("div","note", isCustomType(S.docType)
+      ? "This is your own document, so there is no prescribed starter — the blank page is the starting point. It arrives with your letterhead, a title and a page number already placed."
+      : "No starter is written for this document type under "+esc(S.school.board)+" · "+esc(S.school.state)+" yet. Start from a blank canvas."));
 }
 
 /* P8.3 — what will this starter STILL need under the active compliance stack?
@@ -2244,9 +2870,45 @@ function openDelete(id){
   };
 }
 
+/**
+ * Retire a published template.
+ *
+ * Deliberately framed as retiring rather than deleting, because that is what it
+ * is: the versions stay, the record of what was issued stays, and only the
+ * working list loses a row. The alternative the product used to offer for a
+ * published template was nothing at all.
+ */
+function openArchive(id){
+  if (refuse("manage", "Archiving a template")) return;
+  const row = libOf(S.docType).find(r => r.id === id);
+  if (!row) return;
+
+  modal("Archive “" + row.name + "”?", "It leaves your list — nothing it issued is lost",
+    `<p style="margin-top:0;font-size:12.5px;line-height:1.6">
+       This template has published version${row.publishedVersion > 1 ? "s" : ""}, and each one is the
+       record of what a certificate issued from it actually said — so it cannot be deleted.
+       Archiving retires it instead: it disappears from this list, and every published version,
+       its PDF and its history remain exactly where they are.</p>
+     <p class="note" style="margin-bottom:0">An archived template cannot be made live again. If you
+       need it back, duplicate it into a fresh draft.</p>`,
+    `<button class="btn" data-close>Cancel</button><span class="spacer"></span>
+     <button class="btn btn--primary" id="archGo">Archive it</button>`, true);
+
+  zq("#archGo").onclick = async () => {
+    try {
+      await srv.archive(id);
+      closeModal();
+      S.lib[S.docType] = (S.lib[S.docType] || []).filter(r => r.id !== id);
+      render();
+      toast("“" + row.name + "” archived — its published versions are untouched");
+    } catch (e) { apiFail(e, "Archiving “" + row.name + "”"); }
+  };
+}
+
 function openActivate(id){
+  if (refuse("manage", "Making a template live")) return;
   const row=libOf(S.docType).find(r=>r.id===id), cur=activeTpl(S.docType);
-  const t=TYPES.find(x=>x.id===S.docType);
+  const t=typeOf(S.docType) || {name:"this document type"};
   modal("Set active — "+row.name, "Exactly one template is active per document type",
     `<div class="gate">
       <div class="gate__row ${cur?"gate--warn":"gate--pass"}">
@@ -2299,13 +2961,14 @@ zq("#mineGrid").addEventListener("click", e=>{
   /* The selector gates which buttons reach the branches below. A branch added
      without adding its attribute here is dead code that fails SILENTLY —
      clicking did nothing at all, no error, no dialog. */
-  const b=e.target.closest("button[data-act],button[data-deact],button[data-open],button[data-del]");
+  const b=e.target.closest("button[data-act],button[data-deact],button[data-open],button[data-del],button[data-arch]");
   if(!b) return;
   if(b.dataset.open) return openTemplate(libOf(S.docType).find(r=>r.id===b.dataset.open));
   if(b.dataset.del) return openDelete(b.dataset.del);
+  if(b.dataset.arch) return openArchive(b.dataset.arch);
   if(b.dataset.act) return openActivate(b.dataset.act);
   if(b.dataset.deact){
-    const t=TYPES.find(x=>x.id===S.docType);
+    const t=typeOf(S.docType) || {name:"this document type"};
     modal("Deactivate?", "Nothing will resolve for "+esc(t.name),
       `<p style="margin-top:0;font-size:12.5px;line-height:1.6">With no active template, every print point for <b>${esc(t.name)}</b> fails closed — it refuses to render rather than falling back to some other template. That is the correct behaviour, and it is also a visible outage for the office.</p>`,
       `<button class="btn" data-close>Cancel</button><span class="spacer"></span>
@@ -2339,6 +3002,7 @@ zq("#mineGrid").addEventListener("click", e=>{
 let editBefore=null;
 
 function enterEdit(id, clientX, clientY){
+  if (readOnly()) return;   // a view grade may read the page, not retype it
   const o=obj(id);
   if(!o || o.type!=="text" || o.locked) return;
   if(!o.content.i18n[langOf(o)]) o.content.i18n[langOf(o)]={runs:[]};
@@ -2406,9 +3070,19 @@ function insertField(key){
     toast("Inserted "+key);
     return;
   }
+  if(o && isRepeat(o)){
+    /* A repeating table's rows come from its list. Pushing a scalar field in
+       would produce a row that repeats a constant beside every item. */
+    toast("This table repeats over "+((FIELD[o.content.repeatOver]||{}).label||"a list")+". Change what it repeats over in the inspector, or put this field in a text object.", true);
+    return;
+  }
+  if(o && (FIELD[key]||{}).type==="list"){
+    toast("A list field can only be placed in a repeating table — draw a table, then bind it in the inspector.", true);
+    return;
+  }
   if(o && o.type==="table"){
     const before=snapshot();
-    o.content.rows.push({key}); push("Add table row", before, snapshot()); render();
+    (o.content.rows=o.content.rows||[]).push({key}); push("Add table row", before, snapshot()); render();
     toast("Added a row bound to "+key); return;
   }
   toast("Select a text object first, or double-click one to edit");
@@ -2500,7 +3174,7 @@ zq("#ctxbar").addEventListener("click", e=>{
     const i=el("input"); i.type="color"; i.value=cur.length===7?cur:"#14100D";
     i.style.cssText="position:fixed;left:-100px";
     document.body.appendChild(i);
-    i.addEventListener("input",()=>{ o.style.colour=i.value; layoutPage(); paintCtxbar(); });
+    i.addEventListener("input",()=>{ o.style.colour=i.value; layoutSoon(); paintCtxbar(); });
     i.addEventListener("change",()=>{ const before=snapshot(); push("Colour",before,snapshot()); i.remove(); render(); });
     i.click();
   }
@@ -2882,8 +3556,17 @@ function paintInspector(){
       ${["left","center","right"].map(a=>`<button data-al="${a}" class="${(st.align||"left")===a?"is-on":""}">${a}</button>`).join("")}
     </div></div>`:""}
 
-    ${o.type==="table"?`
-    <div class="subhead">Rows — ${o.content.rows.length}</div>
+    ${isRepeat(o)?`
+    <div class="subhead">Repeats over</div>
+    <div class="row row--1"><select data-p="content.repeatOver">
+      ${contractFor().filter(f=>f.type==="list").map(f=>`<option value="${f.key}" ${o.content.repeatOver===f.key?"selected":""}>${esc(f.label)}</option>`).join("")}
+    </select></div>
+    <div class="hint" style="margin:-2px 0 8px">One row per item. How many there are is decided by the document, not here — so anything below this table must be anchored to it.</div>
+    <div class="subhead">Columns</div>
+    <div class="rowlist" id="colList"></div>
+    <div class="row"><label class="chk"><input type="checkbox" data-p="content.showHeader" ${o.content.showHeader===false?"":"checked"}> Column headings</label></div>`
+    :o.type==="table"?`
+    <div class="subhead">Rows — ${(o.content.rows||[]).length}</div>
     <div class="rowlist" id="rowList"></div>
     <button class="btn btn--sm" data-act="addrow">+ Add row</button>`:""}
 
@@ -2966,9 +3649,20 @@ function paintInspector(){
     <div class="row"><button class="btn btn--sm" data-act="dup">Duplicate</button>
       <button class="btn btn--sm" data-act="del" style="color:var(--seal);border-color:var(--seal-ring)">Delete</button></div>`;
 
+  if(isRepeat(o)){
+    const CL=zq("#colList");
+    listColumns(o).forEach((c,i)=>{
+      const row=el("div","rowitem");
+      row.innerHTML=`<span class="rowitem__l">${esc(c.label)}</span>`+
+        `<input type="number" min="5" max="100" step="1" data-col="${i}" value="${c.wPct==null?"":c.wPct}" title="Column width, % of the table">`+
+        `<span class="rowitem__u">%</span>`;
+      CL.appendChild(row);
+    });
+    return;
+  }
   if(o.type==="table"){
     const RL=zq("#rowList");
-    o.content.rows.forEach((r,i)=>{
+    (o.content.rows||[]).forEach((r,i)=>{
       const row=el("div","rowitem");
       row.innerHTML=`<select data-row="${i}">${contractFor().map(f=>`<option value="${f.key}" ${r.key===f.key?"selected":""}>${esc(f.label)}</option>`).join("")}</select>
         <button data-delrow="${i}" title="Remove row">✕</button>`;
@@ -3398,7 +4092,7 @@ function paintBlocks(){
 }
 function paintFieldList(){
   const L=zq("#fieldList"); L.innerHTML="";
-  const dt=(S.tpl&&S.tpl.docType)||S.docType, ty=TYPES.find(t=>t.id===dt);
+  const dt=(S.tpl&&S.tpl.docType)||S.docType, ty=typeOf(dt);
   const cn=zq("#ctName"), cc=zq("#ctCount");
   if(cn) cn.textContent=ty?ty.name:"this document type";
   if(cc) cc.textContent=contractFor(dt).length+" fields";
@@ -3707,7 +4401,7 @@ window.addEventListener("mousemove", e=>{
     const k=pxPerMm(), r=zq("#page").getBoundingClientRect(), D=pageDims();
     const at = gdrag.axis==="v" ? (e.clientX-r.left)/k : (e.clientY-r.top)/k;
     S.guides[gdrag.axis][gdrag.idx]=mm(at);
-    layoutPage();
+    layoutSoon();
     clearGuides();
     const lim = gdrag.axis==="v" ? D.w : D.h;
     const off = at<-4 || at>lim+4;
@@ -3734,7 +4428,7 @@ desk.addEventListener("wheel", e=>{
     e.preventDefault();
     const before=S.zoom;
     S.zoom=Math.max(.25,Math.min(3, S.zoom*(e.deltaY<0?1.08:0.92)));
-    if(Math.abs(before-S.zoom)>0.001){ layoutPage(); paintRulers(); paintStatus(); }
+    if(Math.abs(before-S.zoom)>0.001){ layoutSoon(); paintRulers(); paintStatus(); }
   }
 },{passive:false});
 desk.addEventListener("scroll", positionCtxbar);
@@ -3766,6 +4460,7 @@ function zoomToSelection(){
    12 · OBJECT OPERATIONS
    ========================================================================== */
 function addObject(type,x,y,w,h){
+  if (refuse("edit", "Adding an object")) return;
   const before=snapshot();
   const id="obj_"+Math.random().toString(36).slice(2,6);
   const o={id, name:type.charAt(0).toUpperCase()+type.slice(1), type,
@@ -3783,6 +4478,7 @@ function addObject(type,x,y,w,h){
   return o;
 }
 function duplicateSel(){
+  if (refuse("edit", "Duplicating an object")) return;
   if(!S.sel.length) return;
   const before=snapshot(), ids=[];
   S.sel.map(obj).forEach(o=>{
@@ -3796,6 +4492,7 @@ function duplicateSel(){
   toast("Duplicated — the copy carries no compliance binding");
 }
 function tryDelete(){
+  if (refuse("edit", "Deleting an object")) return;
   const blocked=S.sel.map(obj).filter(o=>o&&o.requiredKey);
   if(blocked.length){ openCite(blocked[0].requiredKey, true); return; }
   const before=snapshot();
@@ -4036,6 +4733,18 @@ window.addEventListener("keydown", e=>{
 
   if(e.code==="Space" && !typing){ spaceDown=true; zq("#desk").classList.add("is-pan"); }
   /* Escape is staged: never destroys work, always reaches a neutral state */
+  /* A DIALOG OWNS THE KEYBOARD WHILE IT IS OPEN.
+     Only Escape ever checked the scrim. Everything below it — ⌘A select-all,
+     ⌘D duplicate, ⌘Z undo, arrow-key nudge, and Backspace, which deletes the
+     selected object with NO confirmation — stayed live on the canvas underneath
+     an open modal. So a person reading "Deactivate this template?" and pressing
+     Backspace out of habit deleted an object on the page behind the dialog,
+     silently, with the only trace being an undo step they could not see.
+     Escape stays reachable because that is how you leave the dialog. */
+  if(zq("#scrim").classList.contains("is-on") && e.key!=="Escape" && e.key!=="Tab"){
+    return;
+  }
+
   if(e.key==="Escape"){
     if(zq("#scrim").classList.contains("is-on")) return closeModal();
     /* an open drawer is the frontmost thing on screen, so Esc dismisses it
@@ -4276,8 +4985,20 @@ zq(".insp").addEventListener("change", e=>{
     const before=snapshot(), p=t.dataset.p;
     let v = t.hasAttribute("data-num") ? evalMm(t.value, null) : t.value;
     if(t.hasAttribute("data-num") && v===null){ toast("That isn't a number or a sum I can work out", true); return render(); }
+    if(t.type==="checkbox") v=t.checked;
     if(p==="anchorTo"){ o.anchorTo=v||null; if(!v) o._y=null; }
     else if(p.startsWith("style.")){ o.style=o.style||{}; o.style[p.slice(6)] = v===""?null:v; }
+    /* content.* had no branch, so it took the `o[p]=v` fallback and wrote a
+       property literally named "content.showHeader" — set, saved, and read by
+       nothing. A control that reports success and changes nothing. */
+    else if(p.startsWith("content.")){
+      o.content=o.content||{};
+      const ck=p.slice(8);
+      o.content[ck]=v;
+      /* A different list has different columns; carrying the old ones over
+         would bind column headings to fields the new list does not have. */
+      if(ck==="repeatOver") o.content.columns=null;
+    }
     else o[p]=v;
     push("Edit "+p, before, snapshot()); render();
   }
@@ -4285,6 +5006,13 @@ zq(".insp").addEventListener("change", e=>{
     const o=obj(S.sel[0]), before=snapshot();
     o.content.rows[+t.dataset.row].key=t.value;
     push("Change row field", before, snapshot()); render();
+  }
+  if(t.dataset.col!=null){
+    const o=obj(S.sel[0]); if(!isRepeat(o)) return;
+    const before=snapshot(), n=parseFloat(t.value);
+    const cols=(o.content.columns=listColumns(o).map(c=>({key:c.key,wPct:c.wPct,align:c.align})));
+    cols[+t.dataset.col].wPct = isFinite(n)&&n>0 ? Math.min(100,n) : null;
+    push("Column width", before, snapshot()); render();
   }
   if(t.dataset.region){
     const before=snapshot();
@@ -4304,7 +5032,7 @@ zq(".insp").addEventListener("change", e=>{
 zq(".insp").addEventListener("click", e=>{
   const b=e.target.closest("button"); if(!b) return;
   const o=S.sel.length===1?obj(S.sel[0]):null;
-  if(b.dataset.delrow!=null && o){ const before=snapshot(); o.content.rows.splice(+b.dataset.delrow,1);
+  if(b.dataset.delrow!=null && o && !isRepeat(o)){ const before=snapshot(); o.content.rows.splice(+b.dataset.delrow,1);
     push("Remove row", before, snapshot()); return render(); }
   if(b.dataset.h && o){ const before=snapshot(); o.height=b.dataset.h; push("Height mode",before,snapshot()); return render(); }
   if(b.dataset.flow && o){
@@ -4329,7 +5057,7 @@ zq(".insp").addEventListener("click", e=>{
   if(a==="clearAsset"&&o){ const before=snapshot(); o.asset=null;
     push("Remove image", before, snapshot()); return render(); }
   if(a==="edit"&&o) return enterEdit(o.id);
-  if(a==="addrow"&&o){ const before=snapshot(); o.content.rows.push({key:"student.fullName"});
+  if(a==="addrow"&&o&&!isRepeat(o)){ const before=snapshot(); (o.content.rows=o.content.rows||[]).push({key:"student.fullName"});
     push("Add row", before, snapshot()); return render(); }
   if(a==="dup") return duplicateSel();
   if(a==="del") return tryDelete();
@@ -4361,7 +5089,23 @@ function onTopAction(e){
  * control while the guarantee is weaker is a bluff, and the person paying for
  * it is the one who closes a tab believing their work is safe.
  */
+/**
+ * One guard every write path passes through.
+ *
+ * Hiding a button is presentation, not enforcement — a stale tab, a keyboard
+ * shortcut, or a console call all reach the same functions. The server is the
+ * real boundary and fail-closes on all 24 endpoints, but a client that ATTEMPTS
+ * a write it knows it cannot do produces a confusing generic failure instead of
+ * a sentence naming the missing grade.
+ */
+function refuse(level, what){
+  if (may(level)) return false;
+  toast(what + " needs " + level + " access to Documents. You have " + SRV.grade + " access.", true);
+  return true;
+}
+
 async function saveNow(){
+  if (refuse("edit", "Saving")) return;
   const b=zq("#saveBtn"); if(b) b.disabled=true;
   try{
     if(!SRV.online){ toast("Offline — nothing is being saved"); return; }
@@ -4404,7 +5148,7 @@ zq("#dupToggle").onclick=()=>{
     if(S.screen==="designer") layoutPage();
   };
 })();
-window.addEventListener("resize", ()=>{ if(S.screen==="designer"){ layoutPage(); positionCtxbar(); } });
+window.addEventListener("resize", ()=>{ if(S.screen==="designer"){ layoutSoon(); positionCtxbar(); } });
 
 /* ==========================================================================
    16 · MODALS
@@ -4414,6 +5158,24 @@ function modal(title, sub, body, foot, small){
   zq("#mBody").innerHTML=body; zq("#mFoot").innerHTML=foot||"";
   zq("#modal").classList.toggle("modal--sm", !!small);
   zq("#scrim").classList.add("is-on");
+
+  /* Announce it, and put the keyboard inside it.
+     Exactly one of ~15 dialogs used to call .focus(), so for the rest the
+     keyboard stayed on whatever was behind — a screen reader was never told a
+     dialog had opened, and Tab walked the page underneath. Focus goes to the
+     primary action where there is one, since these dialogs are confirmations
+     and the primary is what the reader came to press. */
+  const m = zq("#modal");
+  m.setAttribute("role", "dialog");
+  m.setAttribute("aria-modal", "true");
+  m.setAttribute("aria-labelledby", "mTitle");
+  m.setAttribute("aria-describedby", "mSub");
+  requestAnimationFrame(() => {
+    const target = m.querySelector(".btn--primary:not([disabled])")
+                || m.querySelector("input,select,textarea")
+                || m.querySelector("button:not([disabled])");
+    if (target) target.focus();
+  });
 }
 const closeModal=()=>zq("#scrim").classList.remove("is-on");
 zq("#scrim").addEventListener("click", e=>{ if(e.target.id==="scrim"||e.target.closest("[data-close]")) closeModal(); });
@@ -4601,6 +5363,7 @@ function openProof(){
  * they did not watch.
  */
 async function proofOnServer(){
+  if (refuse("edit", "Rendering a proof")) return;
   const log=zq("#proofLog"), bar=zq("#proofBar"), btn=zq("#proofRun");
   const say=t=>{ if(log) log.insertAdjacentHTML("beforeend", `<div>· ${esc(t)}</div>`); };
   if(btn) btn.disabled=true;
@@ -4675,6 +5438,7 @@ async function proofOnServer(){
 }
 
 function openPublish(){
+  if (refuse("manage", "Publishing")) return;
   const v=validate(), p=prof(), rows=[];
   const unbound=v.blocking.filter(b=>b.type==="unbound"), lh=v.blocking.filter(b=>b.type==="lineheight");
   rows.push(unbound.length?{c:"fail",t:`${unbound.length} required field${unbound.length>1?"s":""} unbound`,s:unbound.map(b=>b.key).join(", ")}
@@ -4861,7 +5625,7 @@ async function openHistory(){
         <b style="color:var(--bad)">Snapshot missing</b>
         <span>Nothing can be reproduced from this version.</span></span></li>`;
     }
-    const canRoll = SRV.can.manage && !v.active;
+    const canRoll = may("manage") && !v.active;
     const hash=(v.proofPdfHash||"");
     const langs=v.pdfLangs||[];
     /* SHOW IT BEFORE ASKING ANYONE TO MAKE IT LIVE. History could only
@@ -5042,6 +5806,39 @@ function repaintScreen(){
 async function hydrateFromServer(){
   if(!SRV.online) return;
   if(BOOT.schoolName) S.school=Object.assign({}, S.school, {name:BOOT.schoolName});
+
+  /* THE SCHOOL'S OWN STATE AND BOARD, from the server.
+     These were a FIXTURE — CBSE · Jharkhand — and only the name was ever taken
+     from the page. So the hub told this school "Applies in Kerala; this school
+     is in Jharkhand" while the school is in Madhya Pradesh: a factual error
+     about the reader's own school, on the screen that decides which forms they
+     are offered.
+     It matters more now that the server enforces the same gate at create time.
+     A client working from a different state than the server would offer a form
+     the server then refuses — the two disagreeing about the same fact.
+     Absent values are left as they are rather than blanked: an unrecorded board
+     is a gap in the school's record, and answering it with "" would silently
+     empty the compliance basis instead of showing that it is unknown. */
+  try{
+    const meta=await srv.types();
+    const sc=(meta&&meta.school)||{};
+    S.school=Object.assign({}, S.school, {
+      name : sc.name  || S.school.name,
+      state: sc.state || S.school.state,
+      board: sc.board || S.school.board,
+      stage: sc.stage || S.school.stage
+    });
+  }catch(e){
+    /* This comment used to say the failure "must not pass silently" and then
+       passed it silently — a console.warn is invisible to the person using the
+       product. It matters because the fallback fixture ASSERTS a state and
+       board, and those decide which statutory documents the school is offered:
+       a Kerala school whose lookup failed would be shown the wrong catalogue
+       with nothing on screen suggesting anything went wrong. */
+    console.warn("[zxdt] could not read the school's state and board", e);
+    S.loadError = "We could not confirm your school's board and state, so the list of "
+                + "available documents may be wrong.";
+  }
   try{
     const out=await srv.templates("");
     const lib={}, active={};
@@ -5055,8 +5852,15 @@ async function hydrateFromServer(){
     entries.forEach(([docId,t])=>{
       if(!docId || !t) return;
       const type=t.docType||"transfer_certificate";
+      /* ARCHIVED means retired. It was still listed in the gallery, so the
+         one action offered for a published template — "archive it instead of
+         deleting" — appeared to do nothing: the row stayed exactly where it
+         was. Hidden from the list; the version history and the documents it
+         issued are untouched and still reachable. */
+      if((t.status||"draft")==="archived") return;
       (lib[type]=lib[type]||[]).push({
         id:docId, name:t.name||docId, starter:t.starterId||null,
+        docType:type, docTitle:t.docTitle||"", shapes:t.shapes||null,
         status:t.status||"draft", version:t.version||1,
         publishedVersion:t.publishedVersion||null,
         /* activeVersion was dropped here, so a card could not tell WHICH
@@ -5069,10 +5873,42 @@ async function hydrateFromServer(){
       });
       if(t.activeVersion!=null) active[type]=docId;
     });
-    S.lib=lib; S.active=active; S.loading=false;
+    S.lib=lib; S.active=active; S.loading=false; S.loadError=null;
     repaintScreen();
+
+    /* A SCHOOL SHOULD NOT BE MISSING ITS STANDARD DOCUMENTS.
+       Until now a new school had none at all: one existed only after somebody
+       opened this page — which nothing links to — chose a starter, and then
+       proofed, published and activated it. Five to seven correct decisions
+       before a transfer certificate could be printed.
+
+       The trigger is PER TYPE, not "is the library empty". The first version of
+       this asked whether the school had ANY template, and a school whose only
+       template was an archived bonafide therefore never got a transfer
+       certificate — one unrelated document suppressed the whole standard set.
+       Caught on a live tenant, not in review.
+
+       Eligibility is computed the same way the gallery computes it, so the
+       client never asks the server to seed a Kerala form into another state.
+       The server is authoritative and idempotent regardless; this check exists
+       only to avoid a round trip on the overwhelming majority of loads. */
+    if (may("edit")) {
+      const missing = STARTERS
+        .filter(s => (!s.boards || s.boards.includes(S.school.board))
+                  && (!s.states || s.states.includes(S.school.state)))
+        .some(s => !lib[s.docType]);
+      if (missing) await seedStandardTemplates();
+    }
   }catch(e){
+    /* A FAILED LOAD IS NOT AN EMPTY SCHOOL.
+       This set S.lib={} and repainted, rendering the exact copy a school with
+       no templates sees — and the only distinguishing signal was a toast that
+       cleared itself after 3.2 seconds. After that the screen said, with
+       complete confidence, that the school had no documents.
+       `_patterns.md` catalogues this shape: "a read failure reported
+       indistinguishable from a legitimate empty result". */
     S.lib={}; S.active={}; S.loading=false;
+    S.loadError = (e && e.message) || "The request did not complete.";
     repaintScreen();
     apiFail(e, "Loading your templates");
   }
@@ -5089,6 +5925,48 @@ async function hydrateFromServer(){
       const r=await srv.template(BOOT.templateId);
       if(r&&r.template){ adoptTemplate(r.template, BOOT.templateId); }
     }catch(e){ apiFail(e, "Opening the template"); }
+  }
+}
+
+/**
+ * Provision the standard documents, then show them.
+ *
+ * Deliberately quiet on the "nothing to do" path: the server is idempotent and
+ * will answer `seeded: []` for a school that already has its documents, and
+ * announcing that would be noise. A FAILURE is not quiet — a school that
+ * silently stays empty looks identical to a school the product simply has no
+ * templates for, which is the read-failure-as-empty-state shape this module has
+ * already been bitten by.
+ */
+async function seedStandardTemplates(){
+  try{
+    const r = await srv.seedStandard();
+    if(!r || !r.seeded || !r.seeded.length) return;
+
+    const out = await srv.templates("");
+    const raw = out.templates || {};
+    const entries = Array.isArray(raw) ? raw.map(x => [x.id || "", x.data || x]) : Object.entries(raw);
+    const lib = {}, active = {};
+    entries.forEach(([docId, t]) => {
+      if(!docId || !t) return;
+      const type = t.docType || "transfer_certificate";
+      (lib[type] = lib[type] || []).push({
+        id: docId, name: t.name || docId, starter: t.starterId || null,
+        docType: type, docTitle: t.docTitle || "",
+        status: t.status || "draft", version: t.version || 1,
+        publishedVersion: t.publishedVersion || null,
+        activeVersion: t.activeVersion != null ? t.activeVersion : null,
+        edited: t.updatedAt || "", editedBy: t.updatedBy || t.createdBy || ""
+      });
+      if(t.activeVersion != null) active[type] = docId;
+    });
+    S.lib = lib; S.active = active;
+    repaintScreen();
+
+    toast(r.seeded.length + " standard document" + (r.seeded.length > 1 ? "s" : "") +
+          " added as drafts — review, then publish and make live");
+  }catch(e){
+    apiFail(e, "Setting up your standard documents");
   }
 }
 

@@ -45,7 +45,7 @@
   --sh2:0 20px 60px rgba(42,28,20,.20);
   --r:12px; --r-sm:8px; --r-xs:5px;
   --ease:.22s cubic-bezier(.4,0,.2,1);
-  --font-d:'Syne','Space Grotesk',ui-sans-serif,system-ui,sans-serif;
+  --font-d:'Archivo','Plus Jakarta Sans',ui-sans-serif,system-ui,sans-serif;
   --font-b:'Plus Jakarta Sans',ui-sans-serif,system-ui,-apple-system,sans-serif;
   --font-m:'JetBrains Mono',ui-monospace,SFMono-Regular,Menlo,monospace;
 }
@@ -185,8 +185,26 @@
 .zxdt .type-card:hover{border-color:var(--clay);transform:translateY(-2px);box-shadow:var(--sh2)}
 .zxdt .type-card--off{opacity:.55}
 .zxdt .type-card__top{display:flex;align-items:flex-start;justify-content:space-between;gap:10px}
-.zxdt .type-card__name{font-family:var(--font-d);font-size:16px;font-weight:700;letter-spacing:-.02em}
-.zxdt .type-card__sub{font-size:11.5px;color:var(--ink3);margin-top:2px}
+.zxdt .type-card__name{font-family:var(--font-d);font-size:15.5px;font-weight:700;letter-spacing:-.015em;
+  display:flex;align-items:center;gap:7px;line-height:1.25}
+/* The status DOT carries what three separate chips used to say. Colour is never
+   the only signal — the status word sits beside it in `.type-card__state`. */
+.zxdt .type-card__dot{width:7px;height:7px;border-radius:50%;flex:0 0 auto;background:var(--ink4)}
+.zxdt .type-card__dot--live{background:var(--ok,#2E7D5B);box-shadow:0 0 0 3px rgba(46,125,91,.14)}
+.zxdt .type-card__dot--draft{background:var(--clay);box-shadow:0 0 0 3px rgba(188,90,60,.13)}
+.zxdt .type-card__sub{font-size:11.5px;color:var(--ink3);margin-top:3px;
+  overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+
+/* ONE primary line: the answer to "can this school print this today?" */
+.zxdt .type-card__state{font-size:12.5px;color:var(--ink1);font-weight:600;letter-spacing:-.01em}
+.zxdt .type-card__state em{font-style:normal;font-weight:400;color:var(--ink3)}
+/* ONE secondary line: provenance, deliberately quieter than the state. */
+.zxdt .type-card__basis{font-size:10.5px;color:var(--ink3);font-family:var(--font-m);
+  display:flex;align-items:center;gap:6px;flex-wrap:wrap;line-height:1.5}
+.zxdt .type-card__basis .sep{opacity:.4}
+.zxdt .type-card__stat{color:var(--clay);font-weight:600}
+
+/* kept: the disabled/unavailable card still uses the old row layout */
 .zxdt .type-card__meta{display:flex;flex-direction:column;gap:5px;font-size:11.5px;color:var(--ink2)}
 .zxdt .type-card__row{display:flex;justify-content:space-between;gap:10px}
 .zxdt .type-card__row b{font-weight:600;color:var(--ink1)}
@@ -898,3 +916,49 @@
 /* Evidence level chips were 9px — under the 10px floor the rest of the module
    now holds to, and they carry a compliance grade, not decoration. */
 .zxdt .lvl{ font-size:10px; }
+
+/* ── repeating table (fee receipt line items) ──────────────────────────────
+   A table whose row count belongs to the document, not the design. It is drawn
+   as a real <table> so column widths behave the way mPDF will lay them out,
+   rather than as the flex "label · value" rows an ordinary table uses. */
+.zxdt .rpt{width:100%;border-collapse:collapse;table-layout:fixed;font:inherit}
+.zxdt .rpt th,.zxdt .rpt td{padding:1px 3px;vertical-align:top;overflow-wrap:anywhere;
+  border-bottom:1px solid rgba(42,28,20,.18)}
+.zxdt .rpt__h th{font-weight:700;border-bottom:1px solid rgba(42,28,20,.45)}
+.zxdt .rpt .ta-left{text-align:left}
+.zxdt .rpt .ta-right{text-align:right}
+.zxdt .rpt .ta-center{text-align:center}
+.zxdt .rpt__spec td{opacity:.75}
+.zxdt .rpt__note{margin-top:3px;font-size:9px;color:var(--ink3);font-family:var(--font-m)}
+.zxdt .rowitem__l{flex:1;font-size:11px;min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+.zxdt .rowitem__u{font-size:10px;color:var(--ink3)}
+.zxdt .rowitem input[type=number]{width:52px;height:26px;border-radius:var(--r-xs);
+  border:1px solid var(--line2);background:var(--raised);font-size:11px;font-family:var(--font-m);
+  text-align:right;padding:0 5px}
+.zxdt .chk{display:flex;align-items:center;gap:6px;font-size:11px;cursor:pointer}
+.zxdt .chk input{margin:0}
+
+/* ── custom document types ─────────────────────────────────────────────────
+   The "New document" card is a dashed invitation rather than a filled card, so
+   the school's own documents read as a shorter list than it is and the way to
+   add one is unmistakably an action, not another document. */
+.zxdt .type-card--new{border-style:dashed;background:transparent;justify-content:flex-start}
+.zxdt .type-card--new .type-card__name{color:var(--clay)}
+.zxdt .type-card--new:hover{background:rgba(188,90,60,.05)}
+
+/* the name dialog */
+.zxdt #newDocName{width:100%;height:34px;padding:0 10px;border-radius:var(--r-xs);
+  border:1px solid var(--line2);background:var(--raised);font-size:13px;font-family:inherit;color:var(--ink1)}
+.zxdt #newDocName:focus{outline:none;border-color:var(--clay);box-shadow:0 0 0 3px rgba(188,90,60,.15)}
+.zxdt #newDocGo[disabled]{opacity:.45;pointer-events:none}
+
+/* read-only posture — a view grade sees why, not just fewer buttons */
+.zxdt .chip--ro{border-color:var(--line2);color:var(--ink3);background:var(--raised);
+  font-size:11px;letter-spacing:.02em;cursor:help}
+
+/* a load failure that stays put — never a toast that fades into "you have none" */
+.zxdt .loaderr{display:flex;align-items:flex-start;justify-content:space-between;gap:14px;
+  padding:12px 14px;margin:0 0 14px;border-radius:var(--r);
+  border:1px solid var(--seal-ring,rgba(168,50,42,.35));background:var(--seal-dim,rgba(168,50,42,.06));
+  font-size:12.5px;line-height:1.5}
+.zxdt .loaderr__why{color:var(--ink3);font-size:11.5px;margin-top:2px}

@@ -750,7 +750,7 @@ document.addEventListener('DOMContentLoaded', function() {
     --fm-r-sm: var(--r-sm, 6px);
     --fm-ease: .22s cubic-bezier(.4,0,.2,1);
     --fm-font: 'Plus Jakarta Sans', var(--font-b, sans-serif);
-    --fm-font-d: 'Fraunces', 'Syne', serif;
+    --fm-font-d: 'Fraunces', 'Archivo', serif;
 }
 
 /* ── Topbar ── */

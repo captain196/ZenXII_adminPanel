@@ -204,9 +204,9 @@ $isError  = $flashMsg && (stripos($flashMsg, 'fail') !== false || stripos($flash
 
 <style>
   .imx {
-    /* Panel "Clay" palette + panel fonts (Syne display / Plus Jakarta body) so
+    /* Panel "Clay" palette + panel fonts (Archivo display / Plus Jakarta body) so
        the importer matches the rest of the admin, not a stray blue. */
-    --font-b:'Plus Jakarta Sans',system-ui,sans-serif; --font-d:'Syne','Plus Jakarta Sans',sans-serif;
+    --font-b:'Plus Jakarta Sans',system-ui,sans-serif; --font-d:'Archivo','Plus Jakarta Sans',sans-serif;
     --surface:#ffffff; --surface-2:#FAF5F0; --ink:#22160F; --ink-2:#6B5346;
     --muted:#9E8578; --faint:#C2A89A; --border:rgba(0,0,0,.08); --border-2:rgba(0,0,0,.15);
     --brand:#BC5A3C; --brand-d:#9E4830; --brand-soft:#F7ECE7; --brand-bd:#E7CFC5;

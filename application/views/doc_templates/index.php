@@ -26,6 +26,7 @@ $zxdtBoot = [
     'sessionYear' => $session_year ?? '',
     'canEdit'     => (bool) ($can_edit   ?? false),
     'canManage'   => (bool) ($can_manage ?? false),
+    'grade'       => (string) ($grade ?? 'view'),
     'csrfName'    => $this->security->get_csrf_token_name(),
     'csrfHash'    => $this->security->get_csrf_hash(),
     'base'        => rtrim(base_url(), '/') . '/doc_templates',
@@ -89,14 +90,19 @@ $zxAsset = function (string $rel) {
     <section class="screen is-on" id="screen-hub">
       <div class="doc-scroll"><div class="wrap">
         <div class="page-head">
-          <div class="eyebrow">Certificates</div>
+          <div class="eyebrow">Documents</div>
           <h1>Document types</h1>
           <p>Design the certificate once. Every place that prints it — the office, the Teacher app, a parent's download — resolves the template you activate here.</p>
         </div>
         <div class="type-grid" id="typeGrid"></div>
+
+        <div class="sec-label">Your own documents</div>
+        <p class="note" style="margin-top:-4px">Anything the prescribed forms do not cover — a participation certificate, a concession letter, a gate pass. You name it, design it, and it behaves like every other document type: its own templates, its own active version.</p>
+        <div class="type-grid" id="typeGridCustom"></div>
+
         <div class="sec-label">Not enabled for this school</div>
         <div class="type-grid" id="typeGridOff"></div>
-        <p class="note"><b>v1 ships three types.</b> The research corpus holds 281 document types; enabling more is data, not code. A school with no hostel never sees a hostel certificate.</p>
+        <p class="note">The research corpus holds 281 document types; enabling a prescribed one is data, not code. A school with no hostel never sees a hostel certificate.</p>
       </div></div>
     </section>
 
@@ -110,7 +116,7 @@ $zxAsset = function (string $rel) {
         </div>
         <div class="sec-label">Your templates</div>
         <div class="gal-grid" id="mineGrid"></div>
-        <div class="sec-label">Starters — cloned into your school, never linked</div>
+        <div class="sec-label" id="starterLabel">Starters — cloned into your school, never linked</div>
         <div class="gal-grid" id="starterGrid"></div>
         <p class="note"><b>Why these previews are schematic.</b> A real thumbnail means PDF&nbsp;→&nbsp;PNG, which needs imagick/ghostscript — unverified on the Ohio box. The card draws the object rectangles straight from the saved template instead: honest, instant, and required objects (red) are visible at a glance.</p>
       </div></div>

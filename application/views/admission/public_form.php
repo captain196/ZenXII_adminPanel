@@ -17,7 +17,7 @@ $esc = function($v) { return htmlspecialchars($v, ENT_QUOTES, 'UTF-8'); };
 <link rel="apple-touch-icon" href="<?= base_url('Designs/favicon.png?v=2') ?>">
     <meta name="csrf-token" content="<?= $this->security->get_csrf_hash() ?>">
     <meta name="csrf-name"  content="<?= $this->security->get_csrf_token_name() ?>">
-    <link href="https://fonts.googleapis.com/css2?family=Plus+Jakarta+Sans:wght@400;500;600;700;800&family=Syne:wght@600;700;800&display=swap" rel="stylesheet">
+    <link href="https://fonts.googleapis.com/css2?family=Plus+Jakarta+Sans:wght@400;500;600;700;800&family=Archivo:wght@500;600;700;800&display=swap" rel="stylesheet">
     <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.5.0/css/all.min.css">
     <style>
         :root {
@@ -27,7 +27,7 @@ $esc = function($v) { return htmlspecialchars($v, ENT_QUOTES, 'UTF-8'); };
             --border:rgba(188,90,60,.15);
             --t1:#0c1e38; --t2:#1a5c56; --t3:#5a9e98;
             --r:12px;
-            --font-d:'Syne',sans-serif; --font-b:'Plus Jakarta Sans',sans-serif;
+            --font-d:'Archivo',sans-serif; --font-b:'Plus Jakarta Sans',sans-serif;
             --ease:.22s cubic-bezier(.4,0,.2,1);
         }
         * { box-sizing:border-box; margin:0; padding:0; }

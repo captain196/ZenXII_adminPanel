@@ -317,7 +317,7 @@ $__hide_site_footer = in_array($__ctrl_ftr, ['attendance', 'staff_attendance'], 
         display: flex;
         align-items: center;
         justify-content: center;
-        font-family: var(--font-d, 'Syne', sans-serif);
+        font-family: var(--font-d, 'Archivo', sans-serif);
         font-size: 11px;
         font-weight: 800;
         color: #ffffff;
