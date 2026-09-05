@@ -10,10 +10,10 @@ This is proposed, not granted: only the operator accepts risk.
 | Tier | Discharged | How |
 |---|---|---|
 | **T0** certification blockers | **27 / 30** | 14 executed live · 7 automated · 4 moot after the legacy retirement · 2 structurally closed |
-| **T1** core journeys | **27 / 56** | real-session journeys against real Firestore, all passing, incl. the full lifecycle |
+| **T1** core journeys | **34 / 56** | real-session journeys against real Firestore, all passing, incl. the full lifecycle, rollback and undo |
 | **T2** negative & boundary | **44 / 72** | 32 automated · 11 answered earlier · 1 moot |
 | **T3** surface & polish | **6 / 20** | the factual ones; the rest need human eyes and are honestly left open |
-| | **104 / 178** | |
+| | **111 / 178** | |
 
 **Automated suite: 643 tests · 4 failures · 27 skipped — the standing baseline, unchanged
 through roughly 45 changes.** Up from 524 at the start of this engagement: **+119 tests**,
@@ -50,6 +50,12 @@ documents; the module given a name and a place in the navigation it never had.
 4. **`templateSessions` presence rows are never cleaned up** (UR-14).
 5. **The frozen PDFs live only on one Lightsail instance's local disk.** Whether snapshots
    include `uploads/` is unanswered (T0-08) and is the one open item that could lose data.
+6. **A hub load can exceed PHP's execution limit** (L16). Individual Firestore calls are
+   capped at 15 s; the request as a whole is not, and at 89 templates the sum crossed the
+   30-second ceiling and terminated the process mid-request. On Apache that is a 500 and a
+   consumed worker. **This is the same root cause as risk 1, one step further along** — it
+   has stopped being merely slow. The fix is a server-side `select` projection so the read
+   returns less, which the payload projection does not address.
 
 ## Outside this module, and larger than it
 
