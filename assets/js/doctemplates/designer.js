@@ -4987,7 +4987,19 @@ zq(".insp").addEventListener("change", e=>{
     if(t.hasAttribute("data-num") && v===null){ toast("That isn't a number or a sum I can work out", true); return render(); }
     if(t.type==="checkbox") v=t.checked;
     if(p==="anchorTo"){ o.anchorTo=v||null; if(!v) o._y=null; }
-    else if(p.startsWith("style.")){ o.style=o.style||{}; o.style[p.slice(6)] = v===""?null:v; }
+    else if(p.startsWith("style.")){
+      o.style=o.style||{};
+      const sk=p.slice(6);
+      /* Type size is bounded here as well as on the server. Below about 4pt a
+         statutory field is present in the document and unreadable on paper, which is
+         worse than absent — absent fails the contract check loudly, unreadable passes
+         every gate and reaches a family. The HTML min="4" does not survive a paste. */
+      if(sk==="sizePt" && v!=="" && v!=null){
+        const n=parseFloat(v);
+        v = isFinite(n) ? Math.min(400, Math.max(4, n)) : null;
+      }
+      o.style[sk] = v===""?null:v;
+    }
     /* content.* had no branch, so it took the `o[p]=v` fallback and wrote a
        property literally named "content.showHeader" — set, saved, and read by
        nothing. A control that reports success and changes nothing. */
@@ -5011,7 +5023,11 @@ zq(".insp").addEventListener("change", e=>{
     const o=obj(S.sel[0]); if(!isRepeat(o)) return;
     const before=snapshot(), n=parseFloat(t.value);
     const cols=(o.content.columns=listColumns(o).map(c=>({key:c.key,wPct:c.wPct,align:c.align})));
-    cols[+t.dataset.col].wPct = isFinite(n)&&n>0 ? Math.min(100,n) : null;
+    /* The input declares min="5" max="100"; the handler only enforced the max, so a
+       typed 0.1 was accepted and the column collapsed to a sliver. An HTML min is a
+       hint to the spinner, never a constraint — the browser will not stop a paste or
+       a keystroke, and nothing downstream re-checks it. */
+    cols[+t.dataset.col].wPct = isFinite(n)&&n>0 ? Math.min(100, Math.max(5, n)) : null;
     push("Column width", before, snapshot()); render();
   }
   if(t.dataset.region){

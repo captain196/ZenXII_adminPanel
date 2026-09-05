@@ -1143,6 +1143,23 @@ class Doc_template_service
                 $o[$k] = $this->clampMm($o[$k], 0.0, self::MAX_MM, 0.0);
             }
         }
+
+        /* TYPE SIZE. The client declares min="4" on the input, which a paste defeats,
+           and geometry clamping said nothing about it. Below ~4pt a statutory field is
+           PRESENT in the document and unreadable on paper — worse than absent, because
+           absent fails the contract check loudly while unreadable passes every gate and
+           reaches a family. 400pt is roughly a full A4 height, so the ceiling costs
+           nothing real. */
+        if (isset($o['style']) && is_array($o['style']) && array_key_exists('sizePt', $o['style'])) {
+            $v = $o['style']['sizePt'];
+            /* Touch it ONLY if it is actually out of bounds. Clamping unconditionally
+               rewrote a valid integer 10 as a float 10.0 — harmless to the renderer, but
+               it means every save rewrites data it had no reason to change, and a diff of
+               stored documents stops meaning what it should. */
+            if (!is_numeric($v) || $v < 4.0 || $v > 400.0) {
+                $o['style']['sizePt'] = $this->clampMm($v, 4.0, 400.0, 10.0);
+            }
+        }
         return $o;
     }
 
