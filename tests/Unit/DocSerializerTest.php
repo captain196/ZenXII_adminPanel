@@ -778,4 +778,127 @@ class DocSerializerTest extends TestCase
             'the browser prints the characters literally — the preview must not show them');
         $this->assertStringContainsString('1', $web);
     }
+
+    /* ================================================================== *
+     *  Repeating tables — what a fee receipt needs and no certificate does
+     *
+     *  A certificate's body is a fixed set of particulars. A receipt's body is
+     *  a LIST whose length is a property of the payment. This is the capability
+     *  the type was declared and left unbuildable for.
+     * ================================================================== */
+
+    public function test_a_repeating_table_renders_one_row_per_item(): void
+    {
+        $html = $this->s->render($this->tplRepeat(), [], 'en', [
+            'contract' => $this->listContract(), 'sample' => 'typical',
+        ]);
+        $this->assertSame(2, substr_count($html, '<tr>'), 'two sample items, two rows');
+        $this->assertStringContainsString('Tuition fee', $html);
+        $this->assertStringContainsString('12,600.00', $html);
+    }
+
+    /** p95 is the receipt that decides whether the page holds. */
+    public function test_p95_renders_the_long_list(): void
+    {
+        $html = $this->s->render($this->tplRepeat(), [], 'en', [
+            'contract' => $this->listContract(), 'sample' => 'p95',
+        ]);
+        $this->assertSame(7, substr_count($html, '<tr>'));
+        $this->assertStringContainsString('Arrears', $html);
+    }
+
+    public function test_real_data_drives_the_row_count(): void
+    {
+        $html = $this->s->render($this->tplRepeat(), ['receipt.items' => [
+            ['item.head' => 'Tuition', 'item.amount' => '100.00'],
+            ['item.head' => 'Bus',     'item.amount' => '50.00'],
+            ['item.head' => 'Lab',     'item.amount' => '25.00'],
+        ]], 'en', ['contract' => $this->listContract()]);
+        $this->assertSame(3, substr_count($html, '<tr>'));
+        $this->assertStringContainsString('Bus', $html);
+    }
+
+    /**
+     * A receipt with no items is not a receipt. Printing an empty box would
+     * produce a document that looks valid and proves nothing was paid.
+     */
+    public function test_an_empty_list_throws_rather_than_printing_an_empty_table(): void
+    {
+        $this->expectException(\RuntimeException::class);
+        $this->expectExceptionMessageMatches('/Refusing to print an empty table/');
+        $this->s->render($this->tplRepeat(), ['receipt.items' => []], 'en',
+            ['contract' => $this->listContract()]);
+    }
+
+    public function test_repeating_over_a_field_that_is_not_a_list_throws(): void
+    {
+        $tpl = $this->tplRepeat();
+        $tpl['objects'][0]['content']['repeatOver'] = 'receipt.no';
+        $this->expectException(\RuntimeException::class);
+        $this->expectExceptionMessageMatches('/is not a list/');
+        $this->s->render($tpl, [], 'en', ['contract' => $this->listContract(), 'sample' => 'typical']);
+    }
+
+    public function test_repeating_over_an_undeclared_field_throws(): void
+    {
+        $tpl = $this->tplRepeat();
+        $tpl['objects'][0]['content']['repeatOver'] = 'receipt.nothing';
+        $this->expectException(\RuntimeException::class);
+        $this->expectExceptionMessageMatches('/contract does not declare/');
+        $this->s->render($tpl, [], 'en', ['contract' => $this->listContract(), 'sample' => 'typical']);
+    }
+
+    /** Amounts right-aligned, per the contract, without the template saying so. */
+    public function test_column_alignment_comes_from_the_contract(): void
+    {
+        $html = $this->s->render($this->tplRepeat(), [], 'en', [
+            'contract' => $this->listContract(), 'sample' => 'typical',
+        ]);
+        $this->assertStringContainsString('text-align:right', $html);
+    }
+
+    public function test_a_header_row_is_optional_and_labelled_from_the_contract(): void
+    {
+        $tpl = $this->tplRepeat();
+        $tpl['objects'][0]['content']['showHeader'] = true;
+        $html = $this->s->render($tpl, [], 'en', [
+            'contract' => $this->listContract(), 'sample' => 'typical',
+        ]);
+        $this->assertStringContainsString('Particulars', $html);
+        $this->assertSame(3, substr_count($html, '<tr>'), 'header plus two items');
+    }
+
+    private function tplRepeat(): array
+    {
+        return [
+            'templateId' => 'TPL1', 'languages' => ['en'], 'defaultLanguage' => 'en',
+            'page' => ['size' => 'A4', 'orientation' => 'portrait'],
+            'objects' => [[
+                'id' => 'items', 'type' => 'table', 'name' => 'Fee items',
+                'xMm' => 15, 'yMm' => 80, 'wMm' => 180, 'hMm' => 60,
+                'style' => ['sizePt' => 9, 'lineHeight' => 1.5],
+                'content' => ['repeatOver' => 'receipt.items', 'columns' => [
+                    ['key' => 'item.head', 'wPct' => 70],
+                    ['key' => 'item.amount', 'wPct' => 30],
+                ]],
+            ]],
+        ];
+    }
+
+    private function listContract(): array
+    {
+        return ['receipt.no' => ['label' => 'Receipt number', 'sample' => 'R1'],
+                'receipt.items' => [
+            'label' => 'Fee items', 'type' => 'list',
+            'itemFields' => [
+                'item.head'   => ['label' => 'Particulars'],
+                'item.amount' => ['label' => 'Amount', 'align' => 'right'],
+            ],
+            'sample' => [
+                ['item.head' => 'Tuition fee',   'item.amount' => '12,600.00'],
+                ['item.head' => 'Transport fee', 'item.amount' => '4,500.00'],
+            ],
+            'p95' => array_map(fn($i) => ['item.head' => 'Arrears ' . $i, 'item.amount' => '1,000.00'], range(1, 7)),
+        ]];
+    }
 }

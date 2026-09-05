@@ -25,6 +25,8 @@ use RuntimeException;
 class DocContractServiceTest extends TestCase
 {
     private Doc_contract $svc;
+    /** @var array<string,mixed> the raw config, so checks can be driven by it */
+    private static array $cfg;
 
     public static function setUpBeforeClass(): void
     {
@@ -38,6 +40,7 @@ class DocContractServiceTest extends TestCase
     {
         $config = [];
         require __DIR__ . '/../../application/config/doc_types.php';
+        self::$cfg = $config;
 
         // The injected-params seam exists precisely so this suite needs no
         // CodeIgniter bootstrap. See the constructor's docblock.
@@ -108,12 +111,31 @@ class DocContractServiceTest extends TestCase
         $this->assertArrayHasKey('leaving_certificate_5a', $kerala);
     }
 
+    /**
+     * Read from the config rather than from a hand-kept list.
+     *
+     * The hand-kept version named fee_receipt, and went on asserting it was
+     * hidden after the type was built — a test that passes by describing the
+     * past. Whatever the config marks disabled is what must not be offered.
+     */
     public function test_disabled_types_are_never_offered_in_any_state(): void
     {
+        $disabled = array_keys(array_filter(self::$cfg['doc_types'], fn($t) => !empty($t['disabled'])));
+        $this->assertNotEmpty($disabled, 'no type is marked disabled — this check would pass vacuously');
+
         foreach ([null, 'Kerala', 'Jharkhand', 'Andhra Pradesh'] as $state) {
             $offered = $this->svc->typesForState($state);
-            $this->assertArrayNotHasKey('migration', $offered);
-            $this->assertArrayNotHasKey('fee_receipt', $offered);
+            foreach ($disabled as $id) {
+                $this->assertArrayNotHasKey($id, $offered, "disabled type '$id' was offered");
+            }
+        }
+    }
+
+    /** A fee receipt is not state-gated: every school issues one. */
+    public function test_the_fee_receipt_is_offered_everywhere(): void
+    {
+        foreach ([null, 'Kerala', 'Jharkhand', 'Andhra Pradesh'] as $state) {
+            $this->assertArrayHasKey('fee_receipt', $this->svc->typesForState($state));
         }
     }
 

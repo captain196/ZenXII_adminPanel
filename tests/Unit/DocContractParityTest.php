@@ -63,18 +63,74 @@ class DocContractParityTest extends TestCase
      * found something before returning.
      * ------------------------------------------------------------------ */
 
-    /** @return list<string> keys of the client CONTRACT array, in order */
-    private function clientFieldKeys(): array
+    /**
+     * The CONTRACT array's source, with every nested `itemFields:[…]` block
+     * removed.
+     *
+     * A list field (receipt.items) nests key/maxLen pairs one level down. A flat
+     * regex reads those as top-level fields — it reported `item.head` as a merge
+     * field and gave `receipt.items` its first column's maxLen. Both are parser
+     * artifacts, and a parser that quietly invents fields is the same class of
+     * problem this whole test file exists to catch, so the nesting is removed
+     * with a balanced scan rather than out-cleverer regex. The item fields are
+     * then checked on their own terms in clientItemFields().
+     */
+    private function clientContractSource(bool $stripItems = true): string
     {
         $i = strpos(self::$js, 'const CONTRACT = [');
         $this->assertNotFalse($i, 'CONTRACT array not found in designer.js');
         $j = strpos(self::$js, "\n];", $i);
         $this->assertNotFalse($j, 'CONTRACT array is unterminated in designer.js');
+        $blk = substr(self::$js, $i, $j - $i);
 
-        preg_match_all('/\{key:"([^"]+)"/', substr(self::$js, $i, $j - $i), $m);
+        if (!$stripItems) {
+            return $blk;
+        }
+        while (($at = strpos($blk, 'itemFields:[')) !== false) {
+            $open  = $at + strlen('itemFields:[') - 1;
+            $depth = 0;
+            $end   = null;
+            for ($k = $open, $n = strlen($blk); $k < $n; $k++) {
+                if ($blk[$k] === '[') {
+                    $depth++;
+                } elseif ($blk[$k] === ']') {
+                    if (--$depth === 0) {
+                        $end = $k;
+                        break;
+                    }
+                }
+            }
+            $this->assertNotNull($end, 'an itemFields block is unterminated in designer.js');
+            $blk = substr($blk, 0, $at) . substr($blk, $end + 1);
+        }
+        return $blk;
+    }
+
+    /** @return list<string> keys of the client CONTRACT array, in order */
+    private function clientFieldKeys(): array
+    {
+        preg_match_all('/\{key:"([^"]+)"/', $this->clientContractSource(), $m);
         $keys = $m[1];
         $this->assertNotEmpty($keys, 'parsed zero fields from CONTRACT — the parser is wrong, not the file');
         return $keys;
+    }
+
+    /** @return array<string,array<string,int>> listFieldKey => itemKey => maxLen */
+    private function clientItemFields(): array
+    {
+        $blk = $this->clientContractSource(false);
+        preg_match_all('/\{key:"([^"]+)"(?:(?!\{key:").)*?itemFields:\[(.*?)\]/s', $blk, $m, PREG_SET_ORDER);
+
+        $out = [];
+        foreach ($m as $row) {
+            preg_match_all('/\{key:"([\w.]+)"(?:(?!\}).)*?maxLen:(\d+)/s', $row[2], $c, PREG_SET_ORDER);
+            $cols = [];
+            foreach ($c as $col) {
+                $cols[$col[1]] = (int) $col[2];
+            }
+            $out[$row[1]] = $cols;
+        }
+        return $out;
     }
 
     /** @return array<string,list<string>> docType => declared keys */
@@ -153,7 +209,7 @@ class DocContractParityTest extends TestCase
     {
         preg_match_all(
             '/\{key:"([\w.]+)"(?:(?!\}).)*?maxLen:(\d+)/s',
-            self::$js,
+            $this->clientContractSource(),
             $m,
             PREG_SET_ORDER
         );
@@ -276,11 +332,29 @@ class DocContractParityTest extends TestCase
     public function test_maxlen_accommodates_the_p95_sample(): void
     {
         foreach (self::$cfg['doc_merge_fields'] as $key => $f) {
+            if (($f['type'] ?? 'text') === 'list') {
+                $this->assertNotEmpty(
+                    $f['itemFields'] ?? [],
+                    "List field '$key' declares no itemFields — its columns would be unbounded"
+                );
+                foreach ($f['itemFields'] as $col => $spec) {
+                    $this->assertArrayHasKey('maxLen', $spec, "Column '$key/$col' has no maxLen");
+                    foreach (($f['p95'] ?? $f['sample'] ?? []) as $n => $row) {
+                        $this->assertLessThanOrEqual(
+                            $spec['maxLen'],
+                            mb_strlen((string) ($row[$col] ?? '')),
+                            "Column '$key/$col' has maxLen {$spec['maxLen']} but row $n of its own "
+                            . 'worst-case sample is longer'
+                        );
+                    }
+                }
+                continue;
+            }
             if (!isset($f['maxLen'])) {
                 $this->assertContains(
                     $f['type'] ?? 'text',
                     ['image', 'flag'],
-                    "Field '$key' has no maxLen and is not an image or flag"
+                    "Field '$key' has no maxLen and is not an image, flag or list"
                 );
                 continue;
             }
@@ -292,6 +366,39 @@ class DocContractParityTest extends TestCase
                 . mb_strlen($worst) . ' characters'
             );
         }
+    }
+
+    /**
+     * A list field's COLUMNS must agree across the seam too.
+     *
+     * The columns are where a receipt's substance lives. If the client believes
+     * the Particulars column holds 48 characters and the server measures 32, the
+     * designer's capacity hint is wrong on exactly the field a clerk types into
+     * most, and the overflow gate fires after the receipt has been designed.
+     */
+    public function test_list_item_columns_agree_between_client_and_server(): void
+    {
+        $client = $this->clientItemFields();
+
+        $server = [];
+        foreach (self::$cfg['doc_merge_fields'] as $key => $f) {
+            if (($f['type'] ?? 'text') !== 'list') {
+                continue;
+            }
+            $cols = [];
+            foreach ((array) ($f['itemFields'] ?? []) as $col => $spec) {
+                $cols[$col] = (int) ($spec['maxLen'] ?? 0);
+            }
+            $server[$key] = $cols;
+        }
+
+        ksort($client);
+        ksort($server);
+        $this->assertSame(
+            $server,
+            $client,
+            'List item columns have drifted between designer.js and doc_types.php'
+        );
     }
 
     /** Non-text fields must not carry a length constraint that cannot apply. */

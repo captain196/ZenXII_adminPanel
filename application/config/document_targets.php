@@ -138,8 +138,10 @@ return [
                       . 'v1 serializer does not do; see doc_types.php. Two hard rules for '
                       . 'whoever wires it: a receipt number is allocated ONCE per payment and '
                       . 'never reallocated on reprint, and a reprint must be marked DUPLICATE. '
-                      . 'The legacy RTDB Certificates.php counter is read-increment-write and '
-                      . 'mints duplicate numbers under concurrency — do not copy it. '
+                      . 'The retired RTDB Certificates.php counter was read-increment-write and '
+                      . 'minted duplicate numbers under concurrency — do not reinvent it. The '
+                      . 'pattern to copy is Sis::_get_tc_number(), which allocates atomically '
+                      . 'via claim-doc CAS and aborts rather than risk a duplicate. '
                       . "\n\n"
                       . 'CONFLICT, SETTLE THIS BEFORE WIRING: the PARENT APP ALREADY RENDERS '
                       . 'FEE RECEIPTS ON THE DEVICE. ZenXII_Parent util/ReceiptPdfGenerator.kt '

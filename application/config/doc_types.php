@@ -89,6 +89,59 @@ $config['doc_merge_fields'] = [
     'tc.conductRemark'         => ['label' => 'General conduct',          'sample' => 'Good',                               'maxLen' => 64],
     'tc.duesPaidUpto'          => ['label' => 'Fees paid up to',          'sample' => 'March 2026',                         'maxLen' => 32],
 
+    /* --- fee receipt ---------------------------------------------------
+     * A receipt differs from every certificate above in one way that drives
+     * the whole design: its body is a LIST whose length varies per document.
+     * One pupil pays tuition; another pays tuition, transport, hostel, lab and
+     * two arrears. A fixed set of rows cannot express that, which is why this
+     * type was declared and left unbuildable until now.
+     * ------------------------------------------------------------------- */
+    'receipt.no'               => ['label' => 'Receipt number',          'sample' => 'RCT/2026-27/004182',                 'maxLen' => 24],
+    'receipt.date'             => ['label' => 'Receipt date',            'sample' => '03/09/2026',                         'maxLen' => 12],
+    'receipt.session'          => ['label' => 'Session',                 'sample' => '2026-27',                            'maxLen' => 12],
+    'receipt.forPeriod'        => ['label' => 'Paid for',                'sample' => 'April – June 2026',
+                                   'p95'    => 'April, May, June, July, August and September 2026 (arrears of the previous session included)', 'maxLen' => 120],
+    'receipt.mode'             => ['label' => 'Payment mode',            'sample' => 'UPI',                                'maxLen' => 24],
+    'receipt.txnId'            => ['label' => 'Transaction reference',   'sample' => 'UPI/426512890043',
+                                   'p95'    => 'UPI/426512890043/HDFC0000123/2026-09-03T11:42:19+05:30', 'maxLen' => 64],
+    'receipt.collectedBy'      => ['label' => 'Collected by',            'sample' => 'A. Sharma (Accounts)',               'maxLen' => 48],
+
+    /* THE LIST. `type: list` is what tells the serializer this key resolves to
+       many rows rather than one value, and `itemFields` names the columns a
+       table may bind. The p95 sample is deliberately long — six heads plus
+       arrears is what a real term-start receipt looks like, and it is the case
+       that decides whether the table fits on the page. */
+    'receipt.items'            => [
+        'label'      => 'Fee items',
+        'type'       => 'list',
+        'itemFields' => [
+            'item.head'   => ['label' => 'Particulars', 'maxLen' => 48],
+            'item.period' => ['label' => 'Period',      'maxLen' => 24],
+            'item.amount' => ['label' => 'Amount',      'maxLen' => 14, 'align' => 'right'],
+        ],
+        'sample' => [
+            ['item.head' => 'Tuition fee',   'item.period' => 'Apr–Jun 2026', 'item.amount' => '12,600.00'],
+            ['item.head' => 'Transport fee', 'item.period' => 'Apr–Jun 2026', 'item.amount' => '4,500.00'],
+        ],
+        'p95' => [
+            ['item.head' => 'Tuition fee',            'item.period' => 'Apr–Sep 2026', 'item.amount' => '25,200.00'],
+            ['item.head' => 'Transport fee — Route 7','item.period' => 'Apr–Sep 2026', 'item.amount' => '9,000.00'],
+            ['item.head' => 'Hostel and mess',        'item.period' => 'Apr–Sep 2026', 'item.amount' => '48,000.00'],
+            ['item.head' => 'Laboratory and computer','item.period' => '2026-27',      'item.amount' => '3,200.00'],
+            ['item.head' => 'Examination fee',        'item.period' => 'Term I',       'item.amount' => '1,800.00'],
+            ['item.head' => 'Library and reading room','item.period' => '2026-27',     'item.amount' => '900.00'],
+            ['item.head' => 'Arrears carried forward','item.period' => '2025-26',      'item.amount' => '7,450.00'],
+        ],
+    ],
+
+    'receipt.gross'            => ['label' => 'Gross amount',            'sample' => '17,100.00', 'p95' => '95,550.00', 'maxLen' => 16, 'align' => 'right'],
+    'receipt.discount'         => ['label' => 'Concession',              'sample' => '1,000.00',  'p95' => '0.00', 'maxLen' => 16, 'align' => 'right'],
+    'receipt.fine'             => ['label' => 'Late fee',                'sample' => '0.00',      'maxLen' => 16, 'align' => 'right'],
+    'receipt.netPaid'          => ['label' => 'Net amount paid',         'sample' => '16,100.00', 'p95' => '95,550.00', 'maxLen' => 16, 'align' => 'right'],
+    'receipt.amountInWords'    => ['label' => 'Amount in words',
+                                   'sample' => 'Rupees Sixteen Thousand One Hundred only',
+                                   'p95'    => 'Rupees Ninety Five Thousand Five Hundred and Fifty only', 'maxLen' => 160],
+
     /* --- derived server-side (a clerk never types these) ---------------- */
     'attendance.workingDays'   => ['label' => 'Working days',             'sample' => '221', 'maxLen' => 4, 'type' => 'int',  'calc' => 'attendance'],
     'attendance.daysPresent'   => ['label' => 'Days present',             'sample' => '198', 'maxLen' => 4, 'type' => 'int',  'calc' => 'attendance'],
@@ -162,6 +215,18 @@ $config['doc_contracts'] = [
     'study' => [
         'school.name', 'student.fullName', 'student.fatherName', 'tc.lastClassStudied', 'doc.issueDate',
     ],
+
+    /* A receipt is a financial record, not a statutory certificate: no board
+       prescribes its wording. What it must carry is what makes it evidence of
+       payment — who paid, how much, for what, when, by what means, and against
+       which receipt number. */
+    'fee_receipt' => [
+        'doc.isDuplicate', 'school.name', 'school.address',
+        'receipt.no', 'receipt.date', 'receipt.session',
+        'student.admissionNumber', 'student.fullName', 'tc.lastClassStudied',
+        'receipt.items', 'receipt.netPaid', 'receipt.amountInWords',
+        'receipt.mode', 'receipt.collectedBy',
+    ],
 ];
 
 /* ---------------------------------------------------------------------------
@@ -213,9 +278,15 @@ $config['doc_types'] = [
         'alias'    => 'board-issued — never merged with a TC',
         'disabled' => true,
     ],
+    /* Buildable as of 2026-09-03: the serializer now repeats a table over a
+       list field, which was the one thing this type needed and no certificate
+       did. DESIGNING a receipt is not ISSUING one — the print point in
+       config/document_targets.php remains unwired (CON-NO_PRINT_IMPL), and the
+       conflict recorded there still stands: the Parent app renders its own
+       receipt on the device, and one of the two has to go before anything is
+       wired. */
     'fee_receipt' => [
-        'name'     => 'Fee Receipt',
-        'alias'    => 'needs repeating rows — v2',
-        'disabled' => true,
+        'name'  => 'Fee Receipt',
+        'alias' => 'financial record · itemised, no statutory format',
     ],
 ];
