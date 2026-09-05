@@ -18,8 +18,9 @@ defined('BASEPATH') or exit('No direct script access allowed');
  * literal {student_name} is both an embarrassment and a forgery vector, and a
  * blank where a statutory field belongs is a defective legal record.
  *
- * This deliberately REVERSES the legacy Certificates.php, which substitutes ''
- * and prints a blank. Do not "improve" this back toward leniency.
+ * This deliberately REVERSES the legacy Certificates.php (retired 2026-09-04),
+ * which substituted '' and printed a blank. Do not "improve" this back toward
+ * leniency — the reason it existed outlives the file it was contrasted with.
  *
  * ---------------------------------------------------------------------------
  * CONTENT FORMAT — runs, not Quill Deltas
@@ -420,6 +421,24 @@ class Doc_serializer
         if (!in_array($type, self::NON_TEXT, true)) {
             $css .= $this->textCss($o, $st);
         }
+        /* A page number is a PLACEHOLDER, and mPDF substitutes it by finding
+           the exact contiguous string "{PAGENO}" in the page content. Let it
+           wrap and the substitution silently does not happen — the document
+           prints the token instead of a number. Found on a 20mm-wide box that
+           broke it after "{PAGENO"; a 180mm box on identical markup was fine,
+           so nothing in the output distinguishes working from broken. */
+        if ($type === 'pageNumber') {
+            $css .= 'white-space:nowrap;';
+            if (isset($st['lineHeight']) && is_numeric($st['lineHeight'])) {
+                $css .= 'line-height:' . (float) $st['lineHeight'] . ';';
+            }
+            if (isset($st['sizePt'])) {
+                $css .= 'font-size:' . (float) $st['sizePt'] . 'pt;';
+            }
+            if (isset($st['align'])) {
+                $css .= 'text-align:' . $this->align($st['align']) . ';';
+            }
+        }
         if (isset($st['colour'])) {
             $css .= 'color:' . $this->colour($st['colour']) . ';';
         }
@@ -452,11 +471,27 @@ class Doc_serializer
         $css .= 'font-size:' . (float) ($st['sizePt'] ?? 10) . 'pt;';
         $css .= 'font-weight:' . (int) ($st['weight'] ?? 400) . ';';
         $css .= 'text-align:' . $this->align($st['align'] ?? 'left') . ';';
+        /* CSS CONTEXT, NOT HTML CONTEXT.
+           These two were passed through esc() — htmlspecialchars — which is
+           correct for HTML text and wrong here: it does not escape `:` or `;`,
+           so a value could close the declaration and add its own. A font family
+           of "Arial;background:url(http://…)" emitted verbatim, and mPDF renders
+           this HTML SERVER-SIDE, so a remote url in it is an outbound request
+           from the production host. `guardImages()` exists for exactly that
+           threat but only inspects `<img src=`, never `style=`.
+           Both are now validated by shape, the way align() and colour() beside
+           them already were. */
         if (!empty($st['fontFamily'])) {
-            $css .= 'font-family:' . $this->esc((string) $st['fontFamily']) . ';';
+            $ff = $this->cssFontFamily((string) $st['fontFamily']);
+            if ($ff !== '') {
+                $css .= 'font-family:' . $ff . ';';
+            }
         }
         if (isset($st['track'])) {
-            $css .= 'letter-spacing:' . $this->esc((string) $st['track']) . ';';
+            $tr = $this->cssLength((string) $st['track']);
+            if ($tr !== '') {
+                $css .= 'letter-spacing:' . $tr . ';';
+            }
         }
         return $css;
     }
@@ -484,7 +519,37 @@ class Doc_serializer
                    DEFAULTS TO THE PDF. The PDF is the legal artifact; a
                    caller that forgets the flag must get the correct document,
                    not the correct preview. */
-                return ($opts['forPdf'] ?? true) ? '{PAGENO}' : '1';
+                if (!($opts['forPdf'] ?? true)) {
+                    return '1';   // the preview is one page, and 1 is what it carries
+                }
+                /* mPDF substitutes {PAGENO} by scanning the page's content for
+                   that exact contiguous string. A narrow box breaks it: the
+                   receipt's 20mm page-number box wrapped the placeholder after
+                   "{PAGENO", and the printed receipt carried the literal token
+                   across two lines while the 180mm-wide Transfer Certificate
+                   printed a number correctly from IDENTICAL markup. Nothing in
+                   the HTML distinguishes the two cases, so nowrap is emitted on
+                   the element itself rather than left to the designer's width. */
+                /* And REFUSE a box the placeholder cannot survive.
+                   nowrap is not enough: mPDF hard-breaks text that cannot fit
+                   its box, so a 12mm box still split "{PAGEN / O}" and printed
+                   the pieces. There is no output to inspect afterwards that
+                   would reveal it — the token simply appears where a number
+                   should be — so it is caught here, at design time, on a
+                   deliberately conservative width estimate. */
+                $pt  = (float) ($o['style']['sizePt'] ?? 10);
+                $min = 1.8 * $pt;                       // ≈ 8 characters, generously
+                $w   = (float) ($o['wMm'] ?? 0);
+                if ($w > 0 && $w < $min) {
+                    throw new RuntimeException(sprintf(
+                        "Doc_serializer: page-number object '%s' is %.1fmm wide, too narrow for "
+                        . 'the page-number placeholder at %.1fpt (needs about %.0fmm). mPDF would '
+                        . 'break the placeholder across lines and print it literally instead of a '
+                        . 'number — widen the box or reduce the type size.',
+                        $o['id'] ?? '?', $w, $pt, $min
+                    ));
+                }
+                return '{PAGENO}';
 
             case 'shape':
                 return '';
@@ -667,12 +732,36 @@ class Doc_serializer
 
     private function table(array $o, array $data, string $lang, array $opts): string
     {
+        /* The repeating check must come FIRST. A repeating table has no `rows`
+           of its own — its rows are the data — so the empty-rows guard below
+           returned an empty string and the receipt rendered as a blank box. */
+        $repeatFirst = (string) ($o['content']['repeatOver'] ?? '');
+        if ($repeatFirst !== '') {
+            return $this->repeatingTable($o, $repeatFirst, $data, $opts);
+        }
+
         $rows = (array) ($o['content']['rows'] ?? []);
         if (!$rows) {
             return '';
         }
         // Rule 6: tables are permitted; flex and grid are not. mPDF supports
         // neither, and a template that used them would render as a broken stack.
+        /* ---------------------------------------------------------------
+           A REPEATING TABLE: one row per item in a list field.
+           
+           This is the one thing a fee receipt needs that no certificate does.
+           A certificate's body is a fixed set of particulars — fourteen rows,
+           always fourteen. A receipt's body is a LIST whose length is a
+           property of the payment: one pupil pays tuition, another pays
+           tuition, transport, hostel, lab and two arrears. That is why this
+           document type was declared and left unbuildable.
+           
+           The rows are DATA, not design. The template declares the columns and
+           the list to walk; how many rows appear is decided when the document
+           is issued, which is also why the p95 sample carries seven items —
+           the overflow gate has to measure the receipt that actually breaks the
+           page, not the flattering two-line one.
+           --------------------------------------------------------------- */
         $html = '<table class="zx-t" cellspacing="0" cellpadding="0" style="width:100%;">';
         $n = 0;
         foreach ($rows as $row) {
@@ -727,6 +816,82 @@ class Doc_serializer
             }
             $html .= '</tr>';
         }
+        return $html . '</table>';
+    }
+
+    /**
+     * Render one row per item of a list field.
+     *
+     * @param string $key the list field, e.g. `receipt.items`
+     */
+    private function repeatingTable(array $o, string $key, array $data, array $opts): string
+    {
+        $def = $this->contract[$key] ?? null;
+        if ($def === null) {
+            throw new RuntimeException(
+                "Doc_serializer: object '{$o['id']}' repeats over '$key', which this document "
+                . "type's contract does not declare."
+            );
+        }
+        if (($def['type'] ?? null) !== 'list') {
+            throw new RuntimeException(
+                "Doc_serializer: '$key' is not a list, so '{$o['id']}' cannot repeat over it. "
+                . 'A repeating table needs a field whose value is many rows.'
+            );
+        }
+
+        $sample = $opts['sample'] ?? false;
+        if ($sample !== false) {
+            $items = ($sample === 'p95') ? ($def['p95'] ?? $def['sample'] ?? []) : ($def['sample'] ?? []);
+        } else {
+            $items = $data[$key] ?? null;
+            /* An empty list is a real answer — a receipt with no items is not a
+               receipt — and it must not print as a silently empty box. */
+            if (!is_array($items) || !$items) {
+                throw new RuntimeException(
+                    "Doc_serializer: no rows resolved for '$key' (object '{$o['id']}'). "
+                    . 'Refusing to print an empty table where the document\'s substance belongs.'
+                );
+            }
+        }
+
+        $cols = (array) ($o['content']['columns'] ?? []);
+        if (!$cols) {
+            /* No columns chosen: use every field the contract declares for an
+               item, in declaration order. A template that repeats over a list
+               and shows nothing is a mistake, not a layout choice. */
+            $cols = array_map(fn($k) => ['key' => $k], array_keys((array) ($def['itemFields'] ?? [])));
+        }
+
+        $itemDefs = (array) ($def['itemFields'] ?? []);
+        $html = '<table class="zx-t" cellspacing="0" cellpadding="0" style="width:100%;">';
+
+        if (!empty($o['content']['showHeader'])) {
+            $html .= '<tr>';
+            foreach ($cols as $c) {
+                $ck    = (string) ($c['key'] ?? '');
+                $align = $c['align'] ?? ($itemDefs[$ck]['align'] ?? 'left');
+                $w     = isset($c['wPct']) ? 'width:' . (float) $c['wPct'] . '%;' : '';
+                $html .= '<td style="' . $w . 'text-align:' . $this->align((string) $align)
+                       . ';font-weight:700;border-bottom:1px solid #2A1C14;">'
+                       . $this->esc((string) ($itemDefs[$ck]['label'] ?? $ck)) . '</td>';
+            }
+            $html .= '</tr>';
+        }
+
+        foreach ($items as $row) {
+            $html .= '<tr>';
+            foreach ($cols as $c) {
+                $ck    = (string) ($c['key'] ?? '');
+                $align = $c['align'] ?? ($itemDefs[$ck]['align'] ?? 'left');
+                $w     = isset($c['wPct']) ? 'width:' . (float) $c['wPct'] . '%;' : '';
+                $val   = is_array($row) ? ($row[$ck] ?? '') : '';
+                $html .= '<td style="' . $w . 'text-align:' . $this->align((string) $align)
+                       . ';vertical-align:top;">' . $this->esc((string) $val) . '</td>';
+            }
+            $html .= '</tr>';
+        }
+
         return $html . '</table>';
     }
 
@@ -812,6 +977,34 @@ class Doc_serializer
     private function colour(string $c): string
     {
         return preg_match('/^#[0-9A-Fa-f]{3,8}$/', $c) ? $c : '#000';
+    }
+
+    /**
+     * A font-family list, or nothing.
+     *
+     * Permits family names, quotes, commas and spaces — and nothing that could
+     * end a declaration or open a function call. Rejecting outright rather than
+     * stripping: a half-sanitised font stack that silently loses its fallback is
+     * a worse outcome than falling back to the document default.
+     */
+    private function cssFontFamily(string $v): string
+    {
+        $v = trim($v);
+        if ($v === '' || mb_strlen($v) > 120) {
+            return '';
+        }
+        return preg_match('/^[A-Za-z0-9 ,\'"_-]+$/u', $v) ? $v : '';
+    }
+
+    /**
+     * A CSS length — a number with an optional unit, or nothing.
+     *
+     * Covers what `track` legitimately holds (".18em", "0", "-0.5px").
+     */
+    private function cssLength(string $v): string
+    {
+        $v = trim($v);
+        return preg_match('/^-?(?:\d+\.?\d*|\.\d+)(?:em|rem|px|pt|%)?$/', $v) ? $v : '';
     }
 
     private function esc(string $s): string

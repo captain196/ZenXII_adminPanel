@@ -11,10 +11,16 @@ defined('BASEPATH') or exit('No direct script access allowed');
  * NAMING: not "template_designer" — Result.php:112 already owns
  * result/template_designer, which is a MARKS-SCHEME editor, unrelated.
  *
- * LEGACY: application/controllers/Certificates.php is left running and
- * untouched. It is an RTDB prototype whose counter is read-increment-write
- * ("best-effort atomicity" in its own comment), so concurrent issuance mints
- * duplicate certificate numbers. Replacement is alongside, per ADR D6.
+ * LEGACY: application/controllers/Certificates.php was RETIRED on 2026-09-04.
+ * It was an RTDB prototype, 692 lines with zero tests, whose counter was
+ * read-increment-write — two concurrent issues minted the same number AND the
+ * same record id, so the second silently overwrote the first. It also never
+ * produced a document (pdfUrl was hardcoded '', printing was window.print()
+ * over browser DOM) and its revocation flag was never read back at the
+ * retrieval path, so a revoked certificate stayed printable.
+ * It had issued ZERO certificates across all 8 production schools — verified
+ * live before removal — so nothing was migrated. See
+ * qa/certificates/20-legacy-backend.md and 22-three-systems.md.
  *
  * CSRF: protection stays ON. Gate G0.7 proved the token round-trips correctly
  * with the existing config (csrf_token, csrf_regenerate=FALSE) — POST without
@@ -45,9 +51,16 @@ class Doc_templates extends MY_Controller
         // page loads
         'index'          => 'view',
         'gallery'        => 'view',
-        'design'         => 'edit',
+        /* VIEW, not edit. `design` only serves the shell; every byte of content
+           arrives through `get_template`, which is itself view-graded, and every
+           write is separately graded. Gating the shell at `edit` meant a
+           view-grade user could not so much as LOOK at the certificate their
+           school issues — a read grade that reads nothing. The client renders
+           read-only for them; the server refuses their writes regardless. */
+        'design'         => 'view',
         // reads
         'get_types'      => 'view',
+        'seed_standard'  => 'edit',   // creates templates — same grade as create()
         'get_templates'  => 'view',
         'get_template'   => 'view',
         'get_blocks'     => 'view',
@@ -166,6 +179,11 @@ class Doc_templates extends MY_Controller
             'session_year' => $this->session_year ?? '',
             'can_edit'     => has_permission(self::MODULE, 'edit'),
             'can_manage'   => has_permission(self::MODULE, 'manage'),
+            /* The grade itself, so the client can SAY which one it is rather
+               than inferring it from two booleans and getting the wording
+               wrong. Ordered, so the UI can reason about it. */
+            'grade'        => has_permission(self::MODULE, 'manage') ? 'manage'
+                            : (has_permission(self::MODULE, 'edit') ? 'edit' : 'view'),
         ];
 
         $this->load->view('include/header');
@@ -240,6 +258,51 @@ class Doc_templates extends MY_Controller
             'school' => $school,
             'types'  => $contract->catalogue($school['state']),
         ]]);
+    }
+
+    /**
+     * Give this school the standard documents it should already have.
+     *
+     * A new school's library was empty and nothing provisioned it — a template
+     * existed only once a human opened the designer (which has no navigation
+     * link), picked a starter, and proofed, published and activated it.
+     *
+     * IDEMPOTENT by document type, so it is safe to call on every hub load: a
+     * school that already has a transfer certificate is not handed a second.
+     * Seeded templates arrive as DRAFTS — publishing freezes a legal record and
+     * activating is what every print point resolves, and neither may happen
+     * because a page was loaded.
+     */
+    public function seed_standard(): void
+    {
+        $this->_require_post();
+
+        $this->_run(function () {
+            $school = $this->_school_context();
+
+            /* The school's OWN templates, read through the same school-scoped
+               query the list endpoint uses. Passing an unscoped read here would
+               let another tenant's population suppress this school's seeding. */
+            require_once APPPATH . 'libraries/Doc_rows.php';
+            $existing = Doc_rows::map($this->fs->where(
+                'documentTemplates', [['schoolId', '=', (string) $this->school_id]]
+            )) ?: [];
+
+            $this->load->library('doc_seeder', null, 'docseed');
+            $r = $this->docseed->seed(
+                (string) $this->school_id,
+                $school['board'] ?? null,
+                $school['state'] ?? null,
+                $existing,
+                $this->_actor()
+            );
+
+            if ($r['seeded']) {
+                log_audit(self::AUDIT_MODULE, 'template.seed', (string) $this->school_id,
+                          'Seeded standard templates: ' . implode(', ', $r['seeded']));
+            }
+            return $r;
+        });
     }
 
     /**
@@ -339,8 +402,65 @@ class Doc_templates extends MY_Controller
                name, docType or status on them. */
             require_once APPPATH . 'libraries/Doc_rows.php';
             $rows = Doc_rows::map($this->fs->schoolWhere('documentTemplates', $where));
-            return ['templates' => $rows];
+
+            /* PROJECT. This endpoint returned every template's COMPLETE document,
+               `objects` array included, and it is called on every hub load.
+               Measured on one real school: 85 templates, **456 KB** in a single
+               response — of which the list needs a name, a status and a couple of
+               version numbers. The designer fetches the full document through
+               get_template when a template is actually opened.
+               At 850 templates that response was ~4.5 MB on every page load; at
+               8,500, ~45 MB, built as one PHP array before json_encode. */
+            $summary = [];
+            foreach ($rows as $id => $t) {
+                $summary[$id] = [
+                    'schoolId'         => $t['schoolId']         ?? '',
+                    'templateId'       => $t['templateId']       ?? '',
+                    'docType'          => $t['docType']          ?? '',
+                    'docTitle'         => $t['docTitle']         ?? '',
+                    'name'             => $t['name']             ?? '',
+                    'status'           => $t['status']           ?? 'draft',
+                    'version'          => $t['version']          ?? 1,
+                    'publishedVersion' => $t['publishedVersion'] ?? null,
+                    'activeVersion'    => $t['activeVersion']    ?? null,
+                    'starterId'        => $t['starterId']        ?? null,
+                    'updatedAt'        => $t['updatedAt']        ?? '',
+                    'updatedBy'        => $t['updatedBy']        ?? ($t['createdBy'] ?? ''),
+                    /* The gallery draws a schematic from object GEOMETRY only —
+                       never their content — so the shapes travel and the text,
+                       images and merge bindings stay behind. */
+                    'shapes'           => $this->_shapes($t['objects'] ?? []),
+                ];
+            }
+            return ['templates' => $summary];
         });
+    }
+
+    /**
+     * Geometry only, for the gallery's schematic preview.
+     *
+     * Five numbers an object instead of the whole object. On the measured
+     * population this is the difference between a 456 KB list response and one
+     * an order of magnitude smaller, and it means no template's text, images or
+     * merge bindings are shipped to a screen that only draws rectangles.
+     */
+    private function _shapes(array $objects): array
+    {
+        $out = [];
+        foreach ($objects as $o) {
+            if (!is_array($o)) {
+                continue;
+            }
+            $out[] = [
+                'x' => (float) ($o['xMm'] ?? 0), 'y' => (float) ($o['yMm'] ?? 0),
+                'w' => (float) ($o['wMm'] ?? 0), 'h' => (float) ($o['hMm'] ?? 0),
+                't' => (string) ($o['type'] ?? 'text'),
+                'r' => !empty($o['requiredKey']),   // drawn in the statutory colour
+                'g' => (string) ($o['region'] ?? 'body'),
+                's' => (($o['content']['shape'] ?? '') === 'seal'),
+            ];
+        }
+        return $out;
     }
 
     public function get_template(): void
@@ -480,6 +600,37 @@ class Doc_templates extends MY_Controller
             return;
         }
 
+        /* INTEGRITY GATE — does the file still match what was published?
+         *
+         * The snapshot records a sha256 of each language's PDF at publication. Nothing
+         * ever checked it: the file was streamed on trust, so if the bytes on disk had
+         * changed by ANY route — the proof-overwrite defect fixed in this pass, a bad
+         * backup restore, a compromised host, a half-written file after a crash — a
+         * school would download a document that no longer matched its own record and
+         * nothing anywhere would say so. The certification question was "does anything
+         * notice?" and the answer was no.
+         *
+         * Now the read path notices. A mismatch is refused rather than served, because a
+         * certificate whose bytes disagree with the record of what was issued is worse
+         * than no certificate at all — and it is logged, because somebody needs to know.
+         *
+         * Absent digest = an older snapshot published before this was frozen. Those are
+         * served, since refusing them would retire history nobody can re-render. */
+        $expected = $snap['proofPdfPerLanguage'][$lang]['hash'] ?? null;
+        if (is_string($expected) && $expected !== '') {
+            $actual = 'sha256:' . hash_file('sha256', $file);
+            if (!hash_equals($expected, $actual)) {
+                log_message('error', sprintf(
+                    'Doc_templates::version_pdf INTEGRITY FAILURE — %s v%d (%s): recorded %s, on disk %s. Refusing to serve.',
+                    $id, $ver, $lang, $expected, $actual
+                ));
+                log_audit(self::AUDIT_MODULE, 'version.integrity_failure', $id,
+                          "v$ver ($lang) no longer matches the hash recorded at publication");
+                show_404();
+                return;
+            }
+        }
+
         header('Content-Type: application/pdf');
         header('Content-Disposition: inline; filename="' . basename($file) . '"');
         header('Content-Length: ' . filesize($file));
@@ -602,7 +753,23 @@ class Doc_templates extends MY_Controller
         if (!$this->_require_post()) return;
 
         $this->_run(function () {
-            $docType = $this->_safe_type((string) $this->input->post('docType'));
+            $asked   = (string) $this->input->post('docType');
+            $docType = $this->_safe_type($asked);
+            if ($docType === '') {
+                /* SAY WHAT HAPPENED. This used to fall through to the service,
+                   which answered "schoolId and docType are required" — a message
+                   that names the wrong cause and sends the reader to look at
+                   their session. The type was simply not one this school may
+                   create, and that is both the truth and something they can act
+                   on. */
+                throw new InvalidArgumentException(
+                    $asked === ''
+                        ? 'No document type was given.'
+                        : "'$asked' is not a document type this school can create. A state-specific "
+                          . 'form is offered only in the state that prescribes it; a custom document '
+                          . 'must be created from the hub so it can be named.'
+                );
+            }
 
             $seed = json_decode((string) $this->input->post('seed'), true);
             if ($seed !== null && !is_array($seed)) {
@@ -642,7 +809,21 @@ class Doc_templates extends MY_Controller
                 throw new InvalidArgumentException('patch must be a JSON object');
             }
             $out = $this->_templates()->save($id, $patch, (int) $lock, $this->_actor());
-            return ['lockVersion' => $out['lockVersion']];
+
+            /* PASS THE REJECTIONS THROUGH.
+               save() drops any field that is not an editable part of the design —
+               docType and version among them, both of which were exploitable — and
+               reports which ones it dropped. This endpoint returned only the new
+               lockVersion, so that report died here and the client was told
+               "saved" with no hint that part of its request had been discarded.
+               Answering success while silently discarding half the payload is the
+               phantom-success shape this codebase already has a pattern entry for;
+               it is not any better when the discarding is deliberate. */
+            $res = ['lockVersion' => $out['lockVersion']];
+            if (!empty($out['rejectedFields'])) {
+                $res['rejectedFields'] = $out['rejectedFields'];
+            }
+            return $res;
         });
     }
 
@@ -821,6 +1002,34 @@ class Doc_templates extends MY_Controller
             }
 
             $version  = (int) ($tpl['version'] ?? 1);
+
+            /* DEFENCE IN DEPTH — refuse to render onto a published version's file.
+             *
+             * The proof filename is built from the LIVE head's version, and this
+             * method writes it unconditionally. That is fine while the head's
+             * version is ahead of what has been published, which is the only
+             * state save() can now produce. It was NOT fine when save() would
+             * accept a `version` field: setting it back to an already-published
+             * number made this write land on the exact path recorded inside that
+             * version's immutable snapshot, replacing the artefact a school
+             * downloads while the snapshot still read as untouched.
+             *
+             * save() no longer accepts `version`, so the chain is already broken
+             * upstream. This guard exists because a P0 should not depend on one
+             * allowlist staying correct forever — and because the invariant is
+             * worth stating where the write happens, not only where the input is
+             * filtered. */
+            $publishedVersion = $tpl['publishedVersion'] ?? null;
+            if ($publishedVersion !== null && $version <= (int) $publishedVersion) {
+                throw new RuntimeException(
+                    "Refusing to render a proof at version $version: version "
+                    . "$publishedVersion of this template is already published, and its "
+                    . 'PDF is the record of what a certificate issued from it said. '
+                    . 'Rendering here would overwrite that record. Edit the draft first — '
+                    . 'a normal edit moves the version forward.'
+                );
+            }
+
             $paths    = [];
             $pages    = 0;
             $perLang  = [];
@@ -879,6 +1088,10 @@ class Doc_templates extends MY_Controller
     /** 4 MB. A crest or a signature; anything larger is a scanned page. */
     const ASSET_MAX_BYTES = 4194304;
 
+    /** 40 megapixels. A full A4 page at 600 DPI is ~35 MP, so this bounds memory
+     *  without constraining anything a school would legitimately upload. */
+    const ASSET_MAX_PIXELS = 40000000;
+
     /**
      * Upload a crest or signature.
      *
@@ -920,6 +1133,29 @@ class Doc_templates extends MY_Controller
             $info = @getimagesize($f['tmp_name']);
             if (!$info || empty($info[0]) || empty($info[1])) {
                 throw new InvalidArgumentException('That file is not a readable image');
+            }
+
+            /* A PIXEL CAP, because the byte cap does not bound memory.
+             *
+             * Compressed size and decompressed size are unrelated. A 12000x12000
+             * PNG of one flat colour is **17 KB on disk** — comfortably inside the
+             * 4 MB cap, correctly sniffed as image/png, and perfectly readable by
+             * getimagesize. Decompressed it is 144 megapixels, about 549 MB in
+             * memory, against Doc_renderer's 96 MB ceiling. Measured, not
+             * estimated. Any `edit`-grade user could upload it and then kill the
+             * PHP worker on every render that touched it.
+             *
+             * 40 MP is far beyond any legitimate crest, signature or student
+             * photo — a full A4 page at 600 DPI is about 35 MP — so the cap costs
+             * real users nothing and the refusal names the actual limit. */
+            $pixels = (int) $info[0] * (int) $info[1];
+            if ($pixels > self::ASSET_MAX_PIXELS) {
+                throw new InvalidArgumentException(sprintf(
+                    'That image is %d x %d (%.0f megapixels), larger than the %d megapixel limit. '
+                    . 'File size is not the constraint — a small file can still be enormous once '
+                    . 'decompressed. Resize it and upload again.',
+                    $info[0], $info[1], $pixels / 1000000, self::ASSET_MAX_PIXELS / 1000000
+                ));
             }
 
             $dir = FCPATH . 'uploads/' . $this->school_id . '/doctemplates/assets';
@@ -1060,9 +1296,40 @@ class Doc_templates extends MY_Controller
     // ═══════════════════════════════════════════════════════════════════
 
     /** v1 document types. Widened from the research corpus in v2. */
+    /**
+     * Accept a document type, or nothing.
+     *
+     * THIS WAS A HARDCODED LIST OF THREE — transfer_certificate, bonafide,
+     * character — while the catalogue declared seven. Every other type fell
+     * through to '', and `create` then rejected it with "schoolId and docType
+     * are required", a message that names neither the type nor the real cause.
+     * Kerala's Form 5A, Kerala's r.22A certificate, the A.P. Study Certificate
+     * and the Fee Receipt could not be created AT ALL, and the error blamed a
+     * missing school id. Verified live: bonafide created, study and fee_receipt
+     * both refused.
+     *
+     * It now asks the catalogue, so a type added to `doc_types.php` works
+     * without anyone remembering this method exists. Still fail-closed: an
+     * unrecognised type returns '' exactly as before.
+     */
     private function _safe_type(string $t): string
     {
-        $allowed = ['transfer_certificate', 'bonafide', 'character'];
-        return in_array($t, $allowed, true) ? $t : '';
+        if ($t === '') {
+            return '';
+        }
+        try {
+            // Load the library BEFORE the static call — it is loaded lazily, so
+            // the class need not be declared yet on the first request that hits
+            // a custom type.
+            $contract = $this->_contract();
+            // A custom type is validated by its shape; nothing declares it centrally.
+            if ($contract::isCustom($t)) {
+                return $t;
+            }
+            return $contract->typeAvailable($t, $this->_school_context()['state']) ? $t : '';
+        } catch (Throwable $e) {
+            log_message('error', 'Doc_templates::_safe_type — ' . $e->getMessage());
+            return '';
+        }
     }
 }

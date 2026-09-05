@@ -2,6 +2,7 @@
 defined('BASEPATH') or exit('No direct script access allowed');
 
 require_once __DIR__ . '/Doc_rows.php';
+require_once __DIR__ . '/Doc_contract.php';   // isCustom() — the custom-type shape
 
 /**
  * Doc_template_service — the template lifecycle. Phase 6.
@@ -178,6 +179,17 @@ class Doc_template_service
         if ($schoolId === '' || $docType === '') {
             throw new InvalidArgumentException('Doc_template_service: schoolId and docType are required');
         }
+        /* A custom type MUST arrive with the title it was minted from.
+           Without it the only name left is the slug, and the hub would list the
+           document as "custom:sports_day" — which is not what anybody typed and
+           cannot be corrected afterwards, because the title is the only record
+           of the capitalisation and punctuation the school chose. */
+        if (Doc_contract::isCustom($docType) && trim((string) ($seed['docTitle'] ?? '')) === '') {
+            throw new InvalidArgumentException(
+                "Doc_template_service: '$docType' is a custom document type and must be created "
+                . 'with a docTitle — the slug alone cannot reproduce the name that was typed.'
+            );
+        }
 
         $existing = ($this->store['query'])(self::HEAD_COLLECTION, [['schoolId', '=', $schoolId]]) ?: [];
         $max = 0;
@@ -199,6 +211,14 @@ class Doc_template_service
                 'schoolId'         => $schoolId,
                 'templateId'       => $templateId,
                 'docType'          => $docType,
+                /* The human name of a CUSTOM document type.
+                   `name` is the template's name ("Draft 2", "2026 wording");
+                   docTitle is what KIND of document it is, and for a custom type
+                   nothing else records that — the slug in docType is derived and
+                   lossy ("custom:sports_day" cannot tell you it was typed
+                   "Sports Day"). Empty for a built-in type, whose name is in the
+                   catalogue. */
+                'docTitle'         => (string) ($seed['docTitle'] ?? ''),
                 'name'             => $this->uniqueName(
                                           (string) ($seed['name'] ?? 'Untitled template'),
                                           $existing),
@@ -222,7 +242,38 @@ class Doc_template_service
                 'updatedAt'        => $this->now(),
             ];
 
-            ($this->store['set'])(self::HEAD_COLLECTION, $docId, $head);
+            /* CREATE-ONLY AT THE DATABASE, not at the exists() check above.
+             *
+             * The check and the write were two separate calls with nothing
+             * between them, so two concurrent creates that both read the same
+             * $max, and both found TPL0086 free, would BOTH write it — the
+             * second silently overwriting the first school's brand-new template,
+             * with no error to either caller. The doc-comment claimed this loop
+             * "refuses to write over an existing id"; the exists() call cannot
+             * deliver that, because the answer is stale the instant it returns.
+             * On this deployment a Firestore round trip is ~1.7-2.3s, so the
+             * window is wide, not theoretical.
+             *
+             * With an `exists:false` precondition the DATABASE refuses the
+             * write, the loop simply advances to the next number, and the
+             * comment becomes true. The exists() check is kept because it saves
+             * a doomed round trip in the common case. */
+            $commit = $this->store['commit'] ?? null;
+            if (is_callable($commit)) {
+                $ok = ($commit)([[
+                    'op'           => 'set',
+                    'collection'   => self::HEAD_COLLECTION,
+                    'docId'        => $docId,
+                    'data'         => $head,
+                    'precondition' => ['exists' => false],
+                ]]);
+                if ($ok !== true) {
+                    continue;   // somebody won the race — take the next number
+                }
+            } else {
+                ($this->store['set'])(self::HEAD_COLLECTION, $docId, $head);
+            }
+
             $this->log('create', $docId, "Created $docType template $templateId");
 
             return ['templateId' => $docId, 'head' => $head];
@@ -311,11 +362,71 @@ class Doc_template_service
             );
         }
 
-        // Never let a caller move lifecycle fields through save(), and never
-        // let one claim to be somebody else.
-        foreach (['status', 'publishedVersion', 'activeVersion', 'templateId', 'schoolId',
-                  'updatedBy', 'createdBy'] as $k) {
-            unset($patch[$k]);
+        /* AN ALLOWLIST, NOT A DENYLIST.
+         *
+         * This was a denylist of 7 fields against a document carrying 24, and a
+         * denylist is only ever as good as the last person's memory. Two fields
+         * had already fallen through it, each independently exploitable by an
+         * `edit`-grade caller who never needed `manage`:
+         *
+         *   docType  — create() gates the type against the school's state via
+         *              _safe_type(); save() did not, so you could mint a custom
+         *              type and patch it into a state-gated statutory one. The
+         *              proof gate does not defend this dimension either
+         *              (contentHash() omits docType), so it survived publish and
+         *              froze permanently into version history.
+         *
+         *   version  — proof_pdf() builds its output filename from the LIVE head's
+         *              version. Setting version back to an already-published
+         *              number made the next proof render overwrite the frozen PDF
+         *              that published version points at. The Firestore snapshot
+         *              stayed honest while the artefact a school actually
+         *              downloads was replaced. No race, two ordinary POSTs.
+         *
+         * Adding those two names to the denylist would fix those two reports and
+         * leave the shape intact for the next field somebody adds. So the list is
+         * inverted: a draft edit may change the DESIGN, and nothing else. Every
+         * field not named here — present or future, known or forgotten — is
+         * dropped, and the caller is told rather than silently ignored.
+         *
+         * The permitted set is exactly what the editor sends (designer.js:1401-1405),
+         * plus the two fields other legitimate flows carry. */
+        $editable = ['name', 'docTitle', 'page', 'header', 'footer', 'objects',
+                     'languages', 'defaultLanguage', 'complianceLayers'];
+
+        $rejected = array_diff(array_keys($patch), $editable);
+        $patch    = array_intersect_key($patch, array_flip($editable));
+
+        if ($rejected) {
+            /* Not silent, and not fatal either.
+             *
+             * The save still succeeds, because the DESIGN in the patch is
+             * legitimate and refusing it would break any future client that
+             * innocently round-trips a whole template object back through
+             * save() — a very plausible refactor that would turn a harmless
+             * no-op into a hard failure on every keystroke.
+             *
+             * But it does not pass silently. Dropping a field while answering
+             * "saved" is the phantom-success shape this codebase has been
+             * bitten by before, so the rejection is recorded in the audit trail
+             * AND returned to the caller, which can surface it. A caller that
+             * ignores the field is choosing to; a caller that never hears about
+             * it had no choice. */
+            $this->log('save.rejected', $docId,
+                'Ignored non-editable field(s): ' . implode(', ', $rejected));
+        }
+
+        /* GEOMETRY BOUNDS — the server's own, not the client's.
+           Page margins and object x/y/w/h had no range check on either side:
+           evalMm() rejects non-numbers and clamps nothing, and save() wrote the
+           patch through untouched. A negative margin or a 90000mm object could
+           be saved and then published, and publish only checks that the proof
+           hash still matches the design — not that the design is on the page. */
+        if (isset($patch['page']) && is_array($patch['page'])) {
+            $patch['page'] = $this->boundPage($patch['page']);
+        }
+        if (isset($patch['objects']) && is_array($patch['objects'])) {
+            $patch['objects'] = array_map([$this, 'boundObject'], $patch['objects']);
         }
 
         $patch['lockVersion'] = $stored + 1;
@@ -323,9 +434,52 @@ class Doc_template_service
         if ($by !== '') {
             $patch['updatedBy'] = $by;
         }
-        ($this->store['update'])(self::HEAD_COLLECTION, $docId, $patch);
+        /* A REAL COMPARE-AND-SWAP, not a read-then-hope.
+         *
+         * The doc-comment above has always promised "the loser gets a conflict;
+         * nobody gets a lost edit". The implementation read the head, compared
+         * lockVersion in PHP, then issued an UNCONDITIONAL write — so two saves
+         * that both read lockVersion 7 both passed the check and the second
+         * silently overwrote the first. Neither user saw an error. On this
+         * deployment a Firestore round trip is ~1.7-2.3s, so the window is wide
+         * enough to matter rather than being theoretical.
+         *
+         * `__updateTime` comes back on every read (Firestore_rest_client:630)
+         * and commitBatch turns it into a `currentDocument` precondition
+         * (:1041-1047) — the same primitive activate() and the fee-accounting
+         * loops already use. The database now arbitrates: if the document moved
+         * between our read and our write, the commit fails and nothing lands.
+         *
+         * Falls back to the old unconditional write only where no atomic
+         * primitive exists — the injected-store unit tests — and says so. */
+        $commit    = $this->store['commit'] ?? null;
+        $seenAt    = $head['__updateTime'] ?? null;
 
-        return $patch;
+        if (is_callable($commit) && is_string($seenAt) && $seenAt !== '') {
+            $ok = ($commit)([[
+                'op'           => 'set',
+                'collection'   => self::HEAD_COLLECTION,
+                'docId'        => $docId,
+                'merge'        => true,
+                'data'         => $patch,
+                'precondition' => ['updateTime' => $seenAt],
+            ]]);
+            if ($ok !== true) {
+                throw new RuntimeException(
+                    "E_CONFLICT: '$docId' changed while this save was in flight. Your edit "
+                    . 'was NOT saved and nothing was overwritten. Reload to see the current '
+                    . 'version before editing again.'
+                );
+            }
+        } else {
+            ($this->store['update'])(self::HEAD_COLLECTION, $docId, $patch);
+        }
+
+        $out = $patch;
+        if ($rejected) {
+            $out['rejectedFields'] = array_values($rejected);
+        }
+        return $out;
     }
 
     /* ================================================================== *
@@ -523,13 +677,17 @@ class Doc_template_service
             'validationResult' => $proof['validation'] ?? ['blocking' => [], 'warnings' => []],
             'proofPdfHash'     => $proof['hash'],
             'proofPdfPaths'    => $proof['pdfPaths']     ?? [],
+            /* PER-LANGUAGE hashes, frozen alongside the paths.
+               `proofPdfHash` is a single digest over ALL languages concatenated, so it
+               cannot verify one downloaded file. Freezing the per-language digests lets
+               version_pdf check the exact bytes it is about to serve against what was
+               recorded at publication — see the integrity gate there. */
+            'proofPdfPerLanguage' => (array) ($proof['perLanguage'] ?? []),
             'fontManifest'     => $proof['fontManifest'],
             'mpdfVersion'      => $proof['mpdfVersion'],
             'publishedBy'      => $by,
             'publishedAt'      => $this->now(),
         ];
-        ($this->store['set'])(self::VERSION_COLLECTION, $vid, $snapshot);
-
         // The head moves on to the NEXT draft. Publishing does not activate —
         // that is a separate, deliberate act (P6.4).
         $headPatch = [
@@ -540,7 +698,66 @@ class Doc_template_service
             'updatedAt'        => $this->now(),
             'updatedBy'        => $by,
         ];
-        ($this->store['update'])(self::HEAD_COLLECTION, $docId, $headPatch);
+
+        /* ONE ATOMIC WRITE, for the same reason activate() insists on one.
+         *
+         * This was two sequential calls: set() the frozen snapshot, then
+         * update() the head. If the process died between them — a timeout, a
+         * network blip, a worker recycle — the snapshot existed and the head
+         * never advanced. The retry then hit the create-only guard above
+         * ("version already exists") BEFORE reaching the head update, and
+         * because the head's version had never incremented, the next attempt
+         * computed the same version id and hit the same guard. The template
+         * could publish that version never, and the following one never either:
+         * a permanent dead end reachable by an ordinary network failure, with
+         * no self-service repair.
+         *
+         * There WAS an accidental escape — save() would accept a `version`
+         * field, so a technical user could hand-crank the counter past the
+         * blockage. That was also the primitive behind the P0 proof-PDF
+         * overwrite, and closing the P0 closed the escape with it. Rather than
+         * build a repair tool for a state that should not exist, the state is
+         * made unreachable: both writes land together or neither does.
+         *
+         * The precondition on the snapshot is what makes the retry safe. It is
+         * create-only at the database, not merely guarded by the read above, so
+         * two concurrent publishes cannot both believe they won. */
+        $commit = $this->store['commit'] ?? null;
+        if (!is_callable($commit)) {
+            throw new RuntimeException(
+                'Doc_template_service: publish requires an atomic multi-document write and '
+                . 'none is available. Refusing to run non-atomically: a failure between the '
+                . 'two writes strands the template permanently — it could publish neither '
+                . 'this version nor any later one.'
+            );
+        }
+
+        $ok = ($commit)([
+            [
+                'op'           => 'set',
+                'collection'   => self::VERSION_COLLECTION,
+                'docId'        => $vid,
+                'data'         => $snapshot,
+                // Create-only AT THE DATABASE. The exists() check above is a
+                // courtesy that gives a readable error; this is the guarantee.
+                'precondition' => ['exists' => false],
+            ],
+            [
+                'op'           => 'set',
+                'collection'   => self::HEAD_COLLECTION,
+                'docId'        => $docId,
+                'merge'        => true,
+                'data'         => $headPatch,
+                'precondition' => ['exists' => true],
+            ],
+        ]);
+
+        if ($ok !== true) {
+            throw new RuntimeException(
+                "Doc_template_service: publishing '$docId' v$version did not commit. "
+                . 'Nothing was written — the draft is untouched and can be published again.'
+            );
+        }
 
         $this->log('publish', $docId, "Published v$version");
 
@@ -580,6 +797,21 @@ class Doc_template_service
     public function activate(string $docId, string $by = '', ?int $version = null): array
     {
         $head = $this->head($docId);
+
+        /* An ARCHIVED template must not be reactivated.
+           `archive()` refuses to archive an active template, so the pair looked
+           symmetrical — but `activate()` never read `status`, so the same
+           template could be archived and then activated straight back, arriving
+           live in a state the gallery treats as retired. The two guards now
+           close the loop from both ends. */
+        if (($head['status'] ?? 'draft') === 'archived') {
+            throw new RuntimeException(
+                "Doc_template_service: '$docId' is archived. An archived template is "
+                . 'retired, and making it live again would resolve every print point to a '
+                . 'document the school has taken out of use. Duplicate it into a new draft '
+                . 'instead.'
+            );
+        }
 
         $published = $head['publishedVersion'] ?? null;
         if ($published === null) {
@@ -865,6 +1097,55 @@ class Doc_template_service
      * template changes which certificate that school legally issues, and
      * archiving theirs removes their ability to issue one at all.
      */
+    /** The largest sheet the engine supports, with room to spare. */
+    private const MAX_MM = 2000.0;
+
+    private function clampMm($v, float $min, float $max, float $default): float
+    {
+        if (!is_numeric($v)) {
+            return $default;
+        }
+        return max($min, min($max, (float) $v));
+    }
+
+    /** Margins cannot be negative, and cannot exceed the sheet. */
+    private function boundPage(array $page): array
+    {
+        if (isset($page['marginsMm']) && is_array($page['marginsMm'])) {
+            foreach (['t', 'r', 'b', 'l'] as $k) {
+                if (array_key_exists($k, $page['marginsMm'])) {
+                    $page['marginsMm'][$k] = $this->clampMm($page['marginsMm'][$k], 0.0, self::MAX_MM, 15.0);
+                }
+            }
+        }
+        return $page;
+    }
+
+    /**
+     * An object must sit within a plausible sheet.
+     *
+     * Position may be negative — bleed off the edge is a legitimate design — but
+     * is bounded so it cannot be parked a kilometre away, and width/height can
+     * never be negative or absurd.
+     */
+    private function boundObject($o)
+    {
+        if (!is_array($o)) {
+            return $o;
+        }
+        foreach (['xMm' => -self::MAX_MM, 'yMm' => -self::MAX_MM] as $k => $min) {
+            if (array_key_exists($k, $o)) {
+                $o[$k] = $this->clampMm($o[$k], $min, self::MAX_MM, 0.0);
+            }
+        }
+        foreach (['wMm', 'hMm', 'maxHMm', 'anchorGapMm'] as $k) {
+            if (array_key_exists($k, $o)) {
+                $o[$k] = $this->clampMm($o[$k], 0.0, self::MAX_MM, 0.0);
+            }
+        }
+        return $o;
+    }
+
     private function head(string $docId): array
     {
         $head = ($this->store['get'])(self::HEAD_COLLECTION, $docId);

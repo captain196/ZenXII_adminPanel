@@ -62,7 +62,13 @@ class DocTemplateServiceTest extends TestCase
         $this->svc   = $this->make();
     }
 
-    private function make(bool $withTransaction = true): Doc_template_service
+    /**
+     * @param bool $withTransaction is an atomic commit available at all?
+     * @param bool $commitSucceeds  does it succeed? False models the database
+     *        REFUSING the write because a precondition no longer holds — the
+     *        case a compare-and-swap exists for.
+     */
+    private function make(bool $withTransaction = true, bool $commitSucceeds = true): Doc_template_service
     {
         $d = function () { return $this->docs; };
         $store = [
@@ -90,8 +96,11 @@ class DocTemplateServiceTest extends TestCase
                assert the batch was a COMPLETE assignment — that is the
                property activation's safety rests on, and it is checkable here
                even though Firestore's atomicity itself is not. */
-            'commit' => $withTransaction ? function (array $ops) {
+            'commit' => $withTransaction ? function (array $ops) use ($commitSucceeds) {
                 $this->commits[] = $ops;
+                if (!$commitSucceeds) {
+                    return false;   // the database refused — a lost-update was prevented
+                }
                 foreach ($ops as $op) {
                     $c = $op['collection']; $id = $op['docId'];
                     if (($op['precondition']['exists'] ?? null) === true && !isset($this->docs[$c][$id])) {
@@ -404,6 +413,46 @@ class DocTemplateServiceTest extends TestCase
         $this->assertNull($this->docs['documentTemplates']['SCH1_TPL0009']['activeVersion']);
     }
 
+    /**
+     * TWO CUSTOM DOCUMENTS DO NOT SHARE AN ACTIVE SLOT.
+     *
+     * This is the reason each custom document is its own `custom:{slug}` type
+     * rather than one shared "Custom" bucket. Under a shared bucket, a school
+     * activating its Sports Day certificate would silently deactivate its Fee
+     * Concession letter — two unrelated documents fighting over one live slot,
+     * with nothing on screen to explain why one stopped printing.
+     *
+     * Verified live as well (both stayed active), but a live observation is not
+     * a regression guard, and the invariant is one line of code away from being
+     * lost the next time somebody "simplifies" the type id.
+     */
+    public function test_activating_one_custom_document_leaves_another_alone(): void
+    {
+        foreach ([['SCH1_TPLC1', 'custom:sports_day'], ['SCH1_TPLC2', 'custom:fee_concession']] as [$id, $type]) {
+            $this->docs['documentTemplates'][$id] = [
+                'schoolId' => 'SCH1', 'templateId' => substr($id, 5),
+                'docType'  => $type, 'docTitle' => 'X', 'name' => $type,
+                'status'   => 'draft', 'version' => 1,
+                'publishedVersion' => null, 'activeVersion' => null,
+                'lockVersion' => 0, 'objects' => [['id' => 'a']],
+                'languages' => ['en'], 'defaultLanguage' => 'en',
+            ];
+        }
+
+        foreach (['SCH1_TPLC1', 'SCH1_TPLC2'] as $id) {
+            $this->recordProof($id);
+            $this->svc->publish($id);
+            $this->svc->activate($id);
+        }
+
+        $this->assertNotNull($this->docs['documentTemplates']['SCH1_TPLC1']['activeVersion'],
+            'activating the second custom document deactivated the first — they are sharing a slot');
+        $this->assertNotNull($this->docs['documentTemplates']['SCH1_TPLC2']['activeVersion']);
+
+        // and the statutory types are untouched by either
+        $this->assertSame(1, $this->docs['documentTemplates']['SCH1_TPL0009']['activeVersion']);
+    }
+
     /** Publishing is not activating — that is a separate, deliberate act. */
     public function test_publish_does_not_activate(): void
     {
@@ -430,13 +479,61 @@ class DocTemplateServiceTest extends TestCase
      */
     public function test_activate_refuses_to_run_without_an_atomic_write(): void
     {
+        /* The template is arranged as ALREADY published, rather than published
+           through the service. publish() now demands the same atomic write and
+           would refuse first — correctly — which would make this test pass for
+           the wrong reason and stop testing activate at all. */
         $svc = $this->make(false);
-        $this->recordProof('SCH1_TPL0007');
-        $svc->publish('SCH1_TPL0007');
+        $this->docs['documentTemplates']['SCH1_TPL0007']['publishedVersion'] = 2;
+        $this->docs['documentTemplateVersions']['SCH1_TPL0007_v2'] = ['version' => 2];
 
         $this->expectException(RuntimeException::class);
         $this->expectExceptionMessageMatches('/requires an atomic multi-document write/');
         $svc->activate('SCH1_TPL0007');
+    }
+
+    /**
+     * publish() refuses the same way, for a sharper reason.
+     *
+     * It used to be two sequential writes. A failure between them left the
+     * frozen snapshot in place while the head never advanced — and the retry hit
+     * the create-only guard before reaching the head, so the template could
+     * publish neither that version nor any later one. A permanent dead end
+     * reachable by an ordinary network failure.
+     *
+     * The one escape was save()'s unstripped `version` field, which was also the
+     * primitive behind the P0 proof-PDF overwrite. Closing the P0 closed the
+     * escape, so the stranded state is now made UNREACHABLE rather than
+     * repairable.
+     */
+    public function test_publish_refuses_to_run_without_an_atomic_write(): void
+    {
+        $svc = $this->make(false);
+        $this->recordProof('SCH1_TPL0007');
+
+        $this->expectException(RuntimeException::class);
+        $this->expectExceptionMessageMatches('/requires an atomic multi-document write/');
+        $svc->publish('SCH1_TPL0007');
+    }
+
+    /** Both writes go in one commit — never a snapshot without a head update. */
+    public function test_publish_writes_the_snapshot_and_the_head_in_one_commit(): void
+    {
+        $this->recordProof('SCH1_TPL0007');
+        $this->svc->publish('SCH1_TPL0007');
+
+        $this->assertNotEmpty($this->commits, 'publish did not use the atomic path');
+        $ops = end($this->commits);
+        $this->assertCount(2, $ops, 'publish must commit exactly the snapshot and the head');
+
+        $byCollection = array_column($ops, null, 'collection');
+        $this->assertArrayHasKey('documentTemplateVersions', $byCollection);
+        $this->assertArrayHasKey('documentTemplates', $byCollection);
+        $this->assertSame(['exists' => false],
+            $byCollection['documentTemplateVersions']['precondition'],
+            'the snapshot must be create-only AT THE DATABASE, not merely guarded by a prior read');
+        $this->assertSame(['exists' => true],
+            $byCollection['documentTemplates']['precondition']);
     }
 
     /** If a past bug left two active, activate heals rather than assuming one. */
@@ -807,6 +904,261 @@ class DocTemplateServiceTest extends TestCase
     {
         $r = $this->svc->create('SCH1', 'bonafide', ['name' => '   '], 'STA1');
         $this->assertSame('Untitled template', $r['head']['name']);
+    }
+
+    /* ---------------------------------------------------------------- *
+     * save() is an ALLOWLIST — the P0 fix
+     *
+     * It was a denylist of 7 names against a 24-field document, and two fields
+     * had already fallen through it. Both were exploitable by an `edit`-grade
+     * caller who never needed `manage`. These tests pin the SHAPE, not the two
+     * reports — a denylist restored under any name would fail them.
+     * ---------------------------------------------------------------- */
+
+    /**
+     * `docType` must not be patchable.
+     *
+     * create() gates the document type against the school's state; save() did
+     * not. So an edit-grade user could mint an ungated `custom:` type and patch
+     * it into a state-gated statutory one. Reproduced live against the running
+     * server on 2026-09-04 before the fix.
+     */
+    public function test_save_cannot_change_the_document_type(): void
+    {
+        $before = $this->docs['documentTemplates']['SCH1_TPL0007']['docType'];
+        $lock   = $this->docs['documentTemplates']['SCH1_TPL0007']['lockVersion'];
+
+        $this->svc->save('SCH1_TPL0007', ['docType' => 'study', 'name' => 'ok'], $lock);
+
+        $this->assertSame($before, $this->docs['documentTemplates']['SCH1_TPL0007']['docType'],
+            'save() changed docType — the state gate on create() is bypassable again');
+    }
+
+    /**
+     * `version` must not be patchable — this is the P0.
+     *
+     * proof_pdf() builds its output filename from the live head's version.
+     * Setting version back to an already-published number made the next proof
+     * render overwrite the frozen PDF that published version points at: the
+     * Firestore snapshot stayed honest while the artefact a school downloads
+     * was replaced. No race, two ordinary POSTs, no `manage` grade.
+     */
+    public function test_save_cannot_move_the_version_counter(): void
+    {
+        $head = &$this->docs['documentTemplates']['SCH1_TPL0007'];
+        $before = $head['version'];
+
+        $this->svc->save('SCH1_TPL0007', ['version' => 1, 'name' => 'ok'], $head['lockVersion']);
+
+        $this->assertSame($before, $this->docs['documentTemplates']['SCH1_TPL0007']['version'],
+            'save() moved the version counter — a published version PDF is overwritable again');
+    }
+
+    /**
+     * The shape, not the instances. A field nobody has thought of yet must be
+     * dropped by default — that is the whole point of inverting the list.
+     */
+    public function test_save_drops_any_field_not_explicitly_editable(): void
+    {
+        $lock = $this->docs['documentTemplates']['SCH1_TPL0007']['lockVersion'];
+
+        $this->svc->save('SCH1_TPL0007', [
+            'name'                => 'legit',
+            'someFutureField'     => 'should never be written',
+            'contractRef'         => 'tampered',
+            'starterId'           => 'tampered',
+            'createdAt'           => '1999-01-01',
+        ], $lock);
+
+        $stored = $this->docs['documentTemplates']['SCH1_TPL0007'];
+        $this->assertSame('legit', $stored['name'], 'the legitimate field must still be written');
+        $this->assertArrayNotHasKey('someFutureField', $stored);
+        $this->assertNotSame('tampered', $stored['contractRef'] ?? null);
+        $this->assertNotSame('tampered', $stored['starterId'] ?? null);
+        $this->assertNotSame('1999-01-01', $stored['createdAt'] ?? null);
+    }
+
+    /** Everything the editor legitimately sends must still get through. */
+    public function test_save_still_writes_every_field_the_editor_sends(): void
+    {
+        $lock = $this->docs['documentTemplates']['SCH1_TPL0007']['lockVersion'];
+
+        $patch = [
+            'name' => 'New name', 'page' => ['size' => 'A5'], 'header' => ['x' => 1],
+            'footer' => ['y' => 2], 'objects' => [['id' => 'z']],
+            'languages' => ['en', 'hi'], 'defaultLanguage' => 'hi',
+        ];
+        $this->svc->save('SCH1_TPL0007', $patch, $lock);
+
+        $stored = $this->docs['documentTemplates']['SCH1_TPL0007'];
+        foreach ($patch as $k => $v) {
+            $this->assertSame($v, $stored[$k], "save() dropped the legitimate field '$k'");
+        }
+    }
+
+    /**
+     * The caller is TOLD what was dropped, not just the audit log.
+     *
+     * The save still succeeds — refusing outright would break any client that
+     * round-trips a whole template object through save(). But answering "saved"
+     * while silently discarding part of the request is the phantom-success shape
+     * this codebase has been bitten by before, so the dropped names come back.
+     */
+    public function test_save_returns_the_fields_it_refused_to_write(): void
+    {
+        $lock = $this->docs['documentTemplates']['SCH1_TPL0007']['lockVersion'];
+        $out  = $this->svc->save('SCH1_TPL0007',
+            ['name' => 'ok', 'version' => 1, 'docType' => 'study'], $lock);
+
+        $this->assertArrayHasKey('rejectedFields', $out);
+        $this->assertContains('version', $out['rejectedFields']);
+        $this->assertContains('docType', $out['rejectedFields']);
+    }
+
+    /** A clean save says nothing about rejections, because there were none. */
+    public function test_a_clean_save_reports_no_rejected_fields(): void
+    {
+        $lock = $this->docs['documentTemplates']['SCH1_TPL0007']['lockVersion'];
+        $out  = $this->svc->save('SCH1_TPL0007', ['name' => 'ok'], $lock);
+        $this->assertArrayNotHasKey('rejectedFields', $out);
+    }
+
+    /** A rejected field is logged, never silently swallowed. */
+    public function test_a_rejected_field_is_recorded_rather_than_ignored(): void
+    {
+        $lock = $this->docs['documentTemplates']['SCH1_TPL0007']['lockVersion'];
+        $this->svc->save('SCH1_TPL0007', ['version' => 1, 'name' => 'ok'], $lock);
+
+        $actions = array_column($this->audit, 0);
+        $this->assertContains('save.rejected', $actions,
+            'a caller sending a non-editable field must leave a trace — silently dropping it '
+            . 'is the phantom-success shape this codebase has been bitten by before');
+    }
+
+    /**
+     * save() uses a database-arbitrated compare-and-swap, not a PHP comparison.
+     *
+     * The lock check read the head, compared lockVersion in PHP, then wrote
+     * UNCONDITIONALLY — so two saves that both read lockVersion 7 both passed
+     * and the second silently overwrote the first, with no error to either
+     * user. The doc-comment promised the opposite. The write now carries an
+     * `updateTime` precondition so Firestore, not PHP, decides who won.
+     */
+    public function test_save_writes_with_an_update_time_precondition(): void
+    {
+        $this->docs['documentTemplates']['SCH1_TPL0007']['__updateTime'] = '2026-09-04T10:00:00Z';
+        $lock = $this->docs['documentTemplates']['SCH1_TPL0007']['lockVersion'];
+
+        $this->svc->save('SCH1_TPL0007', ['name' => 'cas'], $lock);
+
+        $this->assertNotEmpty($this->commits, 'save() did not use the atomic path');
+        $ops = end($this->commits);
+        $this->assertSame(['updateTime' => '2026-09-04T10:00:00Z'], $ops[0]['precondition'],
+            'the write must be conditional on the document not having moved since the read');
+    }
+
+    /** A commit the database refuses is a conflict, never a silent no-op. */
+    public function test_a_refused_commit_is_reported_as_a_conflict(): void
+    {
+        $this->docs['documentTemplates']['SCH1_TPL0007']['__updateTime'] = '2026-09-04T10:00:00Z';
+        $lock = $this->docs['documentTemplates']['SCH1_TPL0007']['lockVersion'];
+
+        $svc = $this->make(true, false);   // commit available, but it fails
+        $this->expectException(\RuntimeException::class);
+        $this->expectExceptionMessageMatches('/E_CONFLICT.*NOT saved/s');
+        $svc->save('SCH1_TPL0007', ['name' => 'x'], $lock);
+    }
+
+    /**
+     * create() must be create-only AT THE DATABASE.
+     *
+     * The exists() check and the write were two separate calls. Two concurrent
+     * creates that both read the same max, and both found TPL0086 free, would
+     * both write it — the second silently overwriting the first school's new
+     * template, with no error to either caller.
+     */
+    public function test_create_writes_with_an_exists_false_precondition(): void
+    {
+        $this->svc->create('SCH1', 'bonafide', ['name' => 'x'], 'STA1');
+
+        $this->assertNotEmpty($this->commits, 'create() did not use the atomic path');
+        $ops = end($this->commits);
+        $this->assertSame(['exists' => false], $ops[0]['precondition'],
+            'the write must be refused BY THE DATABASE if the id was taken between check and write');
+    }
+
+    /**
+     * When the database refuses, the loop takes the next number rather than
+     * failing or — far worse — overwriting.
+     */
+    public function test_a_lost_id_race_advances_to_the_next_number(): void
+    {
+        $refusals = 2;
+        $svc = new Doc_template_service([
+            'schoolId' => 'SCH1',
+            'store' => [
+                'get'    => fn($c, $id) => $this->docs[$c][$id] ?? null,
+                'set'    => function ($c, $id, $data) { $this->docs[$c][$id] = $data; return true; },
+                'update' => fn() => true,
+                'exists' => fn($c, $id) => isset($this->docs[$c][$id]),
+                'query'  => fn() => $this->docs['documentTemplates'],
+                'delete' => null,
+                'commit' => function (array $ops) use (&$refusals) {
+                    $this->commits[] = $ops;
+                    if ($refusals-- > 0) {
+                        return false;      // another caller won this id
+                    }
+                    foreach ($ops as $op) { $this->docs[$op['collection']][$op['docId']] = $op['data']; }
+                    return true;
+                },
+            ],
+            'audit' => function ($a, $e, $desc) { $this->audit[] = [$a, $e, $desc]; },
+        ]);
+
+        $r = $svc->create('SCH1', 'bonafide', ['name' => 'raced'], 'STA1');
+
+        $this->assertCount(3, $this->commits, 'it should have tried three ids');
+        $ids = array_map(fn($ops) => $ops[0]['docId'], $this->commits);
+        $this->assertSame(count(array_unique($ids)), count($ids),
+            'it retried the SAME id instead of advancing — that is an infinite overwrite risk');
+        $this->assertNotEmpty($r['templateId']);
+    }
+
+    /* ---------------------------------------------------------------- *
+     * Custom document types
+     * ---------------------------------------------------------------- */
+
+    /**
+     * A custom type must arrive with the title it was minted from.
+     *
+     * The slug is derived and lossy — "custom:sports_day" cannot tell you it was
+     * typed "Sports Day" — so without the title the hub would list the school's
+     * document under a machine id, and there would be nothing left to correct it
+     * from.
+     */
+    public function test_a_custom_type_created_without_a_title_is_refused(): void
+    {
+        $this->expectException(\InvalidArgumentException::class);
+        $this->expectExceptionMessageMatches('/must be created with a docTitle/');
+        $this->svc->create('SCH1', 'custom:sports_day', ['name' => 'Draft 1'], 'STA1');
+    }
+
+    public function test_a_custom_type_stores_the_title_it_was_named_with(): void
+    {
+        $r = $this->svc->create('SCH1', 'custom:sports_day',
+            ['name' => 'Draft 1', 'docTitle' => 'Sports Day Participation'], 'STA1');
+
+        $this->assertSame('custom:sports_day', $r['head']['docType']);
+        $this->assertSame('Sports Day Participation', $r['head']['docTitle']);
+        $this->assertSame('Draft 1', $r['head']['name'],
+            'docTitle is what KIND of document it is; name is this template');
+    }
+
+    /** A built-in type carries no docTitle — its name lives in the catalogue. */
+    public function test_a_built_in_type_needs_no_title(): void
+    {
+        $r = $this->svc->create('SCH1', 'bonafide', ['name' => 'Bonafide 2026'], 'STA1');
+        $this->assertSame('', $r['head']['docTitle']);
     }
 
     /* ---------------------------------------------------------------- *

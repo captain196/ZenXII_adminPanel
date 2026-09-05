@@ -520,4 +520,192 @@ class DocSecurityTest extends TestCase
                 . 'genuinely empty value.');
         }
     }
+
+    /* ================================================================== *
+     *  CSS-context injection — style attributes are not HTML text
+     *
+     *  WHY THIS IS SEVERE, established empirically 2026-09-05:
+     *  mPDF DEREFERENCES CSS url(). Proved with a purely local probe — render
+     *  the same div twice, `background:url()` pointing once at a file that
+     *  exists and once at one that does not. Identical markup, identical
+     *  everything, and the outputs differed by 866 bytes: mPDF fetched and
+     *  embedded the real file. Had it ignored CSS urls, both would be
+     *  byte-identical.
+     *
+     *  So a value that escapes its declaration and adds `background:url(...)`
+     *  is not a cosmetic defect. This HTML is rendered SERVER-SIDE on the
+     *  production host, which means an attacker-chosen URL becomes an outbound
+     *  request from that host — reaching whatever it can reach, including a
+     *  cloud metadata endpoint. `Doc_renderer::guardImages()` was written for
+     *  exactly this threat and inspects only `<img src=`, never `style=`.
+     *
+     *  The sanitisers below are therefore load-bearing, not defence in depth.
+     *  Nothing else stands between a saved template and that request.
+     * ================================================================== */
+
+    /**
+     * A style value must not be able to end its own declaration.
+     *
+     * `style.fontFamily` and `style.track` were escaped with htmlspecialchars,
+     * which is right for HTML text and wrong in a CSS attribute value: it does
+     * not touch `:` or `;`. A font family of
+     * "Arial;background:url(http://169.254.169.254/…)" was emitted verbatim.
+     *
+     * That matters more here than in an ordinary web page, because this HTML is
+     * rendered by mPDF ON THE SERVER — so a remote url inside it is an outbound
+     * request from the production host toward an address of the caller's
+     * choosing. `Doc_renderer::guardImages()` was written for precisely that
+     * threat and inspects only `<img src=`, never `style=`.
+     *
+     * Reachable at `edit` grade: save() applies no shape validation to objects.
+     */
+    public function test_a_font_family_cannot_break_out_of_its_declaration(): void
+    {
+        $html = $this->renderWithStyle([
+            'fontFamily' => 'Arial;background:url(http://169.254.169.254/latest/meta-data/)',
+        ]);
+
+        $this->assertStringNotContainsString('169.254.169.254', $html);
+        $this->assertStringNotContainsString('Arial;background', $html);
+    }
+
+    public function test_letter_spacing_cannot_break_out_of_its_declaration(): void
+    {
+        $html = $this->renderWithStyle([
+            'track' => '0;x:url(http://example.invalid/beacon.png)',
+        ]);
+
+        $this->assertStringNotContainsString('example.invalid', $html);
+        $this->assertStringNotContainsString('beacon', $html);
+    }
+
+    /** A legitimate value must still survive — a guard that blocks everything is a bug. */
+    public function test_legitimate_font_and_tracking_values_still_render(): void
+    {
+        $html = $this->renderWithStyle(['fontFamily' => "Helvetica Neue, Arial", 'track' => '.18em']);
+
+        $this->assertStringContainsString('font-family:Helvetica Neue, Arial', $html);
+        $this->assertStringContainsString('letter-spacing:.18em', $html);
+    }
+
+    /** Shape, not blocklist: anything that is not a plain value is dropped whole. */
+    public function test_a_malformed_value_is_dropped_rather_than_partially_emitted(): void
+    {
+        foreach (['url(x)', 'expression(alert(1))', 'a}b{c', '/*x*/red', "a\\3a b"] as $bad) {
+            /* The OBJECT's style attribute, not the whole document — the
+               stylesheet's own @font-face block legitimately says font-family. */
+            $this->assertStringNotContainsString('font-family:', $this->objectStyle($bad),
+                "a malformed font-family ('$bad') was partially emitted");
+        }
+    }
+
+    /** A repeating table's per-column alignment is whitelisted, not escaped. */
+    public function test_a_table_column_alignment_cannot_inject_css(): void
+    {
+        $s = new \Doc_serializer();
+        $tpl = [
+            'templateId' => 'TPLSEC', 'docType' => 'fee_receipt',
+            'languages' => ['en'], 'defaultLanguage' => 'en',
+            'page' => ['size' => 'A4', 'orientation' => 'portrait',
+                       'marginsMm' => ['t' => 15, 'r' => 15, 'b' => 15, 'l' => 15]],
+            'objects' => [[
+                'id' => 't', 'type' => 'table', 'xMm' => 15, 'yMm' => 40, 'wMm' => 180,
+                'hMm' => 20, 'z' => 1, 'height' => 'auto',
+                'style' => ['sizePt' => 9, 'lineHeight' => 1.4],
+                'content' => ['repeatOver' => 'items', 'showHeader' => true,
+                              'columns' => [['key' => 'a',
+                                             'align' => 'left;background:url(http://evil.invalid/x)']]],
+            ]],
+        ];
+        $contract = ['items' => ['label' => 'Items', 'type' => 'list',
+                                 'itemFields' => ['a' => ['label' => 'A', 'maxLen' => 20]]]];
+        $html = $s->render($tpl, ['items' => [['a' => 'x']]], 'en', ['contract' => $contract]);
+
+        $this->assertStringNotContainsString('evil.invalid', $html);
+        $this->assertStringContainsString('text-align:left;', $html);
+    }
+
+    /** Just the style attribute of the rendered object. */
+    private function objectStyle(string $fontFamily): string
+    {
+        $html = $this->renderWithStyle(['fontFamily' => $fontFamily]);
+        return preg_match('/<div class="zx-o zx-text"[^>]*style="([^"]*)"/', $html, $m) ? $m[1] : '';
+    }
+
+    /** Render one text object carrying the given style, and return the HTML. */
+    private function renderWithStyle(array $style): string
+    {
+        $s = new \Doc_serializer();
+        return $s->render([
+            'templateId' => 'TPLSEC', 'docType' => 'bonafide',
+            'languages' => ['en'], 'defaultLanguage' => 'en',
+            'page' => ['size' => 'A4', 'orientation' => 'portrait',
+                       'marginsMm' => ['t' => 15, 'r' => 15, 'b' => 15, 'l' => 15]],
+            'objects' => [[
+                'id' => 'x', 'type' => 'text', 'xMm' => 15, 'yMm' => 40, 'wMm' => 180,
+                'hMm' => 8, 'z' => 1, 'height' => 'auto',
+                'style' => array_merge(['sizePt' => 10, 'lineHeight' => 1.4,
+                                        'weight' => 400, 'align' => 'left'], $style),
+                'content' => ['i18n' => ['en' => ['runs' => [['t' => 'hello']]]]],
+            ]],
+        ], [], 'en');
+    }
+
+    /* ================================================================== *
+     *  T0-28 — upload resource exhaustion
+     * ================================================================== */
+
+    /**
+     * The byte cap does not bound memory, so a pixel cap must.
+     *
+     * Compressed and decompressed size are unrelated. Measured, not estimated: a
+     * 12000x12000 PNG of one flat colour is **17 KB on disk** — inside the 4 MB cap,
+     * correctly sniffed as image/png, readable by getimagesize — and 549 MB decompressed,
+     * against Doc_renderer's 96 MB ceiling. Any edit-grade user could upload it and kill
+     * the PHP worker on every render that touched it.
+     */
+    public function test_the_asset_pixel_cap_rejects_a_decompression_bomb(): void
+    {
+        $cap = $this->assetMaxPixels();
+
+        $this->assertGreaterThan($cap, 12000 * 12000,
+            'the measured bomb must be over the cap, or the cap protects nothing');
+    }
+
+    /** …and admits everything a school would legitimately upload. */
+    public function test_the_asset_pixel_cap_admits_real_documents(): void
+    {
+        $cap = $this->assetMaxPixels();
+
+        foreach ([
+            'A4 at 300 dpi'  => [2480, 3508],
+            'A4 at 600 dpi'  => [4961, 7016],
+            'a school crest' => [1200, 1200],
+            'a student photo'=> [1024, 1280],
+        ] as $what => [$w, $h]) {
+            $this->assertLessThanOrEqual($cap, $w * $h,
+                "the pixel cap would reject $what ({$w}x{$h}) — it is too tight");
+        }
+    }
+
+    /** The byte cap alone is demonstrably insufficient — this is why the pixel cap exists. */
+    public function test_the_byte_cap_alone_does_not_bound_decompressed_size(): void
+    {
+        $c = (string) file_get_contents(
+            dirname(__DIR__, 2) . '/application/controllers/Doc_templates.php');
+        $this->assertMatchesRegularExpression('/const ASSET_MAX_BYTES\s*=\s*\d+/', $c);
+        $this->assertMatchesRegularExpression('/const ASSET_MAX_PIXELS\s*=\s*\d+/', $c,
+            'ASSET_MAX_PIXELS was removed — a 17 KB file can again decompress to 549 MB');
+        $this->assertStringContainsString('$pixels > self::ASSET_MAX_PIXELS', $c,
+            'the pixel cap is declared but never enforced');
+    }
+
+    private function assetMaxPixels(): int
+    {
+        $c = (string) file_get_contents(
+            dirname(__DIR__, 2) . '/application/controllers/Doc_templates.php');
+        $this->assertMatchesRegularExpression('/const ASSET_MAX_PIXELS\s*=\s*(\d+)/', $c);
+        preg_match('/const ASSET_MAX_PIXELS\s*=\s*(\d+)/', $c, $m);
+        return (int) $m[1];
+    }
 }

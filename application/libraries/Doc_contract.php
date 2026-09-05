@@ -104,10 +104,94 @@ class Doc_contract
     /** The bare key list a document type declares. */
     public function keysFor(string $docType): array
     {
+        /* A CUSTOM document has no contract to declare, because a contract
+           records SOMEBODY ELSE'S PRESCRIPTION — CBSE's Annexure-I, Kerala's
+           Form 5A. A document a school invents has no such author, so there is
+           nothing to hold it to and every field we hold is offered.
+
+           The practical consequence is that `offContract` can never fire on a
+           custom document. That is correct rather than lax: that check exists
+           to stop a template binding a field the prescribing authority does not
+           recognise, and here the school IS the authority. Everything else —
+           unresolved fields, over-length, the overflow gate — still applies,
+           because those are about whether the document prints truthfully. */
+        if (self::isCustom($docType)) {
+            return array_keys($this->fields);
+        }
         if (!isset($this->contracts[$docType])) {
             throw new InvalidArgumentException("Doc_contract: unknown document type '$docType'");
         }
         return $this->contracts[$docType];
+    }
+
+    /* ================================================================== *
+     *  Custom document types
+     *
+     *  A custom type is `custom:{slug}` and each one is its OWN document type,
+     *  not a shared "Custom" bucket. That is deliberate: the module's central
+     *  invariant is exactly one ACTIVE template per (school, docType), and a
+     *  shared bucket would make activating a school's Sports Day certificate
+     *  silently deactivate its Fee Concession letter. Minting a type per
+     *  document keeps every existing rule — one active, one contract, one
+     *  gallery, one hub card — working unchanged.
+     * ================================================================== */
+
+    /** `custom:` followed by a lowercase slug, 1–40 chars, no leading/trailing _ */
+    public const CUSTOM_PATTERN = '/^custom:[a-z0-9](?:[a-z0-9_]{0,38}[a-z0-9])?$/';
+
+    public static function isCustom(string $docType): bool
+    {
+        return (bool) preg_match(self::CUSTOM_PATTERN, $docType);
+    }
+
+    /**
+     * Turn what a person typed into a custom document-type id.
+     *
+     * @throws InvalidArgumentException when nothing usable survives — a title of
+     *         only punctuation would otherwise mint `custom:` and collide with
+     *         every other unusable title, quietly merging two documents into one
+     *         type and one active slot.
+     */
+    public static function customTypeFor(string $title): string
+    {
+        /* NORMALISE BEFORE LOWERCASING.
+           PHP's strtolower() is byte-only; JavaScript's toLowerCase() is
+           Unicode-aware. On a Turkish dotted capital İ (U+0130) they disagreed:
+           PHP left it alone and the collapse below swallowed it, JS expanded it
+           to "i" + a combining mark and kept the i. "İstanbul Public School"
+           therefore minted `custom:stanbul_public_school` on the server and
+           `custom:i_stanbul_public_school` in the client — two document-type
+           identities from one typed name, and the id is what every template,
+           active slot and print point is keyed on.
+           Executed in both runtimes on 2026-09-04; every ASCII case agreed,
+           which is exactly why it survived review. mb_strtolower with an
+           explicit UTF-8 encoding matches the client's behaviour. */
+        $slug = function_exists('mb_strtolower')
+            ? mb_strtolower(trim($title), 'UTF-8')
+            : strtolower(trim($title));
+        $slug = preg_replace('/[^a-z0-9]+/', '_', $slug);
+        $slug = trim((string) $slug, '_');
+        $slug = substr($slug, 0, 40);
+        $slug = trim($slug, '_');
+
+        if ($slug === '') {
+            throw new InvalidArgumentException(
+                'Doc_contract: "' . $title . '" contains no letters or digits, so it cannot name '
+                . 'a document type. Give the document a name a person could read.'
+            );
+        }
+        return self::CUSTOM_PREFIX . $slug;
+    }
+
+    public const CUSTOM_PREFIX = 'custom:';
+
+    /** The title a custom type was minted from, as a readable fallback. */
+    public static function customTitle(string $docType): string
+    {
+        if (!self::isCustom($docType)) {
+            return $docType;
+        }
+        return ucfirst(str_replace('_', ' ', substr($docType, strlen(self::CUSTOM_PREFIX))));
     }
 
     /** Document types this school may use, honouring `requiresState`. */
@@ -129,6 +213,11 @@ class Doc_contract
     /** True when the type exists, is enabled, and is available in this state. */
     public function typeAvailable(string $docType, ?string $state): bool
     {
+        // A custom type is available wherever it was invented: no state
+        // prescribes it, so no state can withhold it.
+        if (self::isCustom($docType)) {
+            return true;
+        }
         return isset($this->typesForState($state)[$docType]);
     }
 
@@ -214,14 +303,41 @@ class Doc_contract
             $def = $contract[$k];
 
             /* Unresolved. Never render a blank into a statutory field. */
-            if (!array_key_exists($k, $bundle) || $bundle[$k] === null || $bundle[$k] === '') {
+            if (!array_key_exists($k, $bundle) || $bundle[$k] === null || $bundle[$k] === ''
+                || (is_array($bundle[$k]) && $bundle[$k] === [])) {
                 $errors[] = ['type' => 'unresolved', 'key' => $k,
                              'message' => "No value resolved for '{$def['label']}'"];
                 continue;
             }
 
-            $val  = (string) $bundle[$k];
             $type = $def['type'] ?? 'text';
+
+            /* A LIST is rows, not a string.
+               Casting one to string yields "Array" — five characters, inside
+               every maxLen there is, so a fee receipt with a malformed item
+               list would have validated clean and printed a table of nothing.
+               Lists are checked per column instead, on their own declared
+               limits. */
+            if ($type === 'list') {
+                foreach ($this->validateList($k, $def, $bundle[$k]) as $issue) {
+                    if ($issue['severity'] === 'error') {
+                        unset($issue['severity']);
+                        $errors[] = $issue;
+                    } else {
+                        unset($issue['severity']);
+                        $warnings[] = $issue;
+                    }
+                }
+                continue;
+            }
+
+            if (is_array($bundle[$k])) {
+                $errors[] = ['type' => 'badType', 'key' => $k,
+                             'message' => "'{$def['label']}' is not a list field but a list was supplied"];
+                continue;
+            }
+
+            $val = (string) $bundle[$k];
 
             if ($type === 'int' && !preg_match('/^\d+$/', $val)) {
                 $errors[] = ['type' => 'badType', 'key' => $k,
@@ -255,6 +371,54 @@ class Doc_contract
         }
 
         return ['ok' => $errors === [], 'errors' => $errors, 'warnings' => $warnings];
+    }
+
+    /**
+     * Check a list field's rows against the columns its own definition declares.
+     *
+     * Errors are structural — the wrong shape, or a row missing a column the
+     * template will print a cell for. Over-length stays a WARNING for the same
+     * reason it does on a scalar: maxLen is our rendering estimate, and the
+     * overflow gate measures what actually happened.
+     *
+     * @return list<array{severity:string,type:string,key:string,message:string}>
+     */
+    private function validateList(string $k, array $def, $value): array
+    {
+        $label = $def['label'] ?? $k;
+        if (!is_array($value) || array_is_list($value) === false) {
+            return [['severity' => 'error', 'type' => 'badType', 'key' => $k,
+                     'message' => "'$label' must be a list of rows"]];
+        }
+
+        $cols   = (array) ($def['itemFields'] ?? []);
+        $issues = [];
+
+        foreach ($value as $n => $row) {
+            if (!is_array($row)) {
+                $issues[] = ['severity' => 'error', 'type' => 'badType', 'key' => $k,
+                             'message' => "'$label' row " . ($n + 1) . ' is not a row of columns'];
+                continue;
+            }
+            foreach ($cols as $col => $spec) {
+                $cell = $row[$col] ?? null;
+                if ($cell === null || $cell === '') {
+                    $issues[] = ['severity' => 'error', 'type' => 'unresolved', 'key' => "$k/$col",
+                                 'message' => "'$label' row " . ($n + 1) . " has no "
+                                              . ($spec['label'] ?? $col)];
+                    continue;
+                }
+                if (isset($spec['maxLen']) && mb_strlen((string) $cell) > $spec['maxLen']) {
+                    $issues[] = ['severity' => 'warning', 'type' => 'overLength', 'key' => "$k/$col",
+                                 'len' => mb_strlen((string) $cell), 'maxLen' => $spec['maxLen'],
+                                 'message' => "'$label' row " . ($n + 1) . ' · '
+                                              . ($spec['label'] ?? $col) . ' is '
+                                              . mb_strlen((string) $cell)
+                                              . " characters against an expected {$spec['maxLen']}"];
+                }
+            }
+        }
+        return $issues;
     }
 
     /* ================================================================== *
