@@ -6,7 +6,7 @@ defined('BASEPATH') or exit('No direct script access allowed');
  *
  * Single source of truth for "give me the active students in this
  * class/section." Replaces the legacy RTDB roster reads scattered across
- * Result.php, Attendance.php, Lms.php, Certificates.php, Exam_engine.php,
+ * Result.php, Attendance.php, Lms.php, Exam_engine.php,
  * Homework_firestore_sync.php, Health_check.php, and Superadmin_schools.php.
  *
  * The replaced node was:

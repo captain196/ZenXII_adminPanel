@@ -1676,6 +1676,264 @@ window.ZXDT_E2E = async function (only) {
              note: r.merged.map(o=>o.id).join(",") };
   });
 
+  /* ══════════════════════════════════════════════════════════════════════
+     W · THE FEE RECEIPT — the first type whose body is a REPEATING table.
+
+     Every other document type has a body of fixed length: the designer decides
+     how many lines there are. A receipt's does not — the payment decides. So
+     this group is less about the receipt than about the object: a table whose
+     row count is unknown at design time, and everything that used to assume
+     content.rows exists.
+     ══════════════════════════════════════════════════════════════════════ */
+
+  const rctStarter = () => STARTERS.find(s => s.docType === "fee_receipt");
+  const openRct = () => { resetApp(); openStarter(rctStarter()); return S.tpl.objects.find(o => isRepeat(o)); };
+
+  await T("W1", "the fee receipt is offered, and its starter builds", () => {
+    const type = TYPES.find(t => t.id === "fee_receipt");
+    const s = rctStarter();
+    if (!type || type.disabled) return { ok: false, note: "type missing or disabled" };
+    if (!s) return { ok: false, note: "no starter" };
+    const t = s.build();
+    return { ok: t.objects.length > 0 && t.docType === "fee_receipt", note: t.objects.length + " objects" };
+  });
+
+  await T("W2", "the starter has exactly one repeating table, bound to the item list", () => {
+    const t = rctStarter().build();
+    const reps = t.objects.filter(o => isRepeat(o));
+    return { ok: reps.length === 1 && reps[0].content.repeatOver === "receipt.items",
+             note: reps.map(o => o.content.repeatOver).join(",") };
+  });
+
+  await T("W3", "the list field counts as BOUND, so the contract is satisfied", () => {
+    openRct();
+    return { ok: boundKeys().has("receipt.items"),
+             note: [...boundKeys()].filter(k => k.startsWith("receipt.")).join(" ") };
+  });
+
+  await T("W4", "the receipt binds nothing its own contract does not declare", () => {
+    openRct();
+    const off = offContractKeys();
+    return { ok: off.length === 0, note: off.join(",") };
+  });
+
+  /* The canvas draws one row per item, and the count follows the DATA MODE.
+     A table that draws a fixed number of rows regardless of the data is the
+     defect this whole object type exists to avoid. */
+  await T("W5", "the canvas draws one row per item, and more of them under p95", () => {
+    const o = openRct();
+    S.data = "typical"; const small = (objectHTML(o).match(/<tr/g) || []).length;
+    S.data = "p95";     const large = (objectHTML(o).match(/<tr/g) || []).length;
+    S.data = "typical";
+    return { ok: small === 3 && large === 8, note: `typical ${small}, p95 ${large} (incl. heading)` };
+  });
+
+  await T("W6", "with data off it draws a specimen row, not an empty frame", () => {
+    const o = openRct(); S.data = "off";
+    const h = objectHTML(o); S.data = "typical";
+    return { ok: /rpt__spec/.test(h) && /Particulars/.test(h),
+             note: "an empty frame reads as a broken table rather than an unbound one" };
+  });
+
+  await T("W7", "column headings can be turned off", () => {
+    const o = openRct();
+    const withH = (objectHTML(o).match(/<th/g) || []).length;
+    o.content.showHeader = false;
+    const without = (objectHTML(o).match(/<th/g) || []).length;
+    return { ok: withH === 3 && without === 0, note: `${withH} → ${without}` };
+  });
+
+  /* content.showHeader had no branch in the inspector's property writer, so it
+     wrote a property literally named "content.showHeader" — set, saved, and
+     read by nothing. A control that reports success and changes nothing. */
+  await T("W8", "the inspector writes into content, not a property named 'content.x'", () => {
+    const o = openRct(); S.sel = [o.id]; render();
+    const box = document.querySelector('.insp [data-p="content.showHeader"]');
+    if (!box) return { ok: false, note: "the heading control is not on screen" };
+    box.checked = false; box.dispatchEvent(new Event("change", { bubbles: true }));
+    return { ok: obj(o.id).content.showHeader === false && !("content.showHeader" in obj(o.id)),
+             note: JSON.stringify(obj(o.id).content.showHeader) };
+  });
+
+  await T("W9", "changing what it repeats over clears the old columns", () => {
+    const o = openRct();
+    o.content.columns = [{ key: "item.head", wPct: 90 }];
+    S.sel = [o.id]; render();
+    const sel = document.querySelector('.insp [data-p="content.repeatOver"]');
+    if (!sel) return { ok: false, note: "no repeat-over control" };
+    sel.value = "receipt.items"; sel.dispatchEvent(new Event("change", { bubbles: true }));
+    return { ok: obj(o.id).content.columns == null,
+             note: "columns bound to the old list would head the new one's cells" };
+  });
+
+  await T("W10", "a column width typed in the inspector reaches the object", () => {
+    const o = openRct(); S.sel = [o.id]; render();
+    const inp = document.querySelector('.insp [data-col="0"]');
+    if (!inp) return { ok: false, note: "no column control" };
+    inp.value = "40"; inp.dispatchEvent(new Event("change", { bubbles: true }));
+    const c = (obj(o.id).content.columns || [])[0];
+    return { ok: c && c.wPct === 40, note: JSON.stringify(c) };
+  });
+
+  await T("W11", "a list field cannot be dropped into an ordinary table", () => {
+    resetApp(); openStarter(STARTERS.find(s => s.id === "tc_cbse"));
+    const tbl = S.tpl.objects.find(o => o.type === "table" && !isRepeat(o));
+    if (!tbl) return { ok: true, note: "no ordinary table in this starter" };
+    S.sel = [tbl.id];
+    const before = (tbl.content.rows || []).length;
+    insertField("receipt.items");
+    return { ok: (tbl.content.rows || []).length === before,
+             note: "a list in a fixed table would print one cell reading 'Array'" };
+  });
+
+  await T("W12", "a scalar field is not pushed into a repeating table", () => {
+    const o = openRct(); S.sel = [o.id];
+    const before = JSON.stringify(o.content);
+    insertField("student.fullName");
+    return { ok: JSON.stringify(obj(o.id).content) === before,
+             note: "it would repeat one constant beside every item" };
+  });
+
+  /* Everything under the table must be anchored to it, because the table's
+     height belongs to the payment. An absolute total would print over the
+     items on a long receipt and float above them on a short one. */
+  await T("W13", "the totals are anchored to the table, not positioned absolutely", () => {
+    const t = rctStarter().build();
+    const items = t.objects.find(o => isRepeat(o));
+    const below = ["r_net", "r_words", "r_mode", "r_note"].map(id => t.objects.find(o => o.id === id));
+    const chained = below.every(o => o && o.anchorTo);
+    const rooted  = below[0].anchorTo === items.id;
+    return { ok: chained && rooted, note: below.map(o => o && o.id + "→" + (o && o.anchorTo)).join(" ") };
+  });
+
+  await T("W14", "an ordinary table is untouched by any of this", () => {
+    resetApp(); openStarter(STARTERS.find(s => s.id === "tc_cbse"));
+    const tbl = S.tpl.objects.find(o => o.type === "table" && !isRepeat(o));
+    if (!tbl) return { ok: true, note: "no ordinary table" };
+    const rows = (tbl.content.rows || []).length;
+    S.sel = [tbl.id]; render();
+    const h = objectHTML(tbl);
+    return { ok: !/class="rpt"/.test(h) && (h.match(/tblrow"/g) || []).length === rows,
+             note: rows + " rows drawn the old way" };
+  });
+
+  /* ══════════════════════════════════════════════════════════════════════
+     X · DOCUMENTS THE SCHOOL INVENTS
+
+     Each one is its OWN document type, `custom:{slug}`, and that is the whole
+     design: the module's central invariant is one active template per document
+     type, so a shared "Custom" bucket would make activating one silently
+     deactivate another.
+
+     The first live run of this feature opened a COMPLETELY BLANK designer — no
+     page, no layers, no visible error — because paintCrumb still looked the type
+     up in TYPES and threw on `undefined.name` inside render(). Several of the
+     checks below exist only because of that: they draw the screens rather than
+     inspect the model.
+     ══════════════════════════════════════════════════════════════════════ */
+  G("X · custom document types");
+
+  await T("X1", "a typed name becomes a readable, stable type id", () => {
+    const cases = [
+      ["Sports Day Participation", "custom:sports_day_participation"],
+      ["  Fee Concession Letter  ", "custom:fee_concession_letter"],
+      ["No-Dues (2026-27)",         "custom:no_dues_2026_27"]
+    ];
+    const bad = cases.filter(([t,x]) => customTypeFor(t) !== x).map(([t,x]) => t+" → "+customTypeFor(t));
+    return { ok: !bad.length, note: bad.join(" | ") };
+  });
+
+  /* Every unusable title would mint the same id, quietly merging two unrelated
+     documents into one type — and one active slot. */
+  await T("X2", "a name with no letters or digits mints nothing", () => {
+    return { ok: customTypeFor("—  ***  —") === "" && customTypeFor("") === "" };
+  });
+
+  await T("X3", "the id shape is enforced, matching the server pattern", () => {
+    const good = ["custom:a", "custom:sports_day"].every(isCustomType);
+    const bad  = ["custom:", "custom:_x", "custom:x_", "custom:Sports_Day", "custom:a b",
+                  "transfer_certificate", "custom", ""].some(isCustomType);
+    return { ok: good && !bad };
+  });
+
+  /* A contract records somebody else's prescription. A school's own document
+     has no such author, so nothing is off-contract and every field is offered. */
+  await T("X4", "a custom document is offered every field and can bind any of them", () => {
+    const n = contractFor("custom:sports_day").length;
+    return { ok: n === CONTRACT.length && n > CONTRACTS.transfer_certificate.length,
+             note: n + " fields vs " + CONTRACTS.transfer_certificate.length + " on a TC" };
+  });
+
+  await T("X5", "the blank page arrives with letterhead, title and a page number", () => {
+    const t = blankTemplate("custom:sports_day", "Sports Day");
+    const has = k => t.objects.some(o => o.id === k);
+    return { ok: has("c_name") && has("c_addr") && has("c_title") && has("c_page") && t.docTitle === "Sports Day",
+             note: t.objects.length + " objects" };
+  });
+
+  await T("X6", "the title is written onto the page, not just stored", () => {
+    const t = blankTemplate("custom:gate_pass", "Gate Pass");
+    const title = t.objects.find(o => o.id === "c_title");
+    return { ok: /GATE PASS/.test(JSON.stringify(title.content)) };
+  });
+
+  /* THE BLANK-DESIGNER DEFECT. paintCrumb used TYPES.find, got undefined for a
+     custom type and threw on .name — inside render(), so nothing drew at all. */
+  await T("X7", "opening a custom document draws the page and the breadcrumb", () => {
+    resetApp();
+    S.docType = "custom:sports_day";
+    const t = blankTemplate(S.docType, "Sports Day");
+    S.tpl = t; S.lang = "en"; S.sel = []; S.undo = []; S.redo = []; S.proofed = null;
+    S.baseline = JSON.parse(JSON.stringify(t.objects));
+    let threw = null;
+    try { go("designer"); } catch (e) { threw = e.message; }
+    const kids = (document.querySelector("#page") || {children: []}).children.length;
+    const crumb = (document.querySelector("#crumb") || {textContent: ""}).textContent;
+    return { ok: !threw && kids > 5 && /Sports Day/.test(crumb),
+             note: threw ? "THREW: " + threw : kids + " page children · " + crumb };
+  });
+
+  await T("X8", "the typed name survives until the library catches up", () => {
+    resetApp();
+    S.docType = "custom:sports_day";
+    S.tpl = blankTemplate(S.docType, "Sports Day");     // not in S.lib yet
+    const t = typeOf(S.docType);
+    return { ok: t && t.name === "Sports Day",
+             note: t ? t.name : "no type record — the slug would read back as 'Sports day'" };
+  });
+
+  await T("X9", "a custom type is discovered from the library, with its stored title", () => {
+    resetApp();
+    S.lib["custom:fee_concession"] = [{id:"SCH1_TPL1", name:"Draft 1", docType:"custom:fee_concession",
+                                       docTitle:"Fee Concession Letter", status:"draft", version:1,
+                                       publishedVersion:null, activeVersion:null, edited:""}];
+    const t = customTypes().find(x => x.id === "custom:fee_concession");
+    return { ok: !!t && t.name === "Fee Concession Letter" && t.custom === true,
+             note: t ? t.name : "not discovered" };
+  });
+
+  /* STARTERS[0] is a Transfer Certificate. Without a custom branch, buildTpl
+     would hand a Sports Day certificate a TC's objects — and draw a TC
+     thumbnail on its card. */
+  await T("X10", "a custom row never falls back to the Transfer Certificate starter", () => {
+    const row = {id:"SCH1_TPL1", name:"Draft 1", docType:"custom:gate_pass", docTitle:"Gate Pass",
+                 status:"draft", version:1, publishedVersion:null, activeVersion:null};
+    const t = buildTpl(row);
+    return { ok: t.docType === "custom:gate_pass" && t.objects.some(o => o.id === "c_title")
+                 && !t.objects.some(o => o.id === "t_table"),
+             note: t.docType + " · " + t.objects.map(o=>o.id).join(",") };
+  });
+
+  await T("X11", "nothing prescribes it, so it is never marked statutory or unchecked", () => {
+    const b = typeBasis(typeOf("custom:sports_day"));
+    return { ok: b.label === "Your own format" && b.evidence === null, note: b.label };
+  });
+
+  await T("X12", "a custom type never leaks into the shipped type catalogue", () => {
+    return { ok: !TYPES.some(t => isCustomType(t.id)),
+             note: "TYPES is the shipped list; a school's own documents are discovered" };
+  });
+
   document.removeEventListener("visibilitychange", __watch);
   if (__wentHidden || document.visibilityState !== "visible") {
     throw new Error(

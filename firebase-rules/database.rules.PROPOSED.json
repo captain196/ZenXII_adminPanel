@@ -1,0 +1,63 @@
+{
+  "rules": {
+    ".read": false,
+    ".write": false,
+
+    "Indexes": {
+      "School_codes": { ".read": true, ".write": false },
+      "School_names": { ".read": true, ".write": false }
+    },
+    "School_ids": { ".read": true, ".write": false },
+
+    "Schools": {
+      "$schoolId": {
+        ".read": "auth != null && (auth.token.school_id === $schoolId || auth.token.schoolId === $schoolId)",
+        ".write": false,
+
+        "Social": {
+          "StoryViews": {
+            "$storyId": {
+              "$uid": {
+                ".write": "auth != null && auth.uid === $uid && (auth.token.school_id === $schoolId || auth.token.schoolId === $schoolId)"
+              }
+            }
+          }
+        },
+
+        "LeaveApplications": {
+          "$leaveId": {
+            ".write": "auth != null && (auth.token.school_id === $schoolId || auth.token.schoolId === $schoolId)"
+          }
+        }
+      }
+    },
+
+    "SOSAlerts": {
+      "$schoolId": {
+        ".read": "auth != null && (auth.token.school_id === $schoolId || auth.token.schoolId === $schoolId)",
+        "$alertId": {
+          ".write": "auth != null && (auth.token.school_id === $schoolId || auth.token.schoolId === $schoolId)"
+        }
+      }
+    },
+
+    "Users": {
+      ".read": false,
+      ".write": false,
+
+      "Devices": {
+        "$userId": {
+          ".read": "auth != null && auth.uid === $userId",
+          "$deviceId": {
+            ".write": "auth != null && auth.uid === $userId"
+          }
+        }
+      }
+    },
+
+    "User_ids_pno": { ".read": false, ".write": false },
+    "Exits":        { ".read": false, ".write": false },
+    "System":       { ".read": false, ".write": false },
+    "RateLimit":    { ".read": false, ".write": false }
+  }
+}

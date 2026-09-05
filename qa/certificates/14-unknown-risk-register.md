@@ -1,22 +1,32 @@
-# 14 · Unknown-risk register
+# UNKNOWN-RISK REGISTER — Certificates / Document Engine · run 2
 
-What we know we do not know. Recorded so it is not mistaken for absence of risk.
+Every significant `[UNKNOWN]` and `[CONTESTED]` from this run. **These survive into the
+final certification report and never silently disappear.** An unresolved P0-adjacent
+unknown blocks 🟢 certification; it may permit 🟠 or 🔵, but only with the human explicitly
+accepting it.
 
-| ID | Unknown | Why it is unknown | If it goes wrong |
-|---|---|---|---|
-| **U1** | **Does `uploads/.htaccess` actually take effect in production?** | Depends on Apache `AllowOverride` in the Ohio vhost, which is not in git. If it is `None`, the file is inert and R2 is still open | Proof PDFs — letterhead, crest, signatures — remain downloadable with no login |
-| **U2** | **Does the online path work at all?** | No row has been executed; there has never been a signed-in run | Anything from "it works" to "nothing saves". Unknown either way |
-| **U3** | **Firestore atomicity under real contention** | `:commit` is documented as atomic; not observed here | Two active templates, or none |
-| **U4** | **mPDF memory and time on the Ohio box** | The box has OOM history. Locally a proof peaks around 84 MB for ONE document; `fee_demand_note` is bulk by nature | A proof that works in dev OOMs in production, or takes the request down |
-| **U5** | **Whether Indic output is READABLE, not merely present** | Automation proves ink on the page and the right embedded font. Only a reader of the script can judge conjuncts and matras | A certificate is issued in a language nobody checked |
-| **U6** | **Assets remain web-served** | Accepted: names are sha256, so unguessable — but unguessable is not private, and a URL once shared is permanent | A signature graphic leaks via a shared link |
-| **U7** | **Does any other session or teammate hold work in these files?** | The repo is worked concurrently; `firestore.rules` especially | A deploy ships someone's half-finished work |
-| **U8** | **Whether `Doc_block_service` has other unowned write paths** | Only `save()` was audited and guarded; `acceptOffer`/`declineOffer` were not traced for ownership | The same class of cross-tenant write as R1, in the block library |
+| # | Unknown | Why unknown | Potential impact | How to resolve | Human action | Status |
+|---|---|---|---|---|---|---|
+| ~~UR-1~~ **CLOSED** | ~~Does mPDF dereference `background:url(…)`?~~ **RESOLVED 2026-09-05: YES.** Proved locally — same markup, `url()` at an existing vs a missing file, outputs differed by 866 bytes. No outbound request from production was needed to establish it. The injection vector itself was closed the same day (`cssFontFamily()`/`cssLength()`), so the exposure is gone; the finding stands as confirmation that the fix was necessary, not precautionary. | The injection is CONFIRMED (E3, QA-LEAD). Confirming the fetch means making the **production** server issue an outbound request to a chosen host — §2 **H4**, dangerous operation | **P0 if yes** — server-side SSRF from a host that can reach `169.254.169.254`. **P2 if no** — browser-side beacon in `preview()` only | Set a URL on a host the human controls as `fontFamily`, call `proof_pdf()`, read that host's access log for a server-originated hit | **H4 — explicit authorisation required.** Never point at a third party | **OPEN — gates certification** |
+| ~~UR-2~~ **CLOSED (reads)** | ~~Does tenant isolation actually hold on reads?~~ **RESOLVED 2026-09-04: a second-tenant session was provided; two REAL published foreign templates refused on `get_template`, `get_versions` and `version_pdf`, with no existence oracle (identical text, status and byte length). Writes remain E2 — one shared `head()` gate, 7 callers.** | The live probe used a **non-existent** foreign id and returned "Template not found" — indistinguishable from "document absent". The check exists in source (`Doc_templates.php:353`, `Doc_template_service::head()`); its firing was never observed | **P0 if it fails** — cross-tenant read of another school's templates. Ecosystem invariant | Obtain a **real** template id belonging to a second school and replay `get_template`, `get_versions`, `version_pdf` | **H1 — QA-LEAD cannot obtain a second tenant's id** | **OPEN — gates certification** |
+| **UR-3** | Do Lightsail instance snapshots include `uploads/`? | Infrastructure fact, not in the repo. The runbook shows `uploads/` is rsynced **by hand** on migration and is not in git | **P1** — every historical certificate PDF is unrecoverable if the instance is lost. Firestore would still list the versions as published | Check the backup/snapshot configuration on the Ohio instance | **H1 — operator knowledge** | **OPEN** |
+| **UR-4** | Is `save()`'s read-then-write lock actually exploitable under real concurrency? | `[CONTESTED]` — the doc-comment claims CAS; the code is read-compare-in-PHP-then-unconditional-write. Source cannot answer whether the window is hit in practice | **P1 if yes** — silent lost edits on a legal-record editor, no error to either user | Two concurrent `save()` calls with the same `lockVersion` against a real or emulated Firestore | **H2 — human-run** | **OPEN** |
+| **UR-5** | Same question for `create()`'s id race and `save_block()`'s first-write collision | Same shape, three sites. A11 re-rated the `save_block` case P3→P2 because **both** racing callers receive HTTP 200 | **P1** — one template silently overwritten by another, no trace | Two concurrent "New template" actions | **H2** | **OPEN** |
+| **UR-6** | Which certificate system is authoritative? | `[CONTESTED]` — two live systems, one RBAC key, no shared data. The legacy one **issues real certificates today** and is the one in the sidebar. Nothing in the repo records a decision | Reframes the whole certification: the ecosystem issues certificates from an untested prototype | Cannot be resolved from code | **H3 — business decision** | **OPEN — reframes scope** |
+| **UR-7** | Is the app-side fee receipt meant to be replaced by the engine's `fee_receipt` type? | `[CONTESTED]` — two independent implementations, different layout engines, different localisation policy, mutually unaware | Divergent receipts for the same payment once the seam is wired | Cannot be resolved from code | **H3** | **OPEN** |
+| **UR-8** | Does the `save({version:N+1})` STRANDED escape actually repair a stranded template, or just unblock the next publish while leaving `publishedVersion` stale? | Never executed; the STRANDED state has never been observed live | Determines whether the P0 OV1 fix can ship without a repair tool. **Blocks the fix design, not the certification** | Induce a partial publish in a non-production environment | **H2** | **OPEN — blocks fix design** |
+| **UR-9** | Are there Unicode divergences beyond Turkish `İ` between the PHP and JS slug functions? | QA-LEAD executed one class (SpecialCasing) and found `İ` diverges; `ÄÖÜ`, `ß`, `Ⅻ` agree. The space was not enumerated | **P2** — client and server mint different type ids for one name | Property-test both implementations over a Unicode corpus | Automatable — no human needed | **OPEN, low** |
+| **UR-10** | Deployed PHP `post_max_size` / `memory_limit`, and Lightsail RAM/vCPU | Not inspected | Bounds the payload-DoS severity and sets the real mPDF render-concurrency ceiling | Read the deployed `php.ini`; check instance size | **H1** | **OPEN, low** |
+| **UR-11** | Do the 4 remaining route-less endpoints dispatch? (`version_pdf`, `presence`, `leave`, `duplicate`) | QA-LEAD confirmed 4 of 7 at runtime; these 4 were not exercised | **P3** — a 404 on a working feature, or an ungated reachable endpoint | Hit each URL directly | **H2, trivial** | **OPEN, low** |
+| **UR-12** | Is `docTitle`/`name` escaped when rendered into the DOM by `designer.js`? | A8 scoped itself server-side and explicitly handed this off; no agent picked it up | **P2** — stored XSS in the panel, self-inflicted, same-tenant | Audit the client render path for these two fields | Automatable | **OPEN** |
+| **UR-13** | Do the 2 live archived templates carry `publishedVersion != null`? | Not captured in the E3 pass | Low — determines whether the archive→reactivate gap (N10) is reachable on real data | One read | Trivial | **OPEN, low** |
 
-## The honest summary
+## Summary
 
-Three P0/P1 security defects were found in code that had already been described
-as production-ready, by reading the paths that unit tests replace with doubles.
-**U8 is the direct admission that the same audit has not been completed for the
-block service.** The right conclusion from R1–R3 is not "the module is now
-secure" — it is that the review that found them is not finished.
+- **0 unknowns now gate certification.** UR-1 closed 2026-09-05 (mPDF does dereference; the vector was already closed). UR-2 closed 2026-09-04. **UR-2 was closed on 2026-09-04** by a real cross-tenant probe — see `_live-state.md` L14. Its write half stays open at E2.
+- **2 reframe scope or block a fix** (UR-6, UR-8).
+- **3 need a human to run a concurrency or infrastructure check** (UR-3, UR-4, UR-5).
+- **UR-9 and UR-12 are automatable** and need no human time at all.
+
+**No unknown here has been resolved by reasoning.** Each is listed because reading code
+genuinely cannot settle it — which is precisely why the rows exist.

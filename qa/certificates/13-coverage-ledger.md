@@ -1,42 +1,58 @@
-# 13 · Coverage ledger
+# COVERAGE LEDGER — Certificates / Document Engine · run 2 · 2026-09-04
 
-**41 rows: T0 ×17 · T1 ×9 · T2 ×10 · T3 ×5.** All ship `NOT TESTED`.
+Counts and **named gaps**. No completeness percentages: a percentage needs a denominator,
+and the denominator — the true total of workflows, error paths and transitions — is exactly
+what is unknown, because undiscovered items are undiscovered. Where a real denominator
+exists it is written as a fraction with both numbers visible.
 
-Kept deliberately short. Exhaustive coverage produces rows nobody executes,
-including the ones that mattered — and coverage that is not executed is zero.
+|                          | Discovered | Modelled | Rows | Open gaps |
+|---|---|---|---|---|
+| Controllers / libraries  | 1 + 9      | 9        | —    | legacy `Certificates.php` mapped, **not** deeply modelled |
+| Public endpoints         | 27 (3 page + 24 AJAX) | 24/24 | see 06 | 5 have no client caller: `preview`, `save_block`, `get_blocks`, `validate`, `archive` |
+| Routes                   | 17/24 explicit | — | — | 7 rely on CI3 default routing; **4 of 7 confirmed live by QA-LEAD**; `version_pdf`, `presence`, `leave`, `duplicate` untested |
+| Capability grades        | 3 (view/edit/manage) | 24/24 gated | yes | only **manage** exercised this run — view and edit are unprovisioned |
+| Firestore collections    | 4 owned + 2 read | 4 | yes | `reusableBlocks` document key shape never traced |
+| Firestore rules blocks   | 4 | 4 | yes | `templateSessions` has **no** match block (falls to catch-all deny) |
+| Composite indexes        | 7 declared | 7 | 1 | **0 of 7 required by any current query** — provisioned for a feature that does not exist |
+| Cloud Functions          | **0** | — | — | none exist for this module; nothing to test |
+| Print points             | 8 declared, **0 wired** | 8 | yes | seam verified structurally inert |
+| Entity states            | 9 | 9 | yes | `STRANDED` and `PHANTOM` are code-shape only, never observed live |
+| Transitions              | — | all | yes | **4 illegal-but-permitted**; **5 business-required-but-impossible** |
+| Module invariants        | 11 | 11 | yes | **3 currently violated** (N9 unstripped `version`, N10 archive→reactivate, N11 archived-not-hidden) |
+| Background processes     | 1 (presence heartbeat) | 1 | yes | no hidden-tab/idle stop condition |
+| Cross-surface capability | 1 surface + 2 app absences | 3 | yes | absence independently confirmed in both apps |
+| Test assets (existing)   | 16 PHPUnit files, 9 Jest blocks, 1 browser harness (179 rows) | — | — | harness writes to **real tenant data**; 71 of 85 live templates are its debris |
+| Live population          | 85 heads, 5 published, 2 active, 2 archived | — | yes | single school only; no second tenant available |
 
-## Covered
+## Agents
 
-| Area | Rows | Depth |
-|---|---|---|
-| Tenant isolation / authorization | T0-08, 09, 10, 13, 15 | **Strong** — includes direct-POST bypass of the UI |
-| The publish gate | T0-03, 04, T2-07 | **Strong** — stale proof, no proof, server-side re-validation |
-| Activation invariant (I1) | T0-01, 02 | Good; the concurrent case is inherently hard to execute by hand |
-| Persistence | T1-01, 02, T2-06, 08 | **Strong** — this is the capability that did not exist before this build |
-| Fail-closed | T0-07, T2-04, 08 | Strong |
-| Immutability | T0-05 | Adequate — one row, but the property is binary |
-| Data exposure | T0-14 | One row, and it can only be run on the server |
-| Upload safety | T2-01, 02 | Adequate |
-| Multilingual rendering | T1-08 | **Thin** — one row for the only requirement automation cannot judge |
-| Legacy collision | T0-16, 17 | Documents the baseline, does not certify it |
-| UI/UX | T3-01…05 | Thin by design |
+**Spawned: 12 of 12.** None skipped.
+- **A3 · MOBILE-SPEC — deliberate depth reduction.** Full lifecycle/rotation/process-death
+  analysis was not performed, because the surface does not exist. Mandate narrowed to
+  *proving* the absence with a reproducible search. **This is a scope decision, and it is a
+  coverage gap if the absence is ever wrong.**
+- **A7 · DIFF-ANALYST — re-aimed.** Classic cross-surface parity is thin (one surface), so
+  A7 was pointed at the divergences that do exist. That decision found the run's
+  scope-changing result (the legacy system issues certificates).
+- **A11 · ADVERSARY — completed its deliverables, then hit a session rate limit** while
+  composing its summary. Both files were already written; its verdicts were recovered from
+  disk by QA-LEAD and independently re-verified for OV1. **No loss of coverage.**
 
-## NOT covered, and why
+## Unexamined areas — named
 
-| Gap | Why | Mitigation |
-|---|---|---|
-| Both Android apps | The module does not exist there. One row (T3-05) records the baseline | Nothing to test |
-| Issuance end to end | Does not exist — `CON-NO_PRINT_IMPL` | Design-time risks R4, R5 |
-| Load / 10× | No seeded school of realistic size. T2-10 is a proxy | R11 open |
-| Firestore atomicity under real contention | Cannot be produced reliably by hand. T0-02 is a best effort | R9 open; needs an emulator drill with a control |
-| Restore drill | Needs a real test school (plan P9.5, blocked on B4) | Open |
-| Every merge field | 30 fields; the contract is parity-tested in CI | Automation covers it better |
-
-## Confidence
-
-**Moderate, and asymmetric.** High on the panel's server-side logic, which is
-heavily unit-tested and was read directly. **Low on everything runtime**: not one
-row has been executed, and the online client↔server path has never run against a
-signed-in session. Three security defects were found *after* the module was
-called production-ready, all in code paths the unit tests replaced with doubles —
-which is the honest measure of how much E2 is worth here.
+1. **Legacy `Certificates.php` internals.** Mapped (692 lines, 17 routes, RTDB, 0 tests) and
+   confirmed to issue real certificates. **Not modelled, not attacked, no state machine.**
+   It is the system the sidebar actually exposes. Largest single gap in this run.
+2. **The two apps beyond absence.** Confirmed to contain no certificate code. No further
+   analysis performed, correctly — but if a print point is wired, this coverage is void.
+3. **`view` and `edit` grade behaviour at runtime.** Everything observed this run used
+   **manage**. Every permission row is therefore unexecuted.
+4. **A second tenant.** No cross-tenant evidence of any kind was obtainable.
+5. **Production infrastructure.** PHP `post_max_size`/`memory_limit`, Lightsail RAM/vCPU/disk,
+   and whether instance snapshots include `uploads/` — all unread, and the last one gates a P1.
+6. **mPDF internals.** Whether it dereferences CSS `url()`, and its image-decoder behaviour
+   on hostile input.
+7. **Compliance layer depth.** `Doc_compliance` was read as a reporter; the authority data
+   and its `verifiedOn`/evidence-grade claims were not audited against sources.
+8. **`Doc_serializer` client-side DOM escaping.** A8 scoped itself server-side; `docTitle`
+   and `name` rendering in `designer.js` was not audited for XSS.
