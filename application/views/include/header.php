@@ -41,7 +41,7 @@
          stylesheet is parsed, shaving the font round-trip off the critical path. -->
     <link rel="preconnect" href="https://fonts.googleapis.com">
     <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
-    <link href="https://fonts.googleapis.com/css2?family=Plus+Jakarta+Sans:wght@300;400;500;600;700;800&family=Syne:wght@600;700;800&family=JetBrains+Mono:wght@400;500;600&display=swap" rel="stylesheet">
+    <link href="https://fonts.googleapis.com/css2?family=Plus+Jakarta+Sans:wght@300;400;500;600;700;800&family=Archivo:wght@500;600;700;800&family=JetBrains+Mono:wght@400;500;600&display=swap" rel="stylesheet">
     <link rel="stylesheet" href="<?php echo base_url(); ?>tools/css/header-inline.css"><!-- inline header CSS externalized (QW5) -->
 
     <!-- Global JS variables — available on every page that loads this header -->
@@ -659,17 +659,29 @@
             </li>
             <?php endif; ?>
 
+            <?php /* DOCUMENTS — the Document Engine.
+                     Named "Documents", not "Certificates", because it also builds
+                     fee receipts and whatever documents a school invents — an
+                     accountant would never look for a receipt format under
+                     Certificates.
+                     It had NO sidebar entry at all until 2026-09-04 and was
+                     reachable only by typing the URL, while this menu pointed
+                     exclusively at the legacy RTDB system, since retired.
+                     Gated on presence, like every other item here: the level
+                     decides what you can DO inside, not whether you can see it. */ ?>
             <?php if ($can('Certificates')): ?>
             <li class="treeview">
-                <a href="#"><i class="fa fa-certificate"></i><span>Certificates</span><span class="pull-right-container"><i class="fa fa-angle-left pull-right"></i></span></a>
+                <a href="#"><i class="fa fa-file-text-o"></i><span>Documents</span><span class="pull-right-container"><i class="fa fa-angle-left pull-right"></i></span></a>
                 <ul class="treeview-menu">
-                    <li><a href="<?= base_url('certificates') ?>"><i class="fa fa-circle-o"></i>Dashboard</a></li>
-                    <li><a href="<?= base_url('certificates/templates') ?>"><i class="fa fa-circle-o"></i>Templates</a></li>
-                    <li><a href="<?= base_url('certificates/generate') ?>"><i class="fa fa-circle-o"></i>Generate</a></li>
-                    <li><a href="<?= base_url('certificates/issued') ?>"><i class="fa fa-circle-o"></i>Issued</a></li>
+                    <li><a href="<?= base_url('doc_templates') ?>"><i class="fa fa-circle-o"></i>All documents</a></li>
+                    <li><a href="<?= base_url('doc_templates/gallery/transfer_certificate') ?>"><i class="fa fa-circle-o"></i>Transfer Certificate</a></li>
+                    <li><a href="<?= base_url('doc_templates/gallery/bonafide') ?>"><i class="fa fa-circle-o"></i>Bonafide</a></li>
+                    <li><a href="<?= base_url('doc_templates/gallery/fee_receipt') ?>"><i class="fa fa-circle-o"></i>Fee Receipt</a></li>
                 </ul>
             </li>
             <?php endif; ?>
+
+
 
             <!-- ═══════════════════════════════════════════════════════════
                  STEP 4 — ACADEMICS (assign teachers, build timetable, run exams)

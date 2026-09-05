@@ -1229,26 +1229,22 @@ $route['lms/submit_quiz_attempt']                    = 'Lms/submit_quiz_attempt'
 $route['lms/rebuild_submission_count']               = 'Lms/rebuild_submission_count';
 $route['lms/rebuild_attempt_count']                  = 'Lms/rebuild_attempt_count';
 
-// ── Certificate Management ─────────────────────────────────────────────
-// Pages — clean URLs for each tab
-$route['certificates']                               = 'Certificates/index';
-$route['certificates/templates']                     = 'Certificates/index/templates';
-$route['certificates/generate']                      = 'Certificates/index/generate';
-$route['certificates/issued']                        = 'Certificates/index/issued';
+/* ── Certificate Management — RETIRED 2026-09-04 ───────────────────────
+   The legacy RTDB certificate system (Certificates.php + views/certificates/)
+   was removed. It had 17 routes, 692 lines, zero tests, and had issued
+   ZERO certificates across all 8 production schools — verified against the
+   live database before removal, so nothing was migrated because nothing
+   existed. Its defects are recorded in qa/certificates/20-legacy-backend.md:
+   read-increment-write numbering that silently overwrote a prior issued
+   record, no idempotency, revocation that never took effect at the read path,
+   and no durable artefact — it printed browser DOM and stored no document.
 
-// AJAX endpoints
-$route['certificates/get_dashboard']                 = 'Certificates/get_dashboard';
-$route['certificates/get_classes']                   = 'Certificates/get_classes';
-$route['certificates/get_templates']                 = 'Certificates/get_templates';
-$route['certificates/save_template']                 = 'Certificates/save_template';
-$route['certificates/delete_template']               = 'Certificates/delete_template';
-$route['certificates/get_students']                  = 'Certificates/get_students';
-$route['certificates/get_student_details']           = 'Certificates/get_student_details';
-$route['certificates/generate_certificate']          = 'Certificates/generate_certificate';
-$route['certificates/get_issued']                    = 'Certificates/get_issued';
-$route['certificates/get_certificate']               = 'Certificates/get_certificate';
-$route['certificates/revoke_certificate']            = 'Certificates/revoke_certificate';
-$route['certificates/get_school_profile']            = 'Certificates/get_school_profile';
+   Document design now lives in Doc_templates.php (Firestore, versioned,
+   proofed). Transfer-certificate issuance already lives in Sis.php with
+   atomic claim-doc numbering. The RBAC module key 'Certificates' is UNCHANGED
+   and still gates Doc_templates — it is stored per-tenant in
+   schools.staffRoles, so renaming it would be a data migration.
+   ──────────────────────────────────────────────────────────────────────── */
 
 /* ── School Backup ─────────────────────────────────────────────────── */
 $route['school_backup']                              = 'School_backup/index';
@@ -1413,3 +1409,15 @@ $route['doc_templates/save_block']                   = 'Doc_templates/save_block
 $route['doc_templates/publish']                      = 'Doc_templates/publish';
 $route['doc_templates/activate']                     = 'Doc_templates/activate';
 $route['doc_templates/archive']                      = 'Doc_templates/archive';
+/* The 7 endpoints below relied on CI3's default segment routing. Four were
+   confirmed to dispatch at runtime during the 2026-09-04 certification pass;
+   three were never exercised. Declared explicitly so reachability is a stated
+   fact rather than a framework side effect. */
+$route['doc_templates/seed_standard']                = 'Doc_templates/seed_standard';
+$route['doc_templates/get_versions']                 = 'Doc_templates/get_versions';
+$route['doc_templates/version_pdf']                  = 'Doc_templates/version_pdf';
+$route['doc_templates/presence']                     = 'Doc_templates/presence';
+$route['doc_templates/leave']                        = 'Doc_templates/leave';
+$route['doc_templates/duplicate']                    = 'Doc_templates/duplicate';
+$route['doc_templates/deactivate']                   = 'Doc_templates/deactivate';
+$route['doc_templates/delete']                       = 'Doc_templates/delete';

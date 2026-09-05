@@ -61,3 +61,13 @@ application/logs/*.log
 
 # PHPUnit run cache (local test artifact)
 .phpunit.result.cache
+
+# Real user files and generated artefacts — never in git.
+# PATH_A_US_SERVER_RUNBOOK.md rsyncs uploads/ during a server move precisely because
+# it is NOT tracked. It also collects Document Engine proof PDFs, which accumulate with
+# no cleanup: 13 MB / 26 files were sitting untracked here after one testing session.
+uploads/
+!uploads/.htaccess
+
+# PHPUnit output, rewritten on every run
+tests/results/
