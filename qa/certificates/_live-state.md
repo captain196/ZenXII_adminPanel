@@ -570,3 +570,56 @@ nobody can bulk-delete.
 I spent several probes hunting a phantom because I assumed a fixed wait was long enough. The
 honest lesson for the UAT rows: **wait on a condition, not a timer.** Every remaining live
 probe in this engagement should poll for `S.loading === false` rather than sleeping.
+
+## L16 · A hub load can exceed PHP's execution limit and kill the request · E3
+
+The dev server died three times during journey runs. Not flaky — the log names the cause:
+
+```
+Fatal error: Maximum execution time of 30+2 seconds exceeded (terminated) in
+application/libraries/Firestore_rest_client.php on line 521
+```
+
+Line 521 is `curl_exec` inside `request()`.
+
+**Individual calls ARE bounded** — `CURLOPT_TIMEOUT => 15` at `:503`. **The request as a
+whole is not.** `get_templates` on this school makes several Firestore calls (`firebase_ops=4`
+observed) and at 89 templates their sum crossed PHP's 30-second ceiling, which terminated the
+process mid-request.
+
+### Why this is a production finding, not a local annoyance
+
+`php -S` is single-threaded, so the fatal killed the whole server — that part is local. On
+Apache with `mod_php` the same request would consume a worker for the full
+`max_execution_time` and then die, returning a 500. The user-visible result is a hub that
+sometimes fails to load, unpredictably, on the schools with the most templates.
+
+Worse, a termination lands **wherever execution happened to be**. `publish()` is now a single
+atomic commit precisely so a mid-flight death cannot strand a template — this finding is the
+concrete scenario that guard was written for, and it turns out to be reachable by ordinary
+slowness rather than by network failure.
+
+### Relationship to L15
+
+L15 recorded the hub taking 3–17 s. This is the same root cause one step further along: the
+Firestore READ is unbounded in aggregate, and the payload projection (456 KB → 117 KB) does
+not touch it. At 89 templates the read is now brushing a hard limit rather than merely
+being slow.
+
+### What would fix it, in order of value
+
+1. **A server-side projection** (`select` on the Firestore query) so the read returns
+   summary fields rather than whole documents — this is the actual fix.
+2. **Pagination** on `get_templates`.
+3. A per-request budget in `Firestore_rest_client` that fails fast with a clear error
+   instead of letting PHP terminate at an arbitrary point.
+
+**Not fixed here.** (1) and (2) change a hot read path shared by every screen in the module
+and deserve their own change with their own verification; (3) is a shared library used by
+124 controllers. Recorded rather than half-done.
+
+### Consequence for testing
+
+The journey harness now runs against a school with **no active templates**, so a mid-run
+death cannot leave a real school issuing a probe. That is a guard against this exact
+sequence, which happened twice before the cause was understood.

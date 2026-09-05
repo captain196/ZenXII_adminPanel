@@ -21,6 +21,19 @@ window.ZXDT_JOURNEYS = async function (only) {
 
   const R = [];
   const mine = [];                       // everything this run created, for cleanup
+
+  /* What the school had live BEFORE this run. Anything that changes is reported as
+     loudly as a failing journey — a harness that alters what a school issues has done
+     something far worse than fail a test. */
+  const activeBefore = {};
+  let activeBeforeRead = false;
+  try {
+    const out0 = await srv.templates("");
+    const raw0 = out0.templates || {};
+    const e0 = Array.isArray(raw0) ? raw0.map(r => [r.id, r.data || r]) : Object.entries(raw0);
+    e0.forEach(([id, t]) => { if (t.activeVersion != null) activeBefore[t.docType] = id; });
+    activeBeforeRead = true;
+  } catch (e) { /* the comparison below refuses to run rather than guess */ }
   const grade = SRV.grade;
 
   /* CAN THIS RUN CLEAN UP AFTER ITSELF?
@@ -29,6 +42,27 @@ window.ZXDT_JOURNEYS = async function (only) {
      leaving three probes behind in a real school for someone else to find and wonder
      about. A harness that dirties a live tenant is not a harness, it is a mess with a
      progress bar. Refuse rather than litter. */
+  /* REFUSE TO TOUCH A SCHOOL THAT IS ISSUING.
+     Activation is atomic and DISPLACES the incumbent — that is the module's central
+     invariant, so a probe going live silently takes over from the school's real
+     template. Cleanup then cannot remove it ("this is the ACTIVE template"), and if the
+     run dies before its restore step the school is left issuing a test document, or
+     nothing at all. Both happened during this engagement: once leaving a probe live for
+     `bonafide`, once leaving the type with nothing live at all.
+     Ordering alone is not a guarantee — anything can die between two statements — so the
+     lifecycle journeys simply do not run where there is something live to displace.
+     Seed a school with no active templates and they run in full. */
+  if (activeBeforeRead && Object.keys(activeBefore).length) {
+    const go = confirm(
+      "ZXDT_JOURNEYS: this school has " + Object.keys(activeBefore).length +
+      " LIVE template(s): " + Object.values(activeBefore).join(", ") + ".\n\n" +
+      "The lifecycle journeys activate a probe, which DISPLACES whichever template is " +
+      "live. If this run is interrupted the school is left issuing a test document.\n\n" +
+      "OK = skip those journeys and run the rest.\nCancel = stop.");
+    if (!go) throw new Error("ZXDT_JOURNEYS: cancelled — use a school with no active templates.");
+    window.__ZXDT_NO_LIFECYCLE = true;
+  }
+
   if (grade !== "manage" && !(only && only.startsWith("J-1"))) {
     const proceed = confirm(
       "ZXDT_JOURNEYS: this session is '" + grade + "'. Creating templates needs edit, but " +
@@ -55,6 +89,11 @@ window.ZXDT_JOURNEYS = async function (only) {
   const J = async (id, name, needs, fn) => {
     if (only && !id.startsWith(only)) return;
     const rank = { view: 1, edit: 2, manage: 3 };
+    if (window.__ZXDT_NO_LIFECYCLE && ["J-23","J-24","J-25","J-30","J-31"].includes(id)) {
+      R.push({ id, name, ok: null,
+               note: "SKIPPED — this school has live templates this journey would displace" });
+      return;
+    }
     if (window.__ZXDT_READONLY && needs !== "view") {
       R.push({ id, name, ok: null, note: "SKIPPED — read-only run (cannot clean up at " + grade + ")" });
       return;
@@ -334,11 +373,133 @@ window.ZXDT_JOURNEYS = async function (only) {
     return { ok: gone, note: "removed cleanly" };
   });
 
+  /* ══════════════════════════════════════════════════════════════════════
+     REMAINING T1 ROWS — rollback, undo, uploads, compliance, and the two
+     error messages a clerk is most likely to hit.
+     ══════════════════════════════════════════════════════════════════════ */
+
+  await J("J-30", "rollback makes an EARLIER published version live again", "manage", async () => {
+    const c = await newTemplate("bonafide");
+    const id = c.templateId;
+    await srv.proof(id); await srv.publish(id);            // v1
+    let h = (await srv.template(id)).template;
+    await srv.save(id, { name: "second wording" }, h.lockVersion);
+    await srv.proof(id); await srv.publish(id);            // v2
+    await srv.activate(id);                                 // active = v2
+    const at2 = (await srv.template(id)).template.activeVersion;
+
+    await srv.activate(id, 1);                              // roll back to v1
+    const at1 = (await srv.template(id)).template.activeVersion;
+    return { ok: at2 === 2 && at1 === 1, note: `active v${at2} → rolled back to v${at1}` };
+  });
+
+  await J("J-31", "version history still lists BOTH versions after a rollback", "manage", async () => {
+    const id = mine[mine.length - 1];
+    const v = (await srv.versions(id)).versions;
+    const nums = v.map(x => x.version).sort();
+    return { ok: nums.includes(1) && nums.includes(2),
+             note: "rolling back retires nothing — v" + nums.join(", v") + " all remain" };
+  });
+
+  /* The status field never becomes 'published' — publication is expressed by
+     publishedVersion. A UI reading `status` would show a badge that reverts on reload. */
+  await J("J-32", "publication is expressed by publishedVersion, not by status", "manage", async () => {
+    const id = mine[mine.length - 1];
+    const h = (await srv.template(id)).template;
+    return { ok: h.publishedVersion != null && h.status === "draft",
+             note: `status='${h.status}' while publishedVersion=${h.publishedVersion} — a badge `
+                 + `driven by status would say the wrong thing` };
+  });
+
+  await J("J-33", "an off-contract merge field is refused with a message naming the key", "edit", async () => {
+    const t = blankTemplate("custom:journey_probe", "Off contract");
+    const body = t.objects.find(o => o.id === "c_body");
+    body.content.i18n.en.runs.push({ f: "receipt.netPaid" });   // not in a bonafide contract
+    let msg = "";
+    try {
+      const c = await srv.create("bonafide", {
+        name: "OFF-CONTRACT PROBE", page: t.page, header: t.header, footer: t.footer,
+        objects: t.objects, languages: ["en"], defaultLanguage: "en" });
+      mine.push(c.templateId);
+      await srv.proof(c.templateId);
+    } catch (e) { msg = e.message; }
+    return { ok: /receipt\.netPaid|contract/i.test(msg),
+             note: msg ? msg.slice(0, 90) : "NO refusal — an unbound field would print blank" };
+  });
+
+  await J("J-34", "undo is available within a session and restores the prior state", "edit", async () => {
+    const id = mine[0];
+    const stored = (await srv.template(id)).template;
+    await openTemplate({ id, name: stored.name, docType: stored.docType });
+    await until(() => S.tpl && S.tpl.templateId === id && !S.loading, 40000, "the template");
+
+    const before = JSON.stringify(S.tpl.objects);
+    const o = S.tpl.objects.find(x => x.type === "text");
+    const snap = snapshot();
+    o.style.sizePt = (o.style.sizePt || 10) + 2;
+    push("journey edit", snap, snapshot());
+    const changed = JSON.stringify(S.tpl.objects) !== before;
+    undo();
+    const restored = JSON.stringify(S.tpl.objects) === before;
+    return { ok: changed && restored, note: changed ? (restored ? "edit then undo restored it" : "undo did NOT restore") : "the edit did not register" };
+  });
+
+  await J("J-35", "the keyboard shortcut sheet exists and is reachable", "view", async () => {
+    openKeys();
+    const open = document.querySelector("#scrim").classList.contains("is-on");
+    const rows = document.querySelectorAll("#mBody kbd, #mBody .keys__row, #mBody tr").length;
+    closeModal();
+    return { ok: open, note: open ? rows + " entries listed" : "the sheet did not open" };
+  });
+
+  await J("J-36", "a proof records the font manifest and mPDF version", "edit", async () => {
+    const p = await srv.proof(mine[0]);
+    const pr = p.proof || {};
+    return { ok: !!pr.fontManifest && !!pr.mpdfVersion,
+             note: `mPDF ${pr.mpdfVersion} · ${Object.keys(pr.fontManifest || {}).length} font(s) pinned` };
+  });
+
   /* ── cleanup ────────────────────────────────────────────────────────── */
 
   /* Cleanup is not optional and its failure is not a footnote — a left-behind probe is
      a defect this harness introduced into a real school, and it is reported as loudly as
      any test failure. */
+  /* The restore below is a SAFETY NET, not the safety. It only runs if the run reaches
+     the end — and when the dev server died mid-run it did not. The real protection is
+     the guard above, which declines to activate anything on a school that is issuing. */
+
+  /* RESTORE WHAT WAS LIVE, then clean up.
+     Deactivating probes is not enough. Activation DISPLACES the incumbent — that is the
+     module's central invariant — so activating a probe silently takes over from the
+     school's real template, and merely deactivating the probe afterwards leaves the type
+     with NOTHING live. That is what happened: bonafide went from TPL0004 to none, and
+     only the activeBefore/activeAfter check caught it.
+     Re-activating what was there first puts the school back where it started, in one
+     atomic commit per type, before anything is deleted. */
+  for (const [docType, wasId] of Object.entries(activeBefore)) {
+    if (mine.includes(wasId)) continue;              // it was ours, nothing to restore
+    try {
+      const h = (await srv.template(wasId)).template;
+      if (h.activeVersion == null && h.publishedVersion != null) {
+        await srv.activate(wasId, h.publishedVersion);
+      }
+    } catch (e) { /* reported by the activeAfter check below */ }
+  }
+
+  /* DEACTIVATE FIRST, ALWAYS.
+     A journey run activated a probe and left it ACTIVE for `bonafide`, which — because
+     activation is atomic and displaces the incumbent — silently took over from the
+     school's real template. Cleanup then could not remove it ("this is the ACTIVE
+     template"), so the probe stayed live and the real one stayed displaced.
+     The harness must never be able to change what a school issues. Deactivating before
+     any removal makes that structurally impossible rather than a matter of ordering. */
+  for (const id of mine) {
+    try {
+      const h = (await srv.template(id)).template;
+      if (h.activeVersion != null) { await srv.deactivate(id); }
+    } catch (e) { /* already gone, or never active */ }
+  }
+
   const cleanup = [];
   for (const id of mine) {
     try { await srv.remove(id); cleanup.push("deleted " + id); }
@@ -357,8 +518,35 @@ window.ZXDT_JOURNEYS = async function (only) {
   }
 
   const done = R.filter(r => r.ok !== null);
+  /* Did this run change what the school issues? */
+  const activeAfter = {};
+  let activeAfterRead = false;
+  try {
+    const out1 = await srv.templates("");
+    const raw1 = out1.templates || {};
+    const e1 = Array.isArray(raw1) ? raw1.map(r => [r.id, r.data || r]) : Object.entries(raw1);
+    e1.forEach(([id, t]) => { if (t.activeVersion != null) activeAfter[t.docType] = id; });
+    activeAfterRead = true;
+  } catch (e) { /* handled immediately below */ }
+
+  /* A FAILED READ IS NOT AN EMPTY RESULT.
+     The first version of this check treated an unreachable server as "nothing is
+     active" and reported that the run had wiped the school's live templates. It had
+     not — the read had simply failed. That is the exact pattern catalogued in
+     _patterns.md, reproduced inside the guard written to catch it, which is a fair
+     reminder that a safety check is code and gets the same bugs as any other. */
+  const displaced = (!activeBeforeRead || !activeAfterRead)
+    ? null
+    : Object.keys(activeBefore)
+        .filter(t => activeBefore[t] !== activeAfter[t])
+        .map(t => `${t}: was ${activeBefore[t]}, now ${activeAfter[t] || "NONE"}`);
+
   const orphans = cleanup.filter(c => c.startsWith("***"));
   return {
+    ACTIVE_TEMPLATES_UNCHANGED: displaced === null
+      ? "UNKNOWN — a template read failed, so this run cannot vouch either way. Check by hand."
+      : displaced.length === 0 ? true
+      : "*** THIS RUN CHANGED WHAT THE SCHOOL ISSUES *** " + displaced.join(" | "),
     CLEANUP_OK: orphans.length === 0 ? true : "*** " + orphans.length + " PROBE(S) LEFT IN A REAL SCHOOL ***",
     summary: { grade, total: R.length, ran: done.length,
                passed: done.filter(r => r.ok).length,
