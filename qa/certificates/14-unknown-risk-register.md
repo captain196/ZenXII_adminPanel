@@ -30,3 +30,12 @@ accepting it.
 
 **No unknown here has been resolved by reasoning.** Each is listed because reading code
 genuinely cannot settle it — which is precisely why the rows exist.
+
+---
+
+## Added 2026-09-05 — found while converting T2 rows
+
+| # | Observation | Impact | Status |
+|---|---|---|---|
+| **UR-14** | `Doc_presence::key()` builds `{callerSchool}_{templateId}_{userId}` and strips only the caller's OWN prefix from the template id. Passing a foreign id yields `SCH1_SCH2_TPL9_STA1`. **Not a leak** — the row sits in the caller's own namespace, so another school's genuine rows (`SCH2_TPL9_…`) are neither readable nor spoofable. But any string passed as `templateId` creates a row, `presence` is only `view`-graded, and `templateSessions` has **no cleanup**. | **P3** — litter, not exposure. Compounds with the known absence of any cleanup for that collection | OPEN |
+| **UR-15** | `_run()`'s error taxonomy is correct — an unexpected `Throwable` is logged and replaced with a generic message, while domain exceptions reach the clerk deliberately. But `RuntimeException` messages that DO reach the client carry internal class names (`Doc_template_service: no template 'X'`). Cosmetic rather than dangerous, and the tenant refusal is deliberately identical for foreign and absent ids — verified live. | **P3** | OPEN, low |
