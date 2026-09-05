@@ -239,6 +239,37 @@ flagged as a live maintenance risk even where currently correct: `STORIES_MODULE
 
 ---
 
+## A staged destructive change is picked up by whoever commits next
+
+**Shape.** `git rm` (or `git add` on a deletion) stages immediately. Two sessions work this
+tree concurrently, so anything left staged is fair game for the next `git commit -a` from
+another session — which lands your change under someone else's message, without the other
+half of the work it belonged with.
+
+**Why it recurs here.** Multiple agent sessions share one checkout, and this repo's own
+working agreement is to sweep the whole tree when committing ("commit every changed line").
+That agreement is right, and it is exactly what makes a stray staged deletion dangerous.
+
+**What it cost, 2026-09-05.** A retirement was staged as `git rm application/controllers/
+Certificates.php` plus its view, intending to commit alongside the `routes.php` and
+`header.php` cleanup. Another session committed first (`3d83cf9`, Student AI work) and took
+the two deletions with it. HEAD then held **16 routes pointing at a controller that no
+longer existed** and a sidebar linking to them: every Certificates menu entry 404'd. Nobody
+deployed in that window, so it cost nothing real — this time.
+
+**How to detect.** Before committing, `git diff --cached --name-only` and ask whether every
+staged path is yours *and* complete. A staged deletion with no accompanying route/nav change
+is the specific smell.
+
+**The rule.** **Stage and commit in one motion, or do not stage at all.** For a destructive
+change, prefer plain `rm` and let git see an unstaged deletion until the commit is ready —
+an unstaged change cannot be swept into someone else's commit.
+
+**Corollary for reviewers.** A commit whose stat shows deletions unrelated to its subject
+line has probably absorbed someone else's staging. It is not necessarily wrong to keep — in
+this instance reverting would have restored a system deliberately retired AND undone
+legitimate Student AI work — but the missing half must be found and landed immediately.
+
 ## Test strategies that found real bugs here
 
 **Cross-path / cross-surface asymmetry comparison** — running the same conceptual operation through
