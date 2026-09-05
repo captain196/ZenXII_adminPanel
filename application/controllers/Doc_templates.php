@@ -708,6 +708,14 @@ class Doc_templates extends MY_Controller
                 'complianceBasis'  => $src['complianceBasis']  ?? [],
                 'complianceLayers' => $src['complianceLayers'] ?? [],
                 'starterId'        => $src['starterId'] ?? null,
+                /* CARRY THE DOCUMENT TITLE.
+                   A custom type cannot be created without it — create() refuses,
+                   because the slug is lossy and nothing else records what was typed.
+                   Omitting it here meant a custom document could not be DUPLICATED at
+                   all: the copy failed with "must be created with a docTitle", naming a
+                   field the user never supplied and cannot see. Found by the journey
+                   harness, which duplicates whatever template it made first. */
+                'docTitle'         => $src['docTitle'] ?? '',
                 'copiedFrom'       => $id,
             ];
 

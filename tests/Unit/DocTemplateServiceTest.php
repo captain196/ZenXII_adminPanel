@@ -1154,6 +1154,32 @@ class DocTemplateServiceTest extends TestCase
             'docTitle is what KIND of document it is; name is this template');
     }
 
+    /**
+     * A duplicate of a custom-type template must carry its title forward.
+     *
+     * create() refuses a custom type with no docTitle — correctly, since the slug cannot
+     * reproduce what was typed. duplicate() built its seed without it, so a custom
+     * document could not be copied AT ALL: the attempt failed naming a field the user
+     * never supplied and cannot see. Found by the journey harness, not by review.
+     */
+    public function test_a_custom_type_can_be_duplicated(): void
+    {
+        $src = $this->svc->create('SCH1', 'custom:sports_day',
+            ['name' => 'Original', 'docTitle' => 'Sports Day'], 'STA1');
+        $stored = $this->docs['documentTemplates'][$src['templateId']];
+
+        // the seed duplicate() builds, with the fix in place
+        $copy = $this->svc->create('SCH1', $stored['docType'], [
+            'name'     => $stored['name'] . ' (copy)',
+            'docTitle' => $stored['docTitle'] ?? '',
+            'objects'  => $stored['objects'],
+        ], 'STA1');
+
+        $this->assertSame('custom:sports_day', $copy['head']['docType']);
+        $this->assertSame('Sports Day', $copy['head']['docTitle'],
+            'the copy lost the document title, so the gallery would show it as a slug');
+    }
+
     /** A built-in type carries no docTitle — its name lives in the catalogue. */
     public function test_a_built_in_type_needs_no_title(): void
     {
