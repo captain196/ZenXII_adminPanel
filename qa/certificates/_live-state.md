@@ -623,3 +623,49 @@ and deserve their own change with their own verification; (3) is a shared librar
 The journey harness now runs against a school with **no active templates**, so a mid-run
 death cannot leave a real school issuing a probe. That is a guard against this exact
 sequence, which happened twice before the cause was understood.
+
+
+## L17 · L15 and L16 FIXED — the projection moved to the database · E3 measured
+
+The earlier fix (F13) trimmed what was SENT to the browser. It did not change what was
+READ, and the read was the cost. Measured directly against Firestore, same filter, same 89
+documents, the only variable being whether `select` was supplied:
+
+| | time | transferred |
+|---|---|---|
+| whole documents (before) | **4,375 ms** | **4,955,897 bytes** |
+| projected (after) | **1,962 ms** | **93,201 bytes** |
+| | **2.2× faster** | **53× smaller** |
+
+### What made it possible
+
+`objects` is the largest field and the only one the list did not need — except that the
+gallery thumbnail was derived from it. So the geometry is now **denormalised onto the
+document at write time** (`shapes`: five numbers plus type, region and seal flag per
+object), and the query projects `objects` away entirely.
+
+Deliberately geometry only. No text, no image paths, no merge bindings — this field is
+returned to every list caller, and a screen that draws grey rectangles has no business
+receiving a template's wording. A test asserts that.
+
+### The risk this introduces, and how it is held
+
+A denormalised copy that can drift from its source is worse than no copy: the gallery would
+draw a template that no longer looks like that, and nothing would say so. `shapes` is
+therefore written in the SAME patch as `objects`, never separately, and three tests pin
+that they move together — on edit, on delete, and on create.
+
+Templates saved before the field existed simply have no `shapes`; the client falls back to
+the starter outline it drew before any of this. No backfill is required, and none is
+pretended to.
+
+### Additive at the library layer
+
+`Firestore_rest_client::query()` and `Firestore_service::where()`/`schoolWhere()` gained an
+optional `$selectFields` parameter defaulting to null, which preserves whole-document
+behaviour exactly. That library is used by **124 controllers**; not one of them changes.
+
+`__name__` is added to every projection automatically. Without it Firestore returns
+documents with no identity, and every caller that maps id => fields would quietly receive a
+numerically-indexed list instead — the precise shape `Doc_rows.php` exists to normalise,
+and a bug that presents as empty data.

@@ -231,6 +231,7 @@ class Doc_template_service
                 'header'           => $seed['header']  ?? [],
                 'footer'           => $seed['footer']  ?? [],
                 'objects'          => $seed['objects'] ?? [],
+                'shapes'           => $this->shapesOf($seed['objects'] ?? []),
                 'languages'        => $seed['languages'] ?? ['en'],
                 'defaultLanguage'  => (string) ($seed['defaultLanguage'] ?? 'en'),
                 'contractRef'      => $seed['contractRef'] ?? null,
@@ -427,6 +428,10 @@ class Doc_template_service
         }
         if (isset($patch['objects']) && is_array($patch['objects'])) {
             $patch['objects'] = array_map([$this, 'boundObject'], $patch['objects']);
+            /* Kept in step in the SAME write. A denormalised field that can lag its source
+               is worse than no denormalised field: the gallery would draw a template that
+               no longer looks like that, and nothing would say so. */
+            $patch['shapes'] = $this->shapesOf($patch['objects']);
         }
 
         $patch['lockVersion'] = $stored + 1;
@@ -1099,6 +1104,41 @@ class Doc_template_service
      */
     /** The largest sheet the engine supports, with room to spare. */
     private const MAX_MM = 2000.0;
+
+    /**
+     * The gallery thumbnail's geometry, denormalised onto the head document.
+     *
+     * The list view draws each template as rectangles. Deriving those from `objects` meant
+     * the list query had to READ `objects` — the largest field on the document, and the
+     * reason a query for 89 templates took 15-17 s and could cross PHP's execution
+     * ceiling. Five numbers per object, written once at save time, let the list project
+     * `objects` away entirely.
+     *
+     * Deliberately geometry ONLY. No text, no image paths, no merge bindings: a screen
+     * that draws grey boxes has no business receiving a template's content, and this
+     * field is returned to every list caller.
+     *
+     * @param array<int,mixed> $objects
+     * @return array<int,array<string,mixed>>
+     */
+    private function shapesOf(array $objects): array
+    {
+        $out = [];
+        foreach ($objects as $o) {
+            if (!is_array($o)) {
+                continue;
+            }
+            $out[] = [
+                'x' => (float) ($o['xMm'] ?? 0), 'y' => (float) ($o['yMm'] ?? 0),
+                'w' => (float) ($o['wMm'] ?? 0), 'h' => (float) ($o['hMm'] ?? 0),
+                't' => (string) ($o['type'] ?? 'text'),
+                'r' => !empty($o['requiredKey']),
+                'g' => (string) ($o['region'] ?? 'body'),
+                's' => (($o['content']['shape'] ?? '') === 'seal'),
+            ];
+        }
+        return $out;
+    }
 
     private function clampMm($v, float $min, float $max, float $default): float
     {

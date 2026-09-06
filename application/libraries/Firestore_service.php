@@ -424,17 +424,23 @@ class Firestore_service
      * @param int|null    $limit        Max results
      * @return array  [['id' => docId, 'data' => [...]], ...]
      */
+    /**
+     * @param array<int,string>|null $selectFields return only these fields (plus the id).
+     *        Null keeps whole-document behaviour — every existing caller is unaffected.
+     */
     public function where(
         string $collection,
         array $conditions = [],
         ?string $orderBy = null,
         string $direction = 'ASC',
-        ?int $limit = null
+        ?int $limit = null,
+        ?array $selectFields = null
     ): array {
         if ($this->client === null) return [];
         $t = microtime(true);
         try {
-            $results = $this->client->query($collection, $conditions, $orderBy, $direction, $limit);
+            $results = $this->client->query($collection, $conditions, $orderBy, $direction,
+                                            $limit, null, $selectFields);
             $this->_track(microtime(true) - $t, false);
             return $results;
         } catch (\Exception $e) {
@@ -472,13 +478,14 @@ class Firestore_service
         array $extraConditions = [],
         ?string $orderBy = null,
         string $direction = 'ASC',
-        ?int $limit = null
+        ?int $limit = null,
+        ?array $selectFields = null
     ): array {
         $conditions = array_merge(
             [['schoolId', '==', $this->schoolId]],
             $extraConditions
         );
-        return $this->where($collection, $conditions, $orderBy, $direction, $limit);
+        return $this->where($collection, $conditions, $orderBy, $direction, $limit, $selectFields);
     }
 
     /**

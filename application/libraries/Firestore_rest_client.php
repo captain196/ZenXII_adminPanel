@@ -1317,13 +1317,28 @@ class FirestoreRestClient
         return $this->query($collection, $conditions, $orderBy, $direction, $limit, $startAfter);
     }
 
+    /**
+     * @param array<int,string>|null $selectFields PROJECTION — return only these fields.
+     *
+     * Firestore bills and transfers whole documents unless told otherwise. A collection
+     * whose documents carry a large array (a template's `objects`, say) makes a list query
+     * expensive out of all proportion to what a list actually needs: measured here at
+     * 15-17 s for 89 documents, enough to cross PHP's execution ceiling and terminate the
+     * request mid-flight.
+     *
+     * Null keeps the existing behaviour exactly — every current caller is unaffected.
+     * Note that a projection returns ONLY the named fields, so `__name__` is added
+     * automatically; without it the document id would be lost and every caller that keys
+     * on it would silently receive an unkeyed list.
+     */
     public function query(
         string $collection,
         array $conditions = [],
         ?string $orderBy = null,
         string $direction = 'ASC',
         ?int $limit = null,
-        $startAfter = null
+        $startAfter = null,
+        ?array $selectFields = null
     ): array {
         $opMap = ['=' => 'EQUAL', '==' => 'EQUAL', '<' => 'LESS_THAN', '<=' => 'LESS_THAN_OR_EQUAL',
                   '>' => 'GREATER_THAN', '>=' => 'GREATER_THAN_OR_EQUAL', '!=' => 'NOT_EQUAL',
@@ -1333,6 +1348,17 @@ class FirestoreRestClient
         $structuredQuery = [
             'from' => [['collectionId' => $collection]],
         ];
+
+        if ($selectFields !== null && $selectFields !== []) {
+            /* `__name__` is the document path. A projection that omits it returns
+               documents with no identity, and every caller that maps id => fields would
+               quietly produce a numerically-indexed list instead — the exact shape
+               Doc_rows.php exists to normalise, and a bug that looks like empty data. */
+            $fields = array_values(array_unique(array_merge(['__name__'], $selectFields)));
+            $structuredQuery['select'] = [
+                'fields' => array_map(fn($f) => ['fieldPath' => $f], $fields),
+            ];
+        }
 
         if (!empty($conditions)) {
             $filters = [];

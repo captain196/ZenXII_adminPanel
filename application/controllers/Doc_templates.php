@@ -401,7 +401,24 @@ class Doc_templates extends MY_Controller
                endpoint got a numerically-indexed array whose rows had no
                name, docType or status on them. */
             require_once APPPATH . 'libraries/Doc_rows.php';
-            $rows = Doc_rows::map($this->fs->schoolWhere('documentTemplates', $where));
+
+            /* PROJECT AT THE DATABASE, not just at the response.
+             *
+             * The earlier fix trimmed what was SENT to the browser (456 KB → 117 KB) but
+             * the query still READ whole documents, and `objects` is by far the largest
+             * field. Measured: 15-17 s for 89 templates, enough to cross PHP's execution
+             * ceiling and terminate the request mid-flight (see qa/certificates L16).
+             *
+             * `shapes` is the thumbnail geometry, denormalised onto the document at write
+             * time precisely so this query never has to touch `objects`. Templates saved
+             * before that field existed simply have no shapes; the client falls back to
+             * the starter's outline, which is what it drew before any of this. */
+            $rows = Doc_rows::map($this->fs->schoolWhere(
+                'documentTemplates', $where, null, 'ASC', null,
+                ['schoolId', 'templateId', 'docType', 'docTitle', 'name', 'status', 'version',
+                 'publishedVersion', 'activeVersion', 'starterId', 'updatedAt', 'updatedBy',
+                 'createdBy', 'shapes']
+            ));
 
             /* PROJECT. This endpoint returned every template's COMPLETE document,
                `objects` array included, and it is called on every hub load.
@@ -426,10 +443,11 @@ class Doc_templates extends MY_Controller
                     'starterId'        => $t['starterId']        ?? null,
                     'updatedAt'        => $t['updatedAt']        ?? '',
                     'updatedBy'        => $t['updatedBy']        ?? ($t['createdBy'] ?? ''),
-                    /* The gallery draws a schematic from object GEOMETRY only —
-                       never their content — so the shapes travel and the text,
-                       images and merge bindings stay behind. */
-                    'shapes'           => $this->_shapes($t['objects'] ?? []),
+                    /* Read straight from the denormalised field. `objects` is no longer
+                       fetched at all, so deriving it here is not an option — and does not
+                       need to be. A template saved before the field existed returns null
+                       and the client falls back to its starter's outline. */
+                    'shapes'           => $t['shapes'] ?? null,
                 ];
             }
             return ['templates' => $summary];
