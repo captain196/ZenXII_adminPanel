@@ -1207,3 +1207,85 @@ snapshots retained.
 The console opens on **ap-south-1** while the instance runs in **us-east-2**. Harmless — the
 console is global — but worth knowing when someone goes looking for the instance and the
 default region shows nothing.
+
+## L28 · Compliance exclusions were never stored · E4, fixed
+
+The one control in this module that suppresses a **statutory** requirement did not persist.
+
+### What happened
+
+`toggleLayer()` set `S.layerOff` in memory and called `markDirty()`. The autosave patch
+carried
+
+```js
+{ name, page, header, footer, objects, languages, defaultLanguage }
+```
+
+and **not** `complianceLayers`. So the save succeeded, `dirty` cleared, the status bar read
+*"All changes saved"*, and the exclusion died on reload. Proven by reloading: `layerOff: {}`,
+`overrideReason: {}`, `complianceLayers: []`.
+
+The dialog's own words were therefore untrue:
+
+> The reason is stored with the template and shown on every rule it suppresses.
+
+That is phantom success — the bug class this repo already has a written rule about — on the
+control where it matters most. A school excludes an authority to unblock a publish, is told
+*"Excluded RTE Act 2009 — reason recorded"*, and next session the rule is back and blocking,
+with no record that anyone ever decided anything.
+
+### The half nobody could see
+
+The server was always ready: `complianceLayers` is in `save()`'s allowlist and `publish()`
+freezes it into the version snapshot. **Only the client never sent it.** Live counts before
+the fix:
+
+```
+templates carrying any complianceLayers : 0 of 90
+complianceAuthorities documents         : 0
+```
+
+So `Doc_compliance`, its 11 unit tests and the entire P5.6 "affected by authority" report
+were reading a field nothing had ever written. Both halves were individually correct and the
+feature as a whole did nothing — which is precisely why no test caught it.
+
+### What is stored, and what deliberately is not
+
+Only **exclusions**. The applied stack is derived from board + state + classes and recomputed
+on every load, so storing it would duplicate derived state and go stale the moment a school's
+basis changes. What cannot be recomputed is that a person decided an authority does not reach
+this template, and why.
+
+**No `version` is invented.** `Doc_compliance` compares `version` against the authority's
+current one, and the client has no version to give — `AUTHORITIES` carries `evidence` and
+`verifiedOn` but no version, and the collection holding them is empty. Writing a number we do
+not have would make every template report as behind the first authority that ever gets one.
+For an excluded layer the reader stops at `applied:false` before it looks, so omitting it
+costs nothing.
+
+Verified end to end: the layer persists with reason, evidence grade and `excludedAt`,
+rehydrates on reload, and `resolveStack()` marks it off.
+
+```json
+{"authorityId":"rte","label":"RTE Act 2009","applied":false,
+ "reason":"School teaches classes IX-XII only; the RTE Act reaches the elementary stage",
+ "evidence":"A","verifiedOn":"2026-08-16","excludedAt":"2026-09-07T21:28:12Z"}
+```
+
+### What the compliance UI gets right, recorded because it is unusual
+
+- **Authorities auto-apply** from board + state with no user action: RTE Act 2009 s.5(3)
+  (national, Level A, verified 2026-08-16) and CBSE Bye-Laws Annexure-I, 19 requirements.
+- **Every requirement names its authority and evidence grade** — `student.dob · CBSE`,
+  `Level A`, with the verification date shown.
+- **The exclusion dialog argues both sides**: *"sometimes it is a school editing its way out
+  of a legal requirement"*, and refuses an empty reason with *"an unexplained exclusion is an
+  audit finding"*.
+- **It states the limits of its own knowledge**: *"No numeric turnaround deadline and no
+  issuance register are set by the Act — any SLA we ship is our own recommendation, not
+  law."* and *"Inventing a plausible-looking requirement to fill this gap would assert wrong
+  law confidently, which is worse than enforcing nothing."*
+
+A minor inconsistency, recorded not fixed: the exclusion dialog leaves its confirm button
+enabled and refuses an empty reason with a toast, while the new-document dialog disables its
+button and validates inline. Both are safe; only one tells you before you click.

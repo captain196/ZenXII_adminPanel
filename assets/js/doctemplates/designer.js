@@ -1413,6 +1413,30 @@ async function resolveConflict(silent){
 /** A person-facing name for an object, for the conflict list. */
 const objLabel = o => (o && (o.name || o.id)) || "an object";
 
+/**
+ * The exclusions a person made on this template, in the shape Doc_compliance reads.
+ *
+ * Empty when nothing is excluded, which is the normal case — an untouched
+ * template stores an empty array rather than a fabricated list of everything
+ * that happens to apply today.
+ */
+function complianceOverrides(){
+  return Object.keys(S.layerOff || {})
+    .filter(id => S.layerOff[id])
+    .map(id => {
+      const a = (typeof AUTHORITIES !== "undefined" && AUTHORITIES.find(x => x.id === id)) || {};
+      return {
+        authorityId: id,
+        label:       a.label || id,
+        applied:     false,
+        reason:      (S.overrideReason && S.overrideReason[id]) || "",
+        evidence:    a.evidence   || null,
+        verifiedOn:  a.verifiedOn || null,
+        excludedAt:  new Date().toISOString()
+      };
+    });
+}
+
 async function srvSaveDraft(silent) {
   if (!SRV.online || !S.tpl || !S.tpl.templateId) return false;
   // Nothing to save for a template that was never created on the server.
@@ -1429,7 +1453,31 @@ async function srvSaveDraft(silent) {
   const patch = {
     name: S.tpl.name, page: S.tpl.page, header: S.tpl.header, footer: S.tpl.footer,
     objects, languages: S.tpl.languages,
-    defaultLanguage: S.tpl.defaultLanguage
+    defaultLanguage: S.tpl.defaultLanguage,
+    /* COMPLIANCE EXCLUSIONS ARE A HUMAN DECISION AND MUST BE STORED.
+     *
+     * This patch did not carry them, so excluding an authority set S.layerOff
+     * in memory, called markDirty(), saved a patch with no compliance data,
+     * cleared the dirty flag and reported "All changes saved". The exclusion
+     * died on reload, and the dialog's own promise — "The reason is stored with
+     * the template and shown on every rule it suppresses" — was simply not
+     * true. Phantom success on a compliance control.
+     *
+     * The server was always ready for it: `complianceLayers` is in save()'s
+     * allowlist and publish() freezes it into the version snapshot. Only the
+     * client never sent it. Verified live: 0 of 90 templates carried a layer.
+     *
+     * Only EXCLUSIONS are persisted, deliberately. The applied stack is derived
+     * from board + state + classes and is recomputed on every load, so storing
+     * it would duplicate derived state and go stale the moment a school's basis
+     * changes. What cannot be recomputed is that a person decided an authority
+     * does not reach this template, and why — so that is what is written.
+     *
+     * No `version` is invented. Doc_compliance reads version only for layers
+     * that are still applied; for an excluded one it stops at `applied:false`.
+     * Writing a number we do not have would make every template look stale
+     * against the first authority that ever gets a version. */
+    complianceLayers: complianceOverrides()
   };
   try {
     const out = await srv.save(S.tpl.templateId, patch, S.tpl.lockVersion || 0);
@@ -6080,6 +6128,16 @@ function adoptTemplate(t, docId){
    * and the readers keep saying what they mean. The server default now carries
    * margins too, so the shapes agree at both ends. */
   S.tpl.page = Object.assign({}, starterTC().page, t.page || {});
+  /* Bring stored exclusions back into the working state, or a reload silently
+     re-applies an authority a person deliberately excluded — and the rule they
+     switched off starts blocking publication again with no explanation. */
+  S.layerOff = {}; S.overrideReason = {};
+  (t.complianceLayers || []).forEach(l => {
+    if (l && l.authorityId && l.applied === false) {
+      S.layerOff[l.authorityId] = true;
+      S.overrideReason[l.authorityId] = l.reason || "";
+    }
+  });
   S.tpl.page.marginsMm = Object.assign({t:15,r:15,b:15,l:15},
                                        (t.page && t.page.marginsMm) || {});
   /* CRITICAL: the stored document carries `templateId` as the SHORT entity id
