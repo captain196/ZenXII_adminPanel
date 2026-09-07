@@ -1014,3 +1014,68 @@ defect report.
 - **A failed hub read raises a banner that stays** — "This is not the same as having none —
   nothing has been lost" — with Try again, and it does not self-clear like the 3.2-second
   toast it replaced.
+
+## L25 · Indic document names cannot be created, and different ones collide · E3/E4
+
+Found running T2-18 and T2-23. Client and server agree exactly, so the parity contract is
+intact — this is a **uniform design limitation**, not drift, which is why every existing test
+passes over it.
+
+### 1 · Every Indic-only name is refused
+
+| name | minted id |
+|---|---|
+| `प्रमाण पत्र` (Hindi, "certificate") | **REFUSED** |
+| `खेल दिवस` (Hindi, "sports day") | **REFUSED** |
+| `শংসাপত্র` (Bengali) | **REFUSED** |
+| `સર્ટિફિકેટ` (Gujarati) | **REFUSED** |
+| `Հայերեն Վկայական` (Armenian) | REFUSED |
+| `日本語の証明書` (Japanese) | REFUSED |
+
+The message is *"contains no letters or digits, so it cannot name a document type"* — which
+is **factually false**. `प्रमाण पत्र` is entirely letters. This is the same shape as the
+upload defect in L20: the code detects the failure correctly and then describes a different
+one.
+
+This matters for this product specifically. ZenXii ships Hindi, templates declare
+`languages:["en","hi"]`, and `DocRenderIntegrationTest` has dedicated tests proving each
+Indic script renders and embeds its own font. **The engine can print a Devanagari
+certificate perfectly but cannot name one.**
+
+### 2 · Different names collide, silently
+
+A name mixing script with Latin or digits mints an id from only the surviving remnant:
+
+```
+प्रमाण पत्र 2026   (certificate 2026)      ->  custom:2026
+वार्षिक समारोह 2026 (annual function 2026)  ->  custom:2026     *** COLLIDE ***
+खेल दिवस 2026      (sports day 2026)       ->  custom:2026
+Hindi प्रमाण -> custom:hindi   ·   Hindi वार्षिक -> custom:hindi
+```
+
+The consequence is not cosmetic. **Exactly one template is active per docType**, so two
+unrelated documents sharing `custom:2026` fight over one slot: activating the annual-function
+certificate deactivates the fee certificate, and the hub reports it as the live document for
+both. The naming dialog would tell the second author *"You already have a document called
+that — Create will open it"*, naming a document they have never seen.
+
+`docTitle` is stored separately and is what the hub displays, so the **display** stays
+correct — which is exactly what makes this hard to notice.
+
+### Why this is a decision, not a patch
+
+Changing how ids are minted changes **Firestore document keys** and is asserted by parity
+tests on both surfaces (`DocCustomTypeTest::test_the_slug_matches_the_client_on_unicode_special_casing`,
+`test_the_id_shape_is_enforced_not_merely_documented`). The three options, with what each costs:
+
+1. **Deterministic suffix on collision** — keep the id shape `custom:[a-z0-9_]+`, and when
+   transliteration yields nothing distinctive, append a stable hash of the full name
+   (`custom:doc_9f3a1c2b`). Smallest change; guarantees distinctness; makes Indic-only names
+   creatable. Requires an identical hash in JS and PHP, which the parity test would then pin.
+2. **Widen the id shape to Unicode letters** — truest to the name, but changes the shape
+   contract, the document keys, and every place that assumes `[a-z0-9_]`.
+3. **Leave it and refuse loudly** — at minimum fix the message, which is false today, and
+   warn when a name's id shares nothing with what was typed.
+
+Not changed pending a decision, because it alters a cross-surface identity contract.
+Recorded against T2-18 and T2-23.
