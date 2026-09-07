@@ -1079,3 +1079,73 @@ tests on both surfaces (`DocCustomTypeTest::test_the_slug_matches_the_client_on_
 
 Not changed pending a decision, because it alters a cross-surface identity contract.
 Recorded against T2-18 and T2-23.
+
+## L26 · The second account, and two coverage gaps the ledger named · E4/E3
+
+Run with **STA0025 (Amit Verma, manage)** — a genuinely different actor from the SSA0011
+session everything else this run used.
+
+### T1-33 · presence, finally provable
+
+A heartbeat through the product recorded `user=STA0025, name=Amit Verma` — so the actor is
+taken from the session, never from a request field. `others()` then separates actors exactly
+as it should:
+
+| viewer | sees |
+|---|---|
+| SSA0011 | STA0025 (18 s ago) |
+| STA0011 | STA0025 (18 s ago) |
+| **STA0025** | **nobody** — correctly excludes itself |
+
+and the two stale rows on the same template (3 and 4 days old) are excluded from every view
+by the 90-second window. This is what two tabs of one login could never show.
+
+### T2-16 · audit actor identity — the ledger's "never independently checked"
+
+The audit log now carries two different identities in adjacent rows:
+
+```
+2026-09-07T21:06:16   who=STA0025   action=block_create      entity=ZZZ_QA_BLOCK_0908
+2026-09-07T09:28:15   who=SSA0011   action=delete            entity=…_TPL0095
+2026-09-07T09:21:16   who=SSA0011   action=template.create   entity=…_TPL0095
+```
+
+967 audit rows for this school. The block document itself also carries `updatedBy: STA0025`.
+Actor identity is real and distinguishes people — which could not be shown from one login.
+
+### The `reusableBlocks` key shape — the other named gap — and what it costs
+
+Traced: **`reusableBlocks/{blockId}`, with no `{schoolId}_` prefix** — the only collection in
+this module that departs from the repo-wide `{schoolId}_{entityId}` contract.
+
+The security question it raises is answered correctly. A cross-tenant overwrite is **refused**,
+School A's block is untouched, and the refusal is deliberately worded to be indistinguishable
+from "not found" so no existence oracle leaks across tenants:
+
+```
+School A creates 'letterhead'                 -> stored
+School B creates its own 'letterhead'         -> refused: "no block 'letterhead'"
+School A's block afterwards                   -> v=1, updatedBy=STA_A, untouched
+```
+
+What remains is that the **block namespace is global**: the first school to claim `letterhead`
+denies that id to every other school, and the second school is told the block does not exist
+while trying to create one. That is the "message names the wrong failure" shape again — but
+here it is a deliberate trade, because the honest message would confirm another tenant's
+block exists.
+
+**Reachability keeps this latent, not live**: `save_block` has **0** client callers,
+`srv.blocks` has 0 call sites, and `blockId` never appears in the client at all. The write
+path cannot be reached from the shipped UI.
+
+### A fourth harness artefact, caught before it was recorded
+
+The first run of the namespace probe reported School B's cross-tenant write **succeeding** —
+which would have been a serious finding. It was my store double: PHP arrow functions capture
+**by value**, so `get()` kept returning the empty array it was defined with, and the tenant
+guard never had an existing block to compare against. Re-run with `use (&$docs)`, the guard
+refuses correctly.
+
+Fourth this session, after the CDP timeout (L19), the hidden-tab rAF (L22) and the invisible
+status blob (L24). Each would have been a false defect report, and each was caught by the
+same move: **reproduce the contradiction with the variable isolated before believing it.**
