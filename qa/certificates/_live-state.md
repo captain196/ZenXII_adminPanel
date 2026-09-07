@@ -1289,3 +1289,60 @@ rehydrates on reload, and `resolveStack()` marks it off.
 A minor inconsistency, recorded not fixed: the exclusion dialog leaves its confirm button
 enabled and refuses an empty reason with a toast, while the new-document dialog disables its
 button and validates inline. Both are safe; only one tells you before you click.
+
+## L29 · The matrix is complete — 178/178 executed
+
+Every row now carries a result, an evidence level and a citation. Nothing reads NOT TESTED.
+
+| tier | rows | executed |
+|---|---|---|
+| T0 | 30 | 30 |
+| T1 | 56 | 56 |
+| T2 | 72 | 72 |
+| T3 | 20 | 20 |
+
+137 PASS · 4 found-and-fixed · 11 VOID (retired with the legacy system) · 10 open ·
+2 blocked on a human · the rest partial or recorded-for-decision.
+
+### The last batch
+
+- **T2-09 caught a defect in my own work.** Every timestamp on a stored template is
+  server-generated. The compliance fix I made earlier today wrote `excludedAt` from the
+  **browser** clock — which would have made it the single client-stamped value in the
+  document, on the record that says when a school set aside a statutory requirement. A wrong
+  or altered laptop clock would date a legal decision incorrectly. Removed and pinned by a
+  test. When it happened was already recorded server-side twice.
+- **T2-68 verified rather than assumed.** The S2/S6 tuple collision is real and the audit
+  log is the only discriminator — but that log is complete and trustworthy, proven at E4
+  across two identities. The state that made the collision dangerous, I-9's
+  `archived AND active` hybrid, is closed: `activate()` now refuses an archived template.
+  Checked against current code rather than taken from the earlier fix note.
+- **T1-23** — the designer registers no history entry, so Back exits the module (observed
+  landing on `/admin/index`). Data is safe: the `beforeunload` guard fires only for real
+  unsaved work on a persisted document, verified across all three states.
+- **T1-21** — an expired session is fail-closed: a 200 carrying the login page is rejected
+  rather than treated as success. The message names the status code rather than the cause,
+  which is the one thing worth improving.
+- **T3-18** — no `/Title`, `/Author`, `/Creator` or `/Subject` in a real proof PDF, so no
+  identity leaks. `/Producer` discloses `mPDF 8.3.1`, and the download filename is the
+  internal key.
+
+### What is still open, and why each is open
+
+| row | state | why |
+|---|---|---|
+| **T0-08** | FAIL, P1 | No current backup. Automatic snapshots disabled; only snapshot is 64 days old. One toggle. |
+| T0-15 | blocked | Needs a second-tenant session. |
+| T0-29 | blocked | Needs the Firebase console. |
+| T0-10 | E2 | Cross-tenant write read link-by-link; the live probe was declined and not routed around. |
+| **T2-18 / T2-23** | decision | Indic names cannot be created and different ones collide. Changes a cross-surface id contract — costed in L25, not chosen unilaterally. |
+| T1-30 / T1-17 / T1-56 | product decision | Which fee receipt is authoritative. |
+| T2-63 / T2-64 | open | 7 unused indexes; `templateSessions` has no rules block. |
+| T2-65 | open | Proofs are never pruned on a disk with no backup. |
+| T2-28 / T2-71 | open | Presence heartbeat has no idle stop; rows never reclaimed. Display is correct. |
+| T2-26 / T3-03 / T3-05 | partial | Virtualization absent; small breakpoints never rendered; empty state not reachable at this school. |
+| T2-29 / T3-09 | minor | Archived hidden client-side; undo's session scope unstated. |
+
+Four defects were found and fixed in the last stretch and are **not** counted as passes
+without saying so: the stored XSS (L18), the two mis-named failures (L20), the page-shape
+crash (L23) and the compliance exclusions that never saved (L28).

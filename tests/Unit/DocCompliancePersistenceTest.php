@@ -74,6 +74,22 @@ final class DocCompliancePersistenceTest extends TestCase
      * client has no version to give, and inventing one would make every template
      * report as behind the first authority that ever gets a version.
      */
+    /**
+     * Every other timestamp on a stored template is server-generated. A
+     * client-stamped one here would be the single browser-supplied value in the
+     * document, on the record that says WHEN a school set aside a statutory
+     * requirement — and a wrong or altered laptop clock would date a legal
+     * decision incorrectly. When it happened is already recorded server-side
+     * twice: the template's updatedAt and the audit row for the save.
+     */
+    public function test_no_client_timestamp_is_written(): void
+    {
+        $at   = strpos(self::$js, 'function complianceOverrides');
+        $body = substr(self::$js, $at, 1400);
+        $this->assertDoesNotMatchRegularExpression('/\w+At\s*:\s*new Date\(\)/', $body,
+            'complianceOverrides() stamps a compliance record from the browser clock.');
+    }
+
     public function test_no_version_is_invented(): void
     {
         $at   = strpos(self::$js, 'function complianceOverrides');
@@ -107,7 +123,6 @@ final class DocCompliancePersistenceTest extends TestCase
             'reason'      => 'School teaches IX-XII only',
             'evidence'    => 'A',
             'verifiedOn'  => '2026-08-16',
-            'excludedAt'  => '2026-09-08T00:00:00Z',
         ];
         $svc = new Doc_compliance(['store' => [
             'get'   => fn($c, $id) => ['label' => 'RTE Act 2009', 'version' => 3],
