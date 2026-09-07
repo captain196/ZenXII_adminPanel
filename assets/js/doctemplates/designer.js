@@ -1690,10 +1690,81 @@ const CUSTOM_PREFIX = "custom:";
 const isCustomType = t => typeof t === "string" && /^custom:[a-z0-9](?:[a-z0-9_]{0,38}[a-z0-9])?$/.test(t);
 
 /** What a person typed → a type id. Mirrors Doc_contract::customTypeFor. */
+/* The slug budget isCustom() enforces on the server. */
+const SLUG_MAX = 40;
+
+/** Trim, collapse whitespace runs to one space, lowercase. Must match PHP. */
+function normaliseTitle(title){
+  return String(title||"").trim().replace(/\s+/gu, " ").toLowerCase();
+}
+
+/** The transliteration this module has always used. */
+function asciiSlug(norm){
+  return norm.replace(/[^a-z0-9]+/g, "_").replace(/^_+|_+$/g, "");
+}
+
+/**
+ * Did transliteration drop a word the reader would consider part of the name?
+ *
+ * A token with no letter or digit is punctuation, not a word — an em dash
+ * between two words does not make a name lossy. A token that DOES carry letters
+ * and still transliterates to nothing does.
+ */
+function slugIsLossy(norm){
+  return norm.split(" ").some(tok =>
+    tok !== "" && /[\p{L}\p{N}]/u.test(tok) && tok.replace(/[^a-z0-9]+/g, "") === "");
+}
+
+/**
+ * FNV-1a, 32-bit, over the UTF-8 bytes — eight lowercase hex characters.
+ *
+ * Trivially identical in PHP and JavaScript and needs no async API, which
+ * matters because this runs synchronously while the user types; SubtleCrypto,
+ * the obvious SHA-256 route, is promise-based and could not be used here. A
+ * distinctness device, never a security one.
+ */
+function fnv1a32(s){
+  const b = new TextEncoder().encode(s);
+  let h = 0x811c9dc5;
+  for (let i = 0; i < b.length; i++){ h ^= b[i]; h = Math.imul(h, 0x01000193) >>> 0; }
+  return h.toString(16).padStart(8, "0");
+}
+
+/**
+ * The document-type id a typed name mints. MUST agree with
+ * Doc_contract::customTypeFor() exactly — the id is what every template, active
+ * slot and print point is keyed on, so a disagreement is two identities from one
+ * typed name.
+ *
+ * Returns "" when the name carries no letter or digit at all; the caller shows
+ * that as a refusal. Every other name mints something.
+ *
+ * WHEN THE SLUG NO LONGER STANDS FOR THE NAME, IT IS MADE UNIQUE. Transliteration
+ * keeps only [a-z0-9], so a name in a script it cannot represent loses whole
+ * words. Observed before this fix:
+ *
+ *     प्रमाण पत्र 2026     (certificate 2026)      -> custom:2026
+ *     वार्षिक समारोह 2026 (annual function 2026)  -> custom:2026
+ *
+ * — two unrelated documents on one id, and exactly one template is active per
+ * docType, so activating either silently deactivated the other. Devanagari alone
+ * lost everything and was refused outright, which is worse: ZenXii ships Hindi
+ * and renders it with embedded fonts, so the engine could PRINT a Devanagari
+ * certificate but not NAME one.
+ *
+ * Only the broken cases get a suffix. A name whose every word survives, and which
+ * was not truncated, mints exactly what it always did — so no existing type is
+ * renamed and no stored document is orphaned.
+ */
 function customTypeFor(title){
-  const slug = String(title||"").toLowerCase()
-    .replace(/[^a-z0-9]+/g, "_").replace(/^_+|_+$/g, "").slice(0, 40).replace(/^_+|_+$/g, "");
-  return slug ? CUSTOM_PREFIX + slug : "";
+  const norm = normaliseTitle(title);
+  if (!/[\p{L}\p{N}]/u.test(norm)) return "";        // punctuation alone names nothing
+
+  const full = asciiSlug(norm);
+  if (!slugIsLossy(norm) && full.length <= SLUG_MAX) return CUSTOM_PREFIX + full;
+
+  const stem = full.slice(0, SLUG_MAX - 9).replace(/^_+|_+$/g, "") || "doc";
+  return CUSTOM_PREFIX + stem + "_" + fnv1a32(norm);
 }
 
 /**

@@ -1346,3 +1346,59 @@ Every row now carries a result, an evidence level and a citation. Nothing reads 
 Four defects were found and fixed in the last stretch and are **not** counted as passes
 without saying so: the stored XSS (L18), the two mis-named failures (L20), the page-shape
 crash (L23) and the compliance exclusions that never saved (L28).
+
+## L30 · T2-18 / T2-23 RESOLVED — Indic names create, and different names never collide
+
+Option 1 from L25 implemented: a deterministic suffix, keeping the id shape
+`custom:[a-z0-9_]{1,40}` that `isCustom()` enforces and every document key assumes.
+
+### The rule
+
+A name gets a suffix only when the slug **stops standing for it**:
+
+- **lossy** — some token carrying letters or digits transliterates to nothing
+- **truncated** — the untruncated slug exceeded the 40-character budget
+
+Otherwise the id is exactly what it always was. A token with no letter or digit is
+punctuation, not a word, so `Sports — Day` is not lossy and still mints `custom:sports_day`.
+
+The suffix is FNV-1a 32-bit over the UTF-8 bytes of the normalised name, eight hex
+characters, with the stem trimmed to 31 so the total stays inside 40. FNV was chosen because
+it is trivially identical in PHP and JavaScript and needs no async API — the client mints
+ids **synchronously while the user types**, so SubtleCrypto was not available. It is a
+distinctness device, never a security one.
+
+### Verified, not assumed
+
+A 34-name corpus was run through `Doc_contract::customTypeFor()` and through the client's
+`customTypeFor()` extracted from `designer.js`:
+
+```
+PHP/JS disagreements: 0
+```
+
+| property | result |
+|---|---|
+| existing types unchanged | `sports_day_participation`, `fee_concession_letter`, `sports_certificate` — all three identical |
+| previously refused, now mint | Hindi, Bengali, Gujarati, Japanese, Arabic, Armenian |
+| previously colliding, now distinct | `custom:2026_8b6a37ca` vs `custom:2026_c9e12a82` |
+| ASCII behaviour preserved | six spellings of "Sports Day" still collapse to one id; İstanbul unchanged |
+| truncation collisions | closed as well — two 60-character names sharing 40 characters now differ |
+| id shape | every minted id matches `custom:[a-z0-9_]{1,40}` |
+
+**Backward compatibility was the binding constraint**, not a nicety: the id is what every
+template, active slot and print point is keyed on, so renaming a type orphans its stored
+documents. Every custom type in the project was inventoried first — three, all ASCII, none
+changed.
+
+### Live
+
+Typing `प्रमाण पत्र` into the new-document dialog now enables Create, says "Will be created
+as a new document type", mints `custom:doc_7adcffb8`, and the template opens with its Hindi
+title intact and renders on the hub as **प्रमाण पत्र**. `!!!` is still refused, and the
+message that was false for Devanagari is now shown only when it is true.
+
+Two changed values in the parity test were changed because they were **wrong before**:
+`ÄÖÜ School` and `ß Schule` each lost a whole word, so every name shaped
+`<unrepresentable word> School` minted the same `custom:school`. `ÄÖÜ School` and
+`ÑÑÑ School` are now distinct.

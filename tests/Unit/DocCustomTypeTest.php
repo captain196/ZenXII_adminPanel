@@ -94,16 +94,108 @@ class DocCustomTypeTest extends TestCase
      */
     public function test_the_slug_matches_the_client_on_unicode_special_casing(): void
     {
+        /* Each value here was produced by BOTH runtimes and compared: a 34-name
+           corpus was run through Doc_contract::customTypeFor() and through the
+           client's customTypeFor() extracted from designer.js, with zero
+           disagreements. These are the cases worth pinning in the suite.
+
+           Two values changed when the lossy-name suffix was added, and both
+           changed because they were WRONG before: 'ÄÖÜ School' and 'ß Schule'
+           each lost a whole word to transliteration, so every name of the shape
+           "<unrepresentable word> School" minted the same custom:school. */
         $cases = [
             'İstanbul Public School' => 'custom:i_stanbul_public_school',
             'İİİ'                    => 'custom:i_i_i',
-            'ÄÖÜ School'             => 'custom:school',
-            'ß Schule'               => 'custom:schule',
             'Sports Day'             => 'custom:sports_day',
+            'ÄÖÜ School'             => 'custom:school_40605994',
+            'ß Schule'               => 'custom:schule_aac72bbf',
         ];
         foreach ($cases as $title => $expected) {
             $this->assertSame($expected, Doc_contract::customTypeFor($title),
                 "PHP and the client disagree on the type id for '$title'");
+        }
+    }
+
+    /**
+     * A name written in a script transliteration cannot represent must still
+     * name a document.
+     *
+     * Devanagari, Bengali, Gujarati, Japanese, Arabic and Armenian names were
+     * REFUSED outright — with a message claiming they contained no letters or
+     * digits, which for `प्रमाण पत्र` is plainly false. ZenXii ships Hindi and
+     * DocRenderIntegrationTest proves each Indic script renders with its own
+     * embedded font, so the engine could print a Devanagari certificate and not
+     * name one.
+     */
+    public function test_a_name_in_a_non_latin_script_can_name_a_document(): void
+    {
+        foreach (['प्रमाण पत्र', 'खेल दिवस', 'শংসাপত্র', 'સર્ટિફિકેટ', '日本語の証明書', 'شهادة عربية'] as $name) {
+            $id = Doc_contract::customTypeFor($name);
+            $this->assertTrue(Doc_contract::isCustom($id), "'$name' minted an illegal id: '$id'");
+        }
+    }
+
+    /**
+     * The collision this was really about.
+     *
+     * `प्रमाण पत्र 2026` (certificate 2026) and `वार्षिक समारोह 2026` (annual
+     * function 2026) both minted `custom:2026`. Exactly one template is active
+     * per docType, so activating either would silently deactivate the other —
+     * two unrelated documents fighting over one slot, while the hub showed the
+     * right names because docTitle is stored separately.
+     */
+    public function test_different_names_never_share_an_id(): void
+    {
+        $pairs = [
+            ['प्रमाण पत्र 2026', 'वार्षिक समारोह 2026'],
+            ['खेल दिवस 2026',    'पुरस्कार 2026'],
+            ['Hindi प्रमाण',      'Hindi वार्षिक'],
+            ['ÄÖÜ School',        'ÑÑÑ School'],
+            [str_repeat('Sports Day ', 6) . 'One', str_repeat('Sports Day ', 6) . 'Two'],
+        ];
+        foreach ($pairs as [$a, $b]) {
+            $this->assertNotSame(
+                Doc_contract::customTypeFor($a), Doc_contract::customTypeFor($b),
+                "'$a' and '$b' mint the same document type id"
+            );
+        }
+    }
+
+    /**
+     * And nothing that already worked may change.
+     *
+     * The id is what every template, active slot and print point is keyed on, so
+     * renaming a type orphans stored documents. Checked against every custom
+     * type in the project before shipping — all three were unchanged.
+     */
+    public function test_names_that_already_worked_mint_exactly_what_they_did(): void
+    {
+        $unchanged = [
+            'Sports Day Participation' => 'custom:sports_day_participation',
+            'Fee Concession Letter'    => 'custom:fee_concession_letter',
+            'sports certificate'       => 'custom:sports_certificate',
+            'Sports Day'               => 'custom:sports_day',
+            'Sports-Day'               => 'custom:sports_day',
+            'SPORTS DAY'               => 'custom:sports_day',
+            'Sports — Day'             => 'custom:sports_day',   // an em dash is punctuation, not a lost word
+            '2026'                     => 'custom:2026',
+        ];
+        foreach ($unchanged as $title => $expected) {
+            $this->assertSame($expected, Doc_contract::customTypeFor($title),
+                "'$title' changed id — every stored template of that type is now orphaned");
+        }
+    }
+
+    /** Punctuation alone still names nothing — that refusal was always right. */
+    public function test_a_name_with_no_letters_or_digits_is_still_refused(): void
+    {
+        foreach (['!!!', '---', '   ', '@#$%'] as $bad) {
+            try {
+                Doc_contract::customTypeFor($bad);
+                $this->fail("'$bad' should not mint a document type");
+            } catch (InvalidArgumentException $e) {
+                $this->assertStringContainsString('no letters or digits', $e->getMessage());
+            }
         }
     }
 

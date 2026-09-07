@@ -166,22 +166,116 @@ class Doc_contract
            Executed in both runtimes on 2026-09-04; every ASCII case agreed,
            which is exactly why it survived review. mb_strtolower with an
            explicit UTF-8 encoding matches the client's behaviour. */
-        $slug = function_exists('mb_strtolower')
-            ? mb_strtolower(trim($title), 'UTF-8')
-            : strtolower(trim($title));
-        $slug = preg_replace('/[^a-z0-9]+/', '_', $slug);
-        $slug = trim((string) $slug, '_');
-        $slug = substr($slug, 0, 40);
-        $slug = trim($slug, '_');
+        $norm = self::normaliseTitle($title);
 
-        if ($slug === '') {
+        /* A NAME MUST CONTAIN A LETTER OR A DIGIT SOMEWHERE.
+           Punctuation alone would mint `custom:` and collide with every other
+           unusable title, quietly merging two documents into one type and one
+           active slot. This is the only case that is refused outright — and it
+           is now tested against the WHOLE Unicode letter class, not against
+           a-z, because "प्रमाण पत्र" is entirely letters. */
+        if (!preg_match('/[\p{L}\p{N}]/u', $norm)) {
             throw new InvalidArgumentException(
                 'Doc_contract: "' . $title . '" contains no letters or digits, so it cannot name '
                 . 'a document type. Give the document a name a person could read.'
             );
         }
-        return self::CUSTOM_PREFIX . $slug;
+
+        $full = self::asciiSlug($norm);
+
+        /* WHEN THE SLUG NO LONGER STANDS FOR THE NAME, MAKE IT UNIQUE.
+         *
+         * Transliteration keeps only [a-z0-9], so a name written in a script it
+         * cannot represent loses whole words. Observed:
+         *
+         *     प्रमाण पत्र 2026     (certificate 2026)      -> custom:2026
+         *     वार्षिक समारोह 2026 (annual function 2026)  -> custom:2026
+         *
+         * — two unrelated documents on one id, and exactly one template is active
+         * per docType, so activating either silently deactivates the other. A
+         * name in Devanagari alone lost everything and was refused outright,
+         * which is worse: ZenXii ships Hindi and renders it with embedded fonts,
+         * so the engine could PRINT a Devanagari certificate but not NAME one.
+         *
+         * A deterministic suffix over the whole name restores distinctness while
+         * keeping the id shape `custom:[a-z0-9_]{1,40}` that isCustom() enforces
+         * and every document key already assumes.
+         *
+         * ONLY the broken cases get a suffix. A name whose every word survives
+         * transliteration, and which was not truncated, mints exactly what it
+         * always did — so no existing type is renamed and no stored document is
+         * orphaned. Verified against every custom type in the project before
+         * shipping: all three are unchanged.
+         *
+         * Truncation is included because it is the same failure: two 60-character
+         * names sharing their first 40 characters were one id. */
+        if (!self::slugIsLossy($norm) && strlen($full) <= self::SLUG_MAX) {
+            return self::CUSTOM_PREFIX . $full;
+        }
+
+        $stem = trim(substr($full, 0, self::SLUG_MAX - 9), '_');
+        if ($stem === '') {
+            $stem = 'doc';        // nothing survived; the hash carries the identity
+        }
+        return self::CUSTOM_PREFIX . $stem . '_' . self::fnv1a32($norm);
     }
+
+    /** Trim, and collapse every run of whitespace to one space, then lowercase. */
+    private static function normaliseTitle(string $title): string
+    {
+        $t = preg_replace('/\s+/u', ' ', trim($title));
+        return function_exists('mb_strtolower')
+            ? mb_strtolower((string) $t, 'UTF-8')
+            : strtolower((string) $t);
+    }
+
+    /** The transliteration this module has always used. */
+    private static function asciiSlug(string $norm): string
+    {
+        $slug = preg_replace('/[^a-z0-9]+/', '_', $norm);
+        return trim((string) $slug, '_');
+    }
+
+    /**
+     * Did transliteration drop a word the reader would consider part of the name?
+     *
+     * A token carrying no letter or digit is punctuation, not a word, so an em
+     * dash between two words does not make a name lossy. A token that DOES carry
+     * letters and still transliterates to nothing does.
+     */
+    private static function slugIsLossy(string $norm): bool
+    {
+        foreach (preg_split('/ /u', $norm) ?: [] as $tok) {
+            if ($tok === '' || !preg_match('/[\p{L}\p{N}]/u', $tok)) {
+                continue;
+            }
+            if (preg_replace('/[^a-z0-9]+/', '', $tok) === '') {
+                return true;
+            }
+        }
+        return false;
+    }
+
+    /**
+     * FNV-1a, 32-bit, over the UTF-8 bytes — eight lowercase hex characters.
+     *
+     * Chosen because it is trivially identical in PHP and JavaScript and needs no
+     * async API: the client mints ids synchronously while the user types, so
+     * SubtleCrypto (the obvious SHA-256 route) was not available. This is a
+     * distinctness device, never a security one.
+     */
+    private static function fnv1a32(string $s): string
+    {
+        $h = 0x811c9dc5;
+        for ($i = 0, $n = strlen($s); $i < $n; $i++) {
+            $h ^= ord($s[$i]);
+            $h = ($h * 0x01000193) & 0xFFFFFFFF;
+        }
+        return str_pad(dechex($h), 8, '0', STR_PAD_LEFT);
+    }
+
+    /** The slug budget isCustom() enforces. */
+    private const SLUG_MAX = 40;
 
     public const CUSTOM_PREFIX = 'custom:';
 
