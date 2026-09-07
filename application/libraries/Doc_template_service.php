@@ -235,7 +235,17 @@ class Doc_template_service
                 'lockVersion'      => 0,
                 'publishedVersion' => null,
                 'activeVersion'    => null,
-                'page'             => $seed['page']    ?? ['size' => 'A4', 'orientation' => 'portrait'],
+                /* The default page carries MARGINS too.
+                   Without them this produced a page the designer could not
+                   render — it read page.marginsMm.l directly and threw, leaving
+                   a blank editor. The server's own fallback should not describe
+                   a document the client cannot open; 15 mm is what
+                   blankTemplate() and boundPage() already use. */
+                'page'             => $seed['page']    ?? [
+                                          'size'        => 'A4',
+                                          'orientation' => 'portrait',
+                                          'marginsMm'   => ['t' => 15, 'r' => 15, 'b' => 15, 'l' => 15],
+                                      ],
                 'header'           => $seed['header']  ?? [],
                 'footer'           => $seed['footer']  ?? [],
                 'objects'          => $seed['objects'] ?? [],

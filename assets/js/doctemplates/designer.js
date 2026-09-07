@@ -1983,7 +1983,11 @@ function layoutPage(){
     if(en&&eo){ const ei=zq(".obj__in",en);
       if(ei && ei.isContentEditable) eo.content.i18n[langOf(eo)]={runs:parseRuns(ei)}; }
   }
-  const P=zq("#page"), k=pxPerMm(), m=S.tpl.page.marginsMm, D=pageDims();
+  /* Belt and braces. adoptTemplate() normalises page.marginsMm, so this should
+     never be reached with margins missing — but layoutPage() is the one place
+     whose failure is a blank editor rather than a wrong number. */
+  const P=zq("#page"), k=pxPerMm(), D=pageDims();
+  const m=Object.assign({t:15,r:15,b:15,l:15}, (S.tpl.page&&S.tpl.page.marginsMm)||{});
   zq("#stage").style.width=(D.w*k)+"px";
   P.style.width=(D.w*k)+"px"; P.style.height=(D.h*k)+"px"; P.innerHTML="";
 
@@ -6057,6 +6061,27 @@ async function seedStandardTemplates(){
 /** Take a stored template document and make it the one on screen. */
 function adoptTemplate(t, docId){
   S.tpl=Object.assign(starterTC(), t);
+  /* PAGE IS A NESTED OBJECT, AND Object.assign IS SHALLOW.
+   *
+   * A stored page of {size, orientation} REPLACED the starter's page wholesale
+   * and took `marginsMm` with it. Eight places then read
+   * `S.tpl.page.marginsMm.t` / `.l` directly, so opening such a template threw
+   * "Cannot read properties of undefined" and the designer rendered nothing —
+   * a blank editor with the failure only in the console.
+   *
+   * That page shape is the SERVER'S OWN DEFAULT: create() fell back to
+   * ['size'=>'A4','orientation'=>'portrait'] with no margins, so the two halves
+   * disagreed about what a minimal page is. No current UI path reached it —
+   * createOnServer() sends the client's own page, and every starter and
+   * blankTemplate() carries margins — but any template created through the API
+   * and then opened here took the whole editor down.
+   *
+   * Fixed at the funnel rather than at the eight readers: one place to be right,
+   * and the readers keep saying what they mean. The server default now carries
+   * margins too, so the shapes agree at both ends. */
+  S.tpl.page = Object.assign({}, starterTC().page, t.page || {});
+  S.tpl.page.marginsMm = Object.assign({t:15,r:15,b:15,l:15},
+                                       (t.page && t.page.marginsMm) || {});
   /* CRITICAL: the stored document carries `templateId` as the SHORT entity id
      ("TPL0001"), and the assign above has just overwritten the full document id
      with it. Every endpoint takes the full one, so leaving this would make every

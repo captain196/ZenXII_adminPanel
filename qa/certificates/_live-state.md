@@ -940,3 +940,77 @@ Lower severity than I first recorded. The *display* is correct: `others()` filte
 showing them would train people to ignore the warning. What remains is that the client
 heartbeat has no idle stop and rows are never reclaimed: 11 rows today, growing with
 (templates × users).
+
+## L23 · A crash only the server's own default could produce · E4, fixed
+
+Running create/design/save through the **designer** rather than the API found what every
+API-level pass had missed. Opening a template threw
+
+```
+TypeError: Cannot read properties of undefined (reading 'l')
+    at layoutPage (designer.js:1998)
+```
+
+and the editor rendered **nothing** — a blank screen, with the failure only in the console.
+
+### Root cause: a shallow merge over a nested object
+
+```js
+S.tpl = Object.assign(starterTC(), t);
+```
+
+`Object.assign` is shallow. A stored `page` of `{size, orientation}` replaced the starter's
+page **wholesale**, taking `marginsMm` with it — and eight separate places then dereference
+`S.tpl.page.marginsMm.t` / `.l` directly.
+
+### Why it survived this long
+
+That page shape is the **server's own default**: `create()` fell back to
+`['size'=>'A4','orientation'=>'portrait']` with no margins. But no UI path ever produced
+one — `createOnServer()` sends the client's page, and every starter and `blankTemplate()`
+carries margins. **The crash needed a template only the server's default could make**, and
+nothing in the product made templates that way. My probe did, which is why it appeared now.
+
+Fixed at both ends, deliberately: the server default carries margins so the two halves agree
+on what a minimal page is, and `adoptTemplate()` merges `page` deeply rather than replacing
+it. `layoutPage()` keeps a fallback too, because its failure mode is the worst one available
+— not a wrong number, but an empty editor.
+
+I fixed this at the funnel rather than at the eight readers: one place to be right, and the
+readers keep saying what they mean.
+
+## L24 · A failure I nearly filed, and the selector that caused it
+
+Testing autosave under a forced 500 (T1-22), I read the status label and found it saying
+"not saved" **after** the work had demonstrably reached the server. That is phantom failure
+— the inverse of the bug class this repo already tracks — and I was about to record it.
+
+It was my selector. The element it matched was **invisible and 14,332 characters long**: a
+hidden blob containing the words as source text. The real status label is `.sb--ok`, 17
+characters, and it had been correct the whole time.
+
+Re-run asserting on **visibility** rather than on text presence, the behaviour is exactly
+right:
+
+| | label | dirty |
+|---|---|---|
+| before | `.sb--ok` "All changes saved" | false |
+| during the outage | `.sb--warn` | **true** — the edit is remembered, not discarded |
+| after recovery | `.sb--ok` | false, and the server's copy matches |
+
+This is the third harness-manufactured failure this session, after the CDP timeout (L19) and
+the hidden-tab rAF (L22). The pattern is now clear enough to state as a rule: **when the
+product contradicts a test that already passed, suspect the probe before the product, and
+find a contrast that isolates the variable.** Every one of the three would have been a false
+defect report.
+
+### What the same run confirmed properly
+
+- **Undo through the real handlers**, not internals: 1 mm nudge, 10 mm shift-nudge, two
+  undos reversing both, redo replaying one — which also validates the shortcuts sheet.
+- **Autosave is real, not a label**: after it settled, the stored `xMm` matched the client
+  and `lockVersion` had advanced.
+- **Opening a template does not mark it dirty**, so merely looking at one saves nothing.
+- **A failed hub read raises a banner that stays** — "This is not the same as having none —
+  nothing has been lost" — with Try again, and it does not self-clear like the 3.2-second
+  toast it replaced.
