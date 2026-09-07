@@ -121,6 +121,14 @@ class Doc_template_service
                         && method_exists($fs->raw_client(), 'commitBatch')
                 ? fn(array $ops) => $fs->raw_client()->commitBatch($ops)
                 : null,
+            /* Why the last commit failed, so a timeout is not reported as a
+               conflict. Null where the client cannot say, and the caller then
+               falls back to the conservative wording. */
+            'commitStatus' => method_exists($fs, 'raw_client')
+                        && is_object($fs->raw_client())
+                        && method_exists($fs->raw_client(), 'lastCommitStatus')
+                ? fn() => $fs->raw_client()->lastCommitStatus()
+                : null,
         ];
     }
 
@@ -470,11 +478,7 @@ class Doc_template_service
                 'precondition' => ['updateTime' => $seenAt],
             ]]);
             if ($ok !== true) {
-                throw new RuntimeException(
-                    "E_CONFLICT: '$docId' changed while this save was in flight. Your edit "
-                    . 'was NOT saved and nothing was overwritten. Reload to see the current '
-                    . 'version before editing again.'
-                );
+                throw new RuntimeException($this->commitFailure($docId));
             }
         } else {
             ($this->store['update'])(self::HEAD_COLLECTION, $docId, $patch);
@@ -1121,6 +1125,51 @@ class Doc_template_service
      * @param array<int,mixed> $objects
      * @return array<int,array<string,mixed>>
      */
+    /**
+     * Name the failure the commit actually had.
+     *
+     * `commitBatch()` returns one boolean for a 412 precondition, a 400, a 503
+     * and a curl timeout alike, and this method used to read every one of them
+     * as "somebody else edited this template". A user whose 5,000-object save
+     * exceeded the 15 s HTTP timeout was told a colleague had changed the
+     * document, and sent to reload — where they found nothing changed, and
+     * retried into the same failure.
+     *
+     * The three cases need different words because they need different actions:
+     *
+     *  - 412  a real conflict. Reload; someone's work is at stake.
+     *  - 0    the request never completed. THE OUTCOME IS UNKNOWN — curl gave
+     *         up waiting, and Firestore may still have applied the write. We
+     *         must not repeat the old promise that "nothing was overwritten",
+     *         because nothing here can know that. Reload and look.
+     *  - else the write was refused. Retrying unchanged will fail again.
+     */
+    private function commitFailure(string $docId): string
+    {
+        $st  = $this->store['commitStatus'] ?? null;
+        $code = is_callable($st) ? (int) ((($st)() ?? [])['code'] ?? -1) : -1;
+
+        if ($code === 412) {
+            return "E_CONFLICT: '$docId' changed while this save was in flight. Your edit "
+                 . 'was NOT saved and nothing was overwritten. Reload to see the current '
+                 . 'version before editing again.';
+        }
+        if ($code === 0) {
+            return "E_TIMEOUT: the save of '$docId' did not complete in time. It is NOT known "
+                 . 'whether it was stored — the request was abandoned before the database '
+                 . 'answered. Reload and check before editing again; if the change is missing, '
+                 . 'a smaller edit will usually go through.';
+        }
+        if ($code > 0) {
+            return "E_WRITE_REFUSED: the database refused the save of '$docId' (HTTP $code). "
+                 . 'Your edit was not stored. Retrying it unchanged will fail the same way.';
+        }
+        /* The store cannot say why. Keep the old, conservative wording rather
+           than guessing at a cause we have no evidence for. */
+        return "E_CONFLICT: '$docId' could not be saved. Reload to see the current version "
+             . 'before editing again.';
+    }
+
     private function shapesOf(array $objects): array
     {
         $out = [];

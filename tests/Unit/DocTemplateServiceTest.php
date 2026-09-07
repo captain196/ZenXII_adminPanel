@@ -72,6 +72,12 @@ class DocTemplateServiceTest extends TestCase
     {
         $d = function () { return $this->docs; };
         $store = [
+            /* These doubles simulate a PRECONDITION failure — the document moved
+               under the write — so they say so. Without this the service cannot
+               tell a real conflict from a timeout, and correctly falls back to
+               wording that promises neither. 412 is the only code that means
+               'somebody else edited this'. */
+            'commitStatus' => fn() => ['code' => 412, 'ops' => 1],
             'get'    => fn($c, $id) => $this->docs[$c][$id] ?? null,
             'set'    => function ($c, $id, $data) { $this->docs[$c][$id] = $data; return true; },
             'update' => function ($c, $id, $patch) {

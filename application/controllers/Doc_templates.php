@@ -1119,6 +1119,49 @@ class Doc_templates extends MY_Controller
     const ASSET_MAX_PIXELS = 40000000;
 
     /**
+     * The largest upload this server will actually accept.
+     *
+     * The smallest of what the application allows and what PHP allows. On this
+     * deployment `upload_max_filesize` was 2M against ASSET_MAX_BYTES of 4 MiB,
+     * so the application's cap could never fire and every message quoting it
+     * named a size the server would refuse.
+     */
+    private static function effectiveMaxBytes(): int
+    {
+        $caps = [self::ASSET_MAX_BYTES];
+        foreach (['upload_max_filesize', 'post_max_size'] as $k) {
+            $v = self::iniBytes((string) ini_get($k));
+            if ($v > 0) {
+                $caps[] = $v;
+            }
+        }
+        return min($caps);
+    }
+
+    /** php.ini shorthand ("2M", "8M", "512K") to bytes. */
+    private static function iniBytes(string $v): int
+    {
+        $v = trim($v);
+        if ($v === '') {
+            return 0;
+        }
+        $n = (int) $v;
+        return match (strtolower(substr($v, -1))) {
+            'g'     => $n * 1073741824,
+            'm'     => $n * 1048576,
+            'k'     => $n * 1024,
+            default => $n,
+        };
+    }
+
+    private static function humanBytes(int $b): string
+    {
+        return $b >= 1048576
+            ? rtrim(rtrim(number_format($b / 1048576, 1), '0'), '.') . ' MB'
+            : max(1, (int) round($b / 1024)) . ' KB';
+    }
+
+    /**
      * Upload a crest or signature.
      *
      * The type is decided by INSPECTING the file, never by its extension or by
@@ -1136,15 +1179,49 @@ class Doc_templates extends MY_Controller
 
         $this->_run(function () {
             $f = $_FILES['file'] ?? null;
-            if (!is_array($f) || ($f['error'] ?? UPLOAD_ERR_NO_FILE) !== UPLOAD_ERR_OK) {
-                throw new InvalidArgumentException('No file was uploaded');
+
+            /* SAY WHICH FAILURE THIS IS.
+             *
+             * Every non-OK upload code used to report "No file was uploaded",
+             * which is false for most of them and actively misleading for the
+             * common one: a file REJECTED FOR SIZE was reported as a file that
+             * never arrived, so the natural response was to retry the same
+             * file and watch it fail the same way.
+             *
+             * Observed live: a 3.97 MB PNG — under this class's own 4 MiB
+             * ASSET_MAX_BYTES — was refused with "No file was uploaded",
+             * because PHP's upload_max_filesize was 2M and stopped it long
+             * before the application's check could run. The declared cap was
+             * unreachable and the message described the wrong failure. */
+            $code = is_array($f) ? ($f['error'] ?? UPLOAD_ERR_NO_FILE) : UPLOAD_ERR_NO_FILE;
+            if ($code !== UPLOAD_ERR_OK) {
+                $limit = self::effectiveMaxBytes();
+                throw new InvalidArgumentException(match ($code) {
+                    UPLOAD_ERR_INI_SIZE, UPLOAD_ERR_FORM_SIZE =>
+                        'That image is too large. The most this server accepts is '
+                        . self::humanBytes($limit) . '.',
+                    UPLOAD_ERR_PARTIAL   => 'The upload was interrupted before it finished. Try again.',
+                    UPLOAD_ERR_NO_FILE   => 'No file was uploaded',
+                    UPLOAD_ERR_NO_TMP_DIR,
+                    UPLOAD_ERR_CANT_WRITE,
+                    UPLOAD_ERR_EXTENSION => 'The server could not store the upload. This is a server '
+                                          . 'configuration problem, not a problem with your file.',
+                    default              => 'The upload failed (code ' . (int) $code . ').',
+                });
             }
             if (!is_uploaded_file($f['tmp_name'])) {
                 throw new RuntimeException('Not an uploaded file');
             }
-            if (($f['size'] ?? 0) > self::ASSET_MAX_BYTES) {
+            /* Report the EFFECTIVE limit, not this class's constant.
+             *
+             * php.ini is deployment-specific and can be — and here was — lower
+             * than ASSET_MAX_BYTES. Quoting the constant told the user a number
+             * this server would never honour. */
+            $limit = self::effectiveMaxBytes();
+            if (($f['size'] ?? 0) > $limit) {
                 throw new InvalidArgumentException(
-                    'Image is larger than ' . (self::ASSET_MAX_BYTES / 1048576) . ' MB'
+                    'That image is ' . self::humanBytes((int) $f['size'])
+                    . '. The most this server accepts is ' . self::humanBytes($limit) . '.'
                 );
             }
 

@@ -1053,9 +1053,53 @@ class FirestoreRestClient
 
         $url = "https://firestore.googleapis.com/v1/projects/{$this->projectId}/databases/{$this->databaseId}/documents:commit";
         $r = $this->request('POST', $url, ['writes' => $writes]);
-        if ($r['code'] >= 200 && $r['code'] < 300) return true;
+        if ($r['code'] >= 200 && $r['code'] < 300) {
+            $this->lastCommit = ['code' => (int) $r['code'], 'ops' => count($writes)];
+            return true;
+        }
+        /* RECORD WHY, not just THAT.
+         *
+         * This method returns one boolean for every possible failure: a 412
+         * precondition (someone really did edit the document), a 400 (the
+         * payload is malformed or too large), a 503, and code 0 — curl gave up,
+         * usually on CURLOPT_TIMEOUT. Callers that treat false as "conflict"
+         * therefore tell a user their colleague edited the template when in
+         * fact the request timed out, and the advice that follows ("reload to
+         * see the current version") shows them a document nobody changed.
+         *
+         * Observed: a large save exceeded the 15 s timeout, logged HTTP 0, and
+         * surfaced as E_CONFLICT.
+         *
+         * The boolean stays exactly as it was — 124 controllers depend on it —
+         * and the detail is recorded beside it for callers that want to be
+         * accurate. */
+        $this->lastCommit = [
+            'code' => (int) $r['code'],
+            'ops'  => count($writes),
+            'body' => $r['body'] ?? null,
+        ];
         if (function_exists('log_message')) log_message('error', "FirestoreREST::commitBatch HTTP {$r['code']} ops=" . count($writes) . " body=" . json_encode($r['body']));
         return false;
+    }
+
+    /** @var array{code:int,ops:int,body?:mixed}|null Outcome of the most recent commitBatch(). */
+    private ?array $lastCommit = null;
+
+    /**
+     * Why the last commitBatch() ended as it did.
+     *
+     * `code` is the HTTP status, or 0 when the request never completed (curl
+     * timeout or transport failure). Null before any commit has run.
+     *
+     * A 412 is the ONLY code that means "the document changed under you".
+     * Everything else is a failure of the request, not a conflict — and code 0
+     * additionally means the outcome is UNKNOWN: curl stopped waiting, but
+     * Firestore may still have applied the write. A caller must not claim
+     * nothing was written on a 0.
+     */
+    public function lastCommitStatus(): ?array
+    {
+        return $this->lastCommit;
     }
 
     /**

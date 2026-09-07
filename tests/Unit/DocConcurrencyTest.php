@@ -78,6 +78,12 @@ class DocConcurrencyTest extends TestCase
         return new Doc_template_service([
             'schoolId' => $schoolId,
             'store' => [
+                /* These doubles simulate a PRECONDITION failure — the document moved
+                   under the write — so they say so. Without this the service cannot
+                   tell a real conflict from a timeout, and correctly falls back to
+                   wording that promises neither. 412 is the only code that means
+                   'somebody else edited this'. */
+                'commitStatus' => fn() => ['code' => 412, 'ops' => 1],
                 'get'    => fn($c, $id) => $this->docs[$c][$id] ?? null,
                 'set'    => function ($c, $id, $d) { $this->docs[$c][$id] = $d; return true; },
                 'update' => function ($c, $id, $d) { $this->docs[$c][$id] = array_merge($this->docs[$c][$id] ?? [], $d); return true; },

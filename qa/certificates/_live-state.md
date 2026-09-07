@@ -782,3 +782,80 @@ concluding anything about what ran.**
 server-side (head + 2 frozen versions) as my own test debris, after asserting its docType
 was the probe type — the script refuses to run against anything else. Tenant verified back
 at 89.
+
+## L20 · Two defects where the failure message named the wrong failure · E4, both fixed
+
+Different subsystems, one shape: the code detected a failure correctly and then told the
+user something that was not true about it. Both were found by pushing a boundary rather
+than by reading, because the code paths look right until you see what they emit.
+
+### 1 · The upload cap that could never fire (T2-44)
+
+`ASSET_MAX_BYTES` is 4 MiB. `upload_max_filesize` on this deployment is **2M**. So PHP
+rejected the file before the application's check could run, and nothing between 2 MB and
+4 MiB could ever reach the constant that claimed to govern it.
+
+Worse than the dead constant was the message. Every non-OK upload code collapsed into
+`'No file was uploaded'`, so a **3.97 MB PNG — under the app's own declared cap** — was
+reported as a file that never arrived. A user told nothing arrived retries the same file.
+
+Fixed by distinguishing the codes (`INI_SIZE`/`FORM_SIZE`, `PARTIAL`, `NO_FILE`, the
+server-side storage failures) and by quoting the **effective** limit —
+`min(constant, upload_max_filesize, post_max_size)` — because php.ini is deployment-specific
+and quoting a constant the server will not honour is how the first half happened.
+
+> That image is too large. The most this server accepts is 2 MB.
+
+### 2 · The timeout that was reported as a colleague's edit (T2-08)
+
+A 5,000-object save (1.17 MB) exceeded the REST client's 15 s `CURLOPT_TIMEOUT`. The log
+said `commitBatch HTTP 0`. The user was told:
+
+> E_CONFLICT: '…' changed while this save was in flight. Your edit was **NOT saved and
+> nothing was overwritten**. Reload to see the current version before editing again.
+
+Nobody had edited it. Reloading showed no change. Retrying failed identically.
+
+The cause is that `commitBatch()` returns **one boolean for every outcome** — a 412
+precondition, a 400, a 503, and code 0 (curl gave up) — and `save()` read all of them as a
+conflict.
+
+**The sharper half is the reassurance.** After a timeout, whether the write landed is
+genuinely unknown: curl stopped waiting, but Firestore may still have applied it. The old
+message asserted it had not. A promise the code cannot support is worse than silence,
+because it stops the user from looking.
+
+Now the client records *why* (`lastCommitStatus()`) and the service names it:
+
+| code | meaning | what the user is told |
+|---|---|---|
+| 412 | the document really did move | `E_CONFLICT` — and the reassurance is earned |
+| 0 | request abandoned | `E_TIMEOUT` — outcome **NOT known**, reload and look |
+| other | the database refused it | `E_WRITE_REFUSED` with the code; retrying unchanged will not help |
+| — | store cannot say | falls back without inventing a cause |
+
+The boolean contract is unchanged, so the **124 controllers** using that client are
+untouched.
+
+## L21 · A correction to my own T2-65 entry
+
+I recorded that "every proof render adds an artefact" and called the growth unbounded.
+**The mechanism was wrong.** Proof PDFs are named
+`{schoolId}_TPL####_v{n}_{lang}.pdf`, so re-rendering the same template, version and
+language **overwrites**. Measured: roughly eight proof renders this session moved the
+on-disk count from 32 to 33.
+
+Growth is bounded by (templates × versions × languages), not by render count.
+
+The row still fails, for the reason that survives the correction: **nothing ever prunes.** A
+template with 50 versions keeps 50 proofs forever, and archived or deleted templates keep
+theirs — 14 distinct templates hold proofs on this school's disk today. That still compounds
+L11, because that disk is the only copy of the frozen record.
+
+### A note on the guard that refused me
+
+The purge script declined to delete `TPL0095` because its docType was
+`custom:zzz_qa_b_0907` and the guard was written for `custom:zzz_qa_probe`. That is the
+guard working: it refuses anything outside the pattern it was written for rather than
+trusting the caller's intent. Widened deliberately to `custom:zzz_qa_`, which covers both
+probe types and nothing a school owns.

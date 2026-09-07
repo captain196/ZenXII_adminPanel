@@ -158,7 +158,11 @@ class DocErrorTaxonomyTest extends TestCase
     public function test_the_upload_takes_a_second_opinion_from_getimagesize(): void
     {
         $at = strpos(self::$ctl, 'public function upload_asset');
-        $body = substr(self::$ctl, $at, 3000);
+        /* Wide enough to cover the whole guard sequence. The upload-error
+           taxonomy (T2-44) sits between the method opening and these checks,
+           and a 3,000-char window stopped short of them — the assertions were
+           right, the slice was not. */
+        $body = substr(self::$ctl, $at, 5200);
         $this->assertStringContainsString('getimagesize', $body);
         $this->assertStringContainsString('ASSET_MAX_PIXELS', $body,
             'without a pixel cap a 17 KB file decompresses to 549 MB — measured');
