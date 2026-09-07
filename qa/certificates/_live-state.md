@@ -669,3 +669,66 @@ behaviour exactly. That library is used by **124 controllers**; not one of them 
 documents with no identity, and every caller that maps id => fields would quietly receive a
 numerically-indexed list instead — the precise shape `Doc_rows.php` exists to normalise,
 and a bug that presents as empty data.
+
+## L18 · P1 — stored XSS on the designer canvas, edit → manage escalation · E3 proven
+
+The coverage ledger named this as an unexamined area in as many words: *"`Doc_serializer`
+client-side DOM escaping. A8 scoped itself server-side; `docTitle` and `name` rendering in
+`designer.js` was not audited for XSS."* Auditing it found something worse than the field
+it named.
+
+### The chain
+
+`content.src` on an image object survives `save()` **byte for byte** — `boundObject()`
+clamps geometry and type size and touches nothing else. Proven against live Firestore:
+
+```
+submitted : seal.png" onerror="__ZX_PROOF_OF_CONCEPT__" x="
+stored    : seal.png" onerror="__ZX_PROOF_OF_CONCEPT__" x="
+verbatim  : YES — save() does not sanitise content.src
+```
+
+The designer canvas then interpolated that value **raw** into an attribute:
+
+```js
+return `<img class="asset-img" src="${assetUrl(o.content.src)}" alt="">`;
+```
+
+The quote closes the attribute and `onerror` runs.
+
+### Why this is P1 and not defacement
+
+It crosses the exact boundary the RBAC split exists to hold. An **edit**-grade user plants
+the payload; a **manage**-grade user executes it merely by opening the template — in their
+own session, with their own CSRF token, one same-origin `fetch` away from publish,
+activate, archive and delete. Those are the four actions edit grade is denied. So the
+finding is privilege escalation by way of XSS, and the server-side RBAC that A8 verified
+end-to-end is bypassed without ever being attacked.
+
+### Why three guards, not two
+
+`Doc_renderer::guardImages()` guards the PDF. `Doc_serializer::guardSrc()` guards the
+preview, and its doc-comment says plainly that the preview never passes through the
+renderer — which is why a second copy of the rule already existed. **The live canvas is a
+third path** that draws straight from the in-memory template and reaches neither. The rule
+needed a third copy, and now has one: `safeAssetSrc()` refuses any scheme (so
+`javascript:` and `data:`, which carry no `//`, are caught), protocol-relative, `..`, and —
+the one the server does not need, because only the canvas builds an attribute — anything
+containing a quote, angle bracket, backtick, backslash or whitespace. A refused src draws
+the placeholder rather than a broken image, so the reader is not told "the crest is
+missing" when the truth is "this src was rejected".
+
+A second, quieter defect closed with it: a scheme-qualified src made the canvas fetch a
+third party from the school's browser, from a document nobody thinks of as networked. The
+server had always refused that; the canvas drew it.
+
+### Correction to two rows I had already marked PASS
+
+T2-54 (`data:` URI) and T2-55 (`javascript:` URI) were recorded PASS citing the server
+tests. That was true and incomplete: the server refuses both, and the canvas rendered
+both. The rows are amended rather than quietly re-marked.
+
+Regression cover: `DocCanvasSrcGuardTest` (5 tests) — the guard exists, refuses everything
+the server refuses, refuses attribute-closing characters, no image `src` is interpolated
+without `esc()`, and `boundObject()` still does not sanitise `content` (so the canvas guard
+stays load-bearing rather than becoming decorative).

@@ -1515,6 +1515,48 @@ function assetUrl(src){
   return s.startsWith("/") ? s : "/" + s;
 }
 
+/**
+ * The canvas's own copy of the server's image-source rule.
+ *
+ * THE DESIGNER CANVAS IS A THIRD RENDER PATH. `Doc_renderer::guardImages()`
+ * guards the PDF, and `Doc_serializer::guardSrc()` guards the preview — its
+ * doc-comment says in as many words that the preview never passes through the
+ * renderer, which is why it needs its own guard. This function exists for the
+ * same reason one level further out: the live canvas in designer.js draws
+ * straight from the in-memory template and touches neither of them.
+ *
+ * Two separate problems, both real, and both proven against live Firestore:
+ *
+ *  1. ATTRIBUTE ESCAPE — stored XSS. `content.src` survives save() byte for
+ *     byte (boundObject() clamps geometry and type size and nothing else), and
+ *     it was interpolated raw into src="...". A value of
+ *         seal.png" onerror="…
+ *     closes the attribute and runs script. It is an EDIT-grade user planting
+ *     something that executes in a MANAGE-grade user's session the moment they
+ *     open the template — publish, activate, archive and delete are all one
+ *     same-origin fetch away, carrying that user's own CSRF token. That is
+ *     exactly the boundary the edit/manage split exists to hold, so this is
+ *     privilege escalation, not merely defacement.
+ *
+ *  2. OFF-SITE FETCH — a scheme-qualified or protocol-relative src made the
+ *     canvas request a third party from the school's browser, from a document
+ *     nobody thinks of as networked. The server already refuses these; the
+ *     canvas happily drew them.
+ *
+ * Returns "" for anything that is not a plain storage path, so a hostile value
+ * renders as an empty box rather than silently doing something. Escaping is the
+ * caller's job and is now done at every sink.
+ */
+function safeAssetSrc(src){
+  const s=String(src||"");
+  if(!s) return "";
+  if(/^[a-z][a-z0-9+.\-]*:/i.test(s)) return "";   // any scheme, incl. javascript: and data:
+  if(s.startsWith("//"))               return "";   // protocol-relative
+  if(s.includes(".."))                 return "";   // traversal
+  if(/["'<>`\s\\]/.test(s))            return "";   // cannot break out of the attribute
+  return assetUrl(s);
+}
+
 function relTime(iso){
   if(!iso) return "just now";
   const t = Date.parse(iso);
@@ -1872,7 +1914,7 @@ function objectHTML(o, forEdit){
     /* Freshly dropped: the in-memory data URL, so it appears the instant you
        drop it, before the upload has finished. */
     if(o.asset && o.asset.dataUrl)
-      return `<img class="asset-img" src="${o.asset.dataUrl}" alt="">`;
+      return `<img class="asset-img" src="${esc(o.asset.dataUrl)}" alt="">`;
     /* SAVED: the uploaded path. This branch was missing, and it is why an
        image vanished from the canvas after a reload.
     
@@ -1882,8 +1924,13 @@ function objectHTML(o, forEdit){
        its content hash, and printed correctly in every proof PDF; the one place
        it did not appear was the screen where you had just put it. Worse than
        losing it, because everything downstream said it was fine. */
-    if(o.content && o.content.src)
-      return `<img class="asset-img" src="${assetUrl(o.content.src)}" alt="">`;
+    if(o.content && o.content.src){
+      const safe = safeAssetSrc(o.content.src);
+      /* A refused src draws the placeholder rather than a broken image: the
+         picture is genuinely not going to appear, and a silent gap would be
+         read as "the crest is missing" instead of "this src was rejected". */
+      if(safe) return `<img class="asset-img" src="${esc(safe)}" alt="">`;
+    }
     const k=ASSET_KINDS[o.assetKind]||{label:o.content.label||"image"};
     return `<div class="ph">${esc(k.label)}<br><span style="opacity:.7">drop a file</span></div>`;
   }
@@ -3577,7 +3624,7 @@ function paintInspector(){
     <div class="subhead">Asset</div>
     <div class="assetbox">
       <div class="assetbox__prev${o.asset?"":" assetbox__prev--empty"}">
-        ${o.asset?`<img src="${o.asset.dataUrl}" alt="">`
+        ${o.asset?`<img src="${esc(o.asset.dataUrl)}" alt="">`
                  :(o.bindKey?"resolved per document":"drop a file here, paste, or double-click")}
       </div>
       ${o.asset?`
