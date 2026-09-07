@@ -732,3 +732,53 @@ Regression cover: `DocCanvasSrcGuardTest` (5 tests) — the guard exists, refuse
 the server refuses, refuses attribute-closing characters, no image `src` is interpolated
 without `esc()`, and `boundObject()` still does not sanitise `content` (so the canvas guard
 stays load-bearing rather than becoming decorative).
+
+## L19 · The full lifecycle executed live, E4, on an isolated custom type
+
+23 T1 rows and 3 T2 rows closed by running the module's own endpoints against live
+Firestore in an authenticated `manage` session.
+
+### The safety design, and why it mattered
+
+The journey harness displaced this school's live templates **twice** in earlier runs. So
+this one:
+
+1. **Snapshotted the active set first**, and refused to start if that read returned nothing
+   — an empty read is indistinguishable from "the school has no templates", and guessing
+   between them is precisely the bug that made an earlier guard report the templates wiped.
+2. **Ran entirely inside a custom document type** (`custom:zzz_qa_probe_0907`). Activating
+   within `transfer_certificate` or `bonafide` would displace TPL0001 or TPL0004 — the
+   school's real live certificates. A custom type has no incumbent, so `activate()` there
+   displaces nothing.
+3. Verified afterwards: **89 templates, TPL0001 TC v6 and TPL0004 bonafide v1 unchanged.**
+
+### What the run established that static reading could not
+
+- **O1 confirmed at E4.** `status` never becomes `published`. After a successful publish it
+  still reads `draft`; publication is `publishedVersion != null` and nothing else.
+- **Publishing does not move what is live** (T1-24). v2 was published while v1 stayed
+  active. A colleague publishing while you edit cannot change what the school is issuing.
+- **A duplicate starts unpublished.** The copy cannot inherit the original's published
+  standing, so duplicating an active certificate does not mint a second one.
+- **The type filter narrows at the SERVER** (91 → 2), not in the client.
+- **The upload allow-list is keyed by the sniffed type.** A file named `evil.png` and
+  declared `image/png` was refused as `text/x-php`. Extension and declared Content-Type
+  both count for nothing. A zero-byte file is refused as `application/x-empty`.
+- **Assets are content-addressed.** Identical bytes under a different filename return the
+  same path, so a re-upload costs no storage — and the filename being the content hash is
+  what makes them non-enumerable, which is the assumption T2-61 rests on.
+
+### A method note worth carrying forward
+
+A CDP timeout does **not** stop the page's JavaScript. One batch exceeded the 45 s limit and
+reported an error while the remaining steps — deactivate, archive, duplicate — kept running
+and completed. Reading the state afterwards showed the truth; trusting the error would have
+recorded three passes as failures. **After any tool-level timeout, re-read the state before
+concluding anything about what ran.**
+
+### Debris
+
+`TPL0095` finished published-and-archived, which `delete()` correctly refuses. It was purged
+server-side (head + 2 frozen versions) as my own test debris, after asserting its docType
+was the probe type — the script refuses to run against anything else. Tenant verified back
+at 89.
