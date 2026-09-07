@@ -159,6 +159,40 @@ class DocSurfaceTest extends TestCase
      *  T3-02 — modal accessibility (fixed earlier this session)
      * ================================================================== */
 
+    /**
+     * Escape must close a dialog from wherever it was opened.
+     *
+     * The keydown handler returns immediately unless the designer is on screen,
+     * and the staged-Escape logic sits AFTER that guard — so a dialog opened
+     * from the hub (naming a new document, confirming a delete or an archive)
+     * could not be dismissed with Escape at all. Confirmed live: the dialog
+     * stayed open, and only the scrim or the Cancel button would close it.
+     *
+     * Nothing hung, because a MutationObserver settles the dialog's promise on
+     * any dismissal. It was purely a keyboard user being denied the one key
+     * every dialog answers to — and it contradicted the file's own comment,
+     * "Escape stays reachable because that is how you leave the dialog", which
+     * was true only inside the designer.
+     *
+     * qa/certificates/06-uat-matrix.csv T3-01, T1-12
+     */
+    public function test_escape_closes_a_dialog_opened_from_any_screen(): void
+    {
+        $at = strpos(self::$js, 'window.addEventListener("keydown"');
+        $this->assertNotFalse($at, 'the global keydown handler is gone');
+
+        $guard  = strpos(self::$js, 'if(S.screen!=="designer") return;', $at);
+        $escape = strpos(self::$js, 'e.key==="Escape" && zq("#scrim").classList.contains("is-on")', $at);
+
+        $this->assertNotFalse($escape,
+            'No Escape-closes-the-modal check in the global handler. A dialog opened from '
+            . 'the hub cannot then be dismissed with Escape.');
+        $this->assertNotFalse($guard, 'the designer guard is gone — re-check this ordering');
+        $this->assertLessThan($guard, $escape,
+            'The Escape check sits AFTER the designer guard, so the guard swallows it on '
+            . 'every other screen. That is the defect this test exists for.');
+    }
+
     public function test_modals_announce_themselves_and_take_focus(): void
     {
         $at = strpos(self::$js, 'function modal(title, sub, body, foot, small)');

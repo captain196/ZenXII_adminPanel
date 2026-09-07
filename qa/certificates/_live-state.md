@@ -859,3 +859,84 @@ The purge script declined to delete `TPL0095` because its docType was
 guard working: it refuses anything outside the pattern it was written for rather than
 trusting the caller's intent. Widened deliberately to `custom:zzz_qa_`, which covers both
 probe types and nothing a school owns.
+
+## L22 · Two real tabs, the visual pass, and one artefact that nearly became a bug report
+
+### The two-session races, done properly (T1-24, T1-25)
+
+Two genuine tabs, not one tab simulating two. Tab B read the template; Tab A published and
+activated it; Tab B then acted on its stale view. Both refusals were correct and, more
+importantly, **specific**:
+
+- publish → *"the proof on record is for v1 but this draft is v2"*
+- save → *"you read lockVersion 1, it is now 3"*
+
+That second one is the real 412 path, naming both numbers — the case L20 had to disentangle
+from a timeout wearing the same message. Tab A's design and pointers were intact afterwards.
+
+### An artefact that read exactly like an accessibility defect
+
+The shortcuts dialog opened and focus stayed on the trigger button. `role`, `aria-modal`
+and `aria-labelledby` were all correct, so this looked like a genuine focus-management bug —
+and it directly contradicted a test I had already recorded as passing.
+
+It was the harness. `modal()` focuses inside `requestAnimationFrame`, and the tab was being
+driven in the background:
+
+```
+visibilityState : "hidden"
+requestAnimationFrame fires : false
+```
+
+**rAF does not fire in a hidden tab, so the focus call never ran.** Re-run in a visible tab,
+same modal, same code: focus moves correctly onto the close control.
+
+Two things worth carrying forward. First, this is the same family as the CDP-timeout lesson
+in L19 — *the harness can manufacture a failure that looks exactly like a product defect*,
+and the way out is to find a contrast that isolates the variable rather than to reason about
+which is more likely. Second, `newCustomDocument()`'s own dialog focuses with `setTimeout`
+rather than rAF, which is why it focused correctly even while hidden; that difference is
+what made the contrast obvious.
+
+### A real finding underneath it (T3-01)
+
+Chasing the above surfaced something genuine. The global keydown handler opens with
+
+```js
+if(S.screen!=="designer") return;
+```
+
+and the staged-Escape logic sits **after** it. So a dialog opened from the **hub** — naming a
+new document, confirming a delete or an archive — could not be dismissed with Escape at all.
+
+Nothing hung: a MutationObserver settles the dialog's promise on any dismissal, and the
+scrim and Cancel both worked. It was purely a keyboard user being denied the one key every
+dialog answers to — and it contradicted this file's own comment a few lines below, *"Escape
+stays reachable because that is how you leave the dialog"*, which was true only inside the
+designer.
+
+Hoisted above the guard and verified live from the hub. Behaviour inside the designer is
+unchanged, because the staged Escape already closed the modal first when the scrim was up.
+
+### What the visual pass found otherwise
+
+- **Keyboard mechanics are clean**: 0 buttons without an accessible name, 0 positive
+  tabindex, across 94 focusable elements.
+- **Unavailable types are shown with a reason**, not hidden — *"Applies in Kerala, this
+  school is in madhya pradesh"*, *"board-issued — never merged with a TC"* — under a note
+  saying enabling a prescribed form is data, not code.
+- **Custom documents sit in their own section** with an explanation, deliberately not mixed
+  into the prescribed grid.
+- **The shortcuts sheet is accurate**: 28 entries, all matching real handlers.
+- **Responsive is designed for but unproven**: a real ladder at 1240/1020/900/860/767/760
+  with an inspector toggle below 760, and no clipping at the observed 1461×758 — but the
+  resize tool moved the OS window without changing the content viewport, so the smaller
+  breakpoints were never rendered. Left PARTIAL rather than inferred from CSS.
+
+### Presence, refined (T2-28, T2-71)
+
+Lower severity than I first recorded. The *display* is correct: `others()` filters on a
+90-second window, so a stale holder is never shown as present, and the source says why —
+showing them would train people to ignore the warning. What remains is that the client
+heartbeat has no idle stop and rows are never reclaimed: 11 rows today, growing with
+(templates × users).

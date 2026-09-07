@@ -4773,6 +4773,27 @@ function pickFile(targetId){
    ========================================================================== */
 const TOOLKEY={v:"move",h:"hand",t:"text",b:"table",i:"image",l:"shape",q:"qr"};
 window.addEventListener("keydown", e=>{
+  /* ESCAPE CLOSES A DIALOG FROM WHEREVER IT WAS OPENED.
+   *
+   * This handler used to return immediately unless the designer was on screen,
+   * and the staged-Escape logic below it sits after that guard — so a dialog
+   * opened from the HUB (naming a new document, confirming a delete, an
+   * archive) could not be dismissed with Escape at all. The scrim and the
+   * Cancel button both worked, so nothing hung; it was purely a keyboard user
+   * being denied the one key every dialog answers to.
+   *
+   * It also contradicted this file's own comment a few lines down — "Escape
+   * stays reachable because that is how you leave the dialog" — which was true
+   * only inside the designer.
+   *
+   * Hoisted above the guard. Behaviour in the designer is unchanged: the staged
+   * Escape below already closed the modal first when the scrim was up, so this
+   * takes the same branch one step earlier. */
+  if(e.key==="Escape" && zq("#scrim").classList.contains("is-on")){
+    e.preventDefault();
+    closeModal();
+    return;
+  }
   if(S.screen!=="designer") return;
   const meta=e.metaKey||e.ctrlKey;
   const t=e.target;
