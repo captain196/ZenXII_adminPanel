@@ -1149,3 +1149,61 @@ refuses correctly.
 Fourth this session, after the CDP timeout (L19), the hidden-tab rAF (L22) and the invisible
 status blob (L24). Each would have been a false defect report, and each was caught by the
 same move: **reproduce the contradiction with the variable isolated before believing it.**
+
+## L27 · T0-08 ANSWERED — the frozen record has no current backup · E4, read from the AWS console
+
+Read directly from the Lightsail console (account **Zenxii 582983022638**), read-only.
+
+### The instance
+
+**LAMP-1** · 512 MB RAM · 2 vCPU · **20 GB SSD** · Ohio Zone A (us-east-2a) ·
+`3.138.59.194` · Running. Matches `PATH_A_US_SERVER_RUNBOOK.md` exactly. This also closes the
+coverage ledger's "Lightsail RAM/vCPU/disk — unread".
+
+### The question, and the answer that matters more
+
+**Do instance snapshots include `uploads/`?** Yes. AWS's own wording on the Snapshots tab:
+*"You can create a snapshot to back up your instance, its system disk, and attached disks."*
+A single-disk 20 GB instance means `/opt/zenxii/uploads/` is inside a snapshot.
+
+**But there are no current snapshots.**
+
+```
+Automatic snapshots are disabled          ← AWS's own words, verbatim
+Manual snapshots for LAMP-1               ← list is EMPTY
+Only snapshot in the account: "ZenXii"    ← copied from Mumbai (ap-south-1)
+                                             on July 6, 2026 · 64 days ago
+```
+
+That one snapshot is a **migration artefact** from the Mumbai → Ohio move, not a backup
+routine.
+
+### What this actually means
+
+The mechanism would protect the artefacts. **The mechanism is not running.**
+
+Chain it with what is already recorded:
+
+- **L11** — the frozen proof PDF lives on one server's local disk, and that is the only copy.
+- **T2-65** — nothing prunes them; 14 templates hold proofs today.
+- **L27** — that disk has had no snapshot since 6 July 2026, and none is scheduled.
+
+So: **every certificate artefact frozen since 6 July 2026 exists in exactly one place.** For a
+statutory-document product the frozen artefact *is* the record — it is what an auditor or a
+court is shown — so losing the instance is not losing a cache, it is losing the evidence.
+
+The row is therefore **FAIL**, not the PASS a "yes, snapshots include uploads" answer would
+have given. The question as written asked about the mechanism; the mechanism is fine and
+switched off.
+
+### Not changed
+
+Enabling automatic snapshots is a change to the user's production infrastructure and carries
+a cost, so it is recommended, not done. It is one toggle on this tab: seven most recent daily
+snapshots retained.
+
+### A note on the region
+
+The console opens on **ap-south-1** while the instance runs in **us-east-2**. Harmless — the
+console is global — but worth knowing when someone goes looking for the instance and the
+default region shows nothing.
