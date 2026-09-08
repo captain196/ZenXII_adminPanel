@@ -1531,3 +1531,72 @@ which belongs to the exam module and means something else.
 **C** drive the compliance basis from that record and nothing else.
 **D** gate issuance on the ladder — when issuance exists. Eight print points are declared and
 zero are wired, so the gate can be built before the door, which is the only time it is cheap.
+
+## L33 · Every Transfer Certificate printed today carries a false affiliation · E3
+
+Found while researching what a compliant issuance flow would look like. **Issuance already
+exists** — `Sis::issue_tc()` allocates an atomic number, writes the record and renders
+`views/sis/tc_print.php`. It does not go through the Document Engine, and it is wrong in two
+ways at once.
+
+### 1 · The view reads keys the document does not have
+
+`$school_profile` is the raw `schools/{id}` document, which is camelCase. The view reads
+snake_case. Checked against `SCH_B56BB9A401`:
+
+| the view reads | the document carries | result |
+|---|---|---|
+| `school_name` | `name` / `schoolName` | absent |
+| `logo` | `logoUrl` | absent — **no crest prints** |
+| `affiliation_no` | `affiliationNo` | absent — **the number never prints** |
+| `board` | `affiliationBoard` | absent — **falls back to a literal** |
+| `school_code` | `schoolCode` | absent |
+
+Only `address` and `phone` happen to match. The school's real affiliation number,
+`41298123`, sits in the document one key away and never reaches the page.
+
+This is the same key-shape drift `CLAUDE.md` already documents for auth claims
+(`school_id` vs `schoolId`) — one side snake, one side camel, no error, just a blank.
+
+### 2 · What it prints instead
+
+```php
+$schoolBoard = $sp['board'] ?? 'C.B.S.E';
+...
+<div class="school-affil">Affiliated to <?= $schoolBoard ?>, New Delhi</div>
+```
+
+The board **defaults to a literal**, and **"New Delhi" is hardcoded**. So every Transfer
+Certificate this system prints — for every school, in every state, under every board — says:
+
+> **Affiliated to C.B.S.E, New Delhi**
+
+`SCH_B56BB9A401` is in Madhya Pradesh with no recorded board. `SCH_218AAF5C23` is a state
+board school in Uttar Pradesh. Both print the same false claim, on a statutory document a
+family carries to the next school, and which the receiving school relies on.
+
+It is the fixture bug of L31 again — a plausible default standing in for an unrecorded fact —
+except here it is not a compliance panel that is wrong, it is the certificate itself.
+
+### Why this reframes the issuance work
+
+The Document Engine's `transfer_certificate` print point already declares
+`module: SIS, numberingSeries: tc` — it was designed to plug into exactly this flow. The
+engine can print a correct, template-driven, compliance-checked TC today; SIS prints a
+hardcoded one that asserts a false affiliation.
+
+So wiring the print point is not a new feature. **It replaces a document that is currently
+wrong**, and that is the strongest argument for doing it.
+
+### Not fixed here
+
+Two candidate fixes, deliberately not chosen unilaterally:
+
+1. **Repair `tc_print.php`** — read the right keys, drop the hardcoded city, fall back to
+   nothing rather than to a board. Small, immediate, and keeps two TC renderers.
+2. **Wire the print point** — SIS resolves the active template through `Doc_resolver` and
+   renders through the engine, which already validates against the compliance profile and
+   freezes what it issued. Larger, and retires the second renderer.
+
+(1) stops the false claim this week. (2) is where this is going. They are not exclusive, and
+(1) should not be skipped while (2) is built.
