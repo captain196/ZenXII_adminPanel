@@ -29,8 +29,8 @@ Lakshadweep · Andaman & Nicobar Islands
 |---|---|---|---|---|---|
 | **Karnataka** | Self-declaration Form-I to the **BEO**; **DDPI** issues/cancels; DPI → Commissioner above. Separate **registration** (KEA 1983 s.31/34) and **recognition** (s.39) | **5 years → amended 26.08.2024 to 10 years on first renewal, then permanent** (RTE Rules 2012 r.11(6)) | **No — abolished 01.06.2016.** Replaced by a **mandatory DISE code on every TC**, verifiable online | **Prohibited** — 2025:KHC:5986. No state rule permits it | A / A (via judgment) |
 | **Kerala** | *KER track:* **DEO** grants/withdraws (r.3(b)(vi)); Director for temporary beyond 1 yr and appeals. *RTE track:* **Deputy Director of Education**, Form I → **Form II** | **Permanent recognition has no expiry**; temporary is **1 year at a time**, max 3 yrs without Director approval (KER V-21(1)). Renewal **3 months before expiry** (V-16(a)). RTE-track term NOT FOUND | **No** for intra-Kerala TCs (Form 5 has no countersign block). **Yes** for **inbound out-of-state** TCs — Inspecting Officer, within 2 months (Ch.VI r.10) | **Rule text still mandates withholding** (KER VI-17(2)) but courts consistently override. **Live, unresolved conflict** | A |
-| **Tamil Nadu** | Split by class range **and** school type: **Joint Director (Elementary)** I–V/I–VIII · **CEO** district LKG–V, I–X/VI–X non-minority · **Joint Director (Secondary)** minority/Anglo-Indian · **Joint Director (Matriculation)** | **NOT FOUND — and the absence looks deliberate.** TN RTE r.12 states no term and has **no renewal provision**. Appears open-ended until withdrawn | **NOT FOUND** in TNER 38–46 — the **headmaster** alone signs | **TNER r.40 forbids** refusal for prior arrears. Only a **one-term "special fee"** (r.38) may be claimed | A |
-| **Puducherry** | *pending — see §4* | *pending* | *pending* | *pending* | — |
+| **Tamil Nadu** | *Private Schools Act track:* **DEO → Joint Director → Director (Private Schools) → Government**, by stage. *RTE track:* **Joint Director (Elementary)** / **CEO** / **JD (Secondary)** / **JD (Matriculation)**. **Two parallel regimes** | *Private Schools Rules 2023 r.8(8):* **the period of the structural stability certificate or building licence, whichever is earlier**; pre-2023 permanent recognitions **stay permanent**. *RTE track:* **no term stated, no renewal rule**. Renewal **3 months before expiry** | **No.** Head of institution signs alone. Out-of-state certificates are **evaluated** by the **DEO** (2023 Rules r.20), not countersigned | **Prohibited** — Madras HC **DB 19.07.2024**. ⚠️ **TNER r.40 exists in two opposite circulating texts** — unresolved | A |
+| **Puducherry** | **Director of School Education**, **non-delegable** (PRTE r.12(2)); field officers are Deputy Inspector of Schools / CEO (Mahe) / Delegate to DSE (Yanam). **No BEO** | *RTE track:* **3 years**, renewable **3 more**; apply **by 30 November of the preceding year**. *1987 Act track:* **indefinite until withdrawn** | **Yes — but only** for a TC from a school **outside the UT**, by the **inspecting authority over the originating school** (1996 Rules r.62 proviso) | **No rule permits it** and none forbids it. No Puducherry judgment or circular found | A |
 | **Andhra Pradesh** | *RTE/elementary:* **DEO** (r.14(1)). *Private secondary:* the 1993 Rules track — competent authority NOT FOUND in rule text | **3 years → 8 years** by **G.O.Ms.No.38, 22.04.2023** amending r.14(4). A further 8→10 change is **NOT FOUND** | **NOT FOUND** | **NOT FOUND** — no AP rule and no AP judgment either way | A (rules) / C (the GO) |
 | **Telangana** | **MEO verifies → DEO recommends → Regional Joint Director accords.** Separate **BSE Telangana** recognition for SSC exams | **10 years** in the real order read; the rule fixing it is **NOT FOUND**. Renewal **90 days before expiry** | **NOT FOUND** | **Prohibited** — Vyshnav Dinesh, 03.06.2024 | A (the order) |
 | **Lakshadweep** | **NOT FOUND.** Director of Education heads the department; **all 32 schools are government-run** | NOT FOUND | NOT FOUND | Largely **moot** if no private schools exist | B |
@@ -452,7 +452,91 @@ stays on the books. **This is flagged, not resolved.**
 
 ## 3 · Tamil Nadu
 
-### 3.1 Recognition — TN RTE Rules 2011, rule 12 — **[A]**
+> **Tamil Nadu's recognition law changed recently and most secondary sources are out of date.**
+> The **TN Recognised Private Schools (Regulation) Act 1973 is REPEALED**. The operative
+> framework is the **TN Private Schools (Regulation) Act, 2018 — enacted as Act No. 35 of
+> 2019** — plus the **TN Private Schools (Regulation) Rules, 2023**.
+
+### 3.0 The main track — Act 35 of 2019 + Rules 2023 — **[A]**
+
+**The Act.** President's assent 07.08.2019; TN Gazette Extraordinary **No. 334, 16.08.2019**.
+s.1(3) applies it to **all private schools, aided or unaided**.
+https://prsindia.org/files/bills_acts/acts_states/tamil-nadu/2019/Act%2035%20of%202019%20TN.pdf
+
+*(Name/number mismatch is genuine: the Act calls itself "2018" and was enacted as Act 35 of
+**2019**. Both citations are correct.)*
+
+**s.59 — Repeal and Savings, and why the old TC rules survive.**
+s.59(1) repeals the 1973 Act. **s.59(3)** saves all rules, orders, notifications, **Codes**,
+bye-laws and circulars in force, *"as if they are made under the corresponding provisions of this
+Act unless and until superseded."*
+
+**⇒ This is the legal reason the Tamil Nadu Educational Rules (TNER) and the Code of Regulations
+for Matriculation Schools are still on the books despite the repeal.** They are saved
+subordinate legislation, not live primary law.
+
+**Recognition under the Act:**
+
+| Section | Content |
+|---|---|
+| s.4–6 | Permission to establish; appeal within 30 days, decision final |
+| **s.7(1)–(2)** | Apply for recognition **within 3 years** of the permission order, or the permission is **deemed lapsed** |
+| **s.8(1)** | The authority *"shall issue the certificate recognising the private school … **for such period, as may be prescribed**"* |
+| s.8(2) | Considerations: adequacy of existing schools, need, pupil numbers, playground, amenities, equipment/laboratory/library |
+| s.8(4)–(5) | Refusal within 3 months with reasons and a hearing; appeal in 30 days, appellate decision **final** |
+| **s.8(6)** | Renewal *"**within a period of three months before the date of expiry** of the period of recognition"* |
+| **s.8(7)** | *"**No child shall be admitted in any school which has not been granted with the certificate of recognition** or renewal"* |
+| **s.9** | **No application for Board affiliation before recognition under s.8** |
+| s.10–11 | Withdrawal with reasons and a hearing; records handed over within one month |
+
+**The Rules 2023** (made under s.57; text recites "[… January 2023]").
+https://www.legitquest.com/act/tamil-nadu-private-schools-regulation-rules-2023/CB24
+**[A for the rule text; C for the citation metadata — the gazette original and the G.O./S.R.O.
+number were NOT FOUND.]**
+
+- **r.8(1)–(2)** — recognition applied for in **Form II-A**, at least **6 months before** the
+  academic year of proposed admission.
+- **r.8(5)** — fees **₹5,000** (Play/Nursery & Primary/Primary), **₹10,000** (Middle/High/Hr Sec).
+- **r.8(6)** — conditions: contiguous **single plot**, boundary wall, land owned or leased by
+  registered document (**lease ≥ 15 years**, ≥ 5 if from Government), **Structural Stability
+  Certificate** and **Building Licence** (TN Public Building (Licensing) Act 1965), **Sanitary
+  Certificate**, **Fire NOC**, endowment, teacher qualifications — and **no child admitted before
+  recognition**.
+- **r.8(7)** — grant in **Form III-A** or refusal, within **3 months**.
+- **r.8(8) — THE VALIDITY ANSWER:** *"The certificate of recognition shall be issued **for the
+  period specified in the structural stability certificate or the building licence whichever is
+  earlier**."* **Proviso:** schools already holding **permanent recognition under the 1973 Act**
+  at publication *"shall continue to have permanent recognition"*, but must furnish renewed
+  SSC/BL/Sanitary/Fire certificates on expiry.
+- **r.9** — renewal in **Form II-B**, **within 3 months prior to expiry**; ₹1,000 / ₹2,000;
+  renewed again for the SSC/building-licence period.
+- **r.10** — appeal within 30 days, disposed within 2 months.
+- **r.11** — **withdrawal takes effect only at the end of the academic year.**
+- **r.18 — issue of a TC:** *"Every pupil of a private school shall have the **right to seek
+  transfer**…"*; on the parent's written application *"the Head Master **shall issue** the
+  Transfer Certificate as per the instructions issued in this regard."* **⚠️ No fee or no-dues
+  condition appears in r.18** — the current, purpose-built TC rule for TN private schools is
+  unconditional on the parent's application.
+- **r.19** — duplicate TC: ₹100 + declaration of loss, **issued within 2 weeks**.
+- **r.20** — certificates from **another State/UT/country** are **evaluated by the District
+  Educational Officer** within 3 months of provisional admission.
+
+**Competent authority — self-financing schools (Annexure I-B):** grant of recognition is by
+**DEO (Private Schools)** for Play Schools, **Joint Director (Private Schools)** for Nursery &
+Primary/Primary, and **Director of Private Schools** for Middle/High/Higher Secondary, with the
+**Government** as final appellate authority. **The BEO does not appear in the recognition chain
+at all.** For **aided** schools (Annexure I-A) renewal is by the **DEO (Elementary)** or **DEO
+(Secondary)** by stage, with withdrawal escalated to the Joint Directors and Directors.
+
+**Online:** recognition is applied for **end-to-end online** on **TN e-Sevai**
+(https://esevai.tnschools.gov.in/) — routes `/rcform/permission` and `/rcform/grant`, with form
+labels *"Classes For Which Recognition is Sought From / To"* and a class-wise strength table
+driving the fee slab. The **DGE portal** (https://apply1.tndge.org/dge-onlineportal, linked from
+https://dge.tn.gov.in/) advertises *"Opening of New School (Form A/B)"*, *"Renewal of Recognition
+(Form C)"* and **"Opening of Additional Standard (Form D)"**. **[B]** *(The rule prescribing DGE
+Forms A–D was NOT FOUND — they are not the 2023 Rules' forms.)*
+
+### 3.1 The second track — TN RTE Rules 2011, rule 12 — **[A]**
 
 https://indiankanoon.org/doc/85105980/
 
@@ -479,18 +563,34 @@ this pattern in the region (Explanation to r.12):
 | Minority I–X / VI–X; Anglo-Indian | **Joint Director (Secondary Education)** |
 | Matriculation schools | **Joint Director, Matriculation** |
 
-**VALIDITY PERIOD: NOT FOUND — and the absence looks deliberate.** Neither r.12(4) nor Form II
-states a duration, and **rule 12 contains no renewal provision at all**. Form II scopes the grant
-*"for class … to class …"* — a **class range, no sections**. On the rule text, TN recognition
-appears **open-ended until withdrawn** — a materially different model from AP's fixed term.
+**RTE-track VALIDITY PERIOD: NOT FOUND, and the blank is on the form itself.** **Form II** reads
+*"…grant of recognition to the ______ **for class ______ to class ______ for the period from
+______ to ______**"* — the period is **left blank for the authority to fill**, no rule fixes it,
+and **rule 12 contains no renewal provision at all**. Form II also carries: *"The grant of
+recognition **is not extendable and does not in any way imply any obligation to recognize beyond
+class VIII**"* and *"**No unrecognized classes shall run within the premises of the school.**"*
+
+*(Contrast Puducherry, §4, which fixes 3 years in the rule itself.)*
 
 **r.13 — withdrawal.** Only after registered-post notice specifying the violations, a **one-month**
-response period, a committee inspection, an inquiry report and a hearing. **r.13(2):** *"If the
-competent authority passes an order of withdrawal of recognition, it shall be **operative from
-the immediately succeeding academic year**."*
+response period, inspection by a **committee of 3 or 5 educationists and Government
+representatives**, and a hearing. **r.13(2):** withdrawal is *"**operative from the immediately
+succeeding academic year**"*, and the order **must name the neighbourhood schools** the children
+move to.
 
-**Design consequence:** a TN withdrawal is **not immediate**. An eligibility model that flips a TN
-school ineligible on the date of the withdrawal order would be wrong.
+**Design consequence:** a TN withdrawal is **not immediate** — under either track (2023 Rules
+r.11 says the same). An eligibility model that flips a TN school ineligible on the date of the
+withdrawal order would be wrong.
+
+### 3.1a ⚠️ Tamil Nadu has TWO parallel recognition regimes
+
+A TN private school is subject to **both** the RTE r.12 recognition (elementary, under RTE s.18)
+**and** the Private Schools Act s.8 recognition — with **different competent authorities**,
+**different forms**, and **different validity concepts** (a blank period vs the building-licence
+period). **Nothing found reconciles them.**
+
+**Compliance software must model two recognition records per TN school, not one.** The same is
+true of Puducherry (§4).
 
 ### 3.2 TNER rules 38–46 — the TC rules, read verbatim — **[A]**
 
