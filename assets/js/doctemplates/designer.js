@@ -2507,8 +2507,13 @@ function paintHub(){
   });
   TYPES.filter(t=>!typeEnabled(t)).forEach(t=>{
     const c=el("div","type-card type-card--off");
-    const why = t.requiresState ? `Applies in ${esc(t.requiresState)} — this school is in ${esc(S.school.state)}`
-                                : esc(t.alias);
+    /* With no recorded state this used to read "…this school is in " and stop.
+       Naming the gap is the honest half of not guessing at it. */
+    const why = t.requiresState
+      ? (S.school.state
+          ? `Applies in ${esc(t.requiresState)} — this school is in ${esc(S.school.state)}`
+          : `Applies in ${esc(t.requiresState)} — this school's state is not recorded`)
+      : esc(t.alias);
     c.innerHTML=`<div class="type-card__top"><div><div class="type-card__name">${esc(t.name)}</div>
       <div class="type-card__sub">${why}</div></div></div>
       <div><span class="chip">${t.requiresState?"Not applicable here":"Not enabled"}</span></div>`;
@@ -6040,10 +6045,40 @@ async function hydrateFromServer(){
   try{
     const meta=await srv.types();
     const sc=(meta&&meta.school)||{};
+    /* THE SERVER ANSWERED, SO ITS SILENCE IS INFORMATION.
+     *
+     * `board` and `state` decide which statutory authorities apply and which
+     * documents the school is offered. They used to fall back to S.school —
+     * which starts as SCHOOL_DEFAULT, the offline fixture: Delhi Public School,
+     * Ranchi · CBSE · Jharkhand.
+     *
+     * So a school that had never recorded a board was told its Transfer
+     * Certificate satisfies CBSE Examination Bye-Laws, Annexure-I, and its
+     * nineteen required fields. Observed live on SCH_B56BB9A401: the record has
+     * no `affiliationBoard` and no `board`, the server correctly sent "", and
+     * the hub showed CBSE. Six of the nine schools in this project have no
+     * recorded board, so six would have issued under a basis nobody chose.
+     *
+     * The reasoning for the old fallback was that blanking a value "would
+     * silently empty the compliance basis instead of showing that it is
+     * unknown". The intent is right and the effect was its opposite: leaving the
+     * demo default is not showing that the board is unknown, it is stating a
+     * confident wrong answer — the exact thing the compliance panel warns about
+     * two screens away, that inventing a plausible requirement "would assert
+     * wrong law confidently, which is worse than enforcing nothing".
+     *
+     * The architecture already handles absence correctly and was only being
+     * bypassed: `appliesWhen: sc => sc.board === "CBSE"` matches no board
+     * authority for "", resolveStack() returns RTE alone, and PROFILES.generic —
+     * "Generic — no verified profile" — enforces nothing and says so.
+     *
+     * A FAILED lookup is different and still keeps what it had: the catch below
+     * raises a visible loadError, because there the absence is our ignorance
+     * rather than the school's record. */
     S.school=Object.assign({}, S.school, {
       name : sc.name  || S.school.name,
-      state: sc.state || S.school.state,
-      board: sc.board || S.school.board,
+      state: sc.state || "",
+      board: sc.board || "",
       stage: sc.stage || S.school.stage
     });
   }catch(e){

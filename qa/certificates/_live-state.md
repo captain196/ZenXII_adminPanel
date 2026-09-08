@@ -1468,3 +1468,66 @@ The CBSE TC profile in the corpus is flagged `fieldListVerified: false` and
 `illustrative: true` in its own source. `FINAL_BLUEPRINT.md` names the same limit: only the
 CBSE TC profile rests on verified primary sources; Kerala and Tamil Nadu field lists were
 never retrieved, and **Maharashtra, Karnataka and UP have no verified authority at all**.
+
+## L32 · L31 FIXED, and an issuer-identity design published · E4
+
+### The fix
+
+`board` and `state` no longer fall back to `SCHOOL_DEFAULT` when the server answers.
+A successful lookup that returns nothing means the school **has** nothing — its silence is
+information. Verified live on `SCH_B56BB9A401`:
+
+| | before | after |
+|---|---|---|
+| board shown | `CBSE` | **(not recorded)** |
+| CBSE Annexure-I applied | yes | **no** |
+| required fields asserted | **19** | **0** |
+| RTE Act 2009 (national) | yes | yes — correctly unchanged |
+| state | Jharkhand fixture risk | `madhya pradesh`, the real value |
+
+A **failed** lookup is deliberately left alone: there the absence is our ignorance rather
+than the school's record, so the previous values stand and `S.loadError` makes the failure
+visible. The distinction is the whole point.
+
+Also fixed: with no recorded state, an unavailable type's card read *"…this school is in "*
+and stopped. It now says *"this school's state is not recorded"*. Naming the gap is the
+honest half of not guessing at it.
+
+Regression cover: `DocIssuerBasisTest` (5 tests), including one that pins the fixture *still
+says CBSE* — so if anyone removes that risk, the tests guarding it get re-read rather than
+silently passing.
+
+### The design, published
+
+An issuer-identity specification and working prototype, built on the live data:
+**https://claude.ai/code/artifact/17ef2981-a161-471b-bf55-0ffa878e0f00**
+
+It sets out the two layers of identity (the school's entitlement; the document's
+traceability), a four-rung trust ladder, and what the corpus does and does not verify.
+
+### The finding the design rests on
+
+Nine school records, read 8 September 2026. **Zero have a complete, well-formed issuer
+identity.**
+
+| | |
+|---|---|
+| board recorded | 3 of 9 |
+| affiliation number | 4 of 9 — **two malformed** |
+| UDISE+ code | **0 of 9** |
+| recognition order | none |
+| stored seal | none |
+
+`6564643131685.16463168` is not a number of any kind. `09310113101` is eleven digits — a
+UDISE code sitting in the affiliation field. The field is unvalidated free text, so nothing
+ever told anyone.
+
+### Ordering recommended for the rest
+
+**A** stop the fixture reaching production — **done**.
+**B** model issuer identity as its own dated, attributed record carrying its own level,
+`verifiedBy`, `verifiedOn` and review interval, as authorities already do. Not `board_config`,
+which belongs to the exam module and means something else.
+**C** drive the compliance basis from that record and nothing else.
+**D** gate issuance on the ladder — when issuance exists. Eight print points are declared and
+zero are wired, so the gate can be built before the door, which is the only time it is cheap.
