@@ -1402,3 +1402,69 @@ Two changed values in the parity test were changed because they were **wrong bef
 `ÄÖÜ School` and `ß Schule` each lost a whole word, so every name shaped
 `<unrepresentable word> School` minted the same `custom:school`. `ÄÖÜ School` and
 `ÑÑÑ School` are now distinct.
+
+## L31 · The compliance basis falls back to a DEMO FIXTURE when a school has no board · E4
+
+Found while researching what identity an authentic certificate issuer must hold.
+
+### What happens
+
+```
+school record SCH_B56BB9A401 : no affiliationBoard, no board field
+server sends                 : board: ""
+client shows                 : board: "CBSE"
+compliance stack applied     : rte + cbse  (CBSE Bye-Laws Annexure-I, 19 required fields)
+```
+
+The school is told its Transfer Certificate satisfies **CBSE Examination Bye-Laws,
+Annexure-I** — an authority it has never claimed to sit under.
+
+### Why
+
+`S.school = Object.assign({}, SCHOOL_DEFAULT)` and
+
+```js
+const SCHOOL_DEFAULT = {name:"Delhi Public School, Ranchi", board:"CBSE", state:"Jharkhand", stage:"both"};
+```
+
+is a **demo fixture**. Hydration then overwrites only non-empty server values, on deliberate
+reasoning recorded in the source: *"Absent values are left as they are rather than blanked: an
+unrecorded board is a gap in the school's record, and answering it with '' would silently
+empty the compliance basis instead of showing that it is unknown."*
+
+The intent is right and the effect is the opposite. Leaving the demo default is not showing
+that the board is unknown — it is stating a confident wrong answer, which is exactly what the
+compliance panel's own copy warns against two screens away: *"Inventing a plausible-looking
+requirement to fill this gap would assert wrong law confidently, which is worse than
+enforcing nothing."*
+
+### The architecture already has the right answer and is being bypassed
+
+`appliesWhen: sc => sc.board === "CBSE"` means an empty board correctly matches **no** board
+authority, `resolveStack()` returns RTE alone, and `PROFILES.generic` — *"Generic — no
+verified profile"* — takes over, enforcing nothing and saying so. That is precisely what
+`FINAL_BLUEPRINT.md` designed. Only the fixture stops it running.
+
+### Scale
+
+Across the 9 school records in this project:
+
+| | |
+|---|---|
+| `affiliationNo` present | **4 of 9** |
+| board recorded (`affiliationBoard`/`board`) | **3 of 9** |
+| UDISE code | **0 of 9** |
+| `recognitionNo` / `registrationNo` | none |
+| school seal stored | none (`logoUrl` only) |
+
+So **6 of 9 schools would be issuing under a compliance basis nobody recorded.**
+`SCH_B56BB9A401` does carry `board_config: {"type":"CBSE"}` — but that belongs to the exam
+and grading module (`grading_pattern`, `passing_marks`) and is not read here; whether it may
+stand as an affiliation claim is a product decision, not a safe inference.
+
+### Also worth carrying to any issuance build
+
+The CBSE TC profile in the corpus is flagged `fieldListVerified: false` and
+`illustrative: true` in its own source. `FINAL_BLUEPRINT.md` names the same limit: only the
+CBSE TC profile rests on verified primary sources; Kerala and Tamil Nadu field lists were
+never retrieved, and **Maharashtra, Karnataka and UP have no verified authority at all**.
