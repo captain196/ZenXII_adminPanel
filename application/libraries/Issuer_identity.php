@@ -116,8 +116,69 @@ class Issuer_identity
         ],
     ];
 
-    /** UDISE+ codes are eleven digits. The one identifier common to every board. */
+    /**
+     * UDISE+ codes are eleven digits, and the first two are the STATE.
+     *
+     * Structure: 2 state · 2 district · 3 block · 4 school. The state prefix is
+     * the census/GST state code, so a code can be checked against the school's
+     * own declared state with no lookup and no network — which is worth having,
+     * because a UDISE code is the closest thing to machine-checkable proof that
+     * a school legally exists.
+     *
+     * The ordering is why: a school gets its recognition certificate from the
+     * state, and only then does the Block Education Office register it on
+     * UDISE+ after physical verification. Recognition comes first; the code is
+     * downstream evidence of it. Board affiliation is a later and separate
+     * thing — it governs examinations, not existence.
+     *
+     * This caught a real one. SCH_218AAF5C23 is in Uttar Pradesh and carries
+     * `affiliationNo = 09310113101`: eleven digits beginning 09, which is the
+     * UP state code. It is a genuine UDISE code sitting in the affiliation
+     * field, because the form labels one input "Affiliation / DISE No.".
+     */
     const UDISE_PATTERN = '/^\d{11}$/';
+
+    /** Census/GST state codes, which UDISE+ uses for its first two digits. */
+    const STATE_CODES = [
+        '01' => 'jammu and kashmir', '02' => 'himachal pradesh', '03' => 'punjab',
+        '04' => 'chandigarh',        '05' => 'uttarakhand',      '06' => 'haryana',
+        '07' => 'delhi',             '08' => 'rajasthan',        '09' => 'uttar pradesh',
+        '10' => 'bihar',             '11' => 'sikkim',           '12' => 'arunachal pradesh',
+        '13' => 'nagaland',          '14' => 'manipur',          '15' => 'mizoram',
+        '16' => 'tripura',           '17' => 'meghalaya',        '18' => 'assam',
+        '19' => 'west bengal',       '20' => 'jharkhand',        '21' => 'odisha',
+        '22' => 'chhattisgarh',      '23' => 'madhya pradesh',   '24' => 'gujarat',
+        '27' => 'maharashtra',       '29' => 'karnataka',        '30' => 'goa',
+        '31' => 'lakshadweep',       '32' => 'kerala',           '33' => 'tamil nadu',
+        '34' => 'puducherry',        '35' => 'andaman and nicobar islands',
+        '36' => 'telangana',         '37' => 'andhra pradesh',   '38' => 'ladakh',
+    ];
+
+    /**
+     * Which state a UDISE code says it belongs to, or null if the prefix is not
+     * a state code we know. Null means "cannot tell", never "wrong".
+     */
+    public static function stateOfUdise(string $udise): ?string
+    {
+        if (!preg_match(self::UDISE_PATTERN, $udise)) {
+            return null;
+        }
+        return self::STATE_CODES[substr($udise, 0, 2)] ?? null;
+    }
+
+    /**
+     * Does this value look like a UDISE code for a DIFFERENT state than the one
+     * recorded? Used to explain a mismatch rather than merely reject it.
+     */
+    public static function udiseStateMismatch(string $udise, string $declaredState): ?string
+    {
+        $codeState = self::stateOfUdise($udise);
+        $declared  = strtolower(trim($declaredState));
+        if ($codeState === null || $declared === '') {
+            return null;                      // cannot tell — say nothing
+        }
+        return $codeState === $declared ? null : $codeState;
+    }
 
     /** Our own convention, not a statutory period — which is why it is settable. */
     const DEFAULT_REVIEW_MONTHS = 12;
@@ -158,8 +219,11 @@ class Issuer_identity
             } elseif (!self::BOARDS[$board]['needsNo']) {
                 $errors['affiliationNo'] = 'An unaffiliated school has no affiliation number.';
             } elseif (!preg_match(self::BOARDS[$board]['pattern'], $no)) {
+                $udiseState = self::stateOfUdise($no);
                 $errors['affiliationNo'] = preg_match(self::UDISE_PATTERN, $no)
-                    ? 'Eleven digits is a UDISE+ code, not an affiliation number — it belongs in the UDISE field.'
+                    ? 'Eleven digits is a UDISE+ code, not an affiliation number'
+                      . ($udiseState ? ' — and ' . substr($no, 0, 2) . ' is ' . ucwords($udiseState) : '')
+                      . '. It belongs in the UDISE field.'
                     : 'Not a valid ' . self::BOARDS[$board]['label'] . ' number. ' . self::BOARDS[$board]['hint'];
             } else {
                 $out['affiliationNo'] = $no;
@@ -171,7 +235,15 @@ class Issuer_identity
             if (!preg_match(self::UDISE_PATTERN, $udise)) {
                 $errors['udiseCode'] = 'A UDISE+ code is exactly 11 digits.';
             } else {
-                $out['udiseCode'] = $udise;
+                /* The first two digits are the state. Checking them costs
+                   nothing and catches a code copied from another school. */
+                $other = self::udiseStateMismatch($udise, (string) ($in['state'] ?? ''));
+                if ($other !== null) {
+                    $errors['udiseCode'] = 'That code begins ' . substr($udise, 0, 2)
+                        . ', which is ' . ucwords($other) . '. Check it belongs to this school.';
+                } else {
+                    $out['udiseCode'] = $udise;
+                }
             }
         }
 

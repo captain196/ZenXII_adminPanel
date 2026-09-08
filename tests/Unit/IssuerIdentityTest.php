@@ -97,6 +97,68 @@ final class IssuerIdentityTest extends TestCase
         $this->assertArrayHasKey('udiseCode', Issuer_identity::validate(['udiseCode' => '093101'])['errors']);
     }
 
+    /* ── the UDISE state prefix ─────────────────────────────────────── */
+
+    /**
+     * A UDISE+ code is 2 state · 2 district · 3 block · 4 school, and the state
+     * prefix is the census/GST state code. Checking it needs no network, and it
+     * is the closest thing to machine-checkable proof that a school exists —
+     * because a school gets its recognition certificate from the state FIRST,
+     * and only then does the Block Education Office register it on UDISE+ after
+     * physical verification.
+     */
+    public function test_a_udise_code_names_its_own_state(): void
+    {
+        $this->assertSame('uttar pradesh',  Issuer_identity::stateOfUdise('09310113101'));
+        $this->assertSame('madhya pradesh', Issuer_identity::stateOfUdise('23010100112'));
+        $this->assertNull(Issuer_identity::stateOfUdise('093101'), 'not a UDISE shape at all');
+        $this->assertNull(Issuer_identity::stateOfUdise('99310113101'), '99 is not a state code');
+    }
+
+    /** A code from another state is explained, not merely refused. */
+    public function test_a_code_from_another_state_is_caught(): void
+    {
+        $r = Issuer_identity::validate([
+            'state'     => 'madhya pradesh',
+            'udiseCode' => '09310113101',       // a Uttar Pradesh code
+        ]);
+        $this->assertArrayHasKey('udiseCode', $r['errors']);
+        $this->assertStringContainsString('Uttar Pradesh', $r['errors']['udiseCode']);
+    }
+
+    public function test_a_matching_code_is_accepted(): void
+    {
+        $r = Issuer_identity::validate(['state' => 'Uttar Pradesh', 'udiseCode' => '09310113101']);
+        $this->assertSame([], $r['errors']);
+        $this->assertSame('09310113101', $r['fields']['udiseCode']);
+    }
+
+    /** With no declared state we cannot tell, and must not pretend to. */
+    public function test_an_unknown_state_is_not_treated_as_a_mismatch(): void
+    {
+        $this->assertNull(Issuer_identity::udiseStateMismatch('09310113101', ''));
+        $this->assertSame([], Issuer_identity::validate(['udiseCode' => '09310113101'])['errors']);
+    }
+
+    /**
+     * The real one. RVS Science & Sports Academy is in Uttar Pradesh and stores
+     * 09310113101 in its AFFILIATION field. Eleven digits beginning 09 — a
+     * genuine UP UDISE code in the wrong box, because the form labels one input
+     * "Affiliation / DISE No.". The message says so.
+     */
+    public function test_the_misplaced_udise_code_is_identified_by_its_state(): void
+    {
+        $r = Issuer_identity::validate([
+            'affiliationBoard' => 'CBSE',
+            'affiliationNo'    => '09310113101',
+            'state'            => 'Uttar Pradesh',
+        ]);
+        $msg = $r['errors']['affiliationNo'];
+        $this->assertStringContainsString('UDISE+ code', $msg);
+        $this->assertStringContainsString('Uttar Pradesh', $msg);
+        $this->assertStringContainsString('belongs in the UDISE field', $msg);
+    }
+
     /* ── the ladder ─────────────────────────────────────────────────── */
 
     public function test_a_school_with_nothing_recorded_is_level_zero(): void
