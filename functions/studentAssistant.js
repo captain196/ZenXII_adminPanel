@@ -86,6 +86,23 @@ const MAX_TURNS = 20;            // conversation length cap sent by the client
 // keeping a single runaway user bounded. Average use, not the cap, drives the
 // bill — the cap only bounds the tail.
 const DAILY_QUOTA = 10;
+/**
+ * Attempts, answered or not, per student per IST day.
+ *
+ * DAILY_QUOTA alone was not a cost control. Every non-answer path refunds the
+ * unit — the fair thing to do to a student who got nothing — but it means the
+ * counter never advances during exactly the condition the cap exists for. Under
+ * a sustained Vertex 429 or a run of unusable generations, each request refunds
+ * itself and the client can retry forever. Worse, a conversation that never
+ * converges costs MAX_TOOL_ITERATIONS real model calls plus up to
+ * 6 x QUERY_LIMIT Firestore reads and was billed zero.
+ *
+ * So `attempts` counts tries and is NEVER refunded, while `count` keeps counting
+ * answers and stays refundable. A student still gets ten real answers; they no
+ * longer get unbounded failures. The gap between the two is deliberate slack for
+ * genuine flakiness.
+ */
+const DAILY_ATTEMPTS = 25;
 const MAX_OUTPUT_TOKENS = 1024;
 const QUERY_LIMIT = 25;          // rows any one tool may return
 // Token spend is bounded by characters, not just by turn count. Without these
@@ -277,6 +294,8 @@ async function loadContext(schoolId, studentId) {
     schoolId,
     studentId,
     session,
+    // Opt-in, per school, for the pilot's fabrication review. See writeLog.
+    pilotReview: school.ai_assistant_pilot_review === true,
     className: String(student.className || student.class || ''),
     section: String(student.section || ''),
     studentName: String(student.name || ''),
@@ -294,16 +313,32 @@ async function consumeQuota(schoolId, studentId) {
   const ref = db().doc(`${C.ASSISTANT_QUOTA}/${schoolId}_${studentId}_${day}`);
   await db().runTransaction(async (tx) => {
     const snap = await tx.get(ref);
-    const used = snap.exists ? Number(snap.data().count || 0) : 0;
+    const d = snap.exists ? (snap.data() || {}) : {};
+    const used = Number(d.count || 0);
+    // Rows predating `attempts` treat a missing value as equal to count, so the
+    // upgrade does not hand an existing student a fresh allowance.
+    const tries = Number(d.attempts != null ? d.attempts : used);
+
     if (used >= DAILY_QUOTA) {
       throw new HttpsError('resource-exhausted',
         `You have reached today's limit of ${DAILY_QUOTA} questions. Please try again tomorrow.`);
     }
+    if (tries >= DAILY_ATTEMPTS) {
+      // Same error code deliberately: the client maps resource-exhausted to its
+      // own localized "daily limit" string and cannot tell the two cases apart
+      // from the code. The student HAS hit a limit, so the message is true — the
+      // server log carries the distinction.
+      logger.warn('studentAssistant: attempt cap reached', { schoolId, studentId, tries, used });
+      throw new HttpsError('resource-exhausted',
+        `You have reached today's limit of ${DAILY_QUOTA} questions. Please try again tomorrow.`);
+    }
+
     tx.set(ref, {
       schoolId,
       studentId,
       day,
       count: used + 1,
+      attempts: tries + 1,
       updatedAt: admin.firestore.FieldValue.serverTimestamp(),
     }, { merge: true });
   });
@@ -328,6 +363,9 @@ async function refundQuota(schoolId, studentId) {
       const snap = await tx.get(ref);
       if (!snap.exists) return;
       const used = Number(snap.data().count || 0);
+      // `count` only. `attempts` is deliberately NOT refunded — it is the one
+      // number a failure loop cannot walk backwards, and therefore the only real
+      // backpressure in this file.
       tx.set(ref, { count: Math.max(0, used - 1) }, { merge: true });
     });
   } catch (e) {
@@ -844,6 +882,7 @@ exports.studentAssistant = onCall(
 
         await writeLog({ ctx, role, question, toolsUsed, iterations,
           usageIn, usageOut, cacheRead, cacheWrite, ok: clean,
+          reply: clean ? text : undefined,
           error: clean ? undefined : `finishReason=${finish}` });
 
         if (!clean) {
@@ -939,6 +978,20 @@ async function writeLog(o) {
       session: o.ctx.session,
       role: o.role,
       question: String(o.question).slice(0, 500),
+      // The REPLY, and only for schools that opted into pilot review.
+      //
+      // Without this the audit trail cannot reproduce what the assistant
+      // actually said, so the one risk with no automated oracle — fabrication,
+      // a plausible and confident wrong answer — cannot be reviewed at all. A
+      // pilot that cannot read the replies is not a pilot.
+      //
+      // Off unless schools/{id}.ai_assistant_pilot_review === true, because
+      // storing a child's answers for 90 days needs a reason and "we might want
+      // it later" is not one. When the pilot ends, clear the flag; the existing
+      // TTL removes what was already written on its own schedule.
+      reply: o.ctx.pilotReview === true && o.reply
+        ? String(o.reply).slice(0, 2000)
+        : null,
       toolsUsed: o.toolsUsed,
       iterations: o.iterations,
       ok: o.ok,
