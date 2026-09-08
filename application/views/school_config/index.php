@@ -71,6 +71,9 @@
 .sc-grid-3 { grid-template-columns:1fr 1fr 1fr; }
 @media(max-width:640px){ .sc-grid-2,.sc-grid-3{ grid-template-columns:1fr; } }
 
+.ii-note{font-size:11.5px;color:var(--t3);margin-top:5px;min-height:1.1em;line-height:1.5}
+.ii-note.ii-bad{color:#C0392B}
+.ii-note.ii-good{color:#15803D}
 .sc-field label {
     display:block; font-size:11.5px; font-weight:600;
     color:var(--t2); margin-bottom:5px; text-transform:uppercase; letter-spacing:.4px;
@@ -363,6 +366,9 @@
         <button class="sc-tab active" data-tab="profile">
             <i class="fa fa-building-o"></i>Profile
         </button>
+        <button class="sc-tab" data-tab="issuer">
+            <i class="fa fa-certificate"></i>Issuer Identity
+        </button>
         <button class="sc-tab" data-tab="board">
             <i class="fa fa-graduation-cap"></i>Board
         </button>
@@ -644,6 +650,113 @@
                 Use <b>Consistency Check</b> to detect orphaned or empty sessions &nbsp;·&nbsp;
                 Use <b>Sync from Firebase</b> if you edited sessions directly in Firebase Console.
             </div>
+        </div>
+    </div>
+
+    <!-- ════════════════════════════════════════════════════════ -->
+    <!-- TAB: Issuer Identity                                    -->
+    <!--                                                          -->
+    <!-- What entitles this school to ISSUE a certificate, as     -->
+    <!-- distinct from how it presents itself. Kept apart from    -->
+    <!-- Profile because these fields are not display: they       -->
+    <!-- select the statutory compliance profile in Documents,    -->
+    <!-- print as "Aff. No:" on marksheets, and list the school   -->
+    <!-- in the super-admin registry.                             -->
+    <!-- ════════════════════════════════════════════════════════ -->
+    <div class="sc-pane" id="tab-issuer">
+        <div class="sc-step-hint">
+            <span class="sc-step-badge">Required to issue</span>
+            A certificate is evidence. These fields record what entitles this school to issue one — and they are read by Documents, by result cards, and by the school registry.
+        </div>
+
+        <div class="sc-card">
+            <div class="sc-card-title"><i class="fa fa-university"></i> Entitlement to issue</div>
+            <div class="sc-grid sc-grid-2">
+                <div class="sc-field">
+                    <label>Affiliating Board <span style="color:var(--clay,#BC5A3C)">*</span></label>
+                    <select id="ii_affiliation_board"><option value="">— not recorded —</option></select>
+                    <div class="ii-note" id="ii_n_board"></div>
+                </div>
+                <div class="sc-field">
+                    <label>Affiliation Number <span style="color:var(--clay,#BC5A3C)">*</span></label>
+                    <input type="text" id="ii_affiliation_no" maxlength="40" placeholder="Choose a board first" autocomplete="off">
+                    <div class="ii-note" id="ii_n_aff"></div>
+                </div>
+                <div class="sc-field">
+                    <label>UDISE+ Code</label>
+                    <input type="text" id="ii_udise_code" maxlength="11" inputmode="numeric" placeholder="11 digits" autocomplete="off">
+                    <div class="ii-note" id="ii_n_udise"></div>
+                </div>
+                <div class="sc-field">
+                    <label>Registered School Name <span style="color:var(--clay,#BC5A3C)">*</span></label>
+                    <input type="text" id="ii_registered_name" maxlength="200" placeholder="Exactly as on the affiliation instrument" autocomplete="off">
+                    <div class="ii-note" id="ii_n_name"></div>
+                </div>
+            </div>
+        </div>
+
+        <div class="sc-card" id="ii_recog_card">
+            <div class="sc-card-title"><i class="fa fa-file-text-o"></i> Recognition Order</div>
+            <div style="font-size:12px;color:var(--t3);margin:-6px 0 12px">
+                A state-recognised school issues under an order from its state education department rather than a board affiliation. Recorded separately because the two are different instruments — overloading one field is how a UDISE code ended up in the affiliation number.
+            </div>
+            <div class="sc-grid sc-grid-2">
+                <div class="sc-field">
+                    <label>Order Number</label>
+                    <input type="text" id="ii_recognition_no" maxlength="60" autocomplete="off">
+                </div>
+                <div class="sc-field">
+                    <label>Order Date</label>
+                    <input type="date" id="ii_recognition_date">
+                </div>
+                <div class="sc-field" style="grid-column:1/-1">
+                    <label>Issuing Authority</label>
+                    <input type="text" id="ii_recognition_authority" maxlength="200" placeholder="e.g. Directorate of Public Instruction, Madhya Pradesh" autocomplete="off">
+                </div>
+            </div>
+        </div>
+
+        <div class="sc-card">
+            <div class="sc-card-title"><i class="fa fa-pencil-square-o"></i> Signatory of Record</div>
+            <div class="sc-grid sc-grid-2">
+                <div class="sc-field">
+                    <label>Head of Institution <span style="color:var(--clay,#BC5A3C)">*</span></label>
+                    <input type="text" id="ii_head_of_institution" maxlength="200" placeholder="Name as it will print" autocomplete="off">
+                    <div class="ii-note" id="ii_n_head"></div>
+                </div>
+                <div class="sc-field">
+                    <label>Holding Office Since</label>
+                    <input type="date" id="ii_head_since">
+                    <div class="ii-note">A certificate must be signed by whoever held the office on its issue date.</div>
+                </div>
+            </div>
+        </div>
+
+        <div class="sc-card">
+            <div class="sc-card-title"><i class="fa fa-shield"></i> Verification</div>
+            <div id="ii_ladder" style="margin-bottom:14px"></div>
+            <div class="sc-grid sc-grid-2">
+                <div class="sc-field">
+                    <label>Re-check Every</label>
+                    <select id="ii_review_months">
+                        <option value="12">12 months</option>
+                        <option value="24">24 months</option>
+                        <option value="36">36 months</option>
+                    </select>
+                    <div class="ii-note">An affiliation can lapse. A verification with no expiry is a claim wearing a badge.</div>
+                </div>
+                <div class="sc-field">
+                    <label>Where This Appears</label>
+                    <div style="font-size:12px;color:var(--t3);line-height:1.7">
+                        Transfer &amp; other certificates &middot; result cards and marksheets &middot; the school registry
+                    </div>
+                </div>
+            </div>
+        </div>
+
+        <div style="display:flex;gap:10px;align-items:center;flex-wrap:wrap;margin-top:4px">
+            <button class="sc-btn sc-btn-primary" id="ii_save"><i class="fa fa-save"></i> Save Issuer Identity</button>
+            <span id="ii_msg" style="font-size:12px;color:var(--t3)"></span>
         </div>
     </div>
 
@@ -1275,6 +1388,7 @@ function loadConfig() {
         CFG.archived_sessions = d.archived_sessions || [];
         CSRFT = d.csrf_token || CSRFT;
         renderProfile(d.profile || {});
+        renderIssuerIdentity(d.issuer_identity || {});
         renderForgetPwd(d.forget_password_details || {});
         renderSessions(d.sessions || [], d.active_session || '');
         renderBoard(d.board || {});
@@ -1288,6 +1402,197 @@ function loadConfig() {
         renderRcConfig(d.report_card_config || {});
     });
 }
+
+/* ══════════ ISSUER IDENTITY ══════════
+ *
+ * The client mirrors Issuer_identity's rules so a mistake is named while the
+ * person is still looking at the field. The SERVER still decides — this is
+ * feedback, never the gate.
+ *
+ * The rules arrive FROM the server in get_config (issuer_identity.boards), so
+ * there is no second copy here to drift out of step with the first.
+ */
+var IIBoards = [];
+
+function renderIssuerIdentity(ii) {
+    ii = ii || {};
+    IIBoards = ii.boards || [];
+
+    var sel = document.getElementById('ii_affiliation_board');
+    if (sel) {
+        sel.innerHTML = '<option value="">— not recorded —</option>';
+        IIBoards.forEach(function (b) {
+            var o = document.createElement('option');
+            o.value = b.key; o.textContent = b.label;
+            sel.appendChild(o);
+        });
+        sel.value = ii.affiliationBoard || '';
+    }
+
+    var ro = ii.recognitionOrder || {};
+    var map = {
+        ii_affiliation_no:      ii.affiliationNo,
+        ii_udise_code:          ii.udiseCode,
+        ii_registered_name:     ii.registeredName,
+        ii_head_of_institution: ii.headOfInstitution,
+        ii_head_since:          ii.headSince,
+        ii_recognition_no:      ro.number,
+        ii_recognition_date:    ro.date,
+        ii_recognition_authority: ro.authority
+    };
+    Object.keys(map).forEach(function (id) {
+        var el = document.getElementById(id);
+        if (el) el.value = map[id] || '';
+    });
+    var rev = document.getElementById('ii_review_months');
+    if (rev) rev.value = String(ii.reviewMonths || 12);
+
+    iiEvaluate(ii);
+}
+
+function iiBoardSpec(key) {
+    for (var i = 0; i < IIBoards.length; i++) if (IIBoards[i].key === key) return IIBoards[i];
+    return null;
+}
+
+/* The one shape the client checks on its own: eleven digits is a UDISE code.
+   Naming that specific mistake is the point — the old form invited it by
+   labelling a single input "Affiliation / DISE No.". */
+function iiLooksLikeUdise(v) { return /^\d{11}$/.test(v); }
+
+function iiVal(id) {
+    var el = document.getElementById(id);
+    return el ? String(el.value || '').trim() : '';
+}
+function iiNote(id, text, kind) {
+    var el = document.getElementById(id);
+    if (!el) return;
+    el.textContent = text || '';
+    el.className = 'ii-note' + (kind ? ' ii-' + kind : '');
+}
+
+function iiEvaluate(server) {
+    var board = iiVal('ii_affiliation_board');
+    var aff   = iiVal('ii_affiliation_no');
+    var udise = iiVal('ii_udise_code');
+    var name  = iiVal('ii_registered_name');
+    var head  = iiVal('ii_head_of_institution');
+    var spec  = iiBoardSpec(board);
+
+    iiNote('ii_n_board', board ? '' :
+        'Without a board no statutory profile can apply — Documents falls back to a generic profile that enforces nothing and says so.',
+        board ? '' : 'bad');
+
+    var affEl = document.getElementById('ii_affiliation_no');
+    if (affEl) affEl.placeholder = spec ? spec.hint : 'Choose a board first';
+    if (affEl) affEl.disabled = !!(spec && !spec.needsNo);
+
+    var affOk = false;
+    if (spec && !spec.needsNo) {
+        affOk = true;
+        iiNote('ii_n_aff', spec.hint, '');
+    } else if (!board) {
+        iiNote('ii_n_aff', 'The format depends on the board.', '');
+    } else if (!aff) {
+        iiNote('ii_n_aff', spec ? spec.hint : '', 'bad');
+    } else if (iiLooksLikeUdise(aff) && board !== 'STATE') {
+        iiNote('ii_n_aff', 'Eleven digits is a UDISE+ code, not an affiliation number — it belongs in the field beside this one.', 'bad');
+    } else {
+        affOk = true;
+        iiNote('ii_n_aff', 'Checked on save against the ' + (spec ? spec.label : board) + ' format.', '');
+    }
+
+    if (!udise) iiNote('ii_n_udise', 'Eleven digits. The one identifier common to every board and state.', '');
+    else if (!/^\d{11}$/.test(udise)) iiNote('ii_n_udise', 'A UDISE+ code is exactly 11 digits.', 'bad');
+    else iiNote('ii_n_udise', 'Format accepted.', 'good');
+
+    iiNote('ii_n_name', name ? '' :
+        'A certificate printed with a name the board does not recognise cannot be checked by whoever receives it.',
+        name ? '' : 'bad');
+    iiNote('ii_n_head', head ? 'Prints as the signatory of record.' :
+        'The Principal signs and carries the exposure.', head ? '' : 'bad');
+
+    /* The recognition-order card belongs to state-recognised schools. */
+    var recog = document.getElementById('ii_recog_card');
+    if (recog) recog.style.opacity = (board === 'STATE') ? '' : '.55';
+
+    /* The ladder reflects what the SERVER last computed. A client-side guess
+       here would be a second source of truth for a compliance state. */
+    var lv = (server && typeof server.level === 'number') ? server.level : null;
+    var may = server && server.mayIssue;
+    var names = ['Unrecorded', 'Claimed', 'Evidenced', 'Verified'];
+    var tones = ['#C0392B', '#B45309', '#2563EB', '#15803D'];
+    var box = document.getElementById('ii_ladder');
+    if (box && lv !== null) {
+        var bars = '';
+        for (var i = 0; i < 4; i++) {
+            bars += '<i style="flex:1;height:5px;border-radius:3px;display:block;background:'
+                 + (i <= lv ? tones[lv] : 'var(--line,#E3D8CF)') + '"></i>';
+        }
+        box.innerHTML =
+            '<div style="display:flex;gap:4px;margin-bottom:8px">' + bars + '</div>' +
+            '<div style="font-size:12px;color:' + tones[lv] + ';font-weight:600">'
+            + lv + ' · ' + names[lv] + '</div>' +
+            '<div style="font-size:12px;color:var(--t3);margin-top:4px">'
+            + ((may && may.reason) ? may.reason : 'This school may issue certificates.') + '</div>';
+    }
+}
+
+function saveIssuerIdentity() {
+    var data = {
+        affiliation_board:     iiVal('ii_affiliation_board'),
+        affiliation_no:        iiVal('ii_affiliation_no'),
+        udise_code:            iiVal('ii_udise_code'),
+        registered_name:       iiVal('ii_registered_name'),
+        head_of_institution:   iiVal('ii_head_of_institution'),
+        head_since:            iiVal('ii_head_since'),
+        review_months:         iiVal('ii_review_months'),
+        recognition_no:        iiVal('ii_recognition_no'),
+        recognition_date:      iiVal('ii_recognition_date'),
+        recognition_authority: iiVal('ii_recognition_authority')
+    };
+    var msg = document.getElementById('ii_msg');
+    if (msg) { msg.textContent = ''; msg.style.color = 'var(--t3)'; }
+
+    post('school_config/save_issuer_identity', data, function (d) {
+        /* A REFUSAL NAMES EVERY FIELD IT REFUSED. The server returns them
+           keyed, so each one is shown against its own input rather than
+           collapsed into one line the reader has to decode. */
+        if (!d || d.status !== 'success') {
+            if (d && d.fields) {
+                Object.keys(d.fields).forEach(function (k) {
+                    var id = ({
+                        affiliationBoard: 'ii_n_board', affiliationNo: 'ii_n_aff',
+                        udiseCode: 'ii_n_udise', registeredName: 'ii_n_name',
+                        headOfInstitution: 'ii_n_head'
+                    })[k];
+                    if (id) iiNote(id, d.fields[k], 'bad');
+                });
+            }
+            if (msg) {
+                msg.textContent = (d && d.message) || 'Could not save.';
+                msg.style.color = '#C0392B';
+            }
+            return;
+        }
+        if (msg) msg.textContent = d.message || 'Saved.';
+        iiEvaluate({ level: d.level, mayIssue: null });
+    });
+}
+
+/* ── issuer identity: bindings ── */
+(function () {
+    var save = document.getElementById('ii_save');
+    if (save) save.addEventListener('click', function (e) { e.preventDefault(); saveIssuerIdentity(); });
+
+    ['ii_affiliation_board','ii_affiliation_no','ii_udise_code',
+     'ii_registered_name','ii_head_of_institution'].forEach(function (id) {
+        var el = document.getElementById(id);
+        if (!el) return;
+        el.addEventListener('input',  function () { iiEvaluate(null); });
+        el.addEventListener('change', function () { iiEvaluate(null); });
+    });
+})();
 
 /* ══════════ PROFILE ══════════ */
 function renderProfile(p) {

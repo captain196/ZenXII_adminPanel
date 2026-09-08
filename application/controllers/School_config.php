@@ -206,7 +206,35 @@ class School_config extends MY_Controller
                             ? array_values(array_filter($fsSchool['archivedSessions'], 'is_string'))
                             : [];
 
+        /* ISSUER IDENTITY — what entitles this school to issue, as distinct
+           from how it presents itself. Sent whole so the tab can render the
+           ladder without a second round trip, and so the client can mirror the
+           server's own validation rules rather than keeping a second copy that
+           drifts. */
+        $this->load->library('Issuer_identity');
+        $identityDoc = array_merge($fsSchool, [
+            'verification' => (is_array($fsSchool['issuerIdentity']['verification'] ?? null))
+                ? $fsSchool['issuerIdentity']['verification'] : [],
+        ]);
+
         $this->json_success([
+            'issuer_identity' => [
+                'affiliationBoard'  => (string) ($fsSchool['affiliationBoard'] ?? ''),
+                'affiliationNo'     => (string) ($fsSchool['affiliationNo'] ?? ''),
+                'udiseCode'         => (string) ($fsSchool['udiseCode'] ?? ''),
+                'registeredName'    => (string) ($fsSchool['registeredName'] ?? ''),
+                'headOfInstitution' => (string) ($fsSchool['headOfInstitution'] ?? $fsSchool['principal'] ?? ''),
+                'headSince'         => (string) ($fsSchool['headSince'] ?? ''),
+                'reviewMonths'      => (int) ($fsSchool['reviewMonths'] ?? Issuer_identity::DEFAULT_REVIEW_MONTHS),
+                'recognitionOrder'  => (is_array($fsSchool['recognitionOrder'] ?? null)) ? $fsSchool['recognitionOrder'] : [],
+                'verification'      => $identityDoc['verification'],
+                'level'             => Issuer_identity::levelOf($identityDoc),
+                'mayIssue'          => Issuer_identity::mayIssue($identityDoc),
+                'boards'            => Issuer_identity::boardCatalogue(),
+                /* The exam module's board, shown ONLY so a school can see the two
+                   are different questions. It is never read as an affiliation. */
+                'examBoard'         => (string) ($fsSchool['board_config']['type'] ?? ''),
+            ],
             'profile'                 => is_array($profile)  ? $profile  : [],
             'forget_password_details' => $forgetPwd,
             'board'                   => is_array($board)     ? $board    : [],
