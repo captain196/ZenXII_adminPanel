@@ -3,6 +3,18 @@
 **Verification date** 2026-09-08 · **Scope** Indian CENTRAL statutes/schemes + every examination board
 · **Purpose** ZenXii certificate-issuance module (TC, Bonafide, Character, Migration, Study)
 
+## The four answers, up front
+
+| question | answer | where |
+|---|---|---|
+| **Has CBSE abolished countersignature?** | **YES — SUPERSEDED.** r.8(vii) and the Annexure-I footnote survive in the printed bye-laws but were abolished by five circulars, 2014→**31.10.2025**. *"There is no need of countersignature of any transfer certificate."* **The corpus is currently wrong on this.** | **§C** |
+| **What does RTE s.5(3) actually say?** | *"shall immediately issue the transfer certificate"* — **unconditional**, plus two provisos. **Elementary stage (I–VIII) only.** It does **not** contain the words "shall not be withheld for fees" — that is construction, not text. | **§A1.1** |
+| **DPDP children's data** | Every K-12 student is a **"child" (under 18)**. School = **Data Fiduciary**, ZenXii = **Data Processor**. s.9(1) verifiable parental consent; s.9(2) is an **absolute bar consent cannot cure**; s.9(3) no tracking/profiling. **₹200 cr** for s.9, **₹250 cr** for s.8(5). s.8(1): no agreement discharges anyone. | **§A3** |
+| **What makes a digital certificate valid?** | IT Act **s.5** — only a **DSC** or a **Second Schedule** technique. A pasted signature image is **not a signature**. **ZenXii may never hold the principal's key** (s.42); the sole lawful server-side route is a **CA-offered eSign/ESP** with per-signature authentication by the principal. | **§A4** |
+
+**Two rules in this file were found to be stale in the corpus and in CBSE's own published bye-laws:**
+the countersignature rule (**§C**) and **r.8(vi), amended in 2012** (**§B1.3a**). Assume there are more.
+
 ## How to read this file
 
 Every finding carries an **evidence level**:
@@ -402,8 +414,27 @@ notified, and s.9(1) in particular is expressly *"in such manner as may be presc
 Searched: `meity.gov.in/data-protection-framework` (JS SPA, no static content extractable);
 web search for "Digital Personal Data Protection Rules 2025 notified gazette educational institution
 exemption" — **the session's search budget was exhausted at this exact query**, so this was never run.
+A Wayback Machine CDX sweep of `meity.gov.in` then recovered two **index entries** (URLs and capture
+dates only — the archived page bodies are themselves 403 "Access Denied" captures, so **no content was
+read**):
 
-**Do not code a consent flow against a guess here.** Re-run this one query first next pass.
+| capture | URL slug | what it is evidence of |
+|---|---|---|
+| **2025-11-21** | `meity.gov.in/content/draft-digital-personal-data-protection-rules2025` | a MeitY page for **DRAFT** DPDP Rules 2025 existed by Nov 2025 |
+| **2026-06-26** | `meity.gov.in/offerings/vacancies/details/filling-up-the-post-of-chairman-members-in-the-data-protection-board-of-india-…` | MeitY was **still recruiting the Chairman and Members of the Data Protection Board of India in June 2026** |
+
+**Evidence D — these are URL slugs from an archive index, not statements of law.** But they support a
+cautious working assumption, clearly labelled as such:
+
+> **Working assumption (NOT a finding):** as of mid-2026 the DPDP enforcement machinery was still
+> being stood up — the adjudicating Board was not yet staffed — and the Rules had at minimum passed
+> through a public draft stage. **This does not tell us whether the final Rules were notified, when
+> obligations bite, or whether education is carved out under s.9(4).**
+
+**Do not code a consent flow against a guess here.** Re-run that one search first next pass. Note that
+**a Board that cannot yet adjudicate does not make the obligations optional** — s.8 and s.9 bind on
+commencement regardless of whether anyone is available to impose the Schedule's penalties, and the
+limitation period for past processing does not reset when the Board is finally constituted.
 
 ---
 
@@ -949,6 +980,161 @@ where RTE s.5 does not reach and where r.8(vi) still speaks. Add the High Court 
 
 ---
 
+## B2 · CISCE (ICSE / ISC)
+
+Researched from primary regulatory text. **Evidence A** — the ICSE Regulations, the ISC Regulations
+and the Guidelines for Affiliation were read directly (reached via the Wayback Machine, as `cisce.org`
+returns Cloudflare 403 to both curl and the fetch tool). *Exact URLs and verbatim quotes are being
+appended by the strand that read them; the findings below are its report.*
+
+**The headline is a negative finding, and it is a valuable one.**
+
+- **There is no CISCE document titled "Rules of the Council."** The governing texts are the **ICSE
+  Regulations**, the **ISC Regulations**, and the **Guidelines for Affiliation**. Anything citing
+  "CISCE Rules of the Council" for a TC rule is citing a document that does not exist.
+- **CISCE prescribes NO Transfer Certificate format.** — **NOT FOUND**, and this is a clean negative,
+  searched for directly in all three governing texts.
+- **CISCE imposes NO countersignature requirement on a TC.** — **NOT FOUND**, same basis.
+- **"Transfer Certificate" appears exactly ONCE in each Regulations document — and as a
+  *prohibition*, not a format:** *"Transfer Certificate should not be issued with 'Promoted to Class
+  X' if the student has not met the required promotion criteria."* That is the entirety of CISCE's
+  regulation of the TC.
+- **CISCE DOES issue a Migration Certificate** — **ICSE Regulations Ch. II §E.4** and **ISC
+  Regulations §3** — alongside the Statement of Marks and the Pass Certificate.
+- **Cross-board transfer does not run on a TC.** CISCE uses a **Clearance Certificate** and an
+  **online eligibility check** instead.
+
+> **Product consequence.** For a CISCE tenant the module must **not** impose CBSE's Annexure-I
+> 22-field format, and must **not** offer a countersignature field — neither exists in CISCE's rules.
+> The one enforceable CISCE constraint is a **content prohibition**: do not print *"Promoted to Class
+> X"* on a TC for a student who did not meet the promotion criteria. That is a validation rule on the
+> promotion field, not a layout rule.
+>
+> **As with CBSE, the Migration Certificate is a BOARD document, not a school document.** Do not offer
+> that template to a CISCE school either.
+
+## B3 · NIOS
+
+**Evidence A** — the **NIOS Bye-laws Governing Examinations and Certification (Revised & Amended upto
+2021)** and the NIOS Prospectus were read directly. *URLs and verbatim quotes appended by the reading
+strand.*
+
+**The answer to the brief's question — "how does a TC work when there is no conventional school?" — is
+that it does not, and NIOS was built that way deliberately.**
+
+- **The NIOS Bye-laws contain ZERO occurrences of "Transfer Certificate."** NIOS **does not issue a
+  TC at all.**
+- **NIOS issues a Migration Certificate** — **Bye-laws §14.3** — not a Transfer Certificate.
+- **NIOS ACCEPTS a TC at admission, but only as one of four alternative proofs of date of birth** —
+  not as a mandatory academic-transfer instrument. And proof of Class VIII study **may be a "Self
+  Certificate."** *That is the open-admission mechanism*: a candidate with no school, no records and
+  no former head-teacher willing to sign anything can still enrol.
+- **Transfer of Credit (TOC)** — **Bye-laws §3.9.2**, **Prospectus §2.6** — is the mechanism that does
+  the work a conventional transfer would do: subjects already passed at another recognised board are
+  carried across, rather than a certificate being transferred.
+- **Cross-strand finding of direct relevance to §B4:** NIOS's own recognised-boards appendix lists
+  **code 9808 "IGCSE Programme from University of Cambridge"** and **code 9809 "International
+  Baccalaureate – Asia Pacific"** as boards it accepts credit transfer from. This is a **central
+  Indian body formally recognising both foreign awarding bodies** for academic-credit purposes.
+
+> **Product consequence.** A NIOS tenant needs **no TC template at all**, and offering one would
+> invite a school to issue a document its board does not recognise. What a NIOS learner needs is the
+> **TOC** path and the Migration Certificate — and the latter is NIOS's to issue, not the study
+> centre's.
+
+## B4 · IB and Cambridge / CAIE
+
+**Still pending.** The reading strand has delegated this sub-strand and is holding for it; findings
+will be appended. **Nothing about IB or CAIE is asserted here.**
+
+Two things are nonetheless already established and can be relied on:
+
+1. **NIOS recognises both** for Transfer of Credit — IGCSE/Cambridge as code **9808**, IB Asia Pacific
+   as code **9809** (§B3, Evidence A). That is an Indian statutory body treating both as recognised
+   boards.
+2. **The load-bearing question remains open**: whether an IB/IGCSE school in India **also** needs
+   state recognition under RTE s.18 to operate and to issue a TC. On the face of s.18 the answer must
+   be yes — it applies to *any* school other than a government or local-authority one and makes no
+   exception for foreign curricula (§A1.3) — **but that is reasoning from the statute, not a verified
+   finding about how states actually treat international schools.** It is **NOT ASSERTED** until the
+   sub-strand reports.
+
+**Also still NOT FOUND:** whether IB or CAIE prescribe any TC format (expected to be *no* — they award
+qualifications, not school-leaving documents — but a clear negative must be *verified*, not assumed);
+and the AIU equivalence route for IB Diploma and Cambridge qualifications.
+
+---
+
+## B5 · Kendriya Vidyalaya Sangathan (KVS) — partially found
+
+**What IS established, at Evidence A, from the CBSE documents themselves:**
+
+- **KV schools are CBSE-affiliated and sit inside CBSE's TC regime.** Every circular in the §C chain is
+  formally copied to *"The Commissioner, Kendriya Vidyalaya Sangathan, 18-Institutional Area, Shaheed
+  Jeet Singh Marg, New Delhi-110016"* — in the 2014, 2019, 2020 and 2025 circulars alike (the 2025 one
+  addresses the Commissioner at `commissioner-kvs@gov.in`). **So CBSE Examination Bye-Laws Chapter 3 and
+  the countersignature abolition apply to KVs.**
+- **The bye-laws name KVS explicitly** in three places: **r.8(i)** — the admission register is in the form
+  prescribed by the State Government **/ Kendriya Vidyalaya Sangathan / Navodaya Vidyalaya Samiti** as the
+  case may be; **r.8(viii)** — punishment for wilful misrepresentation is per the State/UT Education Act
+  **or KVS/NVS rules**; and the **Annexure-I footnote**, which named the **Asstt. Commissioner of the KVS**
+  as a permitted countersigning authority (now abolished along with the rest — §C).
+
+> **Product consequence: KVS needs no separate TC rule set.** It inherits CBSE's, with the one caveat that
+> its **admission register form** is KVS-prescribed rather than state-prescribed.
+
+**NOT FOUND:** the KVS Education Code article/para numbers governing TC issue; whether KVS prescribes its
+own TC proforma over and above Annexure-I; the KVS rule on **priority admission for children of
+transferable central-government employees against a TC**; and any KVS rule on withholding a TC for dues or
+on duplicate TCs. Searched: `kvsangathan.nic.in/en/education-code` — reachable, and I downloaded **all seven
+PDFs** it links (KVS Training Policy, space-requirement annexure, website input material, CPD Guidelines
+2025, an office-bearers list, the 2026 holiday list, and a 76-page scanned compilation). **None of the seven
+contains the phrase "transfer certificate"** — the Education Code proper is not published at that path.
+`kvsangathan.nic.in/en/admission-guidelines` then began refusing connections (HTTP 000, likely rate-limiting).
+Note also that KVS's `/en/transfer-policy/` page concerns **staff transfers**, not student TCs — an easy trap.
+
+## B6 · Navodaya Vidyalaya Samiti (NVS) / Jawahar Navodaya Vidyalayas
+
+**What IS established, at Evidence A, from the CBSE documents:** identical position to KVS. NVS is on the
+distribution list of the 2014, 2019, 2020 and 2025 circulars (*"The Director, Navodaya Vidyalaya Samiti,
+B-15, Institutional Area, Sector 62, Noida-201 307"*), and is named in bye-law **r.8(i)**, **r.8(viii)** and
+the **Annexure-I footnote** (*"the Deputy Director, Navodaya Vidyalaya Samiti in India"* as a former
+countersigning authority). **JNVs are CBSE-affiliated and follow CBSE Chapter 3.**
+
+**NOT FOUND:** NVS's own TC rules and para numbers; whether NVS prescribes a TC proforma; and the
+governing document for the **JNV Class-IX inter-region migration scheme** (a student-relocation scheme
+distinct from any "migration certificate" — the distinction matters and should not be conflated in our
+template naming). Searched `navodaya.gov.in/nvs/en/Admission-JNVST/JNV-Migration/` — returned HTTP 200 but
+no extractable static content; search budget exhausted.
+
+## B7 · Sainik Schools and Rashtriya Military Schools
+
+**Partially established, at Evidence A.** The CBSE 04.02.2020 SOP is copied to the military education
+chain — *"The Additional Director General of Army Education, A-Wing, Sena Bhawan"*, *"The Secretary AWES,
+Integrated Headquarters of MoD (Army)… Delhi Cantt"*, *"The Director General, Integrated HQ of Ministry of
+Defence (Navy)"*, and (in the 2014/2019 circulars) *"The Deputy Director of Education, Border Security
+Force"*. **This places Army/AWES/Navy-run schools inside CBSE's circulation and therefore its TC regime.**
+
+**NOT FOUND:** Sainik Schools Society's own rules on TC issuance and their rule numbers; the position for the
+**New Sainik Schools (PPP)** scheme; and Rashtriya Military Schools' own rules. Note that AWES (Army Public
+Schools) and the Sainik Schools Society are **different bodies** — the circulars evidence AWES, not the
+Sainik Schools Society, and I am not extending the inference. Search budget exhausted before
+`sainikschoolsociety.in` could be reached.
+
+## B8 · Central Tibetan Schools Administration (CTSA)
+
+**Partially established, at Evidence A.** CTSA is on the distribution list of **every** circular in the §C
+chain — 2014, 2019, 2020 and 2025 (*"The Director/Secretary, Central Tibetan School Administration, ESS Plaza,
+Community Centre, Sector 3, Rohini, Delhi-85"*). Its presence on the **31.10.2025** list is meaningful
+evidence that **CTSA still existed as an addressable body in late 2025** and that its schools are treated as
+CBSE-affiliated for TC purposes.
+
+**NOT FOUND:** CTSA's current operating status as of 2026 (a substantial number of CTSA schools were
+transferred to the Tibetan Sambhota Schools / Department of Education, CTA — **I could not verify the extent
+or the date**); and any CTSA-specific TC rule. **Do not assert the transfer as fact.**
+
+---
+
 ## C · THE COUNTERSIGNATURE QUESTION — VERDICT
 
 **This was the brief's single most important question. It is now settled at Evidence A.**
@@ -1144,161 +1330,6 @@ Distilled from the 2014 + 2020 + 2025 circulars, all Evidence A:
 
 ---
 
-## B2 · CISCE (ICSE / ISC)
-
-Researched from primary regulatory text. **Evidence A** — the ICSE Regulations, the ISC Regulations
-and the Guidelines for Affiliation were read directly (reached via the Wayback Machine, as `cisce.org`
-returns Cloudflare 403 to both curl and the fetch tool). *Exact URLs and verbatim quotes are being
-appended by the strand that read them; the findings below are its report.*
-
-**The headline is a negative finding, and it is a valuable one.**
-
-- **There is no CISCE document titled "Rules of the Council."** The governing texts are the **ICSE
-  Regulations**, the **ISC Regulations**, and the **Guidelines for Affiliation**. Anything citing
-  "CISCE Rules of the Council" for a TC rule is citing a document that does not exist.
-- **CISCE prescribes NO Transfer Certificate format.** — **NOT FOUND**, and this is a clean negative,
-  searched for directly in all three governing texts.
-- **CISCE imposes NO countersignature requirement on a TC.** — **NOT FOUND**, same basis.
-- **"Transfer Certificate" appears exactly ONCE in each Regulations document — and as a
-  *prohibition*, not a format:** *"Transfer Certificate should not be issued with 'Promoted to Class
-  X' if the student has not met the required promotion criteria."* That is the entirety of CISCE's
-  regulation of the TC.
-- **CISCE DOES issue a Migration Certificate** — **ICSE Regulations Ch. II §E.4** and **ISC
-  Regulations §3** — alongside the Statement of Marks and the Pass Certificate.
-- **Cross-board transfer does not run on a TC.** CISCE uses a **Clearance Certificate** and an
-  **online eligibility check** instead.
-
-> **Product consequence.** For a CISCE tenant the module must **not** impose CBSE's Annexure-I
-> 22-field format, and must **not** offer a countersignature field — neither exists in CISCE's rules.
-> The one enforceable CISCE constraint is a **content prohibition**: do not print *"Promoted to Class
-> X"* on a TC for a student who did not meet the promotion criteria. That is a validation rule on the
-> promotion field, not a layout rule.
->
-> **As with CBSE, the Migration Certificate is a BOARD document, not a school document.** Do not offer
-> that template to a CISCE school either.
-
-## B3 · NIOS
-
-**Evidence A** — the **NIOS Bye-laws Governing Examinations and Certification (Revised & Amended upto
-2021)** and the NIOS Prospectus were read directly. *URLs and verbatim quotes appended by the reading
-strand.*
-
-**The answer to the brief's question — "how does a TC work when there is no conventional school?" — is
-that it does not, and NIOS was built that way deliberately.**
-
-- **The NIOS Bye-laws contain ZERO occurrences of "Transfer Certificate."** NIOS **does not issue a
-  TC at all.**
-- **NIOS issues a Migration Certificate** — **Bye-laws §14.3** — not a Transfer Certificate.
-- **NIOS ACCEPTS a TC at admission, but only as one of four alternative proofs of date of birth** —
-  not as a mandatory academic-transfer instrument. And proof of Class VIII study **may be a "Self
-  Certificate."** *That is the open-admission mechanism*: a candidate with no school, no records and
-  no former head-teacher willing to sign anything can still enrol.
-- **Transfer of Credit (TOC)** — **Bye-laws §3.9.2**, **Prospectus §2.6** — is the mechanism that does
-  the work a conventional transfer would do: subjects already passed at another recognised board are
-  carried across, rather than a certificate being transferred.
-- **Cross-strand finding of direct relevance to §B4:** NIOS's own recognised-boards appendix lists
-  **code 9808 "IGCSE Programme from University of Cambridge"** and **code 9809 "International
-  Baccalaureate – Asia Pacific"** as boards it accepts credit transfer from. This is a **central
-  Indian body formally recognising both foreign awarding bodies** for academic-credit purposes.
-
-> **Product consequence.** A NIOS tenant needs **no TC template at all**, and offering one would
-> invite a school to issue a document its board does not recognise. What a NIOS learner needs is the
-> **TOC** path and the Migration Certificate — and the latter is NIOS's to issue, not the study
-> centre's.
-
-## B4 · IB and Cambridge / CAIE
-
-**Still pending.** The reading strand has delegated this sub-strand and is holding for it; findings
-will be appended. **Nothing about IB or CAIE is asserted here.**
-
-Two things are nonetheless already established and can be relied on:
-
-1. **NIOS recognises both** for Transfer of Credit — IGCSE/Cambridge as code **9808**, IB Asia Pacific
-   as code **9809** (§B3, Evidence A). That is an Indian statutory body treating both as recognised
-   boards.
-2. **The load-bearing question remains open**: whether an IB/IGCSE school in India **also** needs
-   state recognition under RTE s.18 to operate and to issue a TC. On the face of s.18 the answer must
-   be yes — it applies to *any* school other than a government or local-authority one and makes no
-   exception for foreign curricula (§A1.3) — **but that is reasoning from the statute, not a verified
-   finding about how states actually treat international schools.** It is **NOT ASSERTED** until the
-   sub-strand reports.
-
-**Also still NOT FOUND:** whether IB or CAIE prescribe any TC format (expected to be *no* — they award
-qualifications, not school-leaving documents — but a clear negative must be *verified*, not assumed);
-and the AIU equivalence route for IB Diploma and Cambridge qualifications.
-
----
-
-## B5 · Kendriya Vidyalaya Sangathan (KVS) — partially found
-
-**What IS established, at Evidence A, from the CBSE documents themselves:**
-
-- **KV schools are CBSE-affiliated and sit inside CBSE's TC regime.** Every circular in the §C chain is
-  formally copied to *"The Commissioner, Kendriya Vidyalaya Sangathan, 18-Institutional Area, Shaheed
-  Jeet Singh Marg, New Delhi-110016"* — in the 2014, 2019, 2020 and 2025 circulars alike (the 2025 one
-  addresses the Commissioner at `commissioner-kvs@gov.in`). **So CBSE Examination Bye-Laws Chapter 3 and
-  the countersignature abolition apply to KVs.**
-- **The bye-laws name KVS explicitly** in three places: **r.8(i)** — the admission register is in the form
-  prescribed by the State Government **/ Kendriya Vidyalaya Sangathan / Navodaya Vidyalaya Samiti** as the
-  case may be; **r.8(viii)** — punishment for wilful misrepresentation is per the State/UT Education Act
-  **or KVS/NVS rules**; and the **Annexure-I footnote**, which named the **Asstt. Commissioner of the KVS**
-  as a permitted countersigning authority (now abolished along with the rest — §C).
-
-> **Product consequence: KVS needs no separate TC rule set.** It inherits CBSE's, with the one caveat that
-> its **admission register form** is KVS-prescribed rather than state-prescribed.
-
-**NOT FOUND:** the KVS Education Code article/para numbers governing TC issue; whether KVS prescribes its
-own TC proforma over and above Annexure-I; the KVS rule on **priority admission for children of
-transferable central-government employees against a TC**; and any KVS rule on withholding a TC for dues or
-on duplicate TCs. Searched: `kvsangathan.nic.in/en/education-code` — reachable, and I downloaded **all seven
-PDFs** it links (KVS Training Policy, space-requirement annexure, website input material, CPD Guidelines
-2025, an office-bearers list, the 2026 holiday list, and a 76-page scanned compilation). **None of the seven
-contains the phrase "transfer certificate"** — the Education Code proper is not published at that path.
-`kvsangathan.nic.in/en/admission-guidelines` then began refusing connections (HTTP 000, likely rate-limiting).
-Note also that KVS's `/en/transfer-policy/` page concerns **staff transfers**, not student TCs — an easy trap.
-
-## B6 · Navodaya Vidyalaya Samiti (NVS) / Jawahar Navodaya Vidyalayas
-
-**What IS established, at Evidence A, from the CBSE documents:** identical position to KVS. NVS is on the
-distribution list of the 2014, 2019, 2020 and 2025 circulars (*"The Director, Navodaya Vidyalaya Samiti,
-B-15, Institutional Area, Sector 62, Noida-201 307"*), and is named in bye-law **r.8(i)**, **r.8(viii)** and
-the **Annexure-I footnote** (*"the Deputy Director, Navodaya Vidyalaya Samiti in India"* as a former
-countersigning authority). **JNVs are CBSE-affiliated and follow CBSE Chapter 3.**
-
-**NOT FOUND:** NVS's own TC rules and para numbers; whether NVS prescribes a TC proforma; and the
-governing document for the **JNV Class-IX inter-region migration scheme** (a student-relocation scheme
-distinct from any "migration certificate" — the distinction matters and should not be conflated in our
-template naming). Searched `navodaya.gov.in/nvs/en/Admission-JNVST/JNV-Migration/` — returned HTTP 200 but
-no extractable static content; search budget exhausted.
-
-## B7 · Sainik Schools and Rashtriya Military Schools
-
-**Partially established, at Evidence A.** The CBSE 04.02.2020 SOP is copied to the military education
-chain — *"The Additional Director General of Army Education, A-Wing, Sena Bhawan"*, *"The Secretary AWES,
-Integrated Headquarters of MoD (Army)… Delhi Cantt"*, *"The Director General, Integrated HQ of Ministry of
-Defence (Navy)"*, and (in the 2014/2019 circulars) *"The Deputy Director of Education, Border Security
-Force"*. **This places Army/AWES/Navy-run schools inside CBSE's circulation and therefore its TC regime.**
-
-**NOT FOUND:** Sainik Schools Society's own rules on TC issuance and their rule numbers; the position for the
-**New Sainik Schools (PPP)** scheme; and Rashtriya Military Schools' own rules. Note that AWES (Army Public
-Schools) and the Sainik Schools Society are **different bodies** — the circulars evidence AWES, not the
-Sainik Schools Society, and I am not extending the inference. Search budget exhausted before
-`sainikschoolsociety.in` could be reached.
-
-## B8 · Central Tibetan Schools Administration (CTSA)
-
-**Partially established, at Evidence A.** CTSA is on the distribution list of **every** circular in the §C
-chain — 2014, 2019, 2020 and 2025 (*"The Director/Secretary, Central Tibetan School Administration, ESS Plaza,
-Community Centre, Sector 3, Rohini, Delhi-85"*). Its presence on the **31.10.2025** list is meaningful
-evidence that **CTSA still existed as an addressable body in late 2025** and that its schools are treated as
-CBSE-affiliated for TC purposes.
-
-**NOT FOUND:** CTSA's current operating status as of 2026 (a substantial number of CTSA schools were
-transferred to the Tibetan Sambhota Schools / Department of Education, CTA — **I could not verify the extent
-or the date**); and any CTSA-specific TC rule. **Do not assert the transfer as fact.**
-
----
-
 # D · CONFLICTS REGISTER
 
 Recorded rather than resolved, per the brief.
@@ -1310,7 +1341,7 @@ Recorded rather than resolved, per the brief.
 | **D3** | **DigiLocker FAQ Q43 routes education certificates to NAD, but NAD presents as higher-education-shaped.** | **Unresolved.** Neither route confirmed for a school TC. §A7 |
 | **D4** | **DigiLocker requires a RANDOM `DocId`; CBSE Annexure-I requires a sequential Book No./Sl. No.** | **Both are right — they are two identifiers with two jobs.** Keep the sequential statutory serial; add a separate random `DocId`. §A7.2 |
 | **D5** | **DigiLocker requires a server located in India; ZenXii's server is in Ohio.** | **Unresolved blocker** for DigiLocker integration. §A7.2 |
-| **D6** | **Bye-laws edition.** The published Examination Bye-Laws are the **1995 edition updated to Dec 2004**, yet circulars from 2014–2025 visibly override them and were never folded in. | Treat the printed bye-law as baseline, circulars as controlling. Whether a newer consolidated edition exists is **NOT FOUND**. §B1 |
+| **D6** | **Bye-laws edition — the published text is stale in at least two places.** CBSE publishes the **1995 edition updated to Dec 2004**, but (i) **r.8(vi) was amended in 2012** (COORD/AS/2011, 28.06.2012) and the published PDF still shows the pre-2012 wording, and (ii) **r.8(vii) and the Annexure-I countersignature footnote were abolished by circular** 2014–2025 and were never struck from the text. | **Treat the printed bye-law as baseline and the circulars as controlling — always check for a superseding circular before citing any Chapter 3 rule.** Two stale rules were found on a single pass; assume there are more. Whether a newer consolidated edition exists is **NOT FOUND** (tried three plausible cbse.gov.in paths, all 404). §B1, §B1.3a, §C |
 
 ---
 
@@ -1320,8 +1351,8 @@ Everything below was looked for and **not established**. None of it may be asser
 
 ### Part A
 1. **NEP 2020** — every paragraph reference. Could not retrieve the PDF (four URL attempts, all 404/403). §A2
-2. **DPDP commencement status** — whether the Act's substantive provisions are in force as of 2026-09-08. §A3.6
-3. **DPDP Rules** — whether notified, their date, and the phase-in schedule. §A3.6
+2. **DPDP commencement status** — whether the Act's substantive provisions are in force as of 2026-09-08. *Partial signal only:* MeitY was still recruiting the Data Protection Board's Chairman and Members in **June 2026** (Evidence D, archive index). §A3.6
+3. **DPDP Rules** — whether the FINAL Rules were notified, their date, and the phase-in schedule. *Partial signal only:* a **draft** DPDP Rules 2025 page existed on MeitY by **Nov 2025** (Evidence D, archive index). §A3.6
 4. **How verifiable parental consent must be obtained** under the Rules. §A3.6
 5. **Whether education/schools are a prescribed exempt class under DPDP s.9(4).** ← **highest-value open question in Part A.** §A3.6
 6. Whether any **s.17(2)(a) notification** exempts government schools. §A3.5
@@ -1341,9 +1372,9 @@ Everything below was looked for and **not established**. None of it may be asser
 20. The four **High Court judgments** on withholding a TC for dues — none read. §A1.5
 
 ### Part B
-21. **CISCE** — all of it (task still running). §B2
-22. **NIOS** — all of it (task still running). §B3
-23. **IB / CAIE** — all of it, including whether Indian state recognition is required. §B4
+21. ~~CISCE~~ — **FOUND** (§B2). The residual negatives are themselves the findings: **no prescribed TC format** and **no countersignature requirement** exist in CISCE's regulations.
+22. ~~NIOS~~ — **FOUND** (§B3). Residual negative: **NIOS does not issue a Transfer Certificate at all.**
+23. **IB / CAIE** — still pending, including the load-bearing question of whether Indian **state recognition under RTE s.18** is required of an IB/IGCSE school. Also unverified: whether IB or CAIE prescribe any TC format, and the **AIU equivalence** route. §B4
 24. **KVS Education Code** — article/para numbers for TC; own proforma; transferable-employee TC rule; withholding/duplicate rules. §B5
 25. **NVS** — own TC rules and para numbers; TC proforma; the JNV Class-IX migration scheme's governing document. §B6
 26. **Sainik Schools Society** and **Rashtriya Military Schools** — own TC rules; the New Sainik Schools (PPP) position. §B7
@@ -1366,8 +1397,21 @@ Only findings at Evidence A/B are listed. Nothing here rests on a NOT FOUND.
    route-dependent annotation, defaulting to absent. §C
 4. **Mark duplicates.** CBSE r.8(vi): a duplicate *"shall always be so marked"*, issued only where the head
    is satisfied the original is lost. §B1.3
-5. **Do not offer a "Migration Certificate" template to CBSE schools.** It is a Board document, not a school
-   document, and since Examinations-2025 it is digital-only via DigiLocker. §B1.1, §B1.4
+5. **Drop "Migration Certificate" from the school-issued template set entirely.** This is the clearest
+   cross-board pattern the research produced, and all three data points are Evidence A:
+
+   | board | who issues a Migration Certificate | citation |
+   |---|---|---|
+   | **CBSE** | **the Board** — bye-law definition (ix) says so in terms; digital-only via DigiLocker since Examinations-2025 | §B1.1, §B1.4 |
+   | **CISCE** | **the Council** | ICSE Reg. Ch. II §E.4; ISC Reg. §3 · §B2 |
+   | **NIOS** | **NIOS itself** — and NIOS issues *no* TC at all | Bye-laws §14.3 · §B3 |
+
+   **Not one of the three boards lets a school issue a Migration Certificate.** The brief listed
+   Migration alongside TC, Bonafide, Character and Study as a document the module should produce —
+   **on this evidence it should not**, at least not for CBSE, CISCE or NIOS tenants. A school issuing
+   one is issuing a document it has no authority to issue. If the template is kept at all it must be
+   gated to state boards that specifically authorise school-level issue, and **NOT FOUND** covers
+   whether any do.
 6. **Two identifiers, never one.** Sequential statutory serial (Book No./Sl. No.) for the register; separate
    random `DocId` for any DigiLocker handle. §D4
 7. **ZenXii may never hold a principal's signing key.** The only lawful server-side route is a CA-offered

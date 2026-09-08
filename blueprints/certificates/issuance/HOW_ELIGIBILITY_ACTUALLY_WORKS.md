@@ -158,3 +158,29 @@ prerequisites rather than a parallel track.
 - **Recognition status is not published** anywhere machine-readable that this research found.
   A school can show us an order; nothing lets us confirm it has not since been withdrawn.
   That is a real limit on what level 3 can honestly claim.
+
+
+---
+
+## 7 · Corrections from the regional research (2026-09-08)
+
+Four premises in the sections above were tested against primary text by the South India stream
+and came back altered. They are corrected here rather than silently edited, because two of them
+were repeated in a published artifact.
+
+- **Kerala 2025:KER:69076 did NOT gut KER Ch.VI r.17(2).** The judgment never mentions that
+  rule. It was a **CBSE** case where KER did not apply. **r.17(2) stands unamended.**
+- **Tamil Nadu never required TC countersignature.** TNER prescribes none. The rule in that
+  pair is **Puducherry's** (1996 Rules r.62 proviso), and only for a TC from outside the UT.
+- **TNER r.40 exists in two circulating, opposite texts.** Unresolved. Either way rr.41–43
+  permit only one term's special fee, never accumulated arrears.
+- **The Madras HC date 22.07.2024 was the reporting date.** The judgment is
+  **W.A. 3075/2021, pronounced 19.07.2024**, and does not cite TNER rr.40–42 by number.
+- **Per-section recognition does not generalise.** Confirmed in only Telangana and Kerala;
+  Karnataka, TN, Puducherry and AP are searched negatives. **Per class-range does generalise** —
+  four streams agree.
+
+The no-dues position is therefore more precise than "the courts gutted it": **the rules stand
+and are unenforceable.** Four judgments prohibit withholding and preserve recovery, but no
+enabling rule was repealed — so a school may cite a rule that genuinely still exists in its own
+state's code, and our answer must account for that rather than deny it.

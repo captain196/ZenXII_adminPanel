@@ -20,6 +20,24 @@ enforces an invented requirement.
 finding may inform a warning at most. Everything in the "NOT FOUND" register at the end is
 explicitly *not* established and must not be asserted to a school.
 
+## Note for the other files in this folder
+
+Two gaps recorded elsewhere in this research set are **closed here**, and the sibling files should be
+updated to cite this one rather than re-searching:
+
+1. **`west-central-india.md` §1.8 records "RTE Act s.5 [NOT RETRIEVED]"** — indiacode.nic.in,
+   legislative.gov.in and education.gov.in all refused automated fetch. **The verbatim text of RTE
+   ss.4, 5, 14, 18 and 19 is in §B.1 and Part A of this file**, obtained through a bare-act aggregator
+   (level **A−**). s.5(3)'s first proviso in particular — *delay in producing a transfer certificate
+   shall not be a ground for either delaying or denying admission* — is the central overlay on every
+   state's LC/TC rule and is quoted in full below.
+2. **The README's "one question above the others"** — whether CBSE has abolished countersignature by
+   Board Regional Officers on Transfer Certificates — **is answered at level A in §B.1**, with the
+   circular chain running 2014 → 2018 → 2019 → 2020 → **31 October 2025**. Short answer: yes, CBSE
+   countersigning is abolished and was re-confirmed in October 2025; a *state* countersignature for a
+   TC arriving from a non-CBSE institution survives. §B.1 also corrects a citation error in the
+   corpus: **`r.8(vii)` is an Examination Bye-Law, not an Affiliation Bye-Law.**
+
 **Age of sources.** Several of the richest primary sources here are old consolidations (Maharashtra
 Secondary Schools Code, revised edition 1979; Kerala Education Rules 1959; CBSE Examination
 Bye-Laws 1995 updated to Dec 2004). They are cited because they are the authoritative *text* of the

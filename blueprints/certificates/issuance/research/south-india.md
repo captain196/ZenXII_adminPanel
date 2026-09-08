@@ -605,9 +605,12 @@ true of Puducherry (§4).
 
 **Tamil Nadu Educational Rules** (1968 compilation), https://indiankanoon.org/doc/24617366/
 
-> **r.40.** *"When a pupil is allowed to continue his studies in an institution during any term on
-> the assumption that there are no arrears of fees for previous terms, a transfer certificate
-> **shall not be refused** on the plea that such arrears exist."*
+> ⚠️ **The r.40 and r.41 texts below are the Indian Kanoon version. A second, differently-worded
+> compilation exists and says the OPPOSITE on r.40. Do not read this subsection without §3.3.**
+
+> **r.40** *(Indian Kanoon version)*. *"When a pupil is allowed to continue his studies in an
+> institution during any term on the assumption that there are no arrears of fees for previous
+> terms, a transfer certificate **shall not be refused** on the plea that such arrears exist."*
 
 > **r.41.** *"When a proper application for a transfer certificate is received at the end of a
 > term, or in the interval between two terms, or in first five working days of a term, the

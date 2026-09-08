@@ -195,3 +195,103 @@ recording that we do not know.
 
 **Madrasa regimes split four ways:** separate boards (West Bengal, Bihar), run by the general
 board (Jharkhand/JAC, Tripura/TBSE), and **abolished** (Assam, 2021).
+
+---
+
+## C-10 · Four premises I supplied were tested and four came back altered
+
+The South stream was briefed with claims taken from this repo's compliance corpus and from my
+own earlier summaries. It checked them against primary text. **Two were wrong, one was half
+right, one was right for a different reason than assumed** — and each would have shipped as an
+enforced rule.
+
+| what I asserted | what the primary text shows |
+|---|---|
+| *Kerala 2025:KER:69076 gutted KER Ch.VI r.17(2)* | **Wrong.** The judgment never mentions r.17(2). It was a **CBSE** case where KER did not apply, argued on CBSE Bye-law Ch.3 r.8(vi). **r.17(2) stands unamended on the books.** |
+| *Tamil Nadu historically required countersignature* | **Wrong.** TNER prescribes none — a grep of the full text found no TC-related countersignature at all. The real rule in that pair is **Puducherry's**. |
+| *TNER rr.40–42 permit withholding a TC for unpaid fees* | **Half right, and unresolved.** **Rule 40 exists in two circulating, opposite texts.** Either way rr.41–43 allow only **one term's special fee**, never accumulated arrears. |
+| *Madras HC DB ruled 22.07.2024* | **Right, wrong date.** It is **W.A. 3075/2021, pronounced 19.07.2024**, and it does **not cite TNER rr.40–42 by number at all**. |
+
+I had repeated the first of these in a published artifact. It has been corrected there.
+
+**The methodological finding matters as much as the corrections.** The stream reports that its
+own first pass got the TNER question wrong *in the opposite direction* — read one source,
+declared the premise withdrawn, and only a second independent retrieval found that both texts
+exist. Its conclusion is the right rule for this whole programme:
+
+> **One source is not verification.**
+
+---
+
+## C-11 · The no-dues position is more precise than "the courts gutted it"
+
+**Four judgments at Level A**, four independent rationales — Tamil Nadu (DB, W.A. 3075/2021,
+19.07.2024), Kerala (2025:KER:69076), Karnataka (2025:KHC:5986), Telangana (W.P. 34185/2023).
+**Withholding is prohibited; recovery of dues is preserved.**
+
+But **no enabling rule was repealed.** Kerala's KER VI-17(2) — *"No transfer certificate shall
+be issued to a pupil from whom there are any dues"* — stands unamended, and Tamil Nadu's
+ordered amendments appear unmade.
+
+**Consequence for the product:** we must not implement a no-dues gate, *and* we must expect a
+school to cite a rule that genuinely still exists in its own state's code. The honest framing
+is not "the rule was struck down" but **"the rule stands and is unenforceable"** — which is a
+harder thing to explain, and the true one.
+
+---
+
+## C-12 · Countersignature resolves — and is being replaced by printed identifiers
+
+With four streams in, the picture is coherent and C-1 can be narrowed:
+
+| | |
+|---|---|
+| **Intra-state TC** | **no countersignature** anywhere researched — Karnataka, Tamil Nadu, Kerala (Form 5 has no countersign block), and all six west/central states |
+| **Inbound out-of-state TC** | **often yes** — Kerala Ch.VI r.10 (Inspecting Officer, within 2 months), Puducherry 1996 r.62 proviso, MH r.22.1, GJ reg 12(9), Goa r.116(2), DNHDD r.97(2), Bihar s.272 |
+| **Board layer** | **still unread** — CBSE Annexure-I appears general; current edition 404/403 in two streams |
+
+**And the mechanism is being replaced.** Karnataka imposed BEO countersignature on 25.05.2016
+and **withdrew it a week later, on 01.06.2016**, substituting a **mandatory DISE code on every
+TC, verifiable online**. Tamil Nadu never required countersignature and instead prints the
+recognition number and DGE school number. MP r.19 proviso and CG clause 16(4) independently
+mandate printing the recognition number.
+
+**Four states, four sources, one direction: printed verifiable identifiers are replacing a
+human countersignature.** That is a strong argument for putting the recognition number and
+UDISE code on the document — which is what a QR verification endpoint would carry — rather
+than building a countersignature workflow.
+
+---
+
+## C-13 · Validity cannot be one field
+
+Eight southern jurisdictions produced **six models**:
+
+- **Karnataka** — 5 years → 10 on first renewal → then **permanent** (26.08.2024)
+- **Andhra Pradesh** — 3 → **8 years** (G.O.Ms.No.38, 22.04.2023). *A further 8→10 claim is
+  **unsupported — do not model it***
+- **Kerala** — permanent never expires; temporary is 1 year at a time, max 3 without Director approval
+- **Tamil Nadu** — **tied to another document**: the structural stability certificate or
+  building licence, *whichever expires first*. Pre-2023 permanent recognitions stay permanent
+- **Puducherry** — 3 years + 3, but apply **by 30 November of the preceding year**
+- **Telangana** — 10 years in the order read; the rule fixing it NOT FOUND
+
+**Two consequences.** Tamil Nadu alone defeats a `validUntil` date field — validity is a
+*reference to another instrument*. And renewal triggers come in two incompatible shapes: an
+**offset** (90 days, 3 months) versus a **fixed calendar date** (Puducherry). An offset-only
+reminder engine never fires for Puducherry.
+
+---
+
+## C-14 · Per-section recognition does NOT generalise — a correction to my own reading
+
+I read a real Telangana order granting recognition for *"classes VIII (E.M) with one section"*
+and generalised **per-section** recognition from it.
+
+The South stream checked: **per-section is confirmed in only two of eight** — Telangana (in the
+order) and Kerala (divisions sanctioned separately by the AEO/DEO). **Karnataka, Tamil Nadu,
+Puducherry and Andhra Pradesh are searched negatives.**
+
+**Per class-range generalises — four streams now agree. Per-section does not.** Modelling
+sections as a recognition dimension everywhere would impose a constraint most states do not
+have.
