@@ -328,6 +328,7 @@ $route['superadmin/school_admins/update_recovery']      = 'Superadmin_school_adm
 $route['school_config']                                 = 'School_config/index';
 $route['school_config/get_config']                      = 'School_config/get_config';
 $route['school_config/save_profile']                    = 'School_config/save_profile';
+$route['school_config/save_issuer_identity']            = 'School_config/save_issuer_identity';
 $route['school_config/save_forget_password_details']    = 'School_config/save_forget_password_details';
 $route['school_config/upload_logo']                     = 'School_config/upload_logo';
 $route['school_config/save_board']                      = 'School_config/save_board';

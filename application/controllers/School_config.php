@@ -452,6 +452,123 @@ class School_config extends MY_Controller
     }
 
     // ─────────────────────────────────────────────────────────────────────
+    // POST  /school_config/save_issuer_identity
+    //
+    // What entitles this school to ISSUE a certificate, as distinct from how it
+    // presents itself. The Profile tab owns display name, contact and address;
+    // this owns the affiliation or recognition instrument, the UDISE code, the
+    // signatory of record and the verification state.
+    //
+    // The split matters because these fields are not decoration. Three surfaces
+    // already read them:
+    //
+    //   Doc_templates.php:328        selects the statutory compliance profile
+    //   result/templates/cbse.php    prints "Aff. No:" on marksheets
+    //   Schools.php:354              lists "Affiliated To" in the SA registry
+    //
+    // and until now nothing validated them. Read live on 2026-09-08: of the four
+    // affiliation numbers stored across nine schools, one was
+    // `6564643131685.16463168` and another was an eleven-digit UDISE code sitting
+    // in the affiliation field — invited by a form that labels one input
+    // "Affiliation / DISE No." and checks nothing. The first of those already
+    // prints on result cards given to families.
+    //
+    // Validation lives in Issuer_identity so the rule has exactly one home; the
+    // client mirrors it for immediate feedback and the server decides.
+    // ─────────────────────────────────────────────────────────────────────
+    public function save_issuer_identity()
+    {
+        $this->_require_role(self::ADMIN_ROLES, 'school_config_save_issuer_identity', 'Configuration', 'edit');
+        $this->load->library('Issuer_identity');
+
+        $in = [
+            'affiliationBoard'  => $this->input->post('affiliation_board', TRUE),
+            'affiliationNo'     => $this->input->post('affiliation_no', TRUE),
+            'udiseCode'         => $this->input->post('udise_code', TRUE),
+            'registeredName'    => $this->input->post('registered_name', TRUE),
+            'headOfInstitution' => $this->input->post('head_of_institution', TRUE),
+            'headSince'         => $this->input->post('head_since', TRUE),
+            'reviewMonths'      => $this->input->post('review_months', TRUE),
+            'recognitionOrder'  => [
+                'number'    => $this->input->post('recognition_no', TRUE),
+                'date'      => $this->input->post('recognition_date', TRUE),
+                'authority' => $this->input->post('recognition_authority', TRUE),
+            ],
+        ];
+
+        $r = Issuer_identity::validate($in);
+        if ($r['errors']) {
+            /* EVERY FAILED FIELD IS NAMED, not just the first — a form that
+               reports one error per round trip teaches people to guess.
+               Emitted directly rather than through json_error(), which takes
+               only a message and a status code: a third argument would have
+               been accepted by PHP and silently dropped, leaving the form
+               saying "some fields could not be saved" without saying which.
+               json_error() is shared by ~140 controllers and is not widened
+               for one caller. The envelope below matches its shape exactly. */
+            http_response_code(422);
+            header('Content-Type: application/json');
+            echo json_encode([
+                'status'     => 'error',
+                'message'    => 'Some fields could not be saved.',
+                'fields'     => $r['errors'],
+                'csrf_token' => $this->security->get_csrf_hash(),
+            ]);
+            exit;
+        }
+
+        $fields = $r['fields'];
+        if (!$fields) {
+            return $this->json_error('No data provided.');
+        }
+
+        /* A CHANGE TO THE CLAIM INVALIDATES WHAT VERIFIED IT.
+           Editing the board or the number after a check would otherwise leave a
+           verification badge attached to a claim nobody checked — the same
+           reasoning that clears a design proof when the design changes. */
+        $existing = $this->fs->get('schools', $this->school_id) ?: [];
+        $prior    = is_array($existing['issuerIdentity'] ?? null) ? $existing['issuerIdentity'] : [];
+        $claimMoved =
+            (($existing['affiliationBoard'] ?? '') !== ($fields['affiliationBoard'] ?? ($existing['affiliationBoard'] ?? ''))) ||
+            (($existing['affiliationNo']    ?? '') !== ($fields['affiliationNo']    ?? ($existing['affiliationNo']    ?? '')));
+
+        $verification = $claimMoved ? [] : ($prior['verification'] ?? []);
+
+        $doc = $fields;
+        $doc['issuerIdentity'] = [
+            'verification' => $verification,
+            'updatedBy'    => $this->_actor_id(),
+            'updatedAt'    => date('c'),
+        ];
+        $doc['issuerIdentity']['level'] = Issuer_identity::levelOf(
+            array_merge($existing, $fields, ['verification' => $verification])
+        );
+
+        $this->fs->update('schools', $this->school_id, $doc);
+
+        log_audit('Configuration', 'save_issuer_identity', $this->school_name,
+            'Issuer identity → level ' . $doc['issuerIdentity']['level']
+            . ($claimMoved && $prior ? ' (verification cleared — the claim changed)' : ''));
+
+        $this->json_success([
+            'message'          => $claimMoved && !empty($prior['verification'])
+                ? 'Saved. The affiliation changed, so the previous verification no longer applies.'
+                : 'Issuer identity saved.',
+            'level'            => $doc['issuerIdentity']['level'],
+            'verificationKept' => !$claimMoved,
+        ]);
+    }
+
+    /** The acting staff id, for an audit line that names a person. */
+    private function _actor_id(): string
+    {
+        return (string) ($this->session->userdata('staff_id')
+            ?: $this->session->userdata('user_id')
+            ?: $this->session->userdata('admin_id')
+            ?: 'unknown');
+    }
+
+    // ─────────────────────────────────────────────────────────────────────
     // POST  /school_config/save_forget_password_details
     //
     // Edits the school super admin's password-recovery contact (name/email/

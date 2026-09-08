@@ -322,11 +322,37 @@ class Doc_templates extends MY_Controller
             $doc = [];
         }
 
+        /* THE BOARD COMES FROM THE ISSUER IDENTITY, AND IS NEVER GUESSED.
+         *
+         * Issuer_identity::complianceBoard() returns '' for anything it does not
+         * recognise, so an unrecorded board matches no board authority,
+         * resolveStack() returns the national layer alone, and the generic
+         * profile takes over — enforcing nothing and saying so, which is what
+         * FINAL_BLUEPRINT designed.
+         *
+         * It also refuses to read `board_config`, which belongs to the exam and
+         * grading module (it carries grading_pattern and passing_marks). That
+         * field says CBSE for schools that never claimed a CBSE affiliation, and
+         * treating it as one would reintroduce the fixture bug by another route.
+         *
+         * `issuer` rides along so the client can show WHY nothing is enforced,
+         * rather than leaving a school to wonder where its requirements went. */
+        $this->load->library('Issuer_identity');
+        $identity = array_merge($doc, [
+            'verification' => (is_array($doc['issuerIdentity']['verification'] ?? null))
+                ? $doc['issuerIdentity']['verification'] : [],
+        ]);
+        $level = Issuer_identity::levelOf($identity);
+
         return [
-            'name'  => (string) ($doc['name'] ?? $this->school_display_name ?? ''),
-            'state' => (string) ($doc['state'] ?? ''),
-            'board' => (string) ($doc['affiliationBoard'] ?? $doc['board'] ?? ''),
-            'stage' => (string) ($doc['stage'] ?? 'both'),
+            'name'   => (string) ($doc['name'] ?? $this->school_display_name ?? ''),
+            'state'  => (string) ($doc['state'] ?? ''),
+            'board'  => Issuer_identity::complianceBoard($doc),
+            'stage'  => (string) ($doc['stage'] ?? 'both'),
+            'issuer' => [
+                'level'    => $level,
+                'mayIssue' => Issuer_identity::mayIssue($identity),
+            ],
         ];
     }
 
