@@ -43,12 +43,12 @@ number to a user.** Where a later amendment is known, it is flagged inline.
 
 | Document | Issued by | Prescribed format? | Duplicate rule | Evidence |
 |---|---|---|---|---|
-| **Transfer Certificate (TC)** | The school — Head/Principal of the school last attended | **YES** where a board or state prescribes one. CBSE: Examination Bye-Laws **Annexure-I**, 22 numbered fields. Kerala: **Form 5** (KER Ch. VI r.17). Maharashtra: **Appendix Four** (leaving certificate). Tamil Nadu matriculation: **Annexure-V** of the Code of Regulations | Duplicate permitted where the head is satisfied the original is lost, and **"it shall always be so marked"** (CBSE Aff. Bye-Laws 8(vi)) | **A** |
+| **Transfer Certificate (TC)** | The school — Head/Principal of the school last attended | **YES** where a board or state prescribes one. CBSE: Examination Bye-Laws **Annexure-I**, 22 numbered fields. Kerala: **Form 5** (KER Ch. VI r.17). Maharashtra: **Appendix Four** (leaving certificate). Tamil Nadu matriculation: **Annexure-V** of the Code of Regulations | Duplicate permitted where the head is satisfied the original is lost, and **"it shall always be so marked"** (CBSE Exam. Bye-Law 8(vi)) | **A** |
 | **School Leaving Certificate (SLC)** | The school — Head personally | In most states the SLC *is* the TC under another name. **Maharashtra is genuinely different**: the "Leaving Certificate" is the canonical instrument, form prescribed at **Appendix Four**, and r.32.1 makes an LC **invalid** unless in that form and signed personally by the Head. Kerala keeps them *separate*: TC = Form 5, **leaving certificate = Form 5A** (r.17(3)) | Maharashtra r.30: written explanation, affidavit before a stipendiary Magistrate if the Head is unsatisfied, and **"marked with the word 'Duplicate' in red ink at the top"** | **A** |
 | **Migration Certificate** | **The BOARD or university — not the school.** CBSE Examination Bye-Law 2(ix) defines it as "a certificate issued by the Central Board of Secondary Education" | Board-controlled; no school-side format | Bye-Law Annexure-II priced "Migration Certificate **or a duplicate copy thereof**" identically — duplicates contemplated, issued by the Board | **A** |
-| **Bonafide Certificate** | The school — Head/Principal | **NOT FOUND** — no statutory or board-prescribed format located | **NOT FOUND** | — |
-| **Character / Conduct Certificate** | The school — Head/Principal | **NOT FOUND** as a standalone prescribed format. But conduct **is a prescribed field on the TC/LC itself**: CBSE Annexure-I field 18 "General conduct"; Maharashtra Appendix Four field 8 "Conduct"; Maharashtra General Register field 12 "Conduct" | **NOT FOUND** | **A** for the TC-field finding |
-| **Study Certificate** | The school — Head/Principal | **NOT FOUND** — no prescribed format located. Kerala has a near neighbour: **r.22A "Certificate of School Education"**, a prescribed form for a pupil who left before the SSLC exam, fee Rs 10 | **NOT FOUND** | **A** for Kerala r.22A only |
+| **Bonafide Certificate** | The school — **Principal/Head only**; CBSE will not countersign | No prescribed *form* found, but CBSE circular COORD/PR UNIT/2020 (04.02.2020) prescribes a binding *issuance standard*: official letterhead, affiliation legend + affiliation no., Principal's signature, school record of issue, website upload | **NOT FOUND** | **A** for the issuance standard |
+| **Character / Conduct Certificate** | The school — **Principal/Head only** | No standalone prescribed format. But conduct **is a prescribed field on the TC/LC itself**: CBSE Annexure-I field 18 "General conduct"; Maharashtra Appendix Four field 8 "Conduct"; Maharashtra General Register field 12 "Conduct". Same 2020 issuance standard applies | **NOT FOUND** | **A** |
+| **Study Certificate** | The school — **Principal/Head only** | No prescribed format located. Kerala has a near neighbour: **r.22A "Certificate of School Education"**, a prescribed form for a pupil who left before the SSLC exam, fee Rs 10. Same 2020 issuance standard applies | **NOT FOUND** | **A** for Kerala r.22A and the issuance standard |
 | **Provisional certificate** | **The BOARD** — CBSE Annexure-II prices a "Provisional certificate of passing the examination" | Board-controlled | n/a | **A** for existence; process NOT FOUND |
 | **Duplicate (any certificate)** | Same issuer as the original | See the per-document rows. The recurring statutory pattern is: **proof of loss + marked as a duplicate** | See §B.7 — three independent primary sources all require the duplicate be *marked* | **A** |
 | **Caste / Income / Domicile** | **Revenue authorities — never the school.** Tahsildar / Mamlatdar / SDM / RDO / Deputy Commissioner, through state citizen-service channels | State revenue forms | n/a | **B** |
@@ -145,26 +145,95 @@ Committee 7.5.1999 / Governing Body 13.5.1999:
 > school of the CBSE situated outside the country and the student shall not be admitted to a school
 > without such a counter signature.*
 
-**⚠ SUPERSEDED IN PART — CBSE circular CBSE/PR/UT/CI/2019/892 dated 04.10.2019 (A/B).** Subject:
-*"Withdrawal of practice of countersigning of the Transfer Certificates and mandatory uploading of
-scanned copy of T.C."*
+### ⚠ THE ANNEXURE-I COUNTERSIGNATURE FOOTNOTE IS SUPERSEDED — verified to 31.10.2025
 
-> *As already informed to all, the practice of the countersignature of the Transfer Certificates from
-> one CBSE affiliated school to another has been done away with.*
+This is the single most operationally important finding in this file, and it answers the question the
+research README flagged as *"one question above the others"*. **CBSE has abolished countersignature of
+Transfer Certificates, and confirmed it as recently as 31 October 2025.**
 
-It cites three earlier circulars (Coord/EC-30.7/2014 of 26.11.2014; CBSE T.C. uploading/2016 of
-01.10.2018; Coord./ROs/Admission-IX/2019 of 18.07.2019) and directs schools to stop sending TCs to
-CBSE HQ and Regional Offices for countersignature.
-Source: <https://www.cbse.gov.in/cbsenew/documents/Subject_Reminder_practice_countersigning_Transfer_Certificates_03112025.pdf>
-(this file, re-circulated under a 2025 filename, contains the 04.10.2019 circular).
+The primary document is a ten-page CBSE bundle: a 2025 reminder with four earlier circulars annexed.
+Source (all quotes below, **Evidence A** — circular text read directly from the scanned originals):
+<https://www.cbse.gov.in/cbsenew/documents/Subject_Reminder_practice_countersigning_Transfer_Certificates_03112025.pdf>
 
-**So the current CBSE position (B):**
+**The chain, in order:**
+
+| Date | Ref | What it did |
+|---|---|---|
+| 30.07.2014 (Exam Cttee) / 06.08.2014 (Governing Body) | resolution | Resolved that countersignature of TCs from one CBSE school to another **be done away with** |
+| 26.11.2014 | COORD/EC-30.7/2014 | Circulated the **10-step SOP that replaces countersignature** (below) |
+| 01.10.2018 | CBSE/T.C Uploading/2018 | Schools were not complying; re-directed mandatory website upload of TCs; *"The format of TC should be strictly as per the Proforma already provided"* |
+| 14.10.2019 | CBSE/PRU/TC/2019/1692 | Reiteration |
+| **04.02.2020** | **COORD/PR UNIT/2020** | **Generalised it beyond TCs — see §B.4** |
+| **31.10.2025** | **CBSE/Coord/Countersignature/2025/**, signed Dr. Sanyam Bhardwaj, Controller of Examinations | Reminder. *"all schools are once again reminded that **there is no need of countersignature of any transfer certificate**. In case of any requirement the S.O.P as mentioned in circular dated 04.02.2020 is to be followed."* And: *"It is also re-iterated that all such certificates are to be uploaded on the individual school's website."* |
+
+**The 10-step SOP that replaced countersignature — COORD/EC-30.7/2014, 26.11.2014 (A).** This is what a
+CBSE school must actually do, and it is what the product should implement:
+
+1. Schools **shall upload a scanned copy of every TC they issue on their official school website**.
+2. Schools **shall issue the TC as per the format given in Annexure 1 of the Examination Bye-Laws**
+   (so the Annexure-I *field list* remains current — only its countersignature footnote is gone).
+3. The TC shall mention **"AFFILIATED TO THE CENTRAL BOARD OF SECONDARY EDUCATION" below the name and
+   address of the school, along with the Affiliation Code No.**
+4. On a CBSE→CBSE transfer, **affiliation status is verified from the Board's website** (cbse.nic.in >
+   e-affiliation > list of affiliated schools) and from the school's own website, **and the affiliation
+   number is recorded on the TC**.
+5. The receiving head **shall ensure the issuing school appears on the Board's website as affiliated
+   and does not appear in the List of Disaffiliated Schools**.
+6. The TC **shall be countersigned by the Manager/Secretary/Member of the School Managing Committee and
+   the head of the school** when forwarding it to the Board in cases of direct admission and seeking
+   Board approval. *(Note: this is an internal SMC countersignature, not an education-officer one.)*
+7. While countersigning, this legend is written: *"Verified from (cbse.nic.in / source from where
+   verified i.e. website etc.) on (date of accessing the source of verification) that the issuing
+   school's name appears in the list of affiliated schools and does not appear in the list of
+   disaffiliated schools and Countersigned"*.
+8. **In case of transfer from a school recognised by / affiliated to any other recognised Board, the
+   genuineness of the TC be got ascertained and countersigned from the authority controlling the
+   school, as per past practice.**
+9. In case of doubt about a TC, the matter is referred to the Board.
+10. School managements *"shall make all out efforts to admit students having valid Transfer Certificate
+    from a school recognized by/affiliated to recognized Board(s)."*
+
+**So the current CBSE position (A):**
 
 | Move | Countersignature |
 |---|---|
-| CBSE school → CBSE school | **None.** Withdrawn 2019. Scanned TC uploaded to the school's website instead |
-| Non-CBSE institution → CBSE school | **Required** — Affiliation Bye-Laws 8(vii): "such a student shall produce a transfer certificate duly countersigned by an authority as indicated in the format given in Annexure-I" (**A**) |
-| Other Indian board, into class X or XII mid-stream (on parental transfer) | TC "duly countersigned by the Educational Authorities of the Board concerned", plus post-facto CBSE approval within one month (Aff. Bye-Laws 7.3(c) and 7.4(ii)) (**A**) |
+| CBSE school → CBSE school | **None.** Replaced by the 2014 SOP: website upload + affiliation-list verification + affiliation code on the TC |
+| Any TC, sent to CBSE HQ/RO for countersigning | **CBSE will not do it.** *"since CBSE does not hold the original information, countersigning should also not be done by CBSE"* (04.02.2020) |
+| Direct admission requiring Board approval | Internal countersignature by the **SMC Manager/Secretary/Member + head**, with the verification legend (2014 SOP steps 6–7) |
+| Non-CBSE institution → CBSE school | **Still required** — Examination Bye-Law 8(vii), and 2014 SOP step 8: countersigned by *"the authority controlling the school"* (i.e. the state education officer), "as per past practice" |
+| Other Indian board, into class X or XII mid-stream (on parental transfer) | TC "duly countersigned by the Educational Authorities of the Board concerned", plus post-facto CBSE approval within one month (Exam. Bye-Laws 7.3(c) and 7.4(ii)) (**A**) |
+
+> **⚠ TENSION the product must not resolve unilaterally.** The 31.10.2025 reminder says flatly *"there
+> is no need of countersignature of **any** transfer certificate"*, while the 2014 SOP step 8 and
+> Examination Bye-Law 8(vii) both preserve countersignature for a TC coming from **another board**. The
+> better reading — and the one consistent with the 2020 circular's own reasoning — is that **CBSE will
+> not countersign anything**, while the *receiving-side* requirement that a non-CBSE TC be authenticated
+> by the authority controlling the issuing school survives. But CBSE has not said this in terms.
+> **Surface both, cite both, and let the school decide.** Do not encode "countersignature abolished"
+> as an unconditional rule.
+
+**For the corpus — two corrections, one substantive and one of citation:**
+
+1. **The rule itself survives; the countersignature footnote does not.** The `AUTHORITIES` entry
+   recording `r.8(vii)` as current at Level A is **substantively still correct** — 8(vii) governs the
+   non-CBSE case and was not withdrawn. What must be corrected is any rule derived from the
+   **Annexure-I footnote**, which required countersignature by "an officer not below the rank of
+   District Inspector of Schools/Deputy Director of Education/Education Officer" for CBSE transfers,
+   and by the Regional Officer / KVS Asstt. Commissioner / NVS Deputy Director for CBSE→CBSE moves.
+   **Those are withdrawn.** `verifiedOn` in this area should now read **2025-10-31**.
+2. **⚠ CITATION ERROR to fix wherever it appears: `r.8(vii)` is an *Examination* Bye-Law, not an
+   *Affiliation* Bye-Law.** Bye-laws 6, 7 and 8 ("Admission of Students to a School, Transfer/Migration
+   of Students") are **Chapter 3 of the CBSE Examination Bye-Laws**, and Annexure-I sits in the same
+   document. Verified two ways: the chapter is published under
+   `cbse.gov.in/cbsenew/Exambylaws_archive/`, and it appears in the Examination Bye-Laws contents at
+   items 6–8 under Chapter 3
+   (<https://cbseacademic.nic.in/web_material/publication/archive/byelawsenglish.pdf>). The
+   **Affiliation Bye-Laws 2018 contain no admission or transfer chapter at all** — their eighteen
+   chapters run Short Title, Norms for Affiliation, Land, Physical Infrastructure, Staff, Financial
+   Resources, School Fees, SMC, Functionaries, Procedures, Inspection, Penalties, Imposition of
+   Penalties, General Rules, Special Provisions, In-Service Training, Affiliation Committee,
+   Interpretation (<https://www.cbse.gov.in/cbsenew/affbye//Affiliation%20Bye%20Laws%202018%20-%20Chapter%20Wise.docx>).
+   Citing 8(vii) as an affiliation bye-law would send anyone checking it to the wrong document.
 
 **Countersignature is a *receiving-side* condition, not an issuing duty.** Two state codes confirm the
 pattern and both attach it to an inter-State move:
@@ -199,7 +268,7 @@ rule nationally.
   it cannot be issued may entail action against the school. **The only grounds on which a leaving
   certificate may be refused are: (i) Non-payment of fee and/or other dues; and (ii) Rustication by
   the Director under Rule 34.**"*
-- **CBSE Affiliation Bye-Laws 8(vi) (A)**: a leaving student *"shall on a payment of all dues, receive
+- **CBSE Examination Bye-Law 8(vi) (A)**: a leaving student *"shall on a payment of all dues, receive
   an authenticated copy of the Transfer certificate up to date."*
 
 **Courts that have held the opposite:**
@@ -244,7 +313,7 @@ of two prescribed forms. See Part C.
 
 ## B.2 School Leaving Certificate (SLC), and how Maharashtra differs
 
-**In most of India, SLC and TC name the same instrument.** CBSE's own Affiliation Bye-Laws 6.1(iv)(a)
+**In most of India, SLC and TC name the same instrument.** CBSE's own Examination Bye-Law 6.1(iv)(a)
 treats them as alternatives — *"The School Leaving Certificate/Transfer Certificate signed by the
 Head of the Institution last attended"* (**A**). CBSE's Exam Bye-Law 69.1(ii)(b) likewise calls the
 document received from the previous school "The School Leaving Certificate of the previous school"
@@ -359,22 +428,70 @@ nationally universal until at least two state boards are checked.
 
 **DigiLocker delivery of migration certificates: NOT FOUND.**
 
-## B.4 Bonafide Certificate
+## B.4 Bonafide Certificate — and the general rule for every "school-information certificate"
 
 **What it is (C/D, convention not law).** A statement by the Head that a named person is a currently
 enrolled student of the school, typically with class, section, admission number and period of study.
 Used for bank accounts, passports, visas, scholarships, travel concessions and court/administrative
 purposes.
 
-**Prescribed format: NOT FOUND.** No statutory, board or state-prescribed bonafide-certificate form was
-located in any source read (CBSE Examination Bye-Laws 1995/2004 full text; CBSE Affiliation Bye-Laws
-admission chapter; Kerala Education Rules Ch. VI; Maharashtra Secondary Schools Code including its full
-appendix list). **The absence of a find is weak evidence here** — the Maharashtra and Kerala codes both
-enumerate their prescribed forms and neither lists a bonafide certificate, which is suggestive, but the
-searches that would settle it could not be run (see method note).
+**Prescribed *format*: NOT FOUND.** No statutory, board or state-prescribed bonafide-certificate form was
+located in any source read (CBSE Examination Bye-Laws 1995/2004 full text including its admission chapter; Kerala Education Rules Ch. VI; Maharashtra Secondary Schools Code including its full
+appendix list). The Maharashtra and Kerala codes both *enumerate* their prescribed forms and neither
+lists a bonafide certificate, which is suggestive but not conclusive.
 
 > **Do not ship the assertion "there is no prescribed format for a bonafide certificate."** Ship
 > instead: "no prescribed format was located; ZenXii supplies a conventional template."
+
+### But there IS a prescribed *issuance standard*, and it is current (A)
+
+**CBSE circular No. COORD/PR UNIT/2020 dated 04.02.2020** — subject: ***"Certificates based on school
+information to be issued by Principals/Head of schools only – no countersign required"***. This is the
+governing rule for bonafide, character, study, experience and any other certificate a CBSE-affiliated
+school issues from its own records. It is expressly kept alive by the 31.10.2025 reminder, which
+directs that *"In case of any requirement the S.O.P as mentioned in circular dated 04.02.2020 is to be
+followed."* Read directly from the annexed original in
+<https://www.cbse.gov.in/cbsenew/documents/Subject_Reminder_practice_countersigning_Transfer_Certificates_03112025.pdf>
+
+Its rationale, quoted: *"It is clear that since CBSE does not hold the original information,
+countersigning should also not be done by CBSE."*
+
+Certificates it expressly covers:
+1. Experience Certificates for teachers working in CBSE-affiliated schools;
+2. **"Certificates issued by the schools to the students for the purpose of employment or obtaining any
+   type of government concessions viz. student tours or Railway journeys etc."** — this is the
+   bonafide/study/character family;
+3. and by Part III, *"any other certificate issued by school based on information available in school,
+   shall henceforth be issued by Principal/Head of School and no countersignature by CBSE shall be
+   required."*
+
+**Part I — steps for the issuing Principal/Head (A):**
+
+- (a) **Issued on the official school letterhead only, and signed by the Principal or Head of school.**
+- (b) The letterhead **must** carry, below the school name and address:
+  `AFFILIATED TO CENTRAL BOARD OF SECONDARY EDUCATION` / `AFFILIATION NO.----------`
+- (c) School name and address **as available in the CBSE records**.
+- (d) *"Only if required"*, the certificate **may** be countersigned by the Manager/Secretary/Member of
+  the School Managing Committee. (Optional, and internal — not an education officer.)
+- (e) If issued on a prescribed format, **the school's stamp and seal must contain the information at
+  (b)**.
+- (f) A copy **may be sent directly to the authority concerned by the school**.
+- (g) **"A record of such cases shall be maintained by the school."**
+
+**Part II — steps for any organisation/authority *accepting* such a certificate (A):** verify it is on
+official school letterhead; verify the letterhead carries the affiliation legend and number; verify the
+school name and address from `http://cbseaff.nic.in/cbse_aff/schdir_Report/userview.aspx`; and where a
+prescribed format is used, ensure the stamp and seal carry the affiliation information and that it is
+signed by the Principal/Head.
+
+**Part IV (A):** *"all such certificates shall be uploaded on school website also."*
+
+> **This is directly implementable and should drive the template engine, not just the docs.** For a
+> CBSE-affiliated school: every issued certificate carries the school's affiliation legend and code in
+> the letterhead block and in the seal; is signed by the Principal/Head; is registered in an issuance
+> log (step (g) makes the log a *requirement*, which is exactly what a certificate module should be);
+> and is published to the school's website. Optional SMC countersignature is a toggle, not a
+> requirement. **Evidence A, verified 2025-10-31.**
 
 **Validity period: NOT FOUND** as a statutory matter. Recency requirements in practice are imposed by
 the *requesting* authority, not by school law. No specific requesting-authority checklist was verified.
@@ -398,7 +515,10 @@ is a convention layered on top. That is a real, citable finding and it should sh
 conduct is an attribute of the leaving record, not an independent document.
 
 **Standalone character-certificate format: NOT FOUND.** No issuing rule, contents rule or prescribed
-form located.
+form located. **But the issuance standard in §B.4 applies to it** — CBSE circular COORD/PR UNIT/2020
+Part III sweeps in *"any other certificate issued by school based on information available in school"*:
+Principal/Head signature, official letterhead with the affiliation legend and code, school-side record
+of issue, website upload, no CBSE countersignature (**A**).
 
 **Restrictions on adverse remarks about a minor: NOT FOUND — and do not invent one.**
 RTE s.16 (bar on holding back and expulsion till completion of elementary education) and s.17 (bar on
@@ -425,6 +545,10 @@ the primary documentary evidence in caste-validity adjudication (see §B.8).
 **Nearest verified relative (A):** Kerala **r.22A, "Certificate of School Education"** — prescribed
 form, Headmaster-issued, for pupils who left before the SSLC examination, fee Rs 10.
 
+**The §B.4 issuance standard applies here too (A).** CBSE's 04.02.2020 circular expressly covers
+certificates issued to students *"for the purpose of employment or obtaining any type of government
+concessions"* — which is precisely what a study certificate is used for.
+
 **Karnataka (B):** the Nadakacheri / Atalji Janasnehi Kendra portal is the revenue channel for caste,
 income and residence certificates and publishes a "Documents Required for Online Application" list
 (<https://nadakacheri.karnataka.gov.in/>); the document list itself could not be retrieved, so
@@ -449,7 +573,7 @@ suspected of tampering) — all **A**.
 
 **Three independent primary sources all require a duplicate to be marked as a duplicate:**
 
-1. **CBSE Affiliation Bye-Laws 8(vi) (A)**: *"A duplicate copy may be issued if the head of the
+1. **CBSE Examination Bye-Law 8(vi) (A)**: *"A duplicate copy may be issued if the head of the
    institution is satisfied that the original is lost but **it shall always be so marked**."*
    <https://www.cbse.gov.in/cbsenew/Exambylaws_archive/ADMISSION%20OF%20STUDENTS%20TO%20A%20SCHOOL.pdf>
 2. **Maharashtra Secondary Schools Code r.30 (A)**: *"In the case of a request for a duplicate copy of
@@ -614,7 +738,7 @@ retrieved.
 |---|---|---|---|
 | **Kerala Education Rules 1959, Ch. VI r.2(1)** | Admission Register | *"Every School shall maintain an Admission Register in **Form 4**."* | **A** |
 | **Maharashtra Secondary Schools Code r.83(A)** | General Register | *"Every school shall maintain in situ and produce at the time of inspection or visit the following records and registers:— (A) Pertaining to Pupils— 1. **General Register in the form given in appendix Eighteen**; 2. Attendance Register … appendix Nineteen; 3. Leaving Certificates received from other schools; 4. **Counterfoils of Leaving Certificates issued to pupils**; 5. Records of pupils' attainments and/or examination results; 6. Records of health and medical examination of pupils; 7. Answer-books of the annual examination of the preceding year; 8. Record of the pupils admitted with test prior to the inspection."* | **A** |
-| **CBSE Affiliation Bye-Laws, Admission Procedure 8(i)** | Admission Register | *"Admission register **in the form prescribed by the State Government concerned/Kendriya Vidyalaya Sangathan/Navodaya Vidyalaya Samiti** as the case may be, shall be maintained by the 'School' where the name of every student joining 'the School' shall be entered."* | **A** |
+| **CBSE Examination Bye-Laws, Ch. 3, bye-law 8(i) "Admission Procedure"** | Admission Register | *"Admission register **in the form prescribed by the State Government concerned/Kendriya Vidyalaya Sangathan/Navodaya Vidyalaya Samiti** as the case may be, shall be maintained by the 'School' where the name of every student joining 'the School' shall be entered."* | **A** |
 | **CBSE Examination Bye-Laws 2(i)** | definition | *"'Admission Register or **Admission & Withdrawal Register**' means a register maintained by the school indicating the admission of candidates to various classes in the institution."* | **A** |
 
 Note what CBSE 8(i) does *and does not* do: it makes the register **mandatory** but **delegates its
@@ -657,7 +781,7 @@ not the certificate — the primary record.
   order should be preserved as permanent record."**
 - 26.4 — applications for change of DOB, caste etc. entertained only for a pupil still attending.
 
-**Maharashtra numbering / CBSE numbering (A):** CBSE Affiliation Bye-Laws 8(ii) — *"Successive numbers
+**Maharashtra numbering / CBSE numbering (A):** CBSE Examination Bye-Law 8(ii) — *"Successive numbers
 must be allotted to students on their admission and **each student should retain this number throughout
 the whole of his career in the school**. A student returning to the school after absence of any duration
 **shall resume his original admission number**."* This is a hard constraint on any ERP that mints a new
@@ -705,7 +829,7 @@ certificate (r.24.4), but no general retention schedule was located in the chapt
   key.
 - CBSE's prescribed TC (Annexure-I) takes the DOB **"according to Admission Register"** (field 6) and
   carries **Admission No.** in its header.
-- CBSE Affiliation Bye-Laws 8(iii): a TC from the last school *"must be produced **before his name can
+- CBSE Examination Bye-Law 8(iii): a TC from the last school *"must be produced **before his name can
   be entered in the Admission Register**"* — the incoming certificate is the source of the new register
   entry. And 8(iv): *"In no case shall a student be admitted into a class higher than that for which he
   is entitled according to the transfer certificate."*
@@ -752,6 +876,20 @@ class.
 8. **Never hard-block admission on a missing TC** (RTE s.5(3) first proviso, **A−**; Maharashtra r.18
    and r.22.1 provisional admission, **A**).
 9. **Never hard-block TC generation on unpaid fees** — disclose dues on the document instead (§B.1).
+10. **There is a second, certificate-side register, and it is required.** CBSE circular COORD/PR UNIT/2020
+    step (g): *"A record of such cases shall be maintained by the school"* (**A**). Maharashtra r.83(A)(4)
+    independently requires **counterfoils of leaving certificates issued to pupils** to be kept and
+    produced at inspection, retained 10 years (**A**). So the module needs an **issuance ledger** — what
+    was issued, to whom, when, by whom, on which register row — distinct from the admission register.
+    That ledger is not a nicety; it is what an inspection asks for.
+11. **CBSE-affiliated schools must publish issued TCs to the school website** (2014 SOP step 1, 2018
+    circular, 2025 reminder, all **A**) and must carry the affiliation legend and code on the certificate
+    (2014 SOP step 3; 2020 circular step (b)). Both are mechanical and belong in the template engine.
+12. **Verification, not countersignature, is the modern control.** The 2014 SOP replaced the countersign
+    with: check the issuing school against the CBSE affiliated / disaffiliated lists, record the
+    affiliation number on the TC, and write a dated verification legend naming the source consulted
+    (**A**). A certificate module that models *verification events* — source, date, outcome — is
+    modelling what CBSE actually now requires.
 
 ---
 

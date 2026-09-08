@@ -14,12 +14,21 @@ Lakshadweep · Andaman & Nicobar Islands
 | **D** | Unverified or inferred. **Never enforce a level-D claim.** |
 | **NOT FOUND** | Searched, not established — *a result, not a failure* |
 
-> **Read this before encoding anything below into a gate.** Two premises supplied to this
-> research turned out to be **wrong on the primary text**, and both would have shipped as
-> enforced rules had they not been checked: Tamil Nadu's TNER r.40 is a *prohibition* on
-> withholding a TC for arrears, not a permission (§3.2); and the Kerala judgment cited for
-> gutting KER r.17(2) never mentions r.17(2) at all (§2.5). A third — a Madras Division Bench
-> judgment of 22.07.2024 — could not be found to exist (§3.4).
+> **Read this before encoding anything below into a gate.** Four premises supplied to this
+> research were tested against primary text. Two were **wrong**, one was **half right**, and one
+> was **right but for a different reason than assumed** — and each would have shipped as an
+> enforced rule had it not been checked.
+>
+> | Premise | What the primary text shows |
+> |---|---|
+> | *The Kerala judgment 2025:KER:69076 gutted KER Ch.VI r.17(2)* | **Wrong.** The judgment never mentions r.17(2). It was a **CBSE** case where KER did not apply, arguing CBSE Bye-law Ch.3 r.8(vi). **r.17(2) is still on the books, unamended** (§2.5) |
+> | *Tamil Nadu historically required countersignature for certain transfers* | **Wrong.** TNER prescribes **none**; a grep of the full text found no TC-related countersignature at all. The real countersignature rule in this pair is **Puducherry's** (§3.4, §4.5) |
+> | *TNER rr.40–42 permit withholding a TC for unpaid fees* | **Half right, and genuinely unresolved.** **Rule 40 exists in two circulating, opposite texts** (§3.3). Either way rr.41–43 allow only **one term's special fee** under r.38 — never accumulated arrears |
+> | *A Madras HC Division Bench ruled on this on 22.07.2024* | **Right, but the date is the reporting date.** It is **W.A. 3075/2021, pronounced 19.07.2024**, and it does **not** cite TNER rr.40–42 by number at all (§3.5) |
+>
+> A first pass of this research also got the TNER r.40 question wrong in the opposite direction —
+> reading one source and declaring the premise withdrawn. It took a second, independent retrieval
+> to find that both texts exist. **One source is not verification.**
 
 ---
 
@@ -626,70 +635,457 @@ true of Puducherry (§4).
 > **r.52(i)(1).** Schools must maintain *"A **register of admissions and withdrawals** (Appendix
 > 6)"*, producible to the District Educational Officer.
 
-### 3.3 **CORRECTION to the research brief's premise**
+### 3.3 ⚠️ THE RULE 40 CONFLICT — two authoritative-looking texts say **opposite** things
 
-The brief states that TNER rules 40–42 *"contain rule text permitting a school to withhold a TC
-for unpaid fees."* **The primary text says close to the opposite.**
+**This is the single most important caution in this document, and it corrects an earlier
+conclusion reached in this same research.** A first pass read only the Indian Kanoon text and
+concluded that the brief's premise was simply wrong. A second, independent retrieval found a
+different text. **Both were verified directly. They are substantively opposite.**
 
-- **r.40 is a prohibition, not a permission.**
-- r.41–43 condition issuance only on **"special fees admissible under rule 38"**, and r.38 caps
-  that at **one term's special fee** for the term of last attendance. That is a narrow, capped,
-  current-term charge — **not general arrears**.
-- The only refusal power in r.42 is for a **mid-term application where "good and sufficient
-  reasons are not shown"** — a *timing* ground, not a *fees* ground — and r.43 lets the applicant
-  cure it by re-applying at term end.
+| Source | Rule 40 text | Effect |
+|---|---|---|
+| **Indian Kanoon** — https://indiankanoon.org/doc/24617366/ (says *"headmaster"*) | *"…on the assumption that there are no arrears of fees for previous terms, a transfer certificate **shall not be refused on the plea that such arrears exist**."* | **PROHIBITS** withholding for arrears |
+| **TNER compilation PDF** — https://www.johnsonasirservices.org/web/Downloads5/29.R.TN%20educational%20rules%20.pdf (says *"Head of the Institution"*) | *"…on the assumption that there are no arrears of fees for previous terms **a transfer certificate shall be issued after payment of all arrears by the pupil including the previous terms**."* | **PERMITS** withholding until all arrears paid |
 
-**Withdraw the premise for Tamil Nadu as stated.** A *different* TN instrument may permit
-withholding — the Recognised Private Schools (Regulation) Act 1973/Rules 1974, or the Private
-Schools (Regulation) Act 2018 — **that has not been checked.**
+Corroborating detail that this is a version difference, not a transcription error: the Indian
+Kanoon copy also gives **r.41** in a longer, older form (*"received at the end of a term, or in
+the interval between two terms, or in first five working days of a term"*) and says *"special
+fees"*; the PDF compresses it and adds *"**and tuition fee**"*. One says *headmaster*
+throughout, the other *Head of the Institution* throughout.
 
-### 3.4 Countersignature and the missing Division Bench judgment
+**Assessment:** the Indian Kanoon text is very likely the **original** wording and the PDF a
+**later amended** compilation — the direction of amendment running from pro-parent to
+pro-school. **But the amending G.O. was NOT FOUND, so which text is currently in force is
+UNRESOLVED.** Recorded as a conflict rather than resolved by preference. **[Level D on the
+resolution; Level A on both texts.]**
 
-**Countersignature: NOT FOUND** in TNER 38–46 — only the **headmaster** signs. The DEO appears
-only as the officer who fixes a reasonable **search fee** (r.44) and to whom the
-**admission-and-withdrawal register** is producible (r.52). Absence in these rules is not proof
-of absence in TN law generally.
+> **Product rule that follows regardless of which text wins:** *never* encode a no-dues TC gate
+> on the strength of TNER r.40. On the Indian Kanoon text it is forbidden; on the PDF text it is
+> permitted by a rule the Madras High Court has since held cannot stand (§3.4).
 
-**The Madras HC Division Bench judgment of 22.07.2024 could NOT be located.** An Indian Kanoon
-Madras-HC search restricted to 20–26 July 2024 returned **"No matching results"**.
+**What is *not* in dispute, and narrows the premise sharply either way:** rules 41–43 condition
+issuance only on **"fees admissible under rule 38"**, and **r.38 caps that at one term's special
+fee** for the term of last attendance — *"No fee can be claimed merely because a pupil's name is
+kept on the register."* **Accumulated arrears were never a lawful pre-condition on the rules'
+own terms.** The only refusal power in r.42 is for a mid-term application where *"good and
+sufficient reasons are not shown"* — a *timing* ground, curable under r.43.
 
-**What was found instead is materially weaker:** ***Miss. J. Roshini v. The Principal***,
-W.P.No.20026 of 2024, **2024:MHC:2730**, **18 July 2024**, **single judge**, Dr Justice Anita
-Sumanth. **[A]** · https://indiankanoon.org/doc/194225027/
+**Other TNER TC provisions found on the second pass — [A]:**
 
-> *"withholding of certificates in any way by the school cannot be countenanced as the school can
-> hold no lien on the academic certificates"* (para 4)
+- **r.34** is the master rule: no admission without a TC *"in the prescribed form (Appendix-5 &
+  5A)"* showing date of birth, **"that he/she has paid all fees due to that school"**, the
+  standard last studied, and promotion status. It also says **"no pupil shall be admitted or
+  enrolled pending the production of a transfer certificate"** — the clause the 2024 Division
+  Bench held repugnant to RTE s.5. Every TC must carry **the school number assigned by the
+  Director of Government Examinations**.
+- **r.47 — APPEAL.** *"In the event of a Head of the Institution **refusing or delaying** to give
+  a transfer certificate the father or the mother or guardian … shall have the **right to appeal
+  to the Inspecting Officer** whose decision shall be **final** unless he thinks it necessary to
+  refer the matter to the Director concerned."* *(Only Kerala, §2.4 r.20, has a comparable
+  remedy.)*
+- **r.44 (compilation version)** — search fee: within a year **nil**; 1–5 years **₹10**; over 5
+  years **₹50**. Duplicate at the same rate, marked *"duplicate"* **in red ink**, **issued only
+  once**.
+- **r.45, r.49** — no TC while a dismissed/expelled pupil is debarred by the **Chief Educational
+  Officer**, or while debarred by the DGE from the 10th/12th public exams.
+- **r.49(B)** — the **Director of School Education** may cancel/withhold/suspend a TC for
+  fraudulent alterations; cancellation cascades between the TC and the public-exam mark
+  certificate.
 
-But **the petition was dismissed** (*"This Writ Petition and the connected Miscellaneous Petition
-are dismissed. No costs."*), the observation is **obiter**, it is a **single judge not a Division
-Bench**, the date is **18** not 22 July, and it **does not cite TNER 40–42**.
+### 3.3a The prescribed TC form — TNER Appendix-5 / 5-A / 5-B — **[A]**
 
-**Do not cite this as a Division Bench holding.** Either the DB judgment exists under a citation
-not indexed on Indian Kanoon, or the brief's reference is inaccurate. Flagged for re-verification.
+Headed **GOVERNMENT OF TAMIL NADU / DEPARTMENT OF SCHOOL EDUCATION / TRANSFER CERTIFICATE /
+"Recognized by the Department of School Education"**. **Appendix-5** is the XI–XII form,
+**Appendix-5-A** the I–X form, **Appendix-5-B** a separate conduct certificate on demand.
+
+Identifiers across the top: Hr.Secy. TMR Code No., Hr.Secy. Certificate Sl.No., Hr.Secy. Reg.No.,
+**School No.**, SSLC Marksheet Sl.No., TMR Code No., SSLC Reg.No., Admission No.
+
+Numbered fields: school/educational district/revenue district · pupil name in **Tamil and
+English** · parents' names · nationality, religion, caste · community · sex · **DOB in figures
+and words** · identification marks · date and standard of admission · standard at leaving,
+course, group, Part-I language, medium · qualified for promotion · **item 12 "Whether the pupil
+has paid all the fees due to the school"** · scholarship/concession · medical inspection · date
+left · working days / days attended / percentage · conduct and character · date of the parent's
+application · date of the TC · course-of-study table · **Signature of the Head of the
+Institution, date and school seal**.
+
+**Form notes:** a private-management school **must print "Recognized by the Department of
+Education Chennai"** — and, on 5-A, **the Recognition Number** — and a private TC without those
+words *"shall not be considered valid"*. The form is *"signed in ink by the Head of the
+Institution who will be held responsible for the correctness of the entries"*, and carries a
+declaration signed by **both the pupil and the parent/guardian**.
+
+**The Code of Regulations for Matriculation Schools** has its own **Annexure-V** TC form whose
+**Serial No. 8** reads, verbatim, *"Whether the pupil has paid all the fees due to the School"* —
+**identical in substance to TNER Appendix-5 item 12**. https://indiankanoon.org/doc/37801442/
+
+### 3.4 Countersignature — **NOT required in Tamil Nadu**
+
+**[A, negative finding, established by search rather than inferred.]** The only signature block in
+Appendix-5 and 5-A is *"Signature of the Head of the Institution, Date and School Seal"* — **no
+countersignature line for BEO / DEO / CEO / Inspector**. A grep of the full TNER text for
+`countersign | counter sign | counter-sign | attest` returned **no TC-related hit**; the only
+countersignature obligation near admission concerns **condonation of attendance shortage**
+(*"the Inspecting Officer should countersign it"*).
+
+**The functional substitute for countersignature in TN is printed validation, not a signature:**
+the recognition wording + **Recognition Number** + the **DGE-assigned school number** (r.34).
+*(Karnataka made the same move in 2016, replacing BEO countersignature with a mandatory DISE
+code — §1.5. Two southern states, same substitution.)*
+
+**What does require an officer** is different and narrower: **out-of-state / out-of-country**
+certificates are **evaluated** by the **District Educational Officer** within 3 months of
+provisional admission (2023 Rules r.20), and under the Matriculation Code *"Transfer certificate
+received from other States for admission into Standard IX and X will be sent to the Inspector for
+evaluation."*
+
+> ⚠️ **This contradicts a premise in the brief** that Tamil Nadu historically required
+> countersignature for certain transfers. **No such requirement exists in TNER for ordinary
+> transfers.** The nearest true statements are the two *inter-state evaluation* provisions above.
+> The genuine countersignature rule in this pair of jurisdictions is **Puducherry's** (§4.5).
+
+### 3.5 No dues — Tamil Nadu: **the Division Bench judgment EXISTS. Level A.**
+
+*(An earlier pass of this research recorded this as NOT FOUND on a date-restricted search. That
+was wrong — the search missed it because the judgment is filed as a **Writ Appeal**, and the date
+in circulation is the reporting date, not the judgment date.)*
+
+***The State of Tamil Nadu v. All India Private Schools Legal Protection Society***
+**W.A. No. 3075 of 2021** with C.M.P. Nos. 21280/2021 & 1209/2022 · **Division Bench: Justice
+S.M. Subramaniam and Justice C. Kumarappan** · **reserved 12.07.2024, pronounced 19.07.2024**
+(widely **reported 22.07.2024** — that is the reporting date, and it is where the brief's
+"22.07.2024" comes from). **[A]** · https://indiankanoon.org/doc/57800773/
+
+**Procedural posture, which decides the holding's scope.** The writ petitioners were
+**associations of Matriculation schools** seeking a mandamus **to force** the authorities **to
+insist on TCs** and to give schools a fee-recovery safeguard. The single judge granted that
+(28.10.2021, W.P.No.16581/2021). **The State appealed and the Division Bench allowed the State's
+appeal, setting that order aside.**
+
+**Critically — the "cannot withhold a TC for fees" proposition was already common ground below
+and was never disturbed.** The single judge had recorded:
+
+> *"This Court has already held that the **Transfer Certificate cannot be retained on the ground
+> of non-payment of fees** and the institution can only proceed against the students for recovery
+> of the fees in accordance with law."*
+
+and, from the schools' own counsel: *"…**since transfer certificate cannot be withheld on the
+ground of non payment of the fees**."* The **only** live issue on appeal was whether schools could
+at least **record the arrears on the TC**. The Division Bench said **no**.
+
+**Held (para 17):**
+
+> *"**Firstly, an Act of the Parliament overrides the Rules and Code. Secondly, any provision of
+> law formulated by the State legislature which is repugnant with an Act of Parliament has to
+> go.** Hence … it is pristinely clear that **a TC in itself is not mandatory for getting admitted
+> in a school.** When the mandatory nature of the TC itself is diluted, any further clauses to be
+> included in the TC, more specifically the impugned **Serial Number (8) in Annexure-5 of the Code
+> of Regulations for Matriculation Schools has to be removed.** This is an irrelevant clause …
+> and furthermore it goes against the welfare of the children and acts against their best
+> interest."*
+
+> paras 8–9: *"This Court can never allow a child to be **stigmatised** on the ground of
+> non-payment of fees… Hence **a TC is not a tool for the schools to collect arrear fees from the
+> parents or to weigh the financial capacity of the parents.**"*
+
+> para 20: *"The schools **should not involve the children in the fee collection process**."*
+
+> para 29: *"…the **school management shall recover the fee dues from the parents in the manner
+> known to law.** Contrarily the school management **has no right to stigmatise the children by
+> making unnecessary entries in the Transfer Certificates.**"*
+
+**Operative directions (para 30), verbatim:**
+
+> **(ii)** *"The appellants are directed to **revisit the Tamil Nadu Education Rules and Code of
+> regulation for matriculation schools**, and accordingly, make all necessary **amendments in
+> consonance with the provisions of the RTE Act within a period of three (3) months**…"*
+>
+> **(iii)** *"The appellants are directed to **issue circular / instructions / orders to all the
+> school administrations across the State of Tamil Nadu, not to insist upon to produce Transfer
+> Certificate by the child at the time of Admission, and prohibit the School Management from
+> making unnecessary entries in the Transfer Certificate including non-payment or delayed payment
+> of School fees. In the event of violation, actions are to be initiated under Section 17 of the
+> RTE Act** and under the relevant laws applicable for protection of children."*
+
+Listed for **compliance on 25.10.2024**.
+
+**⚠️ A distinction the secondary reports blur.** SCC Online and Verdictum report a formulation
+that repugnant clauses are *"null and void"*. In the judgment text, that proposition appears as
+**para 17 reasoning** (*"has to go"*). **The decretal portion (para 30) does not strike down or
+read down any rule — it directs amendment and a circular.** That difference matters: as of this
+research **the rules were not actually amended** (§3.6). **[A vs C — conflict in emphasis noted.]**
+
+**Limits of the holding:**
+
+- **High Court, binding in Tamil Nadu only.** Indian Kanoon showed *"Cited by 0"* at fetch time.
+  **Whether it was appealed or stayed could NOT be verified.**
+- **The RTE ratio is age-limited.** RTE s.5 sits in an Act about elementary education, ages 6–14.
+  But directions (ii)–(iii) are worded for *"all the school administrations across the State"*
+  with no class carve-out, and the appellants include the Directors of **Matriculation** and
+  **Elementary** Education. **The RTE ratio is strongest for I–VIII; the directions are
+  state-wide.** Extending it to IX–XII rests on the directions and on *Roshini*'s lien reasoning.
+- **It names only the Matriculation Code's Annexure-V Sl.No.8.** The identical TNER Appendix-5
+  item 12 is caught only by direction (ii)'s general instruction. **Anyone asserting "the Madras
+  HC struck down TNER rules 40–42" is overstating it — the judgment does not cite those rules by
+  number at all.**
+- **CBSE/ICSE schools in TN: untested.** **[D]**
+- It did **not** decide mark sheets. That limb rests on ***Miss J. Roshini v. The Principal***,
+  W.P.No.20026 of 2024, **2024:MHC:2730**, **18.07.2024**, single judge, Dr Justice Anita Sumanth
+  — where **original mark sheets and the TC** were withheld: *"withholding of certificates in any
+  way by the school cannot be countenanced as the school can hold no lien on the academic
+  certificates of a candidate, though it may resort to other legal measures for recovery of
+  fee/charges."* **[A]** · https://indiankanoon.org/doc/194225027/ — expressly *"As an aside"*
+  (obiter), and **the petition was dismissed**. Persuasive, not a holding.
+
+### 3.6 The rule-versus-ruling conflict in Tamil Nadu — **CONFIRMED, UNRESOLVED**
+
+The withholding-friendly text is **still on the books**:
+
+| Instrument | Status as of 2026-09-08 |
+|---|---|
+| TNER **Appendix-5 field 12** / **5-A** — *"Whether the pupil has paid all the fees due to the school"* | Still in the prescribed form. **No amendment found.** |
+| Matriculation Code **Annexure-V Sl.No.8** — same words | **Expressly ordered removed** by the DB. **No amendment found.** |
+| TNER **r.34(b)** — TC must show *"that he/she has paid all fees due to that school"* | Still in the text. |
+| TNER **r.34** — *"no pupil shall be admitted or enrolled pending the production of a transfer certificate"* | Directly contrary to RTE s.5 and to direction (iii). Still in the text. |
+| TNER **r.40** (disputed version) | Still in the compilation read. **Two opposite texts — §3.3.** |
+| TNER **rr.41–42** — issuance *"provided that his claims for … fees admissible under rule 38 have been satisfied"* | Still in the text (narrow: one term's special fee). |
+| **2023 Rules r.18** — TC on written application, **no fee condition** | Consistent with the ruling |
+| The **circular** ordered by direction (iii) | **NOT FOUND** |
+| The **amendments** ordered by direction (ii), due ~Oct 2024 | **NOT FOUND** — no amending G.O. located |
+
+**Behaviour that follows for a system of record: never gate TC issuance on outstanding fees, and
+never print a fee-arrears status on a TC — even though the printed statutory form still contains
+the field.** Whether the field must be left blank, struck through, or answered unconditionally is
+**not addressed by any source found** (§11).
+
+### 3.7 The board — DGE
+
+**Directorate of Government Examinations**, https://dge.tn.gov.in/ — conducts SSLC, Higher
+Secondary, Diploma in Elementary Education, ESLC, NTSE, NMMS. **[B]**
+
+**Migration certificate** is a **DGE** service, not a school one **[A]** ·
+https://dge.tn.gov.in/docs/services/mig_information.pdf — *"for Students desirous of continuing
+studies **abroad or in other states of India**"*; open to holders of SSLC / OSLC / Matriculation /
+Anglo-Indian / Higher Secondary certificates issued by DGE; **₹505** by DD or treasury challan to
+the Director of Government Examinations, Chennai-600 006; officer to approach: **Deputy Director
+of Government Examinations**.
+
+**The link back to TCs:** TNER r.34 requires every TC to carry **the school number assigned by
+the Director of Government Examinations**; r.49 bars a TC to a pupil debarred by the DGE; r.49(B)
+cascades cancellation between a TC and a DGE mark certificate.
+
+**No distinct "DGE TC regulation" was found** — TC regulation lives in TNER and the Matriculation
+Code, not in DGE rules.
 
 ---
 
 ## 4 · Puducherry
 
-**Largely NOT ESTABLISHED.**
+### 4.1 Puducherry does **NOT** follow the Tamil Nadu Educational Rules — established, not assumed
 
-- Puducherry **has a legislature**, so under RTE s.2(a) its own government is the appropriate
-  Government and it has **its own RTE Rules** rather than the Central ones (§0). **[A for the
-  statutory mechanism; the Rules themselves were not retrieved.]**
-- The **"Puducherry Right of Children to Free and Compulsory Education Rules"** are referenced in
-  *M. Thulasiraman v. The Director of School Education*, Madras HC, 24.07.2018, in the context of
-  a school's *"right to conduct classes"*. **[C — existence only.]**
-- **NOT FOUND:** the Rules' year, the recognition rule number, the recognition validity period,
-  the granting authority, any Puducherry education Act or private-school regulation, any TC
-  format, any countersignature requirement, the board arrangement, and any no-dues position.
+The Directorate of School Education's own **Acts** page lists exactly three Acts —
+the central RTE Act 2009, the **Pondicherry Compulsory Elementary Education Act 2000**, and the
+**Pondicherry School Education Act 1987** — and its **Rules** page exactly four: the **Puducherry
+School Education (Amendment) Rules 2014**, the **Puducherry RTE Rules 2011**, the **Pondicherry
+School Education Rules 1996**, and a recognition explainer. **TNER appears nowhere, and no
+extension notification was found.** **[B]** · https://schooledn.py.gov.in/ActsRules/acts.html ·
+https://schooledn.py.gov.in/ActsRules/rules.html
 
-Searched: `schooleducation.py.gov.in` (DNS does not resolve); `py.gov.in/departments/school-education`
-(HTTP 404); Indian Kanoon full-text search for the Puducherry RTE Rules (returns citing
-judgments only, not the rules).
+The 1987 Act is a **complete code** (permission, recognition, withdrawal, property, teacher
+service conditions, admissions, fees, affiliation, takeover, accounts, appeals, penalties) and
+the 1996 Rules independently regulate admission and TCs.
 
-**Do not default Puducherry to Tamil Nadu's rules.** The two are administratively entangled and
-it is plausible that TNER applies, but **no source was found saying so** — and it is exactly the
-kind of plausible assumption that this document exists to refuse.
+> **Honest limit:** an official listing is strong but not conclusive — a pre-1987 French-era or
+> Madras-era instrument could survive for some purpose without being listed. But **no source
+> claims TNER applies in Puducherry**, and the local framework is self-sufficient. **[B]**
+
+Primary texts, read in full: **Pondicherry School Education Act 1987 (Act 9 of 1987)**
+https://schooledn.py.gov.in/ActsRules/pudu_SchoolEdu.html · **Pondicherry School Education Rules
+1996** https://schooledn.py.gov.in/ActsRules/edu_ENG_DDElement_Rules_1996.html · **Puducherry
+School Education (Amendment) Rules 2014**, G.O. Ms. No. 11 dated 03.03.2014, *Gazette of
+Puducherry* Part-II Extraordinary No. 19, 11.03.2014
+https://schooledn.py.gov.in/ActsRules/PSER2014rules.pdf **[A]**
+
+### 4.2 Recognition — Puducherry RTE Rules 2011, rule 12 — **[A]**
+
+Notified by **G.O. Ms. No. 101, Chief Secretariat (Education), dated 24.10.2011**, by the
+**Lieutenant-Governor** under RTE s.38(1). https://schooledn.py.gov.in/ActsRules/PRTE.html
+
+> ⚠️ **A source trap worth recording.** `py.gov.in/sites/default/files/prte-rules-final-draft.pdf`
+> is titled *"…RULES, **2010** (FINAL DRAFT)"* — a **draft**, not the notified rules, and it
+> differs **materially**: the draft made the CEO / Deputy Director (Women's Education) /
+> Delegate to DSE co-designated authorities, whereas **the notified rule vests recognition solely
+> in the Director of School Education and expressly bars delegation.** Use the `schooledn`
+> notified text.
+
+| Sub-rule | Content |
+|---|---|
+| **12(2)** | *"**The Director of School Education shall be the designated authority to issue certificate of recognition and certificate of renewal** … **this authority shall not be delegated.**"* The school **first files its information electronically** on a website maintained for the purpose, gets a **receipt and registration number**, then submits the paper application to the **Inspecting Officer** |
+| **12(3)** | A **Committee constituted by the DSE** — an educationist, a Government representative and the Inspecting Officer — inspects and forwards within **30 days** through the **Deputy Director (Elementary Education)** |
+| **12(5)** | *"…shall issue the recognition certificate in **Form-2**. The certificate shall be **for a period of three years** and shall be issued **within 45 days** from the date of making application"* |
+| **12(6)–(7)** | Provisional: **Form-3 up to 6 months** (PTR shortfall) or **Form-4 up to 3 years** (other Schedule norms). If not cured in time the school **ceases to be recognised**; the refusal order must be **pasted prominently in the school**, put in the public domain, and **name the neighbourhood schools** the children go to |
+| **12(8)** | *"For renewal … after three years, the application shall be submitted to the Inspecting Officer in **Form I by 30th November of the preceding year**"*; the authority *"will renew the recognition for **three more years**"* |
+| **12(9)** | *"**For opening a new school and for starting the next higher class/stage**, the application shall be submitted in Form – I by 30th November of the preceding year"* |
+| **12(11)** | *"The recognition certificate issuing authority shall **inspect or cause to inspect the school every year**"* |
+
+**Form-2:** *"…I convey the grant for provisional recognition to the ______ (name of the school
+with address) **for Class ______ to Class ______ for a period of three years with effect from
+______ to ______**"*, with the condition that it *"is not extendable and does not in any way imply
+any obligation to recognize/affiliate **beyond Class VIII**."*
+
+**r.13 — withdrawal:** notice with **2 weeks** to explain; a **3-member committee** inquires;
+operative **from the succeeding academic year**; the order must **name the neighbourhood schools**.
+
+### 4.3 Validity — the clearest fixed term in the region, and a second indefinite track
+
+**RTE track: three years, renewable for three more.** The renewal trigger is a **fixed calendar
+date — 30 November of the preceding year** — not a "days before expiry" window. **That is a
+materially different scheduling mechanism from Telangana's 90 days and Kerala's 3 months, and any
+reminder logic must model it as a date, not an offset.**
+
+**1987 Act / 1996 Rules track: NO validity period and NO renewal rule. [A, negative]**
+- **Act s.12(2)** — the certificate is granted *"within such period as may be prescribed"*: a
+  **processing** deadline, not a term.
+- **1996 Rules r.24(3)** — certificate within **3 months** of application: again processing.
+- A grep of the whole 1996 Rules for `renew` returns **zero hits**. **r.30** deals only with
+  *effective dates*; **r.29** requires a **fresh Form-VIII application** where recognition has
+  been withdrawn.
+
+⇒ **Puducherry, like Tamil Nadu, runs two parallel recognition regimes** — a **3-year renewable**
+RTE recognition and an **indefinite** 1987-Act recognition.
+
+**No Puducherry equivalent of AP's GO.38 was found.** Puducherry sits at **3 years** — AP's
+pre-2023 starting point — with no extension located.
+
+### 4.4 Scope — per class/stage, granted **to the agency**, not per section — **[A]**
+
+| Instrument | Text | Shows |
+|---|---|---|
+| **PRTE Form-2** | *"for **Class ___ to Class ___** for a period of three years"* | class-range + fixed term |
+| **PRTE r.12(9)** and **Form-1** | Form-1 is headed *"…/ **RECOGNITION FOR STARTING A NEW CLASS**"* | **adding a class needs a fresh application** |
+| **1996 Rules Form-IX** *[see r.24(2)]* | *"CERTIFICATE OF RECOGNITION OF A PRIVATE SCHOOL (The Directorate of Education is pleased to grant recognition **to the agency** indicated below)"* — fields: name of school · **name of educational agency** · address · *"**Stage up to which recognition is given**"* · special remarks incl. minority status. Signed **Director of Education** | **granted to the agency**, scoped by **stage**, tied to an **address** |
+
+**The AP/Telangana "granted to the SOCIETY" pattern DOES hold in Puducherry** — Form-IX says so in
+terms. **This is a real contrast with Tamil Nadu**, where both operative forms grant *to the
+school* even though the *agency* applies.
+
+**Per SECTION: NOT FOUND** in the 1987 Act, the 1996 Rules or the PRTE Rules 2011.
+
+**Field officers:** **Deputy Inspector of Schools** (Puducherry & Karaikal zones), **Chief
+Educational Officer** (Mahe), **Delegate to DSE** (Yanam). **Puducherry has no BEO in this
+chain.** Establishment application is in **Form I**, in **triplicate**, with a **₹100** fee.
+**[B]** · https://schooledn.py.gov.in/ActsRules/Recognition_Private_Schools.html
+
+**Conditions — 1996 Rules r.25:** scheme of management; *"the school **serves a real need of the
+locality** and is not likely to affect adversely the enrolment in a nearby school"*; approved
+courses; **not run for profit**; admission without discrimination on religion/caste/race/place of
+birth subject to Art. 30(1); adequate building, surroundings, furniture, equipment; health and
+hygiene; **no commercial/residential/communal/political/non-educational use of the premises**.
+**[A]**
+
+**Online:** r.12(2) **mandates** electronic pre-filing before the paper application — but **the
+portal's URL was NOT FOUND**, and no end-to-end online system comparable to TN's e-Sevai exists.
+Puducherry is an **online-registration + paper-application hybrid**.
+
+### 4.5 Transfer certificates — and the region's clearest countersignature rule
+
+**1996 Rules r.62 — "Admission on transfer Certificate"** — **[A]**
+
+> *"No student who had previously attended any recognized school shall be admitted to any other
+> recognized school **unless he produces a transfer or school-leaving certificate** from the school
+> which was last attended by him: **Provided that if such student had studied in a school outside
+> the Union territory of Pondicherry he shall produce such transfer or school leaving certificate
+> duly countersigned by the concerned inspecting authority of schools having jurisdiction over the
+> school.**"*
+
+**r.63** — a migrating student *"shall not be admitted to a class higher than the one in which he
+was studying at his former school, **unless the transfer certificate states that he has been
+promoted to the next higher class**."*
+
+**r.60** — a newly admitted student's name goes on the rolls *"after making payment of all
+specified dues"* — **note this conditions the RECEIVING school's enrolment, not the RELEASING
+school's TC.** **r.61** — admission ordinarily **not after 31 July**, unless the Director is
+satisfied the delay was unavoidable (expressly contemplating migration from outside Puducherry).
+
+**COUNTERSIGNATURE: YES, and precisely scoped.** Required **only** for a TC from a school
+**outside the UT**, and by **the inspecting authority with jurisdiction over the *originating*
+school** — not a Puducherry officer. **Not required** between two Puducherry-recognised schools.
+r.62 does not distinguish aided / unaided / government / CBSE; whether it reaches CBSE-affiliated
+schools is an inference **[D]**.
+
+> **This is the sharpest TN/Puducherry divergence in the region:** **Puducherry requires
+> countersignature for inter-state transfers; Tamil Nadu requires none at all** and uses **DEO
+> evaluation** of out-of-state certificates instead (§3.4). Two adjacent jurisdictions, opposite
+> mechanisms for the same problem.
+
+**PRESCRIBED TC FORMAT: NOT FOUND. [A, negative — searched]** A grep of the full 1996 Rules and
+the full notified PRTE 2011 Rules found that rr.62–63 **refer to** a TC but **prescribe no form**;
+the 1996 Rules' Forms 1–13 are the establishment/recognition/management series. **The Puducherry
+RTE Rules contain no TC provision at all** (zero hits for `transfer certificate`). **Puducherry
+regulates only the receiving school's duty to demand a TC, never the releasing school's duty to
+issue one.**
+
+*(Schools in the Puducherry/Karaikal region may in practice use TN-style TC formats because they
+sit for the TN board — but **no source supports this**, so it is **[D]** and is not asserted.)*
+
+**A parallel stamping requirement — PRTE r.21 [A]:** the certificate of **completion of
+elementary education** (RTE s.30(2)) is issued by the head teacher *"after obtaining necessary
+approval from the concerned **Inspecting Officer**"*, in Form-4, within one month, with the Pupil
+Cumulative Record — and *"**the private school shall stamp prominently on the certificate, the
+number of the school recognition certificate**"*. Functionally the same device as TN's printed
+recognition number and Karnataka's DISE code.
+
+### 4.6 The board — Puducherry has none of its own — **[A]**
+
+**Pondicherry School Education Act 1987, s.2** defines *"public examination"* as one conducted by
+*"the **Boards of Secondary Education in the States of Tamil Nadu, Kerala and Andhra Pradesh** or
+any other Board … recognized by the Government"*.
+
+**s.29 — Affiliations:** *"For the purpose of any public examination **every recognized high
+school or higher secondary school shall be affiliated to one or more of the Boards**…"*
+**s.14:** an unrecognised school shall not *"prepare, train or guide pupils for appearing at any
+public examination."*
+
+This maps onto Puducherry's four non-contiguous regions — **Puducherry and Karaikal** (in Tamil
+Nadu), **Mahe** (in Kerala), **Yanam** (in Andhra Pradesh) — the same split the DSE uses for
+routing recognition applications.
+
+> ⚠️ **NOT verified:** that Puducherry-region State-Board students specifically sit the **Tamil
+> Nadu DGE** examinations. The statute names TN, Kerala and AP **collectively**; the DSE's results
+> pages say only *"STATE BOARD"*. `dge.py.gov.in` does not resolve — **there is no Puducherry
+> DGE**. **[D — do not treat "Puducherry = TN board" as established.]**
+
+**Migration certificates** therefore come from **whichever board conducted the exam**. **No
+Puducherry-specific migration regulation was found.**
+
+### 4.7 No dues — Puducherry: **no rule permits it, and none forbids it**
+
+**[A for the negatives; NOT FOUND for the rest]**
+
+A grep of the full 1996 Rules for `withhold | arrear | dues` returns only: *"withholding of
+increments of pay"* (a teacher-discipline penalty), *"it shall disburse … the dues specified"*
+(grant-in-aid), and **r.60's "after making payment of all specified dues"** — which conditions the
+**receiving** school's entry on the rolls, **not** the releasing school's TC. **There is no
+Puducherry analogue of TNER rules 38/40/41/42.** The notified PRTE Rules 2011 contain **no TC
+provision at all**, hence no fee condition. **r.64 as substituted in 2014** puts private-school
+fees under a **Fee Committee** chaired by a retired High Court judge or retired IAS officer — a
+fee-regulation mechanism, **silent on TCs**.
+
+**⇒ A Puducherry school has no legal basis to withhold a TC for unpaid fees, and — unlike Tamil
+Nadu — cannot even point to a rule that says otherwise.** RTE s.5 and s.15 apply with full force,
+the PRTE Rules being made under the same central Act.
+
+> **An open jurisdictional question that matters.** If appeals from the Union Territory of
+> Puducherry lie to the **Madras High Court**, then the Division Bench judgment of 19.07.2024
+> (§3.5) would be **binding precedent in Puducherry** — though its directions (ii) and (iii) are
+> addressed to Tamil Nadu officers and Tamil Nadu rules and would not themselves operate there.
+> **This jurisdictional point was NOT verified from a primary source. [D — confirm before
+> relying on it.]**
+
+**NOT FOUND for Puducherry:** any circular or judgment on withholding TCs or mark sheets; any
+rule on duplicate TCs, TC fees, TC issuance timelines, or appeal against TC refusal; the
+electronic pre-filing portal URL; and recognition fee amounts under the PRTE Rules.
 
 ---
 
@@ -989,56 +1385,97 @@ instrument was located.
 
 ## 9 · Cross-cutting: the "no dues" question
 
-### 9.1 The three judgments verified at Level A
+### 9.1 The four judgments verified at Level A
 
-| State | Case | Citation | Date | Reasoning |
-|---|---|---|---|---|
-| **Kerala** | *Amit K. Togi (Minor) v. Director of Education (CBSE)* | **2025:KER:69076**, WP(C) 31794/2025 | 17.09.2025 | Art. 21-A; *"factual backgrounds … of no consequence"* |
-| **Karnataka** | *Rohit .G v. Sree Saraswathi Trust* | **2025:KHC:5986**, W.P. 31492/2024 | 10.02.2025 | Certificate is the student's **property**; school is a **trustee**; a parent's default is not the child's |
-| **Telangana** | *Vyshnav Dinesh v. State of Telangana* | W.P. 34185/2023 | 03.06.2024 | **No lien**; Art. 21-A; UGC guidelines 2007 |
+| State | Case | Citation | Date | Bench | Reasoning |
+|---|---|---|---|---|---|
+| **Tamil Nadu** | *State of Tamil Nadu v. All India Private Schools Legal Protection Society* | **W.A. 3075/2021** | **19.07.2024** *(reported 22.07)* | **Division Bench** — S.M. Subramaniam & C. Kumarappan | RTE s.5 overrides State rules and Codes; a TC is *"a procedural tool"*; fee entries **stigmatise** the child |
+| **Kerala** | *Amit K. Togi (Minor) v. Director of Education (CBSE)* | **2025:KER:69076**, WP(C) 31794/2025 | 17.09.2025 | Single judge | Art. 21-A; *"factual backgrounds … of no consequence"* |
+| **Karnataka** | *Rohit .G v. Sree Saraswathi Trust* | **2025:KHC:5986**, W.P. 31492/2024 | 10.02.2025 | Single judge (oral) | Certificate is the student's **property**; school is a **trustee**; a parent's default is not the child's |
+| **Telangana** | *Vyshnav Dinesh v. State of Telangana* | W.P. 34185/2023 | 03.06.2024 | Single judge | **No lien**; Art. 21-A; UGC guidelines 2007 |
 
-Full text and limits at §2.5, §1.7 and §6.6.
+Full text and limits at §3.5, §2.5, §1.7 and §6.6.
 
 ### 9.2 What the pattern does and does not establish
 
-**Establishes**, at Level A, in **Kerala, Karnataka and Telangana**: a school may not withhold a
-Transfer Certificate as leverage for unpaid fees; the remedy is a recovery action. Three courts,
-three years, three *independent* lines of reasoning — which is stronger than three courts
-following one another.
+**Establishes**, at Level A, in **Tamil Nadu, Kerala, Karnataka and Telangana**: a school may not
+withhold a Transfer Certificate as leverage for unpaid fees; the remedy is a recovery action.
+Four courts, three years, and — this is what makes it strong — **four independent lines of
+reasoning** rather than four courts following one another:
+
+- **Statutory supremacy** (Madras DB): an Act of Parliament overrides State rules and Codes, so a
+  fee-conditioned TC clause *"has to go"*.
+- **Fundamental right** (Kerala, Telangana): Art. 21-A / the right to education.
+- **Property and trusteeship** (Karnataka): the certificate is the *student's* property.
+- **No lien** (Telangana, and Madras in *Roshini*): the school holds no lien over academic
+  certificates.
+
+**Tamil Nadu adds two things the others do not.** It is the only **Division Bench** authority, and
+it goes further than issuance: it holds that a school may not even **record fee arrears on the
+TC**, because doing so **stigmatises the child** and involves children in fee collection —
+attracting **RTE s.17** (no mental harassment) on violation.
 
 **Does not establish:**
 
-- That any is a **Supreme Court** ruling or a binding **Division Bench** precedent. All three are
-  **single-judge writ decisions**; the Karnataka one is an **oral order at preliminary hearing**.
-  They bind their respondents and are strongly persuasive. They are not a nationwide rule.
-- Anything for **Andhra Pradesh**, **Puducherry**, **Lakshadweep** or **A&N** — **NOT FOUND** in
-  each. In AP the silence is notable, not reassuring: it is the one large southern state with no
-  located authority either way.
-- That the **enabling rule text has been struck down**. It has not. **Kerala's KER Ch.VI r.17(2)
-  — *"No transfer certificate shall be issued to a pupil from whom there are any dues to the
-  school"* — is still on the books, unamended**, and the 2025 judgment never touched it (it was a
-  CBSE case). Tamil Nadu's TNER never permitted general withholding in the first place. In every
-  verified case the court directed issuance **"without prejudice"** to recovery.
+- That any is a **Supreme Court** ruling. Three of the four are **single-judge** writ decisions;
+  the Karnataka one is an **oral order at preliminary hearing**. Only Tamil Nadu has a DB. None
+  was confirmed to be free of appeal or stay.
+- Anything for **Andhra Pradesh**, **Lakshadweep** or **A&N** — **NOT FOUND** in each. In AP the
+  silence is notable, not reassuring: it is the one large southern state with no located authority
+  either way. **Puducherry** has no judgment of its own, but also **no rule permitting
+  withholding** (§4.7) — and may be bound by the Madras DB if appeals from the UT lie to Madras,
+  which was **not verified**.
+- That the **enabling rule text has been repealed**. It has not, anywhere:
+  - **Kerala's KER Ch.VI r.17(2)** — *"No transfer certificate shall be issued to a pupil from
+    whom there are any dues to the school"* — is **still on the books, unamended**, and the 2025
+    judgment never touched it (a CBSE case).
+  - **Tamil Nadu's** Matriculation Code Annexure-V Sl.No.8 was **expressly ordered removed** and,
+    as of this research, **has not been removed**; TNER Appendix-5 item 12, r.34(b), r.34's
+    "no admission pending a TC", and the disputed r.40 all remain in the text.
 
-**What has gone is the self-help remedy of withholding, not the debt and not the rule.**
+**What has gone is the self-help remedy of withholding — not the debt, and not the rule.** In
+every case the court preserved recovery *"in the manner known to law"* / *"without prejudice"*.
 
 ### 9.3 Product consequence — stated as engineering, not as law
 
-A no-dues **block** on TC issuance is legally unsafe in at least Kerala, Karnataka and Telangana,
-and in Tamil Nadu is contrary to TNER r.40 on the rule text itself.
+**1 · Never block.** A no-dues **block** on TC issuance is legally unsafe in **Tamil Nadu, Kerala,
+Karnataka and Telangana**, and has no legal basis at all in **Puducherry**. That is the whole
+region except AP and the two small UTs, where nothing was found either way.
 
-A no-dues **flag** — surfaced to the issuing officer, recorded against the register entry, never
-blocking issuance — is consistent with every judgment read: each preserved the school's right to
-recover and denied it the right to withhold.
+**2 · A flag, not a gate.** A no-dues **flag** — surfaced to the issuing officer, recorded against
+the register entry, never blocking issuance — is consistent with every judgment read: each
+preserved the school's right to recover and denied it the right to withhold.
 
-**But note the Kerala complication, which a flag alone does not solve.** KER **Form 5** contains
-the mandatory field *"Whether the pupil has paid all the fees due to the school"*. It is a
-**statement of fact on a statutory form**, not a gate — and it is precisely the field the
-Karnataka trust in §1.7 said it was protecting when it withheld the TC. So the correct behaviour
-is: **print the field truthfully, and issue anyway.** Suppressing the field would falsify a
-statutory form; letting it block issuance would repeat the conduct three High Courts have
-condemned. This matches the corpus's existing rule that the no-dues gate must never default on
-and must be per-state configurable.
+**3 · But the printed field is a genuinely hard problem, and the two states point opposite ways.**
+
+Three statutory TC forms in this region contain a mandatory fee-status field:
+
+| Form | Field |
+|---|---|
+| **Kerala KER Form 5** | *"Whether the pupil has paid all the fees due to the school"* |
+| **TN TNER Appendix-5** item 12 / **5-A** | *"Whether the pupil has paid all the fees due to the school"* |
+| **TN Matriculation Code Annexure-V** Sl. No. 8 | *"Whether the pupil has paid all the fees due to the School"* |
+
+- In **Kerala** the field stands unchallenged: it is a **statement of fact on a statutory form**,
+  and the correct behaviour is to **print it truthfully and issue anyway**.
+- In **Tamil Nadu** the Division Bench held the equivalent field an *"irrelevant clause"* that
+  *"has to be removed"* because it **stigmatises the child**, and direction (iii) **prohibits
+  making such entries**. But **the form has not been amended**, so the field is still printed.
+
+**Whether the TN field must be left blank, struck through, or answered unconditionally is not
+addressed by any source found.** That is an unresolved question, not an implementation detail —
+and it is exactly the kind of gap where guessing would put false text on a statutory document.
+**Escalate it rather than defaulting.**
+
+**4 · The Karnataka case shows why this field is the crux, not a detail.** The trust in §1.7 told
+the court in terms that it was withholding the TC **because the TC would certify that no fees were
+due**, which would prejudice its recovery action. The field *is* the incentive to withhold. A
+product that makes the field easy to leave truthful **and** makes issuance unblockable removes
+that incentive; one that couples them recreates it.
+
+This matches the corpus's existing rule that the no-dues gate **must never default on** and **must
+be per-state configurable** — and it now has four Level-A judgments and three statutory forms
+behind it rather than an assumption.
 
 ---
 
@@ -1052,51 +1489,118 @@ TN RTE Form II: *"for class … to class …"*. Karnataka, evidenced from litiga
 recognition for Standard VI to VIII"*. Central RTE Rules Form: *"for Class ___ to Class ___"*.
 **A school recognised for I–VII is not recognised for VIII.**
 
+Adding a class or stage requires a **fresh application** in Kerala (V-1(5)), Puducherry
+(PRTE r.12(9), and Form-1 has a dedicated *"RECOGNITION FOR STARTING A NEW CLASS"* mode), AP
+(s.20(2)(b)–(c)) and Tamil Nadu (DGE **Form D, "Opening of Additional Standard"**).
+
 **2 · Per-SECTION scoping is confirmed in only two of the eight, and by different mechanisms.**
-Telangana grants recognition itself *"with one section"* (§6.1, Level A). Kerala treats sections
-as **"divisions" sanctioned separately** from recognition — AEO for primary, DEO for secondary
-(§2.1, Level A). **Karnataka, Tamil Nadu and AP: NOT FOUND.** The AP/Telangana one-section pattern
-should **not** be generalised.
+Telangana grants recognition itself *"with one section"* (§6.1). Kerala treats sections as
+**"divisions" sanctioned separately** from recognition — AEO for primary, DEO for secondary
+(§2.1). **Karnataka, Tamil Nadu, Puducherry and AP: NOT FOUND** — and for TN and Puducherry this
+is a *searched* negative across the Acts, Rules and the live application forms, not a gap. **The
+AP/Telangana one-section pattern must not be generalised.**
 
-**3 · Recognition attaches to the society/management, not the school** — Kerala KER V-19 names
-*"the Educational Agency in whose favour it is issued"*; the Telangana order names the society;
-AP Education Act s.19(c) defines a private institution by its **registered body of persons**.
+**3 · Recognition attaches to the society/management — in three of five, but NOT in Tamil Nadu.**
+Kerala KER V-19 names *"the Educational Agency in whose favour it is issued"*; Puducherry Form-IX
+grants *"to the agency indicated below"*; the Telangana order names the society; AP Education Act
+s.19(c) defines a private institution by its **registered body of persons**. **Tamil Nadu is the
+exception:** the *agency applies*, but both operative forms grant *"to the above said school"* /
+*"to the ______ (name of the school with address)"*. **A data model that assumes the grantee is
+always the society will be wrong in Tamil Nadu.**
 
-**4 · Recognition is premises-bound in every state where the point arose** — Kerala V-19 (*"nor to
-any other location"*), the Telangana order cond. 5, Karnataka's refused post-facto shift
-permission.
+**4 · Recognition is premises-bound everywhere the point arose** — Kerala V-19 (*"nor to any other
+location"*), the Telangana order cond. 5, Karnataka's refused post-facto shift permission,
+Puducherry Form-IX's address field, and Tamil Nadu functionally (address-specific **building
+licence** and **structural stability certificate**, with *"Shifting"* a separately authorised act).
 
-**5 · Validity is the least generalisable field in this document.** Within one region:
-Kerala **permanent, with a 1-year temporary track**; Tamil Nadu **no term stated at all**;
-AP **8 years** since 2023; Karnataka **10 years then permanent** since 2024; Telangana **10 years**
-in the order read; the Central fallback **3 years**. **Never infer a validity period from the
-state — read it off the order.**
+**5 · Validity is the least generalisable field in this document — and eight jurisdictions
+produced six different models.**
 
-**6 · The renewal warning window, where one exists, is ~90 days.** Telangana **90 days** (order
-cond. 18); Kerala **3 months** (KER V-16(a)). Karnataka, TN, AP: **NOT FOUND**.
+| Model | Where |
+|---|---|
+| **Permanent, with a 1-year temporary track** (max 3 yrs without Director approval) | Kerala, KER |
+| **Tied to another document's expiry** — the structural stability certificate or building licence, whichever is earlier | **Tamil Nadu**, Private Schools Rules r.8(8) |
+| **No term stated at all**; the period is a blank on the form | Tamil Nadu, RTE track |
+| **Fixed short term, renewable** — 3 years + 3 | **Puducherry**, RTE track (and the Central fallback) |
+| **Fixed long term** — 8 years (AP, since GO.38); 10 years (the Telangana order) | AP, Telangana |
+| **Escalating to permanent** — 5 → 10 on first renewal → permanent | **Karnataka**, since 26.08.2024 |
+| **Indefinite until withdrawn** | Puducherry, 1987 Act track |
 
-**7 · Countersignature is receding, and its replacement is a machine-checkable identifier.**
-Karnataka imposed BEO countersignature on 25.05.2016 and **withdrew it on 01.06.2016**, replacing
-it with a **mandatory DISE code on every TC** plus online verification. Kerala requires
-countersignature **only for inbound out-of-state TCs**. TN, AP, Telangana: **NOT FOUND**. This is
-independent support for the corpus's suspicion that the CBSE countersignature requirement
-`r.8(vii)` may be stale — and for designing around **identifier verification** rather than wet
-countersignature.
+**Never infer a validity period from the state — read it off the order.** And note that
+**Tamil Nadu's expiry is not stored in the recognition record at all**: it is the expiry of a
+*different* document. A model with a single `validUntil` field cannot represent it faithfully.
 
-**8 · The register is the source of truth, confirmed in two states.** TN **r.52(i)(1)** — *"a
+**6 · Renewal triggers come in two incompatible shapes, and both must be modelled.**
+An **offset before expiry** — Telangana **90 days** (order cond. 18), Kerala **3 months** (KER
+V-16(a)), Tamil Nadu **3 months** (Act s.8(6), Rules r.9(2)). Versus a **fixed calendar date** —
+Puducherry: *"by **30th November of the preceding year**"* (PRTE r.12(8)). Karnataka and AP:
+**NOT FOUND**. **A reminder engine built only on "N days before expiry" will silently never fire
+for Puducherry.**
+
+**7 · Withdrawal is deferred, not immediate, in three states — and immediate in one.**
+Tamil Nadu (RTE r.13(2) and Rules r.11) and Puducherry (r.13) make withdrawal operative **from the
+succeeding academic year**; TN and Puducherry both additionally require the order to **name the
+neighbourhood schools** the children move to. Kerala similarly acts by order. **But the AP
+Education Act s.21(2) and the Telangana order's cond. 1 make recognition *"liable to be withdrawn
+at any time"*.** So *withdrawn* must be modellable as **both** a future-dated and an immediate
+state.
+
+**8 · Countersignature is receding, and its replacement is a machine-checkable identifier.**
+- **Karnataka** imposed BEO countersignature on **25.05.2016** and **withdrew it on 01.06.2016**,
+  replacing it with a **mandatory DISE code on every TC** plus online verification.
+- **Tamil Nadu** never required it; validation is a **printed recognition statement + Recognition
+  Number + the DGE-assigned school number**, and a private TC lacking the recognition wording
+  *"shall not be considered valid"*.
+- **Puducherry** requires it, but **only for TCs originating outside the UT**, and additionally
+  requires the **recognition certificate number stamped** on completion certificates.
+- **Kerala** requires it **only for inbound out-of-state TCs**.
+- **AP, Telangana: NOT FOUND.**
+
+**Two of the region's largest states independently replaced an officer's signature with a printed,
+machine-verifiable school identifier.** That is strong independent support for the corpus's
+suspicion that the CBSE countersignature requirement `r.8(vii)` may be stale, and for designing
+around **identifier verification** rather than a wet countersignature.
+
+**9 · The register is the source of truth, confirmed in two states.** TN **r.52(i)(1)** — *"a
 register of admissions and withdrawals (Appendix 6)"*, producible to the DEO. Kerala **Form 5**
 requires the date of birth *"as entered in the Admission Register"*. This supports the design rule
-that a certificate transcribes a register entry rather than being composed freely.
+that a certificate **transcribes a register entry** rather than being composed freely.
 
-**9 · Inbound interstate transfers are gated in at least two states.** Telangana order cond. 14
-(no admission from an out-of-state recognised school **without DEO/Director permission**); Kerala
-Ch.VI r.10 (out-of-state TC must be **countersigned by the Inspecting Officer** and used within
-**two months**). A product that treats an inbound TC as self-executing will be wrong in both.
+**10 · Inbound interstate transfers are gated in three jurisdictions, by three different
+mechanisms.** Telangana order cond. 14 — **no admission** from an out-of-state recognised school
+**without DEO/Director permission**. Kerala Ch.VI r.10 — out-of-state TC must be **countersigned
+by the Inspecting Officer** and used within **two months**. Tamil Nadu 2023 Rules r.20 — out-of-
+state certificates are **evaluated by the DEO** within 3 months of *provisional* admission.
+Puducherry r.62 — **countersigned by the originating school's inspecting authority**. **A product
+that treats an inbound TC as self-executing will be wrong in all four.**
 
-**10 · "Recognition" can mean two different licences in the same state.** Telangana has
-departmental recognition (right to run and issue) *and* BSE Telangana's SSC-exam recognition.
-Kerala requires a state RTE **Form II** order *in addition to* CBSE affiliation (Bye-law 2.3.4).
-Karnataka fuses them — KEA s.39(3) makes losing recognition also block exam entry.
+**11 · A parent may appeal a refused or delayed TC — in two states, to an education officer.**
+Kerala Ch.VI **r.20** (appeal to the Educational Officer, final unless referred upward) and Tamil
+Nadu TNER **r.47** (appeal to the Inspecting Officer, *"whose decision shall be final"*).
+**Karnataka, AP, Telangana, Puducherry: NOT FOUND.** Where the remedy exists it is the step
+*before* a writ petition — which is worth surfacing to parents in-product.
+
+**12 · Duplicate TCs are regulated, and always marked.** Kerala KER VI-22 (₹1 + a loss certificate
+from a Gazetted Officer/President/MLA/MP, marked **"Duplicate"**); TN TNER r.44 (search fee by
+age, marked *"duplicate"* **in red ink**, **issued only once**) **and** 2023 Rules r.19 (**₹100**,
+**issued within 2 weeks**). AP/Telangana/Puducherry: NOT FOUND.
+
+**13 · "Recognition" can mean two different licences in the same jurisdiction — and in four of
+them it does.**
+- **Telangana**: departmental recognition *and* BSE Telangana's SSC-exam recognition.
+- **Tamil Nadu**: RTE r.12 recognition *and* Private Schools Act s.8 recognition — different
+  authorities, forms and validity concepts, **unreconciled**.
+- **Puducherry**: PRTE r.12 (3-year) *and* 1987 Act s.12 (indefinite).
+- **Kerala**: KER Chapter V recognition *and* the RTE **Form II** "Order of Prior Recognition",
+  which CBSE Bye-law 2.3.4 makes a **prerequisite to affiliation**.
+- **Karnataka fuses them instead** — KEA s.39(3) makes losing recognition also block exam entry.
+
+**Compliance software must model recognition as a *set* of records per school, not one.**
+
+**14 · Board affiliation is downstream of recognition, and one state says so in the statute.**
+TN Act 35 of 2019 **s.9**: no application for Board affiliation **before** recognition under s.8.
+Kerala: CBSE Bye-law 2.3.4 requires the state recognition certificate. This confirms the
+blueprint's core correction — **recognition is the anchor, affiliation is downstream**.
 
 ---
 
@@ -1142,60 +1646,107 @@ neighbouring state.**
     migration certificates.
 
 ### Tamil Nadu
-16. **Recognition validity period and any renewal provision** — r.12 states none. Whether this is
-    a genuine open-ended model or a term fixed elsewhere is **unresolved**.
-17. **The Madras HC Division Bench judgment of 22.07.2024** cited in the brief. A date-restricted
-    Madras-HC search returned no results. Either it exists under a citation not indexed on Indian
-    Kanoon, or the reference is inaccurate (§3.4).
-18. **Whether the TN Recognised Private Schools (Regulation) Act 1973 / Rules 1974 or the TN
-    Private Schools (Regulation) Act 2018 contain a no-dues withholding power** — not checked.
-19. **Any prescribed TN TC form number or schedule**, and whether any countersignature exists
-    outside TNER.
-20. **Tamil Nadu DGE / State Board TC and migration regulations.**
+16. **Which text of TNER rule 40 is in force** — two opposite texts verified (§3.3). **The
+    amending G.O. was not found.** Searched: `"Tamil Nadu Educational Rules" rule 40 amended
+    "after payment of all arrears" transfer certificate GO`; a grep of the full TNER compilation
+    for amendment footnotes. **This is the highest-value open item in the document.**
+17. **The compliance circular ordered by direction (iii)** of the 19.07.2024 judgment — telling
+    schools not to insist on a TC at admission and not to enter fee arrears. Searched via
+    WebSearch (budget-blocked), DuckDuckGo/Bing/Mojeek (all rate-limited), and by browsing
+    dge.tn.gov.in and esevai.tnschools.gov.in. **Cannot confirm whether it was ever issued.**
+18. **Any amendment to TNER or the Matriculation Code** giving effect to direction (ii), due
+    ~October 2024. The fee fields remain in both forms.
+19. **The outcome of the compliance hearing listed for 25.10.2024**, and whether the DB judgment
+    was appealed or stayed. Indian Kanoon showed *"Cited by 0"* — suggestive, **not proof**.
+20. **Whether TN requires the fee field (Appendix-5 item 12 / Annexure-V Sl.8) to be left blank,
+    struck out, or answered unconditionally** post-judgment. **No source addresses it** — and it
+    is a question a product must answer to print the form at all (§9.3).
+21. **The G.O. / S.R.O. number and gazette citation of the TN Private Schools (Regulation) Rules
+    2023**, and the **commencement notification** for Act 35 of 2019 (s.1(4)). The rule text was
+    read from a commercial bare-act reproduction; the date "13 January 2023" is **level C**.
+22. **The rule or GO prescribing DGE Forms A, B, C and D** (new school / schools having classes /
+    renewal of recognition / opening of additional standard) advertised on dge.tn.gov.in. These
+    are **not** the 2023 Rules' forms — a third, undocumented administrative stream.
+23. **The Annexure I-A row for "Grant of Certificate of Recognition" for AIDED schools** — the
+    retrieved extract covered upgradation, shifting/merger/bifurcation, renewal and withdrawal
+    only. (Annexure I-B's grant row *was* retrieved.)
+24. **Any TN instrument regulating TCs of CBSE/ICSE-affiliated schools**, and whether the DB
+    directions reach them. **[D]**
+25. **Whether the TN Recognised Private Schools (Regulation) Rules 1974 contain a no-dues
+    withholding power** — not fetched, on the ground that the parent Act is repealed and the 1974
+    Rules are superseded for recognition purposes. Flagged in case the historical text is wanted:
+    https://upload.indiacode.nic.in/showfile?actid=AC_TN_85_244_000010_000010_1553847685039&type=rule&filename=tamil_nadu_recognised_private_schools_%28regulation%29_rules%2C_1974.pdf
 
 ### Puducherry
-21. **Essentially everything** — the Rules' year, recognition rule number, validity, granting
-    authority, any local education Act, TC format, countersignature, board arrangement, no-dues
-    position. Only the *existence* of Puducherry RTE Rules is evidenced, at level C (§4).
+26. **The URL of the electronic pre-filing website** mandated by PRTE r.12(2). The whole of
+    schooledn.py.gov.in was browsed; `dge.py.gov.in` does not resolve.
+27. **Any prescribed TC form** — a grep of the complete 1996 Rules and the complete notified PRTE
+    2011 Rules for `transfer certificate | leaving certificate` found references but no form, and
+    Forms 1–13 of the 1996 Rules were enumerated.
+28. **Any Puducherry rule on duplicate TCs, TC fees, TC issuance timelines, or appeal against a
+    refused TC** — same greps, zero hits.
+29. **Any Puducherry circular or judgment on withholding TCs or mark sheets for fees.**
+30. **Primary confirmation of which board Puducherry- and Karaikal-region State-Board students sit
+    for.** The 1987 Act names the TN, Kerala and AP boards **collectively**; the DSE result pages
+    say only *"STATE BOARD"*. **[D]**
+31. **Whether appeals from the UT of Puducherry lie to the Madras High Court** — asserted in §4.7
+    as the basis for treating the 19.07.2024 DB judgment as binding there. **Not verified from a
+    primary source. [D] — confirm before relying on it**, because it decides whether Puducherry
+    inherits Tamil Nadu's leading authority.
+32. **Whether the 1987 Act's Chapter VI ("Admission of Students to Private Schools")** contains
+    any further TC or fee condition beyond rr.60–63 — the recognition chapters and definitions
+    were read in full, Chapter VI was not read section by section.
+33. **Whether the Pondicherry Compulsory Elementary Education Act, 2000** bears on recognition or
+    TCs — listed on the DSE Acts page, **not fetched**.
+34. **Puducherry recognition fee amounts** under the PRTE Rules 2011 (only the ₹100 establishment
+    fee under the 1996 Rules was found).
 
 ### Andhra Pradesh
-22. **The original G.O.Ms.No.38 gazette PDF** — the 3→8 change rests on two secondary
+35. **The original G.O.Ms.No.38 gazette PDF** — the 3→8 change rests on two secondary
     reproductions.
-23. **Whether AP later moved 8 → 10 years.** One search summary asserted it; no source supports
+36. **Whether AP later moved 8 → 10 years.** One search summary asserted it; no source supports
     it. **Do not model it.**
-24. **Validity period, renewal lead time and competent authority under the 1993 Private
+37. **Validity period, renewal lead time and competent authority under the 1993 Private
     Managements Rules** — r.10 does not carry them; rules 1–9 not retrievable.
-25. **Any AP TC format, mandated field list, or countersignature requirement.**
-26. **Any AP no-dues rule, judgment or circular** — in either direction.
-27. **AP Education Act 1982 ss.22 onwards** — fee, records and register provisions unchecked.
+38. **Any AP TC format, mandated field list, or countersignature requirement.**
+39. **Any AP no-dues rule, judgment or circular** — in either direction.
+40. **AP Education Act 1982 ss.22 onwards** — fee, records and register provisions unchecked.
 
 ### Telangana
-28. **The rule or GO fixing the 10-year validity and the 90-day renewal window.** Both are level A
+41. **The rule or GO fixing the 10-year validity and the 90-day renewal window.** Both are level A
     only as **conditions of an order**. G.O.Ms.No.41/2006 and G.O.Ms.No.74/2006 have no full text
     online.
-29. **Any statutory or rule basis for per-SECTION recognition** — the order does it; nothing found
+42. **Any statutory or rule basis for per-SECTION recognition** — the order does it; nothing found
     authorises it.
-30. **Any Telangana TC format, mandated fields or countersignature requirement.**
-31. **Whether Vyshnav Dinesh was appealed or stayed** — a possible writ appeal is indexed on
+43. **Any Telangana TC format, mandated fields or countersignature requirement.**
+44. **Whether Vyshnav Dinesh was appealed or stayed** — a possible writ appeal is indexed on
     Casemine (HTTP 403) and was not readable.
 
 ### Lakshadweep
-32. **RTE Rules, recognition authority, validity, renewal, TC format, countersignature, no-dues
+45. **RTE Rules, recognition authority, validity, renewal, TC format, countersignature, no-dues
     position, board, and UDISE+ UT code** — all absent from the two official pages that exist.
-33. **Confirmation from UDISE+ that Lakshadweep has no private schools** — the departmental page
+46. **Confirmation from UDISE+ that Lakshadweep has no private schools** — the departmental page
     implies it but does not state it.
 
 ### Andaman & Nicobar Islands
-34. **Any notification confirming the Central RTE Rules 2010 apply to A&N** — the conclusion is
+47. **Any notification confirming the Central RTE Rules 2010 apply to A&N** — the conclusion is
     structural, not retrieved.
-35. **Recognition authority, validity, TC format, countersignature, no-dues position, whether any
+48. **Recognition authority, validity, TC format, countersignature, no-dues position, whether any
     local board exists, and the UDISE+ UT code.**
 
 ### Method limits that produced several of the above
-The session's **WebSearch budget was exhausted partway through** (200/200, shared with parallel
-research streams), and DuckDuckGo/Mojeek block scripted access. Later work was done by fetching
-primary documents directly and by mining Indian Kanoon — which is why several state rule texts are
-cited **A (via judgment)** rather than from a gazette. `indiacode.nic.in` returned **HTTP 403** on
-every attempt, and `education.gov.in` **HTTP 403**; both are ordinarily the best sources for state
-Acts and state RTE Rules. **A re-run with search budget and access to those two sites would likely
-close items 1, 2, 12, 16, 21, 22, 24 and 28.**
+The session's **WebSearch budget was exhausted partway through** (200/200, shared with the parallel
+research streams named in `README.md`), and DuckDuckGo/Bing/Mojeek block scripted access. Later
+work was done by **fetching primary documents directly** and by mining Indian Kanoon — which is
+why several state rule texts are cited **A (via judgment)** rather than from a gazette.
+`indiacode.nic.in` returned **HTTP 403** on every attempt and `education.gov.in` **HTTP 403**;
+both are ordinarily the best sources for state Acts and state RTE Rules.
+
+**The structural consequence is worth stating plainly: coverage of *statutes, rules and forms* in
+this document is much stronger than coverage of *circulars*.** Circulars are found by keyword
+search, not by guessing URLs — which is precisely why items **6, 13, 17, 26, 29 and 39** (all of
+them "is there a circular saying X?") are unresolved. **Their absence here is evidence about the
+search, not evidence that no circular exists.**
+
+**A re-run with search budget and access to indiacode/education.gov.in would likely close items
+1, 2, 12, 16, 17, 21, 26, 35, 37 and 41.**
