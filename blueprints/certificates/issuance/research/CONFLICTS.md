@@ -1,6 +1,6 @@
 # Conflict register
 
-**46 entries, IDs unique.** They were not: successive research streams each appended without
+**47 entries here, plus 8 held in `gap-closure-north-northeast.md`. IDs unique across both.** They were not: successive research streams each appended without
 checking the highest number in use, so `C-9`, `C-19`, `C-20` and `C-16b` were each issued twice.
 The second of each is now `C-9a`, `C-19a`, `C-20a`, `C-16c`. **The `C-16b` collision was the
 damaging one — the two entries sharing that ID contradicted each other**, so a citation of "C-16b"
@@ -59,6 +59,8 @@ with their evidence** — the convenient one was never allowed to quietly win.
 | C-34 | **The legacy-font class is real — it is Kruti Dev, and searchable** | **refines C-32 · method** |
 | C-35 | UPMSP — the negative narrows and still holds | narrowed NOT FOUND |
 | C-36 | **Filenames are not evidence — two near-miss fabrications** | **method · binding** |
+| C-37 | **Arunachal caps certificate fees at ₹20/₹50 per document** | **verified verbatim · product** |
+| C-12a, C-16d, C-19b, C-40–C-44 | north/northeast stream — see `gap-closure-north-northeast.md` §3 | **8 entries, held in that file** |
 
 ### What is actually still open
 
@@ -1248,3 +1250,54 @@ means rendering a scan, since a scan is what the filename is attached to.
 DEO/DIS **[A]**. The **HP Secondary Education Code 2012** and its reported **cl. 2.18** remain
 **unread**, and the two documents above are not substitutes for it. HPBOSE stays P0 in
 `AUTHORITY_BACKLOG.md` on the strength of 3.5.7 alone.
+
+---
+
+## C-37 · Arunachal statutorily CAPS what a school may charge for a certificate — verified verbatim
+
+*Added 2026-09-12. My own independent verification of `gap-closure-north-northeast.md` §Arunachal,
+plus a product consequence that report did not draw.*
+
+The Arunachal finding was re-verified against the source rather than accepted: the compendium was
+re-fetched, the Education Rules 2010 located **by content** (not by trusting a page number), and the
+bounds confirmed — **pp. 470–489**, opening with *Gazette Extraordinary No. 109, Vol. XVII,
+Naharlagun, Friday, August 20, 2010 … NOTIFICATION The 19th August, 2010, No. ED2/167/2009 — in
+exercise of powers conferred by section 141 of the Arunachal Pradesh Education Act, 2010 (No. 8 of
+2010)*; p.490 begins Gazette No. 110 (Land Management). **[A]**
+
+**Three claims checked directly against the 71 rules:**
+
+| claim | result |
+|---|---|
+| `countersign` occurs **0** times | **confirmed — 0** |
+| r.14(b) mandates a *"transfer certificate book"* | **confirmed**, and worth stating precisely: it is **one line item in r.14(b)'s Establishment Records list**, a records-retention duty — not a provision about issuing a TC |
+| *"transfer certificate"* appears at all | **exactly once in all 71 rules** — the r.14(b) line item |
+
+### Rule 48, verbatim — and it is wider than a TC rule
+
+Under **PART XXI — OTHER CHARGES FOR OBTAINING CERTIFICATES/DOCUMENTS ETC. [A]:**
+
+> *"48. Judicious and need based fee shall be charged for the collection of documents such as
+> **Transfer/Provisional/Appearing/Character/duplicate certificate of any academic documents** etc.
+> to realize the expenditure. Such charge **shall not exceed Rs. 20/- for Government schools and
+> Rs. 50/- for private aided and unaided schools for each document**."*
+
+**This is the first hard statutory price cap the programme has found, and it covers the whole
+certificate family the Document Engine issues** — transfer, provisional, appearing, character and
+duplicates — not the TC alone. It is **per document**, and it distinguishes government from private
+schools.
+
+**Product consequence.** If certificate issuance is ever charged for — directly, or bundled as a
+per-document fee — **₹20/₹50 is a ceiling in Arunachal, by rule, with no discretion above it.** A
+single product-wide price would breach it. Nothing in the corpus yet says whether other states cap
+similarly; this is the only instance found so far, so **it should not be generalised** — but it
+establishes that the *category* of statutory price caps exists, which no earlier stream had.
+
+### Source preservation
+
+The agent flagged, correctly, that *"the whole finding rests on one webserver"* — an **18 MB, 681-page
+compendium at an opaque hash URL** (`printing.arunachal.gov.in/uploads/pdf/6a2a72510a71c_…pdf`) with
+no archive copy. Pages 470–489 are now extracted and committed at
+**`research/sources/arunachal-education-rules-2010.pdf`** (291 KB, 20 pages), with the gazette
+citation written into the PDF metadata. **The evidence for this entry no longer depends on that host
+staying up.**
