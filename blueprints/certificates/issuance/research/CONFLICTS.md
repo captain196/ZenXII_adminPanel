@@ -295,3 +295,77 @@ Puducherry and Andhra Pradesh are searched negatives.**
 **Per class-range generalises — four streams now agree. Per-section does not.** Modelling
 sections as a recognition dimension everywhere would impose a constraint most states do not
 have.
+
+---
+
+## C-15 · Countersignature RESOLVES — it is the RECEIVING board's rule, and it is not dead
+
+This supersedes C-1, C-8 and C-12. Six streams have now read the state codes, the CBSE
+circulars and the state-board regulations, and the shape is finally clear.
+
+**It was never one rule.** It is a rule the **receiving** institution applies to an **incoming**
+certificate, and it therefore lives in whichever board or state the child is *arriving* at.
+
+| layer | position |
+|---|---|
+| **CBSE, as receiver** | **Abolished.** Five circulars, 26.11.2014 → 31.10.2025. *"There is no need of countersignature of any transfer certificate."* |
+| **HPBOSE, as receiver** | **Alive and fail-closed.** Examination Reg. **3.5.7**, amended 18 Jan 2012: a cross-board TC must be countersigned by an officer not below DEO/DIS, and the scholar *"shall not be admitted… without such countersignature"*. Carve-out only for HPBOSE→HPBOSE. |
+| **BSEH (Haryana)** | No countersignature at issuance, but a DEO-countersigned SLC is demanded when one is later used as **evidence** (record correction, Open-School age proof). A warning, not a gate. |
+| **MPBSE, CGBSE** | Confirmed absence. |
+| **state codes** | Triggered by **inbound out-of-state** arrival — Kerala Ch.VI r.10, Puducherry r.62 proviso, MH r.22.1, GJ reg 12(9), Goa r.116(2), DNHDD r.97(2), Bihar s.272. |
+
+**So every earlier framing was partly wrong, including mine.** It is not "abolished" (HPBOSE
+still enforces it), not "general" (CBSE does not), not "interstate-only" (HPBOSE's trigger is
+cross-*board*, not cross-*state*), and not a per-state boolean.
+
+**What the product must do:** never gate ISSUANCE on countersignature — no researched authority
+requires the issuing school to obtain one. Model it as a property of the **destination**, shown
+as guidance when known. A Himachal school admitting a CBSE child needs it; a CBSE school
+admitting anyone does not.
+
+---
+
+## C-16 · No state board prescribes a TC format — CBSE's Annexure-I stands alone
+
+Nine north/central boards checked: **none publishes a TC proforma.** JKBOSE reg. 19(x) names
+*"the form prescribed"* and does not publish it; HPBOSE prescribes a **Scholar's Register**
+(Annexure-I) rather than a TC.
+
+Taken with the twelve east/north-eastern states (no prescribed format) and four of six
+west/central states (none), **CBSE's Annexure-I is the only enforceable field schedule the
+research has found anywhere in India.**
+
+That is a strong finding for the engine: outside CBSE, the field set is ours to choose, and
+our contracts for bonafide/character/study — which carry `requiredKeys: []` — are right to.
+
+---
+
+## C-17 · Two more boards mandate printed identifiers
+
+Adding to Karnataka's DISE code, Tamil Nadu's recognition + DGE numbers, and MP r.19 / CG 16(4):
+
+- **CGBSE cl. 16(4)** [A] — the TC must state that the school is CGBSE-recognised **and print
+  its मान्यता कोड (recognition code)**.
+- **HPBOSE affiliation condition (f)** [A] — the affiliation number on **all official
+  stationery**.
+
+**Six jurisdictions now, one direction.** Printed, verifiable identifiers are the mechanism
+replacing human countersignature — which is the argument for the QR/verification endpoint the
+blueprint deferred.
+
+---
+
+## C-18 · Affiliation is downstream of recognition — now stated by a board itself
+
+**BSEH reg. 5(a)** is the clearest evidence in the corpus that a board will not affiliate a
+school the state has not already recognised. Until now this was inferred from the sequence
+(recognition → UDISE → affiliation); a board's own regulation now says it.
+
+Also from this stream, both new:
+
+- **BSEH reg. 21** — a bogus SLC escalates ₹1 lakh → ₹3 lakh → **loss of affiliation**. The
+  first found penalty attached to issuing a false certificate.
+- **HPBOSE** — every withdrawal must be **reported to the Board within 15 days**. A
+  post-issuance duty, like CBSE's website upload.
+- **HPBOSE 3.5.6** — the **only duplicate-TC marking rule found in any state board**. CBSE
+  r.8(vi) had been the sole source.
