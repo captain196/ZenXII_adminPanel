@@ -1,6 +1,6 @@
 # Conflict register
 
-**48 entries here, plus 8 held in `gap-closure-north-northeast.md`. IDs unique across both.** They were not: successive research streams each appended without
+**48 entries here, plus 8 in `gap-closure-north-northeast.md` and 15 in `central-defence-and-ctsa.md` — 72 distinct IDs, no collisions.** They were not: successive research streams each appended without
 checking the highest number in use, so `C-9`, `C-19`, `C-20` and `C-16b` were each issued twice.
 The second of each is now `C-9a`, `C-19a`, `C-20a`, `C-16c`. **The `C-16b` collision was the
 damaging one — the two entries sharing that ID contradicted each other**, so a citation of "C-16b"
@@ -47,7 +47,7 @@ with their evidence** — the convenient one was never allowed to quietly win.
 | C-22 | Maharashtra GR number not obtained | superseded by **C-23** |
 | C-23 | The Maharashtra GR is CAPTCHA-gated | **HUMAN-ONLY** |
 | C-24 | KVS/NVS — my question rested on a false premise | **UNSUPPORTED, not disproved** |
-| C-25 | Sainik/RMS/AWES/CTSA not researched | **outstanding** |
+| C-25 | Sainik/RMS/AWES/CTSA not researched | **CLOSED by `central-defence-and-ctsa.md`** |
 | C-26 | **Identifier tally recounted — the trend is not universal** | **corrects C-12/C-17/C-24** |
 | C-27 | **Countersignature trigger is not always a State line** | **schema-binding · refines C-8/12/15** |
 | C-28 | "No prescribed format" conflates three situations | **3rd correction to C-16** |
@@ -61,6 +61,7 @@ with their evidence** — the convenient one was never allowed to quietly win.
 | C-36 | **Filenames are not evidence — two near-miss fabrications** | **method · binding** |
 | C-37 | **Arunachal caps certificate fees at ₹20/₹50 per document** | **verified verbatim · product** |
 | C-38 | **India Code is not a complete record of state rules** | **method · affects every state entry** |
+| C-45–C-59 | central defence + CTSA stream — see `central-defence-and-ctsa.md` | **15 entries, held in that file** |
 | C-12a, C-16d, C-19b, C-40–C-44 | north/northeast stream — see `gap-closure-north-northeast.md` §3 | **8 entries, held in that file** |
 
 ### What is actually still open

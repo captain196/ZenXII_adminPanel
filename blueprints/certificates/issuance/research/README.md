@@ -32,6 +32,7 @@ Findings carry an **evidence level**, and a gap is recorded rather than filled:
 | **C** | a credible secondary source |
 | **D** | unverified, or a single weak source |
 | **NOT FOUND** | searched and not established — *a result, not a failure* |
+| `central-defence-and-ctsa.md` | Sainik Schools Society · RMS · AWES/APS · CTSA — closes C-25 | 2,796 |
 
 This mirrors the rule the compliance corpus already enforces on itself, and the reason is
 written into the product: *inventing a plausible-looking requirement would assert wrong law

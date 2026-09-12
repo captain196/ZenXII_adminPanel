@@ -49,21 +49,25 @@ final class DocAuthorityCorpusTest extends TestCase
     }
 
     /**
-     * Annexure-I has 22 numbered fields and field 2 is "Father's/Guardian's Name".
-     * There is no mother's-name field anywhere in the format. Mother's name is a
-     * Board-RECORD option under bye-law r.68 — a different thing.
+     * CBSE's Annexure-I field 2 IS the Mother's Name.
      *
-     * Requiring it blocked publication for any school that had not recorded one:
-     * us enforcing a requirement the authority does not impose.
+     * This test previously asserted the opposite, and its own failure message
+     * carried the false claim: "Annexure-I field 2 is Father's/Guardian's Name
+     * and the format has no mother's-name field." That was taken from a summary
+     * of a superseded form. Read verbatim from CBSE's Examination Bye-Laws PDF
+     * (2013 edn., PDF p.197 = printed p.91): "1. Name of Pupil  2. Mother's
+     * Name  3. Fathers/Guardian's Name".
+     *
+     * Keeping the test but inverting it, because a test that locks in a wrong
+     * reading of an authority is worse than no test — it defends the error.
      */
-    public function test_the_cbse_tc_does_not_require_a_field_annexure_one_lacks(): void
+    public function test_the_cbse_tc_requires_the_mothers_name_field_two(): void
     {
-        $at = strpos($this->cbseTc(), 'requiredKeys:[');
-        $this->assertNotFalse($at);
-        $keys = substr($this->cbseTc(), $at, 700);
-        $this->assertStringNotContainsString('student.motherName', $keys,
-            "Annexure-I field 2 is \"Father's/Guardian's Name\" and the format has no mother's-name "
-            . 'field. Requiring it enforces a rule CBSE does not impose.');
+        $this->assertStringContainsString('student.motherName', $this->cbseTc(),
+            "Annexure-I field 2 is the Mother's Name (Bye-Laws 2013 edn., p.91). "
+            . 'Dropping it renders a TC short of a field CBSE mandates.');
+        $this->assertStringContainsString('student.fatherName', $this->cbseTc(),
+            "Field 3 is the Father's/Guardian's Name — both are required, in that order.");
     }
 
     /**
@@ -118,9 +122,14 @@ final class DocAuthorityCorpusTest extends TestCase
     /** Citing "the Bye-Laws" without the edition hides that circulars override them. */
     public function test_the_bye_law_edition_is_recorded(): void
     {
-        $this->assertStringContainsString('1995 edn', $this->cbseTc(),
-            'The published bye-laws are the 1995 edition updated to December 2004, and several '
-            . '2014-2025 circulars override them without being folded in.');
+        $this->assertStringContainsString('2013 edn', $this->cbseTc(),
+            'Cite the edition actually read. The corpus previously claimed the 1995 edition '
+            . 'updated to December 2004; the format was in fact read from the 2013 edition, '
+            . 'pp. 91-93. Circulars from 2014-2025 still override it without being folded in, '
+            . 'which is why the edition has to be named at all.');
+        $this->assertStringContainsString('25.01.2012', $this->cbseTc(),
+            'Field 6 ("or OBC") was amended 25.01.2012 and approved 02.02.2012. An undated '
+            . 'citation hides which recension of the form we transcribed.');
     }
 
     /**

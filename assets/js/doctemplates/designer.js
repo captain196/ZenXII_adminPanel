@@ -225,39 +225,70 @@ const AUTHORITIES = [
   },
   {
     id:"cbse", tier:"board", label:"CBSE",
-    authority:"CBSE Examination Bye-Laws (1995 edn., updated to Dec 2004), Annexure-I — as modified by circulars to 31.10.2025",
-    evidence:"A", verifiedOn:"2026-08-16", owner:"platform-compliance",
+    authority:"CBSE Examination Bye-Laws (2013 edn.), Annexure-I, pp. 91–93 — item 6 as amended 25.01.2012 / approved 02.02.2012; plus circulars to 31.10.2025",
+    evidence:"A", verifiedOn:"2026-09-12", owner:"platform-compliance",
     appliesWhen:sc=>sc.board==="CBSE",
     scopeNote:"Binds CBSE-affiliated schools in every state.",
-    fieldListVerified:false,
+    /* Now true: Annexure-I was read verbatim from CBSE's own Bye-Laws PDF
+       (2013 edn., PDF p.197 = printed p.91) on 2026-09-12, not from a summary. */
+    fieldListVerified:true,
     docs:{
       transfer_certificate:{
         /* TRANSCRIBED FROM ANNEXURE-I, not assembled from what a TC usually shows.
          *
-         * Two corrections after reading the format itself (2026-09-12):
+         * CORRECTION (2026-09-12): I REMOVED student.motherName here on
+         * 2026-09-12 and that was WRONG. My note said "Annexure-I field 2 is
+         * Father's/Guardian's Name and there is no mother's-name field anywhere
+         * in the 22", and reasoned that requiring it was "us enforcing a
+         * requirement the authority does not impose". It is the exact reverse.
          *
-         * REMOVED student.motherName. Annexure-I field 2 is "Father's/Guardian's
-         * Name" and there is no mother's-name field anywhere in the 22. Mother's
-         * name is a Board-RECORD option under bye-law r.68, which is a different
-         * thing from a TC field. Requiring it blocked publication for a school
-         * that had not recorded one — us enforcing a requirement the authority
-         * does not impose, which is the precise failure this corpus exists to
-         * avoid, committed in our own data.
+         * The field list I checked against was a SUMMARY of a superseded form.
+         * Read verbatim from CBSE's own Examination Bye-Laws PDF (2013 edn.,
+         * PDF p.197 = printed p.91):
          *
-         * ADDED school.affiliationNo. The 04.02.2020 SOP requires the letterhead
-         * to carry "AFFILIATED TO CENTRAL BOARD OF SECONDARY EDUCATION /
-         * AFFILIATION NO. ____" below the school's name and address, and inside
-         * the stamp where a prescribed format is used. It was mandatory and
-         * absent from this list entirely. */
+         *   1. Name of Pupil
+         *   2. Mother's Name              <-- it is field 2
+         *   3. Fathers/Guardian's Name
+         *   4. Date of birth (in Christian Era) according to
+         *      Admission & Withdrawal Register (in figures / in words)
+         *   5. Nationality
+         *  *6. Whether the candidate belongs to Schedule Caste or
+         *      Schedule Tribe or OBC
+         *
+         * with "*Amended in the Examination Committee's meeting held on
+         * 25.1.2012 and approved by the Governing Body at its meeting held on
+         * 02.2.2012." So there are 23 fields, not 22; the birth/nationality/
+         * caste block is REORDERED rather than shifted by one; and "or OBC" was
+         * added in 2012 and was missing from our list entirely.
+         *
+         * motherName is restored. Bye-law r.68 "Provision of Mother's Name"
+         * (Bye-Laws p.54) is a separate thing about BOARD RECORDS, and I had
+         * used it to argue away a field that the TC format itself mandates.
+         *
+         * NOT ADDED, deliberately: a required key for the SC/ST/OBC category.
+         * It is genuinely field 6 and mandated, so it is recorded in the
+         * constraints below — but making it blocking would stop publication for
+         * every school that has not captured it, and that is a product decision
+         * rather than a transcription fix. Flagged, not silently imposed.
+         *
+         * ADDED school.affiliationNo (unchanged, and independently confirmed by
+         * the header read above: "Affiliation No. ... School Code ..."). The
+         * 04.02.2020 SOP requires the letterhead to carry "AFFILIATED TO
+         * CENTRAL BOARD OF SECONDARY EDUCATION / AFFILIATION NO. ____" below
+         * the school's name and address, and inside the stamp where a
+         * prescribed format is used. */
         requiredKeys:["school.name","school.affiliationNo","doc.bookNo","doc.slNo",
           "student.admissionNumber","student.fullName",
-          "student.fatherName","student.dob","student.dobWords",
+          "student.motherName","student.fatherName","student.dob","student.dobWords",
           "tc.dateOfFirstAdmission","tc.lastClassStudied","attendance.workingDays",
           "attendance.daysPresent","result.promotionEligible","tc.reasonForLeaving",
           "tc.conductRemark","tc.duesPaidUpto","tc.dateOfLeaving","doc.issueDate"],
         requiredSignatures:["class_teacher","checked_by","principal"], sealRequired:true,
         constraints:[
-          "22 mandated fields, plus pre-printed Book No. and Sl. No. on the stationery.",
+          "23 mandated fields, plus pre-printed Book No., Sl. No. and Admission No. on the stationery.",
+          "Field 2 is the Mother’s Name and field 3 the Father’s/Guardian’s — in that order. Field 4 is the date of birth “according to Admission & Withdrawal Register”, which names the register the TC transcribes.",
+          "Field 6 — “Whether the candidate belongs to Schedule Caste or Schedule Tribe or OBC” — was amended on 25.01.2012 and approved 02.02.2012. ZenXii does not require this field, so a TC we render can be short of a field CBSE mandates: a product gap, stated rather than hidden.",
+          "The header must carry the school name and complete address “AS RECORDED IN THE AFFILIATION BRANCH OF THE BOARD” with the seal, plus Affiliation No. and School Code.",
           "Signature block is Class Teacher → Checked by → Principal, plus a school seal.",
           "The letterhead must read “AFFILIATED TO CENTRAL BOARD OF SECONDARY EDUCATION / AFFILIATION NO. ____” below the school name and address, and the same must appear in the seal where a prescribed format is used (SOP 04.02.2020, I(b) and I(e)).",
           "The issued certificate must be uploaded to the school’s own website (circulars 26.11.2014, 01.10.2018, 04.02.2020, restated 31.10.2025). ZenXii does not do this yet.",
