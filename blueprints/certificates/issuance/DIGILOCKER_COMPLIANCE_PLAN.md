@@ -195,5 +195,5 @@ approval evidence; verify against the published issuer list; reach level 4.
 - **CBSE r.8(vi)/(vii)** — duplicate marking and countersignature survive into any digital
   issuance.
 - **Corpus honesty rule** — where an authority is unverified, enforce nothing and say so.
-  Maharashtra, Karnataka and Uttar Pradesh still have no verified authority, and three of the
-  nine schools in this project are in UP.
+  Maharashtra, Karnataka and Uttar Pradesh still have no verified authority — and between them
+  those three states hold a large share of India's schools, so "unverified" is not a corner case.

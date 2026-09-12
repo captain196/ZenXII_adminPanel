@@ -1504,7 +1504,8 @@ async function srvSaveDraft(silent) {
      *
      * The server was always ready for it: `complianceLayers` is in save()'s
      * allowlist and publish() freezes it into the version snapshot. Only the
-     * client never sent it. Verified live: 0 of 90 templates carried a layer.
+     * client never sent it — `complianceLayers` appeared in no save payload the
+     * designer built, which is why no stored template could carry one.
      *
      * Only EXCLUSIONS are persisted, deliberately. The applied stack is derived
      * from board + state + classes and is recomputed on every load, so storing
@@ -6082,10 +6083,11 @@ async function hydrateFromServer(){
      *
      * So a school that had never recorded a board was told its Transfer
      * Certificate satisfies CBSE Examination Bye-Laws, Annexure-I, and its
-     * nineteen required fields. Observed live on SCH_B56BB9A401: the record has
-     * no `affiliationBoard` and no `board`, the server correctly sent "", and
-     * the hub showed CBSE. Six of the nine schools in this project have no
-     * recorded board, so six would have issued under a basis nobody chose.
+     * nineteen required fields. The path is the proof: when a school records no
+     * `affiliationBoard` and no `board`, `_school_context()` correctly sends ""
+     * — and the old client fallback turned that "" into CBSE before rendering
+     * the hub. Any school without a recorded board would have issued under a
+     * statutory basis nobody chose.
      *
      * The reasoning for the old fallback was that blanking a value "would
      * silently empty the compliance basis instead of showing that it is

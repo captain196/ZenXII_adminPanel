@@ -494,12 +494,11 @@ class School_config extends MY_Controller
     //   result/templates/cbse.php    prints "Aff. No:" on marksheets
     //   Schools.php:354              lists "Affiliated To" in the SA registry
     //
-    // and until now nothing validated them. Read live on 2026-09-08: of the four
-    // affiliation numbers stored across nine schools, one was
-    // `6564643131685.16463168` and another was an eleven-digit UDISE code sitting
-    // in the affiliation field — invited by a form that labels one input
-    // "Affiliation / DISE No." and checks nothing. The first of those already
-    // prints on result cards given to families.
+    // and until now nothing validated them. The form invites the confusion:
+    // school_config/index.php:441 labels a single input "Affiliation / DISE No."
+    // over a plain text field whose only constraint is maxlength, so a UDISE
+    // code and an affiliation number are indistinguishable to it. Whatever is
+    // typed there prints on result cards given to families.
     //
     // Validation lives in Issuer_identity so the rule has exactly one home; the
     // client mirrors it for immediate feedback and the server decides.

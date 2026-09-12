@@ -136,10 +136,12 @@ class Issuer_identity
      * downstream evidence of it. Board affiliation is a later and separate
      * thing — it governs examinations, not existence.
      *
-     * This caught a real one. SCH_218AAF5C23 is in Uttar Pradesh and carries
-     * `affiliationNo = 09310113101`: eleven digits beginning 09, which is the
-     * UP state code. It is a genuine UDISE code sitting in the affiliation
-     * field, because the form labels one input "Affiliation / DISE No.".
+     * The confusion has a recognisable shape. A UDISE code is eleven digits
+     * that OPEN WITH THE CENSUS STATE CODE — `09` is Uttar Pradesh, `23` Madhya
+     * Pradesh — so an eleven-digit affiliation number beginning with a valid
+     * state code is almost certainly a UDISE code in the wrong field. The form
+     * cannot tell, because it labels one input "Affiliation / DISE No." and
+     * checks nothing; `stateOfUdise()` below exists so the server can.
      */
     const UDISE_PATTERN = '/^\d{11}$/';
 
