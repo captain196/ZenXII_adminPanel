@@ -39,10 +39,21 @@ NOT FOUND with the searches attempted. Conflicts are recorded, not resolved by p
 
 ## THE HEADLINE, STATED ONCE
 
-**Across this entire region, the examination board is almost never the author of the TC.** The TC
-is a creature of the **state school-education code** (Maharashtra SS Code Appendix Four; Gujarat
-Regulations નમૂનો-૯; Kerala KER Form 5; Tamil Nadu TNER Appendix-5/5-A). The board's
-certificate-layer footprint is confined to four things, and they are consistent across boards:
+**Across this region the examination board is almost never the author of the TC — with exactly one
+real exception.** The TC is normally a creature of the **state school-education code** (Maharashtra
+SS Code Appendix Four; Kerala KER Form 5; Tamil Nadu TNER Appendix-5/5-A and the Matriculation Code
+Annexure V).
+
+> ### ⚠️ THE EXCEPTION: GUJARAT
+> **GSHSEB prescribes the leaving-certificate form in its OWN regulations** — *Gujarat Secondary &
+> Higher Secondary Education Regulations 1974*, **reg 12(14)** and form **નમૂનો-૯**, made by the
+> Board under the 1972 Act. Thirteen mandated fields, three signatories, the school seal, and a
+> validity rule that voids a non-conforming LC outright (§2.1). **Gujarat is the only jurisdiction
+> in this file where "the board prescribes the TC format" is true**, and it means a per-board
+> `prescribesFormat` flag is required — a regional default would be wrong here.
+
+Everywhere else, the board's certificate-layer footprint is confined to four things, and they are
+consistent across boards:
 
 1. **Migration / eligibility certificates for candidates coming from ANOTHER board** — a board
    instrument, issued by the board, never by a school.
@@ -63,14 +74,16 @@ owns the migration/eligibility instruments.**
 | Board | Prescribes a TC format? | Mandatory printed identifiers | Countersignature of a school TC | Post-issuance duty | Evidence |
 |---|---|---|---|---|---|
 | **MSBSHSE** (Maharashtra) | **No.** The word "Transfer Certificate" appears **exactly once** in the whole 1977 Regulations, and only for inbound out-of-state pupils. The LC is prescribed by the **SS Code Appendix Four**, not the board | **None board-imposed.** Reg 67(xvii) instead binds junior colleges to the *Education Department's* Secondary School Code | **No** for an intra-Maharashtra LC. **Yes** under **reg 79(7)** for a Std-XI pass from another State/UT — by "the Educational Inspectors or the equivalent authority of the District concerned in that State or Union Territory" | **Generic only** — reg 29(2)(i)-(ii): supply such returns and maintain such registers "as may be required by the Divisional Board". No TC-specific duty | **A** |
-| **GSEB / GSHSEB** (Gujarat) | *(agent cluster — see §2)* | *(see §2)* | *(see §2)* | *(see §2)* | |
-| **GBSHSE** (Goa) | *(agent cluster — see §3)* | *(see §3)* | *(see §3)* | *(see §3)* | |
+| **GSEB / GSHSEB** (Gujarat) | ✅ **YES — the only one.** Regulations 1974 **reg 12(14)** + form **નમૂનો-૯**: 13 fields, 3 signatories (Clerk + Class Teacher + Principal), school seal. **Reg 12(14)(5)**: in નમૂના-૯, hand-written in ink, signed by the head in his own ink, sealed — *"only then shall it be legally valid"* | **Masthead: S.S.C. Index No. · H.S.C. Index No. · G.R. No. · Medium · certificate serial.** The Index Nos. are the school's **GSHSEB board index numbers** — Gujarat puts the board identity on the LC **through the board's own form** | **No** within Gujarat. **Reg 12(14)(6)** (DEO approval of a substitute signatory) is advance approval of a **person**, not per-certificate. **Yes inbound** — reg 12(9)(ક) State/UT, 12(9)(ઘ) other country | **General Register in નમૂનો-૧૦** (reg 12(13), reg 38); state RTE r.21(3)(a) adds a **"File of Leaving Certificate"** and bars destroying the General Register. **No upload/return duty found** | **A** |
+| **GBSHSE** (Goa) | **No format** — *"leaving certificate"* appears **once** in 47 recovered rules, incidentally (r.77(3)). **But it mandates a FIELD**: Circular 31/2015 makes the **parent's name mandatory** on a school LC, enforced by requiring receiving HS schools to **refuse** an LC without it | **Parent's name only.** No board name, index, recognition number or seal wording on a school LC. **r.81** puts the **school Index number** on the **BOARD's own** passing certificate, not on the LC | **No** on an outbound Goa LC. ⚠️ **YES on inbound — including WITHIN Goa**: Circular 14/2016 requires a CBSE/ICSE LC issued *in Goa* to be countersigned by Education/Zonal Authorities. **The trigger is a BOARD boundary, not a state boundary — unique in this file** | **r.6(2)** generic returns/registers power only. **But Circular 33/2017 is a real annual return** — other-board joiners reported to the Board **by 20 August**. And Circular 14/2016 **bars issuing an LC** to a student whose Final Eligibility is not yet granted | **A** (rules, 2014 archive) / **B** (circulars, live) |
 | **KSEAB** (Karnataka) | **No.** By-laws page and amendments page **publish zero documents** (proved against a populated control page); **~160 SSLC circulars across 4 years enumerated — not one concerns TCs** | **None board-imposed.** KSEAB allots a **"New School Code"** annually, but only for **exam registration**. ⚠️ The mandatory **DISE code on every TC** is a **DEPARTMENTAL** act (Commissioner for Public Instruction, 01.06.2016), **not a KSEAB act** | **NOT FOUND at board level.** Both the 25.05.2016 imposition and the 01.06.2016 withdrawal were departmental | **NOT FOUND** | **B** (exhaustively enumerated) |
 | **Kerala — Pareeksha Bhavan (SSLC)** | **No.** The only prescribed Kerala TC is **KER Form 5**, made by the **State Government** under the Kerala Education Act 1958 — not by the examination authority | **No code or number.** Form 5's only status line is *"Whether the School is a Government, Aided or Recognised School"*. Every certificate must be **sealed with the school seal before issue** (note to Form 5A) | **No** — Form 5 has no countersignature block; signature is *Principal / Headmaster / Headmistress* alone. **Yes inbound**: KER Ch.VI **r.10** requires an out-of-State TC to be *"countersigned by the Inspecting Officer"* | **Yes, a register** — KER Ch.VI **r.2(1)**: every school shall maintain an **Admission Register in Form 4**, whose **item 14** is *"No. and date of transfer certificate granted on leaving"* | **A** |
-| **Kerala — DHSE (Higher Secondary)** | **NOT FOUND.** `dhsekerala.gov.in` **no longer resolves** (DNS failure, 2026-09-12); HSE is now administered as the Higher Secondary branch of the **Directorate of General Education**. No HSE-specific TC format located | NOT FOUND | NOT FOUND | NOT FOUND | **B / NOT FOUND** |
-| **TN DGE** | *(agent cluster — see §6)* | *(see §6 — the recognition-number + DGE-school-number question)* | *(see §6)* | *(see §6)* | |
-| **BSEAP / BIEAP** (Andhra) | *(agent cluster — see §7)* | *(see §7)* | *(see §7)* | *(see §7)* | |
-| **BSE Telangana / TSBIE** | *(agent cluster — see §8)* | *(see §8)* | *(see §8)* | *(see §8)* | |
+| **Kerala — DHSE (Higher Secondary)** | **No.** `dhsekerala.gov.in` **no longer resolves**; HSE is now the Higher Secondary branch of the **Directorate of General Education**. **3,000 archived URLs of the dead domain were enumerated — no TC format, no TC rule, no migration page.** DHSE's certificate footprint is **duplicates and corrections of its OWN HSE certificate** | **None found** | **None found** | **None found** | **B** (evidenced negative via archive) |
+| **TN DGE** | **Not DGE — TNER does.** DGE's own published functions cover **exam conduct only** and say nothing about school TCs. The formats are **TNER Appendix-5 / 5-A** and the **Matriculation Code Annexure V** — two different forms that **disagree on the identifiers** | ⚠️ **DISPUTED — do not ship as asserted.** The claimed *"recognition number + DGE school number"* rests on **one uncorroborated 2003 compilation**; the previously cited primary source **provably lacks the text** (§6.8). Certain on the same form: **Head's ink signature + school seal + pupil's and parent's signatures on receipt** | **No** within TN. **Yes inbound**: Matriculation Code r.12(x) — *"counter signature of the Inspecting Officers of the concerned State"* | **TNER:** TCs *"separately filed and shall be shown to the Inspecting officers"*; office copy marked **"Office Copy"**; endorsed with the admission number. **Matriculation Code:** a **counterfoil for all TCs issued**, and *"this will be one of the conditions of recognition"*. ⚠️ **The counterfoil duty is Matriculation-only — TNER has none** | **A** (Matric Code) / **C** (TNER) |
+| **BSEAP** (Andhra SSC) | **No** — the Board's own **RTI s.4(1)(b) service catalogue was enumerated and TC is absent**; corroborated by the services page. There is **no "A.P. Board of Secondary Education Rules"** in the Board's own list of governing instruments | **None board-imposed** — but ⚠️ **the recognition number IS mandatory on a private school's TC** under **State** rule 10(8), AP Private Managements Rules **1993** (§7.0). **Right requirement, wrong layer** | **NOT FOUND** — BSEAP offers no such service | **NOT FOUND** at board level; the 1993 Rules impose only a **generic** records-and-registers duty, no TC register | **A** |
+| **BIEAP** (Andhra Intermediate) | **NOT FOUND** | **NOT FOUND** | **NOT FOUND**, but on **weak** negative evidence — the JS menu could not be enumerated. **Do not assert as settled** | **NOT ESTABLISHED** | **B / D** |
+| **BSE Telangana** (SSC) | **No** — **doubly evidenced**: the service catalogue *and* the **complete 12-item G.O. list** were both enumerated, and neither contains a TC rule | **None for school TCs.** One board-certificate rule: **mother's name printed** on the Board's own Pass Certificate / Marks Memo from **March 2011** | **NOT FOUND** | **NOT FOUND.** `childinfo.telangana.gov.in` **does not resolve**; ISMS **404** — online-TC mandate **NOT ESTABLISHED either way** | **A** |
+| **TSBIE** (Telangana Intermediate) | **NOT FOUND** | **NOT FOUND** | ⚠️ **A "Counter signature on Transfer Certificate" service EXISTS** (service id 15, for **outbound** inter-state moves) — **but [B, portal UI only], uncorroborated, and its legal compulsion is NOT ESTABLISHED.** Do not build a mandatory step | **Online "Issue TC" exists**; **legal status NOT ESTABLISHED** — the Board's GO/Acts page was never readable (403) | **B, unverified** |
 
 ---
 
@@ -236,13 +249,486 @@ Gujarat case-law position that post-departure certificate corrections track the 
 
 ## 2 · GSEB / GSHSEB — Gujarat
 
-*(pending — research cluster)*
+> **Provenance note.** The Gujarat board record was already established at level **A** by the first
+> wave, which read the *Gujarat Secondary & Higher Secondary Education Regulations, 1974* (GSHSEB
+> 5th edition as amended to 31 Dec 2021, 124 pp, Gujarati) in full —
+> https://www.gsebeservice.com/assets/pdf/rules/RLS621063.pdf, indexed at
+> https://www.gsebeservice.com/Web/rules. **§2 below carries that forward and re-frames it against
+> the seven board questions**; it is not a re-derivation. Where this pass adds nothing new, it says
+> so rather than dressing the old finding as fresh.
+
+### 2.1 Q1 — Does the board prescribe a TC format? **YES — and Gujarat is the exception in this file.**
+
+**GSHSEB is the one board in the west/south whose OWN regulations carry the leaving-certificate
+form.** The instrument is **Regulation 12(14)**, *"શાળા છોડ્યા અંગેના પ્રમાણપત્ર કાઢી આપવા અંગે"*
+(amended by Education Dept resolution **મશબ/૧૨૨૦/૮૪૩/છ dated 24-05-2021**), and the prescribed form
+is **નમૂનો-૯**, *"[જુઓ વિનિયમ-૧૨(૪), ૧૨(૧૪)(૫) અને વિનિયમ-૧૩]"* (amended by **મશબ/૧૨૧૧/૩૪૭/છ dated
+04-05-2011**). **[A]**
+
+> ⚠️ **This is a genuine qualification on the file's headline.** Everywhere else the *state* wrote
+> the TC form and the board wrote nothing. **In Gujarat the two are the same document** — the 1974
+> Regulations are made by the Board under the Gujarat Secondary and Higher Secondary Education Act
+> 1972, and it is those Regulations that prescribe the LC. Gujarat is therefore the **only**
+> jurisdiction in this file where "the board prescribes the TC format" is a true statement — and
+> even here the form is invoked by the *state's* schooling rules as well. *(`CONFLICTS.md` C-16b
+> should be read with this carve-out.)*
+
+**Reg 12(14)(5) is the validity rule and it is unusually strict:** the LC must be in **નમૂના-૯**,
+**hand-written in ink** (શાહીથી હાથે લખેલું), **signed by the head of the school in his own ink**,
+and bear the **school's seal** — *"તો જ તે કાયદેસર ગણાશે"* (**"only then shall it be legally
+valid"**). **[A]**
+
+**The 13 mandated body fields of નમૂનો-૯**, in printed order: Full Name of the Student (**Surname
+first**) · Religion and Caste · **Mother's Name** · Place of Birth (with Taluka/District) · Date of
+Birth **in figures and words, Christian Calendar** · Last School Attended · Date of Admission (with
+class) · Date of leaving school · Standard studying in & since when · Reason for Leaving · Progress
+· Conduct · Remark. Then the certification line *"Certify that the above information is verified by
+me with school register and found to be correct."* **[A]**
+
+**Three signatories — Clerk (ક્લાર્ક) · Class Teacher (વર્ગ શિક્ષક) · Principal (આચાર્ય) — plus the
+school seal.** **[A]**
+
+### 2.2 Q2 — Printed particulars? **YES — and Gujarat's route is unique.**
+
+**નમૂનો-૯'s masthead carries: Name and address of the school · S.S.C. Index No. · H.S.C. Index No. ·
+G.R. No. (જી.આર.નં.) · Medium · No. ____ (certificate serial).** **[A]**
+
+**The S.S.C. / H.S.C. Index Nos. are the school's GSHSEB board index numbers.** So a Gujarat
+secondary school's LC carries a **board-assigned identifier on its face** — achieving what Karnataka
+does with a DISE code and Andhra with a recognition number, **but through the board's own
+identifier, embedded in the board's own form.** **[A]**
+
+> ### 🔴 CORRECTION — the Index No. is NOT the school's registration number
+>
+> **The brief's working assumption, and an earlier phrasing of this section, were wrong.** The
+> Board's own forms carry the two as **separate fields**: **[A]**
+> - **નમૂનો-૨, "માધ્યમિક અને ઉચ્ચતર માધ્યમિક શાળા નોંધણી રજિસ્ટર"** *[જુઓ વિનિયમ 9(9) સાથે વાંચતાં
+>   કલમ 31(3)]* — columns include *"શાળાનો ઇન્ડેક્સ નંબર"* **split SSC / HSC**, **and separately**
+>   *"શાળા નોંધણી નંબર"* and *"શાળા નોંધણી કર્યાની તારીખ"*.
+> - **નમૂનો-૩, "નોંધણી પ્રમાણપત્ર"** *[જુઓ વિનિયમ 9(11) સાથે વાંચતાં કલમ 31(8)]*, issued by the
+>   Secretary under s.31 of the 1972 Act — lists *"શાળા સંચાલક મંડળનો નોંધણી નંબર"*, *"શાળા નોંધણી
+>   નંબર"* **and** *"શાળા ઇન્ડેક્સ નંબર"* as **three different fields**.
+>
+> **નમૂનો-૯ asks only for the two Index Nos. — never the registration number.** Corroborated at
+> **[B]**: GSEB's live affiliated-school registry https://schoolreg.gseb.org/ViewSchool.aspx searches
+> **by School Index** and validates the format as **`00.000` or `000.000`** — the Index is the
+> board's operational school code, not its registration number. Verified 2026-09-12.
+>
+> **A product that models one Gujarat identifier is modelling the wrong thing**, and a school holds
+> at least three: society registration number, school registration number, and SSC/HSC Index.
+
+**⚠️ There is NO free-standing board regulation commanding "print the index number".** The
+obligation is **entirely derivative of the form** — reg 12(14)(5) binds the LC to *"નિયત નમૂના-૯માં"*
+and the form's masthead does the rest. **[A]**
+
+**Board name is NOT required on the LC.** નમૂનો-૯'s masthead carries only the school's name and
+address. *(Contrast નમૂનો-૩, the Board's own registration certificate, which IS headed **"ગુજરાત
+માધ્યમિક અને ઉચ્ચતર માધ્યમિક શિક્ષણ બોર્ડ, ગાંધીનગર"**.)* **No seal WORDING is prescribed anywhere in
+the Regulations** — only that a seal be affixed. **[A]**
+
+**Also printed, and product-relevant:**
+- A standing warning above the field table: *"આ પ્રમાણપત્રમાંની કોઈ નોંધમાં તે કાઢી આપનાર સત્તાધિકારી
+  સિવાય બીજા કોઈથી કશો ફેરફાર થઈ શકશે નહિ…"* — no one but the issuing authority may alter an entry.
+- A sub-header instruction: *"(આ પ્રમાણપત્ર શાહીથી ભરવું.)"* — fill in ink.
+- A statutory warning that only the headmaster (or the person authorised in his absence) may issue
+  the certificate or change an entry.
+
+### 2.3 Q3 — Countersignature? **No for a Gujarat-issued LC. Yes inbound.**
+
+- **Within Gujarat: NO countersignature** by BEO/DEO/DPEO. The signature block is **Clerk + Class
+  Teacher + Principal + seal**, and nothing in reg 12(14) or નમૂનો-૯ adds an external signature.
+  **[A]**
+- **Reg 12(14)(6)** — if the **head is absent**, the substitute signatory must be authorised by the
+  management **and approved by the DEO**. ⚠️ **This is advance approval of a PERSON, not
+  countersignature of each certificate.** Do not model it as a per-document step.
+- **Reg 12(9)(ક)** — **inbound**: a student from another **State/UT** may be admitted only if the LC
+  bears the **સામી સહી (countersignature) of that State/UT's education officer**; if absent, the head
+  shall obtain it and may admit **provisionally** meanwhile, with a full report. **Reg 12(9)(ઘ)** is
+  the analogue for another **country** (valid visa for the study period, a test before admission, and
+  an LC countersigned by that country's education authorities). **[A]**
+- **Per school type (govt / grant-in-aid / self-financed / CBSE): NOT FOUND.** The Regulations draw
+  the aided/non-aided line for **class permission** (reg 10(1)), **not for LC signature.**
+
+### 2.4 Q4 — Post-issuance duty
+
+- **Reg 12(13)** — after admission, enter the student in the **General Register in નમૂનો-૧૦**
+  *[જુઓ વિનિયમ-૧૨(૧૩) અને ૩૮(૧)(ક)(૧)]*, whose 13 columns **correspond almost exactly to નમૂનો-૯'s
+  fields**, closing with *"Remarks (reason for leaving, school fees paid or unpaid)"*. **The LC is a
+  projection of the General Register row.** **[A]**
+- **Reg 38 — and this is the strongest post-issuance duty in the whole file. [A]** Chapter 7,
+  *"38. (1) દરેક રજિસ્ટર થયેલી શાળાએ નીચેનાં રેકર્ડો અને રજિસ્ટરો રાખવા અને નિરીક્ષણ માટે રજૂ કરવાં
+  જોઈશે"* — every registered school **shall keep the following records and produce them for
+  inspection**. Table (ક), *"વિદ્યાર્થીઓને લગતાં રજિસ્ટર"*, as substituted by resolution
+  **મશબ/૧૨૨૦/૯૮૪/અ dated 24-05-2021**:
+
+  | # | Record | Retention |
+  |---|---|---|
+  | 1 | સામાન્ય રજિસ્ટર (વયપત્રક) **નમૂના-૧૦ મુજબ** — General Register | **કાયમી** (permanent) |
+  | 2 | વિદ્યાર્થીઓનું માસિક હાજરી રજિસ્ટર **નમૂના-૧૧ મુજબ** | દસ વર્ષ (10 yrs) |
+  | **3** | **બીજી શાળામાંથી મળેલાં શાળા છોડ્યાના પ્રમાણપત્રો** — **LCs RECEIVED from other schools** | **કાયમી** |
+  | **4** | **વિદ્યાર્થીઓને કાઢી આપેલા શાળા છોડ્યાના પ્રમાણપત્રોની સ્થળપ્રતો** — **office copies / counterfoils of LCs ISSUED to students** | **કાયમી** |
+  | 5 | વિદ્યાર્થીઓએ પ્રાપ્ત કરેલ ગુણ અને પરીક્ષાના પરિણામના રેકર્ડ | કાયમી |
+  | 6 | વિદ્યાર્થીઓના સ્વાસ્થ્ય અને તબીબી તપાસના રેકર્ડ | કાયમી |
+  | 7 | આગલા વર્ષની વાર્ષિક પરીક્ષાના જવાબપત્રો | ત્રણ વર્ષ |
+  | 8 | નિરીક્ષણ પહેલાંની કસોટી પછી દાખલ કરેલાં વિદ્યાર્થીઓના રેકર્ડ | ત્રણ વર્ષ |
+  | 9 | વિદ્યાર્થીઓને લગતી સ્કોલરશીપ અને અન્ય સહાય અંગેનો રેકર્ડ | દસ વર્ષ |
+
+  **Items 3 and 4 are explicit and PERMANENT: a counterfoil file of every LC issued, and a file of
+  every LC received.** **Reg 39** makes schools and hostels open to inspection. *(This is the same
+  two-directional shape as Kerala's Form 4 columns 13 and 14 — §5.5.)*
+- **Reg 12(13)** — on regular admission the student's name must be entered in the **General Register
+  in નમૂનો-૧૦**. **[A]**
+- **Gujarat RTE Rules 2012, r.21(3)(a)** — school records include **"(11) File of Leaving
+  Certificate"** and "(10) File of Age Certificates", and the **"(1) General Register"** *"shall on no
+  account be destroyed"*. **[A]** *(Note this is the STATE rule, corroborating the board's reg 38.)*
+- **A TC-upload or online-TC duty: NOT FOUND — and the archive was enumerated.** The Board's circular
+  archive (`Web/get_circular_list`, all four categories) returns 12 items under **Exam**, 21 under
+  **Research**, and **"No records available"** under both **School Control** and **Student Service**.
+  **Nothing on LC/TC at all.**
+
+### 2.5 Q5 — Admission from another board or state
+
+- **Reg 12(4)** — a student who left another school must submit, **with the admission application,
+  the last school's LC in નમૂનો-૯**. If the child never attended any school, take a **declaration**;
+  if the previous head has not issued the LC, the head **may admit provisionally (કામચલાઉ)** after
+  consulting the previous head, report to the officer, and act on the officer's order. **[A]**
+- **Reg 12(9)(ક)/(ઘ)** — the inbound countersignature rules at §2.3. **[A]**
+- **Reg 12(10)** — without special approval, no placement in a class **higher** than the LC shows the
+  student eligible for. **[A]**
+- **Reg 12(11)(ક)** — *"માન્ય ન થયેલી શાળામાંથી શાળા છોડ્યાના પ્રમાણપત્રના આધારે પ્રવેશ આપી શકાશે
+  નહિ."* — **admission may NOT be granted on an unrecognised school's leaving certificate.** **[A]**
+- **Equivalency Certificate** is offered as a GSHSEB e-service. **[B]**
+
+### 2.6 Q6 — Migration Certificates — **YES, GSHSEB issues them; the regulation is NOT FOUND**
+
+The e-service portal offers **"10th Pass Migration Certificate"**, **"12th Pass Migration
+Certificate"**, duplicate marksheet/certificate and **"Equivalency Certificate"**. **[B]** ·
+https://www.gsebeservice.com/
+
+**⚠️ Board regulation text on migration certificates: NOT FOUND.** The 1974 Regulations index
+(regs 1–43) contains **no migration-certificate regulation** — the service is most likely handled by
+**board resolution** rather than by the Regulations. A secondary report of a **₹100** fee plus a
+document list is **[C]** and **was not confirmed against a board circular**.
+
+**The Board does not issue LCs — schools do, under reg 12(14). [A]**
+
+### 2.7 Q7 — Duplicates
+
+**Reg 12(14)(3):** a **duplicate LC** requires an application **plus an affidavit before an Executive
+Magistrate** stating where the original went and why a duplicate is needed. **[A]**
+
+**⚠️ NOT FOUND: any Gujarat rule on how a duplicate must be MARKED.** Unlike Maharashtra ("Duplicate"
+in red ink at the top), Kerala ("clearly marked 'Duplicate'") and one TNER recension (red ink, once
+only), **no marking requirement was located for Gujarat.** Do not apply a Maharashtra-style
+watermark to a Gujarat LC on the assumption that the rule travels.
+
+### 2.8 Fee and refusal, for completeness **[A]**
+
+- **12(14)(1)** — application **in writing by the guardian/parent** (an adult student may apply
+  himself); the school **must issue the LC in નમૂના-૯ within at most SEVEN DAYS**.
+- **12(14)(2)** — the school **cannot refuse** without proper reasons; if it does not issue one, the
+  **reasons must be given in writing within seven days**. ⚠️ **Gujarat gives NO exhaustive list of
+  lawful refusal grounds** — unlike Maharashtra, which whitelists exactly two. **Do not port
+  Maharashtra's "unpaid dues" ground into Gujarat; it has no Gujarat basis.**
+- **12(14)(4)** — **no fee in any circumstances** if demanded **within two years** of leaving or of
+  the public-exam result; thereafter **₹1 per year, maximum ₹5**.
+
+**Duplicate affidavit competence — reg 12(અ)(7), Note 1 [A]:** *"માનદ પ્રેસિડેન્સી મેજિસ્ટ્રેટ, જસ્ટિસ
+ઓફ પીસ અને માનદ મેજિસ્ટ્રેટ, સોગંદ લેવડાવી શકશે નહિ… માત્ર **વૈતનિક મેજિસ્ટ્રેટ અથવા નોટરી** સમક્ષ
+સોગંદનામું જાહેર કરેલું હોવું જોઈશે."* — Honorary Presidency Magistrates, Justices of the Peace and
+Honorary Magistrates **cannot** administer the oath; **only a stipendiary (વૈતનિક) Magistrate or a
+Notary**. Stamp duty under **Art. 4, Sch. I, Indian Stamp Act**.
+
+### 2.9 ⚠️ Gujarat conflicts — recorded, not resolved
+
+**G1 — "Handwritten in ink" versus the existence of any printed or ERP-generated LC. THE MOST
+PRODUCT-CRITICAL ITEM IN THIS FILE.**
+Reg 12(14)(5) makes a Form-9 LC legally valid **only** if **handwritten in ink**, personally signed
+in ink by the head, and sealed. **On the face of the current (2021) text, a machine-printed Gujarat
+LC is not "કાયદેસર" — not legally valid.** Yet reg 12(14)(1)–(2), **inserted by the same 2021
+resolution**, impose a 7-day SLA and written-reasons-for-refusal — provisions that read as modern
+administrative practice. The two sit in the same sub-regulation.
+**No amendment or circular relaxing the ink requirement was found** — but see NOT FOUND #G-3: the
+post-2021 amendments PDF is an unreadable scan, so a later relaxation **cannot be ruled out**.
+*(This is the exact twin of Maharashtra SS Code Appendix Four N.B. 2, "These entries shall be in
+manuscript and not typewritten" — `west-central-india.md` §1.6. **Two of the three states in this
+file that prescribe an LC form require it to be handwritten.** A digital-certificate product must
+confront this directly rather than assume it is obsolete.)*
+
+**G2 — Form-9 cites its own authority two different ways, on the same printed page.** The Gujarati
+banner reads **"[જુઓ વિનિયમ-૧૨(૪), ૧૨(૧૪)(૫) અને વિનિયમ-૧૩]"**; the inner caption beneath the English
+title "SCHOOL LEAVING CERTIFICATE" reads **"(જુઓ વિનિયમ-૧૩ નમૂનો-૯)"** alone. Both appear in the 2021
+official edition. *(Compounding it: per the index, **reg 13 is "કપટથી પ્રવેશ મળ્યો હોય તો પ્રવેશ
+બિન-અમલી ગણાશે"** — admission obtained by fraud is void — which does not obviously govern the LC.)*
+**Reproduced as printed; a probable drafting artefact; not resolved.**
+
+**G3 — The three signature lines are not equally load-bearing.** The form prints **Clerk + Class
+Teacher + Principal**; reg 12(14)(5) requires the **head's own** ink signature and the seal; the
+form's footer warning admits only the headmaster or an authorised person; reg 12(14)(6) narrows
+"authorised person" to one **authorised by the management AND approved by the DEO**. Consistent in
+outcome, but **only the Principal's signature carries legal weight** — the Clerk and Class Teacher
+lines are form convention, not validity conditions. **Do not build a blocking three-way sign-off.**
 
 ---
 
-## 3 · GBSHSE — Goa
+## 3 · GBSHSE — Goa Board of Secondary and Higher Secondary Education
 
-*(pending — research cluster)*
+> **The first wave recorded GBSHSE as wholly NOT FOUND because its hosts were unreachable. That
+> was a domain problem, not an absence of law.** This pass found the live site and recovered the
+> Board's own Rules.
+
+### 3.0 🟢 Reachability — the first wave was looking at the wrong domain
+
+All verified **2026-09-12**:
+
+| Host | State |
+|---|---|
+| **`https://www.gbshse.in/`** | ✅ **HTTP 200 — THIS IS THE BOARD'S LIVE CURRENT SITE** (65.1.104.144), an Angular SPA; data API `https://www.gbshse.in/Admin_website_api/index.php/MainApi/*` (POST) |
+| `gbshse.in` *(bare, no `www`)* | **DNS does not resolve** — which is why the first wave, and my own first probe, both concluded the domain was dead |
+| `gbshse.gov.in` / `www.gbshse.gov.in` | resolve to **164.100.228.159** (NIC) but **TCP timeout / ECONNREFUSED**. The **old** site; available only via Wayback |
+| **`gbshse.org`** | ⚠️ resolves (108.165.135.3) and **301/302-redirects to `colowinnext.com`, a parked/spam host.** **NOT the board. Never link it from the product.** |
+
+**Lesson worth keeping:** the earlier "board unreachable ⇒ nothing to find" conclusion was produced
+by testing two dead hostnames and one bare domain. **A dead `.gov.in` is not evidence that a board
+has no published rules.**
+
+### 3.1 The Board's primary instrument
+
+**Goa, Daman and Diu Secondary and Higher Secondary Education Rules, 1975**, made by the
+Administrator under **s.46 of the Goa, Daman and Diu Secondary and Higher Secondary Education Board
+Act, 1975 (Act 13 of 1975)**, Notification **LD/1786/75**. Published by the Board as
+`rules.html` + `rule1.html … rule93.html`. **47 of the 93 rule pages were recovered** from Wayback
+snapshots of `www.gbshse.gov.in` (Jan–Feb 2014) — including the complete blocks that matter
+(rr. 1–21, 24, 26–32, 38, 45, 50, 52, 60, 63, 65, **70–89**, 91–93). **[A]** — primary rule text,
+archived from the board's own former site.
+
+⚠️ **Two provenance caveats that travel with every Goa rule quoted below.**
+1. **The rule pages are a 2014 snapshot.** Live 2026 circulars reference Grade 9 semester
+   examinations, ATKT variations, Holistic Progress Cards and PARAKH taxonomy that post-date it, so
+   **the Rules have very likely been amended since**, and no consolidated current edition was found.
+   Rules 81–85 are nevertheless corroborated as operative by live 2023–2026 circulars and portals.
+2. **All rule text comes from ONE source lineage.** Rules **84** and **85** are independently
+   corroborated by live portals and circulars. **Rules 81, 82, 83 and 87 rest on that lineage alone
+   — treat them as A-minus.**
+
+### 3.2 Q1 — Does GBSHSE prescribe a TC/LC format? **No format — but it DOES mandate a field.**
+
+Across all 47 recovered rules the phrase *"leaving certificate"* occurs **exactly once**, and
+incidentally: **r.77(3)**, on repeaters applying through the last school attended *"even if the
+leaving certificate is obtained by him/her"*. **There is no rule prescribing a school Leaving
+Certificate form, no schedule or appendix for one, and no field list.** **[A]**
+
+The school-level LC remains governed by the **Goa, Daman & Diu School Education Rules, 1986**
+(rr. 116, 122, 124, 125) — the *state* layer, already covered in `west-central-india.md` §5.
+
+**But the Board reaches onto the school's LC by circular, and this is a genuine board-imposed
+field. [B]** — retrieved from the live board site, 2026-09-12:
+
+> **Circular No. 31 of 04-09-2015**, ref. **GBSHSE/CERT-CELL/2015**, *"Regarding entry of parents'
+> name on the Leaving Certificate"* ·
+> https://www.gbshse.in/Admin_website_api/Files/circular/912077-circular312015.pdf
+>
+> *"1. It has come to the notice of this Office that some schools are not entering the parents' name
+> on the leaving certificate issued by them.*
+> *2. Since the Marksheet / Marksheet cum Passing Certificate of the candidate shows the parents'
+> name which is as per the entry on the School General Register, **it is mandatory that name of the
+> parent should be reflected on the leaving certificate issued by the school.***
+> *[3]. Further, Head of Higher Secondary schools are instructed **not to accept any leaving
+> certificate issued by schools which does not carry the parents' name.**"*
+>
+> *(Copy forwarded to the Director of Education "with a request to give directives to **CBSE and
+> ICSE schools** in the state of Goa.")*
+
+**This is the only instance in the whole file of a board mandating a specific FIELD on a
+school-issued LC without prescribing the form.** Note the enforcement design: the sanction is not on
+the issuer but on the **receiving** higher secondary school, which must **refuse** a non-compliant
+LC. **A Goa LC template that omits the parent's name will be rejected at the receiving school.**
+
+**And a hard issuance duty — Circular No. 40 of 21-06-2024**, ref. **GBSHSE/EXAM/School Leaving
+Cert./2024** ·
+https://www.gbshse.in/Admin_website_api/Files/circular/788753-2024circularno40.pdf · **[B]**:
+
+> *"2. This is to instruct all schools Heads that **they must issue the School Leaving Certificates
+> to any Class XII or Class X student who requests for** School Leaving Certificate, enabling them
+> to pursue further education elsewhere, including polytechnic or ITI or any other institutions.
+> Schools are reminded that there is no impediment for these students to fill Class X or Class XII
+> online exam forms through their own school as repeater candidates and retake the exams they have
+> previously failed.*
+> *3. So, Heads of the Institutions are informed to ensure **strict compliance with this directive
+> immediately**…"*
+
+### 3.3 Q2 — Printed particulars
+
+**On a school-issued LC: only the parents' name** (Circular 31/2015). **No board name, index number,
+recognition number or seal wording is prescribed for a school LC** — NOT FOUND after reading all 47
+recovered rules and scanning **all 1,016 circular titles** in the live board index.
+
+**On the BOARD's own passing certificate — r.81 "Award of Certificates", verbatim [A]:**
+
+> *"(1) The Board shall award the certificates of passing to the successful candidates of secondary
+> and higher secondary school certificate examinations **in the specified form** indicating therein
+> (a) the name of the candidate; (b) date of birth; (c) seat number of the candidate; **(d) school
+> Index number;** (e) subjects offered; (f) the grade secured by the candidate.*
+> *(2) The certificate shall be issued **over the signature of Secretary of the Board with seal**
+> through the head of the institution. It shall bear the **signature of the candidate and the Head
+> of the school with the seal of the school.**"*
+
+**So Goa does operate a school Index number** — corroborated independently by the board's own
+institution URLs (e.g. `…/institution/hs066-vishwanath-mahadev-parulekar-higher-secondary-school`,
+index **HS066**). **But r.81 puts it on the BOARD's certificate, not on the school's LC.** **[A]/[B]**
+
+**r.81(5)–(7):** a name/DOB correction is admissible only where the entry **differs from the school
+register**; a correction once made *"shall be indicated on the **reverse** of the Certificate by an
+endorsement"* in the Board's specified form; errors found after issue are corrected by Board
+endorsement **routed through the head of the institution**. *(The same reverse-endorsement mechanism
+as MSBSHSE reg 59(3) — §1.8.)*
+
+### 3.4 Q3 — Countersignature. **Not on an outbound Goa LC. Required on inbound — including WITHIN Goa.**
+
+Nothing in the Rules or circulars requires countersignature of a Goa school's own outbound LC.
+
+**Inbound — Circular No. 14 of 3 May 2016, "Issue of Eligibility Certificates"**, which states
+*"This Circular supercedes all other circulars issued in this regard"* ·
+https://www.gbshse.in/Admin_website_api/Files/circular/82260-circular142016.pdf · **[B]**:
+
+| Origin | Requirement |
+|---|---|
+| **CBSE/ICSE *within Goa*** | *"School Leaving Certificate/TC in Original **countersigned by Education/Zonal Authorities**"* |
+| **Other Boards / CBSE / ICSE *outside Goa*** | *"…in Original **countersigned by Education/Zonal Authorities of the State/Country where the school is located**"* |
+| **Foreign** | *"4. Foreign cases: The LC/TC should bear the **counter-signature of the authority of Indian Embassy/Consulate in that country**."* |
+
+⚠️ **Goa is the ONE jurisdiction in this file that demands countersignature on a certificate issued
+INSIDE its own state** — a CBSE or ICSE school in Goa must have its LC countersigned by the
+Education/Zonal Authorities before a Goa Board higher secondary school may use it. **Every other
+state in this corpus triggers countersignature only at a state boundary.** This is a real exception
+to the "inbound-only, interstate-only" model in `CONFLICTS.md` C-1 — **the trigger in Goa is
+crossing a BOARD boundary, not a state boundary.**
+
+Corroborated by **Circular No. 24 of 24-06-2009** ·
+https://www.gbshse.in/Admin_website_api/Files/circular/268478-circular242009.pdf — documents to be
+enclosed include *"iii. **School Leaving Certificate/Transfer Certificate with the counter signature
+of the Educational Inspector** (to be produced by the students seeking admission in Std. XI or XII);
+**iv. Migration Certificate in original.**"* **[B]**
+
+### 3.5 Q4 — Post-issuance duties
+
+**No rule requires a school to keep an LC counterfoil or file a return of LCs issued.** The only
+board-level records duty is generic — **r.6(2)** *(the exact analogue of MSBSHSE reg 29(2), §1.4)*:
+
+> *"(i) shall supply to the Board on or before the dates as may be fixed by the Board such **returns
+> and information** as may be required; (ii) shall **maintain such registers and records as may be
+> required by the Board from time to time**"* **[A]**
+
+**r.87** ("Maintenance and disposal of records") governs the **Board's own office**, not schools —
+office registers preserved as permanent record; exam material disposed of 90 days after results,
+**by pulping under written agreement**. **[A]**
+
+**Two real duties do exist, by circular [B]:**
+- **Circular 14/2016, operative conditions:** *"3. The School shall **not issue the Leaving
+  Certificate** of students whose Final Eligibility have not been granted by the Board."* and
+  *"4. The School shall not declare Std. XI results of such students whose Final Eligibility
+  Certificate have not been issued by the Board."*
+- **Circular No. 33 of 19-07-2017** — every higher secondary school must **submit to the Board by
+  20 August** the details of students who joined from other Boards (Sr. No. / Name / Class joined XI
+  or XII / Name of the Board through which the student passed X or XI / Provisional Certificate
+  Number if applicable). *"Failure to comply will be viewed seriously."* **This is a genuine annual
+  board return, and the only one found in this file.**
+
+**No TC-upload portal exists.** The Board's live e-services (`MainApi/getService`, verified
+2026-09-12) are: Online Registration (IX & XI) `studentreg.gbshse.in`; **Eligibility Portal**
+`studentreg.gbshse.in/eligibility-candidate`; **Apply for Migration Certificate**
+`service2.gbshse.in/cert_issue/document-issuance-portal/`; Institution Services
+`recognition.gbshse.in`; Shikshak/TIS portals; GTET. **None handles school leaving certificates.**
+
+### 3.6 Q5 — Admission from another board or state — **Goa has the most developed regime in this file**
+
+**r.85, "Eligibility certificate", verbatim [A]:**
+> *"(1) The Board shall issue Eligibility Certificate to a student seeking admission in any
+> recognised higher secondary school of this Board on his/her application in specified form
+> alongwith required documents and on payment of specified fees…*
+> *(2) **A student who has passed the qualifying examination from any statutory Board, recognised
+> bodies and Universities other than Board shall be admitted to the institutions recognised only on
+> production of eligibility certificate issued by this Board.**"*
+
+Operationalised by **Circular 14/2016** into **eight categories [B]**:
+
+| Cat. | Who | Board eligibility needed |
+|---|---|---|
+| 1 | Passed Std X of **Goa Board** | **None** |
+| 2 | Passed X (ICSE/CBSE) **in a Goa school** | Final EC — X marks list, LC/TC **countersigned**, **Migration Certificate in original**, X passing certificate. Due **30 Oct** |
+| 3 | Passed X of **NIOS** | Final EC — X marks list, **Migration Certificate in original**, X passing certificate. Due **30 Dec** |
+| 4 | Passed X of **any other Board outside Goa** | ⚠️ **Provisional EC must be obtained BEFORE admission (by 15 July)**; then Final EC by **30 Dec** with countersigned LC + Migration Certificate in original + Provisional EC copy |
+| 5 | Passed XI under **Goa Board** | **None** |
+| 6 | Passed XI, ICSE/CBSE in Goa | Final EC, due **30 June** |
+| 7 | Passed XI ICSE/CBSE in Goa but **SSC from Goa Board** | Eligibility (no LC/migration in the Board's list), due **30 June** |
+| 8 | Passed XI other Boards outside Goa | Final EC with countersigned LC + Migration Certificate in original, due **30 June** |
+
+Fees per Circular 14/2016: **₹100** Provisional EC (cat. 4); **₹200** Final EC (cats. 2,3,4,6,7,8);
+**₹100/month** late; *"No application for Eligibility shall be received after the last date."*
+Revised by **Circular No. 53 of 07-10-2021** *(image-only PDF — amount not read)*. **Circular No. 35
+of 28-05-2025** states the current online fee: *"Payment fees for Indian Students: **₹400** (for
+Academic year 2024-25)."*
+
+**Circular No. 35 of 28-05-2025**, *"Implementation of Online Provisional and Final Eligibility
+System…"* · https://www.gbshse.in/Admin_website_api/Files/circular/276177-2025circularno35.pdf —
+the **current** process **[B]**: register on `www.gbshse.in` → "Eligibility Certificate Application"
+→ UR No. + OTP → upload *"Class X marksheet or equivalent certificate"* and *"Valid ID proof
+(Aadhaar card, passport, etc.)"* → pay ₹400 → download the Provisional Eligibility Certificate →
+submit the print to the higher secondary school, which *"will verify the certificate through the
+Board's system."* Institutions enrol such students via **"ADD Candidate → Import Other Board
+Candidate."**
+
+**Also [A]:** **rr. 17(1)(d)(i) / 18(1)(d)(i)** — an Indian citizen who was a regular student of a
+**secondary/higher secondary school overseas** on an equivalent course may appear at the Board's
+SSC/HSSC **as a private candidate**. **r.18(2)(a)** — a private HSSC candidate is eligible if
+*"he/she has passed his/her secondary school certificate examination **or equivalent examination of
+any Board**"* and **≥3 years** have intervened.
+
+Related equivalence circulars **[B]**: **No. 55 of 13-08-2024** and **No. 48 of 01-09-2021**
+("Scheme of Private Candidate & ITI Candidate (Applying for Equivalence) of SSC/HSSC");
+**No. 38 of 16-06-2026** ("Equivalence Certificate for Grade 10 for persons with Intellectual
+Disabilities").
+
+### 3.7 Q6 — Migration Certificates — **YES, and Goa has the cleanest rule in the file**
+
+**r.84, "Migration certificate", verbatim and in full [A]:**
+
+> *"**84. Migration certificate.** - A migration certificate shall be issued to a candidate who has
+> passed the secondary or higher secondary examination of the Board on receipt of application from
+> the candidates after paying of specified fees."*
+
+That is the entire rule. Note the eligibility trigger is **"has passed"** — *narrower than
+MSBSHSE regs 60/107, which say **"has appeared at"***. **Two neighbouring boards, two different
+thresholds; do not generalise either.**
+
+Corroborated **[B]**, live site 2026-09-12: service tile **"Apply for Migration Certificate"** →
+`https://service2.gbshse.in/cert_issue/document-issuance-portal/#/Login` (published 2023-05-10);
+**Circular No. 32 of 20-05-2023** *"Online Migration certificate for SSC/HSSC 2023 onwards"*;
+**Circular No. 16 of 21-02-2024** *"Revision of Migration fees for SSC/HSSC"*.
+
+### 3.8 Q7 — Duplicates
+
+**r.83, "Supply of duplicate passing certificate", verbatim [A]:**
+
+> *"**83.** The Board shall issue a duplicate passing certificate on receipt of application **through
+> the head of the institution from which the candidate appeared for the examination** on payment of
+> specified fees. However, in the event of the **non-existence of the school** through which the
+> candidate/s appeared for the examination, the duplicate certificate to such candidate/s shall be
+> issued **directly by the Secretary on production of authentic identity.**"*
+
+**This is word-for-word the same design as MSBSHSE regs 61/108 (§1.7)** — the school is a conduit,
+and the conduit **breaks when the school ceases to exist**, at which point the Board deals with the
+candidate directly. **Two independent boards, the same structure: that is now a pattern, not a
+coincidence.**
+
+**r.82, "Provisional certificate":** *"A candidate who has been declared successful at the
+examination shall be issued a provisional passing certificate on application with the specified fees
+through the head of the school."* **[A]**
+
+⚠️ **No marking requirement, and no rule on duplicates of a SCHOOL-issued LC at all.** r.83
+prescribes no "DUPLICATE" overprint, no serial cross-reference and no endorsement. *(Contrast
+r.81(6), which **does** prescribe an endorsement — but that is for **corrections**, and on the
+**reverse of the original**, not on a duplicate.)* **NOT FOUND.**
 
 ---
 
@@ -359,6 +845,26 @@ https://www.keralapareekshabhavan.in/ and https://pareekshabhavan.kerala.gov.in/
 any official page read this session.** The operating authority everywhere in the primary material
 is the **Commissioner for Government Examinations**. Treat "KBPE" as a colloquial label; **cite the
 Commissioner for Government Examinations / Pareeksha Bhavan** in anything user-facing.
+
+#### 5.1a Kerala DHSE — what the dead domain's archive does and does not show **[B]**
+
+Because `dhsekerala.gov.in` is gone, the Internet Archive was used as the retrieval route.
+**3,000 archived URLs from the domain were enumerated** (Wayback CDX, `matchType=domain`,
+2026-09-12). Filtering for `migrat|equival|eligib|transfer|certif|admis|prospect` yields, in total:
+
+- `…/downloads/ApplicationformforDuplicateCertificateFlood2019.pdf` — **DHSE issued DUPLICATES of
+  its own HSE certificate** (the 2019 floods scheme). *(Retrieved — it is a scanned image with no
+  text layer, so its contents are not quoted.)*
+- `…/downloads/Certificatecorrectionsform.pdf` — **corrections to DHSE's own certificate**.
+- `…/admission_ticket.aspx` — exam admission tickets.
+- `…/ general transfer`, `…/downloads/Admissionobserves.doc` — **staff** transfers and admission
+  monitoring, not student certificates.
+
+**No TC format, no TC rule, and NO MIGRATION-CERTIFICATE page appears anywhere in 3,000 archived
+DHSE URLs.** That converts DHSE's Q1/Q2/Q3/Q6 from "unsearched" to **an evidenced negative at level
+B** — with the caveat that a rule buried inside one of the ~hundreds of date-coded circular PDFs
+(`downloads/circulars/0101190110_HSE-PE-CC.pdf` and the like, whose filenames encode a date, not a
+subject) would not have been seen.
 
 **Kerala Higher Secondary — the directorate has been absorbed.** `dhsekerala.gov.in` **does not
 resolve** (DNS failure on repeated attempts, 2026-09-12; the link is still present but dead on the
@@ -1107,8 +1613,14 @@ https://indiankanoon.org/doc/90101170/ · verified 2026-09-12.
 under the **A.P. Education Act 1982**, and DGE Telangana's own RTI manual states that Act was
 *"adopted by Government of Telangana"* (§8.0). Rules made under an adopted Act would ordinarily
 continue by operation of the AP Reorganisation Act 2014, **but no Telangana adaptation notification
-for these specific Rules was located.** **Do not switch this requirement on for a Telangana tenant
-without closing that gap.**
+for these specific Rules was located.**
+
+*Partial corroboration, level **C**:* an Indian Kanoon search for `"Private Managements) Rules, 1993"
+restricted to `doctypes:telangana` returns **24 documents** (verified 2026-09-12) — i.e. the 1993
+Rules are **actively cited in Telangana-classified case law**, which is strong practical evidence
+that they continue to apply there. **The result titles were not read** (the results list did not
+render to text), so this raises confidence without establishing the adaptation instrument.
+**Do not switch this requirement on for a Telangana tenant without closing that gap.**
 
 **⚠️ And note the connection to Tamil Nadu.** This AP rule is almost certainly the origin of the
 cross-state conflation flagged at §6.9 C6: **AP demonstrably requires a recognition number on the
@@ -1380,6 +1892,147 @@ regulation repository was never read.**
 
 ---
 
-## NOT FOUND
+## 9 · WHAT THIS CHANGES FOR THE MODULE
 
-*(consolidated after all clusters report)*
+### 9.1 Corrections to the existing corpus
+
+| Where | What must change |
+|---|---|
+| **`south-india.md` §3.3a, §3.4** | The TN *"school number assigned by the Director of Government Examinations"* claim cites https://indiankanoon.org/doc/24617366/. **That page does not contain the sentence** (§6.8). Re-cite to the johnsonasir compilation and **downgrade the claim from A to C, DISPUTED.** |
+| **`CONFLICTS.md` C-17** | Lists *"Tamil Nadu's recognition + DGE numbers"* alongside genuinely-evidenced mandates (CGBSE cl.16(4), HPBOSE, Karnataka DISE). **TN does not belong in that company at the same confidence.** Karnataka's and CGBSE's are evidenced; TN's is one uncorroborated 2003 compilation that contradicts itself. |
+| **`CONFLICTS.md` C-16 / C-16a** | **Strengthened.** Eleven more board entities checked here — MSBSHSE, GSEB/GSHSEB, GBSHSE, KSEAB, Kerala Pareeksha Bhavan, Kerala DHSE, TN DGE, BSEAP, BIEAP, BSE Telangana, TSBIE — and **none prescribes a TC format.** CBSE's Annexure-I still stands alone. |
+| **Layer attribution generally** | Karnataka's DISE mandate and AP's recognition-number mandate were both being carried as board-layer facts. **Both are STATE/departmental rules** (§4.2, §7.0). The board did not impose either. |
+
+### 9.2 The rules that are safe to enforce from this file
+
+**Enforce (evidence A, primary text read):**
+- **A school must never issue a Migration Certificate.** Now evidenced for MSBSHSE (regs 60, 107),
+  KSEAB, Pareeksha Bhavan, BSEAP, BSE Telangana, BIEAP, TSBIE and TN DGE — every board in scope.
+- **Maharashtra:** the LC needs **two signatures** (Class Master + Head) and is invalid otherwise
+  (SS Code r.32.1); duplicates marked **"Duplicate" in red ink at the top** (r.30).
+- **Kerala:** Form 5's **Government/Aided/Recognised status line** and the **school seal**; the
+  **Form 4 admission-register entry** (No. and date of TC granted on leaving); duplicates **"clearly
+  marked 'Duplicate'"** (r.22); and **never offer a school-to-school TC request** — KER r.14(2)
+  forbids it, the parent must apply.
+- **Andhra Pradesh, private-management schools:** the **recognition number** on the TC, the name
+  board, the admission application form and advertisements — **AP Rules 1993 r.10(8)**, a condition
+  of recognition.
+
+**Do NOT enforce:**
+- Any **board-prescribed TC format** in any of these states.
+- **TN's recognition-number / DGE-school-number printing** as a legal requirement — **configurable,
+  off by default** (§6.8(5)).
+- **TNER r.40** in either direction — it exists in two opposite texts (§6.9 C2).
+- A **TSBIE countersignature** step — portal UI only, legal compulsion not established (§8.2).
+- A **counterfoil duty under TNER** — that duty is **Matriculation-Code-only** (§6.4).
+- The AP recognition-number rule for a **Telangana** tenant until the adaptation gap is closed
+  (§7.0).
+
+### 9.3 Three cross-cutting design consequences
+
+1. **Duplicate marking is not one rule.** Maharashtra: *"Duplicate" in red ink at the top*. Kerala:
+   *clearly marked "Duplicate"*, no colour or position. Tamil Nadu (one recension): *red ink,
+   **issued only once***. AP/Telangana/KSEAB: **no marking rule found at all**. **A single hard-coded
+   watermark will be wrong in at least one state.**
+2. **The school is a CONDUIT for board documents, not an issuer.** MSBSHSE regs 61/108 (duplicate
+   SSC/HSC only through the head of the school) and BSE Telangana's duplicate proforma (routed
+   *"through the Headmaster"*, plus an **HM Identification Certificate** and a **"True extract of the
+   original SSC issued by the Headmaster"**) both put the school in the middle of a board process.
+   **And the conduit breaks on de-recognition** — MSBSHSE reg 61 then sends the certificate direct to
+   the candidate.
+3. **Board-issued artefacts expire from the board's side.** BSEAP's Migration Certificate is
+   downloadable **for 30 days only** from payment. Anything the module ingests from a board portal
+   must be **stored at capture**, not re-fetched on demand.
+
+---
+
+## NOT FOUND — consolidated, with the searches actually attempted
+
+**Read this as a work list, not as an apology.** Several entries below are *evidenced* negatives
+(the catalogue was enumerated and the thing is not in it); those are findings. The genuinely open
+items are marked **OPEN**.
+
+### Maharashtra / MSBSHSE
+1. **Any post-1990 MSBSHSE amendment.** The Board publishes the 1977 Regulations *"as amended up to
+   31st October 1990"*. **OPEN** — an amendment after that date would not have been seen.
+   *Retrieve:* mahahsscboard.in circulars, and the Divisional Boards' own notifications.
+2. **The prescribed FORM for an Eligibility Certificate application** (reg 80(2) says *"in a
+   prescribed form"* and the Regulations do not print it). **OPEN.**
+3. **Current fees.** Regs 60/61/107/108 quote ₹10; certainly stale in amount. The *structure* is
+   citable, the numbers are not.
+
+### Kerala
+4. **Whether Sampoorna-generated TCs are MANDATORY.** *Searched:* the General Education Department
+   site search for "transfer certificate" / "Sampoorna TC" / "migration certificate" (only the two
+   Sampoorna pages and the Citizens' Charter return); the Sampoorna page itself (cites no G.O.); the
+   **DGE Citizens' Charter** page (renders as navigation only — the service table was not
+   retrievable); the **Kerala Right to Service notification for the department**
+   (https://kite.kerala.gov.in/KITE/SEVANAAVAKASHANIYAMAM-DGE.pdf — **8 MB scanned image, no text
+   layer**; would need OCR). **OPEN, and commercially the most important Kerala gap** — if Sampoorna
+   is the system of record, our module is a parallel writer.
+5. **The regulation or G.O. behind Kerala's board Migration Certificate.** The Pareeksha Bhavan
+   portal lists the service but cites no rule, fee or eligibility condition. **OPEN.**
+6. **HSCAP / Ekajalakam requirements for candidates from other boards.** The 2026-27 circulars were
+   downloaded (21 PDFs from `control.hscap.kerala.gov.in`) but are published in a **legacy
+   non-Unicode Malayalam font**; only letterheads, file numbers and G.O. references were legible.
+   Nothing from their bodies is asserted. **OPEN** — needs a Malayalam reader or the English
+   prospectus.
+7. **Whether KER applies to Higher Secondary schools.** Not established either way this session.
+   **OPEN.**
+8. **"Kerala Board of Public Examinations" as a legal entity** — not confirmed on any official page;
+   the operating authority everywhere is the **Commissioner for Government Examinations**.
+9. **A DHSE rule inside the archived date-coded circular PDFs** — ~hundreds of files whose names
+   encode a date, not a subject, were not opened individually.
+
+### Karnataka / KSEAB
+10. **KSEAB by-laws — they appear not to be published at all.** *Evidenced:* the by-laws and
+    amendments pages render the site template with **zero content items**, proved against a
+    populated control page. ~160 circulars over four years enumerated; none touches TCs.
+11. **The regulation behind KSEAB's migration certificate.** The service page cites none;
+    `Migration Letter_2.pdf` is a scanned image with no text layer; `/LetterToReceivingAuthority`
+    returns 404.
+
+### Tamil Nadu
+12. **A second independent copy of TNER rule 34.** *Exhaustively attempted* — see the table at
+    §6.8(3). Indian Kanoon phrase search returns nothing (control query confirms the search works);
+    all eleven search engines tried were CAPTCHA-walled or blocked; Wayback CDX on `tn.gov.in`,
+    `tn.nic.in`, `tnschools.gov.in` returned nothing; the one apparent second copy was
+    **byte-identical** (same MD5). **OPEN and load-bearing.**
+13. **TN Private Schools (Regulation) Rules 2023, rule 18 — and what *"the instructions issued in
+    this regard"* refers to.** The Rules exist and are judicially cited (rr. 8, 8-A, 24(6), 27,
+    28(2), 32 appear in Madras HC judgments 2024–2026), **but Indian Kanoon hosts only the judgments
+    citing them, not the Rules.** The referent of that phrase **remains unresolved** — and it is the
+    operative TC instruction for TN private schools. *Retrieve:* the TN Gazette or the G.O. PDF.
+    **OPEN.**
+14. **Which TNER recension is currently in force** (§6.9 C1) — the amending G.O. was not found.
+15. **What "TMR Code No." stands for** — TNER never defines it.
+
+### Andhra Pradesh / Telangana
+16. **The Intermediate Education Regulations made under s.12 of the 1971 Act** — i.e. the actual
+    regulation governing the BIEAP/TSBIE Eligibility Certificate. *Searched:* Indian Kanoon
+    `"Intermediate Education Act, 1971" "eligibility certificate"` (**0 results**);
+    `"Intermediate Education Act, 1971"` (126 sections indexed, none on admission/eligibility/
+    migration); ss.9 and 12 read via /doc/70034660/; TGBIE `gosandActs.do` (**403 / JS-gated**).
+    **OPEN — this is the biggest hole in the AP/TG record.**
+17. **Whether the AP Private Managements Rules 1993 were adapted for Telangana.** 24
+    Telangana-classified documents cite them (level C), but the adaptation notification was not
+    found. **OPEN, and it gates §7.0 for Telangana tenants.**
+18. **Whether online TC is legally mandatory** in either state. `childinfo.telangana.gov.in`
+    (**NXDOMAIN**), `schooledu.telangana.gov.in/ISMS/` (**404**), department root JS-gated,
+    `cse.ap.gov.in` navigation enumerated with no TC module. **Neither claim may be shipped.**
+19. **Any rule on how a duplicate must be MARKED** — for any of the four AP/TG boards.
+20. **BIEAP's service menu, enumerated directly** — only reader-proxy renderings were obtained, so
+    the "BIEAP has no TC countersignature" negative is **weak**.
+21. **The AP board's G.O. list** — `portal.bseap.org/BSEAPGO/Default.aspx` exposes only JS buttons
+    and `SSCGO.aspx` returns **HTTP 500**. (Telangana's equivalent *was* enumerated in full.)
+22. **`goir.ap.gov.in`** — not reached.
+23. **"A.P. Board of Secondary Education Rules"** — **this instrument was not found to exist.** It is
+    absent from the Board's own RTI list of governing instruments, which names the **A.P. Education
+    Code** instead. *Recorded as a correction to the brief's premise, not as a gap.*
+
+### Method-level
+24. **The session's WebSearch budget was exhausted (200/200) before this file's research began.**
+    Everything here was obtained by direct retrieval, Indian Kanoon's search endpoint, archive.org
+    CDX, and reader proxies. **Every general-purpose search engine tried was CAPTCHA-walled or
+    blocked** (DuckDuckGo html + lite, Google, Bing, Brave, Yandex, Startpage, Ecosia, Mojeek, three
+    SearXNG instances). A re-run with search budget would most likely close items 12, 13, 16 and 17.

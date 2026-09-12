@@ -445,3 +445,270 @@ That is now the third jurisdiction where the word denotes board-granted standing
 state's RTE s.18 licence to operate — after **UP (s.2(d))** and **J&K (reg. 8)**. C-2 holds and
 strengthens: a single `recognitionOrder` field would silently carry two different legal objects,
 and the model must record **which kind**.
+
+---
+
+## C-19 · ⚠️ The Tamil Nadu printed-identifier rule is NOT established — C-17 overstates it
+
+*Added 2026-09-12 by `boards-west-south.md` §6.8.*
+
+**C-17 lists "Tamil Nadu's recognition + DGE numbers" alongside CGBSE cl.16(4) and the HPBOSE
+affiliation condition, as though all three were equally evidenced. They are not.**
+
+The TN claim was cited in `south-india.md` §3.3a/§3.4 to
+<https://indiankanoon.org/doc/24617366/>. **That page was downloaded and searched this session and
+it does not contain the sentence** — `grep -i "school number"` returns **zero hits**. Indian
+Kanoon carries an **older recension** of TNER r.34: "recognised *secondary* school", Appendix 5
+alone, a rule-92 case-sheet, and the **DEO** — with no school number, no recognition wording, no
+"Office Copy" rule and no seal specification.
+
+The claim's actual support is **one** document: a consolidated *Tamil Nadu Educational Manual*
+(`educationalrules.PDF`, author "Thamizhagam", created **2003-05-05**) hosted on a **private
+service-provider site**. Corroboration was attempted exhaustively and **failed** — Indian Kanoon
+phrase searches return nothing (a control query confirms the search works), the Matriculation Code
+contains no such identifier, eleven search engines were CAPTCHA-walled, Wayback CDX on three TN
+government domains returned nothing, and the one apparent second copy proved **byte-identical**
+(same MD5).
+
+**Worse, the single source contradicts itself.** Its **Appendix-5-A** note requires the words
+*"Recognized by the Department of Education Chennai"* **with Recognition Number**; its
+**Appendix-5** note requires the words **without** the Recognition Number, and narrows the
+invalidity sanction to private **Higher Secondary** schools only.
+
+> **Action:** re-mark the TN entry in C-17 as **DISPUTED, level C**. Ship the field
+> **configurable and off by default** — never as an assertion that the law requires it.
+
+**A likely origin for the error, which makes this worth remembering:** **Andhra Pradesh really does
+require it** (C-20). A rule imported from AP into a TN template would look entirely plausible and
+be wrong.
+
+---
+
+## C-20 · Printed-identifier mandates are STATE rules, not board rules — a layer correction
+
+*Added 2026-09-12 by `boards-west-south.md` §4.2, §7.0.*
+
+Two mandates in the corpus were being carried as board-layer facts. **Both are state or
+departmental rules, and the board imposed neither.**
+
+| Mandate | Was attributed to | Actually |
+|---|---|---|
+| **DISE code on every Karnataka TC** | KSEAB | **Commissioner for Public Instruction**, circular 01.06.2016 — School Education Department. KSEAB's by-laws page publishes **zero documents**, and ~160 SSLC circulars over four years contain nothing on TCs |
+| **Recognition number on an AP TC** | *recorded as NOT FOUND* | **AP Private Managements Rules 1993, r.10(8)** — a **State** rule under the AP Education Act 1982 |
+
+**The AP rule, now read first-hand [A]** · <https://indiankanoon.org/doc/90101170/> ·
+G.O.Ms.No.1, Education (P.S.2), 1-1-1994, AP Gazette Extraordinary 3-1-1994:
+
+> *"that the **Name Board of the school, the Transfer Certificate issued by the School**, the
+> applications prescribed for admission of students and the advertisements calling for the
+> applications **shall invariably contain the recognition number given.**"*
+> *(r.10(8), as substituted by G.O.Ms.No.74, Education (SE[PS-1]), 11-9-2006)*
+
+**Three consequences.**
+
+1. **It is a CONDITION OF RECOGNITION** (r.10 chapeau; r.11 makes breach a withdrawal ground).
+   Omitting it is recognition-threatening, not cosmetic.
+2. **It covers four surfaces**, not one — name board, TC, admission form, advertisements.
+3. **It is scoped to PRIVATE-management schools** and **its Telangana application is unverified**
+   (24 Telangana-classified documents cite the 1993 Rules — level C — but no adaptation
+   notification was found).
+
+⚠️ **Also a citation correction:** the operative instrument is the **1993** Rules. They expressly
+**supersede** the 1988 Rules (G.O.Ms.No.524, 20-12-1988) that earlier briefs named.
+
+**The general lesson, which C-12 half-anticipated:** the printed-identifier trend is real, but it
+is being driven by **state education departments**, not by examination boards. A data model that
+hangs "required printed identifiers" off the board record will attach them to the wrong parent.
+
+---
+
+## C-16b · No board prescribes a TC format — eleven more, and the negative is now regional-complete
+
+*Added 2026-09-12 by `boards-west-south.md`.*
+
+**Eleven more board entities checked. Ten prescribe no TC format — and ONE does.**
+
+> ### ⚠️ GUJARAT IS A REAL EXCEPTION, AND IT BREAKS THE CLEAN NEGATIVE
+>
+> **GSHSEB prescribes the leaving-certificate form in its OWN regulations.** *Gujarat Secondary &
+> Higher Secondary Education Regulations 1974*, **reg 12(14)** and form **નમૂનો-૯** — made by the
+> Board under the Gujarat Secondary and Higher Secondary Education Act 1972. **[A]** Thirteen
+> mandated fields, three signatories (Clerk + Class Teacher + Principal), the school seal, and
+> **reg 12(14)(5)'s validity rule**: in નમૂના-૯, hand-written in ink, signed by the head in his own
+> ink, sealed — *"તો જ તે કાયદેસર ગણાશે"*, **"only then shall it be legally valid."**
+>
+> **So CBSE's Annexure-I is no longer the only prescribed TC format found in India.** C-16 and
+> C-16a must be read with this carve-out. *(The earlier streams recorded Gujarat's form correctly as
+> a state-layer finding in `west-central-india.md` §2.6; what was missed is that the instrument
+> prescribing it **is the board's own regulation**, which makes it a board-layer finding too.)*
+
+The other ten: MSBSHSE, GBSHSE, KSEAB, Kerala Pareeksha Bhavan, Kerala DHSE, TN DGE, BSEAP, BIEAP,
+BSE Telangana, TSBIE.
+
+Several of these are **evidenced** negatives rather than unsearched ones, which is what makes the
+entry worth recording:
+
+- **MSBSHSE** — a full-text grep of the 1977 Regulations returns *"transfer certificate"* **exactly
+  once**, and only for inbound out-of-state pupils. The Board instead defers to the Education
+  Department's **Secondary School Code** (reg 67(xvii)).
+- **BSE Telangana** — both the RTI service catalogue **and the complete 12-item G.O. list** were
+  enumerated; neither contains a TC rule.
+- **BSEAP** — the RTI s.4(1)(b) service catalogue was enumerated; TC is absent. The Board's own list
+  of governing instruments contains **no "A.P. Board of Secondary Education Rules"** — an instrument
+  earlier briefs assumed exists.
+- **KSEAB** — by-laws and amendments pages render **zero content items**, proved against a populated
+  control page.
+- **Kerala DHSE** — **3,000 archived URLs** of the now-dead `dhsekerala.gov.in` enumerated; no TC
+  format, no TC rule, no migration page.
+
+**CBSE's Annexure-I no longer stands alone — GSHSEB's નમૂનો-૯ joins it.** Those are the only two
+prescribed Transfer/Leaving Certificate formats the research has found anywhere in India.
+
+**Where a format exists elsewhere in the south and west, the STATE wrote it** — Maharashtra SS Code
+Appendix Four, Gujarat નમૂનો-૯, Kerala KER Form 5, Tamil Nadu TNER Appendix-5/5-A and the
+Matriculation Code Annexure V. **The corrected model is: USUALLY the STATE prescribes the TC and the
+BOARD supplies an identifier that may go on it and owns the migration/eligibility instruments —
+EXCEPT in Gujarat, where the board's own regulation is the prescribing instrument.** A per-board
+`prescribesFormat` flag is therefore required; a regional default would be wrong for Gujarat.
+
+---
+
+## C-16b · CORRECTION TO MY OWN C-16 — prescribed formats DO exist; they are mostly STATE-made
+
+I wrote, twice, that *"CBSE's Annexure-I remains the only prescribed Transfer Certificate
+format found in India."* **That is wrong, and it contradicted a stream I had already
+committed.**
+
+The west/central stream had told me in its very first report that **Gujarat prescribes a form
+with 13 fields, three signatories, ink and seal.** I recorded that, then generalised a
+board-layer negative into an all-India one and lost it.
+
+**What is actually true**, and the distinction matters:
+
+| prescribed format | made by | instrument |
+|---|---|---|
+| **CBSE Annexure-I** | a **board** | Examination Bye-Laws |
+| **Gujarat નમૂનો-૯** | a **board** — the only state board that does | GSEB Regulations 1974, reg 12(14): 13 fields, 3 signatories (Clerk + Class Teacher + Principal), seal |
+| **Maharashtra Appendix Four** | the **state** | SS Code r.32.1 — an LC is invalid in any other form |
+| **Kerala Form 5** | the **state** | made under the Kerala Education Act 1958 — *not* by Pareeksha Bhavan |
+| **Tamil Nadu Appendix-5 / 5-A** | the **state** | TNER — *not* by the DGE, whose published functions cover exam conduct only |
+
+So the correct statement is: **almost no examination board prescribes a TC format — Gujarat is
+the single exception — and the prescribed formats that do exist are overwhelmingly made by
+STATE governments under their education Acts.**
+
+That is a different design conclusion from the one I drew. It is not "only CBSE matters"; it is
+**"look to the state, not the board"** — which is the same lesson the recognition research
+produced, arriving from the other direction.
+
+---
+
+## C-15b · A countersignature that runs the other way
+
+**TSBIE (Telangana Intermediate)** publishes a service — id 15 — *"Counter signature on Transfer
+Certificate"*, and it is for **OUTBOUND** inter-state moves: the board countersigns a TC a
+Telangana school has issued, for a pupil leaving the state.
+
+Every other instance found is **receiving-side**. This one is **issuing-side**, performed by the
+board on request.
+
+It does not overturn C-15 — nothing here requires the issuing school to obtain a
+countersignature before handing over the certificate — but it shows the space has a fourth
+shape, and a model that assumes countersignature is always a destination concern would have no
+place to put it.
+
+**Caveat carried from the stream:** BIEAP and TSBIE negatives rest on **weak evidence** — their
+JS menus could not be enumerated. Not to be asserted as settled.
+
+---
+
+## C-19 · Sikkim — two of four claims OVERTURNED
+
+The first wave reported Sikkim as having no RTE Rules, no Education Act, no recognition officer
+and **no state board**. Two do not survive:
+
+- **"No state board" is WRONG.** The **Sikkim Board of School Education Act, 1978** (Act 19 of
+  1978) establishes one, and it is **absent from the State's own repealed-Acts register**, so it
+  stands. Its recognition is **examination** recognition — a **fourth** instance of C-2, after
+  UP, J&K and MBOSE.
+- **"No Education Act" is EXPLAINED, not confirmed.** The Sikkim Education Act **2002** existed
+  and has been **repealed** per the official state list.
+
+**Which sharpens the open question rather than closing it: what supplies operating recognition
+in Sikkim at all?** An Act repealed and a board that only recognises for examinations leaves a
+gap nobody has identified.
+
+---
+
+## C-3a · CORRECTION — "Punjab: 3 years" was wrong, and the right answer confirms C-6
+
+C-3 recorded Punjab's recognition validity as **3 years**. The gap-closure stream recovered the
+**PSEB Affiliation Regulations 1988 (amended to 2013)** from Wayback captures of PSEB-published
+PDFs and found:
+
+- **PSEB affiliation has NO validity term.** Reg. 11 makes it **continuing**, on an annual
+  ₹5,000 continuation fee (or ₹45,000 for twelve years), **suspended on non-payment**.
+- The only "three years" in the Affiliation Regulations is **Reg. 22's debarment ceiling** — a
+  penalty period, not a validity term.
+- The real three-year term is in the **Punjab RTE Rules 2011, Form-II** — provisional, *"not
+  extendable"*, granted by the **District Education Officer** within 15 days.
+
+**This is C-6 again, and it is now confirmed rather than suspected:** the validity period lives
+in the annexed **FORM**, not in the rule body — exactly as Assam, Meghalaya and Tripura showed,
+and exactly as the MHRD model form predicted.
+
+**And a product finding:** PSEB **gates the TC on a Board migration certificate** — which sits
+alongside the portal-transfer regime found independently in the browser.
+
+---
+
+## C-20 · Uttar Pradesh — officer CLOSED, validity a NEW conflict
+
+**Officer, closed at Evidence A on two independent instruments** — G.O. 575/68-3-2018-2041/2023
+(26.09.2023, s.13 UP Basic Education Act 1972) and UP RTE Rules 2011 r.11 + r.2(1)(j):
+
+> The BSA assumption is **right for basic/elementary and wrong for secondary** — *"Zila Shiksha
+> Adhikari"* resolves by class band. The **BSA issues**, but a **Recognition Committee decides**,
+> chaired by the BSA for primary and by the **Divisional Assistant Director of Education (Basic)**
+> for upper primary.
+
+**Validity — a new conflict, both limbs Evidence A.** The 2023 G.O. says provisional **1 year →
+permanent**; the RTE Rules 2011 **Form-II** says provisional **three years, "not extendable"**,
+nothing beyond Class VIII. Different Acts, different purposes, **neither repeals the other**.
+
+**Do not default this field. Surface both.**
+
+---
+
+## C-21 · TNER Rule 40 — RESOLVED, and the premise was backwards
+
+C-10 recorded that rule 40 exists in two opposite circulating texts. The gap-closure stream
+settled it:
+
+> **Rule 40 FORBIDS refusing a TC over arrears.**
+
+"Text one" — the version permitting withholding — **was not found as rule 40 anywhere**, and
+appears to be a **conflation** of r.34 / Appendix 5 item 8 with the rr.41–43 provisos. The
+numbering was verified three ways, specifically excluding the r.39-is-"Deleted" off-by-one.
+
+**Caveat, stated by the stream and kept here:** a single host (Indian Kanoon); **no gazette copy
+of TNER exists online**, so this is **not Evidence A**.
+
+**And a larger point:** for private schools TNER is likely **superseded** by the **TN Private
+Schools (Regulation) Rules 2023, r.18**, which contains **no withholding power at all**. The
+2024 Division Bench's directed amendment appears never to have been made.
+
+---
+
+## C-22 · Still open, and deliberately not guessed
+
+- **Maharashtra GR on admission without a TC.** `gr.maharashtra.gov.in` is reachable, but its
+  search is an ASP.NET WebForms POST requiring a scraped `__VIEWSTATE`, and no search engine was
+  usable to find the GR code. **Number and date not obtained — and deliberately not guessed.**
+- **Arunachal's Education Rules 2010** — proven to exist via their 2015 amendment
+  (No. SED-143/2015, 30.04.2015); they hold both the TC regime and probably the validity term.
+  Also open: whether a state board now exists (the Act says **CBSE applies until one is
+  constituted**), and the RTE Rules, found nowhere.
+- **Goa RTE Rules 2012** — could not be retrieved from any host, so the 1986/2012 conflict was
+  never compared directly. The 1986 Rules do carry an **express power under r.36 for the Director
+  to authorise a subordinate**, which plausibly explains the Deputy Director. **Record both.**

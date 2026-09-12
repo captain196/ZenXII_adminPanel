@@ -11,6 +11,15 @@ territory, every board, every school type and every document type.
 | `east-northeast-india.md` | WB · Bihar · Jharkhand · Odisha · Assam · Sikkim + the seven north-eastern states |
 | `central-and-boards.md` | RTE · NEP · DPDP · IT Act · UDISE+ · APAAR · DigiLocker/NAD · CBSE · CISCE · NIOS · IB · Cambridge · KVS · NVS · Sainik |
 | `school-and-document-types.md` | school types × document types × the statutory registers |
+| `boards-west-south.md` | **the BOARD layer, west & south** — MSBSHSE · GSEB/GSHSEB · GBSHSE · KSEAB · Kerala (Pareeksha Bhavan + DHSE) · TN DGE · BSEAP + BIEAP · BSE Telangana + TSBIE *(added 2026-09-12)* |
+
+`boards-west-south.md` answers the question the first wave named but did not research: **what does
+the examination board itself impose on a school-issued TC?** Its headline is that the board is
+almost never the author — **the STATE prescribes the TC; the BOARD supplies an identifier and owns
+the migration/eligibility instruments.** It also **corrects two entries in `CONFLICTS.md`**
+(see C-19 and C-20 there): the Tamil Nadu printed-identifier rule is **disputed, not established**,
+and the Karnataka and Andhra printed-identifier mandates are **state/departmental rules, not board
+rules**.
 
 ## The discipline every stream was given
 

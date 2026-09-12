@@ -673,6 +673,19 @@ kept on the register."* **Accumulated arrears were never a lawful pre-condition 
 own terms.** The only refusal power in r.42 is for a mid-term application where *"good and
 sufficient reasons are not shown"* — a *timing* ground, curable under r.43.
 
+> 🔴 **CORRECTION ADDED 2026-09-12 — the "[A]" on the next block is wrong for one of its claims.**
+> The sentence *"Every TC must carry the school number assigned by the Director of Government
+> Examinations"* (r.34, below) — and the Appendix-5-A **Recognition Number** requirement at §3.3a,
+> and the summary at §3.4 and §7 — are **NOT level A**. The Indian Kanoon source cited throughout
+> this section, <https://indiankanoon.org/doc/24617366/>, was re-downloaded and searched on
+> 2026-09-12: it carries an **older recension of r.34 that contains none of it**
+> (`grep -i "school number"` → **zero hits**). The claim rests on **one** uncorroborated 2003
+> compilation which **contradicts itself** between Appendix-5 and Appendix-5-A. Corroboration was
+> attempted exhaustively and failed.
+> **Downgrade to [C], DISPUTED. Full working in `boards-west-south.md` §6.8; registered as
+> `CONFLICTS.md` C-19.** Andhra Pradesh's equivalent rule *is* established (C-20) and is the likely
+> source of the conflation.
+
 **Other TNER TC provisions found on the second pass — [A]:**
 
 - **r.34** is the master rule: no admission without a TC *"in the prescribed form (Appendix-5 &
