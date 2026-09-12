@@ -2865,6 +2865,13 @@ class Fees extends MY_Controller
             $status = (string) ($s['status'] ?? 'Active');
             if (!in_array(strtolower($status), ['active', ''], true)) continue;
 
+            // SESSION SCOPING (tolerant): fee collection is against the CURRENT
+            // session, so drop students who belong to a DIFFERENT session — but
+            // keep any whose session field is blank/missing (legacy/drifted rows)
+            // rather than a hard Firestore filter that would hide them entirely.
+            $sSession = (string) ($s['session'] ?? '');
+            if ($sSession !== '' && strcasecmp($sSession, (string) $this->session_year) !== 0) continue;
+
             $name    = (string) ($s['name']       ?? $s['Name']       ?? '');
             $sid     = (string) ($s['studentId']  ?? $s['userId']     ?? '');
             $father  = (string) ($s['fatherName'] ?? $s['Father Name'] ?? '');
@@ -4247,10 +4254,14 @@ class Fees extends MY_Controller
             }
         } catch (\Exception $_) {}
 
-        // Walk Firestore feeReceipts — aggregate amount per class|section per month
+        // Walk Firestore feeReceipts — aggregate amount per class|section per month.
+        // SESSION-SCOPED: the records matrix is a view of the CURRENT academic
+        // session; without this filter it summed every prior year's receipts into
+        // the same 12-month grid (revenue over-count after a rollover).
         try {
             $rcptRows = $this->firebase->firestoreQuery('feeReceipts', [
                 ['schoolId', '==', $schoolFs],
+                ['session',  '==', $this->session_year],
             ]);
             foreach ((array) $rcptRows as $r) {
                 $d = $r['data'] ?? $r;
@@ -8615,20 +8626,46 @@ class Fees extends MY_Controller
         $this->_require_role(self::MANAGE_ROLES, '', 'Fees', 'manage');
 
         $sessionToCheck = trim($this->input->get('session') ?? $this->session_year);
-        $sn = $this->school_name;
-        $base = "Schools/{$sn}/{$sessionToCheck}";
+        $sn       = $this->school_name;
+        $schoolFs = $this->fs->schoolId();
 
+        // ── ZERO-RTDB / SAFETY FIX ──────────────────────────────────────────
+        // This gate previously probed RTDB paths ("Schools/{sn}/{session}/...")
+        // via $this->firebase->exists(). Post the ZERO-RTDB migration those
+        // paths are always absent, so every `has*` was false and $canDelete was
+        // ALWAYS true — the gate meant to protect a session that still holds fee
+        // structures, demands, or receipts silently failed OPEN, letting an
+        // admin delete a year that still has live financial data (data loss).
+        //
+        // It now counts the canonical Firestore collections, each queried with
+        // the field convention its own working readers use (feeStructures keys
+        // on the school NAME — see the reader at ~L4339; feeDemands/feeReceipts
+        // key on the school id — see ~L1017/L938). On any read error we fail
+        // CLOSED (can_delete = false) so a transient failure can never be
+        // mistaken for "nothing here, safe to delete".
         try {
-            $hasFees = $this->firebase->exists("{$base}/Accounts/Fees/Classes Fees");
-            $hasPending = $this->firebase->exists("{$base}/Accounts/Pending_fees");
-            $hasDemands = $this->firebase->exists("{$base}/Fees/Demands");
-            $hasReceipts = $this->firebase->exists("{$base}/Accounts/Fees/Receipt_Keys");
+            // Existence probe only — limit 1. We do NOT need to count every
+            // demand (a real school can have tens of thousands); one match is
+            // enough to block, and this keeps the gate fast on large tenants.
+            $anyExist = function (string $collection, array $conds): bool {
+                $rows = $this->firebase->firestoreQuery($collection, $conds, null, 'ASC', 1);
+                return is_array($rows) && count($rows) > 0;
+            };
 
-            $canDelete = !$hasFees && !$hasPending && !$hasDemands && !$hasReceipts;
+            $hasFees     = $anyExist('feeStructures', [
+                ['schoolId', '==', $sn],       ['session', '==', $sessionToCheck],
+            ]);
+            $hasDemands  = $anyExist('feeDemands', [
+                ['schoolId', '==', $schoolFs], ['session', '==', $sessionToCheck],
+            ]);
+            $hasReceipts = $anyExist('feeReceipts', [
+                ['schoolId', '==', $schoolFs], ['session', '==', $sessionToCheck],
+            ]);
+
+            $canDelete = (!$hasFees && !$hasDemands && !$hasReceipts);
             $reasons = [];
-            if ($hasFees)    $reasons[] = 'Fee structures exist';
-            if ($hasPending) $reasons[] = 'Pending fees exist';
-            if ($hasDemands) $reasons[] = 'Fee demands exist';
+            if ($hasFees)     $reasons[] = 'Fee structures exist';
+            if ($hasDemands)  $reasons[] = 'Fee demands exist';
             if ($hasReceipts) $reasons[] = 'Payment receipts exist';
 
             $this->_json_out([
@@ -8637,8 +8674,17 @@ class Fees extends MY_Controller
                 'block_reasons' => $reasons,
                 'session' => $sessionToCheck
             ]);
-        } catch (Exception $e) {
-            $this->_json_out(['status' => 'error', 'message' => $e->getMessage()]);
+        } catch (\Throwable $e) {
+            // Fail CLOSED — never report a session as safe to delete when the
+            // check itself could not be completed.
+            log_message('error', 'Fees::year_rollover_block_check read failed: ' . $e->getMessage());
+            $this->_json_out([
+                'status' => 'error',
+                'can_delete' => false,
+                'block_reasons' => ['Could not verify this session is empty — deletion blocked for safety.'],
+                'session' => $sessionToCheck,
+                'message' => $e->getMessage(),
+            ]);
         }
     }
 

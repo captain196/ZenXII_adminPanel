@@ -447,6 +447,62 @@ class Exam_engine
         }
     }
 
+    /**
+     * [uid => SR No] for a class/section — the permanent school register number,
+     * for the tabulation sheet. Mirrors get_student_names(): prefers the shared
+     * Roster_helper (whose projection already carries SRNo at no extra read) and
+     * falls back to a direct Firestore query. Students without an SR No map to ''.
+     */
+    public function get_student_srnos(string $classKey, string $sectionKey): array
+    {
+        try {
+            $CI = get_instance();
+            if ($CI !== null && isset($CI->roster) && method_exists($CI->roster, 'for_class')) {
+                $roster = $CI->roster->for_class($classKey, $sectionKey);
+                $srnos = [];
+                foreach ($roster as $uid => $fields) {
+                    $srnos[$uid] = is_array($fields) ? (string) ($fields['SRNo'] ?? '') : '';
+                }
+                return $srnos;
+            }
+        } catch (\Exception $e) {
+            log_message('error', 'Exam_engine::get_student_srnos — CI roster path failed: ' . $e->getMessage());
+        }
+
+        try {
+            $ck = ($classKey !== '' && stripos($classKey, 'Class ') !== 0)   ? "Class {$classKey}"   : $classKey;
+            $sk = ($sectionKey !== '' && stripos($sectionKey, 'Section ') !== 0) ? "Section {$sectionKey}" : $sectionKey;
+            if ($ck === '' || $sk === '') return [];
+
+            $rows = $this->firebase->firestoreQuery('students', [
+                ['schoolId',  '==', $this->school],
+                ['className', '==', $ck],
+                ['section',   '==', $sk],
+                ['status',    '==', 'Active'],
+            ]);
+            if (!is_array($rows)) return [];
+
+            $srnos = [];
+            foreach ($rows as $entry) {
+                $data = is_array($entry) ? ($entry['data'] ?? $entry) : null;
+                if (!is_array($data)) continue;
+                $uid  = (string) ($data['userId'] ?? $data['studentId'] ?? '');
+                if ($uid === '' && is_array($entry) && isset($entry['id'])) {
+                    $prefix = $this->school . '_';
+                    $uid = (strncmp($entry['id'], $prefix, strlen($prefix)) === 0)
+                        ? substr($entry['id'], strlen($prefix))
+                        : $entry['id'];
+                }
+                if ($uid === '') continue;
+                $srnos[$uid] = (string) ($data['srNo'] ?? $data['srNumber'] ?? $data['SR Number'] ?? '');
+            }
+            return $srnos;
+        } catch (\Exception $e) {
+            log_message('error', 'Exam_engine::get_student_srnos — Firestore fallback failed: ' . $e->getMessage());
+            return [];
+        }
+    }
+
     // =========================================================================
     //  SUBJECT LIST
     // =========================================================================

@@ -108,105 +108,116 @@ class Operations extends MY_Controller
             'assets'    => ['total' => 0, 'assigned' => 0, 'maintenance_due' => 0],
         ];
 
-        // ── Library stats ──
-        // Books: count only → shallow_get (keys only, no record data)
-        $bookKeys = $this->firebase->shallow_get($this->_ops('Library/Books'));
-        $stats['library']['books'] = count($bookKeys);
+        // ── ZERO-RTDB MIGRATION (2026-09-12) ─────────────────────────────────
+        // These summaries previously read RTDB nodes ($this->firebase->get/
+        // shallow_get on "Schools/{school}/Operations/..."), which the ZERO-RTDB
+        // migration emptied — so every tile rendered 0 while the modules
+        // themselves are Firestore-native. Re-pointed at each module's own
+        // canonical Firestore collection (Library.php/Transport.php/Hostel.php/
+        // Inventory.php COL_* constants) via the tenant-scoped $this->fs->
+        // schoolWhere(). Status filters read defensively (case-insensitive,
+        // snake+camel keys) so a field-name drift degrades a sub-count to 0
+        // rather than to a wrong non-zero. Assets is still RTDB-native (never
+        // migrated) and is handled separately below.
+        $rowData = function ($r) { return is_array($r) ? ($r['data'] ?? $r) : []; };
+        $lc      = function ($v) { return strtolower(trim((string) $v)); };
 
-        // Issues: need status + due_date fields → full get required
-        $issues = $this->firebase->get($this->_ops('Library/Issues'));
-        if (is_array($issues)) {
+        // Canonical Firestore collection names (from each module's COL_* consts;
+        // referenced as string literals so Operations needn't load those classes).
+        // ── Library stats (libraryBooks / libraryIssues) ──
+        if (has_permission('Library', 'view')) {
+        try {
+            $stats['library']['books'] = count((array) $this->fs->schoolWhere('libraryBooks'));
             $today = date('Y-m-d');
-            foreach ($issues as $iss) {
-                if (($iss['status'] ?? '') === 'Issued') {
+            foreach ((array) $this->fs->schoolWhere('libraryIssues') as $r) {
+                $d = $rowData($r);
+                if ($lc($d['status'] ?? '') === 'issued') {
                     $stats['library']['issued']++;
-                    if (($iss['due_date'] ?? '') < $today) {
-                        $stats['library']['overdue']++;
-                    }
+                    $due = (string) ($d['dueDate'] ?? $d['due_date'] ?? '');
+                    if ($due !== '' && $due < $today) $stats['library']['overdue']++;
                 }
             }
-        }
+        } catch (\Throwable $e) { log_message('error', 'ops library summary: ' . $e->getMessage()); }
+                }
 
-        // ── Transport stats ──
-        // Vehicles & Routes: need status filter → full get
-        $vehicles = $this->firebase->get($this->_ops('Transport/Vehicles'));
-        if (is_array($vehicles)) {
-            foreach ($vehicles as $v) {
-                if (($v['status'] ?? '') === 'Active') $stats['transport']['vehicles']++;
+        // ── Transport stats (vehicles / routes / studentRoutes) ──
+        if (has_permission('Transport', 'view')) {
+        try {
+            foreach ((array) $this->fs->schoolWhere('vehicles') as $r) {
+                if ($lc($rowData($r)['status'] ?? 'active') === 'active') $stats['transport']['vehicles']++;
             }
-        }
-        $routes = $this->firebase->get($this->_ops('Transport/Routes'));
-        if (is_array($routes)) {
-            foreach ($routes as $r) {
-                if (($r['status'] ?? '') === 'Active') $stats['transport']['routes']++;
+            foreach ((array) $this->fs->schoolWhere('routes') as $r) {
+                if ($lc($rowData($r)['status'] ?? 'active') === 'active') $stats['transport']['routes']++;
             }
-        }
-        // Assignments: count only → shallow_get
-        $trnAsnKeys = $this->firebase->shallow_get($this->_ops('Transport/Assignments'));
-        $stats['transport']['students'] = count($trnAsnKeys);
+            $stats['transport']['students'] = count((array) $this->fs->schoolWhere('studentRoutes'));
+        } catch (\Throwable $e) { log_message('error', 'ops transport summary: ' . $e->getMessage()); }
+                }
 
-        // ── Hostel stats ──
-        // Buildings: need status filter → full get
-        $buildings = $this->firebase->get($this->_ops('Hostel/Buildings'));
-        if (is_array($buildings)) {
-            foreach ($buildings as $b) {
-                if (($b['status'] ?? '') === 'Active') $stats['hostel']['buildings']++;
+        // ── Hostel stats (hostelBuildings / hostelRooms) ──
+        if (has_permission('Hostel', 'view')) {
+        try {
+            foreach ((array) $this->fs->schoolWhere('hostelBuildings') as $r) {
+                if ($lc($rowData($r)['status'] ?? 'active') === 'active') $stats['hostel']['buildings']++;
             }
-        }
-        // Rooms: need occupied sum → full get
-        $rooms = $this->firebase->get($this->_ops('Hostel/Rooms'));
-        if (is_array($rooms)) {
+            $rooms = (array) $this->fs->schoolWhere('hostelRooms');
             $stats['hostel']['rooms'] = count($rooms);
-            foreach ($rooms as $rm) {
-                $stats['hostel']['occupants'] += (int) ($rm['occupied'] ?? 0);
+            foreach ($rooms as $r) {
+                $d = $rowData($r);
+                $stats['hostel']['occupants'] += (int) ($d['occupied'] ?? $d['occupiedCount'] ?? 0);
             }
-        }
+        } catch (\Throwable $e) { log_message('error', 'ops hostel summary: ' . $e->getMessage()); }
+                }
 
-        // ── Inventory stats ──
-        // Items: need status + stock level checks → full get
-        $items = $this->firebase->get($this->_ops('Inventory/Items'));
-        if (is_array($items)) {
-            foreach ($items as $it) {
-                if (($it['status'] ?? '') !== 'Inactive') {
+        // ── Inventory stats (inventory / vendors) ──
+        if (has_permission('Inventory', 'view')) {
+        try {
+            foreach ((array) $this->fs->schoolWhere('inventory') as $r) {
+                $d = $rowData($r);
+                if ($lc($d['status'] ?? '') !== 'inactive') {
                     $stats['inventory']['items']++;
-                    if ((int) ($it['current_stock'] ?? 0) <= (int) ($it['min_stock'] ?? 0)) {
-                        $stats['inventory']['low_stock']++;
-                    }
+                    $cur = (int) ($d['currentStock'] ?? $d['current_stock'] ?? 0);
+                    $min = (int) ($d['minStock'] ?? $d['min_stock'] ?? 0);
+                    if ($cur <= $min) $stats['inventory']['low_stock']++;
                 }
             }
-        }
-        // Vendors: need status filter → full get
-        $vendors = $this->firebase->get($this->_ops('Inventory/Vendors'));
-        if (is_array($vendors)) {
-            foreach ($vendors as $vn) {
-                if (($vn['status'] ?? '') === 'Active') $stats['inventory']['vendors']++;
+            foreach ((array) $this->fs->schoolWhere('vendors') as $r) {
+                if ($lc($rowData($r)['status'] ?? 'active') === 'active') $stats['inventory']['vendors']++;
             }
-        }
+        } catch (\Throwable $e) { log_message('error', 'ops inventory summary: ' . $e->getMessage()); }
+                }
 
         // ── Assets stats ──
-        // Assets: count only → shallow_get
-        $assetKeys = $this->firebase->shallow_get($this->_ops('Assets/Assets'));
-        $stats['assets']['total'] = count($assetKeys);
+        // NOTE: Assets.php is the ONE Operations module still RTDB-native (never
+        // migrated to Firestore), so there is no Firestore source to count yet.
+        // These RTDB reads are dead post-migration (return 0 in prod) and throw
+        // outright where no RTDB binding exists (emulator). Wrapped so the Assets
+        // tiles degrade to 0 without taking down the whole summary endpoint. When
+        // Assets is migrated to Firestore, re-point these three like the modules
+        // above.
+        if (has_permission('Assets', 'view')) {
+        try {
+            $assetKeys = $this->firebase->shallow_get($this->_ops('Assets/Assets'));
+            $stats['assets']['total'] = count($assetKeys);
 
-        // Assignments: need status + return_date check → full get
-        $assetAssign = $this->firebase->get($this->_ops('Assets/Assignments'));
-        if (is_array($assetAssign)) {
-            foreach ($assetAssign as $aa) {
-                if (($aa['status'] ?? '') === 'Active' && empty($aa['return_date'])) {
-                    $stats['assets']['assigned']++;
+            $assetAssign = $this->firebase->get($this->_ops('Assets/Assignments'));
+            if (is_array($assetAssign)) {
+                foreach ($assetAssign as $aa) {
+                    if (($aa['status'] ?? '') === 'Active' && empty($aa['return_date'])) {
+                        $stats['assets']['assigned']++;
+                    }
                 }
             }
-        }
-        // Maintenance: need next_due + status check → full get
-        $maint = $this->firebase->get($this->_ops('Assets/Maintenance'));
-        if (is_array($maint)) {
-            $today = date('Y-m-d');
-            foreach ($maint as $m) {
-                if (!empty($m['next_due']) && $m['next_due'] <= $today && ($m['status'] ?? '') === 'Scheduled') {
-                    $stats['assets']['maintenance_due']++;
+            $maint = $this->firebase->get($this->_ops('Assets/Maintenance'));
+            if (is_array($maint)) {
+                $today = date('Y-m-d');
+                foreach ($maint as $m) {
+                    if (!empty($m['next_due']) && $m['next_due'] <= $today && ($m['status'] ?? '') === 'Scheduled') {
+                        $stats['assets']['maintenance_due']++;
+                    }
                 }
             }
-        }
+        } catch (\Throwable $e) { log_message('error', 'ops assets summary (RTDB, pending migration): ' . $e->getMessage()); }
+                }
 
         $this->json_success(['stats' => $stats]);
     }

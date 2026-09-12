@@ -56,6 +56,7 @@ $can_manage  = function_exists('has_permission') ? has_permission('Results', 'ma
       <thead>
         <tr class="rms-thead-main">
           <th class="rms-th-no">#</th>
+          <th class="rms-th-name">SR No.</th>
           <th class="rms-th-name">Student Name</th>
           <?php foreach ($components as $comp): ?>
           <th class="rms-th-comp" title="<?= htmlspecialchars($comp['Name']) ?>">
@@ -71,7 +72,7 @@ $can_manage  = function_exists('has_permission') ? has_permission('Results', 'ma
       </thead>
       <tbody id="rmsBody">
         <?php if (empty($studentList)): ?>
-        <tr><td colspan="<?= 5 + count($components) ?>" class="rms-no-stu">
+        <tr><td colspan="<?= 6 + count($components) ?>" class="rms-no-stu">
           No students found in <?= htmlspecialchars($classKey) ?> / <?= htmlspecialchars($sectionKey) ?>.
         </td></tr>
         <?php else: ?>
@@ -84,6 +85,7 @@ $can_manage  = function_exists('has_permission') ? has_permission('Results', 'ma
             data-uid="<?= htmlspecialchars($uid) ?>"
             data-maxall="<?= $totalMaxAll ?>">
           <td class="rms-td-no"><?= $sno ?></td>
+          <td class="rms-td-name"><?php $rmsSr = trim((string) (($srList[$uid] ?? ''))); ?><?= $rmsSr !== '' ? '<strong>' . htmlspecialchars($rmsSr) . '</strong>' : '<span style="opacity:.5">&mdash;</span>' ?></td>
           <td class="rms-td-name"><?= htmlspecialchars(is_string($name) ? $name : $uid) ?></td>
           <?php foreach ($components as $ci => $comp):
             $compName = $comp['Name'];

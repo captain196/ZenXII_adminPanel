@@ -13,7 +13,8 @@ defined('BASEPATH') or exit('No direct script access allowed');
  *   Schools/{schoolName}/{session}/{classKey}/{sectionKey}/Students/List
  *
  * which had two inconsistent shapes ({uid: "Name"} vs {uid: {Name, RollNo}})
- * and was only kept up-to-date by `Dual_write::add/removeFromRoster`. This
+ * and was only kept up-to-date by `Student_write_service::add/removeFromRoster`
+ * (that class was named `Dual_write` until 2026-08-13). This
  * helper queries the Firestore `students` collection (kept current by
  * `Entity_firestore_sync::syncStudent` on every admin write) using the
  * deployed `schoolId+className+section+status` compound index.
@@ -124,6 +125,10 @@ class Roster_helper
 
             $out[$sid] = [
                 'Name'        => self::_pick($data, ['name', 'Name'], $sid),
+                // SRNo — permanent school register number, surfaced from the
+                // already-loaded doc at zero extra read cost for rosters that
+                // render it (marks sheet, class result, tabulation).
+                'SRNo'        => self::_pick($data, ['srNo', 'srNumber', 'SR Number'], ''),
                 'RollNo'      => self::_pick($data, ['rollNo', 'Roll No', 'RollNo'], ''),
                 'Class'       => self::_pick($data, ['className', 'Class'], $ck),
                 'Section'     => self::_pick($data, ['section', 'Section'], $sk),
@@ -183,6 +188,7 @@ class Roster_helper
         if ($status !== '' && strcasecmp($status, 'Active') !== 0) return null;
         return [
             'Name'        => self::_pick($doc, ['name', 'Name'], $studentId),
+            'SRNo'        => self::_pick($doc, ['srNo', 'srNumber', 'SR Number'], ''),
             'RollNo'      => self::_pick($doc, ['rollNo', 'Roll No'], ''),
             'Class'       => self::_pick($doc, ['className', 'Class'], ''),
             'Section'     => self::_pick($doc, ['section', 'Section'], ''),

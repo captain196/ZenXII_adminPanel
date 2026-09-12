@@ -220,7 +220,7 @@
     // Build header
     thead.innerHTML = '';
     var trH = document.createElement('tr');
-    ['Rank','Name'].concat(subjects).concat(['Total','Max','%','Grade','P/F','Actions']).forEach(function (col) {
+    ['Rank','SR No.','Name'].concat(subjects).concat(['Total','Max','%','Grade','P/F','Actions']).forEach(function (col) {
       var th = document.createElement('th');
       th.textContent = col; th.className = 'rcr-th';
       trH.appendChild(th);
@@ -242,6 +242,7 @@
       }
 
       tr.appendChild(cell(stu.rank,      'rcr-td-rank'));
+      tr.appendChild(cell(stu.sr_no || '—', 'rcr-td-sr'));
       tr.appendChild(cell(stu.name,      'rcr-td-name'));
 
       subjects.forEach(function (s) {

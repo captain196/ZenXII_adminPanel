@@ -675,6 +675,7 @@
     // Row 1: main headers with colspan for each subject
     var r1 = document.createElement('tr');
     addTh(r1, '#', 3, 1);
+    addTh(r1, 'SR No.', 3, 1);
     addTh(r1, 'Student Name', 3, 1);
 
     subjCols.forEach(function (s, idx) {
@@ -736,6 +737,9 @@
 
       // Serial
       addTd(tr, idx + 1);
+      // SR No. (permanent school register number; blank when not assigned)
+      var srTd = addTd(tr, stu.sr_no ? esc(stu.sr_no) : '—');
+      srTd.classList.add('etb-name');
       // Name
       var nameTd = addTd(tr, esc(stu.name));
       nameTd.classList.add('etb-name');

@@ -220,10 +220,12 @@ class Result extends MY_Controller
         // unchanged.
         $rosterFull  = $this->roster->for_class($classKey, $sectionKey);
         $studentList = [];
+        $srList      = [];   // [uid => SR No] — parallel map, keeps studentList name-only
         foreach ($rosterFull as $uid => $fields) {
             $studentList[$uid] = is_array($fields)
                 ? (string) ($fields['Name'] ?? $uid)
                 : (string) $uid;
+            $srList[$uid] = is_array($fields) ? (string) ($fields['SRNo'] ?? '') : '';
         }
 
         // Load existing marks — B1 re-edit reader cutover: canonical Firestore
@@ -239,6 +241,7 @@ class Result extends MY_Controller
             'subject'       => $subject,
             'template'      => $template,
             'studentList'   => $studentList,
+            'srList'        => $srList,
             'existingMarks' => $existingMarks,
         ];
 
@@ -1521,10 +1524,12 @@ class Result extends MY_Controller
         // pattern at the row site stays semantically correct.
         $rosterFull  = $this->roster->for_class($classKey, $sectionKey);
         $studentList = [];
+        $srList      = [];   // [uid => SR No] — from the same roster, no extra read
         foreach ($rosterFull as $uid => $fields) {
             $studentList[$uid] = is_array($fields)
                 ? (string) ($fields['Name'] ?? $uid)
                 : (string) $uid;
+            $srList[$uid] = is_array($fields) ? (string) ($fields['SRNo'] ?? '') : '';
         }
 
         // Collect subject names
@@ -1575,6 +1580,7 @@ class Result extends MY_Controller
             $row = [
                 'uid'      => $uid,
                 'name'     => $studentList[$uid] ?? $uid,
+                'sr_no'    => $srList[$uid] ?? '',
                 'rank'     => $res['Rank']      ?? '—',
                 'total'    => $res['TotalMarks'] ?? 0,
                 'maxMarks' => $res['MaxMarks']   ?? 0,

@@ -617,6 +617,9 @@ class Examination extends MY_Controller
 
         // Student roster
         $roster = $this->exam_engine->get_student_names($classKey, $sectionKey);
+        // SR No map — permanent school register number for the tabulation sheet
+        // (shared roster projection, no extra read).
+        $srnoMap = $this->exam_engine->get_student_srnos($classKey, $sectionKey);
 
         // Collect all student IDs (from marks + computed)
         $allUids = [];
@@ -641,6 +644,7 @@ class Examination extends MY_Controller
             $students[] = [
                 'userId' => $uid,
                 'name'   => $roster[$uid] ?? $uid,
+                'sr_no'  => (string) ($srnoMap[$uid] ?? ''),
             ];
         }
         // Sort alphabetically by name
