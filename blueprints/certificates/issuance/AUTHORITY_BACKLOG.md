@@ -77,9 +77,35 @@ Mizoram · Nagaland · Odisha · Tripura · Uttarakhand · West Bengal · NIOS �
 Lakshadweep and WBBSE sit at `[B]` or below. The ladder in `Issuer_identity` exists precisely so
 that an unverified basis enforces nothing; feeding it weaker evidence defeats it.
 
-**Do not model countersignature as one boolean.** Stated twice in the corpus and once more in C-26:
-a global `countersignatureRequired = false` is **a wrong rule in Himachal**. It is
-per-jurisdiction and directional. This is the single most likely schema mistake available here.
+**Do not model countersignature as one boolean, and do not key it on the state.** There are now
+**two** established ways to get this wrong:
+
+- **As one flag** — a global `countersignatureRequired = false` is **a wrong rule in Himachal**
+  (C-26): HPBOSE Reg. 3.5.7 makes it mandatory and blocking.
+- **As a state comparison** — `sendingState != receivingState` gets a common Rajasthan case wrong
+  (C-27). **A CBSE school in Jaipur to an RBSE school in Jaipur is intra-State but inter-Board, and
+  it triggers the full inbound gate**: eligibility certificate plus a DEO-countersigned TC.
+
+**The correct key is the sending BOARD/jurisdiction**, with **document language** (RBSE §1.8(2) — a
+vernacular certificate needs a DEO-countersigned English attested copy) and **institution type**
+(BSE Odisha, Social Welfare Organisation) as additional triggers. Direction matters too: C-15
+established countersignature is the **receiving** authority's rule.
+
+**The format model needs three states, not two** (C-28). "No prescribed format" hides a legally
+distinct third case: **Goa r.127** makes a format *mandatory but unpublished* — *"No leaving
+certificate is valid unless it is in the form prescribed by the Director of Education"*, with no form
+annexed. **A Goa LC in a free-text layout is invalid on the face of the rule.** Offering a generic
+template to a Goa school is a compliance risk; the same template in MP is merely unregulated. So:
+`noFormat` · `formatPublished` · `formatPrescribedButUnpublished`.
+
+**And the taxonomy needs more than two mechanisms** (C-29). Beyond countersignature and printed
+identifiers, two more are evidenced at `[A]`: the **board-issued eligibility certificate as a hard
+inbound gate** (GBSHSE and RBSE independently, both at +2 entry, RBSE carrying a ₹1,000 per-pupil
+penalty and personal liability on the head who admits without one), and **return-to-issuer
+verification** (RBSE §1.8(1) — on an *intra*-Board transfer the receiving school sends the TC back to
+the issuing head before permanent admission). The second is the only mechanism in the corpus that
+polices intra-jurisdiction transfers — exactly the case every state-line rule treats as needing no
+check.
 
 ## Status
 

@@ -1,6 +1,6 @@
 # Conflict register
 
-**36 entries, IDs unique.** They were not: successive research streams each appended without
+**41 entries, IDs unique.** They were not: successive research streams each appended without
 checking the highest number in use, so `C-9`, `C-19`, `C-20` and `C-16b` were each issued twice.
 The second of each is now `C-9a`, `C-19a`, `C-20a`, `C-16c`. **The `C-16b` collision was the
 damaging one — the two entries sharing that ID contradicted each other**, so a citation of "C-16b"
@@ -48,7 +48,12 @@ with their evidence** — the convenient one was never allowed to quietly win.
 | C-23 | The Maharashtra GR is CAPTCHA-gated | **HUMAN-ONLY** |
 | C-24 | KVS/NVS — my question rested on a false premise | **UNSUPPORTED, not disproved** |
 | C-25 | Sainik/RMS/AWES/CTSA not researched | **outstanding** |
-| C-26 | **Identifier tally recounted — and the trend is not universal** | **corrects C-12/C-17/C-24** |
+| C-26 | **Identifier tally recounted — the trend is not universal** | **corrects C-12/C-17/C-24** |
+| C-27 | **Countersignature trigger is not always a State line** | **schema-binding · refines C-8/12/15** |
+| C-28 | "No prescribed format" conflates three situations | **3rd correction to C-16** |
+| C-29 | Two mechanisms the taxonomy has no slot for | **new** |
+| C-30 | Identifier pattern: +RBSE, +WB, −Odisha | updates C-26 |
+| C-31 | **The RBSE "Helvetica cipher" was my misdiagnosis** | **correction to me** |
 
 ### What is actually still open
 
@@ -917,3 +922,129 @@ C-17 counted TN on a citation nobody had opened, and C-24 (mine) generalised a d
 from the cases that pointed one way. **Both are the same error the register keeps catching: a tally
 assembled from agreeing sources without going back for the disagreeing one.** The count is now
 stated with its instruments so the next revision can check it rather than inherit it.
+
+---
+
+## C-27 · The countersignature trigger is NOT always a State line — and this one has product bite
+
+*Added 2026-09-12 by `gap-closure-west-east.md` §3.5. Refines C-8/C-12/C-15.*
+
+C-12 and `boards-east-northeast.md` §2.2 both state the pattern as countersignature being
+*"condition-triggered by the pupil crossing a State line, never a standing requirement of the
+document."* **Four distinct triggers are now evidenced at [A], and only one of them is a state line:**
+
+| trigger | instance |
+|---|---|
+| **State line** | Goa r.116(2); Kerala; Puducherry; MH; GJ; DNHDD; Bihar s.272; JAC; NBSE |
+| **BOARD line** — *"बोर्ड के कार्य क्षेत्र से बाहर अर्थात अन्य बोर्ड/विश्वविद्यालयों से"* | **RBSE Anudeshika §1.7** |
+| **Document language** — a vernacular certificate needs a DEO-countersigned English attested copy | **RBSE Anudeshika §1.8(2)** |
+| **Institution type** — a school managed by a Social Welfare Organisation | **BSE Odisha admission form, field 07** |
+| **Unrecognised sending school** | Bihar Education Code s.280 |
+
+**The consequence is a schema consequence, not a note.** A rule engine keyed on
+`sendingState != receivingState` gets a common Rajasthan case wrong: **a CBSE school in Jaipur to an
+RBSE school in Jaipur is intra-State but inter-Board, and it triggers the full inbound gate** —
+eligibility certificate plus a DEO-countersigned TC.
+
+**The correct key is the sending BOARD/jurisdiction, with document language and institution type as
+additional triggers. Not the sending state.**
+
+Taken with C-26 (a global boolean is wrong in Himachal), countersignature now has **two** established
+ways to be modelled wrongly: as one flag, and as a state comparison.
+
+---
+
+## C-28 · "No prescribed format" conflates three legally distinct situations
+
+*Added 2026-09-12 by `gap-closure-west-east.md` §3.6. Third correction to C-16.*
+
+C-16 said Annexure-I was the only prescribed TC format; C-16c corrected that to "look to the state,
+not the board." **The negative is still too coarse — "no prescribed format" covers three situations
+with different legal consequences:**
+
+| situation | meaning | instances |
+|---|---|---|
+| **No format exists** | nothing prescribes the document's fields | MP, Chhattisgarh |
+| **A format exists and is published** | a citable form with mandatory fields | CBSE Annexure-I · Gujarat નમૂનો-૯ · MH Appendix Four · Kerala Form 5 · TN Appendix-5/5-A · WB Schedule II *(completion certificate)* |
+| **A format is legally MANDATORY but NOT PUBLISHED** | validity turns on a form whose text cannot be obtained | **Goa r.127** |
+
+**Goa r.127 is the clean third case and the corpus files it as a plain NOT FOUND, which understates
+it:** *"No leaving certificate is valid unless it is in the form prescribed by the Director of
+Education"* — with no form annexed. So **a Goa LC in a free-text layout is invalid on the face of the
+rule.** Offering a generic template to a Goa school is a compliance risk; the same template in MP is
+merely unregulated. Those cannot share a state in the model.
+
+**Action: the format model needs a `formatPrescribedButUnpublished` state**, and WB Schedule II
+belongs in the prescribed table scoped to the **completion certificate, not the TC**.
+
+---
+
+## C-29 · Two enforcement mechanisms the taxonomy has no slot for
+
+*Added 2026-09-12 by `gap-closure-west-east.md` §3.8.*
+
+C-12's taxonomy runs *human countersignature* → *printed verifiable identifier*. **Two further
+mechanisms are established at [A], and a two-category model has nowhere to put either.**
+
+**1 · The board-issued eligibility certificate, as a hard inbound gate.** **GBSHSE** — pupils
+*"shall be admitted to the institutions recognized only on production of eligibility certificate
+issued only by this Board"*. **RBSE** — *"पात्रता प्रमाण पत्र के अभाव में प्रवेश नहीं दिया जायेगा"*,
+carrying a **₹1,000 per-pupil penalty on the school and personal liability on the head** who admits
+without one. **Two independent jurisdictions, the same instrument, the same stage (+2 entry).**
+It is not a countersignature — nothing is endorsed on the pupil's TC — and not an identifier —
+nothing is printed on it. It is **a separate document the receiving board issues before admission may
+occur at all.**
+
+**2 · Return-to-issuer verification.** **RBSE §1.8(1)** — on an **intra-Board** transfer the
+receiving school must send the TC and marksheet **back to the issuing head**, obtain verification,
+and only then grant permanent admission. **No prior instance anywhere in the corpus**, and it is the
+only mechanism found that polices **intra-jurisdiction** transfers — precisely the case every
+state-line rule treats as needing no check at all.
+
+---
+
+## C-30 · Identifier pattern — two additions, one exclusion, and more evidence against a clean substitution
+
+*Added 2026-09-12 by `gap-closure-west-east.md` §3.7. Updates C-26.*
+
+- **ADD, RBSE [A]** — the Board issues a temporary/permanent affiliation number **plus a school code
+  and publishes both on its website** (cl.4(i), 8(iv), 9(iii): *"बोर्ड की वेब साईट पर भी प्रदर्शित
+  किया जाएगा"*). Board-published, therefore externally verifiable — the closest structural match in
+  the corpus to Karnataka's DISE-code substitution.
+- **ADD, West Bengal [A]** — Schedule II **cannot be completed without the school's Index number**.
+  But it **coexists with** an outbound counter-authentication rather than replacing it.
+- **EXCLUDE, BSE Odisha** — the WhatsApp/portal digitised-certificate service is **delivery of the
+  Board's own certificates**, gated by roll number + DOB + OTP. It verifies **a candidate's identity
+  to obtain their own certificate**; it does not let a receiving school verify a TC. Counting it
+  would overstate the pattern.
+
+**West Bengal is the second jurisdiction after Himachal where a printed identifier and a human
+countersignature coexist.** C-26 held that the substitution trend is real but not universal on one
+counter-example; it now has two, and the Odisha exclusion shows how easily the count inflates if
+"digital certificate service" is read as "verification mechanism."
+
+---
+
+## C-31 · The RBSE "Helvetica font cipher" was MY misdiagnosis, and it misdirected the remedy
+
+*Added 2026-09-12 by `gap-closure-west-east.md` §3.1.*
+
+I carried into the research brief, as fact, that RBSE's `hand_book16.pdf` *"embeds a legacy Devanagari
+font while declaring itself Helvetica"* — *"a substitution cipher that could be guessed at"*, needing
+*"OCR or a legacy-font mapping"*.
+
+**Direct inspection of the file's font table and image objects [A]:** creator **Canon**, **one image
+per page**, 38 pages, a single **Helvetica/WinAnsiEncoding** font. It is **a scan with a bad Latin OCR
+layer.** There is no embedded Devanagari font and no cipher — the garbage is an OCR engine's lossy
+Latin guess. The remedy is to **render the pages and read them**, which is what closed the gap.
+
+**The practical instruction was right and the reason was wrong**, and that combination is the
+dangerous one: *"do not guess at it"* saved the corpus from asserting a mis-transliterated clause, but
+*"needs a legacy-font mapping"* pointed at a fix that cannot work, and the same label had been applied
+to **two different defects**. The corpus separately records UBSE's recognition conditions as
+*"legacy Devanagari font declared as Helvetica"* — **that one may be the genuine article**, and RBSE
+publishes `MFDEV010.TTF` which is the mapping for that class only.
+
+**Action: re-diagnose every "Helvetica" entry individually** (`get_fonts()` + `get_images()`) and split
+the register into *"scan — needs rendering"* vs *"mis-declared font — needs mapping"*. They are not
+the same problem and they do not have the same fix.
