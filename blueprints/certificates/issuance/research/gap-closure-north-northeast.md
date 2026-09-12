@@ -1036,6 +1036,23 @@ and it displaces no countersignature.
 
 **No other CAPTCHA was encountered**, and none was solved or bypassed anywhere in this run.
 
+### Host access notes, for the next run
+
+- **BSEM: `https://` fails, `http://` works.** `https://bsem.nic.in` and `https://www.bsem.nic.in` time out;
+  **`http://bsem.nic.in/` returns 200.** The alternate domain **`bosem.in`** works over HTTPS. ⇒ *an
+  `ECONNREFUSED`/timeout on a `nic.in` host is worth retrying over plain HTTP and on an alternate domain before
+  being recorded as an access failure* — that single step reopened seven "unresolved gaps".
+- **Sikkim: several expected hosts are dead.** `sikkimeducation.gov.in`, `sikkimssa.gov.in`,
+  `samagrashiksha.sikkim.gov.in`, `sikkimarchives.gov.in` and `sscpcr.sikkim.gov.in` **all fail to resolve or
+  connect** (curl exit 000); `www.sikkim.gov.in/departments/human-resource-development-department` returns
+  **HTTP 500** — the live path is **`/departments/education-department`**. The working repository is
+  **`https://www.sikkim.gov.in/mygovernment/gazettes`**.
+- **A dating trap on an Evidence-B source the corpus may have over-weighted:** HRDD's RTI manual ch.6 lists
+  *"Sikkim State Education Act"* among the rules it holds — but **that manual is dated 3 December 2007**, i.e.
+  *before* the 2005 Act commenced and before RTE existed. **It cannot be read as a statement about the current
+  legal position.** Its ch.2 section-wise breakdown assigns private-school recognition to **no section at all**,
+  consistent with recognition having been a trade-licence matter at that date (§2.5.1).
+
 ---
 
 ## 5 · What this file should change in the product

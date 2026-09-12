@@ -1,6 +1,6 @@
 # Conflict register
 
-**43 entries, IDs unique.** They were not: successive research streams each appended without
+**45 entries, IDs unique.** They were not: successive research streams each appended without
 checking the highest number in use, so `C-9`, `C-19`, `C-20` and `C-16b` were each issued twice.
 The second of each is now `C-9a`, `C-19a`, `C-20a`, `C-16c`. **The `C-16b` collision was the
 damaging one — the two entries sharing that ID contradicted each other**, so a citation of "C-16b"
@@ -56,6 +56,8 @@ with their evidence** — the convenient one was never allowed to quietly win.
 | C-31 | **The RBSE "Helvetica cipher" was my misdiagnosis** | **correction to me** |
 | C-32 | **No "legacy Devanagari font" file exists — both are Canon scans** | **closes C-31's action** |
 | C-33 | **Per-section recognition established in the north at [A]** | **extends C-14 · schema-binding** |
+| C-34 | **The legacy-font class is real — it is Kruti Dev, and searchable** | **refines C-32 · method** |
+| C-35 | UPMSP — the negative narrows and still holds | narrowed NOT FOUND |
 
 ### What is actually still open
 
@@ -1127,3 +1129,84 @@ same instrument is revocable retroactively on a defect in how it was obtained. T
 to treat a document as proof of truth is the right shape; this is evidence for that design, not
 against it. **But a model that stores one `recognitionValid` per school cannot express "recognised
 for Science, not for Commerce", which UBSE grants and prices separately.**
+
+---
+
+## C-34 · The legacy-font class is real — but it is Kruti Dev, and it is fully searchable
+
+*Added 2026-09-12. Refines C-32.*
+
+C-32 concluded the category *"legacy Devanagari font declared as Helvetica"* was **empty**, because
+both files the corpus assigned to it are Canon scans. **That conclusion was right about those two
+files and wrong as a generalisation.** The class exists; the corpus had simply never identified a
+true member.
+
+**UPMSP's `NIRDESH_PUSTIKA_2026_PDF.pdf` is one [A]:**
+
+| | |
+|---|---|
+| pages | **101** |
+| creator / producer | `Microsoft® Word 2010` |
+| fonts | `ABCDEE+Kruti Dev 010`, `ABCDEE+Kruti Dev 016`, Calibri, Arial, Times, Symbol |
+| images | 6 (not a scan) |
+| text layer | **257,512 characters — real, extractable, complete** |
+| Kruti Dev pages | **99 of 101** |
+
+**Kruti Dev is a legacy Devanagari font that maps Devanagari onto Latin codepoints**, so
+`pdftotext` returns Latin gibberish — the same *symptom* the corpus attributed to a mis-declared
+Helvetica, from a completely different *cause*. And unlike a scan, **the text is right there.**
+
+### The practical consequence: these documents are searchable without OCR
+
+Devanagari terms have stable Kruti Dev spellings, so the raw extracted text can be grepped directly.
+Verified against this file **[A]** — every probe below returned page hits:
+
+| Kruti Dev | Devanagari | pages |
+|---|---|---|
+| `ijh{kk` | परीक्षा | 81 |
+| `fo|ky;` | विद्यालय | 52 |
+| `ftyk` | जिला | 42 |
+| `gLrk{kj` | हस्ताक्षर | 38 |
+| `izek.k` | प्रमाण | 13 |
+| `LFkkuk` | स्थाना | 5 |
+| `ekU;rk` | मान्यता | **1** |
+
+**101 pages were triaged in seconds, with no OCR, no font mapping and no rendering** — then the one
+page that mattered was rendered and read. This is strictly better than the corpus's recommended
+remedy for this class, and it should be the first thing tried on any Devanagari PDF returning Latin
+garbage: **check the font table; if it names Kruti Dev, grep the text layer.**
+
+---
+
+## C-35 · UPMSP — the negative NARROWS, and it is still a negative
+
+*Added 2026-09-12.*
+
+The corpus records: *"UPMSP — NOT FOUND — regulations exist but are not published online"*, with TC
+format, printed fields, countersignature, migration regulation and duplicates all NOT FOUND, and the
+standing instruction **"Do not assert a UPMSP TC-upload rule."**
+
+**That stands, and is now better founded.** The one substantial UPMSP document online was read
+(C-34), and its अनुक्रमणिका settles what it is **[A]** — 15 sections, all examination conduct:
+
+> general examination rules (pp. 5–51) · centre inspection report + CCTV certificate (52–56) · blank
+> answer-book stock register (57–58) · remuneration schedules (59–65) · seating maps (65–66) ·
+> distribution certificates (66–67) · collection form 3 (68) · souvenir (68–69) · art-paper
+> distribution (70–73) · मा0शि0प0 79 (74–82) · मा0शि0प0 80 (83) · question-paper envelope seals (84)
+> · supplementary paper demand (85) · subject/paper code list (86–95) · High School/Intermediate
+> combined exam schedule (96–101)
+
+**No section concerns transfer certificates, recognition, or certificate issuance.** The single
+`मान्यता` occurrence in 101 pages is incidental — page 48's centre-inspection form counts
+*"invigilators from other recognised institutions."*
+
+**So the negative is narrowed rather than closed:** UPMSP's certificate-facing rules are not merely
+un-found, they are **not in the one document that is online**. The Regulations under the
+Intermediate Education Act 1921 remain a printed volume.
+
+**This is the opposite outcome to RBSE**, and the contrast is the useful part. There, the
+equivalently-named booklet — the **अनुदेशिका** — *was* the student- and certificate-facing document
+and closed three open questions (C-31/§3.2). **An instruction booklet is not a document type with a
+consistent scope**: Rajasthan's carries admission, TC verification and countersignature rules;
+Uttar Pradesh's carries exam logistics. Neither can be inferred from the other's name, and the UP
+booklet should not now be cited as evidence that UPMSP *has* no TC rule — only that it is not there.
