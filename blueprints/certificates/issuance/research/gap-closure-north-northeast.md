@@ -38,7 +38,7 @@ each already partly located by earlier streams.
 | Authority | Who signs a TC | Countersignature + **DIRECTION** | Prescribed format | Recognition basis | Dues / withholding | Evidence |
 |---|---|---|---|---|---|---|
 | **Arunachal Pradesh Education Rules 2010** | NOT FOUND | NOT FOUND | NOT FOUND | Act ss.35–38; "competent authority" **notified**, may differ by area *and* class of institution (s.2(6)) | NOT FOUND | see §2.4 |
-| **Sikkim** | NOT FOUND | NOT FOUND | NOT FOUND | **Open question** — 2002 Education Act repealed; 1978 Board Act gives only *examination* recognition | NOT FOUND | see §2.5 |
+| **Sikkim** | **NOT FOUND** — no TC instrument exists in any Sikkim law. The only student certificate is the RTE **completion** certificate, r.23, issued *"at the school/block/district level"* — **a level, not a designation** | **NOT FOUND in BOTH directions** — nothing outbound, nothing inbound | **No TC format.** Institution forms **I–XVI** (2008 Rules) + RTE **Form No. 1 / No. II** | **Two-step, per class-range:** *registration* (s.10, Director School Education) **then** *recognition* (s.16, Secretary Education Dept), both banded Pre-Primary→XII by fee table. RTE track: 3 yrs, capped at Class VIII | No provision. Dues run **against the management** (r.23(4)), never the child; s.27(2) capitation ban | **A** |
 | **UBSE** (Uttarakhand) | **Not regulated by UBSE.** The Board regulates the TC only as an *inbound evidentiary document* | **YES, inbound/evidentiary — not an issuance gate.** Class-10 TC countersigned by **Block Education Officer or Chief Education Officer** (name correction) / **Chief Education Officer** (DOB correction), when submitted *to the Board* as proof | For corrections: **शुद्धि पत्र परिशिष्ट–ख** (Correction Letter, Appendix-"Kha"); **परिशिष्ट "क"** receipt appendix; **FORM-D-1**, **FORM-A**. **No TC proforma** | **Per examination, per stream (वर्ग) and per subject** — Regs 3–5, **Chapter 7**; Recognition Committee decides; **no validity term** | No provision found | **A** |
 | **BSEM** (Manipur) | **Not regulated by BSEM.** Act s.13(vi) is limited to certificates for *candidates passing examinations* | **NOT FOUND** — `countersign` returns **zero** in the Act and in the Manipur RTE Rules 2010 | **No TC proforma.** Recognition **FORM No. 1 / 2 / 3** | **Per stage, by Board notification**: permission to open IX → provisional → permanent. State recognition to VIII is a **precondition** | No provision found | **A** |
 | **MBOSE** (Meghalaya) | **"an Institution"** — r.1.2(xxiii) defines the TC as *"issued to a student by an Institution on seeking transfer to another Institution"*, naming **no officer**. Act s.12(vi) limits the Board itself to exam certificates; s.23(2) has **no TC head** | **YES — INBOUND ONLY**, three separate provisions. Other State/UT ⇒ countersigned by *"the competent authority of the respective State/Union Territory"*; other Board ⇒ *"the District School Education Officer of the concerned district"*. **Nothing requires a Meghalaya school to obtain a countersignature on a TC it issues** | **No TC proforma.** Annexures 1–4 exist but are **not in the published PDF** | **Affiliation is downstream of recognition, and is CONDITIONAL** (r.1.2(iii)); a *"recognised non-affiliated school"* is a distinct category (r.3.15(ii)) | No provision. r.8.2 withholding is of **results** only | **A** |
@@ -590,9 +590,254 @@ Smt in Board Certificate · Board Magazine 2017 · answer photo copy nirdesh for
 
 *(delegated stream — see §4 for what remains open)*
 
-### 2.5 · Sikkim
+### 2.5 · Sikkim — the open question CLOSES, and a corpus negative turns out to be false
 
-*(delegated stream — see §4 for what remains open)*
+> **The corpus's sharpest open question was: "what supplies operating recognition in Sikkim at all?"** — an
+> Education Act repealed and a board that only recognises for examinations left a gap nobody had identified.
+>
+> **It is answered. The 2002 Act was repealed *by a successor statute on the same subject*, which the corpus
+> never found because it is absent from India Code's Sikkim community entirely.** The operative regime is a
+> **four-document chain, all Evidence A**. And the corpus's *"Sikkim RTE Rules: searched-negative"* — supported
+> by an unusually rigorous controlled probe — **is a FALSE NEGATIVE. The Rules exist.**
+
+**I re-retrieved and re-verified every load-bearing document in this subsection myself**, because these findings
+contradict the established corpus position.
+
+| instrument | citation | status |
+|---|---|---|
+| **The Sikkim Education Act, 2005** (**Act No. 16 of 2005**) | Governor's assent **7 Sept 2005**; Law Dept Notification **No. 16/LD/2005** dt 8/10/05; *Sikkim Government Gazette Extraordinary* **No. 367**, Gangtok, **Thursday 20 October 2005** | **in force from 1 May 2008** |
+| commencement notification | **No. 430/Exam/HRDD** dt 9.5.2008; Gazette Extraordinary **No. 179**, Gangtok, **Tuesday 13 May 2008** | — |
+| **The Sikkim Education Rules, 2008** | **No. 67/07/Exam/HRDD-1** dt 16 July 2008; Gazette Extraordinary **No. 286**, Gangtok, Thursday 17 July 2008 | in force **1 October 2008** |
+| **The Right of Children to Free and Compulsory Education Rules, 2010** | **No. 06/GEN/ADM/HRDD** dt **09.08.2010**; Gazette Extraordinary **No. 411**, Gangtok, **Wednesday 11 August 2010** | in force on publication |
+
+**The method that broke it open, recorded because it will be needed again.**
+**`https://www.sikkim.gov.in/mygovernment/gazettes` is a searchable repository of 11,645 gazette records**,
+reachable by plain `curl`, with GET parameters `SearchTerm`, `deptId`, `ClassificationID`, `SDate` and pager
+`pageNo`. **Education Department = `deptId=3` → 444 records**; `ClassificationID=11` State Acts, `12` Statutory
+Rules. PDFs sit at `https://sikkim.gov.in/uploads/Gazette/{n}_{yyyymmdd}.pdf`. **None of the routes this
+programme had been using — India Code, the CCS RTE platform, Indian Kanoon — indexes it.**
+
+> ⚠️ **The lesson for the corpus's method, and it is uncomfortable.** The earlier Sikkim RTE negative was
+> established by a *controlled* probe: `Sikkim RTE Rules, 2011.pdf` returned byte-for-byte the same soft-404
+> page as a deliberately nonexistent control, while Punjab's returned a real 18 MB PDF. **That control was
+> sound and the inference was still wrong**, because it proved absence *from that host* and the document lives
+> in the State gazette repository. Note also the exact title carries **no "Sikkim" prefix** and the year is
+> **2010, not 2011** — so even a correct-host search for the corpus's guessed filename would have missed.
+> **A controlled negative bounds the avenue, never the universe.** The corpus said exactly this
+> (*"three avenues exhausted, none of them the State's own gazette"*) — and the missing avenue was the one
+> that mattered.
+
+#### 2.5.1 · Q1 — what supplies operating recognition: a two-step state regime, plus a separate RTE track
+
+**Track A — registration THEN recognition, under the 2005 Act.** [A — full text read, independently verified]
+> "**10.** (1) Save as otherwise provided in this Act, every private educational institution established on or
+> before the date of commencement of this Act or intended to be established thereafter shall, notwithstanding
+> anything contained in any other law for the time being in force, **be registered** in accordance with this Act
+> and the rules made thereunder. (2) **No person shall establish or as the case may be, run or maintain an
+> educational institution requiring registration under this section, unless such institution is so registered.**"
+>
+> "**Recognition. 16.** (1) **Recognition may be accorded to any educational institution registered under this
+> Act** in accordance with the provisions of this Act and the rules made thereunder. (2) The granting of
+> recognition shall be subject to fulfilment of the following conditions namely: (a) security deposit of the
+> prescribed amount…; (b) the Managing Committee shall possess or be assured of adequate funds to run the
+> institution on a stable footing; and (c) such other general or special conditions as may be prescribed…"
+
+**s.18(3) supplies the bite** — an unrecognised institution, or one whose recognition is withdrawn, shall not be
+entitled to *"(a) receive any grant-in-aid from the State funds…; (b) **send up or present candidates for
+examinations in courses of studies conducted by a Board or University or the Government.**"* [A]
+⇒ **Registration is the licence to exist; recognition is the licence to present candidates.** Structurally the
+same two-stage split as Manipur's 2017/2024 regime (§2.2), reached independently.
+
+**Track B — RTE Rules 2010, r.11** (elementary only): self-declaration in **Form No. 1** to the **district Joint
+Director** within three months; public posting in 30 days; on-site inspection within three months; r.11(4)
+conforming schools *"shall be granted recognition by the **Director, School Education, in Form No. II** within a
+period of 30 days from the date of inspection"*; **r.11(6)** *"Schools which do not conform … within three years
+from the commencement of the Act, shall cease to function."* [A]
+
+**And a genuinely striking piece of history — what the regime replaced.** s.77, verified verbatim: [A]
+> "**Repeal and Saving 77.** (1) **The Sikkim Education Act., 2002 is hereby repealed.** [marginal note: *11 of
+> 2002*] (2) On and from the date of commencement of this Act, all rules notifications and orders **including
+> the Sikkim Trade License and Miscellaneous Provisions Rules, 1985 so far as it relates to issue of Trade
+> license to Private Educational Institutions shall stand repealed.** (2) Notwithstanding such repeal, all
+> actions taken under such rules, orders and notifications before such commencement shall be deemed to have
+> been taken under the corresponding provisions of this Act."
+
+⇒ **Before 1 May 2008, a private school in Sikkim operated on an Urban-Development TRADE LICENCE, not an
+education-department recognition at all.** That is why the earlier stream found no recognition officer and why
+HRDD's own 2007 RTI manual assigns private-school recognition to no section: at that date it genuinely belonged
+to nobody in the education department. **This also resolves the repeal question the corpus left at Evidence B** —
+the repealing instrument is s.77 of the 2005 Act, operative **1 May 2008**.
+
+Relatedly, **Sikkim Education Rules 2008 r.3(5)** required existing institutions to surrender the *"Provisional
+No Objection Certificate"* in original, and *"Except for institutions which have been already affiliated to
+Central Board of Secondary Education or any other Board recognized by the State Government, such No Objection
+Certificates issued by the Department **shall become null and void** from the date of notification of these
+rules."* [A]
+
+#### 2.5.2 · Q2 — the officers, named at last
+
+The Act deliberately does not name them: **s.2(c) "competent authority"** and **s.2(r) "registering authority"**
+are both defined as *"any person, officer or authority authorized by the State Government … for such area or
+for such purposes"* — **the C-5 pattern again**. The naming notification was located and I verified it:
+
+> Gazette Extraordinary **No. 461**, Gangtok, **Saturday 4 October 2008**; Govt of Sikkim, HRDD;
+> **Ref: SER/HRDD/08/02, Dated: 6.9.08** — *"Under the provision of clause (c) of section 2 of Sikkim Education
+> Act 2005 and rules thereto, Human Resource Development Department, Government of Sikkim, hereby appoints
+> **Secretary, H.R.D. Department, as the Competent Authority** and under the provision of clause (r) of section
+> 2 of the Act, **Director (School Education) is appointed as the Registering Authority**."*
+> — **G.B. Niraula, Joint Director (Exams)** · **Evidence A, verified**
+
+| step | officer | form | validity / renewal |
+|---|---|---|---|
+| Registration (existing) | **Director (School Education)** | application **Form I**; certificate **Form III** (carries "Registration No." and **"Classes permitted"**) | no expiry stated |
+| Registration (new) | same | **Form II**, filed by **September of the preceding year** | — |
+| Up-gradation | same | **Form IV** → certificate **Form V**; original withdrawn | — |
+| Change intimation / register | same | **Form VI**, reply **Form VII**; register in **Form VIII** | — |
+| **Permanent recognition** | **Secretary, HRD (now Education) Department** | application **Forms XII & XIII**; grant **Form XIV** | **permanent**; auto-cancels under r.30(2) if an r.24 condition is breached and not cured within **90 days** |
+| **Provisional recognition** | same | **Form XV**, renewal **Form XVI** (apply **60 days** before expiry) | **1 year**, renewable annually, **max 5 years**; *"The educational institution **shall not admit any fresh batch of students** during the period of such provisional recognition"* |
+| Refusal / withdrawal | same | r.29 refusal; r.31 withdrawal with **30-day** representation | r.32 lets the Competent Authority *"overrule any or all the rules from rule 3 to rule 31, provided that the institution shall continue to function in the public interest"* |
+| Tutorial institutions *(separate track)* | Registering Authority | **Form IX** (new, ≥30 days ahead), **Form X** (existing, within 90 days), certificate **Form XI** | auto-cancels if not started within 12 months |
+
+**RTE track:** grant by **Director, School Education** in **Form No. II**; withdrawal initiated by the **district
+Joint Director, HRDD** (r.12), routed through the **Sikkim Commission for Protection of Child Rights** → the
+**Secretary, HRDD** decides → the Joint Director passes the order, *"operative from the immediately succeeding
+academic year"*, specifying *"the neighbourhood schools to which the children of the de-recognized schools shall
+be admitted."* [A]
+
+**Live designations have since moved, and the appointment notification has not caught up.** Gazette
+Extraordinary **No. 298**, Gangtok, 21 October 2021, Education Department **No. 26/ADM/EDN dt 30/09/2021**,
+signed **G.P. Upadhyaya, IAS, Additional Chief Secretary**: the Revenue District head *"shall be designated as
+**'Chief Education Officer'**"* (not below Additional Director), and each Revenue Sub-Division is an *"Education
+District"* headed by an officer not below Joint Director. [A] The department is now the **Education Department**,
+not HRDD. ⚠️ **No notification re-designating the s.2(c)/(r) authorities after the rename was found** — the 2008
+appointment stands on its face but names an office title that no longer exists verbatim. Registered in §4.
+
+#### 2.5.3 · Q3 — recognition basis: PER CLASS-RANGE, decisively
+
+Both tracks scope the grant to a class band **and price it by band** — the strongest per-class-range evidence the
+corpus has for any state.
+
+**Sikkim Education Rules 2008, Table 3 (recognition security deposit, r.23(1))** — note the explicit
+*"Classes permitted up to"* column: [A]
+
+| classification | classes permitted up to | security deposit |
+|---|---|---|
+| Pre-Primary School | below I | ₹5,000 |
+| Primary School | V | ₹10,000 |
+| Junior High School | VIII | ₹20,000 |
+| Secondary School | X | ₹30,000 |
+| Sr. Secondary School | XII | ₹50,000 |
+
+**Table 1 (registration fee, r.3(8))** bands identically: Pre-Primary ₹5,000 · Primary ₹7,000 · Junior High
+₹10,000 · Secondary ₹15,000 · Senior Secondary ₹20,000. **Form III and Form XIV both carry a "Classes
+permitted" entry**; moving up a band needs a fresh **Form IV** paying the fee *difference* and a replacement
+**Form V**. **Act s.19(5)**: a change of Managing Committee or location requires *"a fresh application for
+recognition … as if it were a newly started institution"* — **the premises/management-event rule of C-4, again.**
+
+**RTE Form No. II is more explicit still**, and it is the MHRD template the corpus already knows from Meghalaya,
+Assam and Tripura: [A]
+> "I convey the grant for provisional recognition to the ________ **for Class ______ to Class ______ for a period
+> of three years w.e.f. ______ to ______.**"
+> "1. The grant for recognition is **not extendable** and does not in any way imply any obligation to
+> recognize/affiliate **beyond Class VIII**."
+
+⇒ **On the RTE track: class-range-scoped, three-year validity, hard-capped at Class VIII** — and **C-6 confirmed
+from yet another state: the validity term is in the FORM, not the rule body.**
+
+#### 2.5.4 · Q4–Q7 — TC, countersignature, format, dues: a clean, well-bounded negative
+
+**No Sikkim instrument contains any transfer-certificate, school-leaving-certificate or migration-certificate
+provision, and none names a signatory for one.** [A — full operative text read in each case]
+
+I independently confirmed the strongest limb: across the **complete text of the Sikkim Education Act 2005**,
+`transfer certificate`, `leaving certificate`, `countersign`, `migration certificate` and `dues` all return
+**zero**. Its **s.76(2)** rule-making heads (i)–(xxix) include *"(xxii) the regulations for admission into
+educational institutions of pupils"* and *"(xxiii) the manner of conducting the class and terminal examination
+and promotion of pupils"* — **but no head for a leaving or transfer certificate.** The only certificate head is
+*"(xxvii) the scale of fees or charges … payable in respect of any certificate, permission, marks lists or other
+document."*
+
+- **Sikkim Education Rules 2008** — rr.1–32 and **Forms I–XVI** inventoried in full. **No TC rule, no TC form.**
+  Nearest adjacent is r.17, requiring *tutorial* institutions to keep a *"register of admissions and withdrawal
+  of pupils"* — a register, not a certificate, and not for schools.
+- **RTE Rules 2010** — rr.1–26 read. The only student certificate is **r.23, "Award of certificate for the
+  purposes of section 30"**: *"(1) The Certificate of completion of elementary education shall be issued **at the
+  school/block/district level** within one month of the completion of elementary education."* ⇒ a **completion**
+  certificate, and note it names **no designation — only a *level***. Contrast Manipur r.23, which names the
+  head teacher and adds the recognition-number stamp (§2.2.5): **same MHRD template, materially different
+  local text.**
+- **Sikkim Board of School Education Act 1978** — no TC provision; certificate powers are exam-only, and *"the
+  Secretary shall, on behalf of the Board, issue under his signature, certificates to successful candidates."*
+- **The repealed Sikkim Education Act 2002** — read; **it had no TC provision either**, so nothing was lost in
+  the repeal. ⚠️ ss.7 and 8(1) sit on a gazette page **physically missing from India Code's scan** (p.4 absent,
+  pp.3 and 5 present); **their content was not guessed.**
+
+**Q5 Countersignature — NOT FOUND, and therefore direction is undeterminable.** Stated with the precision the
+programme requires: **nothing outbound** (no requirement that a TC a Sikkim school issues be countersigned) and
+**nothing inbound** (no requirement that a certificate presented at admission from outside Sikkim carry any
+official signature). The only inbound document requirement found concerns **schools, not students** — Rules 2008
+r.3(3): *"In case the Promoters or the Members of the Managing Committee are residents of other States or foreign
+nationals, clearance from Home Department, Government of Sikkim, must be produced along with the application for
+registration."*
+
+**Q6 Format — no TC format.** Formats are prescribed extensively in Sikkim, but **only for institutions**:
+Forms I–XVI under the 2008 Rules (r.2(1)(b) *"'Form' means a form appended to these rules"*), and RTE **Form
+No. 1** / **Form No. II** with a **Schedule** of norms and an **Annexure "III"** (r.2(2) references *"forms set
+out in Appendix I"*). **No numbered form, schedule or appendix for a transfer or leaving certificate exists.**
+
+**Q7 Dues — no rule in either direction.** What the statute does say about money is adjacent and useful:
+**s.27(2)** *"no money shall be collected before, during or after admission of any person by any educational
+institution as a condition precedent to such admission except towards the prescribed fees"* (capitation ban);
+**s.6(1)(f)** makes fee-setting a **State** power; **r.23(4)** lets the security deposit be applied to *"any dues
+payable by the management"* — **dues run against the management, never against the child**; and **RTE Form No. II
+cond. 7(i)** *"No child admitted shall be held back in any class or expelled from school till the completion of
+elementary education."* **No Sikkim court ruling or circular limiting TC-withholding was found** (Indian Kanoon
+silence treated as weak, per the standing warning).
+
+**A reproducible gazette-side negative, with working controls.** Against all 11,645 records:
+`"ZZQQXNONSENSE"` → **No Record** *(control)*; `"certificate"` → 38, `"transfer"` → 59, `"recognition"` → 3,
+`"trade licence"` → 6 *(search demonstrably works)*; then **`"Transfer Certificate"` → No Record**,
+**`"leaving certificate"` → No Record**, **`"migration certificate"` → No Record**, **`"dues"` → No Record**.
+The HRDD site's own gazette list (45 records, 2010–2021, all five pages — its ASP.NET `ddlPages` postback was
+cracked) and its Office Order list likewise carry nothing on TCs.
+⚠️ **The stated limit of that negative:** the repository searches each record's **abstract, not the PDF text**.
+A TC clause inside a gazette whose abstract omits the phrase would not surface. **No TC provision was found;
+that is not proof none exists.**
+
+#### 2.5.5 · Q8 — UDISE+: Sikkim is a NEGATIVE data point for the pattern
+
+Sikkim has **school-level** identifiers, but **nothing ties any of them to a student certificate or uses one in
+place of a human check.**
+- **RTE Form No. II, cond. 16:** *"The recognition Code Number allotted to your school is ________. This may
+  please be noted and quoted **for any correspondence with this office**."* [A] — explicitly scoped to
+  departmental correspondence. **The same condition number and wording as Meghalaya's Form II cond. 16** already
+  in the corpus, which confirms it is MHRD boilerplate rather than a state policy choice — **a useful correction
+  to how much weight that clause can bear anywhere.**
+- **Forms III and XIV** carry a *"Registration No."* plus *"registered at Sl. No. ___ at Page No. ___ of Volume
+  No. ___ of the Register of Private Educational Institutions"* — **an entirely paper register** under r.8
+  (*"Every such register shall be firmly bound and given running folio numbers"*).
+- **`"UDISE"` and `"school code"` both return No Record** across all 11,645 gazette entries, against working
+  controls. HRDD's school-data form **Format No. 4(A)/EDU** has **no school-code field at all**; field 22 is a
+  free-text *"Recognized Yes / No — if Yes, Recognized by"*, and field 29 lists **"Un-recognized"** as a live
+  category.
+
+⇒ **Sikkim does not join the printed-identifier pattern.** With the three authorities in §2.1–§2.3 also
+negative, **this run adds no member to it and weakens one of its supports** (see §3).
+
+#### 2.5.6 · A trap for the next researcher, and a new open item
+
+⚠️ **Do NOT cite the "Sikkim Education Rules, 2007"** (No. 274/EXAM/HRDD dt 26.12.07, Gazette No. 556,
+31 Dec 2007) **as operative.** It is **previous publication under s.76(1) only — a draft, not law.** Its r.1(2)
+leaves commencement to a future notification, and the 2008 notification recites *"whereas no views or suggestions
+were received before the expiry of the aforesaid period"* before making the final rules. **Both turn up under a
+search for "Sikkim Education Rules".** [A]
+
+⚠️ **NEW OPEN ITEM — The Sikkim Primary Education Act, 2000** (Act No. 14 of 2000; assent 28 June 2000; Law Dept
+Notification 14/LD/2000 dt 30.6.2000; Gazette No. 226, 1 July 2000) — *"An Act to provide for free and compulsory
+primary education for children in the State of Sikkim"*, with an "attendance authority" and attendance-order
+machinery. **It is NOT on the repealed register and is NOT repealed by s.77 of the 2005 Act.** Its own s.1(2) is
+a deferred commencement whose notification was not found. **Whether it is in force, and how it interacts with the
+2005 Act and RTE, is unresolved.** It contains no TC provision. [A]
 
 ---
 
@@ -646,6 +891,43 @@ page is a web rendering that is **demonstrably truncated** (it stops mid-documen
 artefact of the truncation rather than a substantive disagreement, **but not resolved**, because the clause that
 would establish the third stage is in the unpublished portion.
 
+### C-19a · RESOLVED — Sikkim's operating-recognition question, and a corpus negative overturned
+
+**C-19 asked: "what supplies operating recognition in Sikkim at all?"** Two limbs now close and one corpus
+finding is overturned outright.
+
+| corpus position | status after this run |
+|---|---|
+| *"What now supplies the operating-recognition regime in Sikkim is therefore unknown — presumably the central RTE Act s.18 plus state rules or executive orders."* | **ANSWERED.** The **Sikkim Education Act, 2005 (Act 16 of 2005)** + **Sikkim Education Rules, 2008** — a two-step *registration → recognition* regime. The guess ("presumably RTE s.18 plus…") was **half right**: RTE r.11 runs in parallel but only to Class VIII. **Evidence A** |
+| *"'No Education Act' is EXPLAINED, not confirmed — the Sikkim Education Act 2002 has been repealed"* (Evidence B, repeal date and instrument not obtained) | **UPGRADED to Evidence A**, with both missing facts: repealed by **s.77(1) of the 2005 Act**, operative **1 May 2008** (Gazette No. 179). The 2002 Act was **Act 11 of 2002** |
+| *"Sikkim RTE Rules: searched-negative, not confirmed absence"* — supported by a controlled probe | **⚠️ FALSE NEGATIVE. The Rules EXIST**: *"The Right of Children to Free and Compulsory Education Rules, 2010"*, Gazette Extraordinary **No. 411**, 11 Aug 2010, No. 06/GEN/ADM/HRDD. **Evidence A, independently verified** |
+| *"(c) No recognition officer identified — STILL OPEN"* | **CLOSED.** Gazette No. 461, 4 Oct 2008: **Secretary, HRD Dept = Competent Authority**; **Director (School Education) = Registering Authority** |
+
+**And an answer nobody asked for that explains the whole puzzle:** before 1 May 2008 a Sikkim private school ran
+on an **Urban-Development trade licence**, not an education recognition — s.77(2) repealed the *Sikkim Trade
+License and Miscellaneous Provisions Rules, 1985* "so far as it relates to issue of Trade license to Private
+Educational Institutions." **That is why no recognition officer existed to be found.**
+
+**The methodological correction matters more than the facts.** The earlier negative rested on a genuinely
+rigorous *controlled* probe — and was still wrong, because the control bounded the **host**, not the world.
+**Record the rule: a controlled negative licenses "absent from this avenue", never "does not exist."** The
+earlier stream in fact said so; the conclusion drifted stronger than its own caveat.
+
+### C-29 · Sikkim: who grants RTE recognition — the rule and its own form disagree
+
+**RTE Rules 2010, r.11(4)** says recognition is granted *"by the **Director, School Education**, in Form No. II"*.
+But **the printed Form No. II template in the same gazette is subscribed "Joint Director, Human Resource
+Development Department, District: ______"**, and its opening line conveys ***provisional*** recognition, not the
+recognition r.11(4) describes.
+
+**Both limbs are Evidence A and sit in the same instrument. Not resolvable from the text.**
+
+This is **C-6 with a twist**: the corpus's rule is "the form governs in practice, so prefer the form." Here the
+form and the rule name **different officers and different grants**, so that tie-breaker gives the wrong kind of
+answer. **Surface both; default neither.** Note the same MHRD Form-II template produced a Meghalaya
+rule-vs-form conflict on *validity* (corpus gap #66) — **the template itself is the common cause**, which
+suggests checking it wherever it was adopted rather than treating each state's conflict as local.
+
 ### C-16c · The "no board prescribes a TC format" negative is CONFIRMED — and for MBOSE it is now a strong negative, not an absent document
 
 The corpus's C-16 family rests in several places on *not having found* a board's regulations. **For MBOSE that
@@ -671,15 +953,27 @@ Second, **it replaces nothing**: Manipur had no countersignature requirement to 
 instance of an identifier *displacing* a human check. **The identifier is the recognition-certificate number, not
 UDISE+.**
 
-### On UDISE+ specifically — a negative across all three authorities I closed
+### On UDISE+ specifically — a four-jurisdiction negative, and the pattern's support WEAKENS
 
 `UDISE`, `APAAR` and `DigiLocker` return **zero** occurrences in the MBOSE Regulations, in the BSEM Act, and in
-the Manipur RTE Rules 2010; nothing in the UBSE instruments references any of them either. **In these three
-jurisdictions UDISE+ is NOT used as a substitute for a human verification step.** MBOSE in particular still
-requires a live human countersignature on an inbound TC while carrying DigiLocker branding on its website —
-**the portal chrome and the regulations have not converged.** The corpus's "five jurisdictions replace
-countersignature with a verifiable identifier" pattern **gains no new member here**, and Manipur's r.23
-identifier (C-12a) is not one.
+the Manipur RTE Rules 2010; nothing in the UBSE instruments references any of them; and in Sikkim `"UDISE"` and
+`"school code"` return **No Record** across all 11,645 gazette entries against working controls. **In all four
+jurisdictions closed here, UDISE+ is NOT used as a substitute for a human verification step.**
+
+MBOSE is the sharpest case: it **still requires a live human countersignature** on an inbound TC while carrying
+**DigiLocker branding on its own website** — *the portal chrome and the regulations have not converged.* And
+UBSE's answer to "how do I authenticate this?" is a **published standing certificate** (§2.3.4), not a
+per-document code.
+
+**The corpus's "five jurisdictions replace countersignature with a verifiable identifier" pattern gains no new
+member here — and one of its supports is now weaker.** Both **Sikkim's** and **Meghalaya's** RTE Form No. II
+carry *"The recognition Code Number allotted to your school is ___ — this may please be noted and quoted for any
+correspondence with this office"* at **the same condition number (16) in the same words**. ⇒ **that clause is
+MHRD boilerplate, not a state policy choice**, and it is expressly scoped to *departmental correspondence*, not
+to printing on a student's certificate. **Wherever the corpus reads a Form-II code-number clause as evidence of
+the printed-identifier pattern, it is reading the template rather than the state.** Manipur's r.23 stamp (C-12a)
+is a real, state-drafted identifier mandate — but it attaches to the elementary completion certificate, not a TC,
+and it displaces no countersignature.
 
 ---
 
@@ -697,7 +991,8 @@ identifier (C-12a) is not one.
 | 6 | **MBOSE: a TC proforma** | full text of the 43-page Regulations searched; no proforma, and no annexure is a TC |
 | 7 | **MBOSE: HSSLC (Class XII) Examination Regulations** | the **entire 253-row notice index across all 13 pages**, plus the latest-news index, enumerated and regex-matched; **exactly two rows matched, both the SSLC instrument** |
 | 8 | **All three: any withholding-for-dues rule** | `dues` = 0 in the MBOSE Regulations, the BSEM Act and the Manipur RTE Rules; nothing in the UBSE instruments. **MBOSE r.8.2 withholds *results*, not certificates, and not for money** |
-| 9 | **All three: UDISE+/APAAR/DigiLocker in the rule text** | zero occurrences; see §3 |
+| 9 | **All four: UDISE+/APAAR/DigiLocker in the rule text** | zero occurrences; see §3 |
+| 9a | **Sikkim: any TC / leaving-certificate / countersignature / dues provision** | full text of the **Sikkim Education Act 2005** (`transfer certificate`, `leaving certificate`, `countersign`, `migration certificate`, `dues` = **0**, independently re-verified), the **2008 Rules** rr.1–32 + **Forms I–XVI**, the **RTE Rules 2010** rr.1–26, the **1978 Board Act**, and the repealed **2002 Act**; plus the 11,645-record gazette repository with working controls (see §2.5.4 for the exact control results **and the stated abstract-only limit**) |
 
 ### Documents that EXIST but are not published — each with a precise request
 
@@ -709,6 +1004,11 @@ identifier (C-12a) is not one.
 | 13 | **Manipur RTE Rules 2010 — the Appendix (Form No. 1, Form No. II) and the Schedule** | r.2(2) makes all form references point to an Appendix; the gazette text **ends at printed p.15** with the Commissioner's signature | Request **Manipur Gazette Extraordinary No. 337 dated 22 October 2010** *in full* from the Directorate of Printing & Stationery, Government of Manipur, or the Education(S) Department, citing Notification **No. 30/39/10-SE(S)**. **Form No. II is where the recognition validity term would sit (C-6)** |
 | 14 | **BSEM's recognition conditions beyond clause 10, and the withdrawal procedure** | The web page's own preamble promises *"conditions for recognition of schools **and withdrawal thereof**"*, and cl.1(iii) promises a provisional-recognition stage — **the page stops at clause 10** | Request the full text of the conditions approved by **Board resolution No. 6 dated 13-7-2000 as amended on 30-07-2009** from the **Secretary, Board of Secondary Education, Manipur** |
 | 15 | **MBOSE's repealed predecessor SSLC Regulations** | r.9.3 repeals them but **neither names nor dates them** | Ask MBOSE Tura for the superseded edition, to establish what changed — particularly whether the inbound countersignature is new, tightened, or long-standing |
+| 15a | **Sikkim: any TC circular / office order / executive instruction** — the gap the statutes leave. Sikkim regulates *institutions* exhaustively and *student certificates* not at all, so if a TC practice exists it is sub-legislative | **RTI to the State Public Information Officer, Education Department, Tashiling Secretariat, Gangtok – 737101**, and to the **District Joint Directors (Education)** — designated PIOs in all districts. Ask precisely: *"Any circular, office order, executive instruction or prescribed format governing issue of Transfer / School Leaving Certificates by schools in Sikkim — who signs; whether countersignature by any officer is required and on incoming or outgoing certificates; and any instruction on withholding a TC for unpaid fees."* Application form: <https://education.sikkim.gov.in/GeneralSection/UploadedFiles/RTI/RTIApplication.pdf> |
+| 15b | **Full-TEXT search of the Sikkim gazette** (the repository indexes **abstracts only**, which bounds the §2.5.4 negative) | **The single highest-yield unclosed avenue in this file.** Bulk-download the **444 `deptId=3` records** from `https://www.sikkim.gov.in/mygovernment/gazettes` (PDFs at `https://sikkim.gov.in/uploads/Gazette/{n}_{yyyymmdd}.pdf`) and OCR them. Every Sikkim gazette scan from 2007 on is **image-only**. ⚠️ **macOS Vision cannot do this** — these are English scans, so Vision *would* work where the text is English, but no OCR was run over the bulk set in this run |
+| 15c | **Sikkim: re-designation of the s.2(c)/(r) authorities after the HRDD → Education Department rename** | The 2008 appointment (Gazette 461) names *"Secretary, H.R.D. Department"* and *"Director (School Education)"*; HRDD no longer exists under that name, and the 2021 restructuring created **Chief Education Officers** | Gazette search `deptId=3`, `ClassificationID=13` (Constitutional & Statutory Appointments); or the RTI in 15a |
+| 15d | **Sikkim: status of the Sikkim Primary Education Act, 2000** (Act 14 of 2000) | **Not repealed** by s.77 of the 2005 Act and **not on the repealed register**; its s.1(2) commencement notification was not found | Law Department, Gangtok; or gazette search by `SDate` 2000–2002 with the Law Department `deptId` |
+| 15e | **Sikkim: commencement notification for the Board of School Education Act, 1978** | `"Board of School Education"` → **1 record only**, the Act itself (Gazette 138, 26 Sept 1978). **Whether the 1978 Board was ever constituted remains open, with no affirmative evidence either way** | Try **Old Durbar Gazette Notifications** at <https://www.sikkim.gov.in/mygovernment/olddurbargazettes>, and the Law Department for the s.1(2) notification under Act 19 of 1978 |
 
 ### Method limitations that shaped this run — disclosed so the gaps are reproducible
 

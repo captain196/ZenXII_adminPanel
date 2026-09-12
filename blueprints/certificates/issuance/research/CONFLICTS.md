@@ -1,6 +1,6 @@
 # Conflict register
 
-**41 entries, IDs unique.** They were not: successive research streams each appended without
+**43 entries, IDs unique.** They were not: successive research streams each appended without
 checking the highest number in use, so `C-9`, `C-19`, `C-20` and `C-16b` were each issued twice.
 The second of each is now `C-9a`, `C-19a`, `C-20a`, `C-16c`. **The `C-16b` collision was the
 damaging one — the two entries sharing that ID contradicted each other**, so a citation of "C-16b"
@@ -54,6 +54,8 @@ with their evidence** — the convenient one was never allowed to quietly win.
 | C-29 | Two mechanisms the taxonomy has no slot for | **new** |
 | C-30 | Identifier pattern: +RBSE, +WB, −Odisha | updates C-26 |
 | C-31 | **The RBSE "Helvetica cipher" was my misdiagnosis** | **correction to me** |
+| C-32 | **No "legacy Devanagari font" file exists — both are Canon scans** | **closes C-31's action** |
+| C-33 | **Per-section recognition established in the north at [A]** | **extends C-14 · schema-binding** |
 
 ### What is actually still open
 
@@ -1048,3 +1050,80 @@ publishes `MFDEV010.TTF` which is the mapping for that class only.
 **Action: re-diagnose every "Helvetica" entry individually** (`get_fonts()` + `get_images()`) and split
 the register into *"scan — needs rendering"* vs *"mis-declared font — needs mapping"*. They are not
 the same problem and they do not have the same fix.
+
+---
+
+## C-32 · There was never a "legacy Devanagari font" file — BOTH candidates are Canon scans
+
+*Added 2026-09-12. Closes the action C-31 left open.*
+
+C-31 established that RBSE's `hand_book16.pdf` was a scan, not a font cipher, and left an action:
+re-diagnose every *"Helvetica"* entry individually, because the corpus separately recorded UBSE's
+*General and Compulsory condition for Recognition* as *"legacy Devanagari font declared as
+Helvetica"* — **"that one may be the genuine article."**
+
+**It is not.** Direct inspection **[A]**:
+
+| | RBSE `hand_book16.pdf` | UBSE recognition conditions |
+|---|---|---|
+| creator | `Canon` | **`Canon SC1011`** |
+| producer | — | **`MP Navigator EX`** |
+| pages / images | 38 / one per page | **11 / 11** |
+| fonts | single `Helvetica/WinAnsiEncoding` | **single `Helvetica/WinAnsiEncoding`** |
+| text layer | Latin OCR garbage | **23,601 chars of Latin OCR garbage** |
+
+**Same defect, same scanner software, same wrong diagnosis.** The category "legacy Devanagari font
+declared as Helvetica" is **empty** — no file in the corpus is an instance of it. `MFDEV010.TTF`
+would not have helped either document.
+
+**The remedy for both is to render the pages and read them**, which is how the UBSE instrument was
+read (§ `ubse-recognition-conditions.md`). Every gap that cited this diagnosis as the reason a
+document was unobtainable should be reopened — **the corpus abandoned at least two primary
+instruments on a font theory that was never true of either.**
+
+**The lesson is narrower than "check your diagnosis."** The original inference — garbled Devanagari
+in a PDF claiming Helvetica means a mis-declared legacy font — is *a reasonable inference*. It was
+stated once, then **cited as established by later streams**, and the corpus's honesty rule
+("do not guess at the clause") protected the *content* while letting the *diagnosis* harden
+unexamined. A wrong reason that recommends the wrong remedy is more expensive than an admitted gap,
+because it makes the gap look closed-by-impossibility.
+
+---
+
+## C-33 · Per-section recognition, established in a NORTHERN state at [A] — twice over
+
+*Added 2026-09-12. Extends C-14.*
+
+C-14 is my own correction, recording that I over-generalised per-section recognition from one
+Telangana order and could confirm it in **only 2 of 8 southern states**. **UBSE now establishes it
+outside the south, on two independent mechanisms in one instrument [A]:**
+
+**By fee** (Reg 3(ख)) — first Intermediate recognition ₹10,000; **any additional वर्ग ₹5,000**;
+one-time recognition **₹10,000 per वर्ग**; **₹2,500 per subject**, minimum ₹5,000.
+
+**By evidence burden** (Reg 5(ढ)) — an additional stream or subject requires *"विद्यालय के विगत दो
+वर्षों का इण्टरमीडिएट परीक्षा वर्षवार पृथक-2 परीक्षाफल"* — **the school's own last two years of
+Intermediate results, year by year, separately.**
+
+**A school is therefore never simply "UBSE-recognised."** It holds recognition for a stage, for
+particular streams, and for particular subjects — each bought separately and each earned separately.
+Reg 9 adds that no school is recognised **directly for classes 11–12**, so the grant is also
+stage-laddered.
+
+**Two conditions found alongside it that no stream had anticipated:** recognition is granted **only
+for Hindi-medium teaching** (Reg 8), and the society's registration must be **currently renewed**
+(Reg (क)1) — so the *society's* standing is a live component of the school's entitlement, not
+background paperwork.
+
+**And recognition is withdrawable on a false particular** (Reg 5(थ)): the manager's ₹10 stamp-paper
+affidavit accepts that a false annexure or particular may cause the granted recognition to be
+**प्रत्याहरित** (withdrawn), with **personal liability under the IPC 1860**. That is **C-4 on a new
+instrument, in its sharpest form** — the triggering event is a false statement in the school's own
+application, and the consequence reaches a named individual.
+
+**Consequence for `Issuer_identity`.** The `EVIDENCED` rung means "the affiliation instrument is on
+file." Uttarakhand shows an instrument on file is **not** proof of a subsisting entitlement — the
+same instrument is revocable retroactively on a defect in how it was obtained. The ladder's refusal
+to treat a document as proof of truth is the right shape; this is evidence for that design, not
+against it. **But a model that stores one `recognitionValid` per school cannot express "recognised
+for Science, not for Commerce", which UBSE grants and prices separately.**
