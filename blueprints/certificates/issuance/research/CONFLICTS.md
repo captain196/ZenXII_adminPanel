@@ -712,3 +712,85 @@ Schools (Regulation) Rules 2023, r.18**, which contains **no withholding power a
 - **Goa RTE Rules 2012** — could not be retrieved from any host, so the 1986/2012 conflict was
   never compared directly. The 1986 Rules do carry an **express power under r.36 for the Director
   to authorise a subordinate**, which plausibly explains the Deputy Director. **Record both.**
+
+---
+
+## C-23 · The Maharashtra GR is CAPTCHA-gated — a human-only gap, not an unreachable one
+
+The gap-closure stream recorded this as *"reachable but its GR search is an ASP.NET WebForms POST
+requiring a scraped `__VIEWSTATE`"*. That was half the picture. Scraped directly on 2026-09-12:
+
+`gr.maharashtra.gov.in/1145/Government-Resolutions` **is** ASP.NET WebForms — `__VIEWSTATE`,
+`__EVENTVALIDATION` and `__VIEWSTATEGENERATOR` are all present and scrapeable, and the search form
+has exactly the fields needed: `txtKeywords`, `txtTitle`, `txtGRNo`, `ddlDepartmentType`,
+`txtFromDate`/`txtToDate`.
+
+**But it also has `txtimgcode`, marked required, backed by**
+
+```html
+<img id="SitePH_ImgCaptcha" src="../Site/Information/captcha.aspx">
+```
+
+labelled *"Captcha (पडताळणी संकेतांक कोड) *"*.
+
+**So the obstacle is not a technical one we should engineer around — it is a bot check, and
+completing it is not something I will do.** The `__VIEWSTATE` is scrapeable and irrelevant: the
+CAPTCHA gates the query regardless.
+
+**Status: HUMAN-ONLY.** Someone with a browser can run this search in under a minute —
+department *School Education*, keyword *शाळा सोडल्याचा दाखला* or *प्रवेश* — and the GR number and
+date would close the gap. It cannot be closed by automation, and it should stop being retried.
+
+This matters beyond one GR: **any state portal behind a CAPTCHA is permanently out of reach for
+this research method**, and those gaps should be routed to a person rather than re-queued.
+
+---
+
+## C-24 · KVS and NVS — my question rested on a false premise
+
+I briefed the research to ask whether *"the KVS Asstt. Commissioner / NVS Deputy Director
+countersignature survived CBSE's abolition."* The premise was wrong, and correcting it answers it.
+
+**Those officers appear in CBSE's Annexure-I footnote as people whose signature CBSE would
+ACCEPT on an inbound TC — never as officers KVS or NVS required a signature BY.** Once separated,
+there are three countersignatures running in different directions with different fates:
+
+| countersignature | whose rule | direction | status |
+|---|---|---|---|
+| KVS Asstt. Commissioner / NVS Deputy Director on a CBSE→CBSE TC | **CBSE** | inbound | **abolished** |
+| **Chairman, VMC** on a **KV-issued** TC | **KVS** (Education Code, Appendix XXXIII) | **outbound** | **still on the books — but only when the TC is signed by an Officiating/Incharge Principal**, not a regular one |
+| countersignature on a TC presented to a **JNV** | **NVS** (PAP 2026-27 §34) | inbound | **waived** — *"No need to countersign the same if the school is registered in UDISE portal."* |
+
+**CBSE's abolition has no bearing on the Chairman-VMC rule.** They are different requirements, on
+different documents, borne by different officers, running in opposite directions.
+
+**The NVS waiver is the finding with the widest reach.** NVS drops countersignature *specifically
+because the school is on UDISE* — a national identifier standing in for a human check. That is the
+same substitution Karnataka made with the DISE code and CBSE made with website upload, but stated
+in one clause. **Five independent jurisdictions have now replaced countersignature with a
+verifiable identifier.** It is the strongest pattern the entire programme has produced.
+
+### How the negative was established, and its honest limit
+
+All **285 pages** of the KVS Education Code were extracted and grepped: *"countersign"* occurs on
+four pages. Page 246 is Appendix XXXIII — the TC form, countersigned by **Chairman, VMC**. Pages
+257/258/262 are the **National Award for Teachers** proformas, where the Asstt. Commissioner
+countersigns a **teacher's award nomination**, not a student's certificate.
+
+**Residual, stated rather than smoothed over:** the Education Code is a ~1980s second edition, and
+no post-2014 KVS circular on TC countersignature was found in either direction. So
+*"Asstt. Commissioner countersignature required"* is **UNSUPPORTED, not DISPROVED.**
+
+**A second, independent reason CBSE's footnote is dead letter for NVS:** across PAP 2026-27,
+*"Deputy Commissioner"* appears 21 times and *"Deputy Director"* once — in legacy copy inside a
+death-incident SOP. **NVS Regional Offices are headed by a Deputy Commissioner.** CBSE's footnote
+names a designation **NVS no longer uses.**
+
+---
+
+## C-25 · Sainik Schools, RMS, AWES and CTSA — not researched
+
+The central-completion file ends at §7 (NVS). Its own summary table points Sainik/RMS/AWES and
+CTSA to sections that **were never written** — the agent stalled at the watchdog during write-up.
+
+**These are outstanding, not negative.** Nothing about them has been established either way.
