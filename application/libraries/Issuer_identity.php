@@ -12,22 +12,27 @@ defined('BASEPATH') or exit('No direct script access allowed');
  * evidence of it. So before anything is issued, the system has to know — and be
  * able to show — that the school behind it is entitled to issue at all.
  *
- * Read live on 2026-09-08 across the nine school records in this project:
+ * The reason is in the form, not in any one school's data. `school_config`
+ * line 441 labels a SINGLE input
  *
- *     board recorded ........ 3 of 9
- *     affiliation number .... 4 of 9   (two of them malformed)
- *     UDISE+ code ........... 0 of 9
- *     recognition order ..... none
- *     stored seal ........... none
+ *     <label>Affiliation / DISE No.</label>
+ *     <input type="text" id="pf_affiliation_no" maxlength="60">
  *
- * Zero had a complete, well-formed identity. `6564643131685.16463168` is not a
- * number of any kind, and `09310113101` is eleven digits — a UDISE code sitting
- * in the affiliation field, because the form labels one input
- * "Affiliation / DISE No." and validates nothing.
+ * — one field, named for two different identifiers issued by two different
+ * authorities, with `maxlength` as its only constraint. No pattern, no board
+ * context, no shape check. An eleven-digit UDISE code entered there is accepted
+ * silently, because nothing distinguishes it from an affiliation number.
  *
- * That is not cosmetic. These fields already print: `result/templates/cbse.php`
- * renders "Aff. No: …" on marksheets given to families, and
- * `Doc_templates.php` selects the statutory compliance profile from the board.
+ * That is not cosmetic, because the field is not private: `result/templates/
+ * cbse.php` line 45 renders `Aff. No: …` onto marksheets handed to families,
+ * and `Doc_templates.php` selects the statutory compliance profile FROM THE
+ * BOARD STRING. So an unvalidated free-text field decides which law a
+ * certificate is produced under, and then prints its own value as fact.
+ *
+ * (An earlier version of this note cited a census of the school records in this
+ * project. That data is dummy, so the census is withdrawn — it proved nothing.
+ * The argument above needs no census: it is a property of the form, verifiable
+ * by reading line 441.)
  *
  * ---------------------------------------------------------------------------
  * THE LADDER

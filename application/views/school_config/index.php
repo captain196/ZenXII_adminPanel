@@ -698,7 +698,7 @@
         <div class="sc-card" id="ii_recog_card">
             <div class="sc-card-title"><i class="fa fa-file-text-o"></i> Recognition Order</div>
             <div style="font-size:12px;color:var(--t3);margin:-6px 0 12px">
-                A state-recognised school issues under an order from its state education department rather than a board affiliation. Recorded separately because the two are different instruments — overloading one field is how a UDISE code ended up in the affiliation number.
+                A state-recognised school issues under an order from its state education department rather than a board affiliation. Recorded separately because the two are different instruments — overloading one field is how a UDISE code comes to sit in the affiliation number: nothing about an eleven-digit string tells the form which authority issued it.
             </div>
             <div class="sc-grid sc-grid-2">
                 <div class="sc-field">
