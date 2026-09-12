@@ -1,6 +1,6 @@
 # Conflict register
 
-**45 entries, IDs unique.** They were not: successive research streams each appended without
+**46 entries, IDs unique.** They were not: successive research streams each appended without
 checking the highest number in use, so `C-9`, `C-19`, `C-20` and `C-16b` were each issued twice.
 The second of each is now `C-9a`, `C-19a`, `C-20a`, `C-16c`. **The `C-16b` collision was the
 damaging one — the two entries sharing that ID contradicted each other**, so a citation of "C-16b"
@@ -58,6 +58,7 @@ with their evidence** — the convenient one was never allowed to quietly win.
 | C-33 | **Per-section recognition established in the north at [A]** | **extends C-14 · schema-binding** |
 | C-34 | **The legacy-font class is real — it is Kruti Dev, and searchable** | **refines C-32 · method** |
 | C-35 | UPMSP — the negative narrows and still holds | narrowed NOT FOUND |
+| C-36 | **Filenames are not evidence — two near-miss fabrications** | **method · binding** |
 
 ### What is actually still open
 
@@ -1210,3 +1211,40 @@ and closed three open questions (C-31/§3.2). **An instruction booklet is not a 
 consistent scope**: Rajasthan's carries admission, TC verification and countersignature rules;
 Uttar Pradesh's carries exam logistics. Neither can be inferred from the other's name, and the UP
 booklet should not now be cited as evidence that UPMSP *has* no TC rule — only that it is not there.
+
+---
+
+## C-36 · Filenames on education portals are not evidence of content — two near-misses in one session
+
+*Added 2026-09-12. A method entry, recorded because both cases would have produced a fabricated
+citation, which is the one failure this programme treats as worse than an admitted gap.*
+
+Reopening the documents the corpus abandoned (C-32) meant working from filenames, because the
+portals publish little else. **Two filenames on `hpbose.org` read as exactly the thing being hunted
+and were neither.** Both were fetched and read rather than cited.
+
+| filename | reads as | actually is |
+|---|---|---|
+| `Noti.SOS.T.C.24.07.2025.pdf` | a notification on **T**ransfer **C**ertificates | *"HIMACHAL PRADESH STATE OPEN SCHOOL — **Terms & Conditions** for Center Creation (Private Schools)"* — examination-centre creation: application windows, ₹5,000/₹10,000 late fees, a 35-candidate minimum, a ₹7,000 centre-creation fee **[A]** |
+| `Noti_Cond_I_Booklet_compressed_2026.pdf` | the affiliation **Cond**itions booklet | the **Conduct-I** booklet — 48 pages of examination-conduct instructions, footer *"परीक्षा संचालन बारे निर्देश"*, opening with HPBOSE's section-officer contact directory **[A]** |
+
+**"T.C." in an Indian education filename is ambiguous between *Transfer Certificate* and *Terms &
+Conditions*, and "Cond" between *Conditions* and *Conduct*.** Both expansions are idiomatic on these
+portals; neither is guessable from the string.
+
+**Had either been cited unread, the corpus would carry a primary-source attribution for a rule that
+document does not contain** — indistinguishable, to any later reader, from a real citation. That is
+strictly worse than the NOT FOUND it would have replaced, because a NOT FOUND invites another look
+and a false citation closes the question.
+
+**Rule going forward: a filename may direct a fetch; it may never support a claim.** Every `[A]`
+citation in this corpus must rest on text actually read — and on these portals that increasingly
+means rendering a scan, since a scan is what the filename is attached to.
+
+### What this leaves for HPBOSE
+
+**Unchanged.** HPBOSE's countersignature rule still rests where the corpus already put it —
+**Examination Regulation 3.5.7**, amended 18.01.2012, mandatory and blocking, officer not below
+DEO/DIS **[A]**. The **HP Secondary Education Code 2012** and its reported **cl. 2.18** remain
+**unread**, and the two documents above are not substitutes for it. HPBOSE stays P0 in
+`AUTHORITY_BACKLOG.md` on the strength of 3.5.7 alone.

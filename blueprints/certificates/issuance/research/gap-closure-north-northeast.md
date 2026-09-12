@@ -37,7 +37,7 @@ each already partly located by earlier streams.
 
 | Authority | Who signs a TC | Countersignature + **DIRECTION** | Prescribed format | Recognition basis | Dues / withholding | Evidence |
 |---|---|---|---|---|---|---|
-| **Arunachal Pradesh Education Rules 2010** | NOT FOUND | NOT FOUND | NOT FOUND | Act ss.35–38; "competent authority" **notified**, may differ by area *and* class of institution (s.2(6)) | NOT FOUND | see §2.4 |
+| **Arunachal Pradesh Education Rules 2010** | **I–VIII: the "Head-teacher or in-charge"** (RTE s.5(3), central law). **IX–XII: NOT FOUND** — the Rules designate no one; the school head is implied by r.14(b) + the Principal's powers, at **[D]** only | **NOT FOUND in BOTH directions.** `countersign` = 0 across the Rules, the RTE Rules and the Act; Part XVI (admission) imposes **no verification step at all**. The "DDSE countersignature" hypothesis is **refuted** | **NONE for a TC** — the Rules annex no Schedule, Annexure, Appendix or Form. Recognition forms exist in the **RTE** Rules (**FORM I**, **FORM II**) | **Per stage.** DSE for private schools (**r.62**); DDSE for RTE elementary (**r.11(4)**). Split at the elementary boundary by **rr.19/20** — secondary/higher-secondary run *"as per CBSE norms"* | **No withholding power.** r.47(2)'s reformatory list is **exhaustive** and a certificate is not on it; `withhold` occurs **once**, at *"Withhold stipend/scholarship"*. r.48 instead **caps the fee**: **₹20 govt / ₹50 private** per document | **A** |
 | **Sikkim** | **NOT FOUND** — no TC instrument exists in any Sikkim law. The only student certificate is the RTE **completion** certificate, r.23, issued *"at the school/block/district level"* — **a level, not a designation** | **NOT FOUND in BOTH directions** — nothing outbound, nothing inbound | **No TC format.** Institution forms **I–XVI** (2008 Rules) + RTE **Form No. 1 / No. II** | **Two-step, per class-range:** *registration* (s.10, Director School Education) **then** *recognition* (s.16, Secretary Education Dept), both banded Pre-Primary→XII by fee table. RTE track: 3 yrs, capped at Class VIII | No provision. Dues run **against the management** (r.23(4)), never the child; s.27(2) capitation ban | **A** |
 | **UBSE** (Uttarakhand) | **Not regulated by UBSE.** The Board regulates the TC only as an *inbound evidentiary document* | **YES, inbound/evidentiary — not an issuance gate.** Class-10 TC countersigned by **Block Education Officer or Chief Education Officer** (name correction) / **Chief Education Officer** (DOB correction), when submitted *to the Board* as proof | For corrections: **शुद्धि पत्र परिशिष्ट–ख** (Correction Letter, Appendix-"Kha"); **परिशिष्ट "क"** receipt appendix; **FORM-D-1**, **FORM-A**. **No TC proforma** | **Per examination, per stream (वर्ग) and per subject** — Regs 3–5, **Chapter 7**; Recognition Committee decides; **no validity term** | No provision found | **A** |
 | **BSEM** (Manipur) | **Not regulated by BSEM.** Act s.13(vi) is limited to certificates for *candidates passing examinations* | **NOT FOUND** — `countersign` returns **zero** in the Act and in the Manipur RTE Rules 2010 | **No TC proforma.** Recognition **FORM No. 1 / 2 / 3** | **Per stage, by Board notification**: permission to open IX → provisional → permanent. State recognition to VIII is a **precondition** | No provision found | **A** |
@@ -104,7 +104,7 @@ This is more than a drafting detail, and it sharpens the "who signs" answer rath
   is not part of what makes a TC valid, but an admission-side condition the receiving authority adds.** That is
   the direction finding in §2.1.2 (below) corroborated from the definitions chapter rather than from the operative rules.
 - **And it is silent on content.** The Board defines the instrument, regulates its receipt, will lodge an FIR
-  over a tampered one — and never says what it must contain. See C-16c.
+  over a tampered one — and never says what it must contain. See C-16d.
 
 #### 2.1.2 · Countersignature — inbound, three times, and never on issuance
 
@@ -288,7 +288,7 @@ Education, Manipur**, each with a **₹5,000 non-refundable** fee by bank draft/
 ⇒ **Recognition in Manipur is granted by BOARD NOTIFICATION, in three sequential stages, each citing the prior
 stage's notification number.** A school's proof of status is therefore **a notification number, not a
 certificate with an expiry date** — which matters for how the product models it.
-⇒ **Form No. 3 proves a third stage the Recognition Rules page's cl.1(iii) does not list.** Registered in §3.
+⇒ **Form No. 3 proves a third stage the Recognition Rules page's cl.1(iii) does not list.** Registered as C-37.
 - **Searched Level-A negatives across all three forms:** no validity/expiry period; no `transfer`, `leaving`,
   `countersign` or `migration`.
 
@@ -534,7 +534,7 @@ Principals** — and it is the richest UBSE source found.
   अधिकारी / प्रादेशिक बालिका शिक्षा अधिकारी**) द्वारा **प्रतिहस्ताक्षरित** कराकर प्रमाण-पत्र के साथ अवश्य भेजें।"*
   — for a name or father's-name correction, get the **छात्र-पंजिका (Students'/Scholar's Register)** countersigned
   by the **District Education Officer / Regional Girls' Education Officer**. **Different document AND different
-  officers** from the Procedure document's *Class 10 TC countersigned by BEO/CEO*. Registered in §3, unresolved.
+  officers** from the Procedure document's *Class 10 TC countersigned by BEO/CEO*. Registered as C-34, unresolved.
   ⇒ Note also that **UBSE, like HPBOSE, centres the Scholar's/Students' Register rather than the TC** — the
   corpus records HPBOSE as prescribing a *Scholar's Register (Annexure-I)* and no TC proforma. **Second
   instance, independent.**
@@ -586,9 +586,182 @@ Smt in Board Certificate · Board Magazine 2017 · answer photo copy nirdesh for
 
 ---
 
-### 2.4 · Arunachal Pradesh Education Rules 2010
+### 2.4 · Arunachal Pradesh Education Rules 2010 — FOUND, in full
 
-*(delegated stream — see §4 for what remains open)*
+> **The primary target of this run. The corpus called Arunachal *"the largest single gap in the region"* and
+> named the 2010 Rules as *"the single highest-value missing document for this state"* — the place where the TC
+> rules and probably the recognition validity term both sit.**
+>
+> **They are found, in full text, 71 rules, Parts I–XXVI.** And the honest headline is that **they answer the
+> questions without giving the programme what it hoped for: Arunachal prescribes no TC form, designates no TC
+> signatory above Class VIII, and requires no countersignature in either direction.**
+
+**I independently re-retrieved the compendium and re-verified every clause quoted below.**
+
+> **The Arunachal Pradesh Gazette EXTRAORDINARY, No. 109, Vol. XVII, Naharlagun, Friday, August 20, 2010,
+> Sravana 29, 1932 (Saka)** · Government of Arunachal Pradesh, **Department of School Education**, Itanagar ·
+> **NOTIFICATION, The 19th August, 2010** · **No. ED2/167/2009** — *"In exercise of powers conferred by
+> **section 141** of the Arunachal Pradesh Education Act, 2010 (No. 8 of 2010), the State Government hereby
+> makes the following rules, namely :- **1. Short title and commencement : (1) These rules may be called the
+> Arunachal Pradesh Education Rules, 2010.** (2) They shall come into force on the date of their publication in
+> Official Gazette."* — signed **Hage Khoda, Commissioner (Education)** · **Evidence A, verified**
+
+**Where it was — and the channel generalises.** Not on any education domain. The Rules sit at **PDF pages
+470–489** of a **bound annual gazette compendium** on the **Directorate of Printing & Stationery** site:
+
+- index: `https://printing.arunachal.gov.in/display-content.php?menu=Archive` → row 74, *"Extra Ordinary
+  Gazette, 2010"*
+- **file: `https://printing.arunachal.gov.in/uploads/pdf/6a2a72510a71c_1781166673.pdf`** — HTTP 200,
+  **18,163,454 bytes, 681 pages, real text layer throughout** (no OCR needed)
+
+⇒ **That `Archive` menu holds full-year gazette books back to 1984 and is the highest-value Arunachal
+primary-source channel this programme has found.** ⚠️ **It is also essentially unarchived** (Wayback CDX: 34
+URLs, none under `/uploads/`) and the filenames are opaque `<hash>_<epoch>.pdf`. **See §4 row 15f — this should
+be mirrored into the corpus, because the entire Arunachal finding rests on one webserver.**
+
+**Reproducible negative on the route the corpus had been using:** India Code's Arunachal `Rule` collection
+(uuid `5e33e6d8-c45b-49dd-adad-592d34205250`) was **enumerated completely — 86 items — and exactly one sits
+under the Education Act 2010: the 2015 amendment.** A global full-text query for `"Arunachal Pradesh Education
+Rules"` returns **1 hit**, the same amendment; full-text indexing was control-tested and works. **India Code
+does not have the parent Rules.**
+
+**Scope note that makes the findings current:** the 2015 amendment (SED-143/2015) touched only **rr.49–55**
+(teacher transfer and posting). **Every TC- and recognition-relevant rule below — 14, 19–21, 47–48, 58–71 — is
+untouched**, so these are the Rules as amended.
+
+**A bonus instrument, closing another recorded gap: the AP RTE Rules, 2010** — **No. ED.2/28/2010 dated 3 June
+2010**, under s.38 RTE Act, in **EOG No. 76, Vol. XVII, 8 July 2010**, *with* **Appendix-(I)/FORM I** and
+**Appendix-(II)/FORM II** annexed. [A]
+
+#### 2.4.1 · The TC provisions — there are exactly two, and neither is a TC regime
+
+**r.14(b)** — Part VII, Maintenance of School Records, verbatim: [A, verified]
+> "**Establishment Records** - Transfer and posting, personal file, leave register, teachers profile, service
+> book, guard file, Peon book, memo book, files of departmental order, receipt-issue and dispatch, docketing
+> register, **transfer certificate book** etc."
+
+**r.48** — Part XXI, Other Charges for Obtaining Certificates/Documents, verbatim: [A, verified]
+> "**48.** Judicious and need based fee shall be charged for the collection of documents such as
+> **Transfer**/Provisional/ Appearing/Character/ duplicate certificate of any academic documents etc. to realize
+> the expenditure. Such charge shall **not exceed Rs. 20/- for Government schools and Rs. 50/- for private aided
+> and unaided schools for each document**."
+
+⇒ **A TC book is a mandatory register and the price is capped — but content, signatory and procedure are
+unregulated.** Independently verified Level-A negatives across the Rules: **`leaving certificate` = 0,
+`countersign` = 0, `migration` = 0, `UDISE`/`DISE` = 0**; `transfer certificate` occurs **once**, at r.14(b).
+
+**A fee cap is a genuinely unusual instrument and worth carrying into the product** — it is the only
+*price* regulation on certificate issuance anywhere in this run, and note it covers **Character and Provisional
+certificates too**, which the engine also issues.
+
+#### 2.4.2 · Who signs — split by class band, and only the lower half is answered
+
+**Classes I–VIII — answered, by central law, not by state rule.** RTE Act 2009 **s.5(3)**: the *"**Head-teacher
+or in-charge of the school where such child was last admitted, shall immediately issue the transfer
+certificate**"*, with delay barred from blocking admission and the head-teacher *"liable for disciplinary
+action"*. [A] **That the RTE Act operates here is now Level A rather than assumed** — the State made Rules
+under its s.38 on 3 June 2010.
+
+**Classes IX–XII — NOT FOUND as an express designation.** The closest the Rules come is the school head's
+general competence: **(H) PRINCIPAL/HEADMASTER/VICE-PRINCIPAL** — *"shall have the power for the internal
+management and discipline of the institution which includes – (a) **Admission and withdrawal of students** …
+(g) **Maintenance of all forms and school records**."* [A] Taken with r.14(b)'s TC book, the school head is the
+**implied** issuer — **but no rule says so. That inference is [D] and is not dressed as anything more.**
+
+#### 2.4.3 · Countersignature — NOT FOUND, in both directions, stated explicitly
+
+- **Outbound** (on a TC the school issues): **no such provision found.** Zero `countersign` hits in the 2010
+  Rules, the RTE Rules, or the Act.
+- **Inbound** (on a TC presented at admission from elsewhere): **no such provision found.** **Part XVI
+  (rr.38–41, admission) imposes no document-verification step whatsoever.**
+- For classes I–VIII, **RTE s.5(3) affirmatively cuts against** any countersignature gate.
+- ⚠️ **A hypothesis the programme might have been tempted by is refuted:** *"countersigned by the Deputy
+  Director of School Education"* is **NOT FOUND**. **No instrument connects the DDSE to transfer certificates in
+  any role** — not countersignature, not format, not fee, not verification.
+- The only countersignature provisions in the whole 2010–2014 gazette sweep are **unrelated** — electoral-roll
+  claims, service testimonials, boiler inspection memoranda, and **AP Nursing Council Rules 2011 r.14(3)**
+  (candidate photographs *"duly countersigned by the Head of the Institution from where he or she was
+  trained"* — nursing registration, not school law). **Recorded so a future grep does not mistake them for one.**
+
+#### 2.4.4 · Format, recognition, validity, dues
+
+**Format for a TC: NONE. [A]** The 2010 Rules annex **no Schedule, Annexure, Appendix or Form of any kind.** The
+only "form" across all 71 rules is r.21(a)'s *"Self Declaration-cum-Application form"* for tutorial/coaching
+registration, **described in prose and not annexed.**
+**Forms do exist — but for recognition, in the RTE Rules:** **APPENDIX-(I)/FORM I** *"Self declaration cum
+application for grant of recognition of school"* (*"See sub-rule (1) of Rule 11"*), addressed **"To The Deputy
+Director of School Education"**; and **APPENDIX-(II)/FORM II**, the Recognition Certificate under r.11(4), on
+the letterhead **"OFFICE OF DISTRICT EDUCATION OFFICER"**. [A]
+
+**Recognition — per stage, decisively, with the authority changing by track. [A]**
+
+| stage / track | authority | source |
+|---|---|---|
+| up to elementary | *"as per RTE mandates"* | Educ. Rules **r.19** |
+| up to secondary & higher secondary | *"as per **CBSE norms**"* | Educ. Rules **r.20** |
+| private schools generally | **Director of School Education** | Educ. Rules **r.62** |
+| new school permission | DC (via DDSE) recommends → **DSE** grants → **Government approval** | Educ. Rules **rr.58, 60, 61** |
+| elementary under RTE | **Deputy Director of School Education**, Form No. 2, within 15 days | AP RTE Rules **r.11(4)** |
+| tutorial/coaching | **DSE** as Registering Authority + Govt approval; NOC from DC; certificate in 40 days; annual fee **₹30,000** | Educ. Rules **r.21** |
+
+> **r.62** *(verified verbatim, capitals as printed)*: "**CONDITION OF RECOGNITION: NO PRIVATE SCHOOL SHALL BE
+> RECOGNIZED OR CONTINUE TO BE RECOGNIZED, BY THE DIRECTOR OF SCHOOL EDUCATION UNLESS THE SCHOOL FULFILLS THE
+> FOLOWING CONDITIONS, NAMELY.**" *(sic — "FOLOWING")*
+
+**Per-stage is confirmed four independent ways:** rr.19/20 split the regime at the elementary boundary; RTE
+**Form II** grants recognition *"for Class……… to Class………"*; **r.61(a)** *"No approved school … shall open any
+new class other than the ones which have received approval from the appropriate authority"*; **r.69**
+upgradation applications from primary/middle. **Act s.31** mirrors it (*"primary to middle, middle to secondary
+and secondary to higher secondary"*).
+
+**Validity — and the C-6 hypothesis proves *half* right, which is the interesting part. [A both limbs]**
+
+| instrument | term | verbatim |
+|---|---|---|
+| Educ. Rules **r.68** | **1 year** | *"The registration will be for a period of one year."* |
+| Educ. Rules **r.70(a)–(b)** | annual renewal | *"(a) The school should pay the requisite fee **on or before 31st March every year**. (b) The school already affiliated to CBSE will continue to pay to the State Government the annual renewal fee failing which the schools NOC will be withdrawn and its recognition granted by the State Government will stand cancelled."* |
+| AP RTE Rules **FORM II** | **3 years, provisional, non-extendable** | *"I convey the grant for **provisional recognition** … **for Class……… to Class……… For a period of three years**"* + cond. 1 *"not extendable … beyond class VIII"* |
+
+⇒ **the term is in the RULE BODY for the state track and in the FORM for the RTE track.** C-6 said "check the
+form"; here the form is only half the story. **r.66:** *"The recognition given to school will be effective from
+the date decided by the appropriate authority"* — **the read-the-date-off-the-order pattern again.** The Act
+body has no numeric term (s.35 conditions are *"as may be prescribed"*), confirmed against the full PDF.
+Note also **r.70(a)'s fixed calendar date (31 March)**, not an offset — the C-13 reminder-engine problem, a
+third instance in this file after UBSE's 31 July / 31 October.
+
+**Dues — no rule authorising withholding, and affirmative structure against it. [A, verified]**
+**r.47(2)** enumerates the permitted reformatory actions, decided through the School Disciplinary Committee,
+**exhaustively**: *"(a) Verbal/written warning to the students and undertaking from parents. (b) Suspension from
+attending classes for a specific period. (c) Recovery of loss of property/imposing fine. (d) **Withhold
+stipend/scholarship**."*
+⇒ **Withholding a certificate is not on that list.** `withhold` appears in the Rules **exactly once** — that
+clause. In the Act every "withhold" concerns **grants-in-aid to institutions** (s.52), never student documents.
+**No "no dues", no clearance certificate, no arrears gate anywhere.** And for classes I–VIII, RTE s.5(3) is a
+direct statutory bar. **No AP court ruling or circular on withholding was found** — a NOT FOUND, not an absence.
+
+**UDISE+ — not used as a substitute, because there is no step to substitute for. [A instruments / B practice]**
+`UDISE`, `DISE`, `school code` and `unique id` appear **zero** times in the Rules, the RTE Rules or the Act.
+What does exist is operational: `https://education.arunachal.gov.in/institution/school` is a **2,914-school**
+directory keyed on **UDISE code**, with UDISE management code **8 = "Unrecognized" (22 schools)** as a live
+category. Each school page carries a **per-stage recognition schema** — *"Primary Recognition / Upper Primary
+Recognition / Secondary Recognition / Higher Secondary Recognition"* — **corroborating per-stage recognition**.
+⚠️ But **every one of those fields read "N/A" on all four schools sampled**, and **the schema has no
+validity/expiry field at all.** ⚠️ **Confound, stated:** that four-field structure is the **UDISE+ national DCF
+schema**, so it is [B] about Arunachal's operational record and only **[D]** as to Arunachal law.
+
+#### 2.4.5 · The rule that probably explains actual practice
+
+**r.71 Savings**, verbatim: [A, verified]
+> "**Savings :** Not withstanding anything contain in these rules, all rules, orders, notifications, circulars,
+> official memorandum or any other order made or issued before the commencement of these rules and enforced on
+> the date of such commencement, **which are not expressly covered under these rules but covered under the Act,
+> and anything done or any action taken until and unless superseded, shall continue to be enforced** as if they
+> are made, done or taken under the corresponding provisions of these rules."
+
+⇒ Since the Rules **do not expressly cover TC content, signatory or procedure**, r.71 keeps any unsuperseded
+**pre-2010 departmental order** alive on exactly those points. **That is the likeliest home of whatever TC
+practice Arunachal schools actually follow — and it is a class of document that is, by definition, not in the
+gazette compendium.** It is why §4 row 2's RTI is the right next step rather than more gazette sweeping.
 
 ### 2.5 · Sikkim — the open question CLOSES, and a corpus negative turns out to be false
 
@@ -843,7 +1016,7 @@ a deferred commencement whose notification was not found. **Whether it is in for
 
 ## 3 · Conflicts to register
 
-### C-26 · UBSE contradicts itself on WHICH document is countersigned, and by WHOM
+### C-34 · UBSE contradicts itself on WHICH document is countersigned, and by WHOM
 
 Both limbs are **Evidence A**, both are UBSE, and both concern the **same transaction** — a name /
 father's-name correction in a Board certificate.
@@ -862,7 +1035,7 @@ establishes which**, and the documents carry no dates on their faces. The circul
 live** — BEO, CEO, DEO and Regional Girls' Education Officer — and the required *document* is itself disputed.
 Surface all of it as guidance; enforce none of it.
 
-### C-27 · MBOSE's countersigning officer is ambiguous in a way that matters
+### C-35 · MBOSE's countersigning officer is ambiguous in a way that matters
 
 **r.2.1(i)(b)** puts the countersignature on *"the competent authority of the **respective State/Union
 Territory**"* — unmistakably the **origin** jurisdiction. But **r.3.14(c)** and **r.3.15(i)–(ii)** name *"the
@@ -880,7 +1053,7 @@ must obtain a countersignature on a TC it issues — it need not.
 but **the countersigning officer may belong to the origin** even when the *rule* belongs to the destination.
 Those are two different fields and a single one will hold the wrong value.
 
-### C-28 · BSEM's recognition stages: the rules page says two, the forms say three
+### C-36 · BSEM's recognition stages: the rules page says two, the forms say three
 
 The Recognition Rules page, cl.1(iii), enumerates *"(a) Permission to open class IX. (b) Provisional recognition
 of High Schools."* [B] But **FORM No. 3, "Application for Permanent Recognition of High School"**, exists and
@@ -891,9 +1064,9 @@ page is a web rendering that is **demonstrably truncated** (it stops mid-documen
 artefact of the truncation rather than a substantive disagreement, **but not resolved**, because the clause that
 would establish the third stage is in the unpublished portion.
 
-### C-19a · RESOLVED — Sikkim's operating-recognition question, and a corpus negative overturned
+### C-19b · RESOLVED — Sikkim's operating-recognition question, and a corpus negative overturned
 
-**C-19 asked: "what supplies operating recognition in Sikkim at all?"** Two limbs now close and one corpus
+**C-19/C-19a asked: "what supplies operating recognition in Sikkim at all?"** Two limbs now close and one corpus
 finding is overturned outright.
 
 | corpus position | status after this run |
@@ -913,7 +1086,7 @@ rigorous *controlled* probe — and was still wrong, because the control bounded
 **Record the rule: a controlled negative licenses "absent from this avenue", never "does not exist."** The
 earlier stream in fact said so; the conclusion drifted stronger than its own caveat.
 
-### C-29 · Sikkim: who grants RTE recognition — the rule and its own form disagree
+### C-37 · Sikkim: who grants RTE recognition — the rule and its own form disagree
 
 **RTE Rules 2010, r.11(4)** says recognition is granted *"by the **Director, School Education**, in Form No. II"*.
 But **the printed Form No. II template in the same gazette is subscribed "Joint Director, Human Resource
@@ -928,7 +1101,28 @@ answer. **Surface both; default neither.** Note the same MHRD Form-II template p
 rule-vs-form conflict on *validity* (corpus gap #66) — **the template itself is the common cause**, which
 suggests checking it wherever it was adopted rather than treating each state's conflict as local.
 
-### C-16c · The "no board prescribes a TC format" negative is CONFIRMED — and for MBOSE it is now a strong negative, not an absent document
+### C-38 · Arunachal Pradesh: two unreconciled tensions inside its own instruments
+
+**(a) Two designations for the same signatory, in the same notification.** AP RTE Rules **r.11(4)** vests the
+recognition power in the **Deputy Director of School Education**, while **FORM II** in the same notification is
+headed **"OFFICE OF DISTRICT EDUCATION OFFICER"**. [A both] The form was lifted from the **Central RTE Model
+Rules**; Arunachal's operative district officer is the **DDSE**, and *"District Education Officer"* is **not a
+designation the Education Rules use anywhere**. ⇒ **Prefer the DDSE, but record that the form says otherwise.**
+Note this is the **third** state in which the borrowed MHRD Form II contradicts its own parent rule — Meghalaya
+on validity, Sikkim on the granting officer (C-37), Arunachal on the designation. **The template is the common
+cause; check it wherever it was adopted.**
+
+**(b) "Registration" for one year vs "recognition" continuing.** **r.68** says *"The registration will be for a
+period of one year"*, while **r.62** speaks of a school being *"recognized **or continue to be recognized**"*.
+**Whether r.68's one-year term governs recognition as well as registration is not answerable from the text.**
+Two parallel tracks run — **DSE / annual** under the Education Rules and **DDSE / three-year provisional** under
+the RTE Rules — **with no priority clause between them.** [A both limbs]
+
+**Consequence for us:** an Arunachal school may hold **two live recognitions with different terms and different
+granting officers**, and nothing in the instruments says which controls. **Do not collapse them into one
+record, and do not default the term.**
+
+### C-16d · The "no board prescribes a TC format" negative is CONFIRMED — and for MBOSE it is now a strong negative, not an absent document
 
 The corpus's C-16 family rests in several places on *not having found* a board's regulations. **For MBOSE that
 premise is now removed**: the Regulations have been read in full, and they **regulate the TC extensively as an
