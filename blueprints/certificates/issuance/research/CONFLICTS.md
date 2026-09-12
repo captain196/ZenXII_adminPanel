@@ -1,6 +1,6 @@
 # Conflict register
 
-**35 entries, IDs now unique.** They were not: successive research streams each appended without
+**36 entries, IDs unique.** They were not: successive research streams each appended without
 checking the highest number in use, so `C-9`, `C-19`, `C-20` and `C-16b` were each issued twice.
 The second of each is now `C-9a`, `C-19a`, `C-20a`, `C-16c`. **The `C-16b` collision was the
 damaging one — the two entries sharing that ID contradicted each other**, so a citation of "C-16b"
@@ -48,6 +48,7 @@ with their evidence** — the convenient one was never allowed to quietly win.
 | C-23 | The Maharashtra GR is CAPTCHA-gated | **HUMAN-ONLY** |
 | C-24 | KVS/NVS — my question rested on a false premise | **UNSUPPORTED, not disproved** |
 | C-25 | Sainik/RMS/AWES/CTSA not researched | **outstanding** |
+| C-26 | **Identifier tally recounted — and the trend is not universal** | **corrects C-12/C-17/C-24** |
 
 ### What is actually still open
 
@@ -854,3 +855,65 @@ The central-completion file ends at §7 (NVS). Its own summary table points Sain
 CTSA to sections that **were never written** — the agent stalled at the watchdog during write-up.
 
 **These are outstanding, not negative.** Nothing about them has been established either way.
+
+---
+
+## C-26 · The identifier tally, consolidated — and the trend is NOT universal
+
+*Added 2026-09-12. Audits three counts that had drifted apart across C-12, C-17 and C-24.*
+
+Three entries each asserted a count of jurisdictions replacing human countersignature with a
+printed, verifiable identifier — **"six jurisdictions now, one direction"** (C-17), the mechanism
+"being replaced" (C-12), and **"five independent jurisdictions"** (C-24, mine). Those counts were
+written by different streams at different times and **none of them is still right.**
+
+### The [A]-evidenced set, recounted
+
+| jurisdiction | mandate | instrument |
+|---|---|---|
+| **Karnataka** | DISE code on every TC | Commissioner for Public Instruction circular 01.06.2016 — **state, not KSEAB** (C-20) |
+| **Madhya Pradesh** | r.19 | state rules |
+| **Chhattisgarh** | recognition statement **+ मान्यता कोड** on the TC | CGBSE cl.16(4) |
+| **Himachal Pradesh** | affiliation number on **all official stationery** | HPBOSE affiliation condition (f) |
+| **Andhra Pradesh** | recognition number on the TC | AP Private Managements Rules (C-20 upgraded this from NOT FOUND) |
+
+**Five, not six. Tamil Nadu is out** — C-19 established that the cited Indian Kanoon page does not
+contain the sentence attributed to it (`grep -i "school number"` → zero hits).
+
+Separately, and a different mechanism: **NVS PAP 2026-27 §34(i)** waives countersignature outright
+*because* the school is on UDISE — *"No need to countersign the same if the school is registered in
+UDISE portal"* (Evidence A, quoted verbatim in `boards-central-completion.md` §7.4).
+
+### The finding that matters more than the count
+
+**Himachal Pradesh appears in the identifier table AND requires blocking countersignature.**
+
+HPBOSE Examination Regulation **3.5.7**, amended as recently as **18 January 2012**, makes
+countersignature **mandatory and blocking**, by an officer **not below DEO/DIS**, with a carve-out
+only for HPBOSE→HPBOSE transfers. It also requires every withdrawal to be reported to the Board
+**within 15 days**, and countersigned copies filed with exam admission forms.
+
+**So a printed identifier is not, in general, a replacement for countersignature — in Himachal the
+two coexist, and the countersignature is the stricter of the pair.** C-12's framing ("the mechanism
+is being replaced") and C-17's ("six jurisdictions, one direction") both read the trend as
+universal. It is not. It is a real trend with at least one jurisdiction moving the other way, and
+**the one moving the other way strengthened its rule more recently than most of the others adopted
+theirs.**
+
+### Binding consequence for implementation
+
+`boards-north-central.md` §1 already states it, and it is the correct rule:
+
+> **A single global `countersignatureRequired = false` is a wrong rule in Himachal.**
+
+Countersignature is **per-jurisdiction and directional** (C-15: it is the *receiving* authority's
+rule). It cannot be a product-wide boolean, a per-board boolean, or a national default. Any schema
+that models it as one field will be wrong in Himachal on day one — and this is the second time the
+corpus has had to say so, which is why it is being recorded as a conflict rather than a footnote.
+
+### A note on how two of these three counts went wrong
+
+C-17 counted TN on a citation nobody had opened, and C-24 (mine) generalised a direction of travel
+from the cases that pointed one way. **Both are the same error the register keeps catching: a tally
+assembled from agreeing sources without going back for the disagreeing one.** The count is now
+stated with its instruments so the next revision can check it rather than inherit it.
