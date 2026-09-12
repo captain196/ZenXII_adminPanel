@@ -982,36 +982,117 @@ where RTE s.5 does not reach and where r.8(vi) still speaks. Add the High Court 
 
 ## B2 · CISCE (ICSE / ISC)
 
-Researched from primary regulatory text. **Evidence A** — the ICSE Regulations, the ISC Regulations
-and the Guidelines for Affiliation were read directly (reached via the Wayback Machine, as `cisce.org`
-returns Cloudflare 403 to both curl and the fetch tool). *Exact URLs and verbatim quotes are being
-appended by the strand that read them; the findings below are its report.*
+**Evidence A** — four primary documents read in full. `cisce.org` sits behind Cloudflare and returns
+403 to both curl and the fetch tool, so each was retrieved through the Wayback Machine. **Cite the
+canonical URL; the Wayback URL is what actually resolves.**
 
-**The headline is a negative finding, and it is a valuable one.**
+| document | canonical URL | retrieved via |
+|---|---|---|
+| **ICSE Regulations, Exam Year 2026** | `https://cisce.org/wp-content/uploads/2024/01/0.4-ICSE-Regulations-26.pdf` | `https://web.archive.org/web/20250324105523id_/…` |
+| **ISC Regulations, Exam Year 2027** | `https://cisce.org/wp-content/uploads/2025/02/1.-ISC-Regulations.pdf` | `https://web.archive.org/web/2026id_/…` (returns gzip — gunzip before pdftotext) |
+| **Guidelines for Affiliation** (May 2006, approved at the 90th Council Meeting, 28 Apr 2006; a later footnote cites the 97th Meeting, 20 Nov 2009) | `https://cisce.org/wp-content/uploads/2022/10/AffiliationGuidelines.pdf` | `https://web.archive.org/web/2020id_/http://cisce.org/images/AffiliationGuidelines.pdf` |
+| **CVE Regulations 2008** (Certificate of Vocational Education) | `https://cisce.org/wp-content/uploads/2025/04/REGULATIONS_2008.pdf` | direct |
 
-- **There is no CISCE document titled "Rules of the Council."** The governing texts are the **ICSE
-  Regulations**, the **ISC Regulations**, and the **Guidelines for Affiliation**. Anything citing
-  "CISCE Rules of the Council" for a TC rule is citing a document that does not exist.
-- **CISCE prescribes NO Transfer Certificate format.** — **NOT FOUND**, and this is a clean negative,
-  searched for directly in all three governing texts.
-- **CISCE imposes NO countersignature requirement on a TC.** — **NOT FOUND**, same basis.
-- **"Transfer Certificate" appears exactly ONCE in each Regulations document — and as a
-  *prohibition*, not a format:** *"Transfer Certificate should not be issued with 'Promoted to Class
-  X' if the student has not met the required promotion criteria."* That is the entirety of CISCE's
-  regulation of the TC.
-- **CISCE DOES issue a Migration Certificate** — **ICSE Regulations Ch. II §E.4** and **ISC
-  Regulations §3** — alongside the Statement of Marks and the Pass Certificate.
-- **Cross-board transfer does not run on a TC.** CISCE uses a **Clearance Certificate** and an
-  **online eligibility check** instead.
+### B2.1 The headline is a set of negative findings — and they are the valuable part
 
-> **Product consequence.** For a CISCE tenant the module must **not** impose CBSE's Annexure-I
-> 22-field format, and must **not** offer a countersignature field — neither exists in CISCE's rules.
-> The one enforceable CISCE constraint is a **content prohibition**: do not print *"Promoted to Class
-> X"* on a TC for a student who did not meet the promotion criteria. That is a validation rule on the
-> promotion field, not a layout rule.
+- **There is no CISCE document titled "Rules of the Council."** Established by enumerating **~11,500
+  archived `cisce.org` URLs via the Wayback CDX API** (including all 2,475 `wp-content/uploads`
+  assets) and grepping for rule/regulation/affiliation. The only "Rules" hit is
+  `CISCE-Games-Sports-Rules-Regulations-2023.pdf`. **Anything citing "CISCE Rules of the Council" for
+  a TC rule is citing a document that does not exist.**
+- **"Transfer Certificate" appears EXACTLY ONCE in each of the ICSE and ISC Regulations** (`grep -c`
+  confirmed), and **zero times** in the Affiliation Guidelines and the CVE Regulations. In both cases
+  it is a **prohibition**, not a format:
+
+  > **ICSE Regulations, Chapter II, "Internal Examination" (ii):** *"Transfer Certificate should not
+  > be issued with 'Promoted to Class X' if the student has not met the required promotion criteria."*
+  >
+  > **ISC Regulations:** *"Transfer Certificate should not be issued with 'Promoted to Class XII' if
+  > the student has not met the required promotion criteria."*
+
+- **NO prescribed TC format and NO countersignature requirement.** Grepping
+  `proforma|prescribed format|specimen|countersign` across all four documents returns only "proforma
+  prescribed online" (recheck applications) and "attested by one" (answer-script supervision) —
+  **neither concerns a TC.**
+- **CISCE nowhere requires a TC at admission.** Its cross-board gate is a **Clearance Certificate /
+  online eligibility check**, not a TC.
+
+### B2.2 What CISCE does issue
+
+> **ICSE Reg. Ch. II §E.1:** *"Statement of Marks /Pass Certificates / Supplementary Pass Certificates
+> will be issued through the Heads of Schools as soon as possible after the issue of results."*
+> **§E.4:** *"Migration Certificates will be issued on request by Heads of Schools concerned to
+> candidates who have been awarded Pass Certificates."*
 >
-> **As with CBSE, the Migration Certificate is a BOARD document, not a school document.** Do not offer
-> that template to a CISCE school either.
+> **ISC Reg. §C.1:** *"PASS CERTIFICATE CUM STATEMENT OF MARKS will be awarded to candidates who
+> qualify the ISC Examination…"* **§C.3:** *"Migration Certificates will be issued by CISCE to
+> candidates who have qualified the Examination."*
+>
+> **CVE Regulations 2008, item 4:** *"Migration certificates will be issued at the request of Heads of
+> Schools concerned"* — and **zero** occurrences of "Transfer Certificate".
+
+**Corroborating (Evidence B, existence only):** a 2025 CISCE Migration Certificate circular exists at
+`https://cisce.org/wp-content/uploads/2025/05/Migration-Certificate-for-ICSE-Year-2025-Examination.pdf`
+— **a scanned image with no text layer; its contents were not read.**
+
+**CISCE on DigiLocker — Evidence A**, from the ICSE Regulations Chapter III (recheck/re-evaluation),
+clause (III): *"The Statement of Marks / Pass Certificate for the candidates who have applied for
+Recheck / Re-evaluation, will be released after the result of Re-evaluation is declared. However, **the
+result will be available on DigiLocker**."*
+
+### B2.3 The rule that is directly load-bearing for our module
+
+> **ICSE Reg. Chapter IV §A.7, "Name/s and date of Birth":** *"The Certificate will show the Name/s and
+> 'Date of Birth' **as certified by the Head of the School at the time of entry**. No subsequent change
+> in the name/s or date of birth will be permitted, except, if: (a) the Head of the candidates' School
+> certifies with due justification that candidates concerned have made mistake while entering the
+> Name/s / Date of Birth in the online Registration Form or that **after satisfying themselves of the
+> need to do so they have changed the School records** based on a Birth Certificate or any other
+> document issued by a competent authority duly authorised to do so."*
+
+**The school record is the authoritative source for what the board prints.** That is a strong argument
+for treating our student record as a controlled record with an audit trail — a name or DOB edit in
+ZenXii propagates into a board certificate and is thereafter almost impossible to correct.
+
+### B2.4 Admission deadlines and cross-board clearance
+
+> **ICSE Ch. 1 §C:** *"The last date for regularising admission to Class IX of ICSE is **July 31**, each
+> year."* **§D.1:** *"Candidates can be entered only by the School they are attending and in this
+> respect, **the decision of the Head of the School is final**."* **§D.2:** *"…may be admitted to Class X
+> by **31st August**, under intimation to CISCE, at an affiliated and registered School…"*
+>
+> **ISC §D:** *"The last date for regularising admission to Class XI of ISC is **August 31**, each year."*
+>
+> **ISC Ch. 1 §C.2(a):** *"The eligibility of candidates who have been awarded Pass Certificates in an
+> equivalent examination conducted by another recognised Examining Board will be decided by the Chief
+> Executive and Secretary of CISCE."* **§C.2(b):** *"Heads of Schools may **ADMIT PROVISIONALLY** in Class
+> XI, a candidate who has been thus awarded a Pass Certificate by another recognised Examining Board.
+> On granting provisional admission, they must submit online to the CISCE immediately, certified true
+> copies of the Statement of Marks… CISCE will inform the school about the eligibility status of the
+> candidate online."*
+>
+> **Affiliation Guidelines Part I §1(a)(i):** *"The school has to obtain a **No Objection Certificate
+> (NOC) / Certificate of Recommendation from the state**."* and *"no school may admit students to Class
+> IX without the Council's written approval for affiliation"*.
+> **Part I §8(c) "Records":** *"prior clearance for the admission of pupils to classes X, XI and XII, is
+> to be obtained from the Chief Executive and Secretary of the Council. **Pupils admitted without due
+> clearance will not be accepted for the Council's examinations.**"*
+> **Part IV §6:** *"Candidates who have passed the Class X examination from other examining Boards are
+> required to apply to the Council for a **Clearance Certificate**. Admission to Class XI… should only be
+> finalised after a clearance certificate has been issued by the Council."*
+
+**CAVEAT recorded:** the 2006 Affiliation Guidelines describe a **paper Clearance Certificate**; the
+current ISC Regulations describe an **online eligibility check**. **Treat the online flow as current.**
+
+**Note §1(a)(i) independently corroborates §A1.3**: even a national board requires a **state NOC**. State
+authorisation sits under board affiliation, not beside it.
+
+> **Product consequence.** For a CISCE tenant, do **not** impose CBSE's Annexure-I 22-field format and do
+> **not** offer a countersignature field — neither exists in CISCE's rules. The one enforceable CISCE
+> constraint is a **content prohibition**: never print *"Promoted to Class X/XII"* on a TC for a student
+> who did not meet the promotion criteria. That is a validation rule on the promotion field, not a
+> layout rule. **And as with CBSE, the Migration Certificate is the Council's to issue, not the
+> school's.**
 
 ## B3 · NIOS
 

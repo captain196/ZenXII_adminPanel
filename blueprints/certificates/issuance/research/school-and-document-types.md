@@ -834,6 +834,51 @@ Preservation periods for other states: **NOT FOUND.** Kerala Ch. VI mentions pre
 examination records separately and preserving the affidavit and confirmation letter with the leaving
 certificate (r.24.4), but no general retention schedule was located in the chapter read.
 
+## C.3b Why the register matters beyond school administration — it is legal evidence of age
+
+This is the finding that should most change how the module treats the register.
+
+**Juvenile Justice (Care and Protection of Children) Act, 2015, s.94(2) — "Presumption and
+determination of age" (A−).** Where a Committee or Board has reasonable doubt whether a person is a
+child, age is determined by, in this order of preference:
+
+> (i) **the date of birth certificate from the school, or the matriculation or equivalent certificate
+> from the concerned examination Board**, if available; and in the absence thereof;
+> (ii) the birth certificate given by a corporation or a municipal authority or a panchayat;
+> (iii) and only in the absence of (i) and (ii), by an ossification test or any other latest medical
+> age determination test [to be completed within fifteen days].
+
+s.94(3): the age so recorded *"shall, for the purpose of this Act, be deemed to be the true age of that
+person."* Source: <https://indiankanoon.org/doc/187659331/>
+
+**The school record outranks the municipal birth certificate.** That is the opposite of the intuitive
+ordering, and it is the statutory position for every juvenile-justice and POCSO age determination in
+India.
+
+**And in practice courts go behind the certificate to the register itself (B).** Himachal Pradesh High
+Court judgment of 30.12.2024, <https://indiankanoon.org/doc/73909180/>:
+
+> *"Kunji Lal Raghuvanshi (PW-19) produced the **original admission and withdrawal register** of the
+> school first attended by the victim. As per entry No. 1491, the victim was admitted to the first
+> class on 05.07.2009 … her date of birth was recorded as 17.03.2002."*
+
+The court held the register entry had *"great probative value"* because it was **prepared *ante litem
+motam*** — made before any dispute arose. Prosecution practice, visible across the search results, is
+to produce **the school leaving certificate together with an abstract of the admission and withdrawal
+register**: the certificate as the convenient copy, the register as the proof.
+
+> **Product consequences, and they are not cosmetic:**
+> - The register's DOB field must be **append-only with a full audit trail** — who entered it, when,
+>   on what documentary basis (Maharashtra r.26.2 already requires the *nature of the evidence
+>   produced* to be recorded in the remarks column, **A**).
+> - Its probative value comes from having been recorded **before any dispute** — so an entry's
+>   original timestamp is itself evidence, and silently back-dating or bulk-rewriting entries during a
+>   data migration destroys the very quality that makes the record admissible.
+> - **A "print an abstract of the register entry" output is a real requirement**, not a nice-to-have.
+>   Courts ask for it by name.
+> - The same logic applies to the caste field (§B.8) — *Vilas Dhanorkar* turned on a 1921 register
+>   entry.
+
 ## C.4 The TC/register relationship — the brief's hypothesis, verified
 
 **Hypothesis: "a TC transcribes a register entry, and a countersignature is a register match."**
@@ -903,7 +948,10 @@ class.
 11. **CBSE-affiliated schools must publish issued TCs to the school website** (2014 SOP step 1, 2018
     circular, 2025 reminder, all **A**) and must carry the affiliation legend and code on the certificate
     (2014 SOP step 3; 2020 circular step (b)). Both are mechanical and belong in the template engine.
-12. **Verification, not countersignature, is the modern control.** The 2014 SOP replaced the countersign
+12. **Ship a "register abstract" output.** Courts and revenue authorities ask for an abstract of the
+    admission & withdrawal register entry, not for a certificate (§C.3b). It must render the row as
+    recorded, with its entry number, and must not silently normalise historical values.
+13. **Verification, not countersignature, is the modern control.** The 2014 SOP replaced the countersign
     with: check the issuing school against the CBSE affiliated / disaffiliated lists, record the
     affiliation number on the TC, and write a dated verification legend naming the source consulted
     (**A**). A certificate module that models *verification events* — source, date, outcome — is
