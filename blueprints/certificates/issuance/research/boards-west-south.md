@@ -246,9 +246,78 @@ Gujarat case-law position that post-departure certificate corrections track the 
 
 ---
 
-## 4 · KSEAB — Karnataka
+## 4 · KSEAB — Karnataka School Examination and Assessment Board
 
-*(pending — research cluster)*
+**Method note, because the negatives here are only as good as the method.** KSEAB's site is a
+government CMS. Pages were fetched directly and **diffed against a known-populated control page** to
+*prove* emptiness rather than infer it from a failed render. All items verified **2026-09-12**.
+
+### 4.1 Q1 — Prescribes a TC format? **NO. [B, exhaustively enumerated]**
+
+- **By-laws page publishes ZERO documents.** https://kseab.karnataka.gov.in/59/board-by-laws/en (and
+  `/kn`) returns the full site template — 307 text lines — with exactly **one** document link, the
+  site-wide footer RTI PDF, which is not a by-law.
+- **Amendments page also empty** — byte-for-byte the same 307 template lines.
+  https://kseab.karnataka.gov.in/62/amendments/en
+- **The control test that makes this meaningful:** the same template at
+  https://kseab.karnataka.gov.in/521/circulars%28sslc%29-/en renders **9 extra content lines**
+  (year-wise circular groups). **The template does render content when content exists.** By-laws and
+  Amendments genuinely have none published.
+- **~160 circulars enumerated across four years** (SSLC Circulars 2025-26, 2024-25, 2023-24,
+  2022-23). **Not one concerns transfer certificates, TC format or TC fields.** They are exclusively
+  exam administration: student registration, admission tickets, evaluator orders, answer-key
+  objections, revaluation/retotalling, internal-assessment marks entry, model papers, fee payment,
+  and "New School Code" issuance.
+
+**KSEAB prescribes no TC format and mandates no TC fields. Its remit is exam conduct and the
+certificates IT issues.**
+
+### 4.2 Q2 — Printed particulars? **NOT FOUND at board level — and the distinction matters. [B]**
+
+Nothing in KSEAB's published output requires a recognition number, school code, board name or seal
+wording on a school-issued TC.
+
+**KSEAB does allot a "New School Code" annually** (repeated circulars dated 27-07-2022, 01-09-2023,
+18-09-2024, 10-10-2025) — **but that code is for exam registration, and no KSEAB instrument requires
+it on a TC.**
+
+> ⚠️ **Correction of attribution — important for how we cite Karnataka.** The mandatory **DISE code
+> on every TC** (Commissioner for Public Instruction circular **01.06.2016**, withdrawing the
+> **25.05.2016** BEO-countersignature direction) is a **DEPARTMENTAL act of the School Education
+> Department, not a KSEAB act.** KSEAB has no parallel or overlapping instrument. **In Karnataka the
+> TC mandate does not come from the examination board at all.** `south-india.md` §1.5 records the
+> circular correctly; this file fixes the layer it belongs to.
+
+### 4.3 Q3 — Countersignature? **NOT FOUND at board level. [B]**
+No KSEAB by-law or circular addresses TC countersignature. Both the 25.05.2016 imposition and the
+01.06.2016 withdrawal were **departmental** acts.
+
+### 4.4 Q4 — Post-issuance duty? **NOT FOUND. [B]**
+Absent from the (empty) by-laws page, the (empty) amendments page, and four years of SSLC circulars.
+
+### 4.5 Q5 — Admission from another board/state? **NOT FOUND as a KSEAB rule. [B]**
+KSEAB circulars govern **exam-registration eligibility**, not school admission. No KSEAB equivalence
+or eligibility-certificate instrument was located.
+
+### 4.6 Q6 — Migration Certificates — **YES, KSEAB issues them. [B]**
+
+https://kseeb.karnataka.gov.in/onlinemigration/ · 2026-09-12:
+
+> *"ವಲಸೆ ಪ್ರಮಾಣಪತ್ರವನ್ನು … ಬೇರೆ ರಾಜ್ಯಗಳಲ್ಲಿ ವ್ಯಾಸಂಗ ಮುಂದುವರೆಸಲು ಅಗತ್ಯವಿರುವ …"*
+> ("Candidates who have passed the SSLC examination from 2003 can obtain a Migration certificate
+> online in order to continue their study in other states.")
+
+Pre-2003 SSLC passes must apply physically. Flow: register number → OTP → online or challan payment
+→ instant download.
+
+**Under what regulation: NOT FOUND.** The service page cites no by-law, rule or G.O.; it is presented
+as an administrative service only. (`Migration Letter_2.pdf`, the "Letter to Receiving Authority",
+is a **scanned image with no text layer** and is in any case a covering letter, not a regulation.)
+
+### 4.7 Q7 — Duplicates? **NOT FOUND. [B]**
+KSEAB circulars cover **marks-card correction** (10-10-2023 online application for marks-card
+correction; 26-10-2015 circular ED100DTB2014 on court-decreed name/DOB corrections) — **no
+duplicate-certificate rule and no marking convention was found.**
 
 ---
 
@@ -624,9 +693,359 @@ the pupil from the rolls.** Enrolment status and TC issuance are not independent
 
 ---
 
-## 6 · TAMIL NADU — DGE
+## 6 · TAMIL NADU — Directorate of Government Examinations (DGE)
 
-*(pending — research cluster)*
+> ### 🔴 THIS SECTION CORRECTS `south-india.md` §3.3a AND §3.4. READ IT BEFORE SHIPPING ANY TN RULE.
+>
+> The prior wave asserted, citing **https://indiankanoon.org/doc/24617366/**, that TNER **rule 34**
+> requires *"the school number assigned by the Director of Government Examinations"* on every TC.
+> **That page does not contain that sentence.** It was downloaded and searched this session:
+> `grep -i "school number"` returns **zero hits**. The claim is supported by a **different, single,
+> uncorroborated document** — and corroboration was attempted and failed. Details at §6.8.
+
+### 6.0 The framing that the first wave got right and must be preserved
+
+**DGE prescribes nothing about school-issued TCs.** Tamil Nadu's TC rules come from **TNER (the
+Tamil Nadu Educational Rules — a *departmental* code)** and from the **Code of Regulations for
+Matriculation Schools**. DGE is *named inside* TNER as the assigner of a school number — which is a
+very different thing from DGE issuing the rule.
+
+This was checked directly against DGE's own published statement of functions:
+https://dge.tn.gov.in/function.html and https://dge.tn.gov.in/certificate.html · 2026-09-12. DGE's
+stated functions are exclusively **exam conduct** (SSLC, HSE, DEE, ESLC, Technical, TRUST, NMMS,
+NTSE) and issuing or duplicating **its own** mark certificates. **Neither page contains any
+instruction about school-issued transfer certificates.** *(⚠️ DGE's site is stale — its latest news
+items date to 2019.)*
+
+### 6.1 Q1 — Is a TC format prescribed? **Yes — by TNER and the Matriculation Code, not by DGE.**
+
+#### (a) TNER rule 34 and Appendix-5 / 5-A — **[C]** (see §6.8 for why this is C, not A)
+
+Source: the consolidated *Tamil Nadu Educational Manual*, `educationalrules.PDF`, 123 pp, PDF author
+"Thamizhagam", created **2003-05-05**, retrieved from
+https://www.johnsonasirservices.org/web/Downloads5/29.R.TN%20educational%20rules%20.pdf ·
+verified 2026-09-12.
+
+> *"34. No pupil who has previously studied in a recognized high and higher secondary school shall be
+> admitted to another recognized high and higher Secondary school unless he/she presents a transfer
+> certificate in the prescribed form **(appendix-5 & 5A)** from that school showing (a) the date of
+> his/her birth (b) that he/she has paid all fees due to that school (c) the standard in which
+> he/she studied at the time of leaving it, and (d) if he/she has completed the course in that
+> standard, whether he/she is qualified for promotion to a higher standard…"*
+>
+> *"A common transfer certificate form for standards I to X and XI and XII as prescribed in
+> Appendix-5 and 5A should be adopted. **All columns in the transfer certificate must be filled up
+> without any omission.** Father or mother or guardian **and the pupil** should sign the transfer
+> certificate at the time of receiving transfer certificate."*
+
+**APPENDIX-5 — field list, transcribed exactly.**
+
+*Masthead identifier boxes (eight, and they are separate fields):* `Hr.Secy.TMR Code No.` ·
+`Hr.Secy. Certificate Sl.No.` · `Hr.Secy.Reg.No.` · `School No :` · `SSLC Marksheet SL.No.` ·
+`TMR Code No.` · `SSLC Reg. No.` · `Admission No.`
+
+*Printed header:* `GOVERNMENT OF TAMIL NADU / DEPARTMENT OF SCHOOL EDUCATION / TRANSFER CERTIFICATE
+/ Recognized by the Department of School Education`
+
+1. a. Name of the School; b. Name of Educational District; c. Name of the Revenue District
+2. Name of the Pupil (in Block Letters) — **Tamil / English**
+3. a. Name of the Father of the Pupil; b. Name of the Mother of the Pupil
+4. Nationality, Religion and Caste
+5. Community — a. Adi Dravidar (SC/ST); b. Backward Class; c. Most Backward Class; d. Converted to
+   Christianity from Scheduled Caste; e. Denotified Communities
+6. Sex
+7. **Date of Birth, as entered in the admission Register, in figures and words**
+8. Personal marks of identification as in SSLC / Matric / TC (a) (b)
+9. Date of admission and standard in which admitted (**the year to be entered in words**)
+10. a. Standard in which the pupil was studying at the time of leaving (**in words**); b. The course
+    offered, i.e. General Education or Vocational Education; c. …subjects offered under Part III
+    Group-A and Medium of Instruction; d. …Vocational subject under Part III Group-B and the related
+    subject under Part III Group-A; e. Language offered under Part I; f. Medium of Study
+11. Whether qualified for promotion to higher standard under Higher Secondary Education rules
+12. **Whether the pupil has paid all the fees due to the school**
+13. Whether the pupil was in receipt of any Scholarship (nature to be specified) or any Educational
+    concession
+14. Whether the pupil has undergone medical inspection during the academic year (first or repeat to
+    be specified)
+15. Date on which the pupil actually left the school — **15(a)** No. of working days, days attended
+    with percentage
+16. The pupil's conduct and character
+17. Date on which application for Transfer Certificate was made on behalf of the pupil by his Father
+    or Mother or Guardian
+18. Date of the Transfer Certificate
+19. Course of study *(table: Name of the School | Academic Year(s) studied | Standard(s) | First
+    Language | Medium of Instruction)*
+20. **Signature of the Head of the Institution, Date and School Seal**
+
+⚠️ *The source document's own numbering is faulty — it prints "11" twice. The list above is
+renumbered to match the sequence. **Flag this if the form is ever encoded.***
+
+**APPENDIX-5-A** is a shorter variant with the same substance, header *"Recognized by the Department
+of School Education of Tamil Nadu"*, masthead `TMR Code No.` · `Serial No :` · `SSLC Reg. No.` ·
+`Admission No.` · `School No :`, items 1–19.
+
+#### (b) Matriculation schools are a SEPARATE regime — **[A]**, primary regulation read in full
+
+*Code of Regulations for Matriculation Schools*, **Annexure V** ·
+https://indiankanoon.org/doc/37801442/ · verified 2026-09-12:
+
+> *"Annexure V — Form of Transfer Certificate — **Number:** 1. Name of the school which the pupil is
+> leaving 2. Name of the pupil 3. (a) Name of the father (b) Nationality, Religion and Caste
+> (c) Community — State whether the pupil belongs to — (i) Adi-Dravidar (SC or ST) (ii) Backward
+> Class (iii) Most Backward Class (iv) Converts to Christianity from SC or ST (v) Denotified
+> Communities 4. Date of Birth **in words** as entered in Admission Register. 5. Standard in which
+> the pupil was reading at the time of leaving (**in words**). 6. Date of admission or promotion to
+> that standard. **The year to be entered in words.** 7. Whether qualified for promotion to a higher
+> standard under the Code of Regulations of Matriculation Schools. 8. **Whether the pupil has paid
+> all the fees due to the school.** 9. Date on which the pupil actually left the school. 10. Date on
+> which application for transfer certificate was made on behalf of the pupil by his guardian/parent.
+> 11. Date of Transfer Certificate 12. Signature of the Principal."*
+
+**⚠️ The Matriculation form carries NO recognition number and NO school number — only "Number:" at
+the top.** A single "Tamil Nadu TC template" is therefore wrong: **the TNER form and the
+Matriculation form differ precisely on the identifiers.**
+
+### 6.2 Q2 — Printed particulars — **see the verdict at §6.8. Do not ship as an assertion.**
+
+### 6.3 Q3 — Countersignature. **No for a TC issued within Tamil Nadu; yes for an inbound one.**
+
+**TNER [C]:** rule 34 / the Appendix notes require only *"Should be **signed in ink by the Head of
+the Institution** who will be held responsible for the correctness of the entries"*, **plus the
+pupil's and the parent's signatures at the time of receipt**, plus the designation seal. **No
+countersigning authority appears anywhere.**
+
+**Matriculation Code r.12(x) [A]** · https://indiankanoon.org/doc/37801442/ · 2026-09-12:
+> *"**Transfer certificates received from other States should bear the counter signature of the
+> Inspecting Officers of the concerned State.**"*
+
+That is a countersignature on the **incoming** certificate, executed **in the sending state** — not
+on a TC a Tamil Nadu school issues. **This is the same inbound-only pattern as every other
+jurisdiction in this corpus.**
+
+*(Note: the parent-and-pupil signature requirement in TNER is unusual and worth implementing — TN is
+the only state in the corpus where the **pupil** signs the TC on receipt.)*
+
+### 6.4 Q4 — Post-issuance duties. **Mixed, and the two codes must not be merged.**
+
+**TNER rule 34 [C]:**
+> *"All transfer certificates must be **endorsed with the admission number** under which the pupil is
+> enrolled. **They shall be separately filed and shall be shown to the Inspecting officers.**"*
+>
+> *"**Office copy of the transfer certificate should bear the words "Office Copy" in bold letters.**
+> The **designation seal** of the Head of the Institution should bear the **full name and full postal
+> address of the institution with pin code.**"*
+
+**Matriculation Code [A]:**
+> *"**The school will maintain counter-foil for all transfer certificates issued.** The Registers will
+> be maintained properly and the returns required by the Department will be furnished promptly by the
+> management. **This will be one of the conditions of recognition.**"*
+
+⚠️ **Do not merge these.** The **TC counterfoil duty is Matriculation-Code-specific.** The TNER copy
+read has **no** TC counterfoil requirement — the only "counterfoil" in that document is at **rule
+88** and concerns **fee receipts**. Attributing a counterfoil duty to TNER would be inventing a rule.
+
+**No upload duty and no TC-specific return duty** in either instrument.
+
+### 6.5 Q5 — Admission from another board or state — **[A] Matriculation Code**
+
+https://indiankanoon.org/doc/37801442/ · 2026-09-12:
+> *"12(viii) **Transfer certificate received from other States for admission into Standard IX and X
+> will be sent to the Inspector for evaluation.**"*
+> *"12(x) Transfer certificates received from other States should bear the counter signature of the
+> Inspecting Officers of the concerned State."*
+> *"12(iv) **Age rules need not be applied** in other standards for pupils who are coming for
+> admission with Transfer Certificates from **recognised** schools."*
+> *"12(v) **Age rules should be applied** for pupils coming from **unrecognised** private schools…"*
+> *"12(ii) A pupil with a valid Transfer Certificate shall be admitted to the Standard to which the
+> Transfer Certificate declare him/her fit. **The pupil should not be placed in a class higher or
+> lower.**"*
+
+**TNER rule 37(a) [C]:**
+> *"No student shall be admitted in any Standard without proper transfer certificate or Record sheet
+> issued by a recognized institution. **Students coming from Unrecognized schools or after Private
+> study should not be admitted.**"*
+
+**No eligibility or equivalence certificate requirement was found.** The Tamil Nadu mechanism is
+**Inspector evaluation of the foreign TC + sending-state countersignature** — not an equivalence
+certificate. *(Contrast Maharashtra regs 80/81 and the AP/TG Intermediate boards, all of which do use
+eligibility/equivalency instruments.)*
+
+### 6.6 Q6 — Does DGE issue Migration Certificates? **Yes, as an administrative service. [B]**
+
+https://dge.tn.gov.in/docs/services/mig_information.pdf · verified 2026-09-12:
+> *"Name of the Scheme: **Issuing Migration Certificates** for Students desirous of continuing studies
+> in abroad or in other states of India."*
+> *"Object: To help the students those who wish to go for further studies after completing
+> **SSLC/OSLC/Matriculation/Anglo Indian/Higher Secondary** Examinations conducted by this
+> Department."*
+> *"Fees: … demand draft for **Rs.505/-** … or challan for Rs.505/- … in favour of Director of
+> Government Examinations, Chennai – 600 006."*
+> *"Officer to be approached: **Deputy Director of Government Examinations, Chennai – 6.**"*
+
+**The regulation behind it: NOT FOUND.** The document is written as a citizen-service scheme sheet
+and cites no rule, regulation or G.O.
+
+### 6.7 Q7 — Duplicates. **Two regimes — do not conflate.**
+
+**(a) Duplicate school TC — TNER rule 44 [C]:**
+> *"When a pupil applies for Duplicate Transfer Certificate a fee at the above rate shall be
+> collected. **The copy should clearly bear the mark "duplicate" in red ink. It shall be issued only
+> once.**"*
+
+Fee slab in the same rule: *within a year — no fee; after one year up to 5 years — ₹10; above 5
+years — ₹50.*
+⚠️ **This conflicts with the Indian Kanoon TNER text — see C3 at §6.9.**
+
+**(b) Duplicate DGE-issued mark certificate [B]** ·
+https://dge.tn.gov.in/docs/services/Dup_information.pdf · 2026-09-12: **₹505** first duplicate,
+**₹755 "Triplicate"**; routed **through the Headmaster → DEO/DIET**; requires a loss certificate from
+a Revenue official *"not below the rank of Thasildhar"*; private candidates apply direct *"with the
+**Counter Signature of the Head Master of the nearby school**."* **No red-ink or marking convention
+is specified for these.**
+
+*(Note the "nearby school" countersignature — an identity-attestation device, not a validity
+requirement, and the only place in the whole corpus where a school vouches for a stranger.)*
+
+### 6.8 🔴 VERDICT — the "recognition number + DGE school number" question
+
+**PARTIALLY CONFIRMED IN SUBSTANCE, BUT THE PRIOR CITATION IS WRONG AND CORROBORATION FAILED.
+Do not ship this as an asserted legal requirement.**
+
+#### (1) The cited source does not say what it was said to say — **verified false**
+
+https://indiankanoon.org/doc/24617366/ was cited for rule 34's school-number sentence. It **does not
+contain it**. The page was downloaded and its raw text searched: `grep -i "school number"` → **zero
+hits**. Indian Kanoon's rule 34 reads, verbatim (verified 2026-09-12):
+
+> *"34. No pupil who has previously studied in a recognised **secondary** school shall be admitted to
+> another recognised secondary school unless he presents a transfer certificate in the prescribed
+> form (**Appendix 5**) from that school showing (a) the date of his birth, (b) that he has paid all
+> fees due to that school, (c) the standard in which he studied at the time of leaving it, and (d) if
+> he has completed the course in that standard, whether he is qualified for promotion to a higher
+> standard and in the case of a pupil who has at any time received a fee concession **under rule 92**
+> in the school previously attended by him, also his **case-sheet (Appendix 19)**. No pupil shall be
+> allowed to attend school pending formal admission or enrollment… All transfer certificates shall be
+> endorsed with the admission number under which the pupil is enrolled. They shall be separately
+> filed and shall be shown to the **District Educational Officer** when required."*
+
+**It ends there.** No school number. No Appendix 5-A. No recognition wording. No "Office Copy". No
+designation-seal spec. **This is an older recension** — "secondary school" not "high and higher
+secondary", Appendix 5 alone, a rule-92 case-sheet the newer text drops, and the **DEO** rather than
+"Inspecting officers".
+
+#### (2) The substance rests on exactly ONE source
+
+The johnsonasir *Tamil Nadu Educational Manual*, rule 34, verbatim:
+> *"Office copy of the transfer certificate should bear the words "Office Copy" in bold letters. The
+> designation seal of the Head of the Institution should bear the full name and full postal address
+> of the institution with pin code. **The transfer certificate should also possess the school number
+> assigned by the Director of Government examinations.** The Head of the institution in Appendix 5 B
+> shall issue separate conduct certificate on demand."*
+
+And the **Appendix-5-A** note, verbatim:
+> *"Note: 1. **School under Private management shall have the words "Recognized by the Department of
+> Education Chennai" with Recognition Number printed on the Transfer Certificate to be issued by
+> them.** 2. **The transfer certificates issued by the School under private management without the
+> word "Recognized by the Department of Education Chennai" shall not be considered valid.**"*
+
+**But the Appendix-5 note in the SAME document is materially different:**
+> *"Note: Schools under Private Management shall have the words "Recognized by the Department of
+> Education Chennai" printed in the Transfer Certificate to be issued by them. 1. Transfer
+> Certificates issued by the **Higher Secondary Schools** under Private Management without the words
+> "Recognized by the Department of Education, Chennai" shall not be considered valid."*
+
+**Appendix-5 omits the Recognition Number entirely**, and narrows the invalidity sanction to private
+**Higher Secondary** schools. **The document contradicts itself between its own two prescribed
+forms.**
+
+#### (3) Corroboration was attempted and FAILED
+
+| Attempt | Result |
+|---|---|
+| Indian Kanoon phrase search `"school number assigned by the Director of Government examinations"` | **"No matching results"** |
+| Control query `"transfer certificate" "Director of Government Examinations" doctypes:tamilnadu` | **65 results** — so the search works; the absence is real |
+| IK `"Recognized by the Department of Education, Chennai"` | **no results** |
+| IK `"Appendix 5-A" OR "Appendix 5A" "transfer certificate" doctypes:tamilnadu` | **no results** |
+| IK `"recognition number" "transfer certificate" doctypes:tamilnadu` | 5 results — **all from OTHER states** (AP ×2, Gujarat, Uttarakhand, Jharkhand) |
+| Matriculation Code, read in full | **no recognition number, no school number, no DGE identifier** |
+| Search engines | **all blocked**: DDG html+lite (CAPTCHA), Google (block page), Bing (ignored the quoted phrase), Brave (429+CAPTCHA), Yandex (SmartCaptcha), Startpage (Anubis), Ecosia (403), Mojeek (JS challenge), 3× SearXNG (JS challenge/429) |
+| Wayback CDX on `tn.gov.in`, `tn.nic.in`, `tnschools.gov.in` for `educationalrules` | **nothing** |
+| An apparent second copy in this project's fetch cache | **byte-identical** to the johnsonasir file (both MD5 `596e66a782f1eae1d98e37b75fdc9d14`) — **one document fetched twice, not two sources** |
+
+**Provenance of the single source:** metadata reads `Title: educationalrules.PDF`, `Author:
+Thamizhagam`, `Producer: Acrobat PDFWriter 3.02 for Windows NT`, `CreationDate: 2003-05-05`, 123 pp.
+"Thamizhagam" *suggests* a TN government origin but is **not proof**, and the host is a private
+service-provider site. **Evidence level C.** It is a ~2003 compilation whose current force is
+unverified — TNER has been amended since, and the **TN Private Schools (Regulation) Rules 2023** now
+occupy adjacent ground.
+
+#### (4) Is "School No." the same as "TMR Code No." / "Hr.Secy. Code No."? **NO — separate fields. [C]**
+
+Appendix-5's masthead lists them as **distinct boxes**:
+
+```
+Hr.Secy.TMR Code No.
+Hr.Secy. Certificate Sl.No.
+Hr.Secy.Reg.No.
+School No :                        SSLC Marksheet SL.No.
+                                   TMR Code No.
+                                   SSLC Reg. No.
+                                   Admission No.
+```
+
+**TNER nowhere defines "TMR Code No."** — no expansion, no cross-reference. The plausible reading is
+that "TMR" pairs with the Matriculation regime and "Hr.Secy." with Higher Secondary (stream-specific
+exam codes), while "School No." is the DGE-assigned school number of rule 34. **That is inference,
+not established. Do not encode "School No. == TMR Code" or the reverse.**
+
+#### (5) 🔧 What the product must actually do
+
+**Implementing "print recognition number + DGE school number on private-school TCs" as a hard,
+asserted legal requirement is NOT supported at our evidence standard.** It rests on one
+uncorroborated 2003 secondary compilation whose own two prescribed forms contradict each other on
+the recognition number, and whose cited primary source demonstrably lacks the text.
+
+**Ship it as a configurable, OFF-BY-DEFAULT field if at all — never as an assertion to the school
+that the law requires it.**
+
+### 6.9 Tamil Nadu conflicts register
+
+**C1 — TNER rule 34 exists in two substantively different recensions. UNRESOLVED.**
+Indian Kanoon: *"recognised **secondary** school"*, Appendix 5 only, rule-92 case-sheet, **DEO**, and
+**no** school number / recognition wording / Office Copy rule / seal spec.
+johnsonasir: *"recognized **high and higher secondary** school"*, *"appendix-5 & 5A"*, **Inspecting
+officers**, **plus** the school-number sentence, the Office Copy rule, the designation-seal spec, the
+all-columns rule and the pupil/parent signature requirement. The second is plainly a later
+consolidation, but it **cannot be dated or authenticated**. *Not resolved by preference.*
+
+**C2 — TNER rule 40 circulates in two OPPOSITE texts. CONFIRMED (this re-verifies `south-india.md` §3.3).**
+Indian Kanoon: *"…a transfer certificate **shall not be refused on the plea that such arrears
+exist**."*
+johnsonasir: *"…a transfer certificate **shall be issued after payment of all arrears** by the pupil
+including the previous terms."*
+Same rule number, same opening clause, **inverted outcome**. **Never cite TNER r.40 as authority in
+either direction, and keep the no-dues TC gate defaulted OFF.**
+
+**C3 — TNER duplicate-TC rule 44 differs between copies.**
+Indian Kanoon: *"**A fee of fifty paise** may be levied … which should be **clearly marked
+'duplicate'**."* — no red ink, no once-only limit.
+johnsonasir: tiered fee (nil / ₹10 / ₹50), *"clearly bear the mark 'duplicate' **in red ink**"*,
+*"**It shall be issued only once.**"*
+
+**C4 — Appendix-5 vs Appendix-5-A disagree within the same document** on whether the Recognition
+Number must be printed, and on whether the invalidity sanction reaches all private schools or only
+private *Higher Secondary* schools (§6.8(2)).
+
+**C5 — The printed header wording and the note wording are different strings.** The form bodies print
+*"Recognized by the Department of **School** Education"* / *"…of Tamil Nadu"*, while the notes make
+the words *"Recognized by the Department of Education **Chennai**"* the validity test. **A template
+generator must use the NOTE's wording, not the header's.**
+
+**C6 — Cross-state conflation risk, and a likely origin for the error.** Andhra Pradesh rules
+explicitly require the recognition number on a TC (*"shall invariably contain the recognition…number
+given"*, surfaced via Indian Kanoon). **Tamil Nadu has no comparable judicially-visible text.** A
+rule imported from AP into a TN template would look plausible and be wrong. *(This is very likely how
+the TN premise entered the corpus in the first place.)*
 
 ---
 
