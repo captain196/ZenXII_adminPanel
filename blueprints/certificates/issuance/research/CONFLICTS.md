@@ -1,6 +1,6 @@
 # Conflict register
 
-**47 entries here, plus 8 held in `gap-closure-north-northeast.md`. IDs unique across both.** They were not: successive research streams each appended without
+**48 entries here, plus 8 held in `gap-closure-north-northeast.md`. IDs unique across both.** They were not: successive research streams each appended without
 checking the highest number in use, so `C-9`, `C-19`, `C-20` and `C-16b` were each issued twice.
 The second of each is now `C-9a`, `C-19a`, `C-20a`, `C-16c`. **The `C-16b` collision was the
 damaging one — the two entries sharing that ID contradicted each other**, so a citation of "C-16b"
@@ -60,6 +60,7 @@ with their evidence** — the convenient one was never allowed to quietly win.
 | C-35 | UPMSP — the negative narrows and still holds | narrowed NOT FOUND |
 | C-36 | **Filenames are not evidence — two near-miss fabrications** | **method · binding** |
 | C-37 | **Arunachal caps certificate fees at ₹20/₹50 per document** | **verified verbatim · product** |
+| C-38 | **India Code is not a complete record of state rules** | **method · affects every state entry** |
 | C-12a, C-16d, C-19b, C-40–C-44 | north/northeast stream — see `gap-closure-north-northeast.md` §3 | **8 entries, held in that file** |
 
 ### What is actually still open
@@ -1301,3 +1302,77 @@ no archive copy. Pages 470–489 are now extracted and committed at
 **`research/sources/arunachal-education-rules-2010.pdf`** (291 KB, 20 pages), with the gazette
 citation written into the PDF metadata. **The evidence for this entry no longer depends on that host
 staying up.**
+
+---
+
+## C-38 · India Code is not a complete record of state rules — a hole found by sweeping the gazettes
+
+*Added 2026-09-12 by the Arunachal gazette sweep. Method entry with a live consequence.*
+
+### The negative is now much stronger than "not in the 2010 Rules"
+
+**19 gazette volumes were swept — ~419 MB of PDF yielding ~64.6 MB of extracted text**, every volume
+carrying a real text layer: Extraordinary Gazette 2010–2014, 2017, 2020–2023 (10 vols) and Normal
+Gazette 2009, 2012 (both books), 2013, 2014, 2016–2019 (9 vols).
+
+> **`"transfer certificate"` occurs ZERO times. `"migration certificate"` zero throughout.** **[A]**
+
+So the finding rises from *"no TC provision in the 2010 Rules"* to **"no transfer-certificate form,
+format or countersignature requirement was ever prescribed in any published Arunachal gazette,
+2009–2023."**
+
+Every non-zero neighbour resolved as a non-hit, and one of them helps: *"leaving certificate"* ×6 are
+all recruitment qualifications or a date-of-birth correction — and **EOG 2023 (21.11.2023) accepts a
+school leaving certificate as DOB proof "self-attested"**, which is *self*-attestation, not
+countersignature. *"countersign"* ×52 are TA bills, fair-price-shop challans, electoral rolls,
+university statutes, boiler memoranda, service testimonials, Nursing Council photographs — **not one
+concerns a school certificate.**
+
+### The hole: a whole amendment that India Code does not have
+
+**The Arunachal Pradesh Education (Amendment) Rules, 2014** — Noti. **No. SEDN-77/2011(Pt-I)**,
+**28 November 2014**, Normal Gazette 2014 p.359, verified verbatim **[A]**:
+
+> *"In exercise of the power conferred by Section 141 of the Arunachal Pradesh Education Act, 2010
+> (No.8 of 2010), the Governor of Arunachal Pradesh is pleased to amend the Arunachal Pradesh
+> Education Rules, 2010 … **2. Amendment of Rule 55**: … for the existing entry in clause (V) & (VI)
+> of Rule 55, the following shall be substituted …"*
+
+**India Code holds only the 2015 instrument.** So the real chain is **2010 → 2014 → 2015**, not
+2010 → 2015.
+
+**Consequence, and it is general rather than about Arunachal.** *Any* corpus entry whose amendment
+history rests on India Code alone **has an undetected hole of unknown size.** India Code is the
+default source for state rules across this corpus. This is one state where a sweep of the primary
+gazette was actually performed, and it immediately found an instrument India Code lacks — which says
+nothing reassuring about the states where no such sweep was done.
+
+### Why the TC provisions are stable anyway
+
+Every amendment to, and every executive application of, the 2010 Rules found anywhere concerns
+**teacher service and posting**: the 2014 amendment (r.55), the 2015 amendment (rr.49–55), and
+Noti. **No. EED.2/428/2014** of 02.11.2015 re-designating Assistant Teacher as Primary Teacher
+*"in pursuance of Rule 57"* **[A]**. **Not one touches student transfer certificates.** So
+**rr.14(b) and 48 have stood unamended since 20 August 2010** — a conclusion that now rests on the
+amendment record, not on absence of evidence.
+
+### Two corrections the sweep made to its own earlier report
+
+Recorded because both were caught internally rather than shipped:
+
+1. **`grep -i "SED-"` was a false-positive generator** — it matches *"clo**sed-**circuit"* and
+   *"propo**sed-**"*. The EOG 2017 "hits" were **GST tariff entries for CCTV**. Signal discarded;
+   nothing rested on it. The real amendment number was found via the *"Education Rules"* probe.
+2. **The archive's year-holes are genuine, not a paging artifact** — 91 rows, single page, no
+   `page`/`limit`/`offset` parameter, no next/prev control. So the absence of EOG 2015, 2016, 2018,
+   2019 and 2000–2004 reflects what the Directorate has digitised, and must not be reported as
+   "searched".
+
+### What remains, and it is all HUMAN-ONLY
+
+Each is an **unpublished instrument**, not a search failure — further crawling cannot reach them:
+the **s.2(6)/s.2(34)** competent- and registering-authority designation notifications and the
+**s.1(4)** commencement notification for Act 8 of 2010 (**RTI to the Director of School Education /
+Commissioner (Education), Itanagar**); whatever pre-2010 departmental instrument **Rule 71
+(Savings)** keeps alive on TC practice (request the Directorate's standing orders predating
+20.08.2010); and `judgments.ecourts.gov.in`, which is **CAPTCHA-gated**.
