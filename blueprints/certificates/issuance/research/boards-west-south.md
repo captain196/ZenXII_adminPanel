@@ -65,7 +65,7 @@ owns the migration/eligibility instruments.**
 | **MSBSHSE** (Maharashtra) | **No.** The word "Transfer Certificate" appears **exactly once** in the whole 1977 Regulations, and only for inbound out-of-state pupils. The LC is prescribed by the **SS Code Appendix Four**, not the board | **None board-imposed.** Reg 67(xvii) instead binds junior colleges to the *Education Department's* Secondary School Code | **No** for an intra-Maharashtra LC. **Yes** under **reg 79(7)** for a Std-XI pass from another State/UT — by "the Educational Inspectors or the equivalent authority of the District concerned in that State or Union Territory" | **Generic only** — reg 29(2)(i)-(ii): supply such returns and maintain such registers "as may be required by the Divisional Board". No TC-specific duty | **A** |
 | **GSEB / GSHSEB** (Gujarat) | *(agent cluster — see §2)* | *(see §2)* | *(see §2)* | *(see §2)* | |
 | **GBSHSE** (Goa) | *(agent cluster — see §3)* | *(see §3)* | *(see §3)* | *(see §3)* | |
-| **KSEAB** (Karnataka) | *(agent cluster — see §4)* | *(see §4)* | *(see §4)* | *(see §4)* | |
+| **KSEAB** (Karnataka) | **No.** By-laws page and amendments page **publish zero documents** (proved against a populated control page); **~160 SSLC circulars across 4 years enumerated — not one concerns TCs** | **None board-imposed.** KSEAB allots a **"New School Code"** annually, but only for **exam registration**. ⚠️ The mandatory **DISE code on every TC** is a **DEPARTMENTAL** act (Commissioner for Public Instruction, 01.06.2016), **not a KSEAB act** | **NOT FOUND at board level.** Both the 25.05.2016 imposition and the 01.06.2016 withdrawal were departmental | **NOT FOUND** | **B** (exhaustively enumerated) |
 | **Kerala — Pareeksha Bhavan (SSLC)** | **No.** The only prescribed Kerala TC is **KER Form 5**, made by the **State Government** under the Kerala Education Act 1958 — not by the examination authority | **No code or number.** Form 5's only status line is *"Whether the School is a Government, Aided or Recognised School"*. Every certificate must be **sealed with the school seal before issue** (note to Form 5A) | **No** — Form 5 has no countersignature block; signature is *Principal / Headmaster / Headmistress* alone. **Yes inbound**: KER Ch.VI **r.10** requires an out-of-State TC to be *"countersigned by the Inspecting Officer"* | **Yes, a register** — KER Ch.VI **r.2(1)**: every school shall maintain an **Admission Register in Form 4**, whose **item 14** is *"No. and date of transfer certificate granted on leaving"* | **A** |
 | **Kerala — DHSE (Higher Secondary)** | **NOT FOUND.** `dhsekerala.gov.in` **no longer resolves** (DNS failure, 2026-09-12); HSE is now administered as the Higher Secondary branch of the **Directorate of General Education**. No HSE-specific TC format located | NOT FOUND | NOT FOUND | NOT FOUND | **B / NOT FOUND** |
 | **TN DGE** | *(agent cluster — see §6)* | *(see §6 — the recognition-number + DGE-school-number question)* | *(see §6)* | *(see §6)* | |
@@ -1058,6 +1058,73 @@ the TN premise entered the corpus in the first place.)*
 > board. **Do not let the module assert a board-mandated TC format, board-required printed
 > particulars, or a board-required countersignature for AP or Telangana.**
 
+### 7.0 🟢 THE ONE PRINTED-IDENTIFIER RULE IN THIS REGION THAT IS FULLY EVIDENCED — and it is a STATE rule, not a board rule
+
+**This was found by following up a cross-reference the Tamil Nadu cluster surfaced incidentally, and
+it materially corrects the "NOT FOUND" that the Andhra cluster returned for Q2.** It was retrieved
+and read first-hand this session. **[A]**
+
+**Instrument.** *Andhra Pradesh Educational Institutions (Establishment, Recognition, Administration
+and Control of Schools Under Private Managements) Rules, **1993***, published vide **G.O.Ms.No.1,
+Education (P.S.2), dated 1-1-1994**, in the **Andhra Pradesh Gazette R.S. to Part 1, Extraordinary,
+dated 3-1-1994**. Made *"In exercise of the powers conferred by **Section 99 read with Sections 20,
+21, 79, 80 and 83 of the Andhra Pradesh Education Act, 1982 (Act 1 of 1982)**"*. ·
+https://indiankanoon.org/doc/90101170/ · verified 2026-09-12.
+
+> ⚠️ **Correction to the brief's premise.** The instrument is the **1993** Rules, not the 1988 Rules.
+> The preamble expressly supersedes *"Andhra Pradesh Educational Institutions (Establishment
+> Recognition, Administration and Control) Rules, **1988** issued in G.O.Ms.No. 524, Education
+> Department, dated the 20th December, 1988"* (and the 1983 Disciplinary Control Rules, and the 1988
+> Minority Educational Institutions Rules "in so far as schools are concerned"). **Citing the 1988
+> Rules would be citing a superseded instrument.**
+
+**Rule 10 — "Conditions governing Permission/Recognition" — sub-rule (8), verbatim:**
+
+> *"that the **Name Board of the school, the Transfer Certificate issued by the School**, the
+> applications prescribed for admission of students and the advertisements calling for the
+> applications **shall invariably contain the recognition number given.** Vide [Rule 8 and 9] above"*
+>
+> *[the words "Rule 8 and 9" were **substituted for "Rule 9(4)" by G.O. Ms. No. 74, Education (SE
+> [PS-1]), dated 11-9-2006**]*
+
+**Four things make this the strongest printed-identifier finding in the file:**
+
+1. **It is primary rule text**, read in a gazette-cited compilation — not a portal screen, not a
+   secondary compilation.
+2. **It is a CONDITION OF RECOGNITION.** Rule 10's chapeau: *"every permission/recognition granted to
+   the schools under these rules shall be subject to the following conditions"*, and rule 11 makes
+   permission/recognition *"liable for withdrawal by the competent authority for violation of these
+   rules."* **Omitting the recognition number from a TC is therefore a recognition-threatening
+   default, not a formatting lapse.**
+3. **Its scope is four surfaces, not one** — name board, TC, admission application form, and
+   recruitment/admission advertisements. A compliance feature that covers only the TC covers a
+   quarter of the rule.
+4. **It applies to schools under PRIVATE managements** (r.1(2): all categories of private-management
+   schools including minority institutions, pre-primary through Class X and the oriental/special
+   school categories). **It is not evidenced for government or local-body schools.**
+
+**⚠️ Does it apply in Telangana? NOT VERIFIED — flagged, not asserted.** The 1993 Rules are made
+under the **A.P. Education Act 1982**, and DGE Telangana's own RTI manual states that Act was
+*"adopted by Government of Telangana"* (§8.0). Rules made under an adopted Act would ordinarily
+continue by operation of the AP Reorganisation Act 2014, **but no Telangana adaptation notification
+for these specific Rules was located.** **Do not switch this requirement on for a Telangana tenant
+without closing that gap.**
+
+**⚠️ And note the connection to Tamil Nadu.** This AP rule is almost certainly the origin of the
+cross-state conflation flagged at §6.9 C6: **AP demonstrably requires a recognition number on the
+TC; Tamil Nadu's equivalent requirement rests on a single uncorroborated 2003 compilation.** The two
+must not be treated as equally established.
+
+**Also in rule 10, and relevant to Q4:** *"that the educational agency shall **maintain all the
+records and registers indicated as prescribed by the competent authorities** and they shall be made
+available to the concerned inspecting officers for inspection/surprise checks."* This is a generic
+records duty — **it prescribes no TC register and no counterfoil.** A separate condition requires
+*"the records/accounts shall be furnished to the D.E.O. every year"*, which is an accounts return,
+not a certificate return. **[A]**
+
+**No duplicate-certificate rule and no migration-certificate rule exist anywhere in the 1993 Rules**
+— greps for `duplicate` and `migration` across the full text return **zero hits**. **[A, negative]**
+
 ### 7.1 BSEAP — Board of Secondary Education / Directorate of Government Examinations, AP
 
 #### Q1 — Prescribes a TC format? **NO — and this is a positive negative, not an absence of searching.**
@@ -1083,9 +1150,16 @@ Manual; A.P.C.S. (CCA) Rules 1991; A.P.C.S. (Conduct) Rules 1964; A.P. Leave Rul
 Pension Rules; **A.P. Education Code**; A.P. Government Examination Service Rules 2001.* **There is
 no "A.P. Board of Secondary Education Rules" in the Board's own list of what governs it.** **[A]**
 
-#### Q2 — Printed particulars? **NOT FOUND**
-No requirement found for anything printed on a *school-issued* TC. Searched: the RTI manual full
-text, `services_offered.aspx`, and the Board's G.O. portal.
+#### Q2 — Printed particulars? **NOT FOUND at BOARD level — but see §7.0, the requirement exists at STATE level**
+
+No **BSEAP** requirement was found for anything printed on a school-issued TC. Searched: the RTI
+manual full text, `services_offered.aspx`, and the Board's G.O. portal.
+
+**⚠️ This negative must not be reported as "AP requires nothing on a TC".** The
+**recognition number IS mandatory** on a private-management school's TC in Andhra Pradesh — under
+**rule 10(8) of the AP Private Managements Rules 1993 (§7.0)**, a **State** rule under the AP
+Education Act 1982. **Right requirement, wrong layer** — exactly the same layering as Karnataka's
+DISE-code mandate (§4.2), which is departmental rather than KSEAB's.
 
 #### Q3 — Countersignature of a school TC? **NOT FOUND**
 BSEAP offers **no** TC countersignature service — a notable contrast with TSBIE (§8.2), which does.

@@ -369,3 +369,79 @@ Also from this stream, both new:
   post-issuance duty, like CBSE's website upload.
 - **HPBOSE 3.5.6** — the **only duplicate-TC marking rule found in any state board**. CBSE
   r.8(vi) had been the sole source.
+
+---
+
+## C-9 · RESOLVED — autonomous councils have no certificate role
+
+The first wave found this genuinely unresolved and **correctly declined to encode either
+answer**. It is now settled, in the negative, at Evidence A.
+
+**MBOSE Act s.12, proviso** — read directly — states the Board's power
+
+> *"shall not extend to the Primary Schools established, constructed or managed by the District
+> Councils"*
+
+reproducing the **Sixth Schedule para 6** formula verbatim. So the two domains are **mutually
+exclusive by statute**: ADCs run *primary* schools; boards govern *secondary* examinations.
+
+Corroborating, independently:
+
+- **KHADC's full legislation index** — 71+ instruments, 1951–2024 — contains **zero** education
+  entries.
+- **ASSEB's own forms** treat an autonomous council as an **address field**, nothing more.
+
+**No ADC certificate role exists anywhere in the region.** The caution was right and the answer
+is now known — which is the ideal outcome of recording a gap instead of filling it.
+
+**Still unresearched:** Assam's BTC, KAAC and Dima Hasao councils specifically. Note the first
+wave found a Gauhati HC judgment showing the **Secretary, BTC actually according recognition** —
+so the negative above covers *certificates*, and the *recognition* question for Assam's councils
+remains open.
+
+---
+
+## C-15a · Countersignature — confirmed again, from a second region
+
+Two more boards, both Evidence A, both pointing exactly where HPBOSE did:
+
+- **JAC (Jharkhand) Reg. 5(iv)(a)** — the TC is signed by the head of institution and
+  **countersigned by the DEO for out-of-State candidates**.
+- **NBSE (Nagaland), Management of Examinations 2023, Ch. 8** — the TC must be **countersigned
+  by the Inspector of Schools / DEO of the State last studied**, inter-State only.
+
+**Four boards now agree on the shape:** it is a **receiving-side, inter-State-triggered** check,
+and it belongs on the **admission** flow, never on the issuer's document.
+
+### A trap worth recording
+
+**ASSEB's Inspector-of-Schools countersignature sits on the change-of-institution APPLICATION,
+not on the TC.** Read quickly, that looks like a TC countersignature requirement and would have
+produced a wrong rule. The stream caught it; anyone re-reading these sources should expect the
+same shape elsewhere.
+
+---
+
+## C-16a · No board prescribes a TC format — now fifteen more searched
+
+**Fifteen east/north-eastern boards checked; zero prescribe a format.** With nine north/central
+(zero) and the west/central and southern findings, the negative now holds at **both the state
+layer and the board layer**, across every region.
+
+**CBSE's Annexure-I remains the only prescribed Transfer Certificate format found in India.**
+
+Four boards touch the TC narrowly, never as a layout: JAC (signature and countersignature,
+plus a duplicate on **affidavit + FIR copy**, Reg. 8(iv)), NBSE (countersignature), TBSE (the TC
+must state the class the pupil may enter), and ASSEB/MBSE/COHSEM, for which the TC is a document
+the board **consumes** rather than designs.
+
+---
+
+## C-2a · "Recognised" means the board's own grant — a third instance
+
+**MBOSE Act s.2(j)** defines *"recognised"* as **recognised by the Board**.
+
+That is now the third jurisdiction where the word denotes board-granted standing rather than the
+state's RTE s.18 licence to operate — after **UP (s.2(d))** and **J&K (reg. 8)**. C-2 holds and
+strengthens: a single `recognitionOrder` field would silently carry two different legal objects,
+and the model must record **which kind**.
