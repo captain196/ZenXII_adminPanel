@@ -77,7 +77,7 @@ const CONTRACT = [
   {key:"receipt.no",               label:"Receipt number",          sample:"RCT/2026-27/004182", maxLen:24},
   {key:"receipt.date",             label:"Receipt date",            sample:"03/09/2026", maxLen:12},
   {key:"receipt.session",          label:"Session",                 sample:"2026-27", maxLen:12},
-  {key:"receipt.forPeriod",        label:"Paid for",                sample:"April \u2013 June 2026",
+  {key:"receipt.forPeriod",        label:"Paid for",                sample:"April – June 2026",
      p95:"April, May, June, July, August and September 2026 (arrears of the previous session included)", maxLen:120},
   {key:"receipt.mode",             label:"Payment mode",            sample:"UPI", maxLen:24},
   {key:"receipt.txnId",            label:"Transaction reference",   sample:"UPI/426512890043",
@@ -90,13 +90,13 @@ const CONTRACT = [
        {key:"item.amount", label:"Amount",      maxLen:14, align:"right"}
      ],
      sample:[
-       {"item.head":"Tuition fee",   "item.period":"Apr\u2013Jun 2026", "item.amount":"12,600.00"},
-       {"item.head":"Transport fee", "item.period":"Apr\u2013Jun 2026", "item.amount":"4,500.00"}
+       {"item.head":"Tuition fee",   "item.period":"Apr–Jun 2026", "item.amount":"12,600.00"},
+       {"item.head":"Transport fee", "item.period":"Apr–Jun 2026", "item.amount":"4,500.00"}
      ],
      p95:[
-       {"item.head":"Tuition fee",             "item.period":"Apr\u2013Sep 2026", "item.amount":"25,200.00"},
-       {"item.head":"Transport fee \u2014 Route 7","item.period":"Apr\u2013Sep 2026","item.amount":"9,000.00"},
-       {"item.head":"Hostel and mess",         "item.period":"Apr\u2013Sep 2026", "item.amount":"48,000.00"},
+       {"item.head":"Tuition fee",             "item.period":"Apr–Sep 2026", "item.amount":"25,200.00"},
+       {"item.head":"Transport fee — Route 7","item.period":"Apr–Sep 2026","item.amount":"9,000.00"},
+       {"item.head":"Hostel and mess",         "item.period":"Apr–Sep 2026", "item.amount":"48,000.00"},
        {"item.head":"Laboratory and computer", "item.period":"2026-27",      "item.amount":"3,200.00"},
        {"item.head":"Examination fee",         "item.period":"Term I",       "item.amount":"1,800.00"},
        {"item.head":"Library and reading room","item.period":"2026-27",      "item.amount":"900.00"},
@@ -165,7 +165,7 @@ const PROFILES = {
   cbse:{
     id:"cbse", version:4, name:"CBSE — Transfer Certificate",
     scope:"Board: CBSE · all states",
-    authority:"CBSE Examination Bye-Laws, Annexure-I",
+    authority:"CBSE Examination Bye-Laws (1995 edn., updated to Dec 2004), Annexure-I — as modified by circulars to 31.10.2025",
     evidence:"A", verifiedOn:"2026-08-18", owner:"platform-compliance", reviewMonths:12,
     requiredKeys:[
       "school.name","doc.bookNo","doc.slNo","student.admissionNumber","student.fullName",
@@ -210,22 +210,48 @@ const AUTHORITIES = [
     appliesWhen:sc=>sc.stage!=="secondary",
     scopeNote:"Elementary stage only — classes I–VIII. Does not reach IX–XII.",
     docs:{ transfer_certificate:{ requiredKeys:[], constraints:[
-      "The transfer certificate must be issued immediately on request. It cannot be withheld for any reason, including unpaid fees.",
+      /* WHAT THE SECTION SAYS, kept separate from what follows from it.
+         s.5(3) says the head teacher "shall immediately issue the transfer
+         certificate" and attaches no condition. It does NOT contain the words
+         "cannot be withheld for any reason, including unpaid fees" — that is
+         construction plus case law, and this line used to present it as though
+         the Act said it. The rule is sound; the provenance was overstated. */
+      "s.5(3): the head teacher “shall immediately issue the transfer certificate”. The section attaches no condition of any kind.",
+      "So a no-dues gate has no statutory footing, and four High Courts have held withholding unlawful while preserving the school’s right to recover the money — Tamil Nadu W.A. 3075/2021 (19.07.2024), Kerala 2025:KER:69076, Karnataka 2025:KHC:5986, Telangana W.P. 34185/2023. Note that no enabling rule was repealed: Kerala’s KER Ch.VI r.17(2) stands unamended. The rule exists and is unenforceable.",
       "Delay or refusal exposes the head teacher to disciplinary action.",
-      "No numeric turnaround deadline and no issuance register are set by the Act — any SLA we ship is our own recommendation, not law."
+      "No numeric turnaround deadline and no issuance register are set by the Act — any SLA we ship is our own recommendation, not law.",
+      "s.5 sits in the elementary chapter and reaches a child only through class VIII. No equivalent central protection for IX–XII was found."
     ]}}
   },
   {
     id:"cbse", tier:"board", label:"CBSE",
-    authority:"CBSE Examination Bye-Laws, Annexure-I",
+    authority:"CBSE Examination Bye-Laws (1995 edn., updated to Dec 2004), Annexure-I — as modified by circulars to 31.10.2025",
     evidence:"A", verifiedOn:"2026-08-16", owner:"platform-compliance",
     appliesWhen:sc=>sc.board==="CBSE",
     scopeNote:"Binds CBSE-affiliated schools in every state.",
     fieldListVerified:false,
     docs:{
       transfer_certificate:{
-        requiredKeys:["school.name","doc.bookNo","doc.slNo","student.admissionNumber","student.fullName",
-          "student.fatherName","student.motherName","student.dob","student.dobWords",
+        /* TRANSCRIBED FROM ANNEXURE-I, not assembled from what a TC usually shows.
+         *
+         * Two corrections after reading the format itself (2026-09-12):
+         *
+         * REMOVED student.motherName. Annexure-I field 2 is "Father's/Guardian's
+         * Name" and there is no mother's-name field anywhere in the 22. Mother's
+         * name is a Board-RECORD option under bye-law r.68, which is a different
+         * thing from a TC field. Requiring it blocked publication for a school
+         * that had not recorded one — us enforcing a requirement the authority
+         * does not impose, which is the precise failure this corpus exists to
+         * avoid, committed in our own data.
+         *
+         * ADDED school.affiliationNo. The 04.02.2020 SOP requires the letterhead
+         * to carry "AFFILIATED TO CENTRAL BOARD OF SECONDARY EDUCATION /
+         * AFFILIATION NO. ____" below the school's name and address, and inside
+         * the stamp where a prescribed format is used. It was mandatory and
+         * absent from this list entirely. */
+        requiredKeys:["school.name","school.affiliationNo","doc.bookNo","doc.slNo",
+          "student.admissionNumber","student.fullName",
+          "student.fatherName","student.dob","student.dobWords",
           "tc.dateOfFirstAdmission","tc.lastClassStudied","attendance.workingDays",
           "attendance.daysPresent","result.promotionEligible","tc.reasonForLeaving",
           "tc.conductRemark","tc.duesPaidUpto","tc.dateOfLeaving","doc.issueDate"],
@@ -233,7 +259,9 @@ const AUTHORITIES = [
         constraints:[
           "22 mandated fields, plus pre-printed Book No. and Sl. No. on the stationery.",
           "Signature block is Class Teacher → Checked by → Principal, plus a school seal.",
-          "A TC originating outside CBSE additionally needs a countersignature (r.8(vii))."
+          "The letterhead must read “AFFILIATED TO CENTRAL BOARD OF SECONDARY EDUCATION / AFFILIATION NO. ____” below the school name and address, and the same must appear in the seal where a prescribed format is used (SOP 04.02.2020, I(b) and I(e)).",
+          "The issued certificate must be uploaded to the school’s own website (circulars 26.11.2014, 01.10.2018, 04.02.2020, restated 31.10.2025). ZenXii does not do this yet.",
+          "COUNTERSIGNATURE IS NO LONGER REQUIRED. The Annexure-I footnote still says a student “shall not be admitted\u2026 without such a counter signature”, but CBSE abolished the practice across five circulars from 26.11.2014 to 31.10.2025: “there is no need of countersignature of any transfer certificate”. The bye-law text was never rewritten, which is why schools still send TCs to Regional Offices. The circulars control — do not enforce it."
         ],
         duplicateMark:{required:true, text:"Duplicate", citation:"CBSE r.8(vi)",
           quote:"…it shall always be so marked."},
@@ -3625,7 +3653,7 @@ function paintContent(){
         +"color:"+(cap.over?"var(--seal)":"var(--ink4)");
       c.textContent = "\u2248"+cap.budget+" chars fit \u00b7 "
         + (cap.used==null ? "no sample data" : "sample uses "+cap.used)
-        + (cap.over ? "  \u2014 over budget, the proof gate will measure it" : "");
+        + (cap.over ? "  — over budget, the proof gate will measure it" : "");
       c.title = "Advisory. The binding budget for "+cap.key+" is "+cap.budget
         +" characters; the real check is the proof-time overflow gate, which measures the rendered block.";
       row.appendChild(c);
@@ -4136,7 +4164,7 @@ function paintCompliance(){
       <span class="rule__key">${esc(k)}${au?" · "+esc(au.label):""}</span>
       ${ok?"":'<span class="rule__meta"><span class="chip chip--statutory">Unbound — publish blocked</span></span>'}</span>`;
     b.onclick=()=>{ const o=objectForKey(k);
-      if(o){ S.sel=[o.id]; render(); showCtxbar(); toast("Bound in \u201c"+(o.name||o.id)+"\u201d"); }
+      if(o){ S.sel=[o.id]; render(); showCtxbar(); toast("Bound in “"+(o.name||o.id)+"”"); }
       else openCite(k); };
     L.appendChild(b);
   });
