@@ -12,24 +12,43 @@ each already partly located by earlier streams.
 | **D** | unverified, or inference |
 | **NOT FOUND** | searched and not established — *a result, not a failure* |
 
-> **Three headline results.**
+> **Five headline results — every one of the five named authorities is now anchored to a primary document.**
 >
-> 1. **MBOSE's Examination Regulations are PUBLISHED.** The corpus recorded them as *"exist but appear
+> 1. **The two documents the brief called "proven to exist" and "partly located" are both FOUND IN FULL.**
+>    The **Arunachal Pradesh Education Rules, 2010** (71 rules) were in a bound annual gazette compendium on the
+>    *Directorate of Printing & Stationery* site — not on any education domain, and not on India Code. And
+>    **Sikkim's operating-recognition regime exists after all**: the 2002 Act was repealed *by a successor
+>    statute*, the **Sikkim Education Act, 2005**. See §2.4 and §2.5.
+>
+> 2. **MBOSE's Examination Regulations are PUBLISHED.** The corpus recorded them as *"exist but appear
 >    unpublished online"* and flagged that as *"the single most important caveat in this file."*
 >    **That is refuted.** The **Regulations for the Conduct of the SSLC Examination, 2026** — 43 pages,
 >    framed under the MBOSE Act 1973 — are on mbose.in. They were not in the statutory-documents section
 >    (which lists only Acts); they were **rows 25–26 of page 2 of the paginated notice index**, dated
 >    29-04-2026. See §2.1.
-> 2. **BSEM is reachable.** The `ECONNREFUSED` that stopped the earlier pass was an **HTTPS-only failure**.
+>
+> 3. **BSEM is reachable.** The `ECONNREFUSED` that stopped the earlier pass was an **HTTPS-only failure**.
 >    `http://bsem.nic.in/` (plain HTTP) returns 200, and the alternate domain `bosem.in` is fully live.
 >    BSEM publishes a Recognition Rules page, its constitutive Act, and three numbered recognition forms.
 >    See §2.2.
-> 3. **The Manipur RTE Rules 2010 — recorded as NOT FOUND — were found**, on BSEM's own server,
+>
+> 4. **The Manipur RTE Rules 2010 — recorded as NOT FOUND — were found**, on BSEM's own server,
 >    mislabelled as an "Act". They carry a **printed-identifier mandate**. See §2.2.5.
 >
-> **And one methodological warning.** Every single countersignature provision recovered in this run is
-> **inbound** — a requirement on a certificate *presented* to the authority, never one the issuing school
-> must obtain. Two of them sit in documents that a careless reading would file as issuance gates.
+> 5. **A corpus negative is FALSE, and it was one of the better-evidenced ones.** *"Sikkim RTE Rules:
+>    searched-negative"* rested on a genuinely rigorous **controlled** probe — and **the Rules exist**
+>    (Gazette Extraordinary No. 411, 11 Aug 2010). The control bounded the *host*, not the world. See C-19b.
+>
+> **And two methodological warnings.**
+>
+> **First: every single countersignature provision recovered in this run is *inbound*** — a requirement on a
+> certificate *presented* to the authority, never one the issuing school must obtain. Two of them sit in
+> documents that a careless reading would file as issuance gates.
+>
+> **Second: across all five authorities, not one requires anything on a TC the school issues.** Three prescribe
+> no format at all, one caps the *fee* instead (Arunachal r.48: ₹20/₹50), and one does not regulate student
+> certificates whatsoever (Sikkim). **The strongest single conclusion of this run is a negative**, and it is now
+> evidenced rather than assumed.
 
 ---
 
@@ -288,7 +307,7 @@ Education, Manipur**, each with a **₹5,000 non-refundable** fee by bank draft/
 ⇒ **Recognition in Manipur is granted by BOARD NOTIFICATION, in three sequential stages, each citing the prior
 stage's notification number.** A school's proof of status is therefore **a notification number, not a
 certificate with an expiry date** — which matters for how the product models it.
-⇒ **Form No. 3 proves a third stage the Recognition Rules page's cl.1(iii) does not list.** Registered as C-37.
+⇒ **Form No. 3 proves a third stage the Recognition Rules page's cl.1(iii) does not list.** Registered as C-43.
 - **Searched Level-A negatives across all three forms:** no validity/expiry period; no `transfer`, `leaving`,
   `countersign` or `migration`.
 
@@ -382,12 +401,20 @@ Verified against the page image at high magnification, verbatim: [A]
 ### 2.3 · UBSE — the technical block resolved
 
 > **The corpus recorded all eight UBSE questions as "NOT FOUND, technical block, retryable"** — one document a
-> pure scan needing OCR, the other a legacy Devanagari font declared as Helvetica producing Latin garbage.
+> pure scan needing OCR, the other reportedly "a legacy Devanagari font declared as Helvetica" producing Latin
+> garbage.
 >
-> **Both are now read at Evidence A, and no substitution cipher was guessed.** The scan was rendered and read
-> directly as page images; the legacy-font document was **also read as page images**, bypassing its corrupt text
-> layer entirely. The corpus's refusal to transliterate the cipher was right, and it turned out to be
-> unnecessary.
+> **Both are now read at Evidence A, and no substitution cipher was guessed** — the pages were rendered and read
+> directly as images, bypassing the corrupt text layer entirely.
+>
+> ⚠️ **And the second document's diagnosis was wrong — a correction I adopt from the concurrent session's C-32
+> (as further refined by **that session's own C-34**, which establishes that a real, searchable **Kruti Dev**
+> legacy-font class *does* exist — just not in this file) rather than having found it myself.** There was never a legacy Devanagari font: the file is a **Canon scan**
+> (creator `Canon SC1011`, producer `MP Navigator EX`), 11 page-images carrying ~23.6k characters of **OCR
+> garbage** in one `Helvetica/WinAnsiEncoding` font. **So no font mapping would ever have worked**, and the
+> remedy the corpus had queued ("needs a legacy-font mapping") was aimed at a problem that did not exist. The
+> corpus's *refusal to transliterate* was still the right call — but for a better reason than it knew: there was
+> no cipher to transliterate, only bad OCR of an image.
 
 #### 2.3.1 · Procedure (Duplicate Copy, Migration, Correction and Scrutiny) — read in full, 6 pages
 
@@ -463,6 +490,14 @@ conditions — each reciting Regs 3–5 of Chapter 7.
 ⇒ **This is the JKBOSE shape — recognition per subject and per examination — and it defeats a single
 per-school recognition record.**
 
+> ✅ **Independently corroborated.** A concurrent session read the same PDF without coordination and reached the
+> same conclusion (`ubse-recognition-conditions.md`, and **C-33** in `CONFLICTS.md`: *"Per-section recognition,
+> established in a NORTHERN state at [A] — twice over"*), adding the **evidence-burden** limb to the fee limb:
+> **Reg. 5(ढ)** requires an additional stream or subject to be supported by *the school's own last two years of
+> Intermediate results, year by year, separately.* **Two independent reads, same finding — this is the most
+> strongly corroborated single result across both runs**, and it settles the C-14 question ("per-section does
+> NOT generalise") for at least one northern state.**
+
 **The ladder is explicit and one-directional.** [A]
 - p.3 cl.9: *"**किसी भी संस्था को सीधे कक्षा 11 व 12 की मान्यता प्रदान नहीं की जायेगी।**"* — no institution is
   granted recognition **directly** for classes 11 & 12.
@@ -534,7 +569,7 @@ Principals** — and it is the richest UBSE source found.
   अधिकारी / प्रादेशिक बालिका शिक्षा अधिकारी**) द्वारा **प्रतिहस्ताक्षरित** कराकर प्रमाण-पत्र के साथ अवश्य भेजें।"*
   — for a name or father's-name correction, get the **छात्र-पंजिका (Students'/Scholar's Register)** countersigned
   by the **District Education Officer / Regional Girls' Education Officer**. **Different document AND different
-  officers** from the Procedure document's *Class 10 TC countersigned by BEO/CEO*. Registered as C-34, unresolved.
+  officers** from the Procedure document's *Class 10 TC countersigned by BEO/CEO*. Registered as C-40, unresolved.
   ⇒ Note also that **UBSE, like HPBOSE, centres the Scholar's/Students' Register rather than the TC** — the
   corpus records HPBOSE as prescribing a *Scholar's Register (Annexure-I)* and no TC proforma. **Second
   instance, independent.**
@@ -1016,7 +1051,20 @@ a deferred commencement whose notification was not found. **Whether it is in for
 
 ## 3 · Conflicts to register
 
-### C-34 · UBSE contradicts itself on WHICH document is countersigned, and by WHOM
+> **Numbering note.** A concurrent session was writing into this corpus while this file was produced, and its
+> allocation grew *during* this run — it now holds **C-26 through C-36** (plus `C-16c` and `C-19a`) in
+> `CONFLICTS.md`. This file therefore uses **C-40–C-44**, deliberately leaving **C-37–C-39 free** as headroom
+> for that session, and **C-16d / C-19b / C-12a** for the thematic families. **Nothing here renumbers or
+> overwrites another session's entry** — but whoever merges these two files should re-check the allocation
+> before appending to `CONFLICTS.md`, because that is twice this has had to move.
+>
+> **Two of that session's corrections are adopted below rather than argued with** — its **C-31/C-32** (the
+> "legacy Devanagari font" diagnosis was wrong; both blocked PDFs are Canon scans) and its **C-33**, which
+> reached the *same* per-stream/per-subject UBSE conclusion as §2.3.2 **from an independent read of the same
+> PDF**. That convergence is the strongest corroboration either of us produced, and it is recorded as agreement,
+> not as a duplicate finding.
+
+### C-40 · UBSE contradicts itself on WHICH document is countersigned, and by WHOM
 
 Both limbs are **Evidence A**, both are UBSE, and both concern the **same transaction** — a name /
 father's-name correction in a Board certificate.
@@ -1035,7 +1083,7 @@ establishes which**, and the documents carry no dates on their faces. The circul
 live** — BEO, CEO, DEO and Regional Girls' Education Officer — and the required *document* is itself disputed.
 Surface all of it as guidance; enforce none of it.
 
-### C-35 · MBOSE's countersigning officer is ambiguous in a way that matters
+### C-41 · MBOSE's countersigning officer is ambiguous in a way that matters
 
 **r.2.1(i)(b)** puts the countersignature on *"the competent authority of the **respective State/Union
 Territory**"* — unmistakably the **origin** jurisdiction. But **r.3.14(c)** and **r.3.15(i)–(ii)** name *"the
@@ -1053,7 +1101,7 @@ must obtain a countersignature on a TC it issues — it need not.
 but **the countersigning officer may belong to the origin** even when the *rule* belongs to the destination.
 Those are two different fields and a single one will hold the wrong value.
 
-### C-36 · BSEM's recognition stages: the rules page says two, the forms say three
+### C-42 · BSEM's recognition stages: the rules page says two, the forms say three
 
 The Recognition Rules page, cl.1(iii), enumerates *"(a) Permission to open class IX. (b) Provisional recognition
 of High Schools."* [B] But **FORM No. 3, "Application for Permanent Recognition of High School"**, exists and
@@ -1086,7 +1134,7 @@ rigorous *controlled* probe — and was still wrong, because the control bounded
 **Record the rule: a controlled negative licenses "absent from this avenue", never "does not exist."** The
 earlier stream in fact said so; the conclusion drifted stronger than its own caveat.
 
-### C-37 · Sikkim: who grants RTE recognition — the rule and its own form disagree
+### C-43 · Sikkim: who grants RTE recognition — the rule and its own form disagree
 
 **RTE Rules 2010, r.11(4)** says recognition is granted *"by the **Director, School Education**, in Form No. II"*.
 But **the printed Form No. II template in the same gazette is subscribed "Joint Director, Human Resource
@@ -1101,7 +1149,7 @@ answer. **Surface both; default neither.** Note the same MHRD Form-II template p
 rule-vs-form conflict on *validity* (corpus gap #66) — **the template itself is the common cause**, which
 suggests checking it wherever it was adopted rather than treating each state's conflict as local.
 
-### C-38 · Arunachal Pradesh: two unreconciled tensions inside its own instruments
+### C-44 · Arunachal Pradesh: two unreconciled tensions inside its own instruments
 
 **(a) Two designations for the same signatory, in the same notification.** AP RTE Rules **r.11(4)** vests the
 recognition power in the **Deputy Director of School Education**, while **FORM II** in the same notification is
@@ -1109,7 +1157,7 @@ headed **"OFFICE OF DISTRICT EDUCATION OFFICER"**. [A both] The form was lifted 
 Rules**; Arunachal's operative district officer is the **DDSE**, and *"District Education Officer"* is **not a
 designation the Education Rules use anywhere**. ⇒ **Prefer the DDSE, but record that the form says otherwise.**
 Note this is the **third** state in which the borrowed MHRD Form II contradicts its own parent rule — Meghalaya
-on validity, Sikkim on the granting officer (C-37), Arunachal on the designation. **The template is the common
+on validity, Sikkim on the granting officer (C-43), Arunachal on the designation. **The template is the common
 cause; check it wherever it was adopted.**
 
 **(b) "Registration" for one year vs "recognition" continuing.** **r.68** says *"The registration will be for a
@@ -1186,6 +1234,7 @@ and it displaces no countersignature.
 | 7 | **MBOSE: HSSLC (Class XII) Examination Regulations** | the **entire 253-row notice index across all 13 pages**, plus the latest-news index, enumerated and regex-matched; **exactly two rows matched, both the SSLC instrument** |
 | 8 | **All three: any withholding-for-dues rule** | `dues` = 0 in the MBOSE Regulations, the BSEM Act and the Manipur RTE Rules; nothing in the UBSE instruments. **MBOSE r.8.2 withholds *results*, not certificates, and not for money** |
 | 9 | **All four: UDISE+/APAAR/DigiLocker in the rule text** | zero occurrences; see §3 |
+| 9b | **Arunachal: any TC format, signatory, countersignature or dues rule** | full text of the **AP Education Rules 2010** (all 71 rules, independently re-verified: `leaving certificate` = 0, `countersign` = 0, `migration` = 0, `UDISE`/`DISE` = 0, `transfer certificate` = 1 at r.14(b), `withhold` = 1 at r.47(2)(d)), the **AP RTE Rules 2010** incl. Forms I–II, and the full **Act**. Plus a gazette sweep: **EOG 2010, 2011, 2012, 2013, 2014, 2017 — all zero** for "transfer certificate" / "leaving certificate", fuzzy-grepped to survive OCR drift, every *"leaving certificate"* hit in 2010–2014 being a recruitment qualification. **EOG 2017's 20 `countersign` hits were each checked and are all travelling-allowance bills, fair-price-shop challans and university statutes — none school-related.** ⚠️ **Bounded:** EOG **2020–2023** and the **Normal Gazette** series are unswept (row 15j) |
 | 9a | **Sikkim: any TC / leaving-certificate / countersignature / dues provision** | full text of the **Sikkim Education Act 2005** (`transfer certificate`, `leaving certificate`, `countersign`, `migration certificate`, `dues` = **0**, independently re-verified), the **2008 Rules** rr.1–32 + **Forms I–XVI**, the **RTE Rules 2010** rr.1–26, the **1978 Board Act**, and the repealed **2002 Act**; plus the 11,645-record gazette repository with working controls (see §2.5.4 for the exact control results **and the stated abstract-only limit**) |
 
 ### Documents that EXIST but are not published — each with a precise request
@@ -1202,6 +1251,12 @@ and it displaces no countersignature.
 | 15b | **Full-TEXT search of the Sikkim gazette** (the repository indexes **abstracts only**, which bounds the §2.5.4 negative) | **The single highest-yield unclosed avenue in this file.** Bulk-download the **444 `deptId=3` records** from `https://www.sikkim.gov.in/mygovernment/gazettes` (PDFs at `https://sikkim.gov.in/uploads/Gazette/{n}_{yyyymmdd}.pdf`) and OCR them. Every Sikkim gazette scan from 2007 on is **image-only**. ⚠️ **macOS Vision cannot do this** — these are English scans, so Vision *would* work where the text is English, but no OCR was run over the bulk set in this run |
 | 15c | **Sikkim: re-designation of the s.2(c)/(r) authorities after the HRDD → Education Department rename** | The 2008 appointment (Gazette 461) names *"Secretary, H.R.D. Department"* and *"Director (School Education)"*; HRDD no longer exists under that name, and the 2021 restructuring created **Chief Education Officers** | Gazette search `deptId=3`, `ClassificationID=13` (Constitutional & Statutory Appointments); or the RTI in 15a |
 | 15d | **Sikkim: status of the Sikkim Primary Education Act, 2000** (Act 14 of 2000) | **Not repealed** by s.77 of the 2005 Act and **not on the repealed register**; its s.1(2) commencement notification was not found | Law Department, Gangtok; or gazette search by `SDate` 2000–2002 with the Law Department `deptId` |
+| 15f | ⚠️ **MIRROR THE ARUNACHAL GAZETTE COMPENDIUM — the most urgent action in this file.** The entire Arunachal finding rests on **one 18 MB PDF** at an opaque `uploads/pdf/<hash>_<epoch>.pdf` path on a **single webserver that Wayback has not archived** (CDX: 34 URLs, none under `/uploads/`) | Copy `https://printing.arunachal.gov.in/uploads/pdf/6a2a72510a71c_1781166673.pdf` into the corpus (or at minimum extract **pages 470–489**, the Education Rules, and the AP RTE Rules from EOG No. 76). **A site rebuild would silently destroy the only retrievable copy of a document this programme spent two runs looking for.** The AP RTE Rules 2010 (EOG No. 76, 8 July 2010) need the same treatment |
+| 15g | **Arunachal: the s.2(6) / s.2(34) designation notification** — who *is* the "competent authority" and "registering authority". The Act leaves both entirely to notification, *"for such area or for such purposes or for such **classes of institutions** as may be specified"*, and **no such notification is in the published record.** The 2010 Rules do **not** cure it: they use both terms throughout while **r.2 defines neither** | RTI / written request to the **Director of School Education** and the **Commissioner (Education), Government of Arunachal Pradesh, Itanagar** for any notification under **s.2(6)** and **s.2(34)** of the Arunachal Pradesh Education Act 2010, specifying area and classes of institutions |
+| 15h | **Arunachal: any pre-2010 departmental order on TCs kept alive by r.71 Savings** — structurally the likeliest home of actual practice (§2.4.5), and **by definition not in the gazette compendium** | Same RTI as 15g, asking specifically for *"any order, circular or official memorandum in force before 20 August 2010 and not since superseded, governing the issue of Transfer Certificates by schools — including content, signatory, and any countersignature or verification requirement."* **This is the right next step for Arunachal, not more gazette sweeping** |
+| 15i | **Arunachal: commencement notification for the Education Act 2010 (Act 8 of 2010)** — s.1(4) allows *"different dates … for different provisions"*. s.141 is evidently in force (the Rules and the 2015 amendment were made under it) but **which provisions commenced when is not established.** India Code holds a commencement notification only for Act **9** of 2010 | Same office; request the s.1(4) notification(s) |
+| 15j | **Arunachal: any prescribed TC/SLC form in a later gazette** — residual, and **substantially narrowed but not closed** | See the sweep state in the method notes below. Remaining: **EOG 2020–2023** and the **Normal Gazette** series, from the same `?menu=Archive` listing. ⚠️ **The Archive's year-holes are genuine, not pagination artefacts** — 91 rows, single page, no `page`/`limit`/`offset` parameter, no next/prev controls — so **EOG 2000–2004, 2015, 2016, 2018 and 2019 are a real digitisation gap** and those years cannot be swept from this channel at all |
+| 15k | **Arunachal / Sikkim case law on student TCs — HUMAN-ONLY (CAPTCHA)** | 🔒 `https://judgments.ecourts.gov.in/pdfsearch/index.php` is behind a **securimage CAPTCHA (image + audio)** and **was not attempted**. A person should search `"Arunachal Pradesh Education Rules"` and `"transfer certificate" Arunachal`; it indexes far more Itanagar-Bench material than the free-text channel. **A channel that does work, CAPTCHA-free:** the **Gauhati HC free-text search** (`POST https://ghcservices.assam.gov.in/free_text/model/search.php`, fields `t_search`, `r_year` 2011–2026, `s_type=Exact`) — it surfaced the Rules judicially applied three times (**WP(C) 5280/2014 & 5371/2014**, **WP(C) 3932/2016**), **all teacher transfer, none on student TCs** |
 | 15e | **Sikkim: commencement notification for the Board of School Education Act, 1978** | `"Board of School Education"` → **1 record only**, the Act itself (Gazette 138, 26 Sept 1978). **Whether the 1978 Board was ever constituted remains open, with no affirmative evidence either way** | Try **Old Durbar Gazette Notifications** at <https://www.sikkim.gov.in/mygovernment/olddurbargazettes>, and the Law Department for the s.1(2) notification under Act 19 of 1978 |
 
 ### Method limitations that shaped this run — disclosed so the gaps are reproducible
@@ -1215,9 +1270,10 @@ and it displaces no countersignature.
 - **macOS Vision OCR has no Devanagari support** (30 languages, none Indic). Hindi documents were therefore
   **read directly as rendered page images** rather than OCR'd. English scans (the BSEM Act, the Manipur RTE
   Rules, the MBOSE notification) were OCR'd with a purpose-built Vision harness.
-- **The legacy-font cipher was never transliterated.** The corpus's earlier refusal to guess at the Kruti-Dev-
-  style substitution in the UBSE recognition PDF was correct; reading the page images made the question moot.
-  **No claim in §2.3 rests on a guessed character mapping.**
+- **No character mapping was ever guessed.** The corpus's refusal to transliterate the supposed Kruti-Dev-style
+  substitution in the UBSE recognition PDF was correct, and reading the page images made the question moot.
+  **No claim in §2.3 rests on a guessed character mapping** — and per C-32 there was no cipher there to guess at
+  in the first place, only OCR noise over a scan.
 - **`https://mbose.in/public/media_file/` returns 403** (no directory listing), and the filenames are Unix
   timestamps. Documents were therefore reached **only through MBOSE's own paginated indexes**, never by guessing
   filenames. This is why row 7's negative is trustworthy and also why it is bounded: **a document never listed in
@@ -1241,6 +1297,19 @@ and it displaces no countersignature.
   connect** (curl exit 000); `www.sikkim.gov.in/departments/human-resource-development-department` returns
   **HTTP 500** — the live path is **`/departments/education-department`**. The working repository is
   **`https://www.sikkim.gov.in/mygovernment/gazettes`**.
+- ⚠️ **Indian Kanoon is a PROVEN false negative for Arunachal — stronger than the corpus's existing warning.**
+  It returns *"no matching results"* for `"Arunachal Pradesh Education Rules"` **even restricted to Gauhati HC**,
+  yet that exact phrase appears in **three Gauhati HC orders** retrieved from the court's own portal. Its
+  `arunachal-act` / `arunachal-section` corpora **do not contain the AP Education Act 2010 at all.** The corpus
+  already records Indian Kanoon silence as weak evidence; for Arunachal it is **affirmatively misleading.**
+- ⚠️ **`lawsofindia.org` is DEAD** — the ILI domain has lapsed and now serves a squatted Thai-language WordPress
+  stub (verified). Wayback holds only Arunachal **Acts** (1976–2011), **no Rules**. **Record this as a
+  corpus-wide infrastructure change**, since earlier streams may have relied on it.
+- **A grep false positive worth inheriting, self-caught by the Arunachal stream:** `grep -i "SED-"` (intended to
+  find Education Department notification numbers like `SED-143/2015`) **also matches "clo`sed-`circuit" and
+  "propo`sed-`"**. No finding rested on it, but **the signal should be discarded, not read as a notification
+  count.** This is the same failure mode as `COVERAGE.md`'s two manufactured gaps: **a regex that keys on one
+  surface form will invent or inflate evidence.**
 - **A dating trap on an Evidence-B source the corpus may have over-weighted:** HRDD's RTI manual ch.6 lists
   *"Sikkim State Education Act"* among the rules it holds — but **that manual is dated 3 December 2007**, i.e.
   *before* the 2005 Act commenced and before RTE existed. **It cannot be read as a statement about the current
@@ -1255,14 +1324,30 @@ and it displaces no countersignature.
    'MBOSE prescribes nothing' as a settled fact"* has done its job and should now be replaced: the Regulations
    are read, and **MBOSE prescribes no TC format but does impose an inbound countersignature.** Those are two
    different facts and both are now Level A.
-2. **Countersignature needs a direction field, not a boolean — and a second officer field.** C-27 shows the
-   *rule* can belong to the destination while the *officer* belongs to the origin. C-26 shows a single
+2. **Countersignature needs a direction field, not a boolean — and a second officer field.** C-41 shows the
+   *rule* can belong to the destination while the *officer* belongs to the origin. C-40 shows a single
    jurisdiction can have four live officer designations and a disputed target document.
 3. **Never gate issuance on countersignature in any of these five jurisdictions.** Nothing found in this run
    requires an issuing school to obtain one. Two of the provisions recovered would read as issuance gates to a
    careless eye and are not.
 4. **Recognition cannot be one record.** UBSE is per examination × per stream × per subject; BSEM is per stage
-   by notification number with no expiry; Manipur defers from its RTE rule to a separate state statute. **A
-   `recognitionOrder` with a `validUntil` models none of the three.**
-5. **Validity must stay absent, not zero.** For all three authorities I closed, the validity term is either
-   absent from the rule body or sits in an unpublished form. Per C-6 that is the one place it hides.
+   by Board **notification number** with no expiry; Manipur defers from its RTE rule to a separate state
+   statute; **Sikkim requires two grants** (registration *then* recognition) from **two different officers**;
+   and **Arunachal may hold two live recognitions at once** with different terms and different granting
+   officers and **no priority clause** (C-44). **A `recognitionOrder` with a `validUntil` models none of them.**
+5. **Validity must stay absent, not zero.** Where a term exists it is in wildly different places — Arunachal's
+   in the **rule body** (r.68, 1 year) *and* in the **form** (RTE Form II, 3 years); Sikkim's in a **fee-banded
+   table** plus a form; UBSE's and BSEM's nowhere at all. Per C-6, the form is where it hides — but Arunachal
+   shows the form is not always the whole answer.
+6. **Renewal triggers are fixed calendar dates as often as offsets.** Arunachal **31 March** (r.70(a)), UBSE
+   **31 July** with a hard stop at **31 October**, BSEM **31 August**, Sikkim **September** of the preceding
+   year and **60 days** before provisional expiry. **An offset-only reminder engine silently never fires for
+   four of these five.** This is C-13's Puducherry problem, now the majority case rather than the exception.
+7. **A fee cap is a regulated field nobody modelled.** Arunachal r.48 caps what a school may charge for a
+   Transfer, Provisional, Appearing, Character **or duplicate** certificate at **₹20 (government) / ₹50
+   (private)**. The engine issues most of those documents. **It is the only price regulation found anywhere in
+   this run, and it is enforceable.**
+8. **Two small validation rules worth encoding today**, both cheap and both Level A: `KM`/`SMT` on an
+   Uttarakhand Board document is a **marital-status marker, not part of the name** (§2.3.4); and a Manipur
+   **private** school's elementary-completion certificate must carry the **recognition-certificate number
+   stamped prominently** (§2.2.5, r.23 proviso) — **and only that certificate, not a TC.**
