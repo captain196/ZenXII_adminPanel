@@ -4,14 +4,34 @@ $s   = $student;
 $tc  = $tc;
 $sp  = $school_profile;
 
-// School details (dynamic - changes per school)
-$schoolName   = $sp['school_name'] ?? $school_name ?? 'School';
-$schoolAddr   = $sp['address'] ?? '';
+/* SCHOOL DETAILS — READ THE KEYS THE DOCUMENT ACTUALLY HAS.
+ *
+ * $school_profile is the raw schools/{id} Firestore document, which is
+ * camelCase. This block read snake_case, so six of eight lookups missed and
+ * silently fell back:
+ *
+ *     school_name    -> the document has `name` / `schoolName`
+ *     logo           -> `logoUrl`            (no crest printed)
+ *     affiliation_no -> `affiliationNo`      (the number never printed)
+ *     board          -> `affiliationBoard`   (fell back to a literal)
+ *     school_code    -> `schoolCode`
+ *
+ * Only `address` and `phone` happened to match. This is the same key-shape
+ * drift CLAUDE.md documents for auth claims — one side snake, one camel, no
+ * error, just a blank.
+ *
+ * THE BOARD NO LONGER DEFAULTS. It used to fall back to the literal 'C.B.S.E',
+ * so a school that had never recorded a board printed a false affiliation on a
+ * statutory document. An unrecorded board now prints nothing, because a
+ * certificate that asserts an affiliation the school does not hold is worse
+ * than one that asserts none. */
+$schoolName   = $sp['name'] ?? $sp['schoolName'] ?? $school_name ?? 'School';
+$schoolAddr   = $sp['address'] ?? $sp['street'] ?? '';
 $schoolPhone  = $sp['phone'] ?? '';
-$schoolLogo   = $sp['logo'] ?? '';
-$schoolAffNo  = $sp['affiliation_no'] ?? $sp['aff_no'] ?? '';
-$schoolBoard  = $sp['board'] ?? 'C.B.S.E';
-$schoolCode   = $sp['school_code'] ?? '';
+$schoolLogo   = $sp['logoUrl'] ?? '';
+$schoolAffNo  = $sp['affiliationNo'] ?? '';
+$schoolBoard  = $sp['affiliationBoard'] ?? '';
+$schoolCode   = $sp['schoolCode'] ?? '';
 
 // Student details
 $studentName = $s['Name'] ?? '';
@@ -411,9 +431,37 @@ body {
             <?php if ($schoolAddr): ?>
                 <div class="school-addr"><?= htmlspecialchars($schoolAddr) ?></div>
             <?php endif; ?>
-            <div class="school-affil">Affiliated to <?= htmlspecialchars($schoolBoard) ?>, New Delhi</div>
-            <?php if ($schoolAffNo): ?>
-                <div class="school-affil-no">Affl. No: <?= htmlspecialchars($schoolAffNo) ?></div>
+            <?php
+            /* "New Delhi" was hardcoded here, so every certificate this system
+               printed — for every school, in every state, under every board —
+               read "Affiliated to C.B.S.E, New Delhi". For a Madhya Pradesh
+               state-board school that is simply false, on a document a family
+               carries to the next school and the receiving school relies on.
+
+               A board is now printed only if the school recorded one, and the
+               city is not asserted at all: the affiliating body's seat is not
+               something this view knows.
+
+               CBSE's SOP of 04.02.2020 (I(b)) requires the letterhead of a
+               CBSE school to read "AFFILIATED TO CENTRAL BOARD OF SECONDARY
+               EDUCATION / AFFILIATION NO. ____" below the name and address, so
+               for CBSE the wording is prescribed rather than ours to choose. */
+            ?>
+            <?php if ($schoolBoard): ?>
+                <?php if (stripos($schoolBoard, 'cbse') !== false
+                       || stripos($schoolBoard, 'central board') !== false): ?>
+                    <div class="school-affil">AFFILIATED TO CENTRAL BOARD OF SECONDARY EDUCATION</div>
+                    <?php if ($schoolAffNo): ?>
+                        <div class="school-affil-no">AFFILIATION NO. <?= htmlspecialchars($schoolAffNo) ?></div>
+                    <?php endif; ?>
+                <?php else: ?>
+                    <div class="school-affil">Affiliated to <?= htmlspecialchars($schoolBoard) ?></div>
+                    <?php if ($schoolAffNo): ?>
+                        <div class="school-affil-no">Affiliation No: <?= htmlspecialchars($schoolAffNo) ?></div>
+                    <?php endif; ?>
+                <?php endif; ?>
+            <?php elseif ($schoolAffNo): ?>
+                <div class="school-affil-no">Affiliation No: <?= htmlspecialchars($schoolAffNo) ?></div>
             <?php endif; ?>
         </div>
     </div>
