@@ -1,11 +1,71 @@
-# Conflicts between research streams
+# Conflict register
 
-Recorded rather than resolved. Where two streams disagree, picking a winner would manufacture
-certainty neither earned — and the whole point of the evidence discipline is that we would
-rather say "unsettled" than assert a rule a school might act on.
+**35 entries, IDs now unique.** They were not: successive research streams each appended without
+checking the highest number in use, so `C-9`, `C-19`, `C-20` and `C-16b` were each issued twice.
+The second of each is now `C-9a`, `C-19a`, `C-20a`, `C-16c`. **The `C-16b` collision was the
+damaging one — the two entries sharing that ID contradicted each other**, so a citation of "C-16b"
+resolved to either a claim or its own refutation depending on which one you scrolled to.
+
+This is a register, not a resolution. **Where two streams disagree, both readings stay recorded
+with their evidence** — the convenient one was never allowed to quietly win.
+
+## Index
+
+| id | subject | status |
+|---|---|---|
+| C-1 | Countersignature: interstate-only or general? | superseded by **C-15** |
+| C-2 | "Recognition" denotes two different things | established |
+| C-2a | "Recognised" = the board's own grant (3rd instance) | confirms C-2 |
+| C-3 | Recognition validity has no common shape | established |
+| C-3a | **Correction** — "Punjab: 3 years" was wrong | corrects C-3 |
+| C-4 | Recognition lapses on EVENTS, not only dates | established |
+| C-5 | The granting officer is not fixed | established |
+| C-6 | Validity may live in the FORM, not the rules | lead, confirmed by C-3a |
+| C-7 | There is a fourth identifier | established |
+| C-8 | Countersignature: a third position | superseded by **C-15** |
+| C-9 | Autonomous councils unresolved | **resolved by C-9a** |
+| C-9a | Autonomous councils have no certificate role | **RESOLVED** |
+| C-10 | Four premises I supplied came back altered | **correction to me** |
+| C-11 | The no-dues position is more precise than "courts gutted it" | established |
+| C-12 | Countersignature is being replaced by printed identifiers | established |
+| C-13 | Validity cannot be one field | **design-binding** |
+| C-14 | Per-section recognition does NOT generalise | **correction to me** |
+| C-15 | Countersignature is the RECEIVING board's rule, and not dead | **RESOLVES C-1/C-8** |
+| C-15a | Confirmed again from a second region | confirms C-15 |
+| C-15b | A countersignature that runs the other way | refines C-15 |
+| C-16 | No state board prescribes a TC format | **WRONG — see C-16c** |
+| C-16a | Negative extended to fifteen more boards | superseded |
+| C-16b | Negative "regional-complete" | **WRONG — see C-16c** |
+| C-16c | **Prescribed formats DO exist — mostly STATE-made** | **SUPERSEDES C-16/16a/16b** |
+| C-17 | Two more boards mandate printed identifiers | **overstated — see C-19** |
+| C-18 | Affiliation is downstream of recognition | established |
+| C-19 | The Tamil Nadu printed-identifier rule is NOT established | **corrects C-17** |
+| C-19a | Sikkim — two of four claims overturned | **correction** |
+| C-20 | Printed-identifier mandates are STATE rules, not board rules | **layer correction** |
+| C-20a | Uttar Pradesh — officer CLOSED, validity a NEW conflict | **validity OPEN** |
+| C-21 | TNER Rule 40 — resolved, premise was backwards | **RESOLVED** |
+| C-22 | Maharashtra GR number not obtained | superseded by **C-23** |
+| C-23 | The Maharashtra GR is CAPTCHA-gated | **HUMAN-ONLY** |
+| C-24 | KVS/NVS — my question rested on a false premise | **UNSUPPORTED, not disproved** |
+| C-25 | Sainik/RMS/AWES/CTSA not researched | **outstanding** |
+
+### What is actually still open
+
+- **C-20a** — UP recognition validity: two primary instruments disagree on the provisional term.
+- **C-23** — the Maharashtra GR, behind a CAPTCHA. **A person must run this search.**
+- **C-24** — the KVS Asstt. Commissioner countersignature is *unsupported*, which is not the same
+  as disproved; the Education Code is a ~1980s edition and no post-2014 circular was found either way.
+- **C-25** — four central school systems, under research.
+
+### The corrections worth carrying into implementation
+
+**Five entries correct something I asserted** (C-10, C-14, C-16c, C-19, C-19a, C-3a). The pattern in
+all of them is the same: I generalised from one instance, or stated a negative from a search that
+had not actually covered the ground. **C-16c is the sharpest** — I claimed CBSE's Annexure-I was the
+only prescribed TC format in India while a stream I had already committed recorded Gujarat's
+**નમૂનો-૯**. Any code that assumes one national format is wrong.
 
 ---
-
 ## C-1 · Is countersignature interstate-only, or general with a carve-out?
 
 **West & Central concluded** it is an **inbound-admission rule scoped to out-of-state
@@ -372,7 +432,7 @@ Also from this stream, both new:
 
 ---
 
-## C-9 · RESOLVED — autonomous councils have no certificate role
+## C-9a · RESOLVED — autonomous councils have no certificate role
 
 The first wave found this genuinely unresolved and **correctly declined to encode either
 answer**. It is now settled, in the negative, at Evidence A.
@@ -573,7 +633,7 @@ EXCEPT in Gujarat, where the board's own regulation is the prescribing instrumen
 
 ---
 
-## C-16b · CORRECTION TO MY OWN C-16 — prescribed formats DO exist; they are mostly STATE-made
+## C-16c · CORRECTION TO MY OWN C-16 — prescribed formats DO exist; they are mostly STATE-made
 
 I wrote, twice, that *"CBSE's Annexure-I remains the only prescribed Transfer Certificate
 format found in India."* **That is wrong, and it contradicted a stream I had already
@@ -622,7 +682,7 @@ JS menus could not be enumerated. Not to be asserted as settled.
 
 ---
 
-## C-19 · Sikkim — two of four claims OVERTURNED
+## C-19a · Sikkim — two of four claims OVERTURNED
 
 The first wave reported Sikkim as having no RTE Rules, no Education Act, no recognition officer
 and **no state board**. Two do not survive:
@@ -662,7 +722,7 @@ alongside the portal-transfer regime found independently in the browser.
 
 ---
 
-## C-20 · Uttar Pradesh — officer CLOSED, validity a NEW conflict
+## C-20a · Uttar Pradesh — officer CLOSED, validity a NEW conflict
 
 **Officer, closed at Evidence A on two independent instruments** — G.O. 575/68-3-2018-2041/2023
 (26.09.2023, s.13 UP Basic Education Act 1972) and UP RTE Rules 2011 r.11 + r.2(1)(j):
