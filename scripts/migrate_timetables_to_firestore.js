@@ -30,6 +30,7 @@
 
 const admin = require('firebase-admin');
 const path  = require('path');
+const guard = require(path.resolve(__dirname, 'lib', 'projection_guard.js'));
 
 const SERVICE_ACCOUNT_PATH = path.resolve(
   __dirname,
@@ -255,6 +256,27 @@ async function processDayTuple({
     logDecision('ERROR', docId, `read failed: ${e.message}`);
     stats.errors++;
     bumpSchool(schoolId, 'errors');
+    return;
+  }
+
+  // ── the canonical lifecycle owns this document (added 2026-09-12) ──
+  //
+  // The write below is `set(payload, { merge: false })` — a FULL REPLACE. Its
+  // comment argues it is safe because OVERWRITE only fires on an empty-periods
+  // document; that reasoning predates the version architecture and no longer
+  // holds. A projected document is written by a PUBLISHED timetable, and
+  // replacing it would change what teachers and parents see from a source no
+  // version records — silently, and with the canonical record still claiming
+  // otherwise.
+  //
+  // It also cannot be correct on its own terms any more: the source is RTDB,
+  // which is retired, so anything it writes here is older than what it lands on.
+  if (guard.isProjected(existing)) {
+    logDecision('SKIP', docId,
+      `owned by published version ${existing.projectedFromVersion} — `
+      + 'change the timetable and publish instead');
+    stats.decisionSkip++;
+    bumpSchool(schoolId, 'skip');
     return;
   }
 

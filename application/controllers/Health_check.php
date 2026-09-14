@@ -53,7 +53,11 @@ class Health_check extends MY_Controller
         $this->_require_role(self::ADMIN_ROLES, 'view_health_check', 'Configuration', 'view');
         $data['modules']      = $this->_modules();
         $data['session_year'] = $this->session_year;
-        $data['school_name']  = $this->school_name;
+        // $this->school_name is the tenant ID — MY_Controller sets
+        // `school_name = school_id` ("canonical: name == id"), so passing it
+        // here printed the code twice: "SCH_B56BB9A401 (SCH_B56BB9A401)".
+        // school_display_name is the human name the sidebar already shows.
+        $data['school_name']  = $this->school_display_name ?: $this->school_name;
         $data['school_id']    = $this->school_id;
 
         $this->load->view('include/header');
@@ -165,30 +169,25 @@ class Health_check extends MY_Controller
        SHARED HELPERS
     ══════════════════════════════════════════════════════════════════════ */
 
-    protected function _get_session_classes(): array
-    {
-        $school  = $this->school_name;
-        $session = $this->session_year;
-        $classes = [];
-
-        $keys = $this->firebase->shallow_get("Schools/{$school}/{$session}");
-        if (!is_array($keys)) return $classes;
-
-        foreach ($keys as $key) {
-            if (strpos($key, 'Class ') !== 0) continue;
-            $sections = $this->firebase->shallow_get("Schools/{$school}/{$session}/{$key}");
-            if (!is_array($sections)) continue;
-            foreach ($sections as $sk) {
-                if (strpos($sk, 'Section ') !== 0) continue;
-                $classes[] = [
-                    'class_key'  => $key,
-                    'section'    => str_replace('Section ', '', $sk),
-                    'label'      => $key . ' / Section ' . str_replace('Section ', '', $sk),
-                ];
-            }
-        }
-        return $classes;
-    }
+    // Phase 16.3 (LIFE-1) — the local RTDB override that used to live here has
+    // been REMOVED; this controller now inherits the Firestore-backed
+    // MY_Controller::_get_session_classes().
+    //
+    // WHY IT WAS A DEFECT: it was a byte-for-byte copy of the retired RTDB
+    // enumeration, so every health check that walks classes was fed an empty
+    // list for Firestore-onboarded schools and reported "No classes to check"
+    // — a PASS. A diagnostic tool that silently passes because it can see
+    // nothing is worse than one that fails.
+    //
+    // It also contradicted this file's own intent: the roster check at
+    // _checks_* states "Firestore-only post-R1 migration … exercises the
+    // compound index + the Firestore students collection end-to-end", while
+    // being driven by an RTDB class list.
+    //
+    // The inherited implementation returns the identical contract, including
+    // the BARE `section` letter this file re-prefixes with `'Section ' . …`.
+    // It additionally supplies `class_section`, which this copy omitted —
+    // additive, so no existing check breaks.
 
     private function _p($detail) { return ['status' => 'pass', 'detail' => $detail]; }
     private function _w($detail) { return ['status' => 'warn', 'detail' => $detail]; }
@@ -812,6 +811,67 @@ class Health_check extends MY_Controller
        ACADEMIC CHECKS
     ══════════════════════════════════════════════════════════════════════ */
 
+    /**
+     * Has the platform's nightly timetable job run for this school recently?
+     *
+     * ── WHY THIS IS A SEPARATE QUESTION ─────────────────────────────────
+     *
+     * "The apps are showing the wrong timetable" has two very different causes,
+     * and telling a school to press a button is the wrong answer to one of them:
+     *
+     *   the scheduler ran and this school is genuinely behind → send it
+     *   the scheduler never ran at all → EVERY school is behind, and pressing
+     *       the button fixes this one until tomorrow, when it is stale again
+     *
+     * The second is a platform fault. It is also the one that looks exactly
+     * like the first from inside a single school, which is why it is worth the
+     * extra read to separate them.
+     *
+     * Read-only, and it never fails the check on its own — a missing run record
+     * is evidence about the scheduler, not proof about the timetable, and the
+     * equivalence comparison above is what decides whether teachers are seeing
+     * the right thing.
+     */
+    private function _timetable_scheduler_note(): string
+    {
+        $manual = 'Publishing changes the office view immediately; the apps read a '
+                . 'copy that has to be sent to them.';
+
+        try {
+            $runId = 'TTP_' . date('Ymd') . '_' . $this->school_id . '_' . $this->session_year;
+            $today = $this->firebase->firestoreGet('scheduled_job_runs', $runId);
+
+            if (is_array($today)) {
+                $outcome = (string) ($today['outcome'] ?? '');
+                if ($outcome === 'refused' || $outcome === 'failed') {
+                    return 'The nightly timetable job ran today and could NOT complete '
+                         . 'for this school (' . $outcome . '): '
+                         . (string) ($today['error'] ?? 'no reason recorded') . '.';
+                }
+                return 'The nightly timetable job ran today, so this is newer than '
+                     . 'that run.';
+            }
+
+            $yesterday = $this->firebase->firestoreGet('scheduled_job_runs',
+                'TTP_' . date('Ymd', strtotime('-1 day')) . '_'
+                . $this->school_id . '_' . $this->session_year);
+
+            if (!is_array($yesterday)) {
+                // Two days with no record at all. Either the schedule was never
+                // installed, or it has stopped — and in both cases every other
+                // school on the platform is in the same position.
+                return 'NOTE: the nightly timetable job has left no record for this '
+                     . 'school today or yesterday, so it may not be scheduled at all. '
+                     . 'That would affect EVERY school, not just this one — ask '
+                     . 'whoever runs the server to check the `--job=timetable` entry.';
+            }
+            return 'The nightly timetable job last ran yesterday.';
+        } catch (\Throwable $e) {
+            // Never let a diagnostic detail turn into a failure of its own.
+            return $manual;
+        }
+    }
+
     private function _checks_academic()
     {
         $school  = $this->school_name;
@@ -820,64 +880,215 @@ class Health_check extends MY_Controller
 
         return [
             [
+                // ── THE ONE THAT DECIDES WHETHER TEACHERS SEE THE TRUTH ──
+                //
+                // Publishing a timetable is instant for the canonical resolver
+                // and INVISIBLE to the Teacher and Parent apps, which read the
+                // legacy `timetables` projection. That projection is written
+                // only by the CLI cron, and this repository owns no scheduler.
+                //
+                // So the failure this catches is: a school publishes a correct
+                // timetable, nobody runs the cron, and every teacher keeps
+                // seeing the previous one — indefinitely, with no error
+                // anywhere. It was found exactly that way on 2026-09-12, and
+                // the only symptom was a teacher missing from a workload table.
+                //
+                // It asks the shared resolver what is in force, then asks the
+                // projection for a DRY RUN. It writes nothing and decides
+                // nothing; applying stays CLI-only behind APPLY=1.
+                'name' => 'Teachers See The Published Timetable',
+                'fn'   => function () {
+                    require_once APPPATH . 'libraries/Timetable_plan_store.php';
+                    $today = date('Y-m-d');
+                    try {
+                        $store = (new Timetable_plan_store())->init(
+                            $this->firebase, (string) $this->school_id,
+                            (string) $this->session_year, 'health_check');
+                        $res = $store->resolveForDate($today);
+                    } catch (\Throwable $e) {
+                        return $this->_f('Could not determine which timetable is in force: '
+                            . $e->getMessage());
+                    }
+
+                    $status = (string) ($res['status'] ?? '');
+                    if ($status === Timetable_plan_service::NONE) {
+                        return $this->_p("No timetable is published for {$today}");
+                    }
+                    if ($status !== Timetable_plan_service::RESOLVED) {
+                        // Ambiguous or unreadable: we cannot say teachers are
+                        // seeing the right thing, and saying nothing would read
+                        // as saying they are.
+                        return $this->_f('Which timetable applies today could not be '
+                            . 'determined (' . $status . '), so what teachers are seeing '
+                            . 'cannot be confirmed');
+                    }
+
+                    $versionId = (string) ($res['version']['versionId'] ?? '');
+                    try {
+                        $plan = $store->projectPublishedVersion(
+                            (string) ($res['version']['planId'] ?? 'REGULAR'),
+                            $versionId);                      // dry run
+                    } catch (\Throwable $e) {
+                        return $this->_f('The published timetable could not be compared '
+                            . 'against what teachers see: ' . $e->getMessage());
+                    }
+
+                    // EQUIVALENCE, not a count and not "the command ran". A
+                    // projection from the WRONG version completes just as
+                    // successfully as one from the right version, and a count
+                    // reads the same whether the apps are a lesson behind or
+                    // holding a timetable that matches no published version at
+                    // all — which is exactly the state this tenant was found in
+                    // on 2026-09-12.
+                    $dx = is_array($plan['diagnosis'] ?? null) ? $plan['diagnosis'] : [];
+                    if (($dx['inSync'] ?? false) === true) {
+                        return $this->_p('Teachers and parents are seeing the timetable '
+                            . "in force on {$today} — all "
+                            . (int) ($dx['expected'] ?? 0) . ' class page(s) match it');
+                    }
+
+                    // Say WHAT is wrong, then how to fix it — and distinguish
+                    // "the timetable is stale" from "the scheduler never ran",
+                    // because those have completely different remedies. The
+                    // first is one school's data; the second is the platform,
+                    // and every other school has it too.
+                    return $this->_f(
+                        (string) ($dx['summary'] ?? 'The apps do not match the published '
+                            . 'timetable.')
+                        . ' ' . $this->_timetable_scheduler_note()
+                        // Kept on one line deliberately: this exact phrase is the
+                        // button's label, and tests pin that the check names the
+                        // action a school can actually take. Split across a
+                        // concatenation it stops being findable — and so does the
+                        // guarantee that the two stay worded the same.
+                        . ' Someone who can publish timetables can do it from the '
+                        . 'Master Timetable screen: "Send to teachers and parents now".');
+                },
+            ],
+            [
                 'name' => 'Timetable Settings',
-                'fn'   => function() use ($fb, $school, $session) {
-                    $s = $fb->get("Schools/{$school}/{$session}/Time_table_settings");
-                    if (is_array($s) && !empty($s['No_of_periods']))
-                        return $this->_p((int)$s['No_of_periods'] . ' periods, ' . ($s['Start_time'] ?? '?') . ' - ' . ($s['End_time'] ?? '?'));
-                    return $this->_f('No timetable settings configured');
+                'fn'   => function () {
+                    // Firestore `timetableSettings/{school}_{session}`, written
+                    // by Timetable_service::saveSettings(). The old RTDB path
+                    // is empty, so this reported "not configured" for a school
+                    // whose week is configured.
+                    try {
+                        $s = $this->firebase->firestoreGet(
+                            'timetableSettings', "{$this->school_id}_{$this->session_year}");
+                    } catch (\Throwable $e) {
+                        return $this->_f('Timetable settings could not be read: ' . $e->getMessage());
+                    }
+                    if (!is_array($s)) return $this->_f('No timetable settings configured');
+
+                    // saveSettings dual-writes both key shapes; read both.
+                    $periods = (int) ($s['periodsPerDay'] ?? $s['No_of_periods'] ?? 0);
+                    $days    = $s['workingDays'] ?? $s['Working_days'] ?? [];
+                    $start   = $s['startTime'] ?? $s['Start_time'] ?? '?';
+                    $end     = $s['endTime']   ?? $s['End_time']   ?? '?';
+                    if ($periods <= 0) return $this->_f('No timetable settings configured');
+
+                    return $this->_p($periods . ' periods/day × ' . count((array) $days)
+                        . ' working days, ' . $start . ' - ' . $end);
                 },
             ],
             [
                 'name' => 'Class Timetables Populated',
-                'fn'   => function() use ($fb, $school, $session) {
-                    $classes = $this->_get_session_classes();
-                    if (empty($classes)) return $this->_p('No classes to check');
-                    $filled = 0;
-                    foreach ($classes as $cls) {
-                        $tt = $fb->get("Schools/{$school}/{$session}/{$cls['class_key']}/Section {$cls['section']}/Time_table");
-                        if (is_array($tt) && !empty($tt)) $filled++;
+                'fn'   => function () {
+                    // The legacy `timetables` collection — what the Teacher and
+                    // Parent apps actually read. One document per section per
+                    // day. The old RTDB path is empty, so this reported "none
+                    // configured" for a school with a published timetable.
+                    try {
+                        $rows = $this->firebase->firestoreQueryOrFail('timetables', [
+                            ['schoolId', '==', $this->school_id],
+                            ['session',  '==', $this->session_year],
+                        ], null, 'ASC', 2000);
+                    } catch (\Throwable $e) {
+                        return $this->_f('The timetable documents could not be read: '
+                            . $e->getMessage());
                     }
-                    if ($filled === count($classes)) return $this->_p("All {$filled} classes have timetables");
-                    if ($filled > 0) return $this->_p("{$filled}/" . count($classes) . " classes have timetables");
-                    return $this->_f('No class timetables configured');
+
+                    $sections = [];
+                    foreach ($rows as $r) {
+                        $d = is_array($r['data'] ?? null) ? $r['data'] : $r;
+                        $k = (string) ($d['sectionKey'] ?? '');
+                        if ($k === '') {
+                            $k = trim((string) ($d['className'] ?? '') . '/' . (string) ($d['section'] ?? ''), '/');
+                        }
+                        if ($k !== '') $sections[$k] = true;
+                    }
+                    if (!$sections) return $this->_f('No class timetables configured');
+
+                    return $this->_p(count($rows) . ' timetable day-document(s) across '
+                        . count($sections) . ' class-section(s)');
                 },
             ],
             [
                 'name' => 'Curriculum Data',
-                'fn'   => function() use ($fb, $school, $session) {
-                    $cur = $fb->shallow_get("Schools/{$school}/{$session}/Academic/Curriculum");
-                    if (is_array($cur) && count($cur) > 0)
-                        return $this->_p(count($cur) . ' class-sections have curriculum plans');
-                    return $this->_p('No curriculum data yet (optional)');
+                'fn'   => function () {
+                    // Firestore `curriculum` (Curriculum_service::COLLECTION).
+                    // The RTDB read this replaces returned nothing and the check
+                    // called that a PASS — a vacuous green for a subsystem it
+                    // never actually queried.
+                    try {
+                        $rows = $this->firebase->firestoreQueryOrFail('curriculum', [
+                            ['schoolId', '==', $this->school_id],
+                            ['session',  '==', $this->session_year],
+                        ], null, 'ASC', 2000);
+                    } catch (\Throwable $e) {
+                        return $this->_f('Curriculum data could not be read: ' . $e->getMessage());
+                    }
+                    if (!$rows) return $this->_p('No curriculum data yet (optional)');
+                    return $this->_p(count($rows) . ' curriculum record(s)');
                 },
             ],
             [
                 'name' => 'Calendar Events',
-                'fn'   => function() use ($fb, $school, $session) {
-                    $cal = $fb->get("Schools/{$school}/{$session}/Academic/Calendar");
-                    if (!is_array($cal)) return $this->_p('No calendar events yet');
+                'fn'   => function () {
+                    // Firestore `calendarEvents` — the collection Calendar_service
+                    // writes and Holiday_service reads. Holidays decide whether
+                    // attendance may be marked, so "no events" must mean no
+                    // events, not "we asked the wrong store".
+                    try {
+                        $rows = $this->firebase->firestoreQueryOrFail('calendarEvents', [
+                            ['schoolId', '==', $this->school_id],
+                        ], null, 'ASC', 2000);
+                    } catch (\Throwable $e) {
+                        return $this->_f('Calendar events could not be read: ' . $e->getMessage());
+                    }
+                    if (!$rows) return $this->_p('No calendar events yet');
+
                     $byType = [];
-                    foreach ($cal as $ev) {
-                        if (!is_array($ev)) continue;
-                        $t = $ev['type'] ?? 'event';
+                    foreach ($rows as $r) {
+                        $d = is_array($r['data'] ?? null) ? $r['data'] : $r;
+                        $t = (string) ($d['type'] ?? 'event');
                         $byType[$t] = ($byType[$t] ?? 0) + 1;
                     }
                     $str = [];
-                    foreach ($byType as $t => $c) $str[] = "{$t}: {$c}";
-                    return $this->_p(count($cal) . ' events — ' . implode(', ', $str));
+                    foreach ($byType as $t => $c) { $str[] = "{$t}: {$c}"; }
+                    return $this->_p(count($rows) . ' events — ' . implode(', ', $str));
                 },
             ],
             [
                 'name' => 'Substitute Records',
-                'fn'   => function() use ($fb, $school, $session) {
-                    $subs = $fb->get("Schools/{$school}/{$session}/Academic/Substitutes");
-                    if (!is_array($subs)) return $this->_p('No substitute records');
-                    $active = 0;
-                    foreach ($subs as $s) {
-                        if (is_array($s) && ($s['status'] ?? '') === 'assigned') $active++;
+                'fn'   => function () {
+                    // Firestore `substitutes` — written by Substitute_service.
+                    try {
+                        $rows = $this->firebase->firestoreQueryOrFail('substitutes', [
+                            ['schoolId', '==', $this->school_id],
+                            ['session',  '==', $this->session_year],
+                        ], null, 'ASC', 2000);
+                    } catch (\Throwable $e) {
+                        return $this->_f('Substitute records could not be read: ' . $e->getMessage());
                     }
-                    return $this->_p(count($subs) . ' total, ' . $active . ' currently assigned');
+                    if (!$rows) return $this->_p('No substitute records');
+
+                    $active = 0;
+                    foreach ($rows as $r) {
+                        $d = is_array($r['data'] ?? null) ? $r['data'] : $r;
+                        if ((string) ($d['status'] ?? '') === 'assigned') $active++;
+                    }
+                    return $this->_p(count($rows) . ' total, ' . $active . ' currently assigned');
                 },
             ],
         ];
@@ -1457,9 +1668,19 @@ class Health_check extends MY_Controller
             /* 9. Open Recruitment Positions */
             [
                 'name' => 'Open Recruitment Positions',
-                'fn'   => function() use ($fb, $hrBase) {
-                    $jobs = $fb->get("{$hrBase}/Recruitment/Jobs");
-                    if (!is_array($jobs)) return $this->_p('No recruitment jobs posted');
+                'fn'   => function() {
+                    // W1.3: was $fb->get("{$hrBase}/Recruitment/Jobs") — an RTDB
+                    // read against a node nothing has written since Hr.php moved
+                    // to Firestore. It therefore returned null and this check
+                    // reported a cheerful "No recruitment jobs posted" PASS for
+                    // every tenant, regardless of how many jobs were actually
+                    // open or how long they had been past their deadline.
+                    try {
+                        $jobs = $this->fs->schoolList('hrJobs');
+                    } catch (\Exception $e) {
+                        return $this->_w('Could not read recruitment jobs: ' . $e->getMessage());
+                    }
+                    if (!is_array($jobs) || empty($jobs)) return $this->_p('No recruitment jobs posted');
                     $open = 0; $expired = 0;
                     $today = date('Y-m-d');
                     foreach ($jobs as $j) {

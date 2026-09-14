@@ -23,6 +23,24 @@ defined('BASEPATH') OR exit('No direct script access allowed');
  */
 class Academic extends MY_Controller
 {
+    /**
+     * Page size for the substitute-flow timetable scans. One doc per
+     * class-section for the day, so this bounds class-sections, not periods.
+     *
+     * Saturation is REPORTED (see the `completeness` key the endpoint
+     * returns), never silently truncated: get_absent_teacher_schedule drives
+     * which periods an admin arranges cover for, so a period lost to the cap
+     * is a class that quietly ends up with nobody in front of it.
+     */
+    const SUBSTITUTE_SCAN_LIMIT = 100;
+
+    /**
+     * Page size for the substitute SUGGESTION scan. Wider than
+     * SUBSTITUTE_SCAN_LIMIT because it must see every class-section to know
+     * who is busy, not just the absent teacher's own rows.
+     */
+    const SUBSTITUTE_SUGGEST_LIMIT = 200;
+
     public function __construct()
     {
         parent::__construct();
@@ -86,6 +104,69 @@ class Academic extends MY_Controller
             );
         }
         return $this->calendar_svc;
+    }
+
+    /**
+     * Tell the teachers whose day just changed.
+     *
+     * Never allowed to break the operation it reports on: the cover is
+     * already committed by the time this runs, and a push that fails must not
+     * turn a saved cover into an error on screen. It is logged instead.
+     *
+     * The dedupe key carries the direction, so "you are covering" and "that
+     * cover is cancelled" for the same record are never mistaken for repeats
+     * of one another.
+     */
+    private function _notify_cover(array $staffIds, string $date,
+                                   string $recordId, bool $withdrawn): void
+    {
+        $staffIds = array_values(array_unique(array_filter(array_map(
+            fn($s) => trim((string) $s), $staffIds))));
+        if (empty($staffIds)) { return; }
+
+        $on = $date !== '' ? " on {$date}" : '';
+        $mark = $withdrawn ? 'SUBSTITUTE_CANCELLED' : 'SUBSTITUTE_ASSIGNED';
+        $dedupe = 'substitute_' . ($withdrawn ? 'cancel_' : 'assign_')
+            . ($recordId !== '' ? $recordId : $date)
+            . '_' . substr(md5(implode(',', $staffIds)), 0, 8);
+
+        try {
+            $this->emit_push($mark, $dedupe, [
+                'recipientStaffIds' => $staffIds,
+                'title' => $withdrawn ? 'Substitute Cover Cancelled' : 'Substitute Assigned',
+                'body'  => $withdrawn
+                    ? "A substitute cover assigned to you{$on} has been cancelled."
+                    : "You have been assigned as a substitute teacher{$on}.",
+                'date'  => $date,
+            ]);
+        } catch (\Throwable $e) {
+            log_message('error', 'substitute cover push failed (mark=' . $mark
+                . ' record=' . $recordId . '): ' . $e->getMessage());
+        }
+    }
+
+    /**
+     * "Can this teacher take this subject?", with the read failure told apart
+     * from the answer.
+     *
+     * Returns TRUE when the check could not run, so the caller adds no
+     * "not authorized" line about somebody who may be perfectly qualified —
+     * a truthful error is appended here instead, and its presence stops the
+     * save just the same.
+     */
+    private function _can_teach_or_explain(string $tid, string $code,
+                                           string $name, array &$errors): bool
+    {
+        try {
+            return (bool) $this->sas->teacherCanTeach($tid, $code, $name);
+        } catch (\Throwable $e) {
+            log_message('error', 'save_class_matrix: staff record unreadable for '
+                . $tid . ': ' . $e->getMessage());
+            $msg = 'The staff records could not be read, so who teaches what could '
+                . 'not be checked and nothing was saved. Please try again in a moment.';
+            if (!in_array($msg, $errors, true)) { $errors[] = $msg; }
+            return true;
+        }
     }
 
     private function _substitute_svc()
@@ -513,7 +594,7 @@ class Academic extends MY_Controller
         // Auto-sync timetable periods for this class/section (see save_class_matrix).
         $sync = ['docsUpdated' => 0, 'periodsChanged' => 0];
         try {
-            $sync = $this->_timetable_svc()->reconcileClassFromMatrix($fbKey, $sectionKey);
+            $sync = $this->_timetable_assignments_changed($fbKey, $sectionKey);
         } catch (\Throwable $e) {
             log_message('error', 'save_subject_assignments timetable auto-sync failed: ' . $e->getMessage());
         }
@@ -607,18 +688,25 @@ class Academic extends MY_Controller
         $fbKey = $this->safe_path_segment($this->_class_to_firebase_key($canonicalClass), 'class_key');
 
         // Sections that exist for this class (canonical className match).
+        // Fail-loud: this grid is what the administrator then SAVES, and the
+        // save reconciles — anything the request does not mention is deleted.
+        // A failed sections read used to draw a grid with no section columns,
+        // which on save revoked every section teacher in the class. An empty
+        // class and an unreadable one must not look the same here of all places.
         $sections = [];
         try {
-            $fsDocs = $this->fs->schoolWhere('sections', [['className', '==', $canonicalClass]]);
-            if (is_array($fsDocs)) {
-                foreach ($fsDocs as $doc) {
-                    $d = is_array($doc['data'] ?? null) ? $doc['data'] : $doc;
-                    $sec = (string)($d['section'] ?? '');
-                    if ($sec !== '') $sections[] = $sec;
-                }
+            $fsDocs = $this->fs->schoolWhereOrFail('sections',
+                [['className', '==', $canonicalClass]]);
+            foreach ($fsDocs as $doc) {
+                $d = is_array($doc['data'] ?? null) ? $doc['data'] : $doc;
+                $sec = (string)($d['section'] ?? '');
+                if ($sec !== '') $sections[] = $sec;
             }
-        } catch (\Exception $e) {
+        } catch (\Throwable $e) {
             log_message('error', 'Academic::get_class_matrix sections read failed: ' . $e->getMessage());
+            return $this->json_error('The sections for this class could not be read, '
+                . 'so the matrix was not loaded. Please try again in a moment — do '
+                . 'not save from a partly loaded grid.');
         }
         $sections = array_values(array_unique($sections));
         sort($sections);
@@ -626,7 +714,17 @@ class Academic extends MY_Controller
         $this->load->library('subject_assignment_service', null, 'sas');
         $this->sas->init($this->fs, $this->firebase, $this->school_id, $this->school_name, $this->session_year);
 
-        $rows = $this->sas->getAssignmentsForClass($fbKey, '');   // no section filter → all rows
+        // Same reasoning: an unreadable assignment list drawn as an empty grid
+        // becomes a mass revocation the moment somebody saves it.
+        try {
+            $rows = $this->sas->getAssignmentsForClassOrFail($fbKey, '');   // all rows
+        } catch (\Throwable $e) {
+            log_message('error', 'Academic::get_class_matrix assignments read failed: '
+                . $e->getMessage());
+            return $this->json_error('The subject assignments for this class could '
+                . 'not be read, so the matrix was not loaded. Please try again in a '
+                . 'moment — do not save from a partly loaded grid.');
+        }
 
         $subjects = [];        // code => entry
         $classTeachers = [];   // "Section X" => teacherId
@@ -750,6 +848,71 @@ class Academic extends MY_Controller
             ]];
         };
 
+        // ── PERIOD CAPS — the SERVER's copy of the rule ─────────────────
+        //
+        // save_subject_assignments() has enforced these since it was written.
+        // This surface — the second writer of the very same collection — had
+        // them ONLY in the browser, so any request that did not come from that
+        // screen could write a curriculum the week cannot hold.
+        //
+        // It is not theoretical. Class 9th in the live tenant asks for 45
+        // periods against a 36-period week; the generator then silently
+        // under-delivers (English 10 short, Hindi 5 short) and the shortfall
+        // surfaces only later, in a timetable report, as though the generator
+        // had failed. The same two-writers-one-guard shape produced ACAD-D14
+        // and ACAD-D18 in this file.
+        //
+        // Through the UI nothing changes: the screen already refuses the same
+        // two conditions before posting. This closes the bypass around it.
+        //
+        // Both key shapes are read. saveSettings() dual-writes
+        // periodsPerDay/No_of_periods and workingDays/Working_days, so the
+        // legacy-only read in the sibling works today — but it would silently
+        // disable the cap if that dual-write were ever dropped.
+        //
+        // Unconfigured period scheduling means there IS no cap to apply, and
+        // inventing one would refuse every save for a school that has not set
+        // its week up yet. That matches the sibling exactly.
+        $ttSettings = null;
+        try {
+            $ttSettings = $this->firebase->firestoreGet(
+                'timetableSettings', "{$this->school_id}_{$this->session_year}");
+        } catch (\Throwable $e) {
+            log_message('error', 'Academic::save_class_matrix timetableSettings read failed: '
+                . $e->getMessage());
+        }
+        if (!is_array($ttSettings)) { $ttSettings = []; }
+
+        $periodsPerDay = (int) ($ttSettings['periodsPerDay'] ?? $ttSettings['No_of_periods'] ?? 0);
+        $workingDaysIn = $ttSettings['workingDays'] ?? $ttSettings['Working_days'] ?? null;
+        $workingDays   = is_array($workingDaysIn) && $workingDaysIn
+            ? $workingDaysIn
+            : ['Monday','Tuesday','Wednesday','Thursday','Friday','Saturday'];
+        $numWorkingDays    = count($workingDays);
+        $maxPeriodsPerWeek = $periodsPerDay * $numWorkingDays;
+
+        if ($maxPeriodsPerWeek > 0) {
+            $totalAssigned = 0;
+            foreach ($subjectsIn as $sub) {
+                if ((string)($sub['code'] ?? '') === '') continue;
+                $pw = (int) ($sub['periods_week'] ?? 0);
+                // More periods than working days means the same subject twice
+                // in one day for at least one day — a different statement than
+                // the operator made, so it is refused rather than reshaped.
+                if ($pw > $numWorkingDays) {
+                    $n = (string)($sub['name'] ?? $sub['code'] ?? 'Unknown');
+                    $errors[] = "{$n} has {$pw} periods/week but there are only "
+                              . "{$numWorkingDays} working days.";
+                }
+                $totalAssigned += $pw;
+            }
+            if ($totalAssigned > $maxPeriodsPerWeek) {
+                $errors[] = "Total assigned periods ({$totalAssigned}) exceeds the "
+                          . "maximum ({$maxPeriodsPerWeek} = {$periodsPerDay} periods/day "
+                          . "× {$numWorkingDays} days). Remove or reduce some subjects.";
+            }
+        }
+
         foreach ($subjectsIn as $sub) {
             $code = (string)($sub['code'] ?? '');
             if ($code === '') continue;
@@ -758,7 +921,7 @@ class Academic extends MY_Controller
             if (!empty($sub['same_for_all'])) {
                 $tid = (string)($sub['class_wide_teacher_id'] ?? '');
                 $tnm = (string)($sub['class_wide_teacher_name'] ?? '');
-                if ($tid !== '' && !$this->sas->teacherCanTeach($tid, $code, $name)) {
+                if ($tid !== '' && !$this->_can_teach_or_explain($tid, $code, $name, $errors)) {
                     $errors[] = "{$name}: selected teacher is not authorized to teach this subject.";
                 }
                 [$id, $doc] = $build('', $sub, $tid, $tnm, false);
@@ -769,7 +932,7 @@ class Academic extends MY_Controller
                     $t   = is_array($st[$s] ?? null) ? $st[$s] : [];
                     $tid = (string)($t['id'] ?? '');
                     $tnm = (string)($t['name'] ?? '');
-                    if ($tid !== '' && !$this->sas->teacherCanTeach($tid, $code, $name)) {
+                    if ($tid !== '' && !$this->_can_teach_or_explain($tid, $code, $name, $errors)) {
                         $errors[] = "{$name} ({$s}): selected teacher is not authorized to teach this subject.";
                     }
                     $isCT = false;
@@ -801,37 +964,205 @@ class Academic extends MY_Controller
         }
 
         // ── Load CURRENT docs for this class (ids only) ────────────────
-        $current = [];
+        // ACAD-D18: $current is the REVOCATION SET — every id in it that is not
+        // in $desired gets deleted below. schoolWhere() -> firestoreQuery()
+        // returns [] for a FAILED read exactly as it does for "this class has no
+        // assignments yet", so a transient failure emptied the revocation set,
+        // the writes below still ran, and every teacher the admin removed kept
+        // their row — and with it their marks-write access, which
+        // firestore.rules grants straight off these docs.
+        //
+        // Same defect as ACAD-D14 in Subject_assignment_service; this is the
+        // second write surface for the same collection.
+        // ── THE OTHER WRITE SURFACE HOLDS THE SAME AUTHORITY ─────────────
+        //
+        // Subject_assignment_service serialises a per-section save on a
+        // per-section document, so two administrators cannot both replace one
+        // section from the same snapshot. This screen replaces a WHOLE CLASS
+        // and, until now, took no token at all — so it could land in the middle
+        // of a section save without either noticing, and a teacher removed on
+        // one screen could survive on the other with their marks access intact.
+        //
+        // Taking one token per section (plus the class-wide slot) interlocks
+        // the two surfaces without collapsing them: administrators working on
+        // DIFFERENT sections still do not block each other, because they touch
+        // different documents.
+        // A token is needed for every section whose authority this save can
+        // CHANGE — which is not the same as the sections the request listed.
+        // This screen reconciles the whole class: a section the grid does not
+        // mention still has its rows revoked, so taking tokens only for the
+        // listed sections would leave exactly the revocations nobody agreed to
+        // unguarded.
+        //
+        // The existing serialisation documents for this class are therefore
+        // enumerated first. Any section that has ever been saved has one, so a
+        // concurrent per-section save is caught whether or not this grid knew
+        // that section existed.
+        $ledgerSections = $sectionsIn;
+        $ledgerSections[] = '';                       // the class-wide slot
+        $ledgerTokens = [];      // ledgerDocId => updateTime ('' = expected absent)
         try {
-            $rows = $this->fs->schoolWhere('subjectAssignments', [
-                ['session', '==', $this->session_year],
+            $existingLedgers = $this->fs->whereOrFail('subjectAssignmentSections', [
+                ['schoolId',  '==', $this->school_id],
+                ['session',   '==', $this->session_year],
+                ['className', '==', $canonicalClass],
+            ]);
+        } catch (\Throwable $e) {
+            log_message('error', 'save_class_matrix: could not enumerate the '
+                . 'serialisation documents for ' . $canonicalClass . ': ' . $e->getMessage());
+            return $this->json_error('The class could not be locked for editing, so '
+                . 'nothing was saved. Please try again in a moment.');
+        }
+        foreach ($existingLedgers as $lrow) {
+            $lid = (string) ($lrow['id'] ?? '');
+            if ($lid === '') { continue; }
+            $ld = is_array($lrow['data'] ?? null) ? $lrow['data'] : $lrow;
+            $ledgerTokens[$lid] = (string) ($ld['__updateTime'] ?? '');
+        }
+        foreach (array_unique($ledgerSections) as $ls) {
+            $lid = $this->sas->sectionLedgerId($fbKey, (string) $ls);
+            if (array_key_exists($lid, $ledgerTokens)) { continue; }
+            $ldoc = $this->fs->get('subjectAssignmentSections', $lid);
+            $ledgerTokens[$lid] = is_array($ldoc)
+                ? (string) ($ldoc['__updateTime'] ?? '') : '';
+        }
+
+        $current = [];
+        $currentSections = [];   // the section each stored row belongs to
+        try {
+            $rows = $this->firebase->firestoreQueryOrFail('subjectAssignments', [
+                ['schoolId',  '==', $this->school_id],
+                ['session',   '==', $this->session_year],
                 ['className', '==', $canonicalClass],
             ]);
             foreach ($rows as $r) {
                 $rid = $r['id'] ?? ($r['data']['id'] ?? '');
-                if ($rid !== '') $current[$rid] = true;
+                if ($rid !== '') {
+                    $current[$rid] = true;
+                    $rd = is_array($r['data'] ?? null) ? $r['data'] : $r;
+                    $currentSections[] = (string) ($rd['section'] ?? '');
+                }
             }
-        } catch (\Exception $e) {
+        } catch (\Throwable $e) {
             log_message('error', 'Academic::save_class_matrix current-load failed: ' . $e->getMessage());
+            return $this->json_error(
+                'The assignments already saved for this class could not be read, so '
+                . 'nothing was changed. Saving now would have left teachers you removed '
+                . 'still assigned. Please try again in a moment.'
+            );
         }
 
-        // Safety: refuse to wipe a populated class from an empty request.
-        if (empty($desired) && !empty($current)) {
-            return $this->json_error('Nothing to save — the request contained no subjects. Reload the page and try again.');
+        // Safety: refuse to wipe a populated class from a request that arrived
+        // incomplete. The empty-request case was already covered; the one that
+        // was not is a request carrying its class-wide subjects but NO SECTIONS,
+        // which builds no per-section rows and so revokes every section teacher
+        // in the class while still looking like a real save. That is exactly the
+        // shape a failed sections read upstream produces.
+        //
+        // The decision lives in Subject_matrix_guard so it can be tested by
+        // running it rather than by reading this method.
+        require_once APPPATH . 'libraries/Subject_matrix_guard.php';
+
+        // Any section that turned up in the current rows but had no
+        // serialisation document when the tokens were taken is a section this
+        // save could revoke with nothing guarding the decision — it appeared
+        // between the two reads. Take a token for it now: if one exists, that
+        // section changed underneath this request and the save is refused.
+        $unguarded = Subject_matrix_guard::unguardedSections(
+            $currentSections,
+            fn(string $sec): string => $this->sas->sectionLedgerId($fbKey, $sec),
+            $ledgerTokens
+        );
+        foreach ($unguarded as $sec) {
+            $lid  = $this->sas->sectionLedgerId($fbKey, $sec);
+            $ldoc = $this->fs->get('subjectAssignmentSections', $lid);
+            if (is_array($ldoc)) {
+                log_message('error', 'save_class_matrix: section ' . $sec . ' of '
+                    . $canonicalClass . ' was changed while this grid was open');
+                return $this->json_error('Somebody else changed the subjects for '
+                    . 'this class while you were editing them, so nothing was saved. '
+                    . 'Reload the class and try again.');
+            }
+            $ledgerTokens[$lid] = '';
+        }
+
+        $refusal = Subject_matrix_guard::refusalReason($desired, $currentSections, $sectionsIn);
+        if ($refusal !== null) {
+            log_message('error', 'Academic::save_class_matrix refused an incomplete '
+                . 'request for ' . $canonicalClass . ': ' . $refusal);
+            return $this->json_error($refusal);
         }
 
         // ── Reconcile: delete stale, then write desired ────────────────
-        foreach (array_keys($current) as $rid) {
-            if (!isset($desired[$rid])) {
-                try { $this->fs->remove('subjectAssignments', $rid); } catch (\Exception $e) {}
-            }
-        }
+        // remove() returns BOOL and never throws, so the old try/catch inspected
+        // nothing at all — a refused delete was invisible. Revocations are
+        // attempted first and, if any fails, we stop BEFORE writing the new
+        // grants: adding access while failing to remove it is the one ordering
+        // that must never happen.
+        $stale     = Subject_matrix_guard::staleIds(array_keys($current), $desired);
+        $rawClient = method_exists($this->fs, 'raw_client') ? $this->fs->raw_client() : null;
+        $canBatch  = ($rawClient !== null && method_exists($rawClient, 'commitBatchStatus'));
+
         $saved = 0;
-        foreach ($desired as $id => $doc) {
-            try { $this->fs->set('subjectAssignments', $id, $doc, true); $saved++; }
-            catch (\Exception $e) {
-                $errors[] = "Failed to save {$doc['subjectName']}";
-                log_message('error', "save_class_matrix set [{$id}] failed: " . $e->getMessage());
+        if ($canBatch) {
+            // One commit for the whole class: every revocation and every grant
+            // lands together, conditional on nobody else having touched these
+            // sections since the tokens above were read. Revoking and granting
+            // in separate round trips left a window where a teacher had been
+            // removed but their replacement was not yet in place.
+            $ops = Subject_matrix_guard::commitOps($stale, $desired, $ledgerTokens, [
+                'schoolId'  => $this->school_id,
+                'session'   => $this->session_year,
+                'className' => $canonicalClass,
+                'updatedAt' => date('c'),
+            ]);
+
+            try {
+                $commit = $rawClient->commitBatchStatus($ops);
+            } catch (\Throwable $e) {
+                log_message('error', 'save_class_matrix commit failed: ' . $e->getMessage());
+                return $this->json_error('Could not save the assignments. Nothing was changed.');
+            }
+
+            $status = (string) ($commit['status'] ?? '');
+            if ($status === 'PRECONDITION_CONFLICT') {
+                log_message('error', 'save_class_matrix: class CAS conflict for '
+                    . $canonicalClass);
+                return $this->json_error('Somebody else changed the subjects for this '
+                    . 'class while you were editing them, so nothing was saved — saving '
+                    . 'now would have merged your grid into theirs and left teachers '
+                    . 'assigned that neither of you chose. Reload the class and try again.');
+            }
+            if ($status !== 'SUCCESS') {
+                log_message('error', 'save_class_matrix commit returned ' . $status);
+                return $this->json_error('Could not save the assignments. Nothing was changed.');
+            }
+            $saved = count($desired);
+        } else {
+            // A client that cannot batch keeps the previous ordering: revoke
+            // first and stop before granting, because adding access while
+            // failing to remove it is the one order that must never happen.
+            $revokeFailed = [];
+            foreach ($stale as $rid) {
+                if (!$this->fs->remove('subjectAssignments', $rid)) {
+                    $revokeFailed[] = $rid;
+                    log_message('error', 'Academic::save_class_matrix could not revoke '
+                        . 'subjectAssignments/' . $rid);
+                }
+            }
+            if (!empty($revokeFailed)) {
+                return $this->json_error(
+                    'Could not remove ' . count($revokeFailed) . ' assignment(s) that you '
+                    . 'deleted, so no changes were saved. Those teachers would otherwise '
+                    . 'have kept access to this class. Please try again in a moment.'
+                );
+            }
+            foreach ($desired as $id => $doc) {
+                try { $this->fs->set('subjectAssignments', $id, $doc, true); $saved++; }
+                catch (\Exception $e) {
+                    $errors[] = "Failed to save {$doc['subjectName']}";
+                    log_message('error', "save_class_matrix set [{$id}] failed: " . $e->getMessage());
+                }
             }
         }
 
@@ -867,7 +1198,7 @@ class Academic extends MY_Controller
         // app immediately (prevents matrix↔timetable teacherId drift).
         $sync = ['docsUpdated' => 0, 'periodsChanged' => 0];
         try {
-            $sync = $this->_timetable_svc()->reconcileClassFromMatrix($canonicalClass, '');
+            $sync = $this->_timetable_assignments_changed($canonicalClass, '');
         } catch (\Throwable $e) {
             log_message('error', 'save_class_matrix timetable auto-sync failed: ' . $e->getMessage());
         }
@@ -933,8 +1264,20 @@ class Academic extends MY_Controller
         $this->load->library('subject_assignment_service', null, 'sas');
         $this->sas->init($this->fs, $this->firebase, $this->school_id, $this->school_name, $this->session_year);
 
-        // Get source assignments from Firestore-first
-        $sourceAssignments = $this->sas->getAssignmentsForClass($fromKey, '');
+        // Read fail-loud: this endpoint ACTS on an empty answer by stopping and
+        // telling the operator the source class has nothing in it. Through the
+        // tolerant read that sentence is indistinguishable from a failed query,
+        // and it sends somebody off to check a class that is perfectly fine.
+        try {
+            $sourceAssignments = $this->sas->getAssignmentsForClassOrFail($fromKey, '');
+        } catch (\Throwable $e) {
+            log_message('error', 'copy_subject_assignments: source unreadable ('
+                . $fromKey . '): ' . $e->getMessage());
+            return $this->json_error('The source class could not be read, so nothing '
+                . 'was copied. Please try again in a moment — this is not the same '
+                . 'as the class having no subjects.');
+        }
+
         if (empty($sourceAssignments)) {
             return $this->json_error('No assignments found in source class');
         }
@@ -955,18 +1298,30 @@ class Academic extends MY_Controller
 
         // Save to destination class via service (Firestore-only)
         $result = $this->sas->saveClassAssignments($toKey, '', $subjects);
-        $count = $result['count'] ?? count($subjects);
+
+        // The save can refuse — a teacher not recorded for the subject, an
+        // unreadable delete set, a failed commit. This reported success either
+        // way, and read a 'count' key the service has never returned, so the
+        // number shown was the number ATTEMPTED. An operator was told their
+        // subjects had been copied when nothing had been written at all.
+        if (empty($result['success'])) {
+            return $this->json_error(!empty($result['errors'])
+                ? implode(' ', $result['errors'])
+                : 'The subjects could not be copied. Nothing was changed.');
+        }
+        $count = (int) ($result['saved'] ?? 0);
 
         // Auto-sync destination class's timetable periods (see save_class_matrix).
         $sync = ['docsUpdated' => 0, 'periodsChanged' => 0];
         try {
-            $sync = $this->_timetable_svc()->reconcileClassFromMatrix($toKey, '');
+            $sync = $this->_timetable_assignments_changed($toKey, '');
         } catch (\Throwable $e) {
             log_message('error', 'copy_subject_assignments timetable auto-sync failed: ' . $e->getMessage());
         }
 
         return $this->json_success([
             'from' => $fromKey, 'to' => $toKey, 'count' => $count,
+            'warnings' => $result['warnings'] ?? [],
             'timetableSync' => $sync,
         ]);
     }
@@ -1285,6 +1640,24 @@ class Academic extends MY_Controller
         }
     }
 
+    /**
+     * The history of one lesson plan. Both clients have always written these
+     * entries; nothing read them back until now.
+     */
+    public function lesson_plan_history()
+    {
+        $this->_require_role(['Super Admin', 'School Super Admin', 'Admin', 'Principal', 'Academic Coordinator', 'Teacher'], 'view_lesson_plan', 'Academic', 'view');
+        try {
+            return $this->json_success($this->_lesson_plan_svc()->planHistory(
+                trim((string)($this->input->post('teacher_id') ?: $this->admin_id)),
+                trim((string)($this->input->post('date') ?? '')),
+                (int)($this->input->post('period_index') ?? -1)
+            ));
+        } catch (Service_exception $e) {
+            return $this->json_error($e->getMessage());
+        }
+    }
+
     public function get_monthly_plan()
     {
         $this->_require_role(['Super Admin', 'School Super Admin', 'Admin', 'Principal', 'Academic Coordinator', 'Teacher'], 'view_lesson_plan', 'Academic', 'view');
@@ -1383,19 +1756,47 @@ class Academic extends MY_Controller
         }
     }
 
+    /**
+     * CAL-CACHE-1 (2026-09-13) — bust the Holiday_service read cache after any
+     * calendar write so a just-added/removed holiday (or special-working-day)
+     * shows in student attendance IMMEDIATELY, instead of waiting out
+     * Holiday_service's ~5-minute TTL. flush() is the method Holiday_service
+     * documents for exactly this. Best-effort — a cache hiccup must never fail
+     * the save/delete.
+     */
+    private function _flush_holiday_cache(): void
+    {
+        try {
+            $this->load->library('holiday_service');
+            $this->holiday_service->init($this->fs, (string) $this->school_id, (string) $this->session_year);
+            $this->holiday_service->flush();
+        } catch (\Throwable $e) {
+            log_message('error', 'Academic::_flush_holiday_cache failed: ' . $e->getMessage());
+        }
+    }
+
     public function save_event()
     {
         $this->_require_role(['Super Admin', 'School Super Admin', 'Admin', 'Principal', 'Academic Coordinator'], 'manage_calendar', 'Academic', 'manage');
         try {
-            return $this->json_success($this->_calendar_svc()->saveEvent(
+            $res = $this->_calendar_svc()->saveEvent(
                 trim($this->input->post('id')          ?? ''),
                 trim($this->input->post('title')       ?? ''),
                 trim($this->input->post('type')        ?? 'event'),
                 trim($this->input->post('startDate')   ?? $this->input->post('start_date') ?? ''),
                 trim($this->input->post('endDate')     ?? $this->input->post('end_date')   ?? ''),
                 trim($this->input->post('description') ?? ''),
-                $this->input->post('visibleTo')
-            ));
+                $this->input->post('visibleTo'),
+                // Phase D — applicability. Absent POST fields decode to null,
+                // which Calendar_service::saveEvent() treats as "no restriction",
+                // so an existing caller that never sends these keeps working
+                // exactly as before.
+                $this->input->post('appliesTo'),
+                $this->input->post('departments'),
+                $this->input->post('exceptStaff')
+            );
+            $this->_flush_holiday_cache();   // CAL-CACHE-1: reflect in attendance immediately
+            return $this->json_success($res);
         } catch (Service_exception $e) {
             return $this->json_error($e->getMessage());
         }
@@ -1405,9 +1806,11 @@ class Academic extends MY_Controller
     {
         $this->_require_role(['Super Admin', 'School Super Admin', 'Admin', 'Principal', 'Academic Coordinator'], 'manage_calendar', 'Academic', 'manage');
         try {
-            return $this->json_success($this->_calendar_svc()->deleteEvent(
+            $res = $this->_calendar_svc()->deleteEvent(
                 trim($this->input->post('id') ?? '')
-            ));
+            );
+            $this->_flush_holiday_cache();   // CAL-CACHE-1: reflect in attendance immediately
+            return $this->json_success($res);
         } catch (Service_exception $e) {
             return $this->json_error($e->getMessage());
         }
@@ -1427,6 +1830,159 @@ class Academic extends MY_Controller
         } catch (Service_exception $e) {
             return $this->json_error($e->getMessage());
         }
+    }
+
+    /**
+     * The timetable in force on a date, read from the CANONICAL versions.
+     *
+     * ── WHY THIS EXISTS ─────────────────────────────────────────────────
+     *
+     * get_master_timetable() above reads the LEGACY `timetables` collection.
+     * That collection is a PROJECTION: its only writer is
+     * Timetable_plan_store::projectPublishedVersion(apply:true), which runs
+     * when a version is in force on the day it is published, or from
+     * Timetable_projection_cron — CLI-only, and unscheduled while the
+     * canonical switchover sits behind its two owner gates.
+     *
+     * So a timetable can be published, correct, and visible on the Master
+     * Timetable screen while the legacy collection still holds the previous
+     * one. Teacher Workload read that stale copy and reported it as fact:
+     * on 2026-09-12 a teacher with 18 canonical periods showed as absent from
+     * the load table entirely (UAT, operator instruction: workload must follow
+     * the canonical timetable, not the legacy mirror).
+     *
+     * ── WHAT THIS IS NOT ────────────────────────────────────────────────
+     *
+     * This is NOT the canonical switchover. It adds one admin-panel READ of
+     * the canonical versions; it writes nothing, changes no projection, and
+     * leaves the Teacher and Parent apps on `timetables` exactly as the
+     * architecture requires. Gate A (rollover) and gate B (TT-D1 rules) both
+     * govern WRITES to `timetables` and are untouched by a server-side read
+     * made through the service account.
+     *
+     * Returns the same {settings, timetables} shape get_master_timetable()
+     * returns, so a consumer swaps the endpoint and nothing else, PLUS a
+     * `source` block saying which version answered and for which date —
+     * because "no timetable applies" and "we could not tell" must never
+     * render as the same empty grid.
+     */
+    public function get_canonical_timetable()
+    {
+        $this->_require_role(['Super Admin', 'School Super Admin', 'Admin', 'Principal', 'Academic Coordinator', 'Teacher'], 'view_timetable', 'Academic', 'view');
+
+        $date = trim((string) ($this->input->post('date') ?? ''));
+        if ($date === '' || !preg_match('/^\d{4}-\d{2}-\d{2}$/', $date)) {
+            $date = date('Y-m-d');
+        }
+
+        require_once APPPATH . 'libraries/Timetable_plan_store.php';
+
+        try {
+            $store = (new Timetable_plan_store())->init(
+                $this->firebase,
+                (string) $this->school_id,
+                (string) $this->session_year,
+                (string) ($this->session->userdata('admin_id') ?? '')
+            );
+
+            // A READ MUST NOT WRITE. ensureRegularPlan() creates the plan
+            // document, and an audit 'create' row attributed to the viewer,
+            // when none exists. At a brand-new school the first person to open
+            // Teacher Workload would therefore author a record — and that
+            // person may hold only `view`, which this endpoint grants. Worse,
+            // if the write failed, a school whose only real state is "no
+            // timetable yet" would get a hard error instead of being told so.
+            //
+            // Nothing on this path needs that document: resolveForDate() reads
+            // the versions, and listCandidateDays() uses planId only as a query
+            // filter. Publishing still creates the plan, from the edit side.
+            $planId = Timetable_plan_store::PLAN_REGULAR;
+
+            // The SAME resolver the Master Timetable screen uses. Re-deriving
+            // "which timetable applies" here would be a second authority on the
+            // one question the whole lifecycle exists to answer.
+            $res    = $store->resolveForDate($date);
+            $status = (string) ($res['status'] ?? '');
+
+            $source = [
+                'date'      => $date,
+                'status'    => $status,
+                'versionId' => (string) ($res['version']['versionId'] ?? ''),
+                'explain'   => (string) ($res['explain'] ?? ''),
+                'canonical' => true,
+            ];
+
+            // Anything but a single resolved version returns NO grid and says
+            // why. An unreadable read that rendered as an empty week would put
+            // every teacher's load at zero and look like a quiet school.
+            if ($status !== Timetable_plan_service::RESOLVED
+                || ($source['versionId'] === '')) {
+                return $this->json_success([
+                    'settings'   => $this->_timetable_svc()->getSettings(),
+                    'timetables' => (object) [],
+                    'source'     => $source,
+                    // 'none' is a COMPLETE answer — the school genuinely has no
+                    // timetable for that date. Every other non-resolved status
+                    // means we could not tell, which is incomplete.
+                    'completeness' => ['complete' => ($status === Timetable_plan_service::NONE)],
+                ]);
+            }
+
+            $days = $store->listCandidateDays($planId, $source['versionId']);
+        } catch (\Throwable $e) {
+            log_message('error', 'Academic::get_canonical_timetable failed: ' . $e->getMessage());
+            return $this->json_error(
+                'The timetable that applies on ' . $date . ' could not be read, so '
+                . 'no workload is shown. This is not an empty timetable — please try '
+                . 'again in a moment.'
+            );
+        }
+
+        // Reshape version days into the legacy grid shape the consumers expect:
+        //   { "Class 9th/Section A": { "Monday": [cell, …] } }
+        $timetables = [];
+        foreach ($days as $d) {
+            if (!is_array($d)) continue;
+            $sectionKey = (string) ($d['classSection'] ?? '');
+            $day        = (string) ($d['day'] ?? '');
+            if ($sectionKey === '' || $day === '') continue;
+
+            // Index BY period slot, then fill the gaps — never array_values() a
+            // sparse array. The consumer reads periods[0..n-1] as period 1..n,
+            // so collapsing a missing slot would shift every later period one
+            // earlier: a lesson stored for period 4 would render, and be
+            // counted against a teacher, as period 3. Today's data has no gaps;
+            // this makes a gap harmless rather than silently wrong.
+            $cells = [];
+            $maxIdx = -1;
+            foreach ((is_array($d['periods'] ?? null) ? $d['periods'] : []) as $i => $p) {
+                if (!is_array($p)) { continue; }
+                $idx = ((int) ($p['periodNumber'] ?? ($i + 1))) - 1;
+                if ($idx < 0) { $idx = (int) $i; }
+                $subject = trim((string) ($p['subject'] ?? ''));
+                $cells[$idx] = $subject === '' ? null : [
+                    'subject'      => $subject,
+                    'teacher_id'   => trim((string) ($p['teacherId'] ?? '')),
+                    'teacher_name' => trim((string) ($p['teacher'] ?? '')),
+                ];
+                if ($idx > $maxIdx) { $maxIdx = $idx; }
+            }
+            $dense = [];
+            for ($p = 0; $p <= $maxIdx; $p++) {
+                $dense[$p] = $cells[$p] ?? null;     // a free period stays a hole
+            }
+            $timetables[$sectionKey][$day] = $dense;
+        }
+
+        // listCandidateDays() THROWS on saturation rather than truncating, so a
+        // grid that got here is whole by construction — unlike the legacy read,
+        // which caps and reports a partial week.
+        return $this->json_success([
+            'settings'     => $this->_timetable_svc()->getSettings(),
+            'timetables'   => $timetables ?: (object) [],
+            'source'       => $source,
+            'completeness' => ['complete' => true],
+        ]);
     }
 
     public function save_period()
@@ -1529,9 +2085,79 @@ class Academic extends MY_Controller
         return $d;
     }
 
+    /**
+     * CAL-P3B — warn, then require explicit confirmation, before arranging cover
+     * on a date the school is not teaching.
+     *
+     * WHY A GATE AT ALL. Saving a cover NOTIFIES the covering teacher. Without
+     * this, a school could push somebody to cover a lesson on a declared student
+     * holiday, and the first they would know of it is the notification.
+     *
+     * WHY CONFIRMATION AND NOT REFUSAL. Special sessions on a closure day are
+     * legitimate — a revision class before a board exam, a make-up session. A
+     * flat refusal would remove a real workflow to prevent an unlikely mistake.
+     * The market evidence is the same for invigilation: working a non-working
+     * day is normal and handled as workload, not as an impossibility. So the
+     * operator is told plainly and then allowed to proceed on purpose.
+     *
+     * WHY IT LIVES HERE AND NOT IN Substitute_service. The Substitute programme
+     * owns what a cover IS and how it is written. This is the Calendar telling
+     * the operator what the date MEANS before that write happens. The service's
+     * signature, validation and persistence are untouched, so the two programmes
+     * stay separable.
+     *
+     * FAIL-OPEN, DELIBERATELY. The gate engages only on a definite `false`. An
+     * unconfigured tenant (null) or an unreadable calendar (null) passes
+     * straight through, because a calendar outage must not stop a school
+     * arranging cover for a lesson that is genuinely running.
+     *
+     * @return array|null null to proceed; a response array to return instead
+     */
+    private function _non_instruction_cover_gate(string $dateStr): ?array
+    {
+        if (trim($dateStr) === '') return null;
+
+        $cal = $this->_student_calendar_for_date($dateStr);
+
+        // Only a definite "no instruction" gates. null never does.
+        if (($cal['instruction'] ?? null) !== false) return null;
+
+        $confirmed = filter_var(
+            (string) ($this->input->post('confirm_non_instruction') ?? ''),
+            FILTER_VALIDATE_BOOLEAN
+        );
+        if ($confirmed) {
+            // Recorded so the trail shows the operator was told and chose to
+            // continue, rather than looking like an ordinary cover.
+            log_message('info', sprintf(
+                'Academic::save_substitute — cover confirmed on a non-instruction date '
+                . '(school=%s date=%s reason=%s source=%s)',
+                $this->school_id, $dateStr,
+                (string) ($cal['reason'] ?? ''), (string) ($cal['source'] ?? '')
+            ));
+            return null;
+        }
+
+        return [
+            'needsConfirmation' => true,
+            'calendar'          => $cal,
+            'message'           => ($cal['message'] ?? '')
+                ?: 'No classes are scheduled on this date.',
+        ];
+    }
+
     public function save_substitute()
     {
         $this->_require_role(['Super Admin', 'School Super Admin', 'Admin', 'Principal', 'Academic Coordinator'], 'manage_substitutes', 'Academic', 'manage');
+
+        // CAL-P3B — before anything is written or anybody is notified.
+        $gate = $this->_non_instruction_cover_gate(
+            trim($this->input->post('date') ?? ''));
+        if ($gate !== null) {
+            return $this->json_error($gate['message']
+                . ' Confirm that cover is still needed before this is saved.', 409);
+        }
+
         try {
             // NOTE: class_section + subject are LEGACY-FALLBACK fields only —
             // used when the new `assignments[]` array is empty. Pass raw (do NOT
@@ -1552,37 +2178,18 @@ class Academic extends MY_Controller
                 $this->input->post('periods')
             );
 
-            // ── Universal push: notify the assigned substitute teacher(s) ──
-            // Reached only after saveSubstitute() commits (it throws on failure,
-            // caught below). Collects substitute staff ids from the modern
-            // assignments[] array plus the legacy top-level field.
-            try {
-                $staffIds = [];
-                $assignments = $this->input->post('assignments');
-                if (is_array($assignments)) {
-                    foreach ($assignments as $a) {
-                        $sid = trim(($a['substituteTeacherId'] ?? $a['substitute_teacher_id'] ?? ''));
-                        if ($sid !== '') $staffIds[] = $sid;
-                    }
-                }
-                $legacySub = trim($this->input->post('substituteTeacherId') ?? $this->input->post('substitute_teacher_id') ?? '');
-                if ($legacySub !== '') $staffIds[] = $legacySub;
-                $staffIds = array_values(array_unique(array_filter($staffIds)));
-
-                if (!empty($staffIds)) {
-                    $subDate = trim($this->input->post('date') ?? '');
-                    $subId   = trim($this->input->post('id') ?? '');
-                    $dedupe  = 'substitute_' . ($subId !== '' ? $subId : ($subDate . '_' . substr(md5(implode(',', $staffIds)), 0, 8)));
-                    $this->emit_push('SUBSTITUTE_ASSIGNED', $dedupe, [
-                        'recipientStaffIds' => $staffIds,
-                        'title' => 'Substitute Assigned',
-                        'body'  => 'You have been assigned as a substitute teacher' . ($subDate !== '' ? " on {$subDate}" : '') . '.',
-                        'date'  => $subDate,
-                    ]);
-                }
-            } catch (\Throwable $e) {
-                log_message('error', 'save_substitute push emit failed: ' . $e->getMessage());
-            }
+            // ── Who has to be told ───────────────────────────────────────
+            //
+            // Both lists come from what saveSubstitute() actually PERSISTED,
+            // not from the submitted form. The form was the wrong source twice
+            // over: an assignment the save drops would still have produced a
+            // notification, and an edit that moved a period to a different
+            // teacher told nobody, leaving the first teacher believing they
+            // were still covering it.
+            $this->_notify_cover($res['substituteTeacherIds'] ?? [], $res['date'] ?? '',
+                (string) ($res['id'] ?? ''), false);
+            $this->_notify_cover($res['removedTeacherIds'] ?? [], $res['date'] ?? '',
+                (string) ($res['id'] ?? ''), true);
 
             return $this->json_success($res);
         } catch (Service_exception $e) {
@@ -1594,10 +2201,19 @@ class Academic extends MY_Controller
     {
         $this->_require_role(['Super Admin', 'School Super Admin', 'Admin', 'Principal', 'Academic Coordinator'], 'manage_substitutes', 'Academic', 'manage');
         try {
-            return $this->json_success($this->_substitute_svc()->updateSubstituteStatus(
+            $res = $this->_substitute_svc()->updateSubstituteStatus(
                 trim($this->input->post('id')     ?? ''),
                 trim($this->input->post('status') ?? '')
-            ));
+            );
+
+            // Cancelling takes somebody's duty away; reviving gives it back.
+            // Completing changes nothing about who is expected where.
+            if (!empty($res['coverWithdrawn']) || !empty($res['coverRestored'])) {
+                $this->_notify_cover($res['affectedTeacherIds'] ?? [], $res['date'] ?? '',
+                    (string) ($res['id'] ?? ''), !empty($res['coverWithdrawn']));
+            }
+
+            return $this->json_success($res);
         } catch (Service_exception $e) {
             return $this->json_error($e->getMessage());
         }
@@ -1607,9 +2223,14 @@ class Academic extends MY_Controller
     {
         $this->_require_role(['Super Admin', 'School Super Admin', 'Admin', 'Principal', 'Academic Coordinator'], 'manage_substitutes', 'Academic', 'manage');
         try {
-            return $this->json_success($this->_substitute_svc()->deleteSubstitute(
+            $res = $this->_substitute_svc()->deleteSubstitute(
                 trim($this->input->post('id') ?? '')
-            ));
+            );
+
+            $this->_notify_cover($res['affectedTeacherIds'] ?? [], $res['date'] ?? '',
+                (string) ($res['id'] ?? ''), !empty($res['coverWithdrawn']));
+
+            return $this->json_success($res);
         } catch (Service_exception $e) {
             return $this->json_error($e->getMessage());
         }
@@ -1645,8 +2266,34 @@ class Academic extends MY_Controller
         // `date`; older records carried top-level substitute_teacher_id/periods/
         // date_end. Both shapes are handled below.
         $busyPeriods = [];
+        $busyComplete = true;
+        // ACAD-D16 — the last member of the ACAD-D12 family, in the two
+        // places that ask "is this teacher already covering something?".
+        //
+        // sessionWhere() routes to firestoreQuery(), which returns [] for a
+        // missing index, a network failure, 403 and 429 alike. None of them
+        // throw, so the catch below — written precisely for this — could
+        // never fire, and a failed read produced NO existing covers. Every
+        // teacher already covering a class that period was then offered as
+        // free, and the list said it was complete.
+        //
+        // The scan stays session-wide because a legacy cover can span days
+        // (top-level date + date_end), and narrowing it to one date would
+        // quietly stop seeing those. It is bounded and says so when the
+        // bound is reached: this feeds a suggestion, and the save still
+        // refuses a real clash, so it reports rather than denies.
         try {
-            $fsSubs = $this->fs->sessionWhere('substitutes', []);
+            $fsSubs = $this->firebase->firestoreQueryOrFail('substitutes', [
+                ['schoolId', '==', $school],
+                ['session',  '==', $session],
+            ], 'date', 'DESC', self::SUBSTITUTE_SCAN_LIMIT + 1);
+
+            if (count($fsSubs) > self::SUBSTITUTE_SCAN_LIMIT) {
+                $busyComplete = false;
+                $fsSubs = array_slice($fsSubs, 0, self::SUBSTITUTE_SCAN_LIMIT);
+                log_message('error', 'get_teacher_schedule: existing-cover scan hit '
+                    . 'its limit (school=' . $school . ')');
+            }
             foreach ($fsSubs as $doc) {
                 $sub = is_array($doc['data'] ?? null) ? $doc['data'] : $doc;
                 if (($sub['status'] ?? '') === 'cancelled') continue;
@@ -1674,8 +2321,11 @@ class Academic extends MY_Controller
                     }
                 }
             }
-        } catch (\Exception $e) {
-            log_message('error', "get_teacher_schedule: Firestore substitute query failed: " . $e->getMessage());
+        } catch (\Throwable $e) {
+            // Without these rows the teacher looks entirely free.
+            $busyComplete = false;
+            log_message('error', 'get_teacher_schedule: Firestore substitute query '
+                . 'failed: ' . $e->getMessage());
         }
         $busyPeriods = array_values(array_unique($busyPeriods));
 
@@ -1694,6 +2344,12 @@ class Academic extends MY_Controller
             'day'          => $dayName,
             'busy_periods' => array_values($busyPeriods),
             'max_periods'  => $maxPeriods,
+            // Which periods are free is read NEGATIVELY by the caller, so it
+            // has to be able to tell "free" from "we could not find out".
+            'completeness' => [
+                'complete' => $busyComplete,
+                'cap'      => self::SUBSTITUTE_SCAN_LIMIT,
+            ],
         ]);
     }
 
@@ -1721,13 +2377,30 @@ class Academic extends MY_Controller
     {
         $this->_require_role(['Super Admin', 'School Super Admin', 'Admin', 'Principal', 'Academic Coordinator'], 'save_tt_settings', 'Academic', 'manage');
         try {
-            return $this->json_success($this->_timetable_svc()->saveSettings(
+            $saved = $this->_timetable_svc()->saveSettings(
                 trim($this->input->post('start_time')    ?? ''),
                 trim($this->input->post('end_time')      ?? ''),
                 (int)($this->input->post('no_of_periods') ?? 0),
                 $this->input->post('recesses')     ?? '[]',
                 $this->input->post('working_days') ?? '[]'
-            ));
+            );
+
+            // ── THE SHAPE OF THE WEEK JUST CHANGED ───────────────────────
+            //
+            // Every unpublished proposal was built into the OLD week: its days
+            // hold the old number of periods, at the old times, around the old
+            // breaks. A proposal generated for six periods a day would keep a
+            // "no problems" verdict after a move to eight, and publishing it
+            // would hand teachers a week the school does not run.
+            //
+            // This is the approved Option B decision applied one level up: the
+            // timetable is never rewritten, the verdict is invalidated, and the
+            // operator is told to look again. Published versions are untouched —
+            // they record what was in force under the old schedule, which stays
+            // true.
+            $saved['versionsMarkedStale'] = $this->_timetable_schedule_changed();
+
+            return $this->json_success($saved);
         } catch (Service_exception $e) {
             return $this->json_error($e->getMessage());
         }
@@ -1798,6 +2471,79 @@ class Academic extends MY_Controller
         return $this->json_success($data);
     }
 
+    /**
+     * OPTION B — subject assignments changed, so affected timetable work needs
+     * re-checking. It is NOT rewritten.
+     *
+     * This replaces reconcileClassFromMatrix(), which used to reach into the
+     * live `timetables` collection and rewrite the teacher on every period whose
+     * subject matched the new assignment. Under the canonical architecture that
+     * is not allowed twice over: a published timetable is immutable, and a
+     * draft or candidate is somebody's unfinished work that must not change
+     * under them.
+     *
+     * What happens instead: the draft and candidate versions that actually
+     * contain this class have their verdict marked stale, with the reason
+     * recorded, so publishing refuses until someone checks them again. Published
+     * versions are not touched at all.
+     *
+     * Failure here is logged and swallowed on purpose: the assignments HAVE been
+     * saved by the time this runs, and failing the whole request would tell the
+     * operator their assignment change did not happen when it did. The
+     * consequence of a missed mark is a verdict that looks fresher than it is,
+     * which the publish gate still re-checks against the content fingerprint.
+     */
+    /**
+     * Mark every unpublished proposal stale after a Period Scheduling change.
+     *
+     * Mirrors _timetable_assignments_changed(): the settings are already saved
+     * by the time this runs, so a failure here must not fail the save. It is
+     * logged and reported as empty rather than pretending nothing needed
+     * marking — the difference matters when an operator is deciding whether to
+     * trust an old verdict.
+     */
+    private function _timetable_schedule_changed(): array
+    {
+        try {
+            require_once APPPATH . 'libraries/Timetable_plan_store.php';
+            $store = (new Timetable_plan_store())->init(
+                $this->firebase, (string) $this->school_id, (string) $this->session_year,
+                (string) ($this->session->userdata('admin_id') ?? ''));
+
+            return $store->markAllVersionsStaleForSchedule()['marked'];
+        } catch (\Throwable $e) {
+            log_message('error', 'Academic: could not mark timetable versions stale after '
+                . 'a Period Scheduling change: ' . $e->getMessage()
+                . ' — a proposal may still advertise a verdict built for the old week.');
+            return [];
+        }
+    }
+
+    private function _timetable_assignments_changed(string $classKey, string $sectionKey = ''): array
+    {
+        $out = [
+            // Kept for the response contract. They are now always zero, and
+            // truthfully so: nothing is rewritten any more.
+            'docsUpdated' => 0, 'periodsChanged' => 0, 'skippedManual' => 0,
+            'versionsMarkedStale' => [], 'reason' => '', 'policy' => 'mark_stale',
+        ];
+
+        try {
+            require_once APPPATH . 'libraries/Timetable_plan_store.php';
+            $store = (new Timetable_plan_store())->init(
+                $this->firebase, (string) $this->school_id, (string) $this->session_year,
+                (string) ($this->session->userdata('admin_id') ?? ''));
+
+            $r = $store->markVersionsStaleForClass($classKey, $sectionKey);
+            $out['versionsMarkedStale'] = $r['marked'];
+            $out['reason']              = $r['reason'];
+        } catch (\Throwable $e) {
+            log_message('error', 'Academic: could not mark timetable versions stale after '
+                . 'an assignment change (class=' . $classKey . '): ' . $e->getMessage());
+        }
+
+        return $out;
+    }
     /**
      * Save full timetable for a single class-section (bulk write).
      * POST: class_name, section_name, timetable (JSON string)
@@ -2077,94 +2823,116 @@ class Academic extends MY_Controller
     public function get_absent_teachers()
     {
         $this->_require_role(['Super Admin', 'School Super Admin', 'Admin', 'Principal', 'Academic Coordinator'], 'manage_substitutes', 'Academic', 'manage');
+        try {
+            // Moved into Substitute_service so it can be TESTED. The three
+            // reads behind it (staff, approved leave, the day's attendance)
+            // each sat in an empty catch over a helper that returns [] when it
+            // fails, so a failed read arrived here as a shorter list of absent
+            // teachers — and a teacher missing from that list is a class
+            // nobody arranges cover for.
+            $res = $this->_substitute_svc()->getAbsentTeachers(
+                trim($this->input->post('date') ?? ''));
 
-        $dateStr = trim($this->input->post('date') ?? '');
-        if ($dateStr === '' || !strtotime($dateStr)) {
-            return $this->json_error('Valid date is required');
+            // Legacy snake_case keys kept: the panel reads these.
+            return $this->json_success([
+                'date'             => $res['date'],
+                'absent_teachers'  => $res['absentTeachers'],
+                'all_teachers'     => $res['allTeachers'],
+                'absentTeachers'   => $res['absentTeachers'],
+                'allTeachers'      => $res['allTeachers'],
+            ]);
+        } catch (Service_exception $e) {
+            return $this->json_error($e->getMessage());
         }
+    }
 
-        $school  = $this->school_name;
-        $session = $this->session_year;
-        $dt = new \DateTime($dateStr);
-        $dayNum = (int) $dt->format('j');
-        $monthNames = [1=>'January',2=>'February',3=>'March',4=>'April',5=>'May',6=>'June',
-                       7=>'July',8=>'August',9=>'September',10=>'October',11=>'November',12=>'December'];
-        $attKey = $monthNames[(int)$dt->format('n')] . ' ' . $dt->format('Y');
-
-        // Get all staff
-        $allStaff = [];
+    /**
+     * POST /academic/get_cover_policy — the school's own cover rules.
+     * Readable by anyone who may see substitutes: the limits explain the
+     * refusals they will meet.
+     */
+    public function get_cover_policy()
+    {
+        $this->_require_role(['Super Admin', 'School Super Admin', 'Admin', 'Principal', 'Academic Coordinator', 'Teacher'], 'view_substitutes', 'Academic', 'view');
         try {
-            $fsDocs = $this->fs->schoolWhere('staff', [['status', '==', 'Active']]);
-            foreach ($fsDocs as $doc) {
-                $d = is_array($doc['data'] ?? null) ? $doc['data'] : $doc;
-                $tid = $d['staffId'] ?? $d['userId'] ?? '';
-                if ($tid === '') continue;
-                $allStaff[$tid] = [
-                    'id'   => $tid,
-                    'name' => $d['Name'] ?? $d['name'] ?? $tid,
-                ];
-            }
-        } catch (\Exception $e) {}
+            return $this->json_success($this->_substitute_svc()->getPolicy());
+        } catch (Service_exception $e) {
+            return $this->json_error($e->getMessage());
+        }
+    }
 
-        $absentTeachers = [];
-
-        // Method 1: Check approved leave requests covering this date (Firestore-first)
+    /** POST /academic/save_cover_policy — setting the rules is a manage act. */
+    public function save_cover_policy()
+    {
+        $this->_require_role(['Super Admin', 'School Super Admin', 'Admin', 'Principal'], 'manage_substitutes', 'Academic', 'manage');
         try {
-            $leaveReqs = $this->fs->schoolWhere('leaveApplications', [
-                ['status', '==', 'approved'],
-                ['applicantType', '==', 'staff'],
-            ]);
-            foreach ($leaveReqs as $doc) {
-                $d = is_array($doc['data'] ?? null) ? $doc['data'] : $doc;
-                $from = $d['fromDate'] ?? $d['from_date'] ?? '';
-                $to   = $d['toDate'] ?? $d['to_date'] ?? $from;
-                $sid  = $d['staffId'] ?? $d['applicantId'] ?? '';
-                if ($sid === '' || $from === '') continue;
-                if ($dateStr >= $from && $dateStr <= $to) {
-                    $absentTeachers[$sid] = [
-                        'id'         => $sid,
-                        'name'       => $allStaff[$sid]['name'] ?? $d['applicantName'] ?? $sid,
-                        'reason'     => 'Leave: ' . ($d['leaveType'] ?? $d['leave_type'] ?? 'General'),
-                        'leave_type' => $d['leaveType'] ?? $d['leave_type'] ?? '',
-                    ];
-                }
-            }
-        } catch (\Exception $e) {}
+            return $this->json_success($this->_substitute_svc()->savePolicy([
+                'maxCoverPeriodsPerDay'  => (int) ($this->input->post('max_per_day')  ?? 0),
+                'maxCoverPeriodsPerWeek' => (int) ($this->input->post('max_per_week') ?? 0),
+                'requireSubjectMatch'    => $this->input->post('require_subject_match') === '1',
+                'teachingStaffOnly'      => $this->input->post('teaching_staff_only') === '1',
+            ]));
+        } catch (Service_exception $e) {
+            return $this->json_error($e->getMessage());
+        }
+    }
 
-        // Method 2: Check staffAttendance Firestore collection for A or L marks
-        $fsAttFound = false;
+    /**
+     * POST /academic/keep_cover — keep a cover the timetable moved under.
+     *
+     * One of three things an administrator can do about a drifted cover; the
+     * other two, cancelling and re-arranging, already exist. Which is right
+     * depends on the class and the day, so this records a decision rather
+     * than making one.
+     */
+    public function keep_cover()
+    {
+        $this->_require_role(['Super Admin', 'School Super Admin', 'Admin', 'Principal', 'Academic Coordinator'], 'manage_substitutes', 'Academic', 'manage');
         try {
-            $attDocs = $this->fs->schoolWhere('staffAttendance', [
-                ['date', '==', $dateStr],
-            ]);
-            if (!empty($attDocs)) {
-                $fsAttFound = true;
-                foreach ($attDocs as $doc) {
-                    $d = is_array($doc['data'] ?? null) ? $doc['data'] : $doc;
-                    $sid  = $d['staffId'] ?? '';
-                    $mark = strtoupper($d['status'] ?? '');
-                    if ($sid === '' || ($mark !== 'L' && $mark !== 'A')) continue;
-                    if (!isset($absentTeachers[$sid])) {
-                        $absentTeachers[$sid] = [
-                            'id'         => $sid,
-                            'name'       => $allStaff[$sid]['name'] ?? $d['staffName'] ?? $sid,
-                            'reason'     => $mark === 'L' ? 'On Leave' : 'Absent',
-                            'leave_type' => $mark === 'L' ? 'leave' : 'absent',
-                        ];
-                    }
-                }
-            }
-        } catch (\Exception $e) {}
+            return $this->json_success($this->_substitute_svc()->acknowledgeDrift(
+                trim($this->input->post('id') ?? '')
+            ));
+        } catch (Service_exception $e) {
+            return $this->json_error($e->getMessage());
+        }
+    }
 
-        // Build all_teachers list (for manual override — admin can still pick any teacher)
-        $allList = array_values($allStaff);
-        usort($allList, fn($a, $b) => strcasecmp($a['name'], $b['name']));
+    /**
+     * POST /academic/cover_history — the history of ONE cover.
+     *
+     * Answers "who cancelled this?" from the platform's existing Academic
+     * audit trail. Readable at view level: the people who have to work
+     * around a change are the ones who need to know who made it.
+     */
+    public function cover_history()
+    {
+        $this->_require_role(['Super Admin', 'School Super Admin', 'Admin', 'Principal', 'Academic Coordinator'], 'view_substitutes', 'Academic', 'view');
+        try {
+            return $this->json_success($this->_substitute_svc()->coverHistory(
+                trim($this->input->post('id') ?? '')
+            ));
+        } catch (Service_exception $e) {
+            return $this->json_error($e->getMessage());
+        }
+    }
 
-        return $this->json_success([
-            'date'             => $dateStr,
-            'absent_teachers'  => array_values($absentTeachers),
-            'all_teachers'     => $allList,
-        ]);
+    /**
+     * POST /academic/cover_log — who has been carrying the cover.
+     *
+     * The STPCD expects the burden to be shared equitably over the year and
+     * names the cover log as what makes that possible.
+     */
+    public function cover_log()
+    {
+        $this->_require_role(['Super Admin', 'School Super Admin', 'Admin', 'Principal', 'Academic Coordinator'], 'view_substitutes', 'Academic', 'view');
+        try {
+            return $this->json_success($this->_substitute_svc()->coverLog(
+                trim($this->input->post('from') ?? ''),
+                trim($this->input->post('to')   ?? '')
+            ));
+        } catch (Service_exception $e) {
+            return $this->json_error($e->getMessage());
+        }
     }
 
     /**
@@ -2194,13 +2962,28 @@ class Academic extends MY_Controller
         $session = $this->session_year;
 
         // Get the absent teacher's periods on this day from timetable
+        // ACAD-D13 — this list decides which periods get a substitute at all.
+        // A period missing from it is a class that quietly ends up uncovered, so
+        // neither a truncated scan nor a failed read may pass as "this teacher
+        // has nothing scheduled". Read cap+1 to detect saturation, and read
+        // fail-loud because firestoreQuery() returns [] for a failed read exactly
+        // as it does for a teacher with a free day.
         $absentPeriods = [];
+        $complete      = true;
         try {
-            $ttDocs = $this->firebase->firestoreQuery('timetables', [
+            $ttDocs = $this->firebase->firestoreQueryOrFail('timetables', [
                 ['schoolId', '==', $school],
                 ['session', '==', $session],
                 ['day', '==', $dayOfWeek],
-            ], null, 'ASC', 100);
+            ], null, 'ASC', self::SUBSTITUTE_SCAN_LIMIT + 1);
+
+            if (count($ttDocs) > self::SUBSTITUTE_SCAN_LIMIT) {
+                $complete = false;
+                $ttDocs   = array_slice($ttDocs, 0, self::SUBSTITUTE_SCAN_LIMIT);
+                log_message('error', 'get_absent_teacher_schedule: scan truncated at '
+                    . self::SUBSTITUTE_SCAN_LIMIT . ' (school=' . $school . ' day=' . $dayOfWeek
+                    . ') — periods needing cover may be missing.');
+            }
 
             foreach ($ttDocs as $doc) {
                 $d = is_array($doc['data'] ?? null) ? $doc['data'] : $doc;
@@ -2217,7 +3000,11 @@ class Academic extends MY_Controller
                     }
                 }
             }
-        } catch (\Exception $e) {}
+        } catch (\Throwable $e) {
+            $complete = false;
+            log_message('error', 'get_absent_teacher_schedule: timetable read failed '
+                . '(school=' . $school . ' day=' . $dayOfWeek . '): ' . $e->getMessage());
+        }
 
         usort($absentPeriods, fn($a, $b) => $a['periodNumber'] - $b['periodNumber']);
 
@@ -2226,7 +3013,14 @@ class Academic extends MY_Controller
                 'day'     => $dayOfWeek,
                 'date'    => $dateStr,
                 'periods' => [],
-                'message' => 'This teacher has no classes on ' . $dayOfWeek,
+                // Never assert "no classes" off a read we could not complete.
+                'message' => $complete
+                    ? 'This teacher has no classes on ' . $dayOfWeek
+                    : 'The timetable could not be read in full, so this teacher\'s '
+                      . $dayOfWeek . ' classes cannot be listed. Do NOT treat this as '
+                      . 'an empty day — reload before arranging cover.',
+                'completeness' => ['complete' => $complete, 'cap' => self::SUBSTITUTE_SCAN_LIMIT],
+                'calendar'     => $this->_student_calendar_for_date($dateStr),
             ]);
         }
 
@@ -2243,14 +3037,43 @@ class Academic extends MY_Controller
                     }
                 }
             }
-        } catch (\Exception $e) {}
+        } catch (\Throwable $e) {
+            log_message('error', 'get_absent_teacher_schedule: busy-map build failed: '
+                . $e->getMessage());
+        }
 
         // Also mark teachers busy from EXISTING substitute assignments on this
         // date. A teacher already covering another absentee that period is NOT
         // free — without this they get wrongly suggested as available a second
         // time. Handles both the modern assignments[] model and legacy docs.
+        // ACAD-D16 — the last member of the ACAD-D12 family, in the two
+        // places that ask "is this teacher already covering something?".
+        //
+        // sessionWhere() routes to firestoreQuery(), which returns [] for a
+        // missing index, a network failure, 403 and 429 alike. None of them
+        // throw, so the catch below — written precisely for this — could
+        // never fire, and a failed read produced NO existing covers. Every
+        // teacher already covering a class that period was then offered as
+        // free, and the list said it was complete.
+        //
+        // The scan stays session-wide because a legacy cover can span days
+        // (top-level date + date_end), and narrowing it to one date would
+        // quietly stop seeing those. It is bounded and says so when the
+        // bound is reached: this feeds a suggestion, and the save still
+        // refuses a real clash, so it reports rather than denies.
         try {
-            $fsSubs = $this->fs->sessionWhere('substitutes', []);
+            $fsSubs = $this->firebase->firestoreQueryOrFail('substitutes', [
+                ['schoolId', '==', $school],
+                ['session',  '==', $session],
+            ], 'date', 'DESC', self::SUBSTITUTE_SCAN_LIMIT + 1);
+
+            if (count($fsSubs) > self::SUBSTITUTE_SCAN_LIMIT) {
+                $complete = false;
+                $fsSubs = array_slice($fsSubs, 0, self::SUBSTITUTE_SCAN_LIMIT);
+                log_message('error', 'get_absent_teacher_schedule: existing-cover '
+                    . 'scan hit its limit (school=' . $school . ' date=' . $dateStr . ')');
+            }
+
             foreach ($fsSubs as $doc) {
                 $sub = is_array($doc['data'] ?? null) ? $doc['data'] : $doc;
                 if (($sub['status'] ?? '') === 'cancelled') continue;
@@ -2274,7 +3097,13 @@ class Academic extends MY_Controller
                     }
                 }
             }
-        } catch (\Exception $e) {}
+        } catch (\Throwable $e) {
+            // ACAD-D13: without these rows a teacher already covering another
+            // absentee this period looks free and gets offered as a substitute.
+            $complete = false;
+            log_message('error', 'get_absent_teacher_schedule: existing-cover read '
+                . 'failed (school=' . $school . ' date=' . $dateStr . '): ' . $e->getMessage());
+        }
 
         // Get all active teachers with capabilities
         $allStaff = [];
@@ -2292,7 +3121,34 @@ class Academic extends MY_Controller
                     'subjects' => $subs,
                 ];
             }
-        } catch (\Exception $e) {}
+        } catch (\Throwable $e) {
+            // ACAD-D13: with no staff the suggestion dropdown renders EMPTY, which
+            // reads as "nobody is available" rather than "we could not look".
+            $complete = false;
+            log_message('error', 'get_absent_teacher_schedule: staff read failed (school='
+                . $school . '): ' . $e->getMessage());
+        }
+
+        // ── HOW MUCH EACH CANDIDATE IS ALREADY CARRYING ──────────────────
+        //
+        // Untis puts this number in front of the person choosing rather than
+        // enforcing a ceiling, and the STPCD expects the burden to be shared
+        // equitably over the year. Neither works if the person arranging cover
+        // cannot see who has been covering all week.
+        //
+        // Degrades rather than denies: without these numbers the list is still
+        // usable and the save still enforces whatever limits the school set.
+        $coverLoad = [];
+        $coverPolicy = ['maxCoverPeriodsPerDay' => 0, 'maxCoverPeriodsPerWeek' => 0];
+        try {
+            $svc = $this->_substitute_svc();
+            $coverLoad   = $svc->coverLoadOn($dateStr);
+            $coverPolicy = $svc->getPolicy();
+        } catch (\Throwable $e) {
+            $complete = false;
+            log_message('error', 'get_absent_teacher_schedule: cover load unavailable '
+                . '(school=' . $school . ' date=' . $dateStr . '): ' . $e->getMessage());
+        }
 
         // For each absent period, find available substitutes
         foreach ($absentPeriods as &$period) {
@@ -2317,12 +3173,21 @@ class Academic extends MY_Controller
                     'name'         => $teacher['name'],
                     'subjectMatch' => $subjectMatch,
                     'free'         => true,
+                    // What this person is already carrying, so the load can be
+                    // spread deliberately rather than by whoever sorts first.
+                    'coverToday'   => (int) ($coverLoad[$tid]['day']  ?? 0),
+                    'coverThisWeek'=> (int) ($coverLoad[$tid]['week'] ?? 0),
                 ];
             }
 
-            // Sort: subject match first, then alphabetical
+            // Subject specialist first, then whoever has covered least this
+            // week, then by name so the order is stable. Sorting by name alone
+            // meant the same few teachers were offered first every time, which
+            // is precisely the pattern a cover log exists to prevent.
             usort($suggestions, function ($a, $b) {
                 if ($a['subjectMatch'] !== $b['subjectMatch']) return $b['subjectMatch'] - $a['subjectMatch'];
+                if ($a['coverThisWeek'] !== $b['coverThisWeek']) return $a['coverThisWeek'] - $b['coverThisWeek'];
+                if ($a['coverToday']    !== $b['coverToday'])    return $a['coverToday']    - $b['coverToday'];
                 return strcasecmp($a['name'], $b['name']);
             });
 
@@ -2334,7 +3199,103 @@ class Academic extends MY_Controller
             'day'     => $dayOfWeek,
             'date'    => $dateStr,
             'periods' => $absentPeriods,
+            // ACAD-D13: the admin arranges cover from this list. Saying it is
+            // partial is the difference between a known gap and a class nobody
+            // turns up to.
+            'completeness' => ['complete' => $complete, 'cap' => self::SUBSTITUTE_SCAN_LIMIT],
+            // The screen shows these beside the load so a limit is visible
+            // BEFORE somebody arranges cover that will be refused.
+            'coverPolicy'  => [
+                'maxCoverPeriodsPerDay'  => (int) ($coverPolicy['maxCoverPeriodsPerDay']  ?? 0),
+                'maxCoverPeriodsPerWeek' => (int) ($coverPolicy['maxCoverPeriodsPerWeek'] ?? 0),
+            ],
+            // CAL-P3 — advisory. See _student_calendar_for_date().
+            'calendar'     => $this->_student_calendar_for_date($dateStr),
         ]);
+    }
+
+    /**
+     * CAL-P3 — is regular instruction scheduled for students on this date?
+     *
+     * THE PRINCIPLE THIS IMPLEMENTS. The published timetable is the school's
+     * NORMAL schedule; the student calendar says whether that schedule is
+     * operational on a particular date. Those are different questions, and the
+     * data model already keeps them apart: `timetables` documents are keyed
+     * `{school}_{session}_{sectionKey}_{WEEKDAY}`, so there is no per-date
+     * timetable document to suppress. Deleting one would remove that subject
+     * from EVERY Monday, not from one holiday. The operational answer therefore
+     * has to be composed at the point a DATE is turned into a weekday — here.
+     *
+     * WHY `instruction` AND NOT `attendance`. Arranging cover is about whether a
+     * lesson runs, not about whether a register is taken. On an exam-only day
+     * `instruction` is false while `attendance` is true, and there is no
+     * ordinary period to cover; on a special working day or a half day
+     * `instruction` is true and cover IS needed. `instruction` is the dimension
+     * that matches the question this screen asks.
+     *
+     * ADVISORY, DELIBERATELY. Nothing here refuses to list periods or blocks a
+     * substitute being saved. Refusing would change the Substitute programme's
+     * write semantics, which this programme does not own — so the calendar is
+     * reported and the decision to act on it is left to the operator and to the
+     * owner of that workflow.
+     *
+     * NULL is a real answer: an unconfigured tenant resolves to null rather than
+     * to an invented true or false, and a read failure is reported as such so
+     * the screen can say "could not check" instead of implying "all clear".
+     */
+    private function _student_calendar_for_date(string $dateStr): array
+    {
+        $out = ['instruction' => null, 'reason' => null,
+                'source' => 'unavailable', 'message' => ''];
+
+        if ($dateStr === '') return $out;
+
+        try {
+            $ts = strtotime($dateStr);
+            if ($ts === false) return $out;
+            $y = (int) date('Y', $ts); $m = (int) date('n', $ts); $d = (int) date('j', $ts);
+            $iso = date('Y-m-d', $ts);
+
+            $hol = $swd = [];
+            try {
+                $this->load->library('holiday_service');
+                $this->holiday_service->init(
+                    $this->fs, (string) $this->school_id, (string) $this->session_year);
+                // STUDENT audience. A staff-only closure must never read as
+                // "no lesson to cover" — it is precisely when cover IS needed.
+                $hol = $this->holiday_service->holidays_in_month($y, $m, 'students');
+                $swd = $this->holiday_service->special_working_days_in_month($y, $m, 'students');
+            } catch (\Throwable $e) {
+                log_message('error', 'Academic::_student_calendar_for_date holidays: ' . $e->getMessage());
+                return $out;
+            }
+
+            $this->load->library('student_calendar_reader');
+            $this->student_calendar_reader->init(
+                $this->fs, (string) $this->school_id, (string) $this->session_year);
+
+            $r = $this->student_calendar_reader->resolveDate($iso, [
+                'holiday'           => isset($hol[$d]),
+                'specialWorkingDay' => isset($swd[$d]),
+            ]);
+
+            $out['instruction'] = $r['instruction'];
+            $out['reason']      = $r['reason'];
+            $out['source']      = $r['source'];
+
+            if ($r['instruction'] === false) {
+                $name = isset($hol[$d]) ? (string) $hol[$d] : '';
+                $out['message'] = $name !== ''
+                    ? "No classes are scheduled on this date — {$name}. Cover is not normally needed."
+                    : 'No classes are scheduled on this date. Cover is not normally needed.';
+            } elseif ($r['instruction'] === null) {
+                $out['message'] = 'The school calendar could not be checked for this date.';
+            }
+        } catch (\Throwable $e) {
+            log_message('error', 'Academic::_student_calendar_for_date failed: ' . $e->getMessage());
+        }
+
+        return $out;
     }
 
     public function suggest_substitutes()
@@ -2363,12 +3324,49 @@ class Academic extends MY_Controller
         $dayOfWeek = $dt->format('l'); // "Monday", "Tuesday", etc.
 
         // ── 1. Find what the absent teacher teaches on this day ──
+        // ACAD-D15 — the last member of the ACAD-D12 family.
+        //
+        // $busyMap below is built from these docs and then read NEGATIVELY:
+        //     if (!isset($busyMap[$tid][$pn])) { ...offer this teacher... }
+        // so an EMPTY map offers EVERY teacher, including ones already teaching
+        // their own class that period. This read had no try/catch at all, and
+        // firestoreQuery() returns [] on failure rather than throwing, so a
+        // failed read silently produced a full slate of bogus suggestions.
+        //
+        // Substitute_service enforces the actual booking (ACAD-D12), so a bad
+        // suggestion cannot by itself create a clash — it would be offered and
+        // then refused at save. Completeness problem, not a safety one: report,
+        // do not deny.
+        //
+        // SEVERITY IS LOW TODAY, and the reason is worth recording: this endpoint
+        // is routed (routes.php: academic/suggest_substitutes) but has NO caller
+        // anywhere — not in the admin views, not in the Teacher app, not in the
+        // Parent app. Nobody currently sees these suggestions. It is hardened
+        // here so it cannot be wired up later and inherit the family defect, not
+        // because it is misleading anyone now. The `completeness` key it returns
+        // has, accordingly, no UI consumer yet either.
         $absentSchedule = []; // [periodNum => {subject, className, section}]
-        $ttDocs = $this->firebase->firestoreQuery('timetables', [
-            ['schoolId', '==', $school],
-            ['session', '==', $session],
-            ['day', '==', $dayOfWeek],
-        ], null, 'ASC', 200);
+        $complete = true;
+        $ttDocs   = [];
+        try {
+            $ttDocs = $this->firebase->firestoreQueryOrFail('timetables', [
+                ['schoolId', '==', $school],
+                ['session', '==', $session],
+                ['day', '==', $dayOfWeek],
+            ], null, 'ASC', self::SUBSTITUTE_SUGGEST_LIMIT + 1);
+
+            if (count($ttDocs) > self::SUBSTITUTE_SUGGEST_LIMIT) {
+                $complete = false;
+                $ttDocs   = array_slice($ttDocs, 0, self::SUBSTITUTE_SUGGEST_LIMIT);
+                log_message('error', 'suggest_substitutes: scan truncated at '
+                    . self::SUBSTITUTE_SUGGEST_LIMIT . ' (school=' . $school
+                    . ' day=' . $dayOfWeek . ') — some teachers will look free when they are not.');
+            }
+        } catch (\Throwable $e) {
+            $complete = false;
+            log_message('error', 'suggest_substitutes: timetable read failed (school='
+                . $school . ' day=' . $dayOfWeek . '): ' . $e->getMessage());
+        }
 
         foreach ($ttDocs as $doc) {
             $d = is_array($doc['data'] ?? null) ? $doc['data'] : $doc;
@@ -2481,6 +3479,9 @@ class Academic extends MY_Controller
             'absentTeacher'  => $absentTid,
             'absentSchedule' => $absentSchedule,
             'suggestions'    => $top,
+            // ACAD-D15: an availability list built from a partial read will
+            // offer teachers who are not actually free.
+            'completeness'   => ['complete' => $complete, 'cap' => self::SUBSTITUTE_SUGGEST_LIMIT],
         ]);
     }
 

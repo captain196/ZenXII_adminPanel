@@ -17,6 +17,36 @@
 # ── WEEKLY Sunday 03:00 — cross-system integrity audit ─────────────
 0 3 * * 0 /usr/bin/php /var/www/Grader/school/scripts/run_scheduled.php --job=integrity --schoolId=SCH_D94FE8F7AD --session=2026-27 >> /var/log/schoolsync/integrity.log 2>&1
 
+# ── DAILY 00:20 — make today's published timetable visible to the ──
+#    Teacher and Parent apps.  PLATFORM-WIDE: ONE LINE, ALL SCHOOLS.
+#
+#    NOTE THE ABSENCE OF --schoolId. This is deliberate and is the whole
+#    point: ZenX is multi-tenant, so timetable delivery must not be a
+#    per-customer deployment task. The job discovers eligible tenants from
+#    the `schools` collection and each one's session from its own
+#    `currentSession`, so a school onboarded tomorrow is picked up by the
+#    next run with no cron edit, no deployment and no code change.
+#
+#    The office reads the canonical timetable versions; the apps read a
+#    separate copy that has to be written for them. Publishing writes it
+#    itself when the timetable starts the SAME day — so the gap this
+#    closes is the timetable published today to start later, which
+#    otherwise reaches nobody. Runs before the school day so a version
+#    that becomes effective this morning is in place in time.
+#
+#    Safe to run repeatedly and safe to MISS: it asks "what applies
+#    today", writes only what differs, and never deletes. A skipped night
+#    is repaired by the next run. One school failing does not stop the
+#    others — each is processed in isolation and recorded separately in
+#    scheduled_job_runs/TTP_{date}_{school}_{session}.
+#
+#    Exit codes: 0 = every eligible tenant processed or correctly skipped.
+#                2 = at least one tenant FAILED (the others still ran), or
+#                    the tenant list itself could not be read — page someone.
+#
+#    Add --schoolId/--session only for a targeted or recovery run.
+20 0 * * * /usr/bin/php /var/www/Grader/school/scripts/run_scheduled.php --job=timetable >> /var/log/schoolsync/timetable.log 2>&1
+
 # ─────────────────────────────────────────────────────────────────────
 # Windows Task Scheduler equivalents (XAMPP dev box):
 #
@@ -25,6 +55,9 @@
 #
 #   schtasks /Create /SC WEEKLY /D SUN /ST 03:00 /TN "SS-Integrity" /TR ^
 #     "C:\xampp\php\php.exe C:\xampp\htdocs\Grader\school\scripts\run_scheduled.php --job=integrity --schoolId=SCH_D94FE8F7AD --session=2026-27"
+#
+#   schtasks /Create /SC DAILY  /ST 00:20 /TN "SS-Timetable" /TR ^
+#     "C:\xampp\php\php.exe C:\xampp\htdocs\Grader\school\scripts\run_scheduled.php --job=timetable"
 #
 # ─────────────────────────────────────────────────────────────────────
 # Observability:

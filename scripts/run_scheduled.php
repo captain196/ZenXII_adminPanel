@@ -11,16 +11,53 @@
  * Supported jobs:
  *   reconcile        — reconcile_fees.php         (daily)
  *   integrity        — fee_integrity_check.php    (weekly)
+ *   timetable        — timetable_projection_cron  (daily, before the school day)
+ *                      PLATFORM-WIDE: omit --schoolId and every eligible tenant
+ *                      is processed. This is the production shape.
  *
  * Usage:
  *   php scripts/run_scheduled.php --job=reconcile --schoolId=SCH_… --session=YYYY-YY
  *   php scripts/run_scheduled.php --job=integrity --schoolId=SCH_… --session=YYYY-YY
  *
+ *   php scripts/run_scheduled.php --job=timetable                 # ALL tenants
+ *   php scripts/run_scheduled.php --job=timetable --dry-run       # ALL, no writes
+ *   php scripts/run_scheduled.php --job=timetable --schoolId=SCH_… --session=YYYY-YY
+ *                                                                 # one tenant
+ *
  * Exit codes: 0 on success, non-zero mirrors the child's exit so cron
  * MTA can still distinguish failures in mail output.
+ *
+ * Child exit codes for --job=timetable (Timetable_projection_cron):
+ *   0  projected, OR nothing published covers today (a correct no-op), OR dry run
+ *   1  configuration error — SCHOOL_ID / SESSION_YEAR missing, or init failed
+ *   2  REFUSED — the timetable in force could not be determined unambiguously,
+ *      or the projection threw. Nothing was written and what teachers currently
+ *      see is unchanged. This is the one that must page someone.
  */
 
 if (php_sapi_name() !== 'cli') { fwrite(STDERR, "CLI only.\n"); exit(2); }
+
+// ── SAME CLOCK AS THE APPLICATION ───────────────────────────────────────
+//
+// This wrapper is a standalone script: it requires two libraries directly and
+// never bootstraps CodeIgniter, so application/config/config.php — which pins
+// date_default_timezone_set('Asia/Kolkata') — does not run here. Its CHILD does
+// go through index.php and therefore is pinned.
+//
+// Left unpinned, parent and child disagree about what day it is for the 5h30m
+// between 18:30 UTC and midnight IST — and a job scheduled for 00:20 IST sits
+// squarely inside that window. On a UTC host the wrapper would stamp the run
+// record, and the runId, with YESTERDAY's date while the child correctly
+// projected today's timetable. The run history would then say a school's
+// timetable was never materialised on the day it was.
+//
+// Identical resolution order to config.php (APP_TIMEZONE, else Asia/Kolkata,
+// validated) so the two cannot drift; the schools this serves keep IST dates.
+$_schedTz = getenv('APP_TIMEZONE') ?: 'Asia/Kolkata';
+if (in_array($_schedTz, timezone_identifiers_list(), true)) {
+    date_default_timezone_set($_schedTz);
+}
+unset($_schedTz);
 
 $opts = [];
 foreach (array_slice($argv, 1) as $a) {
@@ -30,7 +67,7 @@ foreach (array_slice($argv, 1) as $a) {
     $opts[$eq === false ? $a : substr($a, 0, $eq)] = $eq === false ? true : substr($a, $eq + 1);
 }
 $job = (string) ($opts['job'] ?? '');
-if ($job === '') { fwrite(STDERR, "Usage: --job={reconcile|integrity} …\n"); exit(2); }
+if ($job === '') { fwrite(STDERR, "Usage: --job={reconcile|integrity|timetable} …\n"); exit(2); }
 
 $root = realpath(__DIR__ . '/..');
 $credPath = $root . '/application/config/graderadmin-firebase-adminsdk-a1sml-2b5f1862a7.json';
@@ -71,6 +108,70 @@ switch ($job) {
             '--session='  . escapeshellarg((string) ($opts['session']  ?? '')),
         ];
         break;
+    case 'timetable':
+        // ── materialise today's published timetable for the apps ────────
+        //
+        // The office reads the canonical timetableVersions; the Teacher and
+        // Parent apps read the legacy `timetables` collection, which has to be
+        // WRITTEN for them. Publishing does that itself when the version is in
+        // force the same day — but a version published to take effect LATER
+        // reaches nobody until this runs. On 2026-09-12 a live tenant published
+        // on the 12th for the 13th and the apps would never have shown it.
+        //
+        // Routed through this wrapper rather than invoked directly (which is
+        // what DEPLOY_RUNBOOK.md used to prescribe) so a failure is not merely
+        // a line in a log nobody reads: every run lands in
+        // scheduled_job_runs/{runId} and a non-zero exit raises an alert.
+        //
+        // Idempotent by construction — it asks "what applies today" and writes
+        // only what differs, so a missed night is repaired by the next run and
+        // a double run is a no-op. It never deletes.
+        // ── PLATFORM BY DEFAULT ─────────────────────────────────────────
+        //
+        // No --schoolId means EVERY eligible tenant, which is the form a
+        // multi-tenant SaaS actually needs: one scheduled entry for the whole
+        // platform, and a school onboarded tomorrow is picked up by the next
+        // run with no configuration anywhere.
+        //
+        // --schoolId stays supported for targeted and recovery runs. It is the
+        // exception now, not the normal production shape — requiring it was
+        // what made automatic delivery a per-customer deployment task.
+        $ttSchool  = (string) ($opts['schoolId'] ?? '');
+        $ttSession = (string) ($opts['session']  ?? '');
+        $ttAction  = 'run_all';
+
+        if ($ttSchool !== '' || $ttSession !== '') {
+            if ($ttSchool === '' || $ttSession === '') {
+                fwrite(STDERR, "--schoolId and --session must be given together, "
+                    . "or neither (which processes every eligible tenant)\n");
+                exit(2);
+            }
+            $ttAction = 'run';
+            // The controller reads these from the environment, and a child
+            // started by exec() inherits ours. Passing them this way rather
+            // than as a `VAR=x cmd` prefix keeps the invocation identical on
+            // Windows, where that prefix is a syntax error, not an assignment.
+            putenv('SCHOOL_ID='    . $ttSchool);
+            putenv('SESSION_YEAR=' . $ttSession);
+        }
+        // --dry-run reports what WOULD change and writes nothing. Useful for
+        // proving a new crontab entry is wired before letting it write.
+        putenv('APPLY=' . (isset($opts['dry-run']) ? '0' : '1'));
+        // Deliberately NOT passing FOR_DATE: the controller refuses APPLY for
+        // any date but today, because the legacy collection holds one document
+        // per weekday with no date and cannot represent another day.
+
+        // CodeIgniter's front controller expects to run from the project root.
+        // The child inherits our working directory, so change it here rather
+        // than prefixing a shell `cd`, which again differs per platform.
+        if (!@chdir($root)) {
+            fwrite(STDERR, "could not enter project root: {$root}\n");
+            exit(2);
+        }
+        $childCmd = ['php', escapeshellarg("{$root}/index.php"),
+                     'timetable_projection_cron', $ttAction];
+        break;
+
     default:
         fwrite(STDERR, "unknown --job: {$job}\n"); exit(2);
 }

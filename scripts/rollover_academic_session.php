@@ -79,6 +79,7 @@ if (!function_exists('log_message')) {
 }
 
 require_once APPPATH . 'libraries/Firestore_rest_client.php';
+require_once APPPATH . 'libraries/Rollover_projection_guard.php';
 
 // ── Args ────────────────────────────────────────────────────────────
 function arg_get(string $name, $default = null) {
@@ -239,16 +240,59 @@ if ($STRAT_SETT !== 'skip') {
     echo bold("▸ timetableSettings") . "\n";
     $srcId = "{$SCHOOL}_{$FROM}";
     $dstId = "{$SCHOOL}_{$TO}";
-    try {
-        $src = $fs->getDocument('timetableSettings', $srcId);
-        $dst = $fs->getDocument('timetableSettings', $dstId);
-    } catch (\Throwable $e) { $src = null; $dst = null; }
-    if (!is_array($src)) {
+    // TT-D3 — the same swallowed read that gate A closed for `timetables`,
+    // still open one section above it in this same file. Both documents were
+    // read inside ONE try, and a failure set BOTH to null. So a failed
+    // DESTINATION read skipped the "already rolled" check entirely and the
+    // tool wrote over whatever was actually there — a transient network error
+    // replacing this year's periods-per-day and bell times with last year's.
+    // A failed SOURCE read was reported as "no source doc", which is a failure
+    // announced as an absence.
+    //
+    // The two reads are separated, and the destination decision is the same
+    // pure guard the timetable carry uses. Its projected-document arm simply
+    // never fires here (settings are not projected), so the shared rule needs
+    // no special case — and the settings carry gains the unreadable-destination
+    // protection for free.
+    // TT-D5/TT-D6 — getDocumentOrFail, NOT getDocument. Two reasons, and each
+    // on its own is enough:
+    //
+    //   getDocument() SWALLOWS. It returns null for any non-404 failure, so
+    //   the catch below could never fire, $dstFailed was permanently false,
+    //   and the guard's unreadable-destination arm — the whole point of gate
+    //   A, with its tests and its killed mutants — was unreachable from the
+    //   one caller that matters. A guard that is correct and never asked is
+    //   not protection.
+    //
+    //   getDocument() also CACHES. `timetableSettings` is on the cross-request
+    //   file-backed config cache (300s), so this decision could be made from a
+    //   document state up to five minutes old, written by an unrelated
+    //   process. Observed: a stale entry answered "already rolled" for a
+    //   document that had since been replaced, and the rollover skipped the
+    //   carry and reported it as a clean run. getDocumentOrFail bypasses both
+    //   caches — which is exactly what its own docblock says it is for.
+    $srcFailed = false;
+    try { $src = $fs->getDocumentOrFail('timetableSettings', $srcId); }
+    catch (\Throwable $e) { $src = null; $srcFailed = true; }
+
+    $dstFailed = false;
+    try { $dst = $fs->getDocumentOrFail('timetableSettings', $dstId); }
+    catch (\Throwable $e) { $dst = null; $dstFailed = true; }
+
+    $settingsDecision = Rollover_projection_guard::decide(
+        $dst, PHASE3_ROLLOVER_REV, $dstFailed);
+
+    if ($srcFailed) {
+        echo red("  source settings could not be read — nothing carried\n");
+        $stats['timetableSettings']['failed']++;
+    } elseif (!is_array($src)) {
         echo dim("  no source doc — skip\n");
         $stats['timetableSettings']['skipped']++;
-    } elseif (is_array($dst) && (int)($dst['phase3RolloverRev'] ?? 0) >= PHASE3_ROLLOVER_REV) {
-        echo dim("  target already rolled — skip\n");
-        $stats['timetableSettings']['skipped']++;
+    } elseif ($settingsDecision !== Rollover_projection_guard::WRITE) {
+        $bucket = ($settingsDecision === Rollover_projection_guard::SKIP_UNREADABLE)
+            ? 'failed' : 'skipped';
+        $stats['timetableSettings'][$bucket]++;
+        echo dim('  ' . Rollover_projection_guard::explain($settingsDecision, $dstId) . "\n");
     } else {
         $stats['timetableSettings']['scanned']++;
         $payload = ($STRAT_SETT === 'blank')
@@ -314,10 +358,23 @@ if ($STRAT_ASGN !== 'skip') {
         $secKey  = ($secSafe === '') ? '_ALL_' : $secSafe;
         $dstId   = "{$SCHOOL}_{$TO}_{$clsSafe}_{$secKey}_{$sc}";
 
-        try { $existing = $fs->getDocument('subjectAssignments', $dstId); }
-        catch (\Throwable $e) { $existing = null; }
-        if (is_array($existing) && (int)($existing['phase3RolloverRev'] ?? 0) >= PHASE3_ROLLOVER_REV) {
-            $stats['subjectAssignments']['skipped']++;
+        // TT-D6, same shape as the timetable and settings carries: the read is
+        // what decides "already rolled", so a swallowed failure meant
+        // "no marker, therefore write" and overwrote a destination nobody had
+        // seen. subjectAssignments is the authority Timetables_reconcile
+        // repairs timetables AGAINST, so a silently reset one propagates.
+        $asgnReadFailed = false;
+        try { $existing = $fs->getDocumentOrFail('subjectAssignments', $dstId); }
+        catch (\Throwable $e) { $existing = null; $asgnReadFailed = true; }
+
+        $asgnDecision = Rollover_projection_guard::decide(
+            $existing, PHASE3_ROLLOVER_REV, $asgnReadFailed);
+        if ($asgnDecision !== Rollover_projection_guard::WRITE) {
+            $bucket = ($asgnDecision === Rollover_projection_guard::SKIP_UNREADABLE)
+                ? 'failed' : 'skipped';
+            $stats['subjectAssignments'][$bucket]++;
+            if ($VERBOSE) echo dim('  ' . Rollover_projection_guard::explain(
+                $asgnDecision, $dstId) . "\n");
             continue;
         }
 
@@ -370,10 +427,35 @@ if ($STRAT_TT !== 'skip') {
         $safeKey = str_replace('/', '_', "{$cls}_{$sec}");
         $dstId = "{$SCHOOL}_{$TO}_{$safeKey}_{$day}";
 
-        try { $existing = $fs->getDocument('timetables', $dstId); }
-        catch (\Throwable $e) { $existing = null; }
-        if (is_array($existing) && (int)($existing['phase3RolloverRev'] ?? 0) >= PHASE3_ROLLOVER_REV) {
-            $stats['timetables']['skipped']++;
+        // `timetables` is the compatibility PROJECTION of the canonical
+        // published timetable. A document the projection authored is not this
+        // tool's to overwrite: carrying last year's copy over it would replace
+        // a published timetable on every teacher and parent screen. And a
+        // destination we could not READ is not a destination we may write —
+        // the read is what tells us whether the rollover already ran, so
+        // swallowing its failure turned a network blip into the same
+        // overwrite. Both decisions live in Rollover_projection_guard so they
+        // can be executed by a test rather than only read.
+        // TT-D6 — getDocumentOrFail. getDocument() returns null for every
+        // failure that is not a 404, so this catch never fired and the guard
+        // was told "absent, go ahead and write" about a destination nobody
+        // could read. The fail-loud sibling is the only read that can tell
+        // "there is nothing there" apart from "I could not look", which is the
+        // entire distinction this guard exists to make.
+        $readFailed = false;
+        try { $existing = $fs->getDocumentOrFail('timetables', $dstId); }
+        catch (\Throwable $e) { $existing = null; $readFailed = true; }
+
+        $decision = Rollover_projection_guard::decide(
+            $existing, PHASE3_ROLLOVER_REV, $readFailed);
+        if ($decision !== Rollover_projection_guard::WRITE) {
+            // An unreadable destination is a failure, not a tidy skip: the
+            // operator needs a non-zero count to know work was left undone.
+            $bucket = ($decision === Rollover_projection_guard::SKIP_UNREADABLE)
+                ? 'failed' : 'skipped';
+            $stats['timetables'][$bucket]++;
+            if ($VERBOSE) echo dim('  ' . Rollover_projection_guard::explain(
+                $decision, $dstId) . "\n");
             continue;
         }
 
@@ -390,6 +472,32 @@ if ($STRAT_TT !== 'skip') {
         $payload['updatedByUid']        = 'system_phase3_rollover';
         // Strip generation metadata — new session may regenerate.
         unset($payload['generationId'], $payload['generatedAt'], $payload['generatedByUid'], $payload['generatedByName']);
+
+        // TT-D4 — AND STRIP THE PROJECTION PROVENANCE.
+        //
+        // Carrying FROM a projected document is legitimate: a school rolling
+        // over wants last year's timetable as its starting point, and the
+        // guard above only refuses to write OVER canonical state, not to read
+        // from it. But `array_merge($d, …)` copied every field, so the carried
+        // copy arrived in the new session still claiming to be the projection
+        // of version V1 of last year's plan.
+        //
+        // It is not. It is a copy, and in the new session there may be no
+        // published version at all. The claim is false, and it is the exact
+        // field every guard in this architecture trusts:
+        //
+        //   • Timetables_reconcile refuses to repair a document carrying it —
+        //     so a carried timetable with stale teacher assignments could
+        //     never be repaired by the tool built to repair it;
+        //   • an audit asking "which documents are canonical-derived" gets a
+        //     yes for a document no version authored;
+        //   • and the next projection compares provenance to decide what is
+        //     already its own work.
+        //
+        // A carried document is `carriedFromSession`, which is recorded just
+        // above. Being one thing does not entitle it to claim to be the other.
+        unset($payload['projectedFromPlan'], $payload['projectedFromVersion'],
+              $payload['projectedAt'], $payload['projectedByUid']);
 
         if ($APPLY) {
             try { $fs->setDocument('timetables', $dstId, $payload); $stats['timetables']['created']++; }
@@ -430,10 +538,19 @@ if ($STRAT_CURR !== 'skip') {
         $safeSubj = str_replace([' ','/'], '_', $subj);
         $dstId    = "{$SCHOOL}_{$TO}_{$safeCs}_{$safeSubj}";
 
-        try { $existing = $fs->getDocument('curriculum', $dstId); }
-        catch (\Throwable $e) { $existing = null; }
-        if (is_array($existing) && (int)($existing['phase3RolloverRev'] ?? 0) >= PHASE3_ROLLOVER_REV) {
-            $stats['curriculum']['skipped']++;
+        // TT-D6, fourth and last instance in this tool.
+        $currReadFailed = false;
+        try { $existing = $fs->getDocumentOrFail('curriculum', $dstId); }
+        catch (\Throwable $e) { $existing = null; $currReadFailed = true; }
+
+        $currDecision = Rollover_projection_guard::decide(
+            $existing, PHASE3_ROLLOVER_REV, $currReadFailed);
+        if ($currDecision !== Rollover_projection_guard::WRITE) {
+            $bucket = ($currDecision === Rollover_projection_guard::SKIP_UNREADABLE)
+                ? 'failed' : 'skipped';
+            $stats['curriculum'][$bucket]++;
+            if ($VERBOSE) echo dim('  ' . Rollover_projection_guard::explain(
+                $currDecision, $dstId) . "\n");
             continue;
         }
 

@@ -705,7 +705,8 @@ class FirestoreRestClient
         // read is a cross-region REST round-trip. Serve repeat reads of the same
         // doc from memory. The memo is FLUSHED on every write (see the write
         // methods below), so a read after your OWN write is always fresh — no
-        // staleness is possible within a request. Null results are cached too.
+        // staleness is possible within a request. A genuine 404 (absent) is
+        // cached too; a FAILED read (non-200) is not — see below.
         $ck = $collection . "\0" . $docId;
         if (array_key_exists($ck, $this->_readCache)) {
             self::$probeCacheHits++;
@@ -726,7 +727,30 @@ class FirestoreRestClient
         if (count($this->_readCache) >= 1000) {
             $this->_readCache = [];
         }
-        $val = $this->_getDocumentUncached($collection, $docId);
+        // A null from getDocument() has meant two very different things —
+        // "genuinely absent (404)" and "the read FAILED (non-200)" — and both
+        // were cached identically. Caching the second is a defect: one transient
+        // error on a lifecycle-critical doc pinned "this tenant does not exist"
+        // for the whole TTL (schoolControl/schools cache for 5 min). During that
+        // window Lifecycle_resolver reported a fully-provisioned ACTIVE tenant as
+        // unknown — the platform scheduler skipped it, a fresh SSA login was
+        // refused ("subscription record not found"), and any probe reading
+        // through here saw a school that is not there.
+        //
+        // Diagnosed 2026-09-13: a tenant that had been lifecycle-active for weeks
+        // was reported unprovisioned because a cached error-null outlived the
+        // blip — the same swallowed-failure class NegativeGuardFailLoudTest fixed for
+        // query(). The fail-loud read already separates the two: it returns null
+        // ONLY for a real 404 and throws for every other non-200. So a genuine
+        // absence is still cached (create-vs-update callers depend on that), and
+        // a failed read is neither cached nor memoized — the next read retries
+        // live, and the historic "null on failure" return is preserved for
+        // callers that read null as absent.
+        try {
+            $val = $this->_getDocumentUncached($collection, $docId, true);
+        } catch (\Throwable $e) {
+            return null;   // transient failure: never poison the cache with it
+        }
         $this->_readCache[$ck] = $val;
         if ($cfgFile !== null) {
             $this->_configCacheWrite($cfgFile, $val, self::CONFIG_DOC_TTL[$collection]);

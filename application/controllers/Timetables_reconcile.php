@@ -1,9 +1,35 @@
 <?php
 defined('BASEPATH') or exit('No direct script access allowed');
 
+require_once APPPATH . 'libraries/Timetable_projection_service.php';
+
 /**
- * Timetables_reconcile — repair stale period.teacherId in the canonical
+ * Timetables_reconcile — repair stale period.teacherId in the LEGACY
  * `timetables` collection against the authoritative `subjectAssignments`.
+ *
+ * ── WHAT THIS TOOL MAY AND MAY NOT TOUCH ────────────────────────────────
+ *
+ * `timetables` is no longer canonical. Under the version architecture the
+ * authority is timetableVersions/timetableVersionDays, and `timetables` is a
+ * COMPATIBILITY PROJECTION of whichever version is published — rebuilt from
+ * canonical state by Timetable_projection_service.
+ *
+ * A projected document therefore must never be repaired in place:
+ *
+ *   - the repair bypasses validation and publishing entirely, changing what
+ *     teachers see without any version recording that it happened;
+ *   - the next projection run rebuilds the document from the published
+ *     version and silently destroys the repair, so the drift returns;
+ *   - and for as long as it survives, the compatibility collection disagrees
+ *     with the canonical version it claims to be a copy of.
+ *
+ * Documents carrying `projectedFromVersion` are therefore SKIPPED and
+ * reported. The canonical repair for teacher drift is the approved one:
+ * change the subject assignments (which marks affected proposals stale),
+ * re-check, and publish a new version.
+ *
+ * What remains in scope is documents that predate the canonical lifecycle
+ * and have no published version behind them.
  *
  * WHY THIS EXISTS
  *   `subjectAssignments` (the subject-matrix) is the single source of truth for
@@ -34,6 +60,14 @@ defined('BASEPATH') or exit('No direct script access allowed');
  */
 class Timetables_reconcile extends CI_Controller
 {
+    /**
+     * Both scans abort above this rather than answering from a truncated set.
+     * A reconciler that silently examines the first N documents reports the
+     * ones it happened to see as the whole picture — and its whole purpose is
+     * to be believed when it says a school is clean.
+     */
+    const SCAN_LIMIT = 2000;
+
     private string $schoolFs    = '';
     private string $sessionYear = '';
     private bool   $apply       = false;
@@ -74,14 +108,27 @@ class Timetables_reconcile extends CI_Controller
         echo str_repeat('-', 72) . "\n\n";
 
         // ── 1. Load authoritative subject assignments ────────────────────
+        //
+        // TT-C1 — FAIL LOUD. firestoreQuery() returns [] when the request
+        // fails; only firestoreQueryOrFail() throws. Reading the authority
+        // with the swallowing variant meant a failed read arrived here as
+        // "this school has no subject assignments", and a failed timetable
+        // read (below) as "no drift found" — a reconciliation tool reporting
+        // a clean bill of health because it could not see anything.
         try {
-            $saRows = $this->firebase->firestoreQuery('subjectAssignments', [
+            $saRows = $this->firebase->firestoreQueryOrFail('subjectAssignments', [
                 ['schoolId', '==', $this->schoolFs],
                 ['session',  '==', $this->sessionYear],
-            ], null, 'ASC', 2000);
+            ], null, 'ASC', self::SCAN_LIMIT + 1);
         } catch (\Throwable $e) {
             echo "ERROR loading subjectAssignments: " . $e->getMessage() . "\n";
-            return;
+            exit(2);
+        }
+        if (count($saRows) > self::SCAN_LIMIT) {
+            echo "ERROR: more than " . self::SCAN_LIMIT . " subject assignments in "
+                . "scope. Reconciling against a truncated authority would report "
+                . "drift that is not real and miss drift that is. Aborting.\n";
+            exit(2);
         }
 
         // Authoritative maps:
@@ -119,12 +166,18 @@ class Timetables_reconcile extends CI_Controller
 
         // ── 2. Load timetables ───────────────────────────────────────────
         try {
-            $ttRows = $this->firebase->firestoreQuery('timetables', [
+            $ttRows = $this->firebase->firestoreQueryOrFail('timetables', [
                 ['schoolId', '==', $this->schoolFs],
-            ], null, 'ASC', 2000);
+            ], null, 'ASC', self::SCAN_LIMIT + 1);
         } catch (\Throwable $e) {
             echo "ERROR loading timetables: " . $e->getMessage() . "\n";
-            return;
+            exit(2);
+        }
+        if (count($ttRows) > self::SCAN_LIMIT) {
+            echo "ERROR: more than " . self::SCAN_LIMIT . " timetable documents for "
+                . "this school. A truncated scan would report the documents it "
+                . "happened to see as the whole picture. Aborting.\n";
+            exit(2);
         }
         // Session filtered client-side (mirrors Timetable app reader).
         $ttRows = array_values(array_filter($ttRows, function ($r) {
@@ -136,6 +189,7 @@ class Timetables_reconcile extends CI_Controller
         // ── 3. Diff each period against authority ────────────────────────
         $mismatches   = [];   // flat list of change rows (for reporting)
         $docUpdates   = [];   // docId => [newPeriods, className, section, manuallyEdited]
+        $projected    = [];   // docId => versionId that owns it (never touched)
         $noAuthority  = 0;    // class period whose subject has no teacher-bearing assignment
         $periodsSeen  = 0;
         $manualHit    = [];   // docIds that are manuallyEdited AND have changes
@@ -150,6 +204,20 @@ class Timetables_reconcile extends CI_Controller
             $secK = $this->nk((string)($d['section'] ?? ''));
             $day  = (string)($d['day'] ?? '');
             $isManual = ($d['manuallyEdited'] ?? null) === true;
+
+            // Owned by the canonical projection: repairing it here would
+            // change a teacher's timetable with no version to show for it,
+            // and would be erased by the next projection anyway.
+            //
+            // The test is the shared one, so this tool and the session
+            // rollover cannot drift apart about what "derived" means — they
+            // are the only two writers left that have to make this call, and
+            // a document one of them protects and the other does not is the
+            // worst possible outcome.
+            if (Timetable_projection_service::isDerived($d)) {
+                $projected[$docId] = trim((string) $d['projectedFromVersion']);
+                continue;
+            }
 
             $newPeriods = $periods;
             $docChanged = false;
@@ -209,6 +277,27 @@ class Timetables_reconcile extends CI_Controller
         echo "Periods with no teacher-bearing assignment (left as-is): {$noAuthority}\n";
         echo "Teacher-id mismatches found: " . count($mismatches) . "\n";
         echo "Docs needing update: " . count($docUpdates) . "\n";
+        // TT-C7 — this notice used to be nested INSIDE the manuallyEdited
+        // branch below, so a run that skipped projected documents said nothing
+        // at all unless the school also happened to have hand-edited documents
+        // with drift. A tool that silently declines to do the job it was asked
+        // to do reads as "there was nothing to fix", which is the opposite of
+        // what happened. It is unconditional now.
+        if (!empty($projected)) {
+            echo "\n  ⓘ " . count($projected) . " document(s) are projections of a"
+                . " published timetable and were NOT touched.\n"
+                . "    They are rebuilt from the canonical version, so a repair here\n"
+                . "    would bypass validation and be erased by the next projection.\n"
+                . "    To correct these: change the subject assignments, re-check the\n"
+                . "    affected timetable, and publish a new version.\n";
+            foreach (array_slice($projected, 0, 5, true) as $id => $vid) {
+                echo "      - {$id}  (from {$vid})\n";
+            }
+            if (count($projected) > 5) {
+                echo "      … and " . (count($projected) - 5) . " more\n";
+            }
+        }
+
         if (!empty($manualHit)) {
             echo "  ⚠ of which manuallyEdited: " . count(array_unique($manualHit))
                 . ($this->skipManual ? " (SKIPPED)" : " (WILL be overwritten)") . "\n";

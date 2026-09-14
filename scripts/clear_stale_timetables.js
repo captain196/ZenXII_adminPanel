@@ -14,9 +14,23 @@
  *
  *   node scripts/clear_stale_timetables.js
  *   node scripts/clear_stale_timetables.js --apply
+ *
+ * ── WHAT IT MAY NOT DELETE (added 2026-09-12) ───────────────────────
+ *
+ * "No subjectAssignments" is NOT proof that a section has no timetable. A
+ * published version can cover a section whose assignments were later removed,
+ * and that version is still what applies. Deleting its projected documents
+ * leaves the canonical record saying the class is covered while the apps show
+ * nothing at all — and nothing repairs it until a projection runs, which
+ * nothing in this repository schedules.
+ *
+ * So any document carrying `projectedFromVersion` is refused and reported.
+ * Same rule Timetables_reconcile.php and Rollover_projection_guard.php already
+ * apply; this script was one of the writers still missing it.
  */
 const path = require('path');
 const crypto = require('crypto');
+const guard = require(path.resolve(__dirname, 'lib', 'projection_guard.js'));
 
 let admin;
 try { admin = require(path.resolve(__dirname, '..', 'functions', 'node_modules', 'firebase-admin')); }
@@ -49,8 +63,14 @@ const APPLY = process.argv.includes('--apply');
   // ── 2. Sections that have timetable docs ──
   const ttSnap = await fs.collection('timetables')
     .where('schoolId', '==', SCHOOL).where('session', '==', SESSION).get();
+  // Documents the canonical lifecycle owns are removed from consideration
+  // BEFORE staleness is computed, not filtered at delete time — a section whose
+  // every document is projected is not a stale section at all, and listing it
+  // as one would invite someone to go and delete it by hand.
+  const { allowed: deletable, refused: projected } = guard.partition(ttSnap.docs);
+
   const ttDocsBySection = {};
-  for (const d of ttSnap.docs) {
+  for (const d of deletable) {
     const data = d.data();
     const cls = data.className || '';
     const sec = data.section   || '';
@@ -58,6 +78,8 @@ const APPLY = process.argv.includes('--apply');
     if (!ttDocsBySection[sk]) ttDocsBySection[sk] = [];
     ttDocsBySection[sk].push({ id: d.id, day: data.day || '?', ref: d.ref });
   }
+
+  guard.report(projected, 'deleted');
 
   // ── 3. Find stale sections (have timetables, no assignments) ──
   const staleSections = [];

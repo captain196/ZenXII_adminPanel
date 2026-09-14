@@ -67,8 +67,12 @@ class Rbac_levels_backfill extends CI_Controller
         'ROLE_HR_MANAGER'           => ['*' => 'manage', 'Attendance' => 'edit', 'Reports' => 'view'],
         'ROLE_ACCOUNTANT'           => ['*' => 'edit',   'Reports' => 'view'],
         'ROLE_FRONT_OFFICE'         => ['*' => 'edit',   'Certificates' => 'view', 'Stories' => 'view'],
-        'ROLE_CLASS_TEACHER'        => ['*' => 'edit',   'SIS' => 'view', 'Stories' => 'view', 'Reports' => 'view', 'Events' => 'view'],
-        'ROLE_TEACHER'              => ['*' => 'edit',   'Stories' => 'view', 'Communication' => 'view'],
+        // 'Academic' => 'view' (TT-C8, 2026-09-13): teachers may SEE the timetable, not
+        // edit it — the Teacher App's timetable screen is a read view. Without this the
+        // '*' => 'edit' default would grant Academic at edit; managing timetables stays
+        // with the coordinator/principal roles, which resolve Academic at 'manage'.
+        'ROLE_CLASS_TEACHER'        => ['*' => 'edit',   'SIS' => 'view', 'Academic' => 'view', 'Stories' => 'view', 'Reports' => 'view', 'Events' => 'view'],
+        'ROLE_TEACHER'              => ['*' => 'edit',   'Academic' => 'view', 'Stories' => 'view', 'Communication' => 'view'],
         'ROLE_LIBRARIAN'            => ['*' => 'manage'],
         'ROLE_TRANSPORT_MANAGER'    => ['*' => 'manage', 'Reports' => 'view'],
         'ROLE_HOSTEL_WARDEN'        => ['*' => 'manage'],

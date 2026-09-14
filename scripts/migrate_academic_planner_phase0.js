@@ -41,6 +41,7 @@
  */
 
 const path = require('path');
+const guard = require(path.resolve(__dirname, 'lib', 'projection_guard.js'));
 
 // firebase-admin is installed under functions/node_modules in this repo
 // (no root-level package.json). Resolve it explicitly so the script works
@@ -132,6 +133,17 @@ async function migrateTimetables(school) {
     stats.timetables.scanned++;
     const data = d.data();
     if (alreadyMigrated(data)) { stats.timetables.skipped++; continue; }
+
+    // A projected document is authored by a published version, which already
+    // stamps schoolId and owns `version` as a monotonic counter. Backfilling
+    // `version: 1` onto one would reset a counter the projection uses to decide
+    // what changed, and re-stamp a document this migration never produced.
+    // (Added 2026-09-12 with the rest of the projection-provenance guards.)
+    if (guard.isProjected(data)) {
+      logV('  skip (owned by published version ' + data.projectedFromVersion + ')', d.id);
+      stats.timetables.skipped++;
+      continue;
+    }
 
     const canonSchoolId = resolveSchoolId(data);
     if (!canonSchoolId) {

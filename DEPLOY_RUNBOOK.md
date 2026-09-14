@@ -98,6 +98,145 @@ cd firebase-rules && firebase deploy --only firestore:indexes --project graderad
 ```
 Wait until ALL indexes show "Enabled" before Phase 4. Extra indexes are harmless to old code.
 
+### Phase 2b — Firestore TTL policy for F13 breadcrumbs ⚠️ MANUAL, EASY TO FORGET
+
+**Required by F13.1 (Live GPS). Not expressible in `firestore.rules` or
+`firestore.indexes.json`, so `firebase deploy` will NEVER create it.** Deploying F13 without
+this step is silent: everything works, and `vehicleBreadcrumbs` grows without bound at roughly
+**86,000 documents per day per school** at 3,000 students.
+
+```bash
+gcloud firestore fields ttls update expires_at \
+  --collection-group=vehicleBreadcrumbs \
+  --enable-ttl \
+  --project=graderadmin
+# verify:
+gcloud firestore fields ttls list --project=graderadmin
+```
+(Console equivalent: Firestore → *Time-to-live* → Create policy → collection group
+`vehicleBreadcrumbs`, timestamp field `expires_at`.)
+
+Two things that make this fail **silently** rather than loudly:
+
+1. **TTL only acts on a field of Firestore type `Timestamp`.** An ISO-8601 *string* is ignored and
+   the document never expires. Server writes go through
+   `Transport_gps_service::breadcrumbExpiresAt()`, which emits the
+   `__firestore_type => timestamp` sentinel that `FirestoreRestClient::encode()` turns into a
+   native `timestampValue`; the Kotlin driver app must likewise write a `Timestamp`, never a
+   `String`. Verifier gate `CH-TRN-F13-1` and probe `transport_probe_f13` (§E) both pin this.
+2. **Deletion is asynchronous** — Google states documents are typically deleted within 24h of
+   expiry, not at the instant. Do not treat a lingering expired doc as a defect.
+
+TTL deletions **count as document deletes** for billing, but no more than a cron sweep would, and
+they consume no read quota — which is why D-3 chose native TTL over a sweeper.
+
+**Fallback (only if TTL is unavailable in the project):** decision D-3 option B — a bounded cron
+sweep in `Transport_expiry_cron`. The composite index
+`vehicleBreadcrumbs (schoolId, expires_at)` already ships for exactly this, so no index change is
+needed to fall back.
+
+### Phase 2c — Timetable projection cron ⚠️ MANUAL, EASY TO FORGET
+
+**Required the moment any school publishes a Master Timetable. Not expressible
+in `firestore.rules` or `firestore.indexes.json`, and `git pull` will never
+create it.** Deploying without this is silent in the worst way: the office sees
+the new timetable immediately and **every teacher and parent keeps seeing the
+previous one, indefinitely**.
+
+Why a scheduled task exists at all: the canonical resolver answers "which
+timetable applies today" from the versions themselves, with no flag to flip.
+The Teacher and Parent apps, however, read the legacy `timetables` collection
+through the client SDK, and that collection is **materialised** — somebody has
+to write today's answer into it. Publishing a timetable effective next Monday
+is correct for the resolver instantly; the apps do not change until this runs.
+
+**ONE entry for the whole platform, shortly after midnight** (before the school
+day, so a version that becomes effective today is materialised in time):
+
+```bash
+# Linux crontab — 00:20 daily. ONE LINE, ALL SCHOOLS. No --schoolId.
+20 0 * * * /usr/bin/php /opt/zenxii/scripts/run_scheduled.php --job=timetable \
+  >> /var/log/zenxii_timetable.log 2>&1
+```
+
+```powershell
+# Windows Task Scheduler equivalent
+schtasks /Create /SC DAILY /ST 00:20 /TN "ZenX-Timetable" /TR ^
+  "C:\xampp\php\php.exe C:\xampp\htdocs\ZenX\school\scripts\run_scheduled.php --job=timetable"
+```
+
+**The absence of `--schoolId` is the point.** ZenX is multi-tenant, so timetable
+delivery cannot be a per-customer deployment task — one entry per school is a
+step that silently fails the first time somebody forgets at onboarding, and the
+symptom is a school whose teachers see the wrong timetable with no error
+anywhere. The job discovers eligible tenants from the `schools` collection and
+each one's session from its own `currentSession`, exactly as
+`transport_analytics_rollup_job` already does. **Onboarding a school is the only
+action needed to make it eligible.** Add `--schoolId`/`--session` only for a
+targeted or recovery run.
+
+**Route it through `run_scheduled.php`, not through `index.php` directly.**
+The wrapper is the repository's existing convention for scheduled maintenance
+(the same one `--job=reconcile` and `--job=integrity` use, see
+`scripts/cron.txt`), and it is what makes a failure something other than a line
+in a log nobody reads:
+
+- every run lands in `scheduled_job_runs/{runId}` with status, exit code,
+  duration and the last 50 lines of output;
+- a non-zero exit raises an alert record, which dispatches to Slack/email when
+  `feeSettings/{schoolId}_alerts` is configured.
+
+Add `--dry-run` to prove a new entry is wired before letting it write.
+
+Verified end to end on 2026-09-12 against the live tenant: run record written,
+exit 0, correct resolution, nothing materialised.
+
+**The school is no longer helpless without this.** Since 2026-09-12 the Master
+Timetable screen detects that the apps are behind and offers **Send to teachers
+and parents now** (`manage`, and only for the timetable in force *today* — the
+legacy collection has one document per weekday and no date, so no other day is
+representable). That covers the case that used to be silent: publishing a
+future-dated timetable, which projects nothing on the day it is published.
+
+The cron is still what you want in production, because the button only helps a
+school that *opens the screen*. A timetable that becomes effective overnight
+reaches the apps unattended only if this entry exists.
+
+Safe to run repeatedly and safe to miss:
+
+- **Idempotent** — measured: 36 documents written on the first run, **0** on the
+  second. It writes only what actually differs.
+- **Missed runs self-recover** — it asks *"what applies on this date"*, never
+  *"what changed since last run"*. A run days late still projects the correct
+  answer; there is no catch-up state to lose.
+- **Fails closed** — if two published versions cover the date, or the versions
+  cannot be read, it refuses and leaves what teachers currently see untouched.
+- **`APPLY=1` materialises TODAY only.** `FOR_DATE` is for dry runs; applying
+  another date would write a timetable that is over, or has not started, into a
+  collection that has no date dimension.
+
+Exit codes: `0` ran (including "nothing to project") · `1` env/init failure ·
+`2` refused — **the apps may be stale, alert on this**.
+
+### What to monitor
+
+| Signal | Where | Means |
+|---|---|---|
+| No `scheduled_job_runs` row with `job=timetable` in the last 26h | Firestore | the entry is missing or the host is down — **the most likely failure, because it is the silent one** |
+| `status=failed`, `exitCode=2` | `scheduled_job_runs` + alert | refused; nothing written, apps unchanged. Usually two published versions covering one day |
+| `status=running` for more than a few minutes | `scheduled_job_runs` | hung; the wrapper writes `running` before it starts |
+| `"are NOT seeing this timetable"` | Master Timetable screen, and the run transcript | the apps and the published timetable genuinely differ |
+
+The transcript names the *kind* of difference, not only a count — whether class
+pages are missing entirely, were never sent from a published timetable, are left
+over from an earlier one, or were changed by something other than publishing.
+That last one is the only state that implies a defect rather than a pending job.
+
+**How to tell it is missing, without waiting for a complaint:** Health Check →
+Academic → *"Teachers See The Published Timetable"* fails and prints the exact
+command, and the Master Timetable screen says *"Teachers and parents are still
+seeing a different timetable"* under **In force**. Both are read-only, and both
+compare every class page rather than asking whether a command completed.
 ## Phase 3 — Server prep (no downtime) — REQUIRED to unblock the pull
 On `admin@65.0.240.198:/opt/zenxii`:
 1. **Back up + protect `.htaccess`:**

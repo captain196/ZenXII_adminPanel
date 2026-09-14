@@ -114,6 +114,12 @@ html{font-size:16px !important}
 .ac-edit-warn{padding:4px 6px;border-radius:4px;font-size:10px;font-weight:600;margin-top:2px;line-height:1.3}
 .ac-edit-warn.err{background:rgba(220,38,38,.1);color:#dc2626;border:1px solid rgba(220,38,38,.2)}
 .ac-edit-warn.warn{background:rgba(217,119,6,.1);color:#92400e;border:1px solid rgba(217,119,6,.2)}
+.ac-incomplete{display:flex;gap:8px;align-items:flex-start;margin:0 0 12px;padding:10px 14px;
+    border:1px solid #E0A800;border-left:4px solid #E0A800;border-radius:6px;
+    background:#FFF8E6;color:#6B4E00;font-size:13px;line-height:1.5}
+.ac-incomplete i{margin-top:2px}
+.ac-incomplete strong{font-weight:600}
+
 /* Workload Analytics */
 .ac-wl-stat{flex:1;min-width:110px;padding:14px 16px;background:var(--bg3);border-radius:8px;border:1px solid var(--border);text-align:center}
 .ac-wl-stat-n{font-size:22px;font-weight:700;color:var(--t1);font-family:var(--font-d)}
@@ -191,7 +197,14 @@ html{font-size:16px !important}
 .ac-empty i{font-size:2.2rem;display:block;margin-bottom:10px;opacity:.4}
 /* ── Shimmer / skeleton placeholders for first-time data load ── */
 @keyframes ac-shim{100%{transform:translateX(100%)}}
-.ac-shim{padding:4px 0}
+/* A shim is inserted as a SINGLE child of its target. When that target is
+   itself a grid — #calGrid is .ac-cal-grid, repeat(7,1fr) — the wrapper
+   became one grid ITEM and rendered at 1/7 width, so the calendar skeleton
+   appeared as a narrow column hugging the left edge instead of covering the
+   area it is standing in for. Spanning every column makes the placeholder
+   occupy the same box as the content that replaces it. Harmless outside a
+   grid container, where grid-column is simply ignored. */
+.ac-shim{padding:4px 0;grid-column:1/-1}
 /* shared animated sweep — any skeleton block gets it */
 .ac-shim-bar,.ac-shim-cell,.ac-shim-inp,.ac-shim-pill,.ac-shim-chip,.ac-shim-lbl{position:relative;overflow:hidden;display:block;background:var(--bg3)}
 .ac-shim-bar::after,.ac-shim-cell::after,.ac-shim-inp::after,.ac-shim-pill::after,.ac-shim-chip::after,.ac-shim-lbl::after{content:'';position:absolute;inset:0;transform:translateX(-100%);background:linear-gradient(90deg,transparent,var(--gold-dim),transparent);animation:ac-shim 1.25s infinite}
@@ -262,6 +275,17 @@ html{font-size:16px !important}
 .sa-pw-input:focus{outline:none;border-color:var(--t2)}
 .sa-gap .sa-sec-sel{border-style:dashed;border-color:var(--t3)}
 .sa-unassigned{font-size:9px;color:var(--t3);margin-top:3px;display:block}
+/* A missing teacher is not a neutral blank: it blocks the timetable from being
+   published, so it reads as a warning rather than an empty cell. */
+.sa-cell-all.sa-gap select{border-style:dashed;border-color:#d97706}
+.sa-needs-teacher{font-size:9px;color:#b45309;margin-left:8px;font-weight:700;
+    text-transform:uppercase;letter-spacing:.4px}
+.sa-orphan{font-size:9px;color:#b45309;font-weight:700;text-transform:uppercase;
+    letter-spacing:.4px;margin-left:6px}
+.sa-warnbar{display:flex;align-items:flex-start;gap:8px;margin:0 0 12px;padding:10px 12px;
+    border:1px solid #fcd34d;border-left:4px solid #d97706;border-radius:6px;
+    background:#fffbeb;color:#7c2d12;font-size:12px;line-height:1.45}
+.sa-warnbar i{margin-top:2px;color:#d97706}
 /* toggle */
 .sa-toggle{position:relative;display:inline-block;width:36px;height:20px;vertical-align:middle}
 .sa-toggle input{opacity:0;width:0;height:0;position:absolute}
@@ -311,7 +335,7 @@ html{font-size:16px !important}
     <div class="ac-tabs" id="acTabs">
         <div class="ac-tab active" data-tab="scheduling"><i class="fa fa-clock-o"></i> Period Scheduling</div>
         <div class="ac-tab" data-tab="subjects"><i class="fa fa-book"></i> Subject Assignment</div>
-        <div class="ac-tab" data-tab="timetable"><i class="fa fa-th"></i> Master Timetable</div>
+        <div class="ac-tab" data-tab="timetable"><i class="fa fa-calendar"></i> Master Timetable</div>
         <div class="ac-tab" data-tab="substitutes"><i class="fa fa-exchange"></i> Substitutes</div>
         <div class="ac-tab" data-tab="curriculum"><i class="fa fa-list-ol"></i> Curriculum</div>
         <div class="ac-tab" data-tab="planner"><i class="fa fa-pencil-square-o"></i> Lesson Planner</div>
@@ -509,6 +533,8 @@ html{font-size:16px !important}
                     <div class="ac-fg"><label>Type</label>
                         <select id="calType">
                             <option value="holiday">Holiday</option>
+                            <option value="special_working_day">Special Working Day</option>
+                            <option value="half_day">Half Day</option>
                             <option value="exam">Exam</option>
                             <option value="meeting">Meeting</option>
                             <option value="event" selected>Event</option>
@@ -521,6 +547,25 @@ html{font-size:16px !important}
                     <div class="ac-fg"><label>End Date</label><input type="date" id="calEnd"></div>
                 </div>
                 <div class="ac-fg"><label>Description</label><textarea id="calDesc" rows="2" placeholder="Optional details..."></textarea></div>
+
+                <!-- Phase D — applicability. Blank/unticked on every field below
+                     means "no restriction" (applies to everyone) — matching
+                     every event saved before this existed. Only Holiday/
+                     Special Working Day/Half Day actually consume these;
+                     they're harmless (ignored) on other types. -->
+                <div class="ac-fg">
+                    <label>Applies to <span style="font-weight:400;color:#8a7a6c">(leave both unticked = students + staff)</span></label>
+                    <div style="display:flex;gap:14px">
+                        <label style="font-weight:400"><input type="checkbox" id="calAppliesStudents"> Students</label>
+                        <label style="font-weight:400"><input type="checkbox" id="calAppliesStaff"> Staff</label>
+                    </div>
+                </div>
+                <div class="ac-row">
+                    <div class="ac-fg"><label>Departments <span style="font-weight:400;color:#8a7a6c">(blank = all)</span></label>
+                        <input type="text" id="calDepartments" placeholder="e.g. Teaching, Administration"></div>
+                    <div class="ac-fg"><label>Except staff (Staff IDs) <span style="font-weight:400;color:#8a7a6c">(blank = none)</span></label>
+                        <input type="text" id="calExceptStaff" placeholder="e.g. STA0003, STA0012"></div>
+                </div>
                 <div style="display:flex;gap:8px;margin-top:4px">
                     <button class="ac-btn ac-btn-p ac-btn-sm" onclick="AC.cal.saveEvent(this)"><i class="fa fa-check"></i> Save</button>
                     <button class="ac-btn ac-btn-d ac-btn-sm" id="calDeleteBtn" style="display:none" onclick="AC.cal.deleteEditingEvent()"><i class="fa fa-trash"></i> Delete</button>
@@ -552,67 +597,16 @@ html{font-size:16px !important}
 
     <!-- ═══════════ TAB 3: MASTER TIMETABLE ═══════════ -->
     <div class="ac-pane" id="pane-timetable">
-        <div class="ac-card">
-            <div class="ac-card-hd">
-                <h3><i class="fa fa-th" style="color:var(--gold);margin-right:6px"></i>Master Timetable</h3>
-                <div style="margin-left:auto;display:flex;gap:8px;align-items:center;flex-wrap:wrap">
-                    <!-- View Toggle -->
-                    <div class="ac-pills" id="ttViewToggle">
-                        <button class="ac-pill active" data-view="class"><i class="fa fa-th" style="margin-right:4px"></i>Class View</button>
-                        <button class="ac-pill" data-view="teacher"><i class="fa fa-user" style="margin-right:4px"></i>Teacher View</button>
-                    </div>
-                    <!-- Class filter -->
-                    <select id="ttClassFilter" style="padding:5px 10px;border:1px solid var(--border);border-radius:6px;background:var(--bg3);color:var(--t1);font-size:12px;min-width:120px">
-                        <option value="">All Classes</option>
-                    </select>
-                    <?php // Gated client-side (disable, not hide) via $acad_can_manage ?>
-                    <button class="ac-btn ac-btn-p ac-btn-sm" onclick="AC.tt.autoGenerate()" title="Auto-generate full timetable from subject assignments"><i class="fa fa-magic"></i> Auto Generate</button>
-                    <button class="ac-btn ac-btn-s ac-btn-sm" onclick="AC.tt.copyDay()" title="Copy this day's timetable to another day"><i class="fa fa-copy"></i> Copy Day</button>
-                    <button class="ac-btn ac-btn-s ac-btn-sm" onclick="AC.tt.printTT()" title="Print timetable"><i class="fa fa-print"></i> Print</button>
-                    <button class="ac-btn ac-btn-s ac-btn-sm" onclick="AC.tt.load(this)"><i class="fa fa-refresh"></i> Refresh</button>
-                </div>
-            </div>
-            <div class="ac-card-body">
-                <!-- Day Tabs -->
-                <div class="ac-day-tabs" id="ttDayTabs">
-                    <div class="ac-day-tab active" data-day="Monday">Mon</div>
-                    <div class="ac-day-tab" data-day="Tuesday">Tue</div>
-                    <div class="ac-day-tab" data-day="Wednesday">Wed</div>
-                    <div class="ac-day-tab" data-day="Thursday">Thu</div>
-                    <div class="ac-day-tab" data-day="Friday">Fri</div>
-                    <div class="ac-day-tab" data-day="Saturday">Sat</div>
-                    <div class="ac-day-tab" data-day="_week" style="margin-left:8px;border-color:var(--gold)"><i class="fa fa-calendar"></i> Full Week</div>
-                </div>
+        <?php
+        /* The canonical Master Timetable, rendered here rather than on a page of
+           its own. It sits beside Period Scheduling and Subject Assignment —
+           the two things a timetable is built from — so an administrator has
+           one place to go rather than a choice between two screens for one job.
 
-                <!-- Settings Summary + Fill Rate -->
-                <div style="display:flex;justify-content:space-between;align-items:center;flex-wrap:wrap;gap:8px;margin-bottom:12px">
-                    <div id="ttSettingsSummary" style="font-size:11px;color:var(--t3)"></div>
-                    <div id="ttFillRate" style="font-size:11px;font-weight:600;display:none">
-                        <span id="ttFillPct" style="color:var(--gold)">0%</span>
-                        <span style="color:var(--t3)">slots filled</span>
-                        <span id="ttFillEmpty" style="color:#d97706;margin-left:6px"></span>
-                    </div>
-                </div>
-
-                <!-- Subject Color Legend -->
-                <div id="ttLegend" style="display:none;margin-bottom:12px;padding:8px 12px;background:var(--bg3);border-radius:6px;font-size:11px;display:flex;gap:10px;flex-wrap:wrap"></div>
-
-                <!-- Conflict Summary Bar -->
-                <div id="ttConflictBar" style="display:none"></div>
-
-                <!-- Print Header (visible only when printing) -->
-                <div id="ttPrintHeader" style="display:none">
-                    <h2><?= htmlspecialchars($school_display_name ?? $school_name ?? '') ?> — Master Timetable</h2>
-                    <p>Session: <?= htmlspecialchars($session_year ?? '') ?> | <span id="ttPrintDay"></span></p>
-                </div>
-
-                <!-- Grid -->
-                <div class="ac-tt-grid" id="ttGridWrap">
-                    <div class="ac-empty"><i class="fa fa-th"></i>Loading timetable...</div>
-                </div>
-            </div>
-        </div>
-
+           The panel computes its own permissions and starts itself when the tab
+           is first opened; nothing here needs to pass it anything. */
+        $this->load->view('timetable/lifecycle');
+        ?>
     </div>
 
     <!-- ═══════════ TAB 4: SUBSTITUTES ═══════════ -->
@@ -641,6 +635,9 @@ html{font-size:16px !important}
                 </div>
 
                 <!-- Step 2: Teacher's schedule for the day (auto-loaded) -->
+                <!-- CAL-P3 — what the school calendar says about the chosen date.
+                     Advisory only; it never hides the periods or blocks cover. -->
+                <div id="subCalendarNote" role="status" style="display:none;margin:12px 0;padding:10px 13px;background:#fff8e6;border-left:3px solid #e0a800;border-radius:0 4px 4px 0;font-size:13px;color:#6b5411"></div>
                 <div id="subSchedulePanel" style="display:none;margin:12px 0;padding:14px;background:var(--bg3);border:1px solid var(--border);border-radius:8px">
                     <div style="font-size:12px;font-weight:700;color:var(--t1);margin-bottom:10px">
                         <i class="fa fa-calendar" style="color:var(--gold);margin-right:6px"></i>
@@ -668,6 +665,67 @@ html{font-size:16px !important}
                 </div>
             </div>
         </div>
+
+        <!-- ══ COVER LOG ══
+             The STPCD sets no ceiling on cover but expects the burden to be
+             shared equitably over the year, and names the cover log as what
+             makes that possible. This is that log. -->
+        <div class="ac-card" style="margin-top:14px">
+            <div class="ac-card-hd">
+                <h3><i class="fa fa-balance-scale" style="color:var(--gold);margin-right:6px"></i>Cover Log</h3>
+                <div style="margin-left:auto;display:flex;gap:8px;align-items:center;flex-wrap:wrap">
+                    <input type="date" id="covLogFrom" style="padding:5px 10px;border:1px solid var(--border);border-radius:6px;background:var(--bg3);color:var(--t1);font-size:12px">
+                    <span style="color:var(--t3);font-size:12px">to</span>
+                    <input type="date" id="covLogTo" style="padding:5px 10px;border:1px solid var(--border);border-radius:6px;background:var(--bg3);color:var(--t1);font-size:12px">
+                    <button class="ac-btn ac-btn-s ac-btn-sm" onclick="AC.sub.loadLog(this)"><i class="fa fa-refresh"></i> Show</button>
+                </div>
+            </div>
+            <div class="ac-card-body">
+                <div id="covLogBody">
+                    <div class="ac-empty"><i class="fa fa-balance-scale"></i>Choose a range to see who has been carrying the cover</div>
+                </div>
+            </div>
+        </div>
+
+        <!-- ══ COVER POLICY ══
+             There is no universal limit on how much cover one teacher may be
+             given: the STPCD deliberately sets no number, and CBSE's load cap
+             is weekly and about teaching, not cover. So the school sets it,
+             and a school that sets nothing is limited by nothing. -->
+        <div class="ac-card" style="margin-top:14px">
+            <div class="ac-card-hd">
+                <h3><i class="fa fa-sliders" style="color:var(--gold);margin-right:6px"></i>Cover Policy</h3>
+                <span id="covPolicyState" style="margin-left:auto;font-size:11px;color:var(--t3)"></span>
+            </div>
+            <div class="ac-card-body">
+                <p style="font-size:12px;color:var(--t3);margin:0 0 12px;max-width:62ch">
+                    These are this school's own rules, and ZenX enforces exactly what is set here.
+                    Leave a limit at 0 for no limit — that is how every school starts.
+                </p>
+                <div class="ac-row">
+                    <div class="ac-fg"><label>Most cover periods per teacher, per day</label>
+                        <input type="number" id="covMaxDay" min="0" step="1" value="0"></div>
+                    <div class="ac-fg"><label>Most cover periods per teacher, per week</label>
+                        <input type="number" id="covMaxWeek" min="0" step="1" value="0"></div>
+                </div>
+                <div style="display:flex;flex-direction:column;gap:8px;margin:10px 0">
+                    <label style="display:flex;gap:8px;align-items:flex-start;font-size:12px;cursor:pointer">
+                        <input type="checkbox" id="covSubjectMatch" style="margin-top:2px">
+                        <span>Cover must be taken by a teacher of the subject.
+                        <span style="color:var(--t3)">Senior schools often require this; primary schools usually do not.</span></span>
+                    </label>
+                    <label style="display:flex;gap:8px;align-items:flex-start;font-size:12px;cursor:pointer">
+                        <input type="checkbox" id="covTeachingOnly" style="margin-top:2px">
+                        <span>Only teaching staff may cover lessons.
+                        <span style="color:var(--t3)">Leave off if support staff supervise classes at this school.</span></span>
+                    </label>
+                </div>
+                <div style="display:flex;gap:8px;align-items:center">
+                    <button class="ac-btn ac-btn-p ac-btn-sm" onclick="AC.sub.savePolicy(this)"><i class="fa fa-check" style="pointer-events:none"></i> Save Policy</button>
+                    <button class="ac-btn ac-btn-s ac-btn-sm" onclick="AC.sub.loadPolicy(this)"><i class="fa fa-refresh"></i> Reload</button>
+                </div>
+            </div>
+        </div>
     </div>
 
     <!-- ═══════════ TAB 7: TEACHER WORKLOAD ═══════════ -->
@@ -676,6 +734,18 @@ html{font-size:16px !important}
             <div class="ac-card-hd">
                 <h3><i class="fa fa-bar-chart" style="color:var(--gold);margin-right:6px"></i>Teacher Workload Analytics</h3>
                 <div style="margin-left:auto;display:flex;gap:8px;align-items:center;flex-wrap:wrap">
+                    <!-- Which day's timetable to count. Load is a property of the
+                         timetable IN FORCE on a date, and a school publishes the
+                         next one before it starts — so "today" alone cannot show
+                         the load anybody is planning for. Mirrors the Master
+                         Timetable tab's own "In force on" picker. Server date, not
+                         the browser's UTC clock. -->
+                    <div class="ac-fg" style="margin:0;flex-direction:row;align-items:center;gap:6px">
+                        <label style="margin:0;white-space:nowrap" for="wlDate">Timetable on</label>
+                        <input type="date" id="wlDate" value="<?= date('Y-m-d') ?>"
+                               style="padding:4px 8px;font-size:12px"
+                               onchange="AC.wl.reload(this)">
+                    </div>
                     <div class="ac-fg" style="margin:0;flex-direction:row;align-items:center;gap:6px">
                         <label style="margin:0;white-space:nowrap">Max periods/week</label>
                         <input type="number" id="wlThreshold" min="1" max="60" value="30" style="width:60px;padding:4px 8px;font-size:12px;text-align:center" onchange="AC.wl.render()">
@@ -712,6 +782,7 @@ html{font-size:16px !important}
                 </div>
 
                 <!-- Workload Table -->
+                <div id="wlIncomplete"></div>
                 <div id="wlTable">
                     <div class="ac-empty"><i class="fa fa-bar-chart"></i>Loading workload data...</div>
                 </div>
@@ -812,6 +883,35 @@ function post(url,params){
             return d;
         });
     }).finally(acBusyEnd);
+}
+/**
+ * ACAD-D11 — render the server's completeness contract.
+ *
+ * get_master_timetable returns {complete, loaded, cap}. complete:false means
+ * either the read saturated the cap — whole class-sections missing, and always
+ * the same ones, since docIds sort by class-section — or the read failed.
+ *
+ * It must be shown wherever that payload is used, and stated most strongly on
+ * Teacher Workload: a missing grid row is visible, but an under-counted
+ * periods-per-week total looks like a real number and would be acted on.
+ */
+function acIncompleteBanner(c, what, extra){
+    if(!c || c.complete !== false) return '';
+    var n   = (typeof c.loaded === 'number') ? c.loaded : 0;
+    var cap = (typeof c.cap    === 'number') ? c.cap    : 0;
+    var detail = (cap > 0 && n >= cap)
+        ? ('Only the first ' + n + ' timetable records were loaded, so whole class-sections are missing.')
+        : 'The timetable could not be read, so this view may be empty or partial.';
+    return '<div class="ac-incomplete" role="status">'
+         + '<i class="fa fa-exclamation-triangle"></i> '
+         + '<strong>' + esc(what) + ' is incomplete.</strong> ' + esc(detail)
+         + (extra ? ' ' + esc(extra) : '')
+         + ' Reload to try again, and contact support if it keeps happening.'
+         + '</div>';
+}
+function acSetCompleteness(id, c, what, extra){
+    var el = document.getElementById(id);
+    if(el) el.innerHTML = acIncompleteBanner(c, what, extra);
 }
 function toast(msg,ok){
     var t=document.getElementById('acToast');
@@ -1081,7 +1181,10 @@ document.getElementById('acTabs').addEventListener('click',function(e){
     if(k==='scheduling' && !AC.ps._loaded) AC.ps.init();
     if(k==='curriculum' && !AC.cur._loaded) AC.cur.init();
     if(k==='calendar' && !AC.cal._loaded) AC.cal.init();
-    if(k==='timetable' && !AC.tt._loaded) AC.tt.load();
+    // The canonical panel starts itself on first open, the same way every
+    // other pane here is lazy-loaded. AC.tt is NOT started: its grid
+    // elements no longer exist on this page.
+    if(k==='timetable' && window.ZXTimetable) window.ZXTimetable.init();
     if(k==='substitutes' && !AC.sub._loaded) AC.sub.init();
     if(k==='workload' && !AC.wl._loaded) AC.wl.load();
     if(k==='planner' && !AC.lp._loaded) AC.lp.init();
@@ -1131,6 +1234,8 @@ AC.sa = {
     _currentSection:'', // Phase 4: selected section ('' = class-wide)
     _currentSubs:[], // working copy for selected class+section (legacy per-section view)
     _matrix:{sections:[],subjects:[],class_teachers:{}}, // Phase 5: whole-class Subject×Section matrix
+    /** Non-empty when the grid could not be read — never render or save it. */
+    _matrixUnavailable:'',
     _sectionsCache:{}, // {classKey: [sectionLetter, ...]}
     _periodSettings:{periodsPerDay:0,numWorkingDays:6,maxPeriodsPerWeek:0}, // from TimetableSettings
 
@@ -1159,9 +1264,37 @@ AC.sa = {
                 sel.innerHTML='<option value="">Select Class...</option>';
                 AC.sa._classes.forEach(function(c){
                     var fbKey=AC.sa._toFbKey(c.key);
+                    // Count DISTINCT subjects, not assignment rows: a subject
+                    // taught by a different teacher in each section produces one
+                    // row per section, so counting rows reported "11 subjects"
+                    // for a class that has 7.
+                    //
+                    // And count only what the table will SHOW — subjects that
+                    // are in this class's list in School Configuration. An
+                    // assignment for a subject that was removed from the catalog
+                    // is not displayed, so counting it made the badge disagree
+                    // with the table it labels.
                     var assigned=AC.sa._assignments[fbKey]||[];
-                    var count=Array.isArray(assigned)?assigned.length:0;
-                    var badge=count>0?' ('+count+' subjects)':'';
+                    var catCodes={};
+                    AC.sa._catalogFor(c.key).forEach(function(s){
+                        if(s&&s.code) catCodes[String(s.code)]=true;
+                    });
+                    var haveCatalog=Object.keys(catCodes).length>0;
+
+                    var distinct={};
+                    if(Array.isArray(assigned)){
+                        assigned.forEach(function(a){
+                            if(!a) return;
+                            var code=String(a.code||'');
+                            // With no catalog loaded we cannot filter; count all
+                            // rather than report a misleading zero.
+                            if(haveCatalog && !catCodes[code]) return;
+                            var k=code||String(a.name||'');
+                            if(k) distinct[k]=true;
+                        });
+                    }
+                    var count=Object.keys(distinct).length;
+                    var badge=count>0?' ('+count+(count===1?' subject':' subjects')+')':'';
                     sel.innerHTML+='<option value="'+esc(fbKey)+'" data-label="'+esc(c.label)+'" data-key="'+esc(c.key)+'">'+esc(c.label)+badge+'</option>';
                 });
                 sel.onchange=function(){
@@ -1200,21 +1333,45 @@ AC.sa = {
         AC.sa._matrix={sections:[],subjects:[],class_teachers:{}};
         document.getElementById('saTable').innerHTML='<div style="padding:20px;text-align:center;color:var(--t3);font-size:12px"><i class="fa fa-spinner fa-spin"></i> Loading matrix…</div>';
 
-        post('academic/get_class_matrix',{class_key:AC.sa._currentClassKey||classKey}).then(function(d){
+        AC.sa._matrixUnavailable='';
+        return post('academic/get_class_matrix',{class_key:AC.sa._currentClassKey||classKey}).then(function(d){
             if(d.status==='success'){
                 AC.sa._matrix={
                     sections:d.sections||[],
                     subjects:d.subjects||[],
                     class_teachers:(d.class_teachers&&typeof d.class_teachers==='object')?d.class_teachers:{}
                 };
+                // Which subjects HAD a teacher when the server last answered.
+                // save() compares against this: a subject going from "has a
+                // teacher" to "has none" is a revocation (the teacher also
+                // loses marks-entry access), and must be confirmed, never slip
+                // through inside an unrelated edit.
+                AC.sa._teacherBaseline={};
+                (d.subjects||[]).forEach(function(s){
+                    var any=!!s.class_wide_teacher_id;
+                    if(!any){
+                        var st=s.section_teachers||{};
+                        for(var k in st){ if(st[k]&&st[k].id){any=true;break;} }
+                    }
+                    AC.sa._teacherBaseline[String(s.code)]=any;
+                });
             } else {
+                // A grid that could not be READ must never be drawn as a class
+                // with no subjects. Saving this screen RECONCILES — anything the
+                // request does not mention is deleted — so an empty grid drawn
+                // over a failed read is one click away from revoking every
+                // teacher in the class.
                 AC.sa._matrix={sections:[],subjects:[],class_teachers:{}};
-                toast(d.message||'Failed to load matrix',false);
+                AC.sa._matrixUnavailable=d.message||'The subject matrix for this class could not be read.';
+                toast(AC.sa._matrixUnavailable,false);
             }
+            AC.sa._applyCatalogNames(classKey);
             AC.sa._renderMatrix();
             AC.sa._renderCatalog(classKey);
-        }).catch(function(){
+        }).catch(function(e){
             AC.sa._matrix={sections:[],subjects:[],class_teachers:{}};
+            AC.sa._matrixUnavailable=(e&&e.message)||'The subject matrix for this class could not be read.';
+            toast(AC.sa._matrixUnavailable,false);
             AC.sa._renderMatrix();
             AC.sa._renderCatalog(classKey);
         });
@@ -1260,6 +1417,47 @@ AC.sa = {
         return Object.keys(out).map(function(id){return {id:id,name:out[id]};});
     },
 
+    /* A Same-teacher toggle must never silently discard a chosen teacher.
+       UAT 2026-09-02: 8th Mathematics went from "Sunita Raghav, every section"
+       to "no teacher in any section" across one toggle+save, and the save
+       reported success — because OFF rendered three empty per-section selects
+       and the class-wide choice was simply dropped. OFF now seeds each section
+       with the class-wide teacher (without overwriting a section already set);
+       ON adopts the section teacher only when every section agrees, because
+       picking one of several differing teachers would be inventing data. */
+    _toggleSeed:function(sub,sections,checked){
+        if(!checked){
+            sub.section_teachers=sub.section_teachers||{};
+            if(sub.class_wide_teacher_id){
+                sections.forEach(function(sec){
+                    var t=sub.section_teachers[sec];
+                    if(!t||!t.id){
+                        sub.section_teachers[sec]={id:sub.class_wide_teacher_id,name:sub.class_wide_teacher_name||''};
+                    }
+                });
+            }
+        } else if(!sub.class_wide_teacher_id){
+            // Adopt the ONE DISTINCT teacher present in any section — empty
+            // sections don't veto (UAT 2026-09-12: A=Sunita, B/C empty gave
+            // "needs a teacher", discarding the only information the row had).
+            // Two DIFFERENT teachers still adopt nobody: picking a winner
+            // would be inventing data.
+            var st=sub.section_teachers||{};
+            var distinct={}, adoptName='';
+            sections.forEach(function(sec){
+                var t=st[sec]||{};
+                if(t.id){ distinct[t.id]=true; adoptName=t.name||''; }
+            });
+            var ids=Object.keys(distinct);
+            if(ids.length===1){
+                sub.class_wide_teacher_id=ids[0];
+                sub.class_wide_teacher_name=adoptName;
+            }
+        }
+        sub.same_for_all=checked;
+        return sub;
+    },
+
     /** Build a teacher <select>. data = {idx, sec?} → becomes data-* attributes. */
     _teacherSelectHtml:function(eligible,selectedId,cls,data){
         var attrs=''; for(var k in data){ if(data.hasOwnProperty(k)) attrs+=' data-'+k+'="'+esc(String(data[k]))+'"'; }
@@ -1267,8 +1465,20 @@ AC.sa = {
         if(!eligible||eligible.length===0){
             h+='<option value="" disabled>no eligible teacher</option>';
         } else {
+            // Two staff records can carry the same name — sometimes a genuine
+            // namesake, sometimes a duplicate record. Either way the operator
+            // cannot choose between two identical lines, and picking the wrong
+            // one attributes the timetable to the wrong staff id. Show the id
+            // ONLY where a name is ambiguous, so the common case stays clean.
+            var seen={};
             eligible.forEach(function(t){
-                h+='<option value="'+esc(t.id)+'" data-name="'+esc(t.name)+'"'+(t.id===selectedId?' selected':'')+'>'+esc(t.name)+'</option>';
+                var k=String(t.name||'').trim().toLowerCase();
+                seen[k]=(seen[k]||0)+1;
+            });
+            eligible.forEach(function(t){
+                var k=String(t.name||'').trim().toLowerCase();
+                var label=t.name+(seen[k]>1?' ('+t.id+')':'');
+                h+='<option value="'+esc(t.id)+'" data-name="'+esc(t.name)+'"'+(t.id===selectedId?' selected':'')+'>'+esc(label)+'</option>';
             });
         }
         return h+'</select>';
@@ -1287,7 +1497,15 @@ AC.sa = {
                 h+='<select class="sa-ct-sel" data-sec="'+esc(sec)+'"><option value="">— none —</option>';
                 pool.forEach(function(t){ h+='<option value="'+esc(t.id)+'"'+(t.id===cur?' selected':'')+'>'+esc(t.name)+'</option>'; });
                 h+='</select>';
-                if(pool.length===0) h+='<span class="sa-ct-hint">assign a teacher below first</span>';
+                // ACAD-U1: two different empty states, two different first steps.
+                // The pool is derived from teachers already assigned to subjects in
+                // this section, so with NO subjects there is no teacher control
+                // "below" to use — telling the operator to assign one is a dead end.
+                if(pool.length===0){
+                    h+=((M.subjects||[]).length===0)
+                        ? '<span class="sa-ct-hint">add a subject first, then assign its teacher</span>'
+                        : '<span class="sa-ct-hint">assign a teacher to a subject below first</span>';
+                }
             } else {
                 var nm='—'; pool.forEach(function(t){if(t.id===cur)nm=t.name;});
                 h+='<span style="font-size:12px;color:var(--t1);font-weight:600">'+esc(nm)+'</span>';
@@ -1300,6 +1518,19 @@ AC.sa = {
 
     /** Phase 5: render the Subject×Section matrix. */
     _renderMatrix:function(){
+        // An unreadable grid is drawn as exactly that. Saving this screen
+        // reconciles the whole class, so an empty grid over a failed read is
+        // one click from revoking every teacher in it.
+        if(AC.sa._matrixUnavailable){
+            document.getElementById('saTable').innerHTML=
+                '<div class="ac-empty" style="color:#b45309">'
+                +'<i class="fa fa-exclamation-triangle"></i> '+esc(AC.sa._matrixUnavailable)
+                +'<div style="font-size:11px;margin-top:6px">This is not the same as '
+                +'a class with no subjects. Reload before changing anything — '
+                +'saving from here would remove every assignment in the class.</div>'
+                +'</div>';
+            return;
+        }
         var M=AC.sa._matrix, subs=M.subjects||[], sections=M.sections||[], edit=_canEdit;
 
         document.getElementById('saCount').textContent=subs.length;
@@ -1322,6 +1553,64 @@ AC.sa = {
             return;
         }
 
+        // Anything assigned but absent from this class's subject list is not
+        // shown. Saving REPLACES the class's assignments, so those rows will be
+        // removed by the next save — which is right for a subject that was taken
+        // out of the catalog, and wrong if it was simply never added. Either way
+        // it is stated here rather than happening quietly.
+        var excluded=AC.sa._excluded||[];
+        if(excluded.length){
+            html+='<div class="sa-warnbar"><i class="fa fa-info-circle"></i><div>'
+                +'<b>'+excluded.length+(excluded.length===1?' assignment is':' assignments are')
+                +' not shown:</b> '
+                +esc(excluded.map(function(s){return s.name}).join(', '))+'. '
+                +(excluded.length===1?'It is':'They are')
+                +' not in this class\u2019s subject list in School Configuration, so '
+                +(excluded.length===1?'it':'they')+' will be removed when you save. '
+                +'If '+(excluded.length===1?'it':'they')+' should be taught, add '
+                +(excluded.length===1?'it':'them')+' in School Configuration first.'
+                +'</div></div>';
+        }
+
+        // Summarise before the table. A teacherless subject still generates into
+        // a timetable, but every period it produces is a hard violation that
+        // blocks publishing — so it is worth saying here, where it can be fixed,
+        // rather than leaving it to be discovered on the timetable screen.
+        // Two different truths, two different messages. "No teacher yet" was
+        // shown for a subject taught in Section A just because B and C were
+        // unassigned — contradicting the grid one line below it (UAT
+        // 2026-09-12). A subject with NO teacher anywhere and a subject that
+        // is merely not covered in every section are different problems with
+        // different fixes, so they get separate banners.
+        var missing=[], partial=[];
+        subs.forEach(function(s){
+            if(s.same_for_all){ if(!s.class_wide_teacher_id) missing.push(s.name); }
+            else {
+                var gaps=[];
+                sections.forEach(function(sec){
+                    var t=(s.section_teachers&&s.section_teachers[sec])||{};
+                    if(!t.id) gaps.push(sec);
+                });
+                if(gaps.length===sections.length) missing.push(s.name);
+                else if(gaps.length) partial.push(s.name+' — '+gaps.join(', '));
+            }
+        });
+        if(missing.length){
+            html+='<div class="sa-warnbar"><i class="fa fa-exclamation-triangle"></i><div>'
+                +'<b>'+missing.length+(missing.length===1?' subject has':' subjects have')+' no teacher yet:</b> '
+                +esc(missing.join(', '))+'.<br>'
+                +'A subject with no teacher still appears on the timetable, but nobody is '
+                +'told to attend it — so it will block the timetable from being published '
+                +'until a teacher is set.</div></div>';
+        }
+        if(partial.length){
+            html+='<div class="sa-warnbar"><i class="fa fa-info-circle"></i><div>'
+                +'<b>'+(partial.length===1?'A subject is':partial.length+' subjects are')
+                +' unassigned in some sections:</b> '+esc(partial.join('; '))+'.<br>'
+                +'Periods for those sections will block the timetable from being '
+                +'published until a teacher is set there.</div></div>';
+        }
+
         html+='<div class="sa-help">Each subject uses <b>one teacher for every section</b> by default. Turn off <b>Same teacher</b> to assign a different teacher per section. The <b>class teacher</b> is set per section in the panel above.</div>';
         html+='<div class="sa-matrix-wrap"><table class="sa-matrix"><thead><tr>';
         html+='<th>Subject</th><th style="text-align:center" title="Periods per week">Per/wk</th><th style="text-align:center" title="Use one teacher for all sections of this subject">Same&nbsp;teacher</th>';
@@ -1332,7 +1621,8 @@ AC.sa = {
         subs.forEach(function(s,i){
             var eligible=AC.sa._filterTeachersForSubject(s.code,s.name);
             html+='<tr>';
-            html+='<td class="sa-col-subj"><div class="sa-subj-name">'+esc(s.name)+'</div><div class="sa-subj-meta">'+esc(s.code)+' &middot; '+esc(s.category)+'</div></td>';
+            html+='<td class="sa-col-subj"><div class="sa-subj-name">'+esc(s.name)+'</div>'
+                +'<div class="sa-subj-meta">'+esc(s.code)+' &middot; '+esc(s.category)+'</div></td>';
             if(edit){
                 html+='<td style="text-align:center"><input type="number" min="0" max="20" value="'+(s.periods_week||0)+'" data-idx="'+i+'" class="sa-pw-input"></td>';
                 html+='<td style="text-align:center"><label class="sa-toggle"><input type="checkbox" class="sa-same-check" data-idx="'+i+'"'+(s.same_for_all?' checked':'')+'><span class="track"></span></label></td>';
@@ -1343,7 +1633,12 @@ AC.sa = {
             if(s.same_for_all){
                 var cwId=s.class_wide_teacher_id||'';
                 if(edit){
-                    html+='<td class="sa-cell-all" colspan="'+sections.length+'">'+AC.sa._teacherSelectHtml(eligible,cwId,'sa-cw-sel',{idx:i})+'<span class="sa-all-note">every section</span></td>';
+                    html+='<td class="sa-cell-all'+(cwId?'':' sa-gap')+'" colspan="'+sections.length+'">'
+                        +AC.sa._teacherSelectHtml(eligible,cwId,'sa-cw-sel',{idx:i})
+                        +'<span class="sa-all-note">every section</span>'
+                        +(cwId?'':'<span class="sa-needs-teacher">needs a teacher</span>')
+                        +(eligible.length?'':'<span class="sa-needs-teacher">no eligible teacher — add this subject to a teacher in Staff &amp; HR</span>')
+                        +'</td>';
                 } else {
                     html+='<td class="sa-cell-all" colspan="'+sections.length+'">'+esc(s.class_wide_teacher_name||'—')+'<span class="sa-all-note">every section</span></td>';
                 }
@@ -1393,7 +1688,10 @@ AC.sa = {
             });
         });
         document.querySelectorAll('.sa-same-check').forEach(function(cb){
-            cb.addEventListener('change',function(){ subs[+this.dataset.idx].same_for_all=this.checked; AC.sa._renderMatrix(); });
+            cb.addEventListener('change',function(){
+                AC.sa._toggleSeed(subs[+this.dataset.idx], AC.sa._matrix.sections||[], this.checked);
+                AC.sa._renderMatrix();
+            });
         });
         document.querySelectorAll('.sa-cw-sel').forEach(function(sel){
             sel.addEventListener('change',function(){
@@ -1550,18 +1848,64 @@ AC.sa = {
         });
     },
 
-    _renderCatalog:function(classKey){
-        var box=document.getElementById('saCatalog');
-        if(!box)return;
-        // Extract class number for catalog lookup
+    /** The catalog entries for a class, de-duplicated by code. */
+    _catalogFor:function(classKey){
         var m=(classKey||'').match(/(\d+)/);
         var num=m?m[1]:'';
         var nameKey=(classKey||'').replace('Class ','');
-
-        // Gather subjects from catalog
-        var catSubs=(AC.sa._catalog[num]||[]).concat(AC.sa._catalog[nameKey]||[]);
+        var subs=(AC.sa._catalog[num]||[]).concat(AC.sa._catalog[nameKey]||[]);
         var seen={};
-        catSubs=catSubs.filter(function(s){if(seen[s.code])return false;seen[s.code]=true;return true});
+        return subs.filter(function(s){if(seen[s.code])return false;seen[s.code]=true;return true});
+    },
+
+    /**
+     * School Configuration owns a subject's NAME; an assignment only stores a
+     * snapshot of it.
+     *
+     * Renaming 906 from "Computer Applications" to "Computer Science" left the
+     * old name on this screen — the row rendered its stored snapshot — and the
+     * new name never appeared under "Add Subject from Catalog" because that
+     * list filters by CODE, and 906 was already assigned. The subject looked
+     * simultaneously renamed and unrenamed.
+     *
+     * So the catalog is applied over the matrix by code before rendering. The
+     * stored name is kept only for a code the catalog no longer has, which is a
+     * genuinely orphaned assignment and must stay visible rather than vanish.
+     */
+    _applyCatalogNames:function(classKey){
+        var cat=AC.sa._catalogFor(classKey);
+        var byCode={};
+        cat.forEach(function(s){ if(s&&s.code) byCode[String(s.code)]=s; });
+
+        var keep=[], dropped=[];
+        (AC.sa._matrix.subjects||[]).forEach(function(row){
+            var c=byCode[String(row.code||'')];
+            if(!c){ dropped.push(row); return; }
+            // School Configuration owns the name and the category.
+            if(c.name && c.name!==row.name) row.name=c.name;
+            if(c.category) row.category=c.category;
+            keep.push(row);
+        });
+
+        AC.sa._matrix.subjects = keep;
+        AC.sa._excluded = dropped;
+
+        // If the catalog itself could not be read, keep everything rather than
+        // showing an empty table and inviting a save that deletes the lot.
+        if(cat.length===0){
+            AC.sa._matrix.subjects = keep.concat(dropped);
+            AC.sa._excluded = [];
+            AC.sa._catalogMissing = true;
+        } else {
+            AC.sa._catalogMissing = false;
+        }
+    },
+
+    _renderCatalog:function(classKey){
+        var box=document.getElementById('saCatalog');
+        if(!box)return;
+
+        var catSubs=AC.sa._catalogFor(classKey);
 
         // Filter out already assigned
         var assignedCodes={};
@@ -1608,6 +1952,13 @@ AC.sa = {
     save:function(btn){
         if(!acGuard('manage')) return;
         if(!AC.sa._currentKey){toast('Select a class first',false);return}
+        // Refuse at the source too: an unreadable grid is not the class, and
+        // this save reconciles — anything it does not mention is deleted.
+        if(AC.sa._matrixUnavailable){
+            toast('The matrix was not loaded, so there is nothing safe to save. '
+                +'Reload the class first.',false);
+            return;
+        }
         var M=AC.sa._matrix, subs=M.subjects||[], ps=AC.sa._periodSettings;
 
         // Period validation (periods are class-level, one value per subject)
@@ -1618,25 +1969,54 @@ AC.sa = {
             if(totalP>ps.maxPeriodsPerWeek){ toast('Total periods ('+totalP+') exceeds max ('+ps.maxPeriodsPerWeek+'). Reduce before saving.',false); return; }
         }
 
-        if(btn){btn.classList.add('is-loading');btn.disabled=true;}
-        if(window.ZXLoader) ZXLoader.show('Saving matrix…');
-        post('academic/save_class_matrix',{
-            class_key:AC.sa._currentClassKey||AC.sa._currentKey,
-            matrix:JSON.stringify({sections:M.sections||[],subjects:subs,class_teachers:M.class_teachers||{}})
-        }).then(function(d){
-            if(btn){btn.classList.remove('is-loading');btn.disabled=false;}
-            if(window.ZXLoader) ZXLoader.hide(true);
-            if(d.status==='success'){
-                toast('Saved '+d.count+' assignments',true);
-                if(d.warnings && d.warnings.length) toast('Note: '+d.warnings.join('; '),false);
-                // Reload so the UI reflects the canonical stored shape.
-                AC.sa._loadMatrix(AC.sa._currentClassKey||AC.sa._currentKey);
-            } else toast(d.message,false);
-        }).catch(function(e){
-            if(btn){btn.classList.remove('is-loading');btn.disabled=false;}
-            if(window.ZXLoader) ZXLoader.hide(true);
-            toast((e&&e.message)||'Failed to save assignments',false);
+        // A save that strips the last teacher from a subject is a revocation:
+        // the removed teacher also loses marks-entry access for it. Compare
+        // against what the server last reported and make it a deliberate act.
+        var baseline=AC.sa._teacherBaseline||{}, secs=M.sections||[], losing=[];
+        subs.forEach(function(s){
+            var has=false;
+            if(s.same_for_all){ has=!!s.class_wide_teacher_id; }
+            else {
+                var st=s.section_teachers||{};
+                for(var si=0;si<secs.length;si++){ var t=st[secs[si]]; if(t&&t.id){has=true;break;} }
+            }
+            if(!has && baseline[String(s.code)]) losing.push(s.name);
         });
+        var doSave=function(){
+            if(btn){btn.classList.add('is-loading');btn.disabled=true;}
+            if(window.ZXLoader) ZXLoader.show('Saving matrix…');
+            post('academic/save_class_matrix',{
+                class_key:AC.sa._currentClassKey||AC.sa._currentKey,
+                matrix:JSON.stringify({sections:M.sections||[],subjects:subs,class_teachers:M.class_teachers||{}})
+            }).then(function(d){
+                if(btn){btn.classList.remove('is-loading');btn.disabled=false;}
+                if(window.ZXLoader) ZXLoader.hide(true);
+                if(d.status==='success'){
+                    toast('Saved '+d.count+' assignments',true);
+                    if(d.warnings && d.warnings.length) toast('Note: '+d.warnings.join('; '),false);
+                    // Reload so the UI reflects the canonical stored shape.
+                    AC.sa._loadMatrix(AC.sa._currentClassKey||AC.sa._currentKey);
+                } else toast(d.message,false);
+            }).catch(function(e){
+                if(btn){btn.classList.remove('is-loading');btn.disabled=false;}
+                if(window.ZXLoader) ZXLoader.hide(true);
+                toast((e&&e.message)||'Failed to save assignments',false);
+            });
+        };
+
+        if(losing.length){
+            // BUG-073 house rule: destructive confirmations use the themed
+            // modal, never the native "localhost says" confirm().
+            _confirmModal({
+                title:'Remove the only teacher?',
+                body:'This save removes the ONLY teacher from: '+losing.join(', ')
+                    +'.\nA removed teacher also loses marks-entry access for that subject.',
+                confirmText:'Save anyway',
+                dangerous:true
+            }).then(function(go){ if(go) doSave(); });
+            return;
+        }
+        doSave();
     },
 
     copyFrom:function(){
@@ -1758,7 +2138,7 @@ AC.ps = {
         rBox.innerHTML='';
         var recesses=s.recesses||[];
         if(recesses.length===0) recesses=[{after_period:3,duration:30}];
-        recesses.forEach(function(r){AC.ps._addRecessRow(r.after_period,r.duration)});
+        recesses.forEach(function(r){AC.ps._addRecessRow(r.after_period,r.duration,r.name)});
 
         // Bind change events for live preview
         startEl.addEventListener('change',function(){AC.ps._renderTimeline()});
@@ -1766,13 +2146,18 @@ AC.ps = {
         document.getElementById('psPeriods').addEventListener('change',function(){AC.ps._renderTimeline()});
     },
 
-    _addRecessRow:function(after,dur){
+    // A school may call its break Lunch, Recess, Tiffin or Interval. The name
+    // is optional: leaving it blank keeps the generic word everywhere.
+    _addRecessRow:function(after,dur,name){
         var box=document.getElementById('psRecesses');
         var row=document.createElement('div');
         row.className='ac-row';
         row.style.cssText='margin-bottom:8px;align-items:center';
+        var safeName=String(name||'').replace(/&/g,'&amp;').replace(/</g,'&lt;')
+            .replace(/>/g,'&gt;').replace(/"/g,'&quot;');
         row.innerHTML='<div class="ac-fg" style="max-width:140px"><label>After Period</label><input type="number" min="1" max="14" value="'+(after||3)+'" class="ps-rec-after" onchange="AC.ps._renderTimeline()"></div>'+
             '<div class="ac-fg" style="max-width:140px"><label>Duration (min)</label><input type="number" min="5" max="60" value="'+(dur||30)+'" class="ps-rec-dur" onchange="AC.ps._renderTimeline()"></div>'+
+            '<div class="ac-fg" style="max-width:170px"><label>Name (optional)</label><input type="text" maxlength="24" placeholder="Break" value="'+safeName+'" class="ps-rec-name"></div>'+
             '<div style="padding-top:18px"><button class="ac-btn ac-btn-d ac-btn-sm" onclick="this.closest(\'.ac-row\').remove();AC.ps._renderTimeline()"><i class="fa fa-times"></i></button></div>';
         box.appendChild(row);
     },
@@ -1797,7 +2182,9 @@ AC.ps = {
         document.querySelectorAll('#psRecesses .ac-row').forEach(function(row){
             var after=parseInt(row.querySelector('.ps-rec-after').value)||0;
             var dur=parseInt(row.querySelector('.ps-rec-dur').value)||0;
-            if(after>0&&dur>0) recesses.push({after_period:after,duration:dur});
+            var nameEl=row.querySelector('.ps-rec-name');
+            var nm=nameEl?String(nameEl.value||'').trim():'';
+            if(after>0&&dur>0) recesses.push({after_period:after,duration:dur,name:nm});
         });
         var recMap={};
         var recessMin=0;
@@ -1846,7 +2233,9 @@ AC.ps = {
         document.querySelectorAll('#psRecesses .ac-row').forEach(function(row){
             var after=parseInt(row.querySelector('.ps-rec-after').value)||0;
             var dur=parseInt(row.querySelector('.ps-rec-dur').value)||0;
-            if(after>0&&dur>0) recesses.push({after_period:after,duration:dur});
+            var nameEl=row.querySelector('.ps-rec-name');
+            var nm=nameEl?String(nameEl.value||'').trim():'';
+            if(after>0&&dur>0) recesses.push({after_period:after,duration:dur,name:nm});
         });
 
         var workingDays=[];
@@ -1913,10 +2302,26 @@ AC.cur = {
     // every write response. They make the JS UI a true client of the
     // backend's optimistic-concurrency machinery (version-check + 409).
     version: 0,
+    /** True when some topic documents could not be read this time. */
+    incomplete: false,
+    expectedTopics: 0,
     topicsModel: 'array',
     totalTopics: 0,
     completedTopics: 0,
     percentComplete: 0,
+    /**
+     * Every write here is built from the list on screen, and the server makes
+     * the stored syllabus match it. A list that is missing topics because they
+     * would not load is therefore not something to write back from — the save
+     * is refused server-side too, but a teacher should be told before they
+     * type a topic rather than after.
+     */
+    _wholeList: function(){
+        if(!AC.cur.incomplete) return true;
+        toast('Some topics could not be read, so this syllabus cannot be changed '
+            +'right now. Reload it first.',false);
+        return false;
+    },
     // 409 conflict guard — auto-reload the curriculum if the server
     // reports a version mismatch. Returns true if the response was a
     // conflict (caller should bail out).
@@ -1991,6 +2396,12 @@ AC.cur = {
         withBtn(btn,post('academic/get_curriculum',{class_section:cs,subject:sub})).then(function(d){
             if(d.status==='success'){
                 AC.cur.topics = d.topics || [];
+                // A topic document that failed to load is a lesson missing
+                // from the course this teacher is looking at. The list is
+                // still worth showing; pretending it is complete is not.
+                AC.cur.incomplete = !!d.incomplete;
+                AC.cur.expectedTopics = (typeof d.expectedTopics==='number')
+                    ? d.expectedTopics : 0;
                 // Phase 2: capture server-side version + counters; fall back
                 // to JS computation only if the server didn't supply them.
                 AC.cur._applyServerState(d);
@@ -2001,7 +2412,15 @@ AC.cur = {
                         ? Math.round(AC.cur.completedTopics/AC.cur.totalTopics*100) : 0;
                 }
                 AC.cur.render();
-                toast('Loaded '+AC.cur.totalTopics+' topics',true);
+                // totalTopics is what the syllabus HAS; on a partial read that is
+                // not what arrived, and reporting it as loaded is how somebody
+                // concludes the screen is showing everything.
+                if(AC.cur.incomplete){
+                    toast('Loaded '+(AC.cur.topics||[]).length+' of '
+                        +AC.cur.expectedTopics+' topics — some could not be read',false);
+                } else {
+                    toast('Loaded '+AC.cur.totalTopics+' topics',true);
+                }
             } else {
                 document.getElementById('curTopics').innerHTML='<div class="ac-empty"><i class="fa fa-exclamation-triangle"></i> '+esc(d.message||'Failed to load')+'</div>';
                 toast(d.message||'Failed to load',false);
@@ -2030,8 +2449,21 @@ AC.cur = {
         document.getElementById('curProgressPct').textContent=pct+'%';
         document.getElementById('curProgressBar').style.width=pct+'%';
 
+        // The banner goes above whatever follows, including the empty state:
+        // "no topics" is the one reading most likely to be wrong when the
+        // topic documents are the thing that would not load.
+        var warn='';
+        if(AC.cur.incomplete){
+            var got=(AC.cur.topics||[]).length, want=AC.cur.expectedTopics||0;
+            warn='<div class="ac-empty" style="color:#b45309;padding:8px;margin-bottom:8px">'
+                +'<i class="fa fa-exclamation-triangle"></i> Showing '+got+' of '+want
+                +' topics — the rest could not be read just now. This is not a '
+                +'shorter syllabus; reload before marking progress or deleting '
+                +'anything.</div>';
+        }
+
         if(total===0){
-            document.getElementById('curTopics').innerHTML='<div class="ac-empty"><i class="fa fa-list-ol"></i>No topics yet. Click "Add Topic" to start planning.</div>';
+            document.getElementById('curTopics').innerHTML=warn+'<div class="ac-empty"><i class="fa fa-list-ol"></i>No topics yet. Click "Add Topic" to start planning.</div>';
             return;
         }
         var html='<table class="ac-table"><thead><tr><th>#</th><th>Topic</th><th>Chapter</th><th>Periods</th><th>Status</th><th>Actions</th></tr></thead><tbody>';
@@ -2058,7 +2490,7 @@ AC.cur = {
             html+='</td></tr>';
         });
         html+='</tbody></table>';
-        document.getElementById('curTopics').innerHTML=html;
+        document.getElementById('curTopics').innerHTML=warn+html;
     },
     toggleForm: function(){
         var f=document.getElementById('curAddForm');
@@ -2067,6 +2499,7 @@ AC.cur = {
     },
     addTopic: function(btn){
         if(!acGuard('edit')) return;
+        if(!AC.cur._wholeList()) return;
         var title=document.getElementById('curTopicTitle').value.trim();
         if(!title){toast('Topic title required',false);return}
         AC.cur.topics.push({
@@ -2085,6 +2518,7 @@ AC.cur = {
     },
     setStatus: function(idx,status,btn){
         if(!acGuard('edit')) return;
+        if(!AC.cur._wholeList()) return;
         var cs=document.getElementById('curClass').value;
         var sub=document.getElementById('curSubject').value;
         var topic = AC.cur.topics[idx] || {};
@@ -2114,6 +2548,7 @@ AC.cur = {
     },
     deleteTopic: function(idx,btn){
         if(!acGuard('manage')) return;
+        if(!AC.cur._wholeList()) return;
         _confirmModal({
             title:'Delete this topic',
             body:'The topic will be removed from the curriculum.',
@@ -2149,6 +2584,7 @@ AC.cur = {
     },
     saveFull: function(btn){
         if(!acGuard('edit')) return;
+        if(!AC.cur._wholeList()) return;
         var cs=document.getElementById('curClass').value;
         var sub=document.getElementById('curSubject').value;
         if(!cs||!sub) return;
@@ -2251,6 +2687,10 @@ AC.cal = {
         document.getElementById('calStart').value=date;
         document.getElementById('calEnd').value=date;
         document.getElementById('calDesc').value='';
+        document.getElementById('calAppliesStudents').checked=false;
+        document.getElementById('calAppliesStaff').checked=false;
+        document.getElementById('calDepartments').value='';
+        document.getElementById('calExceptStaff').value='';
         document.getElementById('calDeleteBtn').style.display='none';
         document.getElementById('calForm').classList.add('show');
         document.getElementById('calTitle').focus();
@@ -2269,6 +2709,11 @@ AC.cal = {
         document.getElementById('calStart').value=ev.start_date||'';
         document.getElementById('calEnd').value=ev.end_date||'';
         document.getElementById('calDesc').value=ev.description||'';
+        var appliesTo=ev.appliesTo||[];
+        document.getElementById('calAppliesStudents').checked=appliesTo.indexOf('students')!==-1;
+        document.getElementById('calAppliesStaff').checked=appliesTo.indexOf('staff')!==-1;
+        document.getElementById('calDepartments').value=(ev.departments||[]).join(', ');
+        document.getElementById('calExceptStaff').value=(ev.exceptStaff||[]).join(', ');
         document.getElementById('calDeleteBtn').style.display='inline-flex';
         document.getElementById('calForm').classList.add('show');
     },
@@ -2282,13 +2727,23 @@ AC.cal = {
         var title=document.getElementById('calTitle').value.trim();
         var start=document.getElementById('calStart').value;
         if(!title||!start){toast('Title and date required',false);return}
+        var appliesTo=[];
+        if(document.getElementById('calAppliesStudents').checked) appliesTo.push('students');
+        if(document.getElementById('calAppliesStaff').checked) appliesTo.push('staff');
+        var departments=document.getElementById('calDepartments').value.split(',')
+            .map(function(s){return s.trim();}).filter(function(s){return s!=='';});
+        var exceptStaff=document.getElementById('calExceptStaff').value.split(',')
+            .map(function(s){return s.trim();}).filter(function(s){return s!=='';});
         withBtn(btn,post('academic/save_event',{
             id:document.getElementById('calEditId').value,
             title:title,
             type:document.getElementById('calType').value,
             start_date:start,
             end_date:document.getElementById('calEnd').value||start,
-            description:document.getElementById('calDesc').value.trim()
+            description:document.getElementById('calDesc').value.trim(),
+            appliesTo:JSON.stringify(appliesTo),
+            departments:JSON.stringify(departments),
+            exceptStaff:JSON.stringify(exceptStaff)
         })).then(function(d){
             if(d.status==='success'){
                 AC.cal.hideForm();
@@ -2326,6 +2781,7 @@ AC.tt = {
     settings:null,
     timetables:{},
     classes:[],
+    completeness:null,      // ACAD-D11 — {complete, loaded, cap} from the server
     _subjectAssignments:{}, // from Academic/Subject_Assignments — for period-limit checks
     day:'Monday',
     view:'class', // 'class' or 'teacher'
@@ -2354,6 +2810,7 @@ AC.tt = {
                     AC.tt.timetables=d.timetables||{};
                     AC.tt.classes=d.classes||[];
                     AC.tt._subjectAssignments=d.subject_assignments||{};
+                    AC.tt.completeness=d.completeness||null;
                     AC.tt._buildSubjectColors();
                     AC.tt._populateClassFilter();
                     AC.tt._detectAllConflicts();
@@ -2704,6 +3161,8 @@ AC.tt = {
     },
 
     render:function(){
+        acSetCompleteness('ttIncomplete', AC.tt.completeness, 'This timetable',
+            'Conflict highlighting can only cover what was loaded.');
         if(AC.tt.view==='teacher') AC.tt.renderTeacherView();
         else if(AC.tt.day==='_week') AC.tt.renderWeekView();
         else AC.tt.renderGrid();
@@ -3129,7 +3588,18 @@ AC.tt = {
                 var msg='Preview: '+r.sections_generated+' sections generated.\n';
                 msg+=r.unallocated+' free slots remaining.\n';
                 if(r.conflicts>0) msg+=r.conflicts+' conflicts detected.\n';
-                msg+='\nSave this timetable?';
+
+                // ACAD-D27: the generator already counts how many hand-built days it
+                // will keep and how many it will replace, and writes both to the audit
+                // log AFTERWARDS. The operator was never told BEFORE confirming, so a
+                // run could destroy manually built days with no warning at all. These
+                // numbers come straight from the preview response.
+                var kept=parseInt(r.manual_skipped,10)||0;
+                var lost=parseInt(r.manual_overwritten,10)||0;
+                if(kept>0) msg+='\n'+kept+' manually edited day(s) will be PRESERVED.';
+                if(lost>0) msg+='\n\u26A0 '+lost+' manually edited day(s) will be OVERWRITTEN '
+                                +'and cannot be recovered.';
+                msg+='\n\nSave this timetable?';
                 _confirmModal({
                     title:'Save generated timetable?',
                     body:msg,
@@ -3218,7 +3688,13 @@ AC.tt = {
 };
 
 // Day tab switching
-document.getElementById('ttDayTabs').addEventListener('click',function(e){
+// Belongs to the retired legacy timetable UI. The pane now renders the
+// canonical Master Timetable, so this control is not on the page — and an
+// unguarded bind to a missing element throws, taking every script defined
+// after it with it. Guarded rather than deleted: the rest of this block is
+// still the legacy view's code and is retired as one piece, not piecemeal.
+var _ttDayTabs = document.getElementById('ttDayTabs');
+if (_ttDayTabs) _ttDayTabs.addEventListener('click',function(e){
     var tab=e.target.closest('.ac-day-tab');
     if(!tab)return;
     document.querySelectorAll('.ac-day-tab').forEach(function(t){t.classList.remove('active')});
@@ -3228,7 +3704,13 @@ document.getElementById('ttDayTabs').addEventListener('click',function(e){
 });
 
 // View toggle (Class vs Teacher)
-document.getElementById('ttViewToggle').addEventListener('click',function(e){
+// Belongs to the retired legacy timetable UI. The pane now renders the
+// canonical Master Timetable, so this control is not on the page — and an
+// unguarded bind to a missing element throws, taking every script defined
+// after it with it. Guarded rather than deleted: the rest of this block is
+// still the legacy view's code and is retired as one piece, not piecemeal.
+var _ttViewToggle = document.getElementById('ttViewToggle');
+if (_ttViewToggle) _ttViewToggle.addEventListener('click',function(e){
     var pill=e.target.closest('.ac-pill');
     if(!pill)return;
     document.querySelectorAll('#ttViewToggle .ac-pill').forEach(function(p){p.classList.remove('active')});
@@ -3238,7 +3720,13 @@ document.getElementById('ttViewToggle').addEventListener('click',function(e){
 });
 
 // Class filter
-document.getElementById('ttClassFilter').addEventListener('change',function(){
+// Belongs to the retired legacy timetable UI. The pane now renders the
+// canonical Master Timetable, so this control is not on the page — and an
+// unguarded bind to a missing element throws, taking every script defined
+// after it with it. Guarded rather than deleted: the rest of this block is
+// still the legacy view's code and is retired as one piece, not piecemeal.
+var _ttClassFilter = document.getElementById('ttClassFilter');
+if (_ttClassFilter) _ttClassFilter.addEventListener('change',function(){
     AC.tt.filter=this.value;
     if(AC.tt._loaded) AC.tt.render();
 });
@@ -3283,7 +3771,8 @@ AC.sub = {
         }
 
         abs.innerHTML='<option value="">Loading...</option>';
-        post('academic/get_absent_teachers',{date:date}).then(function(d){
+        // Returned so an edit can wait for the list before choosing from it.
+        return post('academic/get_absent_teachers',{date:date}).then(function(d){
             if(d.status!=='success'){abs.innerHTML='<option value="">Error loading</option>';return}
             var absent=d.absent_teachers||[];
             AC.sub._allTeachers=d.all_teachers||[];
@@ -3337,7 +3826,8 @@ AC.sub = {
         body.innerHTML='<div style="text-align:center;padding:12px;color:var(--t3)"><i class="fa fa-spinner fa-spin"></i> Loading schedule...</div>';
         panel.style.display='block';
 
-        post('academic/get_absent_teacher_schedule',{teacher_id:teacherId,date:date}).then(function(d){
+        // Returned so an edit can wait for the periods before ticking them.
+        return post('academic/get_absent_teacher_schedule',{teacher_id:teacherId,date:date}).then(function(d){
             if(d.status!=='success'){
                 panel.style.display='none';
                 noSch.style.display='block';
@@ -3347,6 +3837,22 @@ AC.sub = {
 
             var periods=d.periods||[];
             AC.sub._schedule=d;
+            // CAL-P3 — the school calendar for THIS date. The timetable is the
+            // normal schedule; this says whether it actually runs today. Purely
+            // advisory: the periods are still listed and cover can still be
+            // arranged, because scheduling on a closure is the operator's call.
+            (function(){
+                var box=document.getElementById('subCalendarNote');
+                if(!box) return;
+                var c=d.calendar||{};
+                if(c.message){
+                    box.textContent=c.message;
+                    box.style.display='block';
+                } else { box.style.display='none'; box.textContent=''; }
+            })();
+            // Kept so a candidate who has reached the school's limit can be
+            // marked in the list, rather than only when the save refuses.
+            AC.sub._policy=d.coverPolicy||{maxCoverPeriodsPerDay:0,maxCoverPeriodsPerWeek:0};
 
             // Format day name
             var dayName=d.day||'';
@@ -3357,12 +3863,21 @@ AC.sub = {
             if(periods.length===0){
                 panel.style.display='none';
                 noSch.style.display='block';
-                document.getElementById('subNoScheduleMsg').textContent=(absName||'This teacher')+' has no classes on '+dayName+'. No substitutes needed.';
+                // ACAD-D13: an incomplete read must never be reported as
+                // "no classes". The server sends the correct wording.
+                document.getElementById('subNoScheduleMsg').textContent =
+                    (d.completeness && d.completeness.complete===false)
+                        ? (d.message || 'The timetable could not be read in full. Do not treat this as an empty day.')
+                        : (absName||'This teacher')+' has no classes on '+dayName+'. No substitutes needed.';
                 return;
             }
 
             // Render per-period rows with checkboxes and substitute dropdowns
             var html='';
+            // ACAD-D13: a partial list still gets arranged from, so say so
+            // above the rows rather than letting it read as the whole day.
+            html += acIncompleteBanner(d.completeness, 'This schedule',
+                'Periods missing from the list will have no cover arranged.');
             periods.forEach(function(p,idx){
                 var pn=p.periodNumber;
                 var time=(p.startTime&&p.endTime)?(p.startTime+' – '+p.endTime):'';
@@ -3396,7 +3911,13 @@ AC.sub = {
                     suggestions.forEach(function(s,si){
                         var matchTag=s.subjectMatch?' ★ subject match':'';
                         var selected=si===0?' selected':'';
-                        html+='<option value="'+esc(s.teacherId)+'" data-name="'+esc(s.name)+'"'+selected+'>'+esc(s.name)+matchTag+'</option>';
+                        // What this person is already carrying, in front of the
+                        // person choosing. The STPCD expects cover to be shared
+                        // equitably over the year and Untis shows exactly this
+                        // count for exactly this reason — neither works if the
+                        // load is invisible at the moment of choosing.
+                        html+='<option value="'+esc(s.teacherId)+'" data-name="'+esc(s.name)+'"'+selected+'>'
+                            +esc(s.name)+matchTag+AC.sub._loadTag(s)+'</option>';
                     });
                     // Separator + all other teachers
                     html+='<optgroup label="── All available teachers ──">';
@@ -3494,25 +4015,376 @@ AC.sub = {
 
         if(assignments.length===0){toast('No valid assignments collected',false);return}
 
-        withBtn(btn,post('academic/save_substitute',{
-            date:date,
-            absent_teacher_id:absEl.value,
-            absent_teacher_name:absName,
-            assignments:JSON.stringify(assignments),
-            reason:reason
-        })).then(function(d){
-            if(d.status==='success'){
-                AC.sub.hideForm();
-                AC.sub.load();
-                toast('Substitute'+(assignments.length>1?'s':'')+' assigned for '+assignments.length+' period'+(assignments.length>1?'s':''),true);
-            } else toast(d.message||'Save failed',false);
-        }).catch(function(err){
-            toast('Network error: '+(err.message||err),false);
-        });
+        // CAL-P3B — the server refuses a cover on a non-instruction date until
+        // the operator confirms it on purpose. The retry carries an explicit
+        // flag; it is NEVER set automatically, because the whole point is that a
+        // human is told before anybody is notified they are covering a lesson on
+        // a day the school is shut.
+        var _sendCover = function(confirmed){
+            var payload = {
+                date:date,
+                absent_teacher_id:absEl.value,
+                absent_teacher_name:absName,
+                assignments:JSON.stringify(assignments),
+                reason:reason
+            };
+            if(confirmed) payload.confirm_non_instruction = '1';
+            return withBtn(btn,post('academic/save_substitute',payload)).then(function(d){
+                if(d.status==='success'){
+                    AC.sub.hideForm();
+                    AC.sub.load();
+                    toast('Substitute'+(assignments.length>1?'s':'')+' assigned for '+assignments.length+' period'+(assignments.length>1?'s':''),true);
+                    return;
+                }
+                // One retry only, and only when the operator agrees.
+                if(!confirmed && d && d.message && /confirm that cover is still needed/i.test(d.message)){
+                    if(window.confirm(d.message + '\n\nArrange cover anyway?')){
+                        return _sendCover(true);
+                    }
+                    toast('Cover not arranged.',false);
+                    return;
+                }
+                toast(d.message||'Save failed',false);
+            }).catch(function(err){
+                toast('Network error: '+(err.message||err),false);
+            });
+        };
+        _sendCover(false);
         } catch(e) {
             toast('Error: '+e.message,false);
             console.error('saveNew error:',e);
         }
+    },
+
+    /** The school's limits, as last reported by the schedule endpoint. */
+    _policy:{maxCoverPeriodsPerDay:0,maxCoverPeriodsPerWeek:0},
+
+    /**
+     * " — covering 2 today, 5 this week" beside a candidate's name.
+     *
+     * Says nothing at all for somebody carrying nothing, so the common case
+     * stays quiet and a real load stands out. Where the school has set a
+     * limit, a candidate who has reached it is marked, because being told
+     * AFTER pressing save is worse than being told before.
+     */
+    _loadTag:function(s){
+        var day=+(s.coverToday||0), week=+(s.coverThisWeek||0);
+        if(!day && !week) return '';
+        var bits=[];
+        if(day)  bits.push(day+' today');
+        if(week) bits.push(week+' this week');
+        var tag=' — covering '+bits.join(', ');
+        var pd=+(AC.sub._policy.maxCoverPeriodsPerDay||0);
+        var pw=+(AC.sub._policy.maxCoverPeriodsPerWeek||0);
+        if((pd && day>=pd) || (pw && week>=pw)) tag+=' — at this school\'s limit';
+        return tag;
+    },
+
+    /**
+     * RE-ARRANGE AN EXISTING COVER.
+     *
+     * saveSubstitute() has always accepted an id and replaced the cover's
+     * assignments, and update_substitute has always been routed — but nothing
+     * on this screen ever set subEditId, so there was no way to reach any of
+     * it. The only way to change a cover was to delete it and start again,
+     * which loses its history and re-notifies everybody from scratch.
+     *
+     * Fills the form from the cover, then waits for the day's periods before
+     * ticking the ones this cover holds.
+     */
+    edit:function(id){
+        if(!acGuard('manage')) return;
+
+        var r=null, recs=AC.sub.records||[];
+        for(var i=0;i<recs.length;i++){ if(recs[i].id===id){ r=recs[i]; break; } }
+        if(!r){
+            toast('That cover is no longer in the list. Reload the day.',false);
+            return;
+        }
+
+        document.getElementById('subForm').classList.add('show');
+        document.getElementById('subEditId').value=id;
+        document.getElementById('subDate').value=r.date||'';
+        document.getElementById('subReason').value=r.reason||'';
+
+        var absentId=r.absent_teacher_id||r.absentTeacherId||'';
+        return Promise.resolve(AC.sub._loadAbsentTeachers()).then(function(){
+            document.getElementById('subAbsent').value=absentId;
+            return AC.sub._loadSchedule();
+        }).then(function(){
+            AC.sub._applyExisting(r);
+        }).catch(function(e){
+            toast((e&&e.message)||'That cover could not be opened for editing',false);
+        });
+    },
+
+    /**
+     * Which periods this cover holds, and who is covering each.
+     *
+     * Pure, so it can be tested without a browser.
+     */
+    _editSelection:function(r){
+        var byPeriod={}, periods=[];
+        (r.assignments||[]).forEach(function(a){
+            var pn=parseInt(a.periodNumber,10);
+            if(!(pn>0)) return;
+            periods.push(pn);
+            byPeriod[pn]=a.substituteTeacherId||a.substitute_teacher_id||'';
+        });
+        return {periods:periods, byPeriod:byPeriod};
+    },
+
+    /** Tick the periods this cover holds; untick the rest. */
+    _applyExisting:function(r){
+        var sel=AC.sub._editSelection(r);
+        var boxes=document.querySelectorAll('.sub-period-check');
+        for(var i=0;i<boxes.length;i++){
+            var pn=parseInt(boxes[i].getAttribute('data-period'),10);
+            boxes[i].checked = (sel.periods.indexOf(pn)>=0);
+        }
+        var picks=document.querySelectorAll('.sub-period-teacher');
+        for(var j=0;j<picks.length;j++){
+            var p=parseInt(picks[j].getAttribute('data-period'),10);
+            if(sel.byPeriod[p]) picks[j].value=sel.byPeriod[p];
+        }
+    },
+
+    /**
+     * What was agreed, beside what the timetable says now.
+     *
+     * A note saying "this changed" is not enough to decide on. The person
+     * choosing needs both halves in front of them.
+     */
+    _driftDetail:function(a){
+        var agreed=a.agreedSubject||'', now=a.currentSubject||'';
+        if(!agreed && !now) return '';
+        var nowText = now ? esc(now) : 'nothing — the period is gone';
+        return '<div style="margin-top:4px;color:var(--t3)">'
+            +'Arranged for <strong>'+esc(agreed||'—')+'</strong>, '
+            +'Period '+esc(a.periodNumber||'')+'. '
+            +'The timetable now has <strong>'+nowText+'</strong>'
+            +(a.currentlyTheAbsentTeacher
+                ? ', still with the absent teacher.'
+                : ', with a different teacher.')
+            +'</div>';
+    },
+
+    /**
+     * Cancel it, re-arrange it, or keep it.
+     *
+     * All three already existed except the last, which is why the warning had
+     * no way to be resolved and became permanent furniture. Nothing here
+     * decides anything: which one is right depends on the class and the day.
+     */
+    _driftActions:function(r,a){
+        if(!AC_CAN_MANAGE) return '';
+        return '<div style="margin-top:6px;display:flex;gap:6px;flex-wrap:wrap">'
+            +'<button class="ac-btn ac-btn-s ac-btn-sm" style="font-size:10px" '
+            +'onclick="AC.sub.keep(\''+esc(r.id)+'\',this)">'
+            +'<i class="fa fa-check" style="pointer-events:none"></i> Keep as it is</button>'
+            +'<button class="ac-btn ac-btn-s ac-btn-sm" style="font-size:10px" '
+            +'onclick="AC.sub.edit(\''+esc(r.id)+'\')">'
+            +'<i class="fa fa-pencil" style="pointer-events:none"></i> Re-arrange</button>'
+            +'<button class="ac-btn ac-btn-d ac-btn-sm" style="font-size:10px" '
+            +'onclick="AC.sub.setStatus(\''+esc(r.id)+'\',\'cancelled\')">'
+            +'<i class="fa fa-ban" style="pointer-events:none"></i> Cancel cover</button>'
+            +'</div>';
+    },
+
+    keep:function(id,btn){
+        if(!acGuard('manage')) return;
+        withBtn(btn,post('academic/keep_cover',{id:id})).then(function(d){
+            if(d.status!=='success'){toast(d.message||'The cover was not kept',false);return}
+            toast('Kept as it is',true);
+            AC.sub.load();
+        }).catch(function(e){
+            toast((e&&e.message)||'The cover was not kept',false);
+        });
+    },
+
+    /* ── THE HISTORY OF ONE COVER ── */
+    history:function(id,btn){
+        withBtn(btn,post('academic/cover_history',{id:id})).then(function(d){
+            if(d.status!=='success'){
+                // A history that could not be READ is not a cover nothing ever
+                // happened to, and this is read to settle a disagreement.
+                AC.sub._historyModal('<div style="color:#b45309">'
+                    +'<i class="fa fa-exclamation-triangle"></i> '
+                    +esc(d.message||'The history could not be read.')+'</div>');
+                return;
+            }
+            AC.sub._historyModal(AC.sub._historyHtml(d));
+        }).catch(function(e){
+            AC.sub._historyModal('<div style="color:#b45309">'
+                +'<i class="fa fa-exclamation-triangle"></i> '
+                +esc((e&&e.message)||'The history could not be read.')+'</div>');
+        });
+    },
+
+    _historyHtml:function(d){
+        var rows=d.entries||[];
+        if(rows.length===0){
+            return '<div class="ac-empty"><i class="fa fa-history"></i>'
+                +'Nothing has been recorded against this cover.</div>';
+        }
+        var html='';
+        if(d.notice){
+            html+='<div style="color:#b45309;font-size:11px;margin-bottom:8px">'
+                +'<i class="fa fa-info-circle"></i> '+esc(d.notice)+'</div>';
+        }
+        html+='<div style="display:flex;flex-direction:column;gap:10px">';
+        rows.forEach(function(r){
+            var when=String(r.at||'').replace('T',' ').slice(0,16);
+            html+='<div style="border-left:2px solid var(--gold);padding:2px 0 2px 10px">'
+                +'<div style="font-size:12px;color:var(--t1)">'+esc(r.what)+'</div>'
+                +'<div style="font-size:11px;color:var(--t3);margin-top:2px">'
+                +esc(r.by)+(r.role?(' · '+esc(r.role)):'')
+                +(when?(' · '+esc(when)):'')+'</div>'
+                +'</div>';
+        });
+        html+='</div>';
+        return html;
+    },
+
+    _historyModal:function(inner){
+        var id='subHistoryModal';
+        var old=document.getElementById(id);
+        if(old&&old.parentNode) old.parentNode.removeChild(old);
+
+        var wrap=document.createElement('div');
+        wrap.id=id;
+        wrap.style.cssText='position:fixed;inset:0;background:rgba(0,0,0,.45);'
+            +'display:flex;align-items:center;justify-content:center;z-index:9999';
+        wrap.innerHTML='<div style="background:var(--bg2);border:1px solid var(--border);'
+            +'border-radius:10px;max-width:520px;width:92%;max-height:80vh;overflow:auto;'
+            +'padding:18px">'
+            +'<div style="display:flex;align-items:center;margin-bottom:12px">'
+            +'<strong style="font-size:13px"><i class="fa fa-history" style="color:var(--gold);'
+            +'margin-right:6px"></i>Cover history</strong>'
+            +'<button class="ac-btn ac-btn-s ac-btn-sm" style="margin-left:auto" '
+            +'data-close="1">Close</button></div>'
+            +inner+'</div>';
+
+        // Closing on the backdrop and on the button, because a modal that can
+        // only be dismissed one way traps somebody eventually.
+        wrap.addEventListener('click',function(ev){
+            if(ev.target===wrap||(ev.target.getAttribute&&ev.target.getAttribute('data-close'))){
+                if(wrap.parentNode) wrap.parentNode.removeChild(wrap);
+            }
+        });
+        document.body.appendChild(wrap);
+    },
+
+    /* ── COVER LOG: who has been carrying it ── */
+    loadLog:function(btn){
+        var from=document.getElementById('covLogFrom').value||'';
+        var to  =document.getElementById('covLogTo').value||'';
+        if(!from||!to){toast('Choose a start and end date',false);return}
+
+        var body=document.getElementById('covLogBody');
+        withBtn(btn,post('academic/cover_log',{from:from,to:to})).then(function(d){
+            // A log that could not be READ is not a term in which nobody
+            // covered anything, and this one is read to decide who to ask next.
+            if(d.status!=='success'){
+                body.innerHTML='<div class="ac-empty" style="color:#b45309">'
+                    +'<i class="fa fa-exclamation-triangle"></i> '
+                    +esc(d.message||'The cover log could not be read.')+'</div>';
+                toast(d.message||'Failed to load',false);
+                return;
+            }
+            AC.sub.renderLog(d);
+        }).catch(function(e){
+            body.innerHTML='<div class="ac-empty" style="color:#b45309">'
+                +'<i class="fa fa-exclamation-triangle"></i> '
+                +esc((e&&e.message)||'The cover log could not be read.')+'</div>';
+        });
+    },
+
+    renderLog:function(d){
+        var rows=d.teachers||[];
+        var body=document.getElementById('covLogBody');
+        if(rows.length===0){
+            body.innerHTML='<div class="ac-empty"><i class="fa fa-balance-scale"></i>'
+                +'No cover was taken between these dates</div>';
+            return;
+        }
+
+        // The heaviest load sets the bar, so the comparison is between
+        // colleagues rather than against a number nobody agreed on.
+        var top=rows[0].periods||1;
+        var html='';
+        if(d.notice){
+            html+='<div class="ac-empty" style="color:#b45309;padding:8px;margin-bottom:8px">'
+                +'<i class="fa fa-info-circle"></i> '+esc(d.notice)+'</div>';
+        }
+        html+='<div style="font-size:12px;color:var(--t3);margin-bottom:10px">'
+            +esc(d.totalPeriods)+' cover period(s) taken by '+rows.length
+            +' teacher(s) between '+esc(d.from)+' and '+esc(d.to)+'.</div>';
+        html+='<div class="ac-scroll" style="overflow-x:auto"><table class="ac-table"><thead><tr>'
+            +'<th>Teacher</th><th>Periods covered</th><th>Days</th><th>Share</th>'
+            +'</tr></thead><tbody>';
+        rows.forEach(function(r){
+            var pct=Math.round(((r.periods||0)/top)*100);
+            html+='<tr>'
+                +'<td>'+esc(r.name)+'</td>'
+                +'<td style="font-variant-numeric:tabular-nums">'+esc(r.periods)+'</td>'
+                +'<td style="font-variant-numeric:tabular-nums">'+esc(r.days)+'</td>'
+                +'<td style="min-width:120px"><div style="height:8px;border-radius:4px;'
+                +'background:var(--bg3);overflow:hidden"><div style="height:8px;width:'
+                +pct+'%;background:var(--gold)"></div></div></td>'
+                +'</tr>';
+        });
+        html+='</tbody></table></div>';
+        body.innerHTML=html;
+    },
+
+    /* ── COVER POLICY: this school's own rules ── */
+    loadPolicy:function(btn){
+        var state=document.getElementById('covPolicyState');
+        withBtn(btn,post('academic/get_cover_policy',{})).then(function(d){
+            if(d.status!=='success'){
+                state.textContent='The policy could not be read.';
+                toast(d.message||'Failed to load policy',false);
+                return;
+            }
+            AC.sub._policy=d;
+            document.getElementById('covMaxDay').value=d.maxCoverPeriodsPerDay||0;
+            document.getElementById('covMaxWeek').value=d.maxCoverPeriodsPerWeek||0;
+            document.getElementById('covSubjectMatch').checked=!!d.requireSubjectMatch;
+            document.getElementById('covTeachingOnly').checked=!!d.teachingStaffOnly;
+            // "Never set" and "set to no limits" look identical on the form, so
+            // the difference is said in words.
+            // Three states, not two: never set, set for this session, or
+            // carried forward from an earlier one. A rule being enforced
+            // that nobody set THIS year has to say where it came from.
+            state.textContent=!d.configured
+                ? 'No policy has been set for this school yet — nothing is limited.'
+                : (d.inheritedFrom
+                    ? ('Carried forward from '+d.inheritedFrom
+                       +'. Saving here sets it for this session.')
+                    : ('Last changed by '+(d.updatedByName||'somebody')
+                       +(d.updatedAt?(' on '+String(d.updatedAt).slice(0,10)):'')));
+        }).catch(function(e){
+            state.textContent='The policy could not be read.';
+            toast((e&&e.message)||'Failed to load policy',false);
+        });
+    },
+
+    savePolicy:function(btn){
+        if(!acGuard('manage')) return;
+        withBtn(btn,post('academic/save_cover_policy',{
+            max_per_day:  document.getElementById('covMaxDay').value||'0',
+            max_per_week: document.getElementById('covMaxWeek').value||'0',
+            require_subject_match: document.getElementById('covSubjectMatch').checked?'1':'0',
+            teaching_staff_only:   document.getElementById('covTeachingOnly').checked?'1':'0'
+        })).then(function(d){
+            if(d.status!=='success'){toast(d.message||'The policy was not saved',false);return}
+            AC.sub._policy=d;
+            toast('Cover policy saved',true);
+            AC.sub.loadPolicy(null);
+        }).catch(function(e){
+            toast((e&&e.message)||'The policy was not saved',false);
+        });
     },
 
     /* ── Load all substitute records ── */
@@ -3520,13 +4392,36 @@ AC.sub = {
         var date=document.getElementById('subDateFilter').value||'';
         acShim('subList','table',{rows:5,cols:8});
         withBtn(btn,post('academic/get_substitutes',{date:date})).then(function(d){
-            AC.sub.records=(d.status==='success')?(d.substitutes||[]):[];
+            // A day that could not be READ must never render as a day with no
+            // cover on it: the person looking at this list is about to decide
+            // who covers the next absence, and an empty table tells them the
+            // period is free. The toast alone was not enough — it fades, and
+            // the untrue table stays.
+            if(d.status!=='success'){
+                AC.sub.records=[]; AC.sub.notice='';
+                AC.sub.unavailable(d.message||'The cover arranged for these dates could not be read.');
+                toast(d.message||'Failed to load',false);
+                return;
+            }
+            AC.sub.records=d.substitutes||[];
+            AC.sub.notice=d.notice||'';
             AC.sub.render();
-            if(d.status!=='success') toast(d.message||'Failed to load',false);
         }).catch(function(e){
-            AC.sub.records=[];
-            document.getElementById('subList').innerHTML='<div class="ac-empty"><i class="fa fa-exclamation-triangle"></i> '+esc((e&&e.message)||'Failed to load substitutes')+'</div>';
+            AC.sub.records=[]; AC.sub.notice='';
+            AC.sub.unavailable((e&&e.message)||'The cover arranged for these dates could not be read.');
         });
+    },
+
+    notice:'',
+
+    /* ── The list could not be read — say that, and nothing else ── */
+    unavailable:function(msg){
+        document.getElementById('subList').innerHTML=
+            '<div class="ac-empty" style="color:#b45309">'
+            +'<i class="fa fa-exclamation-triangle"></i> '+esc(msg)
+            +'<div style="font-size:11px;margin-top:6px">This is not the same as '
+            +'a day with no cover arranged. Reload before arranging anything.</div>'
+            +'</div>';
     },
 
     /* ── Render substitute table (supports both old flat and new assignments[] format) ── */
@@ -3585,6 +4480,32 @@ AC.sub = {
                         html+='</td>';
                     }
                     html+='</tr>';
+                    // The timetable has moved under this cover since it was
+                    // arranged. Said directly beneath the row, because that is
+                    // the row somebody has to look at — and worded to leave the
+                    // decision with them rather than proposing a change nobody
+                    // agreed to. A row of its own: putting it inside the row
+                    // above would break the rowspans holding the date and the
+                    // absent teacher together.
+                    if(a.timetableChanged && a.timetableNote){
+                        html+='<tr><td colspan="9" style="padding:8px 12px;'
+                            +'background:rgba(180,83,9,.08);color:#b45309;font-size:11px">'
+                            +'<i class="fa fa-exclamation-triangle"></i> '
+                            +esc(a.timetableNote)
+                            +AC.sub._driftDetail(a)
+                            +AC.sub._driftActions(r,a)
+                            +'</td></tr>';
+                    } else if(a.keptBy){
+                        // Already looked at and left alone. Said quietly, because
+                        // it is settled — but said, because the row no longer
+                        // matches the timetable and somebody will wonder why.
+                        html+='<tr><td colspan="9" style="padding:6px 12px;'
+                            +'color:var(--t3);font-size:11px">'
+                            +'<i class="fa fa-check"></i> Kept as it is by '
+                            +esc(a.keptBy)
+                            +(a.keptAt?(' on '+esc(String(a.keptAt).slice(0,10))):'')
+                            +' despite a timetable change.</td></tr>';
+                    }
                 });
             } else {
                 // Legacy flat format
@@ -3606,6 +4527,11 @@ AC.sub = {
             }
         });
         html+='</tbody></table>';
+        // A shortened list says so, where the list is — not only in a toast.
+        if(AC.sub.notice){
+            html='<div class="ac-empty" style="color:#b45309;padding:8px;margin-bottom:8px">'
+                +'<i class="fa fa-info-circle"></i> '+esc(AC.sub.notice)+'</div>'+html;
+        }
         document.getElementById('subList').innerHTML=html;
     },
 
@@ -3630,6 +4556,13 @@ AC.sub = {
         if(r.status!=='assigned'){
             html+='<button class="ac-btn ac-btn-d ac-btn-sm" onclick="event.stopPropagation();AC.sub.del(\''+esc(r.id)+'\')" title="Delete" style="font-size:10px;margin-left:4px"><i class="fa fa-trash" style="pointer-events:none"></i></button>';
         }
+        // "Who cancelled this?" is asked of a cover, not of a log page, so it
+        // is answered where the cover is. View-level: the people working
+        // around a change are the ones who need to know who made it.
+        if(r.status==='assigned'){
+            html+='<button class="ac-btn ac-btn-s ac-btn-sm" onclick="event.stopPropagation();AC.sub.edit(\''+esc(r.id)+'\')" title="Re-arrange" style="font-size:10px;margin-left:4px"><i class="fa fa-pencil" style="pointer-events:none"></i></button>';
+        }
+        html+='<button class="ac-btn ac-btn-s ac-btn-sm" onclick="event.stopPropagation();AC.sub.history(\''+esc(r.id)+'\',this)" title="History" style="font-size:10px;margin-left:4px"><i class="fa fa-history" style="pointer-events:none"></i></button>';
         return html;
     },
 
@@ -3687,23 +4620,37 @@ AC.wl = {
     load:function(btn){
         AC.wl._loaded=true;
         if(btn){btn.classList.add('loading');btn.disabled=true}
-        // Ensure timetable data is available
-        if(!AC.tt._loaded){
+        // Reads the CANONICAL published timetable for today, NOT the legacy
+        // `timetables` projection. That projection is only written when a
+        // version is in force on its publish day, or by an unscheduled CLI
+        // cron — so a published, correct timetable can sit there for days
+        // while this screen reports the previous one as fact. On 2026-09-12 a
+        // teacher with 18 canonical periods was missing from the table
+        // entirely (operator instruction: workload follows the canonical
+        // timetable).
+        //
+        // Its own copy, never the shared AC.tt: the Lesson Planner still reads
+        // the legacy shape and must not silently inherit a different source.
+        if(!AC.wl._srcLoaded){
             acShim('wlTable','table',{rows:7,cols:6});
             loadSharedData(function(){
                 var teacherPromise=(_teachers.length>0)?Promise.resolve():post('academic/get_all_teachers').then(function(d){
                     if(d.status==='success') _teachers=d.teachers||[];
                 });
-                var ttPromise=post('academic/get_master_timetable');
+                var dEl=document.getElementById('wlDate');
+                var ttPromise=post('academic/get_canonical_timetable',
+                    {date:(dEl&&dEl.value)||''});
                 Promise.all([teacherPromise,ttPromise]).then(function(results){
                     if(btn){btn.classList.remove('loading');btn.disabled=false}
                     var d=results[1];
                     if(d.status==='success'){
-                        AC.tt.settings=d.settings;
-                        AC.tt.timetables=d.timetables||{};
-                        AC.tt.classes=d.classes||[];
-                        AC.tt._subjectAssignments=d.subject_assignments||{};
-                        AC.tt._loaded=true;
+                        AC.wl._src={
+                            settings:d.settings||{},
+                            timetables:d.timetables||{},
+                            source:d.source||null,
+                            completeness:d.completeness||null
+                        };
+                        AC.wl._srcLoaded=true;
                     }
                     AC.wl._compute();
                     AC.wl.render();
@@ -3719,16 +4666,53 @@ AC.wl = {
         }
     },
 
+    /* The canonical answer for this screen: settings + grid + which version
+       produced them. Kept separate from AC.tt so the two sources never blend. */
+    _src:{settings:{},timetables:{},source:null,completeness:null},
+    _srcLoaded:false,
+
+    /** Changing the date asks the server again — a different day can be a
+        different published timetable, so the cached answer no longer applies. */
+    reload:function(el){
+        AC.wl._srcLoaded=false;
+        AC.wl.load(el);
+    },
+
+    /** One line saying which timetable these numbers came from, or why none did. */
+    _sourceNote:function(){
+        var s=AC.wl._src.source;
+        if(!s) return '';
+        if(s.status==='resolved'){
+            return '<div class="u-text-tertiary" style="font-size:11px;margin-bottom:8px">'
+                +'<i class="fa fa-check-circle" style="color:var(--gold)"></i> '
+                +'From the timetable in force on '+esc(s.date)+'.</div>';
+        }
+        // Never let "could not tell" or "none applies" read as a quiet school:
+        // every teacher would show zero and look genuinely unassigned.
+        var msg=(s.status==='none')
+            ? 'No timetable applies on '+esc(s.date)+' yet, so there is no load to show. '
+              +'Publish one from the Master Timetable tab.'
+            : 'The timetable for '+esc(s.date)+' could not be determined'
+              +(s.explain?' — '+esc(s.explain):'')+'. These figures are NOT a '
+              +'complete picture.';
+        return '<div class="sa-warnbar"><i class="fa fa-exclamation-triangle"></i><div>'
+            +msg+'</div></div>';
+    },
+
     /**
      * Walk every cell of every timetable and aggregate per teacher.
      * O(classes × days × periods) — typically < 1000 cells total.
      */
     _compute:function(){
-        var s=AC.tt.settings;
+        // AC.wl._src, not AC.tt: this screen answers from the canonical
+        // published timetable, and must not drift back onto the legacy mirror
+        // just because another tab happened to load it first.
+        var TT=AC.wl._src||{settings:{},timetables:{}};
+        var s=TT.settings;
         var days=(s&&s.working_days)?s.working_days:['Monday','Tuesday','Wednesday','Thursday','Friday','Saturday'];
         var np=(s&&s.no_of_periods)?s.no_of_periods:6;
         var dayShort={Monday:'Mon',Tuesday:'Tue',Wednesday:'Wed',Thursday:'Thu',Friday:'Fri',Saturday:'Sat',Sunday:'Sun'};
-        var labels=Object.keys(AC.tt.timetables);
+        var labels=Object.keys(TT.timetables||{});
 
         // tid → {id, name, subjects:{name:true}, classes:{label:true}, perDay:{Mon:N,...}, weekly:N, maxDay:N}
         var map={};
@@ -3742,7 +4726,7 @@ AC.wl = {
 
         // Walk timetables
         labels.forEach(function(label){
-            var tt=AC.tt.timetables[label]||{};
+            var tt=(TT.timetables||{})[label]||{};
             days.forEach(function(day){
                 var periods=tt[day]||[];
                 var dk=dayShort[day]||day;
@@ -3797,10 +4781,12 @@ AC.wl = {
     },
 
     render:function(){
+        acSetCompleteness('wlIncomplete', AC.wl._src.completeness, 'Workload data',
+            'Every periods-per-week total below is therefore LOWER than the real figure. Do not assign new periods from these numbers.');
         var data=AC.wl._data;
         var threshold=parseInt(document.getElementById('wlThreshold').value)||30;
         var warnThreshold=Math.round(threshold*0.8); // 80% = warning zone
-        var s=AC.tt.settings;
+        var s=(AC.wl._src&&AC.wl._src.settings)||{};
         var days=(s&&s.working_days)?s.working_days:['Monday','Tuesday','Wednesday','Thursday','Friday','Saturday'];
         var dayShort={Monday:'Mon',Tuesday:'Tue',Wednesday:'Wed',Thursday:'Thu',Friday:'Fri',Saturday:'Sat',Sunday:'Sun'};
         var maxPerDay=((s&&s.no_of_periods)?s.no_of_periods:6);
@@ -3820,12 +4806,16 @@ AC.wl = {
         document.getElementById('wlStats').style.display='block';
 
         if(data.length===0){
-            document.getElementById('wlTable').innerHTML='<div class="ac-empty"><i class="fa fa-bar-chart"></i>No teacher data available. Load the Master Timetable first.</div>';
+            document.getElementById('wlTable').innerHTML=AC.wl._sourceNote()
+                +'<div class="ac-empty"><i class="fa fa-bar-chart"></i>No teacher data available.</div>';
             return;
         }
 
-        // Table
-        var html='<div style="overflow-x:auto"><table class="ac-table"><thead><tr>';
+        // Table. The source note leads, so these numbers are never read without
+        // knowing which timetable produced them — and, when none could be
+        // resolved, without knowing the zeros are not a quiet school.
+        var html=AC.wl._sourceNote();
+        html+='<div style="overflow-x:auto"><table class="ac-table"><thead><tr>';
         html+='<th>Teacher</th><th>Subjects</th><th>Classes</th>';
         days.forEach(function(d){html+='<th style="text-align:center;min-width:40px">'+esc(dayShort[d]||d)+'</th>'});
         html+='<th style="text-align:center">Weekly</th><th style="min-width:100px">Load</th>';
@@ -3888,7 +4878,7 @@ AC.wl = {
     exportCSV:function(){
         var data=AC.wl._data;
         if(data.length===0){toast('No data to export',false);return}
-        var s=AC.tt.settings;
+        var s=(AC.wl._src&&AC.wl._src.settings)||{};
         var days=(s&&s.working_days)?s.working_days:['Monday','Tuesday','Wednesday','Thursday','Friday','Saturday'];
         var dayShort={Monday:'Mon',Tuesday:'Tue',Wednesday:'Wed',Thursday:'Thu',Friday:'Fri',Saturday:'Sat',Sunday:'Sun'};
 
@@ -3973,9 +4963,18 @@ AC.lp = {
                                      : post('academic/get_all_teachers');
         Promise.all([pMt,pTe]).then(function(rs){
             var mt=rs[0], te=rs[1];
-            if(mt.status==='success'){ AC.lp._mt=mt; AC.lp._populateClassSection(mt); }
+            if(mt.status==='success'){ AC.lp._mt=mt; AC.tt.completeness=mt.completeness||null; AC.lp._populateClassSection(mt);
+                if(mt.completeness && mt.completeness.complete===false) toast('Some class-sections could not be loaded, so the class list below may be incomplete.',false); }
             else toast('Failed to load timetable: '+(mt.message||''),false);
             if(te.status==='success'){ _teachers=te.teachers||[]; AC.lp._populateTeachers(); }
+            else {
+                // An empty teacher list is indistinguishable from a school with
+                // no staff, and it leaves the planner unusable with nothing on
+                // screen to explain why.
+                toast('The teacher list could not be loaded: '
+                    +(te.message||'unavailable')+'. The planner cannot be used '
+                    +'until it loads.',false);
+            }
         }).catch(function(e){
             AC.lp._loaded=false; // allow retry on next visit
             toast((e&&e.message)||'Failed to load planner data',false);
@@ -4068,10 +5067,19 @@ AC.lp = {
         // 2. Fetch existing lesson plans for (teacher, date) — envelope: {daily:[…]}
         return post('academic/get_daily_plan',{teacher_id:s.teacherId, date:s.date}).then(function(d){
             s.plansByPeriod={};
-            if(d.status==='success' && Array.isArray(d.daily)){
+            if(d.status!=='success'){
+                // Drawing the grid here would show every period as unplanned,
+                // with a Save button on each — which is how somebody ends up
+                // writing a second plan over a day they simply could not see.
+                var msg=d.message||'Failed to load plans';
+                document.getElementById('lpDailyContent').innerHTML=
+                    '<div class="ac-empty"><i class="fa fa-exclamation-triangle"></i> '
+                    +esc(msg)+'</div>';
+                toast(msg,false);
+                return;
+            }
+            if(Array.isArray(d.daily)){
                 d.daily.forEach(function(p){ s.plansByPeriod[p.periodIndex|0]=p; });
-            } else if(d.status!=='success'){
-                toast(d.message||'Failed to load plans',false);
             }
             AC.lp._renderDaily(dayName);
         }).catch(function(e){
@@ -4088,11 +5096,28 @@ AC.lp = {
             ' · Teacher: <strong>'+esc(s.teacherName||s.teacherId)+'</strong>';
 
         // Filter to slots that match the selected teacher (admin can plan only their slots; but admin role can plan any)
+        var shown={};
         var rows=s.cellsByPeriod.map(function(c){
             var ownsCell=(c.teacherId && c.teacherId===s.teacherId);
             var plan=s.plansByPeriod[c.periodIndex] || null;
+            if(plan) shown[c.periodIndex]=true;
             return AC.lp._rowHtml(c, plan, ownsCell);
         }).join('');
+
+        // A lesson plan is a record of teaching that happened, and the
+        // timetable it was written against can be republished under it. When
+        // a period is removed, its plan used to disappear from this view
+        // entirely — the notes, the topic and the completion were all still
+        // stored, and nobody could see them. They are shown here instead,
+        // read-only: there is no period left to save them into, and quietly
+        // rewriting somebody's record of a lesson to fit a new grid is not
+        // this screen's decision to make.
+        var orphans=Object.keys(s.plansByPeriod)
+            .filter(function(pi){ return !shown[pi]; })
+            .sort(function(a,b){ return (a|0)-(b|0); })
+            .map(function(pi){ return AC.lp._orphanRowHtml(s.plansByPeriod[pi]); })
+            .join('');
+        rows += orphans;
 
         var html =
             '<div style="overflow-x:auto"><table class="ac-table" style="min-width:840px">'+
@@ -4128,6 +5153,16 @@ AC.lp = {
         var version=(plan && (plan.version|0)) || 0;
         var disabled=!ownsCell ? 'disabled' : ''; // can plan only when teacher matches the timetable cell
         var disabledMsg=!ownsCell && c.subject ? ' <small style="color:#dc2626">(timetable shows '+esc(c.teacher||'a different teacher')+')</small>' : '';
+        // The plan stored against this period may have been written when the
+        // period taught something else. Its notes and topic belong to THAT
+        // lesson; showing them under the new subject without saying so is
+        // how a maths lesson quietly becomes a science one.
+        var planSubject=(plan && plan.subject) || '';
+        var driftMsg='';
+        if(planSubject && c.subject && planSubject!==c.subject){
+            driftMsg=' <small style="color:#b45309">(this plan was written for '
+                +esc(planSubject)+', which no longer occupies this period)</small>';
+        }
 
         // Reschedule fields parse "YYYY-MM-DD_P{N}"
         var rsDate='', rsP='';
@@ -4151,9 +5186,9 @@ AC.lp = {
         return ''+
         '<tr data-pi="'+c.periodIndex+'" data-version="'+version+'" data-subject="'+esc(c.subject)+'">'+
             '<td>'+(c.periodNumber)+'</td>'+
-            '<td>'+esc(c.subject)+'</td>'+
+            '<td>'+esc(c.subject)+driftMsg+'</td>'+
             '<td>'+esc(c.teacher||'—')+disabledMsg+'</td>'+
-            '<td><select class="lp-topic" data-subject="'+esc(c.subject)+'" '+disabled+' style="width:100%;padding:5px 8px;border:1px solid var(--border);border-radius:5px;background:var(--bg3);font-size:12px">'+subOptions+'</select></td>'+
+            '<td><select class="lp-topic" data-subject="'+esc(c.subject)+'" data-topic-title="'+esc(topicTitle)+'" '+disabled+' style="width:100%;padding:5px 8px;border:1px solid var(--border);border-radius:5px;background:var(--bg3);font-size:12px">'+subOptions+'</select></td>'+
             '<td><select class="lp-status" '+disabled+' onchange="AC.lp._onStatusChange(this)" style="width:100%;padding:5px 8px;border:1px solid var(--border);border-radius:5px;background:var(--bg3);font-size:12px">'+statusOpts+'</select></td>'+
             '<td>'+
                 '<textarea class="lp-notes" '+disabled+' rows="1" style="width:100%;padding:5px 8px;border:1px solid var(--border);border-radius:5px;background:var(--bg3);font-size:11.5px;resize:vertical;min-height:28px" placeholder="Notes…">'+esc(notes)+'</textarea>'+
@@ -4162,8 +5197,92 @@ AC.lp = {
                     '<input type="number" class="lp-rs-p" '+disabled+' value="'+esc(rsP)+'" min="0" placeholder="P#" style="width:62px;padding:4px 6px;font-size:11px;border:1px solid var(--border);border-radius:4px;background:var(--bg3)">'+
                 '</div>'+
             '</td>'+
-            '<td><button class="ac-btn ac-btn-p ac-btn-sm" '+disabled+' onclick="AC.lp.save(this)"><i class="fa fa-save"></i> Save</button></td>'+
+            '<td style="white-space:nowrap">'+
+                '<button class="ac-btn ac-btn-p ac-btn-sm" '+disabled+' onclick="AC.lp.save(this)"><i class="fa fa-save"></i> Save</button>'+
+                // Only offered where something has actually been recorded:
+                // a period nobody has planned has no history to answer with.
+                (plan
+                    ? ' <button class="ac-btn ac-btn-s ac-btn-sm" title="History" '
+                      +'style="min-width:34px" onclick="AC.lp.history('+c.periodIndex+',this)">'
+                      +'<i class="fa fa-history" style="pointer-events:none"></i></button>'
+                    : '')+
+            '</td>'+
         '</tr>';
+    },
+
+    /**
+     * A stored plan with no period left in the timetable. Read-only on
+     * purpose: there is nothing to save it into, and it is somebody's record
+     * of a lesson, not a stale cache entry to be tidied away.
+     */
+    _orphanRowHtml:function(plan){
+        var status=(plan && plan.status) || 'planned';
+        return ''+
+        '<tr style="background:rgba(180,83,9,.05)">'+
+            '<td>'+(((plan.periodIndex|0)+1))+'</td>'+
+            '<td>'+esc(plan.subject||'—')+' <small style="color:#b45309">'+
+                '(this period is no longer in the timetable)</small></td>'+
+            '<td>'+esc(plan.teacherName||'')+'</td>'+
+            '<td>'+esc(plan.topicTitle||'—')+'</td>'+
+            '<td>'+esc(status)+'</td>'+
+            '<td>'+esc(plan.notes||'')+'</td>'+
+            '<td><small style="color:var(--t3)">kept</small></td>'+
+        '</tr>';
+    },
+
+    /**
+     * WHO CHANGED THIS PERIOD, AND WHEN.
+     *
+     * Both clients have always written these entries; nothing read them
+     * back. The question they answer — a period marked completed that the
+     * teacher says they never taught — is asked about a specific period, so
+     * it is asked from the row.
+     */
+    history:function(periodIndex,btn){
+        var s=AC.lp._state;
+        withBtn(btn,post('academic/lesson_plan_history',{
+            teacher_id:s.teacherId, date:s.date, period_index:periodIndex
+        })).then(function(d){
+            if(d.status!=='success'){
+                // A history that could not be READ is not a plan nothing ever
+                // happened to, and this is read to settle a disagreement.
+                AC.sub._historyModal('<div style="color:#b45309">'
+                    +'<i class="fa fa-exclamation-triangle"></i> '
+                    +esc(d.message||'The history could not be read.')+'</div>');
+                return;
+            }
+            AC.sub._historyModal(AC.lp._historyHtml(d));
+        }).catch(function(e){
+            AC.sub._historyModal('<div style="color:#b45309">'
+                +'<i class="fa fa-exclamation-triangle"></i> '
+                +esc((e&&e.message)||'The history could not be read.')+'</div>');
+        });
+    },
+
+    _historyHtml:function(d){
+        var rows=d.entries||[];
+        if(rows.length===0){
+            return '<div class="ac-empty"><i class="fa fa-history"></i>'
+                +'Nothing has been recorded against this period.</div>';
+        }
+        var html='';
+        if(d.notice){
+            html+='<div style="color:#b45309;font-size:11px;margin-bottom:8px">'
+                +'<i class="fa fa-info-circle"></i> '+esc(d.notice)+'</div>';
+        }
+        html+='<div style="display:flex;flex-direction:column;gap:10px">';
+        rows.forEach(function(r){
+            var when=String(r.at||'').replace('T',' ').slice(0,16);
+            html+='<div style="border-left:2px solid var(--gold);padding:2px 0 2px 10px">'
+                +'<div style="font-size:12px;color:var(--t1)">'+esc(r.what)+'</div>'
+                +'<div style="font-size:11px;color:var(--t3);margin-top:2px">'
+                +esc(r.by)+(r.role?(' · '+esc(r.role)):'')
+                +(r.source?(' · '+esc(r.source)):'')
+                +(when?(' · '+esc(when)):'')+'</div>'
+                +'</div>';
+        });
+        html+='</div>';
+        return html;
     },
 
     _onStatusChange:function(sel){
@@ -4182,20 +5301,62 @@ AC.lp = {
         if(AC.lp._topicsBySubject[key]) return Promise.resolve(AC.lp._topicsBySubject[key]);
 
         return post('academic/get_curriculum',{class_section:cs, subject:subject}).then(function(d){
-            var topics=(d.status==='success' && Array.isArray(d.topics)) ? d.topics : [];
+            if(d.status!=='success'){
+                // Caching [] here would turn one bad moment into "this subject
+                // has no topics" for the rest of the session, with no retry.
+                toast('Topics for '+subject+' could not be read: '
+                    +(d.message||'unavailable'),false);
+                return [];
+            }
+            var topics=Array.isArray(d.topics) ? d.topics : [];
+            if(d.incomplete){
+                toast('Only '+topics.length+' of '+(d.expectedTopics||0)+' topics for '
+                    +subject+' could be read — the list below is not the whole '
+                    +'syllabus.',false);
+            }
             AC.lp._topicsBySubject[key]=topics;
             // Repopulate dropdowns for matching rows
             document.querySelectorAll('#lpDailyContent select.lp-topic[data-subject="'+CSS.escape(subject)+'"]').forEach(function(sel){
                 var current=sel.value;
+                var currentTitle=(sel.dataset&&sel.dataset.topicTitle)||'';
                 var opts=['<option value="">— no topic —</option>'];
+                var found=false;
                 topics.forEach(function(t){
-                    var sel2=(t.topicId===current?' selected':'');
-                    opts.push('<option value="'+esc(t.topicId)+'" data-title="'+esc(t.title)+'"'+sel2+'>'+esc(t.title)+(t.chapter?' — '+esc(t.chapter):'')+'</option>');
+                    var isCurrent=(t.topicId===current);
+                    if(isCurrent) found=true;
+                    var sel2=(isCurrent?' selected':'');
+                    // Topic ids were once assigned by position, so a topic
+                    // removed from the middle of a syllabus shifted every
+                    // later topic's content into another topic's document.
+                    // A plan written before that carries the id it was given
+                    // AND the title it was given, and here those two no longer
+                    // agree. Which lesson was meant cannot be reconstructed —
+                    // the disagreement itself can be, and is worth more than a
+                    // title nobody wrote.
+                    var renamed=(isCurrent && currentTitle && t.title!==currentTitle);
+                    var label=esc(t.title)+(t.chapter?' — '+esc(t.chapter):'')
+                        +(renamed?' (this plan recorded as "'+esc(currentTitle)+'")':'');
+                    opts.push('<option value="'+esc(t.topicId)+'" data-title="'+esc(t.title)+'"'+sel2+'>'+label+'</option>');
                 });
+                // The plan was written for a topic the syllabus no longer
+                // lists. Dropping it from the options would clear the select
+                // to "no topic" without anybody choosing that, and the next
+                // save would write the unlink. Keep it, and say what it is.
+                if(current && !found){
+                    opts.push('<option value="'+esc(current)+'" data-title="'
+                        +esc(currentTitle)+'" selected>'
+                        +esc(currentTitle||current)
+                        +' (no longer in the curriculum)</option>');
+                }
                 sel.innerHTML=opts.join('');
+                if(current) sel.value=current;
             });
             return topics;
-        }).catch(function(){ AC.lp._topicsBySubject[key]=[]; return []; });
+        }).catch(function(e){
+            toast('Topics for '+subject+' could not be read: '
+                +((e&&e.message)||'unavailable'),false);
+            return [];                   // not cached — the next open retries
+        });
     },
 
     save:function(btn){
@@ -4266,7 +5427,14 @@ AC.lp = {
         document.getElementById('lpMonthLabel').textContent=label;
         acShim('lpCalContent','grid',{cells:35});
         return post('academic/get_monthly_plan',{teacher_id:s.teacherId, year:s.monthY, month:s.monthM}).then(function(d){
-            if(d.status!=='success'){ toast(d.message||'Failed',false); return; }
+            if(d.status!=='success'){
+                var msg=d.message||'Failed to load monthly plan';
+                document.getElementById('lpCalContent').innerHTML=
+                    '<div class="ac-empty"><i class="fa fa-exclamation-triangle"></i> '
+                    +esc(msg)+'</div>';
+                toast(msg,false);
+                return;
+            }
             AC.lp._renderMonth(d);
         }).catch(function(e){
             document.getElementById('lpCalContent').innerHTML='<div class="ac-empty"><i class="fa fa-exclamation-triangle"></i> '+esc((e&&e.message)||'Failed to load monthly plan')+'</div>';
@@ -4298,6 +5466,13 @@ AC.lp = {
                 : '';
             cells.push('<div class="ac-cal-day'+todayCls+'" onclick="AC.lp._jumpToDate(\''+iso+'\')"><div class="num">'+dn+'</div>'+content+'</div>');
         }
+        // Totals read as a statement about this teacher, so a month built
+        // from a capped read has to say so where the numbers are.
+        var noticeHtml = d.truncated
+            ? '<div class="ac-empty" style="color:#b45309;padding:8px;margin-bottom:8px">'
+              +'<i class="fa fa-exclamation-triangle"></i> '
+              +esc(d.notice||'These totals may be incomplete.')+'</div>'
+            : '';
         var totalsHtml=
             '<div style="display:flex;gap:14px;flex-wrap:wrap;margin-bottom:12px;font-size:12px;color:var(--t2)">'+
             '<span><strong>'+(totals.total||0)+'</strong> total</span>'+
@@ -4307,7 +5482,7 @@ AC.lp = {
             '<span style="color:#92400e"><strong>'+(totals.rescheduled||0)+'</strong> rescheduled</span>'+
             '</div>';
         document.getElementById('lpCalContent').innerHTML =
-            totalsHtml + '<div class="ac-cal-grid">'+hd+cells.join('')+'</div>';
+            noticeHtml + totalsHtml + '<div class="ac-cal-grid">'+hd+cells.join('')+'</div>';
     },
 
     _jumpToDate:function(iso){
