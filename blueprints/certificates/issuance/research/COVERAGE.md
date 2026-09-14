@@ -75,3 +75,20 @@ These are recorded as **NOT FOUND**, meaning searched-and-unpublished — not un
 **An honest NOT FOUND is a result.** The failure mode worth guarding against is the opposite one —
 filling a hole with a plausible rule number — and the corpus's 23 `[D]` markers against 436 `[A]`
 is the evidence that it mostly didn't.
+
+## Addendum — counting conflict entries (2026-09-14)
+
+The same class of error recurred, in the other direction. A collision check matching
+`^#{2,3} *(C-\d+)` reported **two collisions that do not exist**: `### C-11 said four judgments…`
+and `### C-3's Punjab row is wrong…` are **prose subsections that open with a conflict reference**,
+not entry headings.
+
+**Real entries always carry the separator: `## C-NN · Title`.** Matching `^#{2,3} *(C-\d+[a-z]?) *·`
+gives the true count — **76 entries across three files, C-1…C-62, zero collisions.**
+
+**The pattern across all four instrument errors this programme has hit is one thing:** a regex
+written against what the content *means* rather than what it *looks like*. Twice it manufactured
+gaps (an `[A]` notation mismatch, a state-name alias), and twice it manufactured collisions. The fix
+is the same each time — **check the convention the file actually uses before trusting the count**,
+and treat any surprising measurement as a fault in the instrument until the instrument is controlled.
+
