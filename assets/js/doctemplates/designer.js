@@ -397,12 +397,21 @@ const AUTHORITIES = [
   },
   {
     id:"dser", tier:"state", label:"Delhi School Education Rules 1973", state:"Delhi",
-    authority:"Delhi School Education Act & Rules 1973, rr.139, 167",
+    authority:"Delhi School Education Act & Rules 1973, rr.139(2), 167 — read with Delhi HC LPA 393/2014 and W.P.(C) 4953/2010",
     evidence:"A", verifiedOn:"2026-08-16", owner:"platform-compliance",
     appliesWhen:sc=>sc.state==="Delhi",
-    scopeNote:"A verified NEGATIVE finding — the absence of a rule is itself the finding.",
+    scopeNote:"Mixed: a verified NEGATIVE on ISSUING a TC, and a substantive INBOUND rule on receiving one.",
     docs:{ transfer_certificate:{requiredKeys:[], constraints:[
       "r.139 lists transfer certificate / school leaving certificate / leaving certificate as alternative names for one instrument.",
+      /* WE CITED r.139 BY NUMBER AND RECORDED ONLY ITS NOMENCLATURE.
+         Sub-rule (2) is a substantive inbound rule and it was missing here.
+         The headline negative below still stands, and the distinction is the
+         point: the Act and Rules have no provision on ISSUING a TC, but they
+         do have one on RECEIVING a TC from outside Delhi. Issuing and
+         receiving are different acts — collapsing them is what let a negative
+         about issuance read as a negative about the whole rule. */
+      "r.139(2) is an INBOUND rule: a transfer certificate from a school OUTSIDE Delhi must be sent “for verification and countersignature of the Head of the school in which admission is sought, to the Education Authority of the district” (Kumari Uzma Bano v. GNCTD, Delhi HC, W.P.(C) 4953/2010 and nine connected petitions, 05.08.2010).",
+      "But that verification may NOT hold the child out: the same judgment requires the school to provisionally admit the child while verification proceeds. The check survives; its power to block does not. Any inbound-TC flow we build must admit first and verify alongside, never gate admission on the countersignature returning.",
       "The Act and Rules contain NO provision on issuing transfer certificates at all (Delhi HC, LPA 393/2014). r.167 only permits striking a name off the rolls.",
       "Consequence: a Delhi school has no state rule to rely on for a no-dues gate. Offering one here would assert law that does not exist.",
       "Delhi has a line of authority, not a single case: LPA 393/2014 (TC on one month’s fees, not the year), W.P.(C) 12625/2023 (TC “forthwith” despite ₹47,000 outstanding), and W.P.(C) 15533/2022 of 08.04.2024 — “School Leaving Certificate cannot be withheld … on the ground that the school fees are yet to be paid”, release ordered within one week.",

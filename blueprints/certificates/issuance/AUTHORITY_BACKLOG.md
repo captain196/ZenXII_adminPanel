@@ -37,6 +37,7 @@ jurisdictions the opposite is true and blocking.
 | **Goa** r.116(2) | inbound countersignature | `[A]` |
 | **DNH & DD** r.97(2) | inbound countersignature | `[A]` |
 | **Bihar** s.272 | inbound countersignature | `[A]` |
+| **Delhi** r.139(2) DSER 1973 | inbound countersignature — **and already an encoded authority**, so this omission sat in shipped code. Judicially read in *Kumari Uzma Bano v. GNCTD* (05.08.2010), which also requires the child to be **provisionally admitted while verification proceeds** | `[A]` |
 
 **HPBOSE is first** because it is the one case where the encoded CBSE statement and a live state
 regulation point opposite ways for the same act, and the state one blocks.

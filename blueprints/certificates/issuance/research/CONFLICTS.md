@@ -1,6 +1,6 @@
 # Conflict register
 
-**49 entries here, plus 8 in `gap-closure-north-northeast.md` and 15 in `central-defence-and-ctsa.md` — 72 distinct IDs, no collisions.** They were not: successive research streams each appended without
+**50 entries here, plus 8 in `gap-closure-north-northeast.md` and 15 in `central-defence-and-ctsa.md` — 72 distinct IDs, no collisions.** They were not: successive research streams each appended without
 checking the highest number in use, so `C-9`, `C-19`, `C-20` and `C-16b` were each issued twice.
 The second of each is now `C-9a`, `C-19a`, `C-20a`, `C-16c`. **The `C-16b` collision was the
 damaging one — the two entries sharing that ID contradicted each other**, so a citation of "C-16b"
@@ -62,6 +62,7 @@ with their evidence** — the convenient one was never allowed to quietly win.
 | C-37 | **Arunachal caps certificate fees at ₹20/₹50 per document** | **verified verbatim · product** |
 | C-38 | **India Code is not a complete record of state rules** | **method · affects every state entry** |
 | C-39 | **No-dues case law is national; NO Supreme Court ruling** | **extends C-11 · product** |
+| C-60 | **First judicial treatment of countersignature; 4th mechanism** | **confirms C-15 · corrects dser** |
 | C-45–C-59 | central defence + CTSA stream — see `central-defence-and-ctsa.md` | **15 entries, held in that file** |
 | C-12a, C-16d, C-19b, C-40–C-44 | north/northeast stream — see `gap-closure-north-northeast.md` §3 | **8 entries, held in that file** |
 
@@ -1468,3 +1469,71 @@ cannot be told without the full Rajasthan text, so **both readings stay recorded
 
 Also noted, without inference: **Vivek Rusia J sat on the 2016 MP bench and decided the 2024 MP case
 alone** — and the 2024 judgment carries **no citations at all**, resting on its own reasoning.
+
+---
+
+## C-60 · The first judicial treatment of countersignature — and it adds a mechanism the taxonomy lacks
+
+*Added 2026-09-14. Confirms C-15 judicially, corrects our own reading of a rule we cite by number,
+and puts Delhi into a P0 list it was missing from.*
+
+**Kumari Uzma Bano & Anr. v. Govt of NCT of Delhi**, Delhi High Court,
+**W.P.(C) 4953, 4954, 4974, 4986, 5178, 5191, 5192, 5194, 5195, 5197 of 2010**, decided
+**05.08.2010** — ten petitions heard together.
+
+The Court read **Rule 139(2), Delhi School Education Rules 1973**: a transfer certificate from a
+school **outside Delhi** must be sent *"for verification and countersignature of the Head of the
+school in which admission is sought, to the Education Authority of the district."*
+
+**And then it removed that requirement's power to block a child:** the school must
+**provisionally admit the child while verification proceeds.**
+
+### Three things this settles
+
+**1 · C-15 is now judicially confirmed, not merely inferred.** C-15 concluded from rule texts that
+countersignature is **the receiving authority's rule**, running inbound. Rule 139(2) says exactly
+that — the duty attaches to *"the school in which admission is sought"*, and it is triggered by the
+TC arriving **from outside Delhi**. A court has now read it that way.
+
+**2 · Delhi belongs in the inbound-countersignature list, and was missing from it.**
+`AUTHORITY_BACKLOG.md` P0 lists Kerala Ch.VI r.10, Puducherry r.62, MH r.22.1, GJ reg 12(9), Goa
+r.116(2), DNHDD r.97(2) and Bihar s.272 — **not Delhi.** Delhi is one of only seven authorities the
+product already encodes, so the omission was in shipped code, not just in the notes.
+
+**3 · A fourth enforcement mechanism.** C-29 recorded two the taxonomy could not hold (the
+board-issued eligibility certificate; return-to-issuer verification). This is a third, and it is
+different in kind from all of them:
+
+| mechanism | what it does to the check |
+|---|---|
+| printed verifiable identifier (C-26/C-30) | **replaces** the human check |
+| UDISE waiver (NVS PAP §34) | **removes** the check |
+| eligibility certificate (C-29) | **adds** a prior gate |
+| return-to-issuer (C-29) | **redirects** the check to the sender |
+| **provisional admission pending verification (this)** | **keeps the check and strips its power to block** |
+
+**That last row is the only one that protects the child without weakening the verification**, and it
+is the shape a certificate system should probably prefer. Nothing in the corpus had it.
+
+### A correction to our own entry
+
+The `dser` authority in `designer.js` cites *"Delhi School Education Act & Rules 1973, rr.139, 167"*
+and then uses r.139 **only for nomenclature** — *"r.139 lists transfer certificate / school leaving
+certificate / leaving certificate as alternative names for one instrument."*
+
+**We cite the rule by number and did not record what its sub-rule (2) requires.** The entry's
+headline negative survives and is worth keeping precise: the Act and Rules contain no provision on
+**issuing** a TC — LPA 393/2014 says so. **But they do contain a provision about *receiving* one**,
+and we had it in front of us. A negative about issuance was allowed to read as a negative about the
+rule as a whole.
+
+**Also note the tension this creates with C-39's own source.** LPA 393/2014 is reported as saying the
+Act and Rules have *"no provision regarding the issuance of Transfer Certificate"* — which remains
+true — while r.139(2) plainly regulates TCs. Both hold only because **issuing and receiving are
+different acts**, which is the distinction C-15 and C-27 keep insisting on and which our entry had
+collapsed.
+
+**Evidence note.** Same method and same limit as C-39: retrieved by direct URL fetch against
+`indiankanoon.org` (WebSearch remains at its session ceiling). Case numbers, court and date are from
+the document; the operative passages are quoted from a page summary rather than from the full
+judgment read line by line.

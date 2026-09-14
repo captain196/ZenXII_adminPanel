@@ -12,7 +12,7 @@ Ordered by what it costs you.
 |---|---|---|---|
 | 1 | **Maharashtra GR on admission without a leaving certificate** (C-23) | `gr.maharashtra.gov.in/1145/Government-Resolutions` | Department **School Education**; keyword **शाळा सोडल्याचा दाखला** or **प्रवेश**. Need the **GR number and date**. The form is ASP.NET and its `__VIEWSTATE` is scrapeable — only the CAPTCHA blocks it. |
 | 2 | **BSEM migration certificate rule** | BSEM migration portal | CAPTCHA-gated; recorded HUMAN-ONLY, not attempted. |
-| 3 | **Any judgment on TC withholding in Arunachal** | `judgments.ecourts.gov.in` | Search `"Arunachal Pradesh Education Rules"` and `"transfer certificate" Arunachal`. |
+| ~~3~~ | ~~**Any judgment on TC withholding in Arunachal**~~ **DOWNGRADED 2026-09-14** | — | `indiankanoon.org` answers **direct URL fetches** even with WebSearch capped, so this no longer needs a CAPTCHA. Searched the **Gauhati High Court** (which covers Arunachal): **nothing on point** — the results are an Assam misappropriation case, a document-authenticity case and a college expulsion, and **none mentions Arunachal**. Now a *searched-negative with a stated limit* rather than an unknown. Still worth a human pass on `ecourts` only if this becomes load-bearing. |
 | 4 | **UDISE code for any Sainik School** | UDISE+ *Know Your School* | CAPTCHA established from the site's own JS bundle. Several 11-digit strings appear in Sainik page source but carry **no UDISE label**, so they were deliberately **not** reported as codes. |
 
 ## 2 · Needs an Indian IP
