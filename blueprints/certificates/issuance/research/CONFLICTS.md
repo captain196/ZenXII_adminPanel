@@ -1,6 +1,6 @@
 # Conflict register
 
-**50 entries here, plus 8 in `gap-closure-north-northeast.md` and 15 in `central-defence-and-ctsa.md` — 72 distinct IDs, no collisions.** They were not: successive research streams each appended without
+**51 entries here, plus 8 in `gap-closure-north-northeast.md` and 15 in `central-defence-and-ctsa.md` — 72 distinct IDs, no collisions.** They were not: successive research streams each appended without
 checking the highest number in use, so `C-9`, `C-19`, `C-20` and `C-16b` were each issued twice.
 The second of each is now `C-9a`, `C-19a`, `C-20a`, `C-16c`. **The `C-16b` collision was the
 damaging one — the two entries sharing that ID contradicted each other**, so a citation of "C-16b"
@@ -63,6 +63,7 @@ with their evidence** — the convenient one was never allowed to quietly win.
 | C-38 | **India Code is not a complete record of state rules** | **method · affects every state entry** |
 | C-39 | **No-dues case law is national; NO Supreme Court ruling** | **extends C-11 · product** |
 | C-60 | **First judicial treatment of countersignature; 4th mechanism** | **confirms C-15 · corrects dser** |
+| C-61 | UP gap does NOT close — but the register-is-authority thesis is evidenced | **limited · evidences the module's premise** |
 | C-45–C-59 | central defence + CTSA stream — see `central-defence-and-ctsa.md` | **15 entries, held in that file** |
 | C-12a, C-16d, C-19b, C-40–C-44 | north/northeast stream — see `gap-closure-north-northeast.md` §3 | **8 entries, held in that file** |
 
@@ -1537,3 +1538,66 @@ collapsed.
 `indiankanoon.org` (WebSearch remains at its session ceiling). Case numbers, court and date are from
 the document; the operative passages are quoted from a page summary rather than from the full
 judgment read line by line.
+
+---
+
+## C-61 · UP's TC gap does NOT close — but the corpus's central thesis is now evidenced
+
+*Added 2026-09-14. A deliberately limited finding: it does not close what it was aimed at.*
+
+**The route was sound and worth recording even though it missed.** The UPMSP Regulations under the
+Intermediate Education Act 1921 are a **printed volume** (C-35), so they cannot be fetched. But
+**courts quote unpublished regulations**, and the Allahabad High Court has jurisdiction over them.
+Five judgments spanning **2004 → 2023** cite the same provision:
+
+> **Regulation 7 of Chapter III (Part II-B)** — *Lala Yadav* (01.12.2004, (2005)1UPLBEC781) ·
+> *Ajay Kumar* (13.01.2014) · *Reshav Kumar Chahal* (05.12.2019) · *Jyoti Pandey* (29.07.2021) ·
+> *Vikas Sharma* (16.12.2023, 2023:AHC-LKO:82917)
+
+**This is the first specific regulation number from the UPMSP Regulations the corpus can cite at
+all.** It is also **not about issuing a transfer certificate.**
+
+### What Regulation 7 actually governs
+
+> *"The substantive part of Regulation 7 provides for the correction of such entries in the
+> certificate which have arisen because of any inadvertent clerical mistake or omission in the
+> records of the Board **or the Institution last attended** by the candidate."* — *Vikas Sharma*
+
+A **time bar** applies to the substantive part, and **it has changed**: *Lala Yadav* (2004) states
+**two years** from issuance; *Vikas Sharma* (2023) states **three years**. The regulation was
+evidently amended between them — **neither the amendment nor its date is established here**, and no
+claim should be built on either figure without reading the current text.
+
+A **proviso** carries **no time limit at all** for spelling corrections in the applicant's or the
+parents' names.
+
+### So UP remains NOT FOUND, exactly as before
+
+**UPMSP's TC format, signer, countersignature, migration rule and duplicates are still unevidenced.**
+C-35's standing instruction is untouched: **do not assert a UPMSP TC-upload rule.** This entry adds a
+regulation number and its subject; it adds nothing about issuing a TC.
+
+### What it does establish, and it is not small
+
+**The TC functioned as evidence of a recorded date of birth** — in *Vikas Sharma* the petitioner used
+a school's transfer certificate to prove a DOB of 7.9.2003 against an erroneous Board mark-sheet
+entry of 7.9.2001. The regulation's own wording explains why that works: the correctable error is one
+in *"the records of the Board **or the Institution last attended**"*, so **the institution's record is
+a recognised source of truth about the pupil, and the TC is how that record travels.**
+
+**This is the first external evidence for the thesis the whole module rests on.** `Issuer_identity`'s
+docblock opens:
+
+> *"A Transfer Certificate transcribes an entry in the school's Admission & Withdrawal Register. The
+> register is the authority; the printed sheet is evidence of it."*
+
+That was our reasoning, not a cited proposition. It now converges from two independent directions:
+**CBSE's Annexure-I field 4** requires the date of birth *"according to Admission & Withdrawal
+Register"* (C-45, read verbatim), and **UP Regulation 7** lets the institution's record correct the
+Board's own certificate.
+
+**The product consequence is about stakes, not fields.** A TC ZenXii renders is not merely a leaving
+formality — **it can later be tendered to correct a Board certificate**, which is a far higher
+evidentiary duty than "print the fields." It also means a DOB that does not match the Admission &
+Withdrawal Register is not a cosmetic defect: it is a defect in the one thing the document exists to
+carry.
