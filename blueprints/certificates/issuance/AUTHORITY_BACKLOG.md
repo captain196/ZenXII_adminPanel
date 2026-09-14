@@ -112,3 +112,71 @@ check.
 
 **Nothing in this backlog is built.** This file is the hand-off, not a change. The 7 encoded
 authorities are unchanged and the generic profile still covers everything else.
+
+---
+
+# What the research demands of the product
+
+Ten constraints the corpus has established that **no amount of encoding authorities will satisfy**,
+because each is a shape the data model has to have. They are scattered across the conflict register
+by the order they were discovered; collected here by what they touch.
+
+## The model is wrong in five specific ways
+
+| # | constraint | why the obvious model fails | source |
+|---|---|---|---|
+| 1 | **Validity cannot be one field** | recognition terms have no common shape across states | C-13 |
+| 2 | **Recognition cannot be one flag per school** | UBSE grants and prices it **per stage × per stream × per subject**, each with its own two-year evidence burden. A school is "recognised for Science, not Commerce" | **C-33** |
+| 3 | **Countersignature cannot be one boolean** | `countersignatureRequired = false` is **a wrong rule in Himachal** — HPBOSE Reg. 3.5.7 is mandatory and blocking | **C-26** |
+| 4 | **…and cannot be keyed on the state** | RBSE's trigger is a **board** line: CBSE→RBSE within Jaipur is intra-State, inter-Board, and fires the full inbound gate. Add **document language** and **institution type** as triggers | **C-27** |
+| 5 | **Format needs three states, not two** | `noFormat` · `formatPublished` · **`formatPrescribedButUnpublished`** — Goa r.127 makes a free-text LC **invalid on the face of the rule** | **C-28** |
+
+## The enforcement taxonomy needs five mechanisms, not two
+
+Countersignature and printed identifiers were the original pair. Three more are evidenced:
+
+| mechanism | effect on the check | instance |
+|---|---|---|
+| printed verifiable identifier | **replaces** it | Karnataka, MP, CG, HP, AP (C-26/C-30) |
+| UDISE waiver | **removes** it | NVS PAP §34 |
+| board eligibility certificate | **adds a prior gate** | GBSHSE, RBSE (C-29) |
+| return-to-issuer verification | **redirects** it to the sender | RBSE §1.8(1) (C-29) |
+| **provisional admission pending verification** | **keeps it, strips its power to block** | Delhi r.139(2), *Kumari Uzma Bano* (**C-60**) |
+
+**The last row is the only one that protects the child without weakening verification.** Any inbound
+TC flow must **admit first and verify alongside** — never gate admission on a countersignature
+returning.
+
+## Three hard rules about issuance itself
+
+**6 · Never build a no-dues gate.** Seven High Courts across four regions (C-39). There is **no
+Supreme Court ruling**, so this is a convergent line rather than binding law — but the product's
+answer is the same, and the risk is asymmetric: in Rajasthan, withholding exposes the school to
+**de-recognition proceedings**. The lawful alternatives the courts *name* are Rule 167 DSEAR
+(strike off the rolls), a civil suit, and "other means" — **none involves the certificate.**
+
+**7 · A school may not manufacture a precondition out of its own form.** Delhi LPA 393/2014 found a
+school's self-prescribed TC form demanding both parents' signatures **lacked legal basis**. ZenXii
+lets schools compose templates, so this distinction is ours to hold: **composing fields is lawful;
+gating issuance on a self-authored field is not established as lawful.**
+
+**8 · Certificate fees may be statutorily capped.** Arunachal r.48: **₹20 government / ₹50 private,
+per document**, across transfer/provisional/appearing/character/duplicate (C-37). Only one state so
+far — **do not generalise** — but a single product-wide price would breach it there.
+
+## Two about the artefact's real function
+
+**9 · The date of birth is the field that carries the legal weight.** Courts encounter the TC mostly
+as **proof of a minor's age** (33 of 33 HP judgments) and as a document that can **correct a Board's
+own certificate** (UP Reg. 7 Ch. III). CBSE field 4 names its source: the **Admission & Withdrawal
+Register**. So the DOB deserves a **render-time integrity check against its source** and the
+**strongest audit trail on amendment**; it is currently treated as an ordinary merge field (**C-62**).
+
+**10 · An instrument on file is not a subsisting entitlement.** Uttarakhand Reg. 5(थ): a false
+particular lets granted recognition be **withdrawn**, with personal liability under the IPC. The
+`EVIDENCED` rung means "the document exists", never "the entitlement holds" (C-33, C-4).
+
+---
+
+**None of these is built.** They are what the ~45 unencoded authorities will run into, and each is
+cheaper to design for now than to retrofit.
