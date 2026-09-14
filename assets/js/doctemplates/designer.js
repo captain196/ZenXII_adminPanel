@@ -217,7 +217,11 @@ const AUTHORITIES = [
          construction plus case law, and this line used to present it as though
          the Act said it. The rule is sound; the provenance was overstated. */
       "s.5(3): the head teacher “shall immediately issue the transfer certificate”. The section attaches no condition of any kind.",
-      "So a no-dues gate has no statutory footing, and four High Courts have held withholding unlawful while preserving the school’s right to recover the money — Tamil Nadu W.A. 3075/2021 (19.07.2024), Kerala 2025:KER:69076, Karnataka 2025:KHC:5986, Telangana W.P. 34185/2023. Note that no enabling rule was repealed: Kerala’s KER Ch.VI r.17(2) stands unamended. The rule exists and is unenforceable.",
+      "So a no-dues gate has no statutory footing, and at least SEVEN High Courts across four regions have held withholding unlawful while preserving the school’s right to recover the money — Tamil Nadu W.A. 3075/2021 (19.07.2024), Kerala 2025:KER:69076, Karnataka 2025:KHC:5986, Telangana W.P. 34185/2023, Delhi (LPA 393/2014, W.P.(C) 12625/2023, W.P.(C) 15533/2022 of 08.04.2024), Rajasthan D.B. Spl. Appeal (Writ) 752/2019, and Madhya Pradesh (W.P. 7027/2015 and W.P. 27910/2022 of 19.03.2024).",
+      "But NO Supreme Court ruling on the point was found, by a search that demonstrably reaches Supreme Court education law (T.M.A. Pai, Islamic Academy, Society for Un-Aided Private Schools, Modern Dental — none of which concerns withholding a document over fees). So this is a convergent line of High Courts, not binding national law: persuasive in a state that has not ruled, not binding.",
+      "Note that no enabling rule was repealed: Kerala’s KER Ch.VI r.17(2) stands unamended. The rule exists and is unenforceable.",
+      "The lawful alternatives are the ones the courts themselves name — striking the name off the rolls under Rule 167 DSEAR 1973 (Delhi), a civil suit (Rajasthan, Delhi), or “other means” (MP). None involves the certificate.",
+      "Withholding can also cost a school its recognition: the Rajasthan Division Bench directed the District Education Officer to ensure compliance or face de-recognition proceedings. Refusing to issue is not only unenforceable, it is a risk to the entitlement to issue at all.",
       "Delay or refusal exposes the head teacher to disciplinary action.",
       "No numeric turnaround deadline and no issuance register are set by the Act — any SLA we ship is our own recommendation, not law.",
       "s.5 sits in the elementary chapter and reaches a child only through class VIII. No equivalent central protection for IX–XII was found."
@@ -400,7 +404,16 @@ const AUTHORITIES = [
     docs:{ transfer_certificate:{requiredKeys:[], constraints:[
       "r.139 lists transfer certificate / school leaving certificate / leaving certificate as alternative names for one instrument.",
       "The Act and Rules contain NO provision on issuing transfer certificates at all (Delhi HC, LPA 393/2014). r.167 only permits striking a name off the rolls.",
-      "Consequence: a Delhi school has no state rule to rely on for a no-dues gate. Offering one here would assert law that does not exist."
+      "Consequence: a Delhi school has no state rule to rely on for a no-dues gate. Offering one here would assert law that does not exist.",
+      "Delhi has a line of authority, not a single case: LPA 393/2014 (TC on one month’s fees, not the year), W.P.(C) 12625/2023 (TC “forthwith” despite ₹47,000 outstanding), and W.P.(C) 15533/2022 of 08.04.2024 — “School Leaving Certificate cannot be withheld … on the ground that the school fees are yet to be paid”, release ordered within one week.",
+      /* THIS ONE IS ABOUT US, NOT ABOUT THE SCHOOL.
+         In LPA 393/2014 the school had invented its own TC form requiring BOTH
+         parents’ signatures, and the Court found it lacked legal basis and left
+         its validity open. ZenXii lets a school compose its own template, so the
+         distinction has to be ours to hold: composing FIELDS is lawful; turning a
+         self-authored field into a PRECONDITION on issuance is the thing the Court
+         doubted. We do not yet express that difference anywhere in the product. */
+      "A school may not manufacture a precondition out of its own form. In LPA 393/2014 the school’s self-prescribed TC form demanded both parents’ signatures; the Court held it lacked legal basis and left its validity open. Designing fields is lawful — gating issuance on a field the school invented is not established as lawful."
     ]}}
   },
   {

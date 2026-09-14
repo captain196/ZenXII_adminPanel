@@ -47,11 +47,18 @@ It is **load-bearing for both AWES and RMS**, it was read directly by a research
 could not be recovered. It is labelled as such in the corpus and is the **top confirmation
 priority**. Nothing should be built on it until it is re-found.
 
-## 6 · One gap that is not human-blocked, just out of budget
+## 6 · ~~One gap that is not human-blocked~~ — CLOSED 2026-09-14
 
-**The no-dues question's case-law limb.** WebSearch hit its ceiling (200/200) before the query could
-be issued, so **"no court has limited withholding" is not established anywhere** in the corpus. This
-one *is* closeable by automation — it just needs fresh search budget, not a person.
+**The no-dues case-law limb is closed (C-39).** WebSearch is still at its session ceiling and that
+never lifts — but the ceiling is on *search*, and `indiankanoon.org` answers **direct URL fetches**.
+Working that way took C-11 from four southern judgments to **seven High Courts across four regions**,
+and answered a question no stream had asked: **there is no Supreme Court ruling on the point.**
+
+So the doctrine is a convergent line of High Courts, not binding national law — and two findings came
+with it that reach the product: withholding can expose a school to **de-recognition proceedings**
+(Rajasthan DB), and a school **may not manufacture a precondition out of its own form** (Delhi,
+LPA 393/2014), which lands on the designer rather than on the school.
+
 
 ---
 

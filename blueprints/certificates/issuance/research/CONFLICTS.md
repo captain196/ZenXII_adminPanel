@@ -1,6 +1,6 @@
 # Conflict register
 
-**48 entries here, plus 8 in `gap-closure-north-northeast.md` and 15 in `central-defence-and-ctsa.md` — 72 distinct IDs, no collisions.** They were not: successive research streams each appended without
+**49 entries here, plus 8 in `gap-closure-north-northeast.md` and 15 in `central-defence-and-ctsa.md` — 72 distinct IDs, no collisions.** They were not: successive research streams each appended without
 checking the highest number in use, so `C-9`, `C-19`, `C-20` and `C-16b` were each issued twice.
 The second of each is now `C-9a`, `C-19a`, `C-20a`, `C-16c`. **The `C-16b` collision was the
 damaging one — the two entries sharing that ID contradicted each other**, so a citation of "C-16b"
@@ -61,6 +61,7 @@ with their evidence** — the convenient one was never allowed to quietly win.
 | C-36 | **Filenames are not evidence — two near-miss fabrications** | **method · binding** |
 | C-37 | **Arunachal caps certificate fees at ₹20/₹50 per document** | **verified verbatim · product** |
 | C-38 | **India Code is not a complete record of state rules** | **method · affects every state entry** |
+| C-39 | **No-dues case law is national; NO Supreme Court ruling** | **extends C-11 · product** |
 | C-45–C-59 | central defence + CTSA stream — see `central-defence-and-ctsa.md` | **15 entries, held in that file** |
 | C-12a, C-16d, C-19b, C-40–C-44 | north/northeast stream — see `gap-closure-north-northeast.md` §3 | **8 entries, held in that file** |
 
@@ -1377,3 +1378,93 @@ the **s.2(6)/s.2(34)** competent- and registering-authority designation notifica
 Commissioner (Education), Itanagar**); whatever pre-2010 departmental instrument **Rule 71
 (Savings)** keeps alive on TC practice (request the Directorate's standing orders predating
 20.08.2010); and `judgments.ecourts.gov.in`, which is **CAPTCHA-gated**.
+
+---
+
+## C-39 · The no-dues case law is NATIONAL — and there is no Supreme Court ruling
+
+*Added 2026-09-14. Closes the one gap `HUMAN_ACTIONS.md` §6 marked automation-closeable.
+Extends C-11 from four states to seven, and answers a question no stream had asked.*
+
+**Method, stated because it bounds the evidence.** WebSearch remains at its session ceiling
+(200/200) — that is a budget cap, not a network fault, and no amount of connectivity lifts it. These
+were retrieved by **direct URL fetch against `indiankanoon.org`**, which is reachable that way. Case
+numbers, dates, courts and benches are corroborated across independent fetches; **the operative
+sentences below are quoted from page summaries, not from full judgments I read line by line.**
+Graded accordingly.
+
+### C-11 said four judgments. There are at least seven, and they are not regional.
+
+C-11 recorded Tamil Nadu, Kerala, Karnataka and Telangana — **all four southern**, which left open
+whether this was a southern doctrine. It is not.
+
+| court | case | date | holding |
+|---|---|---|---|
+| **Madhya Pradesh HC** | W.P. 7027/2015 *(Jaiswal & Rusia JJ)* | 17.06.2016 | *"The school cannot withheld the transfer certificate for want of balance amount of tuition fees. The proper remedy for the school is to recover the amount by taking appropriate proceeding, in accordance with law."* |
+| **Rajasthan HC (DB), Jaipur** | D.B. Spl. Appeal (Writ) 752/2019 | 23.07.2019 | school *"not justified in withholding their transfer certificate"*; **TC within three days**; recovery *"by way of filing civil suit or availing any other remedy"* |
+| **Delhi HC** | LPA 393/2014 *(Endlaw J with the Chief Justice)* | 01.08.2014 | TC to issue on **one month's** fees (₹2,480), not the full year — *"the rules of the respondent School do not justify the claim for the fees for the full year"* |
+| **Delhi HC** | W.P.(C) 12625/2023 *(Bhambhani J)* | 25.09.2023 | TC *"forthwith"* despite **₹47,000** outstanding; settlement to be discussed separately |
+| **Delhi HC** | W.P.(C) 15533/2022 *(C. Hari Shankar J)* | 08.04.2024 | *"School Leaving Certificate cannot be withheld … on the ground that the school fees are yet to be paid"*; **release within one week** |
+| **Madhya Pradesh HC, Indore** | W.P. 27910/2022 *(Vivek Rusia J)* | 19.03.2024 | *"Transfer Certificate is must for admission in other school. If there is any issue of non payment of fee, the … School has remedy to recover the same by other means but Transfer Certificate of the students cannot be withheld."* |
+
+**Seven states across four regions — south, north, west and centre.** Delhi alone has a line of
+authority spanning **2014 → 2023 → 2024**, each ordering release and each preserving recovery.
+
+### There is no Supreme Court authority on the point
+
+**Two probes, different phrasings, both negative — with working controls.** The searches surface the
+actual Supreme Court education-law canon — **T.M.A. Pai Foundation**, **Islamic Academy**,
+**Society for Un-Aided Private Schools (2012)**, **Modern Dental College (2016)** — and **none of
+them concerns withholding a certificate or document over fees.** They address admission rights and
+fee-*setting* autonomy, which is a different subject.
+
+**So the search is reaching the right body of law and finding nothing on point.** Stated at the
+corpus's usual strength: **searched-negative with a demonstrated control, not proved absent.**
+C-19b's lesson applies — a control bounds the host, not the world — so this is *"no Supreme Court
+ruling was found, by a search that demonstrably reaches Supreme Court education law"*, not *"none
+exists."*
+
+**Why it matters more than one more citation.** With no apex ruling, **the doctrine is a convergent
+line of High Courts, not binding national law.** Seven High Courts agreeing is powerful and is
+enough to justify the product rule — but it is **persuasive in a state that has not ruled**, not
+binding. A school in an unruled state citing its own unrepealed rule is on weaker ground than it
+thinks, and on stronger ground than a simple *"the courts struck this down"* would suggest. That is
+C-11's framing — **"the rule stands and is unenforceable"** — now shown to be the position across
+four regions rather than one.
+
+### Two findings with direct product consequences
+
+**1 · Withholding can cost a school its recognition.** The Rajasthan DB did not stop at ordering
+release: the **District Education Officer shall ensure compliance or face de-recognition
+proceedings.** That closes a loop the corpus has not recorded — **misconduct in issuing a
+certificate feeds back into the school's entitlement to issue at all.** It is C-4 (recognition lapses
+on *events*) meeting the certificate module directly, and it is the strongest enforcement mechanism
+found anywhere in this programme.
+
+**2 · A school's self-invented form requirements have no legal basis.** In LPA 393/2014 the Delhi
+High Court noted the Delhi School Education Act and Rules contain **"no provision regarding the
+issuance of Transfer Certificate"** — Rule 139 DSER 1973 governs a TC *required for admission*, not
+grounds for withholding — and found the school's **own prescribed form demanding both parents'
+signatures lacked legal basis**, expressly leaving its validity open.
+
+**This lands on the designer.** ZenXii lets a school compose its own certificate template. Delhi says
+a school may not manufacture a *precondition* out of its own form. Designing fields is lawful;
+turning a self-authored field into a gate on issuance is the thing the court doubted. **The
+compliance layer should express that distinction — it currently does not.**
+
+### The lawful alternatives the courts actually name
+
+Not "recover it somehow" — three named mechanisms: **Rule 167 DSEAR 1973** (strike the name off the
+rolls for non-payment — Delhi, 2024), a **civil suit** (Rajasthan; Delhi), and *"other means"*
+(MP, 2024). **None involves the certificate.**
+
+### One detail left unresolved rather than tidied
+
+The Rajasthan judgment is reported as relying on *"Association of Unaided CBSE Schools"* and
+attributing it to the **Madras** High Court. That case is **Madhya Pradesh** — W.P. 7027/2015,
+Jaiswal & Rusia JJ, corroborated by two independent fetches of the document itself. **Better
+evidence: Madhya Pradesh.** Whether the mis-attribution is in the judgment or in the summary I read
+cannot be told without the full Rajasthan text, so **both readings stay recorded.**
+
+Also noted, without inference: **Vivek Rusia J sat on the 2016 MP bench and decided the 2024 MP case
+alone** — and the 2024 judgment carries **no citations at all**, resting on its own reasoning.
