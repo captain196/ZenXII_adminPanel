@@ -1,6 +1,6 @@
 # Conflict register
 
-**51 entries here, plus 8 in `gap-closure-north-northeast.md` and 15 in `central-defence-and-ctsa.md` — 72 distinct IDs, no collisions.** They were not: successive research streams each appended without
+**52 entries here, plus 8 in `gap-closure-north-northeast.md` and 15 in `central-defence-and-ctsa.md` — 72 distinct IDs, no collisions.** They were not: successive research streams each appended without
 checking the highest number in use, so `C-9`, `C-19`, `C-20` and `C-16b` were each issued twice.
 The second of each is now `C-9a`, `C-19a`, `C-20a`, `C-16c`. **The `C-16b` collision was the
 damaging one — the two entries sharing that ID contradicted each other**, so a citation of "C-16b"
@@ -64,6 +64,7 @@ with their evidence** — the convenient one was never allowed to quietly win.
 | C-39 | **No-dues case law is national; NO Supreme Court ruling** | **extends C-11 · product** |
 | C-60 | **First judicial treatment of countersignature; 4th mechanism** | **confirms C-15 · corrects dser** |
 | C-61 | UP gap does NOT close — but the register-is-authority thesis is evidenced | **limited · evidences the module's premise** |
+| C-62 | **The TC's most litigated function is PROOF OF DATE OF BIRTH** | **synthesis · changes risk profile** |
 | C-45–C-59 | central defence + CTSA stream — see `central-defence-and-ctsa.md` | **15 entries, held in that file** |
 | C-12a, C-16d, C-19b, C-40–C-44 | north/northeast stream — see `gap-closure-north-northeast.md` §3 | **8 entries, held in that file** |
 
@@ -1601,3 +1602,58 @@ formality — **it can later be tendered to correct a Board certificate**, which
 evidentiary duty than "print the fields." It also means a DOB that does not match the Admission &
 Withdrawal Register is not a cosmetic defect: it is a defect in the one thing the document exists to
 carry.
+
+---
+
+## C-62 · The TC's most litigated function in India is not transfer — it is PROOF OF DATE OF BIRTH
+
+*Added 2026-09-14. A synthesis across three independent jurisdictions, and it reframes what the
+document is for.*
+
+The programme has spent its whole length treating the transfer certificate as an instrument of
+**transfer** — who signs it, who countersigns it, whether it can be withheld. The case law says
+courts mostly encounter it doing something else entirely.
+
+| jurisdiction | how the TC appears | source |
+|---|---|---|
+| **Uttar Pradesh** | a school's TC used to prove a DOB of **7.9.2003** against an erroneous Board mark-sheet entry of **7.9.2001**; Reg. 7 Ch. III permits correcting an error in *"the records of the Board **or the Institution last attended**"* | *Vikas Sharma*, 2023:AHC-LKO:82917 (C-61) |
+| **Himachal Pradesh** | **33 of 33** HP High Court judgments mentioning *"transfer certificate"* concern **using it as evidence of a minor's age**, chiefly in rape and kidnapping prosecutions — *"only a transfer certificate and not the date of birth certificate … was considered"*. **None** concerns issuance, withholding or countersignature | indiankanoon, `doctypes:himachal_pradesh`, control verified |
+| **CBSE** | Annexure-I **field 4** requires the date of birth *"(in Christian Era) according to **Admission & Withdrawal Register**"* — the only field in the form that names its own source of truth | Examination Bye-Laws 2013 edn., p.91, read verbatim (C-45) |
+
+**Three independent routes, one conclusion: the TC is the portable form of the school's Admission &
+Withdrawal Register entry, and its most consequential field is the date of birth.**
+
+### Why this changes the product's risk profile, not just its field list
+
+A TC ZenXii renders is treated by courts as **evidence of a child's age in criminal proceedings** and
+as **a document capable of correcting a Board's own certificate**. Both are far heavier duties than
+"produce a leaving formality."
+
+**So a wrong date of birth is not a cosmetic defect.** It is a defect in the one field that three
+jurisdictions independently rely on, in proceedings — a prosecution's age finding, a Board record
+correction — where the school is nowhere in the room. `Issuer_identity`'s premise (*"the register is
+the authority; the printed sheet is evidence of it"*) is not an elegant framing; it is **the legal
+function of the artefact**, and the DOB is where that function concentrates.
+
+**Concrete consequence for the Document Engine:** the DOB is the field most deserving of a
+render-time integrity check against its source, and of the strongest audit trail on amendment. It is
+currently treated like any other merge field.
+
+### The HP negative, stated at its real strength
+
+**HP Secondary Education Code cl. 2.18 is not judicially cited anywhere I could reach.** Method and
+control, so the negative can be weighed: the `doctypes:himachal_pradesh` filter was **verified
+working** (22,523 results for a control term, all HP High Court), and *"transfer certificate"*
+within it returns **33**, none on issuance. This is a **searched-negative with a demonstrated
+control**, not proof the clause does not exist — HPBOSE remains **P0** in `AUTHORITY_BACKLOG.md` on
+Examination Regulation 3.5.7, and cl. 2.18 remains an **RTI item**.
+
+### Goa r.127, confirmed verbatim and now more precise
+
+> *"No leaving certificate is valid unless it is in the form prescribed by the Director of Education
+> **and is signed by the Head of the school himself**"* — Goa, Daman and Diu School Education Rules
+> 1986, r.127 **[A]**
+
+The corpus carried validity-of-form and signed-by-the-Head as **two** findings; they are **one
+sentence**. C-28's `formatPrescribedButUnpublished` is unaffected — **the prescribed form itself
+still does not surface**, which is exactly what makes the rule bite.

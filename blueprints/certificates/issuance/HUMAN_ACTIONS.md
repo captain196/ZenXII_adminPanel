@@ -37,7 +37,7 @@ All to the **Director of School Education / Commissioner (Education), Itanagar**
 | 8 | Arunachal **s.2(6) / s.2(34)** competent- and registering-authority designation notifications | names the officer who actually grants recognition |
 | 9 | Arunachal **s.1(4)** commencement notification for Act 8 of 2010 | fixes the date the Act came into force |
 | 10 | Whatever pre-2010 departmental instrument **Rule 71 (Savings)** keeps alive on TC practice | the only remaining route to a pre-2010 Arunachal TC rule |
-| 11 | **HP Secondary Education Code 2012, cl. 2.18** | reportedly holds Himachal's real TC rule. HPBOSE is **P0** in `AUTHORITY_BACKLOG.md` and its blocking countersignature currently rests on Examination Regulation 3.5.7 alone |
+| 11 | **HP Secondary Education Code 2012, cl. 2.18** | reportedly holds Himachal's real TC rule. HPBOSE is **P0** and its blocking countersignature rests on Examination Regulation 3.5.7 alone. **Narrowed 2026-09-14 (C-62):** not judicially cited — the HP High Court filter was verified working (22,523 control results) and *"transfer certificate"* returns 33, **all** about proving a minor's age, none about issuance. So the clause is unreachable through case law; RTI is the remaining route. |
 | 12 | **Sainik Schools' circulated uniform TC format** | the 52nd AISSPC (May 2026) records that uniform formats were **created and circulated**; they are not published. Ask the Sainik Schools Society. |
 
 ## 5 · One claim you should not rely on yet
