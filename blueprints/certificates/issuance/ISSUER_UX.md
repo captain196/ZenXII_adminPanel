@@ -65,6 +65,54 @@ not scale. Three cases, none of which involves waiting on a person here:
 | **Instrument genuinely needed** | give them the upload that is currently missing — and make it **asynchronous**, never a wall in front of first use |
 
 
+## 1b · The school already entered most of this — twice, through two doors
+
+**"Do schools have to enter fields for every document?" No. And the sharper answer is that they
+should not have to enter most of it even once, because they already have.**
+
+`school_config` has **two tabs asking for the same things**, and — verified in the controller —
+**they read and write the same Firestore keys**:
+
+| School Profile tab | Issuer Identity tab | stored as |
+|---|---|---|
+| `pf_affiliation_board` — *"Affiliation Board"* | `ii_affiliation_board` — *"Affiliating Board"* | **`affiliationBoard`** |
+| `pf_affiliation_no` — *"Affiliation / DISE No."* | `ii_affiliation_no` + `ii_udise_code` | **`affiliationNo`** |
+| `pf_display_name` — *"Full school name"* | `ii_registered_name` — *"Registered School Name"* | near-duplicate |
+| `pf_principal_name` — *"Principal name"* | `ii_head_of_institution` — *"Head of Institution"* | near-duplicate |
+| `pf_state` · `pf_city` · `pf_pincode` | (UDISE would derive state + district) | already held |
+
+**This is not duplication of storage. It is two doors onto one field, with different rules.**
+
+- The **profile door** (`maxlength=60`, label *"Affiliation / DISE No."*) has **no validation at all**.
+- The **issuer door** (`maxlength=40`) is **board-pattern validated**.
+
+**So the unvalidated door writes the field the validated door judges.** A school types a UDISE code
+into the profile — which invites it, by naming both identifiers in one label — and the Issuer
+Identity tab then reports the school's own affiliation number as malformed. That is the misfile
+pathology in §6, and this is its mechanism.
+
+### What "user friendly" actually means here
+
+**Ask once, ever — not once per document.** The document type decides **when a school is first
+prompted** and **what is blocked while a field is missing**. It never decides what to ask *again*.
+Once an affiliation number is recorded, every CBSE document uses it forever.
+
+Combine that with §4 and §5 and the target is not "fewer fields":
+
+| source | what it supplies | asked? |
+|---|---|---|
+| **school profile, already filled** | board, affiliation number, school name, principal, state, district | **no — prefill and confirm** |
+| **UDISE code** | state, district | **no — derived** |
+| **board register** (HPBOSE proven) | registered name, stage range, validity session | **no — returned** |
+| genuinely new | *nothing, for a school with a complete profile whose board publishes a register* | **zero** |
+
+**For that school the correct interaction is not a form at all. It is a confirmation:** *"This is what
+we already hold, and this is what your board's register says. Is it right?"*
+
+The residue — a school with a thin profile, or a board with no register — is where questions remain,
+and those are asked once, at first issue of a document that needs them, with the reason visible.
+
+
 ## 2 · Why "just simplify the form" is the wrong instinct
 
 The research says **ten fields is not too many — it is too few.**
