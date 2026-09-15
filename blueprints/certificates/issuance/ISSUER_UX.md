@@ -18,6 +18,53 @@ design note for that collision.
 instrument"* means someone has to physically retrieve a document before the form can be completed.
 That is the single worst step in the flow, and it sits in the mandatory path.
 
+## 1a · What happens after a school submits — nothing, and it is a dead end
+
+**Asked directly: does a school wait for confirmation or verification after submitting? No — and
+the truth is worse than waiting.** Traced through the shipped code, three layers are broken at once.
+
+**There is no confirmation step of any kind.** No approval queue, no reviewer, no notification, no
+state that says "pending". The school saves, and that is the end of the interaction.
+
+**The gate can never be passed.** A school that fills in every field perfectly reaches
+**`CLAIMED` (1)** — `levelOf()` checks board, number pattern, registered name and head of
+institution, then falls through to `return self::CLAIMED`. Issuance requires **`EVIDENCED` (2)**,
+which requires `verification.evidencePath`. **Nothing in the entire codebase writes `evidencePath`,
+and there is no file input anywhere in the Issuer Identity tab.** So the school is shown:
+
+> *"The affiliation is claimed but no instrument is on file. Attach it before issuing."*
+
+— an instruction to attach a document **through a control that does not exist.**
+
+**And none of it blocks anything anyway.** `mayIssue()` is called in exactly two places
+(`Doc_templates::_school_context()` and `School_config::get_config()`), shipped to the client, and
+rendered as a coloured ladder. **No publish path, issue path or print path ever checks it.** The gate
+is decorative.
+
+**Net effect: every school sees a permanently amber "you may not issue", with an impossible
+instruction — and then issues anyway.** That is the worst of both worlds. It protects nobody, and it
+teaches schools that the compliance signal is noise, which is the precise opposite of what a
+compliance signal is for.
+
+**This is a live defect, not a design opinion.** Whatever is decided about the flow below, the
+current state has to change: either the rung becomes reachable and is enforced, or the ladder stops
+claiming a gate it does not operate.
+
+### So should schools wait?
+
+**Nobody should wait for ZenXii. We are not the authority.**
+
+The verification that means anything is **against the board's own register**, not against our
+judgment — so an approval queue staffed by us would assert an authority we do not have, and would
+not scale. Three cases, none of which involves waiting on a person here:
+
+| case | what happens |
+|---|---|
+| **Board publishes a register** (HPBOSE, proven) | match the affiliation number against it — **instant**, and it is real verification, not a pretence |
+| **No register available** | **do not block.** Record `CLAIMED`, and gate only the *specific claim* — a TC that prints `Affiliation No. ____` needs it; a Bonafide certificate asserts only enrolment and does not |
+| **Instrument genuinely needed** | give them the upload that is currently missing — and make it **asynchronous**, never a wall in front of first use |
+
+
 ## 2 · Why "just simplify the form" is the wrong instinct
 
 The research says **ten fields is not too many — it is too few.**
