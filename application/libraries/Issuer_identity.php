@@ -180,11 +180,54 @@ class Issuer_identity
     public static function udiseStateMismatch(string $udise, string $declaredState): ?string
     {
         $codeState = self::stateOfUdise($udise);
-        $declared  = strtolower(trim($declaredState));
-        if ($codeState === null || $declared === '') {
+        if ($codeState === null) {
+            return null;                      // not a UDISE shape — say nothing
+        }
+
+        /* ONLY A RECOGNISED STATE CAN CONTRADICT THE CODE.
+           This used to compare the raw string, so a school in Uttar Pradesh
+           whose `state` is stored as the legacy free text "UP" compared
+           "uttar pradesh" === "up", came back false, and its perfectly valid
+           UDISE code was rejected as belonging to another state. An
+           unrecognised state is not evidence of a mismatch — it is an absence
+           of evidence, and the honest answer to "cannot tell" is to say
+           nothing, which is what this function already promised to do. */
+        $declared = self::canonicalState($declaredState);
+        if ($declared === null) {
             return null;                      // cannot tell — say nothing
         }
         return $codeState === $declared ? null : $codeState;
+    }
+
+    /**
+     * Resolve a declared state to the spelling `STATE_CODES` uses, or null.
+     *
+     * Deliberately conservative: it accepts the canonical name and the
+     * common abbreviations that actually appear in this data, and returns
+     * null for anything it does not recognise rather than guessing. A wrong
+     * guess here rejects a valid school, so the cost is asymmetric.
+     */
+    public static function canonicalState(?string $declared): ?string
+    {
+        $d = strtolower(trim((string) $declared));
+        if ($d === '') {
+            return null;
+        }
+        $known = array_values(self::STATE_CODES);
+        if (in_array($d, $known, true)) {
+            return $d;
+        }
+        /* Punctuation and spacing drift: "jammu & kashmir", "j&k", "andaman and
+           nicobar islands" all name states this map already holds. */
+        $squash = static fn(string $v): string =>
+            preg_replace('/[^a-z]/', '', str_replace('&', 'and', $v));
+        $target = $squash($d);
+        foreach ($known as $name) {
+            if ($squash($name) === $target) {
+                return $name;
+            }
+        }
+        return null;
     }
 
     /** Our own convention, not a statutory period — which is why it is settable. */
@@ -380,6 +423,64 @@ class Issuer_identity
             'reason'  => $level === self::UNRECORDED
                 ? 'This school has no recorded issuer identity. Templates may be designed, but nothing may be issued in its name.'
                 : 'The affiliation is claimed but no instrument is on file. Attach it before issuing.',
+        ];
+    }
+
+    /**
+     * THE ONE DECISION EVERY WRITE DOOR SHARES.
+     *
+     * Three doors write the affiliation keys today — `save_issuer_identity`
+     * (validated), `save_profile` (a byte cap and nothing else) and
+     * `Schools::edit_school` (nothing at all) — and only the first clears the
+     * verification when the claim moves. So a VERIFIED badge survives an
+     * unchecked change of number, and whichever door saves last wins.
+     *
+     * Putting the decision in one pure function is what makes "one field, one
+     * rule" true rather than aspirational: the doors stop deciding anything
+     * and become callers.
+     *
+     * `$existing` is the school document as stored. `$incoming` is whatever a
+     * door received. The state used for the UDISE cross-check is taken from
+     * `$incoming` when present and otherwise from the stored document — which
+     * is the fix for a check that has never once run in production, because
+     * the controller never passed a state and only the unit test did.
+     *
+     * @return array{fields:array<string,mixed>, errors:array<string,string>,
+     *               claimMoved:bool, verification:array, level:int}
+     */
+    public static function reconcile(array $existing, array $incoming): array
+    {
+        if (!array_key_exists('state', $incoming) || trim((string) $incoming['state']) === '') {
+            $incoming['state'] = (string) ($existing['state'] ?? '');
+        }
+
+        $r      = self::validate($incoming);
+        $fields = $r['fields'];
+
+        /* A CHANGE TO THE CLAIM INVALIDATES WHAT VERIFIED IT.
+           Comparing only the keys the door actually submitted, so a door that
+           does not carry the affiliation cannot appear to have changed it. */
+        $claimMoved = false;
+        foreach (['affiliationBoard', 'affiliationNo'] as $k) {
+            if (!array_key_exists($k, $incoming)) {
+                continue;
+            }
+            if ((string) ($existing[$k] ?? '') !== (string) ($fields[$k] ?? ($existing[$k] ?? ''))) {
+                $claimMoved = true;
+            }
+        }
+
+        $prior        = is_array($existing['issuerIdentity'] ?? null) ? $existing['issuerIdentity'] : [];
+        $verification = $claimMoved ? [] : (is_array($prior['verification'] ?? null) ? $prior['verification'] : []);
+
+        return [
+            'fields'       => $fields,
+            'errors'       => $r['errors'],
+            'claimMoved'   => $claimMoved,
+            'verification' => $verification,
+            'level'        => self::levelOf(
+                array_merge($existing, $fields, ['verification' => $verification])
+            ),
         ];
     }
 

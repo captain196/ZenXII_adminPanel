@@ -523,67 +523,129 @@ class School_config extends MY_Controller
             ],
         ];
 
-        $r = Issuer_identity::validate($in);
-        if ($r['errors']) {
-            /* EVERY FAILED FIELD IS NAMED, not just the first — a form that
-               reports one error per round trip teaches people to guess.
-               Emitted directly rather than through json_error(), which takes
-               only a message and a status code: a third argument would have
-               been accepted by PHP and silently dropped, leaving the form
-               saying "some fields could not be saved" without saying which.
-               json_error() is shared by ~140 controllers and is not widened
-               for one caller. The envelope below matches its shape exactly. */
-            http_response_code(422);
-            header('Content-Type: application/json');
-            echo json_encode([
-                'status'     => 'error',
-                'message'    => 'Some fields could not be saved.',
-                'fields'     => $r['errors'],
-                'csrf_token' => $this->security->get_csrf_hash(),
+        /* ONE LOCK, ONE CAS, ONE DECISION.
+         *
+         * This used to be a blind read-modify-write: read the school doc,
+         * compare the stored claim, then fs->update() with no precondition —
+         * the shape BUG-028 records and that delete_stream / add_session /
+         * seed_streams / save_stream already fixed in this file. Two doors
+         * write these same keys, so the window was not theoretical: the
+         * Profile tab could land between this read and this write, and the
+         * issuerIdentity.level persisted here would then describe an
+         * affiliation number the document no longer held.
+         *
+         * The decision itself now lives in Issuer_identity::reconcile(), so
+         * every door reaches the same verdict instead of three doors
+         * disagreeing about whether a verification survives.
+         */
+        $lock = $this->_config_lock_acquire('issuer_identity');
+        if ($lock === null) {
+            log_message('error',
+                "ACC_CONCURRENT_REJECTED endpoint=save_issuer_identity schoolId={$this->school_id} "
+                . "actor={$this->admin_id} reason=lock_timeout");
+            return $this->json_error(
+                'Another configuration change is in progress. Please retry in a few seconds.',
+                409
+            );
+        }
+
+        try {
+            $schoolDocId = $this->fs->schoolId();
+            $existing    = $this->firebase->firestoreGet('schools', $schoolDocId);
+            if (!is_array($existing)) {
+                return $this->json_error('School profile is not yet initialised.');
+            }
+            $updateTime = (string) ($existing['__updateTime'] ?? '');
+
+            /* reconcile() supplies the state for the UDISE cross-check from the
+               stored document. That check has never run in production: the
+               controller never passed a state, and only the unit test did. */
+            $r = Issuer_identity::reconcile($existing, $in);
+
+            if ($r['errors']) {
+                /* EVERY FAILED FIELD IS NAMED, not just the first — a form that
+                   reports one error per round trip teaches people to guess.
+                   Emitted directly rather than through json_error(), which takes
+                   only a message and a status code: a third argument would have
+                   been accepted by PHP and silently dropped, leaving the form
+                   saying "some fields could not be saved" without saying which.
+                   json_error() is shared by ~140 controllers and is not widened
+                   for one caller. The envelope below matches its shape exactly. */
+                http_response_code(422);
+                header('Content-Type: application/json');
+                echo json_encode([
+                    'status'     => 'error',
+                    'message'    => 'Some fields could not be saved.',
+                    'fields'     => $r['errors'],
+                    'csrf_token' => $this->security->get_csrf_hash(),
+                ]);
+                exit;
+            }
+
+            $fields = $r['fields'];
+            if (!$fields) {
+                return $this->json_error('No data provided.');
+            }
+
+            $prior      = is_array($existing['issuerIdentity'] ?? null) ? $existing['issuerIdentity'] : [];
+            $claimMoved = $r['claimMoved'];
+
+            $doc = $fields;
+            $doc['issuerIdentity'] = [
+                'verification' => $r['verification'],
+                'level'        => $r['level'],
+                'updatedBy'    => $this->_actor_id(),
+                'updatedAt'    => date('c'),
+            ];
+            $doc['updatedAt'] = date('c');
+
+            $ops = [[
+                'collection' => 'schools',
+                'docId'      => $schoolDocId,
+                'merge'      => true,
+                'data'       => $doc,
+            ]];
+            if ($updateTime !== '') {
+                $ops[0]['precondition'] = ['updateTime' => $updateTime];
+            }
+
+            $committed = false;
+            try {
+                $committed = (bool) $this->firebase->firestoreCommitBatch($ops);
+            } catch (\Throwable $e) {
+                log_message('error',
+                    "ACC_ISSUER_IDENTITY_COMMIT_FAILED schoolId={$this->school_id} "
+                    . "err=" . $e->getMessage());
+            }
+            if (!$committed) {
+                log_message('error',
+                    "ACC_CONCURRENT_REJECTED endpoint=save_issuer_identity schoolId={$this->school_id} "
+                    . "actor={$this->admin_id} reason=cas_failed");
+                return $this->json_error(
+                    'Another administrator updated this school during your request. '
+                    . 'Please reload the page and retry.',
+                    409
+                );
+            }
+
+            log_audit('Configuration', 'save_issuer_identity', $this->school_name,
+                'Issuer identity → level ' . $r['level']
+                . ($claimMoved && $prior ? ' (verification cleared — the claim changed)' : ''));
+
+            $this->json_success([
+                'message'          => $claimMoved && !empty($prior['verification'])
+                    ? 'Saved. The affiliation changed, so the previous verification no longer applies.'
+                    : 'Issuer identity saved.',
+                'level'            => $r['level'],
+                'verificationKept' => !$claimMoved,
             ]);
-            exit;
+        } catch (\Exception $e) {
+            /* BUG-027: the operator gets the detail, the client gets a sentence. */
+            log_message('error', 'save_issuer_identity error: ' . $e->getMessage());
+            $this->json_error('Failed to save issuer identity. Contact administrator.');
+        } finally {
+            $this->_config_lock_release($lock);
         }
-
-        $fields = $r['fields'];
-        if (!$fields) {
-            return $this->json_error('No data provided.');
-        }
-
-        /* A CHANGE TO THE CLAIM INVALIDATES WHAT VERIFIED IT.
-           Editing the board or the number after a check would otherwise leave a
-           verification badge attached to a claim nobody checked — the same
-           reasoning that clears a design proof when the design changes. */
-        $existing = $this->fs->get('schools', $this->school_id) ?: [];
-        $prior    = is_array($existing['issuerIdentity'] ?? null) ? $existing['issuerIdentity'] : [];
-        $claimMoved =
-            (($existing['affiliationBoard'] ?? '') !== ($fields['affiliationBoard'] ?? ($existing['affiliationBoard'] ?? ''))) ||
-            (($existing['affiliationNo']    ?? '') !== ($fields['affiliationNo']    ?? ($existing['affiliationNo']    ?? '')));
-
-        $verification = $claimMoved ? [] : ($prior['verification'] ?? []);
-
-        $doc = $fields;
-        $doc['issuerIdentity'] = [
-            'verification' => $verification,
-            'updatedBy'    => $this->_actor_id(),
-            'updatedAt'    => date('c'),
-        ];
-        $doc['issuerIdentity']['level'] = Issuer_identity::levelOf(
-            array_merge($existing, $fields, ['verification' => $verification])
-        );
-
-        $this->fs->update('schools', $this->school_id, $doc);
-
-        log_audit('Configuration', 'save_issuer_identity', $this->school_name,
-            'Issuer identity → level ' . $doc['issuerIdentity']['level']
-            . ($claimMoved && $prior ? ' (verification cleared — the claim changed)' : ''));
-
-        $this->json_success([
-            'message'          => $claimMoved && !empty($prior['verification'])
-                ? 'Saved. The affiliation changed, so the previous verification no longer applies.'
-                : 'Issuer identity saved.',
-            'level'            => $doc['issuerIdentity']['level'],
-            'verificationKept' => !$claimMoved,
-        ]);
     }
 
     /** The acting staff id, for an audit line that names a person. */

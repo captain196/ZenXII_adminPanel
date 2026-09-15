@@ -121,13 +121,61 @@ final class IssuerIdentityTabTest extends TestCase
         $this->assertStringContainsString('boardCatalogue()', self::$ctl);
     }
 
-    /** Changing the claim must clear what verified it. */
-    public function test_editing_the_claim_clears_a_prior_verification(): void
+    /**
+     * The body of one method, sliced to where the NEXT method begins.
+     *
+     * A fixed-width substr() was what broke the previous version of these
+     * tests: the method grew past the window and a still-true assertion
+     * started reporting a regression that had not happened.
+     */
+    private function methodBody(string $name): string
     {
-        $at = strpos(self::$ctl, 'public function save_issuer_identity');
-        $php = substr(self::$ctl, $at, 3200);
-        $this->assertStringContainsString('claimMoved', $php,
-            'Editing the board or number leaves a verification badge attached to a claim '
-            . 'nobody checked.');
+        $at = strpos(self::$ctl, 'public function ' . $name);
+        $this->assertNotFalse($at, "Method {$name}() not found.");
+        $rest = substr(self::$ctl, $at + 10);
+        $end  = preg_match('/\n    (?:public|private|protected) function /', $rest, $m, PREG_OFFSET_CAPTURE)
+            ? $m[0][1] : strlen($rest);
+        return substr(self::$ctl, $at, $end + 10);
+    }
+
+    /**
+     * Changing the claim must clear what verified it.
+     *
+     * This used to grep a fixed-width slice of save_issuer_identity() for the
+     * inline `claimMoved` logic. That pinned the test to one implementation in
+     * one controller — which is exactly the problem, because THREE doors write
+     * these keys and the other two never cleared anything. The decision now
+     * lives in Issuer_identity::reconcile(), so the contract worth enforcing is
+     * that the controller DELEGATES rather than deciding for itself.
+     *
+     * The behaviour itself is covered by IssuerReconcileTest.
+     */
+    public function test_the_controller_delegates_the_claim_decision(): void
+    {
+        $php = $this->methodBody('save_issuer_identity');
+
+        $this->assertStringContainsString('Issuer_identity::reconcile(', $php,
+            'The controller decides for itself instead of sharing one decision with the '
+            . 'other doors that write these keys.');
+        $this->assertStringNotContainsString('Issuer_identity::validate(', $php,
+            'Calling validate() directly skips the claim-moved and level handling that '
+            . 'reconcile() exists to guarantee.');
+    }
+
+    /** The write must not be a blind read-modify-write — BUG-028's shape. */
+    public function test_the_issuer_write_is_lock_and_cas_guarded(): void
+    {
+        $php = $this->methodBody('save_issuer_identity');
+
+        $this->assertStringContainsString("_config_lock_acquire('issuer_identity')", $php,
+            'Two doors write these keys; without a lock the Profile tab can land between '
+            . 'this read and this write.');
+        /* The shape is an ASSIGNMENT, not an array literal — BUG-028's own
+           verification notes record a probe that got this wrong once already. */
+        $this->assertStringContainsString("\$ops[0]['precondition'] = ['updateTime' => \$updateTime];", $php,
+            'Without a CAS precondition the stored level can describe an affiliation '
+            . 'number the document no longer holds.');
+        $this->assertStringContainsString('_config_lock_release', $php,
+            'A lock that is not released in a finally block outlives the request.');
     }
 }
