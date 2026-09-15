@@ -8,6 +8,19 @@
 | `issuer-prototype.html` | the prototype; 53 register rows embedded |
 | `hpbose-register-sample.json` | 172 clean rows parsed from HPBOSE's published list, for wider testing |
 
+## The thing to look at first
+
+**Toggle "Profile complete" / "Profile thin" at the top.**
+
+With a complete profile the page opens at **0 new questions** and **level 3 — Verified**, because the
+school already answered board, affiliation number and principal *in the School Profile tab*, and those
+write **the same Firestore keys** the Issuer tab writes. Switching document type does **not** add a
+question. With a thin profile the same document asks 1, and a TC asks 3 — once, ever.
+
+That is the answer to *"do schools enter fields for every document?"* — **no.** The document type
+decides **when** a school is first prompted and **what is blocked** meanwhile; it never decides what
+to ask again.
+
 ## What it demonstrates
 
 1. **The document decides the questions.** Switch between Bonafide / CBSE TC / HP State TC and watch
@@ -42,6 +55,12 @@ is ported:
 - **"Science" is abbreviated three ways.** The register writes `Sci`, `Sci.` **and `Sc.`** — matching
   only `SCI` silently dropped Science from `9th-+2(Sc./Com)`, which would have blocked a science
   student at a school that is recognised for science.
+
+## A wrinkle worth fixing in the port
+
+The document selector offers a CBSE Transfer Certificate to a school whose board is HPBOSE. Harmless
+in a prototype, wrong in the product: **the document list should be filtered by the school's own
+board**, so nobody is offered a certificate they cannot issue. That is one more question never asked.
 
 ## What it is not
 
