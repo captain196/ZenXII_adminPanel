@@ -19,6 +19,11 @@ Ordered by what it costs you.
 
 | # | what | why |
 |---|---|---|
+| **13** | **DBSE — Delhi Board of School Education** affiliation bye-laws and TC rules (**new, C-63**) | `dbse.delhi.gov.in` returns **ECONNREFUSED** from here and `edudel.nic.in` exposes only a results portal. DBSE affiliates the 31 Schools of Specialised Excellence and Delhi Sports School, and **Delhi is one of only seven authorities the product encodes** — so a DBSE school currently gets no board layer at all. |
+
+
+| # | what | why |
+|---|---|---|
 | 5 | **New Sainik Schools rulebook** (the ~100 post-2021 PPP schools) | the NCOG host is **geo-fenced to India**. Exact URLs are in `research/central-defence-and-ctsa.md`. This is the only route to **who signs a TC at a New Sainik School**, which is currently unknown. |
 
 ## 3 · Costs money, and it is the cheapest gap in the register

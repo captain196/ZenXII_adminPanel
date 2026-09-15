@@ -1,6 +1,6 @@
 # Conflict register
 
-**52 entries here, plus 8 in `gap-closure-north-northeast.md` and 15 in `central-defence-and-ctsa.md` — 72 distinct IDs, no collisions.** They were not: successive research streams each appended without
+**53 entries here, plus 8 in `gap-closure-north-northeast.md` and 15 in `central-defence-and-ctsa.md` — 72 distinct IDs, no collisions.** They were not: successive research streams each appended without
 checking the highest number in use, so `C-9`, `C-19`, `C-20` and `C-16b` were each issued twice.
 The second of each is now `C-9a`, `C-19a`, `C-20a`, `C-16c`. **The `C-16b` collision was the
 damaging one — the two entries sharing that ID contradicted each other**, so a citation of "C-16b"
@@ -65,6 +65,7 @@ with their evidence** — the convenient one was never allowed to quietly win.
 | C-60 | **First judicial treatment of countersignature; 4th mechanism** | **confirms C-15 · corrects dser** |
 | C-61 | UP gap does NOT close — but the register-is-authority thesis is evidenced | **limited · evidences the module's premise** |
 | C-62 | **The TC's most litigated function is PROOF OF DATE OF BIRTH** | **synthesis · changes risk profile** |
+| C-63 | **Board audit: 42 of 43 — DBSE was the one hole** | **coverage · new HUMAN-ONLY item** |
 | C-45–C-59 | central defence + CTSA stream — see `central-defence-and-ctsa.md` | **15 entries, held in that file** |
 | C-12a, C-16d, C-19b, C-40–C-44 | north/northeast stream — see `gap-closure-north-northeast.md` §3 | **8 entries, held in that file** |
 
@@ -1657,3 +1658,70 @@ Examination Regulation 3.5.7, and cl. 2.18 remains an **RTI item**.
 The corpus carried validity-of-form and signed-by-the-Head as **two** findings; they are **one
 sentence**. C-28's `formatPrescribedButUnpublished` is unaffected — **the prescribed form itself
 still does not surface**, which is exactly what makes the rule bite.
+
+---
+
+## C-63 · Board coverage audit — 42 of 43, and the one hole is DBSE
+
+*Added 2026-09-15, answering "did you cover all the boards?" by counting. The first time this was
+asked the answer was no, and the reason was that line count had been standing in for coverage.
+Measured this time, board by board.*
+
+**Method.** Each board matched by name and acronym across the whole corpus, counting only mentions
+**anchored within 1,400 characters of an `[A]` citation** — the same rule `COVERAGE.md` uses for
+states. Acronyms were tested alongside full names, because the earlier audit manufactured a false
+gap by searching for one spelling (Uttar Pradesh vs UPMSP).
+
+**Result: 39 boards at three or more primary citations, 3 thin, 1 absent.** Of the four that are not
+"covered", three resolve on inspection and one is a real hole.
+
+### The one genuine gap: DBSE
+
+**The Delhi Board of School Education (created 2021) had ZERO mentions in 21,000 lines.**
+
+That is the worst kind of gap — not a question answered badly, but a body nobody knew to ask about —
+and it lands where it costs most: **Delhi is one of only seven authorities the product actually
+encodes.**
+
+Bounded now, rather than left silent **[B/C]**:
+
+- **It exists and affiliates real schools.** Delhi HC records **Delhi Sports School** (classes
+  VI–XII) as *"affiliated with Delhi Board of School Education"* (*Piyush Dahiya*, 10.12.2024), and
+  the **31 Schools of Specialised Excellence** as DBSE-affiliated (*Chinmay Shokeen*,
+  W.P.(C) 3458/2022 and two connected orders, 2022).
+- **Its scope is currently narrow** — Schools of Specialised Excellence, Delhi Sports School and
+  Delhi government schools. **It is not, yet, a board that ordinary private schools join**, which is
+  why four research streams could miss it without the corpus looking wrong.
+- **Its certificate-facing rules are NOT FOUND.** `dbse.delhi.gov.in` returns **ECONNREFUSED** from
+  here; `edudel.nic.in` exposes only a **results** portal. No affiliation bye-law, no TC rule, no
+  migration rule was reached. Six judgments mention DBSE and **none** discusses transfer
+  certificates or CBSE→DBSE movement.
+
+**Consequence:** a Delhi school on DBSE rather than CBSE has **no board layer at all** in our
+compliance stack — it falls to the state layer (`dser`) plus the generic profile. That is the honest
+failure mode and it is the safe one, but it should be recorded rather than discovered later.
+**DBSE is a new HUMAN-ONLY item** (its own site is unreachable; someone in India should try it).
+
+### The three "thin" boards are not gaps
+
+| board | why it reads thin | actual position |
+|---|---|---|
+| **Kerala Pareeksha Bhavan** (SSLC), **DHSE** (+2) | 1 `[A]` each | **The corpus covered the right instrument.** Kerala's TC rules are **Kerala Education Rules 1959, Chapter VI**, and recognition is **Chapter V** — both **state** instruments, both at `[A]`, with Kerala anchored to **49** primary citations. Pareeksha Bhavan and DHSE *conduct examinations*; they are not where the TC rule lives. A board-level count is the wrong instrument for a state whose rules are state-level. |
+| **Sikkim board** | 6 mentions, 2 `[A]` | **Already resolved.** The corpus establishes the **Sikkim Board of School Education Act 1978** (Act 19 of 1978) exists, *and* that there is **no mainstream Class X/XII state board** — BOSSE is open-schooling only. Thin because there is little to find, which is itself the finding. |
+
+**Kerala also yields a bonus for C-33/C-14:** *"KER Chapter V — recognition is per STANDARD."*
+That is **another per-section recognition instance**, now in a third region.
+
+### The honest limit of this audit
+
+**It tested 43 named boards plus three categories.** The long tail — **madrasa boards, Sanskrit
+boards and state open schools** — is touched as a *category* (9, 4 and 4 `[A]` citations
+respectively) but **was not enumerated body by body**, and there are twenty-odd such bodies across
+the states (UP Board of Madrasa Education, Bihar Sanskrit Shiksha Board, the various State Open
+Schools, Jamia Urdu Aligarh, and so on).
+
+**So the accurate answer to "did you cover all the boards?" is: every mainstream Class X/XII board in
+every state and UT, plus the central and international boards — yes, and DBSE was the one miss.
+The specialised and open-schooling long tail — no, only as a category.** Whether that tail matters
+depends on whether ZenXii expects madrasa, Sanskrit or open schools as tenants, which is a product
+question rather than a research one.
