@@ -5,7 +5,8 @@ defined('BASEPATH') or exit('No direct script access allowed');
  * School_config — Core School Configuration
  *
  * Manages all foundational school configuration:
- *   - School profile (display name, contact, logo, affiliation)
+ *   - School profile (display name, contact, logo) — NOT affiliation,
+ *     which has one door at save_issuer_identity()
  *   - Academic sessions (list, add, set active)
  *   - Board configuration (type, grading pattern, grade scale)
  *   - Master class list (ordinal + foundational classes) with soft-delete
@@ -408,10 +409,27 @@ class School_config extends MY_Controller
         $school    = $this->school_name;
         $school_id = $this->school_id;
 
+        /* DOOR CLOSED: affiliation_board and affiliation_no are NOT accepted here.
+         *
+         * They used to be, and Firestore_service::saveSchool maps them onto the
+         * very keys save_issuer_identity validates — so this door wrote, with a
+         * byte cap and nothing else, the field the other door pattern-checks.
+         * Two consequences, both real before this change:
+         *
+         *   - Last writer won. A validated affiliation number could be replaced
+         *     by anything that fitted in 100 bytes.
+         *   - It needed no mistake at all. Both tabs hydrate from one get_config
+         *     payload and the Issuer tab's success handler never re-renders the
+         *     Profile tab, so pf_* stayed stale. Correct the affiliation on the
+         *     Issuer tab, then save an unrelated phone number here, and the
+         *     correction silently reverted.
+         *
+         * The affiliation now has exactly one door: save_issuer_identity(),
+         * which validates per board, clears the verification when the claim
+         * moves, and writes under a lock with a CAS precondition. */
         $allowed = [
             'display_name', 'address', 'city', 'state', 'pincode',
-            'phone', 'email', 'website', 'principal_name',
-            'affiliation_board', 'affiliation_no', 'established_year',
+            'phone', 'email', 'website', 'principal_name', 'established_year',
         ];
 
         // BUG-029: byte-length caps at trust boundary prevent Firestore DocTooLarge.
@@ -421,8 +439,7 @@ class School_config extends MY_Controller
             'city'              => 100, 'state'             => 100,
             'pincode'           => 20,  'phone'             => 50,
             'email'             => 200, 'website'           => 500,
-            'principal_name'    => 200, 'affiliation_board' => 100,
-            'affiliation_no'    => 100, 'established_year'  => 10,
+            'principal_name'    => 200, 'established_year'  => 10,
         ];
 
         $data = [];

@@ -218,12 +218,58 @@ class Schools extends MY_Controller
                 'Mobile Number'      => 'mobileNumber',
                 'Email'              => 'email',
                 'Website'            => 'website',
-                'Affiliated To'      => 'affiliationBoard',
-                'Affiliation Number' => 'affiliationNo',
             ];
             foreach ($fieldMap as $formKey => $fsKey) {
                 if (isset($normalizedData[$formKey]) && $normalizedData[$formKey] !== '') {
                     $patch[$fsKey] = $normalizedData[$formKey];
+                }
+            }
+
+            /* THE AFFILIATION IS NOT AN ORDINARY FIELD, so it is no longer in
+             * the map above.
+             *
+             * This door used to write affiliationBoard and affiliationNo with no
+             * whitelist, no format check and no length cap — the weakest of the
+             * three doors onto keys that decide which statute a certificate is
+             * produced under. It also never cleared the verification, so a
+             * VERIFIED badge could outlive a number nobody had checked.
+             *
+             * It stays open, because correcting a school's affiliation from the
+             * super-admin screen is a real workflow, but it now reaches the same
+             * verdict as School_config::save_issuer_identity() by calling the
+             * same function. This endpoint answers '0' or '1' and has nowhere to
+             * put field-level errors, so a rejected value fails the request and
+             * the reason goes to the log. */
+            $submittedAffiliation = [];
+            foreach (['Affiliated To' => 'affiliationBoard', 'Affiliation Number' => 'affiliationNo'] as $formKey => $fsKey) {
+                if (isset($normalizedData[$formKey]) && $normalizedData[$formKey] !== '') {
+                    $submittedAffiliation[$fsKey] = $normalizedData[$formKey];
+                }
+            }
+            if ($submittedAffiliation) {
+                $this->load->library('Issuer_identity');
+                $existingDoc = $this->fs->get('schools', $schoolId) ?: [];
+                $rec = Issuer_identity::reconcile($existingDoc, $submittedAffiliation);
+
+                if ($rec['errors']) {
+                    log_message('error',
+                        "Schools::edit_school — affiliation rejected for {$schoolId}: "
+                        . json_encode($rec['errors']));
+                    echo '0'; return;
+                }
+
+                $patch = array_merge($patch, $rec['fields']);
+                $prior = is_array($existingDoc['issuerIdentity'] ?? null) ? $existingDoc['issuerIdentity'] : [];
+                $patch['issuerIdentity'] = array_merge($prior, [
+                    'verification' => $rec['verification'],
+                    'level'        => $rec['level'],
+                    'updatedBy'    => 'superadmin:' . (string) $this->admin_role,
+                    'updatedAt'    => date('c'),
+                ]);
+                if ($rec['claimMoved'] && !empty($prior['verification'])) {
+                    log_message('error',
+                        "ACC_ISSUER_VERIFICATION_CLEARED schoolId={$schoolId} "
+                        . "actor=superadmin reason=claim_changed_via_edit_school");
                 }
             }
             if (isset($patch['address'])) $patch['street'] = $patch['address']; // legacy mirror (SA panel reads `street`)

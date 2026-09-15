@@ -433,13 +433,22 @@
                     <label>Established Year</label>
                     <input type="number" id="pf_established_year" min="1800" max="<?= date('Y') ?>" placeholder="e.g. 1995">
                 </div>
+                <!-- THE AFFILIATION MOVED, it was not deleted.
+                     One input here was labelled "Affiliation / DISE No." — two
+                     identifiers from two different authorities sharing a field
+                     whose only constraint was a length cap. It wrote the same
+                     Firestore keys the Issuer Identity tab validates, so the
+                     unvalidated door overwrote the validated one, and a UDISE
+                     code typed here became the affiliation number that prints
+                     on marksheets. It now has exactly one door. -->
                 <div class="sc-field">
-                    <label>Affiliation Board</label>
-                    <input type="text" id="pf_affiliation_board" maxlength="80" placeholder="e.g. CBSE">
-                </div>
-                <div class="sc-field">
-                    <label>Affiliation / DISE No.</label>
-                    <input type="text" id="pf_affiliation_no" maxlength="60" placeholder="Affiliation or registration number">
+                    <label>Affiliation</label>
+                    <div class="ii-note">
+                        Recorded under
+                        <a href="#" onclick="document.querySelector('.sc-tab[data-tab=&quot;issuer&quot;]').click();return false;">Issuer&nbsp;Identity</a>,
+                        where the number is checked against its board and the UDISE+ code
+                        has its own field.
+                    </div>
                 </div>
             </div>
         </div>
@@ -1596,8 +1605,11 @@ function saveIssuerIdentity() {
 
 /* ══════════ PROFILE ══════════ */
 function renderProfile(p) {
-    var fields = ['display_name','principal_name','established_year','affiliation_board',
-                  'affiliation_no','address','city','state','pincode','phone','email','website'];
+    /* affiliation_board / affiliation_no are deliberately absent: the server no
+       longer accepts them here, and sending them would only look like they were
+       saved. Their one door is saveIssuerIdentity(). */
+    var fields = ['display_name','principal_name','established_year',
+                  'address','city','state','pincode','phone','email','website'];
     fields.forEach(function(f) {
         var el = document.getElementById('pf_' + f);
         if (el) el.value = p[f] || '';
