@@ -224,6 +224,15 @@ class School_config extends MY_Controller
                 'affiliationNo'     => (string) ($fsSchool['affiliationNo'] ?? ''),
                 'udiseCode'         => (string) ($fsSchool['udiseCode'] ?? ''),
                 'registeredName'    => (string) ($fsSchool['registeredName'] ?? ''),
+                /* A SUGGESTION, SENT SEPARATELY — never merged into the value.
+                   "Exactly as on the affiliation instrument" is the one required
+                   field nobody can answer from memory: it sends someone to find
+                   a document before the form can be completed. Offering the name
+                   we already hold turns that into a confirmation, which the
+                   school can correct if the instrument differs. It is kept out of
+                   `registeredName` so the server never asserts, as a recorded
+                   fact, something it merely guessed. */
+                'registeredNameSuggestion' => (string) ($fsSchool['name'] ?? $fsSchool['schoolName'] ?? ''),
                 'headOfInstitution' => (string) ($fsSchool['headOfInstitution'] ?? $fsSchool['principal'] ?? ''),
                 'headSince'         => (string) ($fsSchool['headSince'] ?? ''),
                 'reviewMonths'      => (int) ($fsSchool['reviewMonths'] ?? Issuer_identity::DEFAULT_REVIEW_MONTHS),

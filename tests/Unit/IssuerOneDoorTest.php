@@ -70,6 +70,34 @@ final class IssuerOneDoorTest extends TestCase
             . 'and never clears the verification.');
     }
 
+    /**
+     * The registered-name suggestion must stay a suggestion.
+     *
+     * "Exactly as on the affiliation instrument" is the one required field
+     * nobody can answer from memory. We offer the name we already hold so the
+     * step becomes a confirmation — but the server must never merge that guess
+     * into the recorded value, and the client must never overwrite a name
+     * somebody actually read off an instrument.
+     */
+    public function test_the_registered_name_suggestion_is_separate_and_non_destructive(): void
+    {
+        $this->assertStringContainsString("'registeredNameSuggestion'", self::$config,
+            'The suggestion is gone, so the field that sends someone to find a document '
+            . 'is unanswerable again.');
+
+        $php = $this->body(self::$config, 'get_config');
+        $this->assertStringNotContainsString(
+            "'registeredName'    => (string) (\$fsSchool['registeredName'] ?? \$fsSchool['name']", $php,
+            'The guess was merged into registeredName — the server now asserts as a '
+            . 'recorded fact something it invented.');
+
+        $this->assertStringContainsString('!nameEl.value', self::$view,
+            'The suggestion is applied unconditionally and can overwrite a name that was '
+            . 'read off the actual instrument.');
+        $this->assertStringContainsString('Suggested from your school name', self::$view,
+            'A silently prefilled field reads as a recorded fact; it must say it is a suggestion.');
+    }
+
     /** Whatever door writes the claim must also settle the verification. */
     public function test_every_writer_of_the_claim_settles_the_verification(): void
     {

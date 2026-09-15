@@ -1438,11 +1438,18 @@ function renderIssuerIdentity(ii) {
         sel.value = ii.affiliationBoard || '';
     }
 
+    /* PREFILL ONLY WHAT IS EMPTY.
+       The suggestion is the school name we already hold. It is applied to the
+       input, never to the stored value, and only when nothing is recorded — so
+       it can never overwrite a name someone actually read off an instrument. */
+    var iiNameSuggestion = (!ii.registeredName && ii.registeredNameSuggestion)
+        ? ii.registeredNameSuggestion : '';
+
     var ro = ii.recognitionOrder || {};
     var map = {
         ii_affiliation_no:      ii.affiliationNo,
         ii_udise_code:          ii.udiseCode,
-        ii_registered_name:     ii.registeredName,
+        ii_registered_name:     ii.registeredName,   /* suggestion applied below */
         ii_head_of_institution: ii.headOfInstitution,
         ii_head_since:          ii.headSince,
         ii_recognition_no:      ro.number,
@@ -1455,6 +1462,19 @@ function renderIssuerIdentity(ii) {
     });
     var rev = document.getElementById('ii_review_months');
     if (rev) rev.value = String(ii.reviewMonths || 12);
+
+    /* Apply the suggestion to the empty input and say plainly that it IS a
+       suggestion. A silently prefilled field reads as a recorded fact, which is
+       the opposite of what this tab is for. */
+    var nameEl  = document.getElementById('ii_registered_name');
+    var nameHint = document.getElementById('ii_n_name');
+    if (nameEl && iiNameSuggestion && !nameEl.value) {
+        nameEl.value = iiNameSuggestion;
+        if (nameHint) {
+            nameHint.textContent =
+                'Suggested from your school name — correct it if the affiliation instrument reads differently.';
+        }
+    }
 
     iiEvaluate(ii);
 }
