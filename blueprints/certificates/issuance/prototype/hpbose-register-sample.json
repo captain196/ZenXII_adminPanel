@@ -1,0 +1,1082 @@
+[
+{
+"code": "5216",
+"affi": "12544",
+"name": "D.R.M. VISION PUBLIC SCHOOL PUKHRI",
+"district": "CHAMBA",
+"pin": "176319",
+"cls": "9th-10th",
+"session": "2026-27"
+},
+{
+"code": "5244",
+"affi": "12545",
+"name": "SNOW VALLEY PUBLIC SCHOOL MANJEER",
+"district": "CHAMBA",
+"pin": "176312",
+"cls": "9th-10th(C)",
+"session": "2026-27"
+},
+{
+"code": "5470",
+"affi": "12547",
+"name": "HOLY HILLS PUBLIC SCHOOL SAHO",
+"district": "CHAMBA",
+"pin": "176314",
+"cls": "9th-10th(C)",
+"session": "2026-27"
+},
+{
+"code": "5498",
+"affi": "12550",
+"name": "GLOBAL PUBLIC SCHOOL KIHAR",
+"district": "CHAMBA",
+"pin": "176320",
+"cls": "9th-10th(C)",
+"session": "2026-27"
+},
+{
+"code": "5497",
+"affi": "12553",
+"name": "ST. XAVIERS SCHOOL SAROL",
+"district": "CHAMBA",
+"pin": "176310",
+"cls": "9th-10th",
+"session": "2026-27"
+},
+{
+"code": "1273",
+"affi": "12703",
+"name": "ST.STEPHENS SR.SEC.SCHOOL CHAMBA",
+"district": "CHAMBA",
+"pin": "176310",
+"cls": "9th-+2(Sci/Comm)",
+"session": "2026-27"
+},
+{
+"code": "1290",
+"affi": "12712",
+"name": "KIDS CAMP PUBLIC SCHOOL CHOWARI",
+"district": "CHAMBA",
+"pin": "176302",
+"cls": "9th-+2(Sci)",
+"session": "2026-27"
+},
+{
+"code": "1346",
+"affi": "12714",
+"name": "PARAMOUNT PUBLIC SCHOOL KIHAR",
+"district": "CHAMBA",
+"pin": "176320",
+"cls": "9th-+2(Arts/Sci)(C)",
+"session": "2026-27"
+},
+{
+"code": "1379",
+"affi": "12715",
+"name": "HIM PUSHAP PUBLIC SCHOOL MOURA TELKA",
+"district": "CHAMBA",
+"pin": "176312",
+"cls": "9th--+2th(Sci)(C)",
+"session": "2026-27"
+},
+{
+"code": "1361",
+"affi": "12716",
+"name": "D.C.M.GURUKUL PUBLIC SCHOOL LACHORI",
+"district": "CHAMBA",
+"pin": "176308",
+"cls": "9th-12th(Sci)(C)",
+"session": "2026-27"
+},
+{
+"code": "1247",
+"affi": "12717",
+"name": "LITTLE ANGEL'S SCHOOL BANIKHET",
+"district": "CHAMBA",
+"pin": "176303",
+"cls": "9th-12th(Sci./Com)(C)",
+"session": "2026-27"
+},
+{
+"code": "4736",
+"affi": "12720",
+"name": "KIDS INTERNATIONAL SCHOOL SULTANPUR",
+"district": "CHAMBA",
+"pin": "176314",
+"cls": "9th-12th(Sci)(C)",
+"session": "2026-27"
+},
+{
+"code": "4735",
+"affi": "12721",
+"name": "TINY TOTS PLAYWAY SCHOOL",
+"district": "CHAMBA",
+"pin": "176310",
+"cls": "9th-+2th(Arts)(C)",
+"session": "2026-27"
+},
+{
+"code": "5471",
+"affi": "12722",
+"name": "JAWAHAR PUBLIC SCHOOL SALOONI",
+"district": "CHAMBA",
+"pin": "176320",
+"cls": "9th-12th(Sci)(C)",
+"session": "2026-27"
+},
+{
+"code": "1619",
+"affi": "13512",
+"name": "SARVODYA PUBLIC HIGH SCHOOL KAROT",
+"district": "HAMIRPUR",
+"pin": "176108",
+"cls": "9th-10th(C)",
+"session": "2026-27"
+},
+{
+"code": "1582",
+"affi": "13516",
+"name": "SAVITRI PUBLIC HIGH SCHOOL HAMIRPUR",
+"district": "HAMIRPUR",
+"pin": "177001",
+"cls": "9th-10th(C)",
+"session": "2026-27"
+},
+{
+"code": "1515",
+"affi": "13529",
+"name": "ADHAR PUBLIC SCHOOL BIR",
+"district": "HAMIRPUR",
+"pin": "176110",
+"cls": "9th-10th",
+"session": "2026-27"
+},
+{
+"code": "1567",
+"affi": "13530",
+"name": "D.A.V.PUBLIC SCHOOL GUBBAR",
+"district": "HAMIRPUR",
+"pin": "177028",
+"cls": "9th-10th",
+"session": "2026-27"
+},
+{
+"code": "1674",
+"affi": "13536",
+"name": "PUBLIC MODEL HIGH SCHOOL PANOH CHAURI",
+"district": "HAMIRPUR",
+"pin": "176111",
+"cls": "9th-10th",
+"session": "2026-27"
+},
+{
+"code": "1461",
+"affi": "13546",
+"name": "ARYAN PUBLIC SCHOOL ANU(HAMIRPUR)",
+"district": "HAMIRPUR",
+"pin": "177005",
+"cls": "9th-10th",
+"session": "2026-27"
+},
+{
+"code": "1711",
+"affi": "13552",
+"name": "MOTHER MARY PUBLIC SCHOOL SUJANPUR TIHRA",
+"district": "HAMIRPUR",
+"pin": "176110",
+"cls": "9th-10th(C)",
+"session": "2026-27"
+},
+{
+"code": "1682",
+"affi": "13561",
+"name": "SILVER LINE PUBLIC SCHOOL PATTA",
+"district": "HAMIRPUR",
+"pin": "176041",
+"cls": "9th-10th(C)",
+"session": "2026-27"
+},
+{
+"code": "1665",
+"affi": "13563",
+"name": "BE STAR PUBLIC SCHOOL NALTI",
+"district": "HAMIRPUR",
+"pin": "177001",
+"cls": "9th-10th",
+"session": "2026-27"
+},
+{
+"code": "1706",
+"affi": "13565",
+"name": "SUN RISE PUBLIC HIGH SCHOOL SOHARI",
+"district": "HAMIRPUR",
+"pin": "174311",
+"cls": "9th-10th(C)",
+"session": "2026-27"
+},
+{
+"code": "1722",
+"affi": "13567",
+"name": "AKSHAY JYOTI PUBLIC SCHOOL TIBBI(KUTHERA)",
+"district": "HAMIRPUR",
+"pin": "177020",
+"cls": "9th-10th(C)",
+"session": "2026-27"
+},
+{
+"code": "1528",
+"affi": "13569",
+"name": "SHIVA PUBLIC SCHOOL CHANDRUHI",
+"district": "HAMIRPUR",
+"pin": "177024",
+"cls": "9th-10th",
+"session": "2026-27"
+},
+{
+"code": "1594",
+"affi": "13571",
+"name": "BHARTI PUBLIC SCHOOL JANGAL BERI",
+"district": "HAMIRPUR",
+"pin": "176109",
+"cls": "9th-10th(C)",
+"session": "2026-27"
+},
+{
+"code": "1627",
+"affi": "13577",
+"name": "PRASHANTI PUBLIC SCHOOL KOHLWIN",
+"district": "HAMIRPUR",
+"pin": "174405",
+"cls": "9th-10th",
+"session": "2026-27"
+},
+{
+"code": "1560",
+"affi": "13578",
+"name": "HOLY HIMALYAN PUBLIC SCHOOL GAUNA",
+"district": "HAMIRPUR",
+"pin": "177301",
+"cls": "9th-10th",
+"session": "2026-27"
+},
+{
+"code": "1547",
+"affi": "13580",
+"name": "SHEETAL MODEL SCHOOL DHANETA",
+"district": "HAMIRPUR",
+"pin": "177041",
+"cls": "9th-10th",
+"session": "2026-27"
+},
+{
+"code": "1554",
+"affi": "13585",
+"name": "OASIS PUBLIC SCHOOL DIDWIN TIKKER",
+"district": "HAMIRPUR",
+"pin": "177401",
+"cls": "9th-10th(C)",
+"session": "2026-27"
+},
+{
+"code": "1537",
+"affi": "13588",
+"name": "THE LORD KRISHNA SCHOOL",
+"district": "HAMIRPUR",
+"pin": "174312",
+"cls": "9th-10th",
+"session": "2026-27"
+},
+{
+"code": "1608",
+"affi": "13594",
+"name": "NEW MODEL PUBLIC SCHOOL KAKKAR",
+"district": "HAMIRPUR",
+"pin": "177028",
+"cls": "9th-10th",
+"session": "2026-27"
+},
+{
+"code": "4737",
+"affi": "13595",
+"name": "LITTLE ANGELS PUBLIC SCHOOL TAUNI DEVI",
+"district": "HAMIRPUR",
+"pin": "177023",
+"cls": "9th-10th",
+"session": "2026-27"
+},
+{
+"code": "4739",
+"affi": "13598",
+"name": "HIM HERITAGE PUBLIC SCHOOL SALOUNI",
+"district": "HAMIRPUR",
+"pin": "174311",
+"cls": "9th-10th(C)",
+"session": "2026-27"
+},
+{
+"code": "4741",
+"affi": "13600",
+"name": "AMAR PUBLIC SCHOOL",
+"district": "HAMIRPUR",
+"pin": "177006",
+"cls": "9th-10th",
+"session": "2026-27"
+},
+{
+"code": "4940",
+"affi": "13603",
+"name": "SHIVALIK PUBLIC SCHOOL",
+"district": "HAMIRPUR",
+"pin": "177023",
+"cls": "9th-10th",
+"session": "2026-27"
+},
+{
+"code": "5092",
+"affi": "13605",
+"name": "SARSWATI PUBLIC SCHOOL LAMBLOO",
+"district": "HAMIRPUR",
+"pin": "177029",
+"cls": "9th-10th",
+"session": "2026-27"
+},
+{
+"code": "5159",
+"affi": "13608",
+"name": "OMNI PUBLIC HIGH SCHOOL JHARERI",
+"district": "HAMIRPUR",
+"pin": "177040",
+"cls": "9th-10th",
+"session": "2026-27"
+},
+{
+"code": "5219",
+"affi": "13611",
+"name": "ARIYAN PUBLIC SCHOOL DANGRI",
+"district": "HAMIRPUR",
+"pin": "177048",
+"cls": "9th-10th(C)",
+"session": "2026-27"
+},
+{
+"code": "5258",
+"affi": "13612",
+"name": "RED STAR PUBLIC SCHOOL CHARIAN DI DHAR",
+"district": "HAMIRPUR",
+"pin": "177028",
+"cls": "9th-10th(C)",
+"session": "2026-27"
+},
+{
+"code": "5293",
+"affi": "13613",
+"name": "RIGVEDA PUBLIC SCHOOL HAMIRPUR",
+"district": "HAMIRPUR",
+"pin": "177001",
+"cls": "9th-10th11th-12th(Sci)",
+"session": "2026-27"
+},
+{
+"code": "1479",
+"affi": "14006",
+"name": "PUBLIC MODEL SR.SEC. SCHOOL BAMBLOH(UHAL)",
+"district": "HAMIRPUR",
+"pin": "177022",
+"cls": "9th-+2(Sci)",
+"session": "2026-27"
+},
+{
+"code": "1576",
+"affi": "14007",
+"name": "SILVER BELL SR.SEC.SCHOOL HAMIRPUR",
+"district": "HAMIRPUR",
+"pin": "177001",
+"cls": "9th-+2(Sci)",
+"session": "2026-27"
+},
+{
+"code": "1491",
+"affi": "14009",
+"name": "SHANTI NIKETAN SR.SEC.SCHOOL BARSAR(MEHRE)",
+"district": "HAMIRPUR",
+"pin": "174305",
+"cls": "9th-+2(Arts)(C)",
+"session": "2026-27"
+},
+{
+"code": "1577",
+"affi": "14014",
+"name": "ADARSH PUBLIC SCHOOL HAMIRPUR",
+"district": "HAMIRPUR",
+"pin": "177001",
+"cls": "9th-+2(Sci)",
+"session": "2026-27"
+},
+{
+"code": "1578",
+"affi": "14020",
+"name": "AIM PUBLIC SR.SEC.SCHOOL HAMIRPUR",
+"district": "HAMIRPUR",
+"pin": "177001",
+"cls": "9th-+2(Sci)(C)",
+"session": "2026-27"
+},
+{
+"code": "1514",
+"affi": "14034",
+"name": "NAV BHARAT PUBLIC SCHOOL BIJHRI(KOTLA)",
+"district": "HAMIRPUR",
+"pin": "176040",
+"cls": "9th-12th(Sci)(C)NOCTOCBSE",
+"session": "2026-27"
+},
+{
+"code": "1655",
+"affi": "14045",
+"name": "BRIGHT SUN SR.SEC.SCHOOL MAHRE",
+"district": "HAMIRPUR",
+"pin": "174305",
+"cls": "9th-+2(Sci.)(C)",
+"session": "2026-27"
+},
+{
+"code": "1580",
+"affi": "14049",
+"name": "K.KEY PUBLIC SR.SEC.SCHOOL HAMIRPUR",
+"district": "HAMIRPUR",
+"pin": "177001",
+"cls": "9th-+2(Sci.)(C)",
+"session": "2026-27"
+},
+{
+"code": "1602",
+"affi": "14054",
+"name": "ARYAN PUBLIC SCHOOL JHANDI",
+"district": "HAMIRPUR",
+"pin": "176041",
+"cls": "9th-+2(Sci.)(C)",
+"session": "2026-27"
+},
+{
+"code": "1573",
+"affi": "14056",
+"name": "HIM ACADEMY PUBLIC SCHOOL HIRA NAGAR",
+"district": "HAMIRPUR",
+"pin": "177001",
+"cls": "9th-+2(Sci/Comm)",
+"session": "2026-27"
+},
+{
+"code": "1612",
+"affi": "14059",
+"name": "UDISHA PUBLIC SCHOOL KALOH",
+"district": "HAMIRPUR",
+"pin": "177022",
+"cls": "9th-10th",
+"session": "2026-27"
+},
+{
+"code": "1502",
+"affi": "14060",
+"name": "NEELAM PUBLIC SR.SEC. SCHOOL BIHRU(BIJHARI)",
+"district": "HAMIRPUR",
+"pin": "176040",
+"cls": "9th-+2(Sci)",
+"session": "2026-27"
+},
+{
+"code": "1563",
+"affi": "14061",
+"name": "GEETANJALI PUBLIC SCHOOL",
+"district": "HAMIRPUR",
+"pin": "177041",
+"cls": "9th-+2(Sci.)(C)",
+"session": "2026-27"
+},
+{
+"code": "1656",
+"affi": "14062",
+"name": "LITTLE ANGEL PUBLIC SCHOOL MEHRE",
+"district": "HAMIRPUR",
+"pin": "174305",
+"cls": "9th-+2(Sc./Com)",
+"session": "2026-27"
+},
+{
+"code": "1726",
+"affi": "14064",
+"name": "SAI PUBLIC SR.SEC.SCHOOL UKHLI",
+"district": "HAMIRPUR",
+"pin": "176042",
+"cls": "9th-+2(Sci)",
+"session": "2026-27"
+},
+{
+"code": "1572",
+"affi": "14065",
+"name": "THE MAGNET PUBLIC SCHOOL GHANAL KHURD",
+"district": "HAMIRPUR",
+"pin": "177001",
+"cls": "9th-+2(Sc.)11th-12th(Comm)",
+"session": "2026-27"
+},
+{
+"code": "1463",
+"affi": "14066",
+"name": "ALMIGHTY PUBLIC SCHOOL ANU KHURD",
+"district": "HAMIRPUR",
+"pin": "177001",
+"cls": "NOCTOCBSE",
+"session": "2026-27"
+},
+{
+"code": "1532",
+"affi": "14067",
+"name": "A. N. M PUBLIC SR.SEC. SCHOOL",
+"district": "HAMIRPUR",
+"pin": "176049",
+"cls": "9th-+2(Sci.)",
+"session": "2026-27"
+},
+{
+"code": "1657",
+"affi": "14069",
+"name": "SHIVA PUBLIC SR.SEC. SCHOOL MOHALWIN",
+"district": "HAMIRPUR",
+"pin": "174309",
+"cls": "9th-+2(Arts/Sci.)",
+"session": "2026-27"
+},
+{
+"code": "4742",
+"affi": "14073",
+"name": "HAMIRPUR SR.SEC. SCHOOL HAMIRPUR",
+"district": "HAMIRPUR",
+"pin": "177001",
+"cls": "11th-12th(Sci)",
+"session": "2026-27"
+},
+{
+"code": "1634",
+"affi": "14076",
+"name": "HIM GURUKUL PUBLIC SCHOOL LADRAUR",
+"district": "HAMIRPUR",
+"pin": "176043",
+"cls": "9th-12th(Sci)",
+"session": "2026-27"
+},
+{
+"code": "1615",
+"affi": "14078",
+"name": "BAL GURUKUL PUBLIC SCHOOL KANGOO",
+"district": "HAMIRPUR",
+"pin": "177040",
+"cls": "9th-+2(Sci)(C)",
+"session": "2026-27"
+},
+{
+"code": "1667",
+"affi": "14083",
+"name": "LILY LITTLE FLOWER SCHOOL NALTI AT HAR",
+"district": "HAMIRPUR",
+"pin": "177001",
+"cls": "9th-+2(Sci)",
+"session": "2026-27"
+},
+{
+"code": "5472",
+"affi": "14086",
+"name": "DREAMS PUBLIC SCHOOL AWAHDEVI",
+"district": "HAMIRPUR",
+"pin": "177021",
+"cls": "9th-12th(Sci/Comm)",
+"session": "2026-27"
+},
+{
+"code": "5299",
+"affi": "14088",
+"name": "HIM MODERN PUBLIC SCHOOL BARU (MOHIN)",
+"district": "HAMIRPUR",
+"pin": "177001",
+"cls": "9th-12th(Arts)11th-12th(Sci)",
+"session": "2026-27"
+},
+{
+"code": "1588",
+"affi": "14091",
+"name": "JOLLY CONVENT PUBLIC SCHOOL JAHU",
+"district": "HAMIRPUR",
+"pin": "176048",
+"cls": "9th-12th(Sci)(C)",
+"session": "2026-27"
+},
+{
+"code": "1747",
+"affi": "16006",
+"name": "MODEL PUBLIC HIGH SCHOOL BAAG DAULATPUR",
+"district": "KANGRA",
+"pin": "176038",
+"cls": "9th-10th",
+"session": "2026-27"
+},
+{
+"code": "2033",
+"affi": "16007",
+"name": "PUBLIC MODEL HIGH SCHOOL HARA FATEHPUR",
+"district": "KANGRA",
+"pin": "176053",
+"cls": "9th-10th(C)",
+"session": "2026-27"
+},
+{
+"code": "2446",
+"affi": "16018",
+"name": "ADARSH BHARTI PUBLIC SCHOOL",
+"district": "KANGRA",
+"pin": "176027",
+"cls": "9th-10th(C)",
+"session": "2026-27"
+},
+{
+"code": "2017",
+"affi": "16020",
+"name": "D.A.V.PUBLIC SCHOOL GOHJU",
+"district": "KANGRA",
+"pin": "176208",
+"cls": "9th-10th11th-12th(Sci)",
+"session": "2026-27"
+},
+{
+"code": "2155",
+"affi": "16025",
+"name": "A.V.M.HIGH SCHOOL",
+"district": "KANGRA",
+"pin": "176030",
+"cls": "9th-10th(C)",
+"session": "2026-27"
+},
+{
+"code": "2431",
+"affi": "16030",
+"name": "BHARTI PUBLIC HIGH SCHOOL SIDHBARI",
+"district": "KANGRA",
+"pin": "176057",
+"cls": "9th-10th(C)",
+"session": "2026-27"
+},
+{
+"code": "2094",
+"affi": "16039",
+"name": "HIM KIDS CONVENT SCHOOL JAWALI",
+"district": "KANGRA",
+"pin": "176023",
+"cls": "9th-10th",
+"session": "2026-27"
+},
+{
+"code": "2420",
+"affi": "16041",
+"name": "GYAN ARPAN PUBLIC SCHOOL SHAHPUR",
+"district": "KANGRA",
+"pin": "176206",
+"cls": "9th-10th(C)",
+"session": "2026-27"
+},
+{
+"code": "1836",
+"affi": "16055",
+"name": "ANGEL PUBLIC HIGH SCHOOL BHAWARNA",
+"district": "KANGRA",
+"pin": "176083",
+"cls": "9th-10th(C)",
+"session": "2026-27"
+},
+{
+"code": "1765",
+"affi": "16056",
+"name": "AMBIKA PUBLIC HIGH SCHOOL",
+"district": "KANGRA",
+"pin": "176125",
+"cls": "9th-10th(C)",
+"session": "2026-27"
+},
+{
+"code": "2316",
+"affi": "16060",
+"name": "WATTS PUBLIC HIGH SCHOOL PHARER",
+"district": "KANGRA",
+"pin": "176064",
+"cls": "9th-10th(C)",
+"session": "2026-27"
+},
+{
+"code": "2516",
+"affi": "16067",
+"name": "LITTLE ANGEL'S HIGH SCHOOL ZAMANABAD",
+"district": "KANGRA",
+"pin": "176001",
+"cls": "9th-10th",
+"session": "2026-27"
+},
+{
+"code": "1856",
+"affi": "16069",
+"name": "ST.XAVIER PUBLIC SCHOOL",
+"district": "KANGRA",
+"pin": "176031",
+"cls": "9th-10th",
+"session": "2026-27"
+},
+{
+"code": "2334",
+"affi": "16078",
+"name": "CAMBRIDGE PUBLIC SCHOOL PURBA",
+"district": "KANGRA",
+"pin": "176084",
+"cls": "9th-10th(C)",
+"session": "2026-27"
+},
+{
+"code": "1830",
+"affi": "16081",
+"name": "SUN RISE PUBLIC HIGH SCHOOL BHATOLI PAKWAN",
+"district": "KANGRA",
+"pin": "176053",
+"cls": "9th-10th(C)",
+"session": "2026-27"
+},
+{
+"code": "2140",
+"affi": "16083",
+"name": "BHAGSU MODEL PUBLIC SCHOOL KHANIYARA",
+"district": "KANGRA",
+"pin": "176218",
+"cls": "9th-10th(C)",
+"session": "2026-27"
+},
+{
+"code": "2128",
+"affi": "16085",
+"name": "S.D.PUBLIC HIGH SCHOOL KATHLA",
+"district": "KANGRA",
+"pin": "176091",
+"cls": "9th-10th(C)",
+"session": "2026-27"
+},
+{
+"code": "2166",
+"affi": "16086",
+"name": "KOTLA PUBLIC SCHOOL KOTLA",
+"district": "KANGRA",
+"pin": "176205",
+"cls": "9th-10th",
+"session": "2026-27"
+},
+{
+"code": "1987",
+"affi": "16089",
+"name": "MINERWA HIGH SCHOOL GARLI",
+"district": "KANGRA",
+"pin": "177108",
+"cls": "9th-10th(C)",
+"session": "2026-27"
+},
+{
+"code": "2188",
+"affi": "16094",
+"name": "DAV PUBLIC HIGH SCHOOL LAMBAGAON",
+"district": "KANGRA",
+"pin": "176096",
+"cls": "9th-10th(C)",
+"session": "2026-27"
+},
+{
+"code": "1808",
+"affi": "16121",
+"name": "RISHI VALLEY CONVENT SCHOOL BASDI GARH",
+"district": "KANGRA",
+"pin": "176093",
+"cls": "9th-10th(C)NOCTOCBSE",
+"session": "2026-27"
+},
+{
+"code": "2066",
+"affi": "16127",
+"name": "MODERN PUBLIC SCHOOL JAISINGHPUR",
+"district": "KANGRA",
+"pin": "176095",
+"cls": "9th-10th(C)",
+"session": "2026-27"
+},
+{
+"code": "2203",
+"affi": "16136",
+"name": "SHIVA PUBLIC HIGH SCHOOL",
+"district": "KANGRA",
+"pin": "176023",
+"cls": "9th-10th",
+"session": "2026-27"
+},
+{
+"code": "1807",
+"affi": "16142",
+"name": "LORD KRISHNA HIGH SCHOOL",
+"district": "KANGRA",
+"pin": "176023",
+"cls": "9th-10th",
+"session": "2026-27"
+},
+{
+"code": "1969",
+"affi": "16158",
+"name": "SHIVA PUBLIC HIGH SCHOOL GAGGAL",
+"district": "KANGRA",
+"pin": "176209",
+"cls": "9th-10th",
+"session": "2026-27"
+},
+{
+"code": "2130",
+"affi": "16165",
+"name": "UNIQUE MODEL PUBLIC SCHOOL KATHOG",
+"district": "KANGRA",
+"pin": "177101",
+"cls": "9th-10th",
+"session": "2026-27"
+},
+{
+"code": "2272",
+"affi": "16166",
+"name": "LAKE VIEW MODEL SCHOOL NANGALCHOWK",
+"district": "KANGRA",
+"pin": "177106",
+"cls": "9th-10th(C)",
+"session": "2026-27"
+},
+{
+"code": "2356",
+"affi": "16171",
+"name": "CELESTIAL PUBLIC SCHOOL",
+"district": "KANGRA",
+"pin": "176061",
+"cls": "9th-10th(C)",
+"session": "2026-27"
+},
+{
+"code": "2196",
+"affi": "16172",
+"name": "LITTLE ANGEL MODEL SCHOOL LOHARA",
+"district": "KANGRA",
+"pin": "176053",
+"cls": "9th-10th",
+"session": "2026-27"
+},
+{
+"code": "2277",
+"affi": "16176",
+"name": "D.R.PUBLIC SCHOOL NEHRAN PUKHAR",
+"district": "KANGRA",
+"pin": "177104",
+"cls": "9th-10th",
+"session": "2026-27"
+},
+{
+"code": "2261",
+"affi": "16179",
+"name": "SHIVALIK PUBLIC SCHOOL NAGROTA SURIAN",
+"district": "KANGRA",
+"pin": "176027",
+"cls": "9th-10th",
+"session": "2026-27"
+},
+{
+"code": "1846",
+"affi": "16186",
+"name": "NEW ERA PUBLIC HIGH SCHOOL BILASPUR",
+"district": "KANGRA",
+"pin": "176033",
+"cls": "9th-10th",
+"session": "2026-27"
+},
+{
+"code": "1845",
+"affi": "16187",
+"name": "GURUKUL PUBLIC HIGH SCHOOL BHULLANA",
+"district": "KANGRA",
+"pin": "176071",
+"cls": "9th-10th",
+"session": "2026-27"
+},
+{
+"code": "2046",
+"affi": "16188",
+"name": "BRIGHTEN PUBLIC SCHOOL",
+"district": "KANGRA",
+"pin": "176024",
+"cls": "9th-10th(C)",
+"session": "2026-27"
+},
+{
+"code": "2195",
+"affi": "16189",
+"name": "SUMMER HILL PUBLIC SCHOOL LODHWAN",
+"district": "KANGRA",
+"pin": "176201",
+"cls": "9th-10th(C)",
+"session": "2026-27"
+},
+{
+"code": "2080",
+"affi": "16190",
+"name": "ADHUNIK PUBLIC SCHOOL JASSUR",
+"district": "KANGRA",
+"pin": "176201",
+"cls": "9th-10th(C)",
+"session": "2026-27"
+},
+{
+"code": "1930",
+"affi": "16199",
+"name": "LITTLE FLOWER PUBLIC SCHOOL DHAN",
+"district": "KANGRA",
+"pin": "176023",
+"cls": "9th-10th",
+"session": "2026-27"
+},
+{
+"code": "2382",
+"affi": "16202",
+"name": "MILE STONE PUBLIC SCHOOL SAKOH(DEHRI)",
+"district": "KANGRA",
+"pin": "176022",
+"cls": "9th-10th",
+"session": "2026-27"
+},
+{
+"code": "2145",
+"affi": "16205",
+"name": "ADHUNIK PUBLIC SCHOOL KHARAT(BAROH)",
+"district": "KANGRA",
+"pin": "176054",
+"cls": "9th-10th",
+"session": "2026-27"
+},
+{
+"code": "1883",
+"affi": "16207",
+"name": "SECULAR PUBLIC HIGH SCHOOL CHETRU",
+"district": "KANGRA",
+"pin": "176209",
+"cls": "9th-10th(C)",
+"session": "2026-27"
+},
+{
+"code": "1834",
+"affi": "16208",
+"name": "A.B.M. PUBLIC HIGH SCHOOL BHAWARNA",
+"district": "KANGRA",
+"pin": "176083",
+"cls": "9th-10th(C)",
+"session": "2026-27"
+},
+{
+"code": "2348",
+"affi": "16214",
+"name": "EMINENT PUBLIC HIGH SCHOOL",
+"district": "KANGRA",
+"pin": "176056",
+"cls": "9th-10th",
+"session": "2026-27"
+},
+{
+"code": "2147",
+"affi": "16215",
+"name": "ALPHA PUBLIC HIGH SCHOOL KHAROUTH",
+"district": "KANGRA",
+"pin": "176064",
+"cls": "9th-10th(C)",
+"session": "2026-27"
+},
+{
+"code": "2036",
+"affi": "16217",
+"name": "S.R.M.PUBLIC SCHOOL HARCHAKIAN",
+"district": "KANGRA",
+"pin": "176210",
+"cls": "9th-10th",
+"session": "2026-27"
+},
+{
+"code": "1939",
+"affi": "16218",
+"name": "HAPPY HOURS PUBLIC SCHOOL DHARAMSHALA",
+"district": "KANGRA",
+"pin": "176215",
+"cls": "9th-10th(C)",
+"session": "2026-27"
+},
+{
+"code": "2184",
+"affi": "16222",
+"name": "CHAMUNDA PUBLIC SCHOOL LAHAT",
+"district": "KANGRA",
+"pin": "176086",
+"cls": "9th-10th(C)",
+"session": "2026-27"
+},
+{
+"code": "2199",
+"affi": "16226",
+"name": "NEELGIRI PUBLIC SCHOOL LOWER HATWAS",
+"district": "KANGRA",
+"pin": "176047",
+"cls": "9th-10th",
+"session": "2026-27"
+},
+{
+"code": "2047",
+"affi": "16227",
+"name": "JAI BHART PUBLIC SCHOOL HARSI",
+"district": "KANGRA",
+"pin": "176091",
+"cls": "9th-10th(C)",
+"session": "2026-27"
+},
+{
+"code": "2405",
+"affi": "16241",
+"name": "NEW MODERN PUBLIC SCHOOL SAPERU",
+"district": "KANGRA",
+"pin": "176061",
+"cls": "9th-10th(C)",
+"session": "2026-27"
+},
+{
+"code": "2439",
+"affi": "16242",
+"name": "NEW LIGHT PUBLIC SCHOOL BHATOLI(SOLDHA)",
+"district": "KANGRA",
+"pin": "176225",
+"cls": "9th-10th(C)",
+"session": "2026-27"
+},
+{
+"code": "1981",
+"affi": "16244",
+"name": "GURUKUL PUBLIC SCHOOL GANGATH",
+"district": "KANGRA",
+"pin": "176204",
+"cls": "9th-10th(C)",
+"session": "2026-27"
+},
+{
+"code": "2518",
+"affi": "16249",
+"name": "ANAND MONTESSORI SCHOOL ZAMANABAD",
+"district": "KANGRA",
+"pin": "176001",
+"cls": "9th-10th(C)",
+"session": "2026-27"
+}
+]

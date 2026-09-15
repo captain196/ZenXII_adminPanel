@@ -1,0 +1,471 @@
+<title>Issuer Identity Prototype</title>
+<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=IBM+Plex+Mono:wght@400;500;600&family=IBM+Plex+Sans:wght@400;500;600;700&family=IBM+Plex+Serif:wght@600;700&display=swap">
+<style>
+  :root{
+    --ink:#0F1922; --ink-2:#3C4A55; --ink-3:#6B7A86;
+    --paper:#F7F8F9; --card:#FFFFFF; --sunk:#F1F4F6;
+    --rule:#D8DDE1; --rule-soft:#E8ECEF;
+    --clay:#BC5A3C; --clay-soft:#F6E8E3;
+    --reg:#3F6355; --reg-soft:#E2EBE6;
+    --warn:#8A6410; --warn-soft:#F7EFDB;
+    --stop:#A8372A; --stop-soft:#F7E3E0;
+    --serif:"IBM Plex Serif",Georgia,serif;
+    --sans:"IBM Plex Sans",system-ui,-apple-system,sans-serif;
+    --mono:"IBM Plex Mono",ui-monospace,SFMono-Regular,Menlo,monospace;
+  }
+  @media (prefers-color-scheme:dark){:root:not([data-theme="light"]){
+    --ink:#E7ECEF; --ink-2:#B3BFC8; --ink-3:#8494A0;
+    --paper:#0D141A; --card:#141D25; --sunk:#101821;
+    --rule:#2A3742; --rule-soft:#1E2932;
+    --clay:#E28B6B; --clay-soft:#3A2119;
+    --reg:#8FBCA8; --reg-soft:#1B2A24;
+    --warn:#D8B255; --warn-soft:#2E2718;
+    --stop:#E89184; --stop-soft:#341D1A;
+  }}
+  :root[data-theme="dark"]{
+    --ink:#E7ECEF; --ink-2:#B3BFC8; --ink-3:#8494A0;
+    --paper:#0D141A; --card:#141D25; --sunk:#101821;
+    --rule:#2A3742; --rule-soft:#1E2932;
+    --clay:#E28B6B; --clay-soft:#3A2119;
+    --reg:#8FBCA8; --reg-soft:#1B2A24;
+    --warn:#D8B255; --warn-soft:#2E2718;
+    --stop:#E89184; --stop-soft:#341D1A;
+  }
+  *{box-sizing:border-box}
+  body{background:var(--paper);color:var(--ink);font-family:var(--sans);font-size:15px;line-height:1.55}
+  .wrap{max-width:1080px;margin:0 auto;padding:36px 20px 80px}
+  .eyebrow{font-family:var(--mono);font-size:11px;letter-spacing:.14em;text-transform:uppercase;color:var(--clay);font-weight:500;margin:0}
+  h1{font-family:var(--serif);font-size:clamp(28px,4.5vw,40px);line-height:1.08;margin:10px 0 0;letter-spacing:-.015em;text-wrap:balance}
+  .sub{color:var(--ink-2);margin:12px 0 0;max-width:68ch}
+  .grid{display:grid;grid-template-columns:1.25fr .85fr;gap:20px;margin-top:28px;align-items:start}
+  @media(max-width:860px){.grid{grid-template-columns:1fr}}
+  .card{background:var(--card);border:1px solid var(--rule);border-radius:12px;padding:20px}
+  .card h2{font-family:var(--serif);font-size:18px;margin:0 0 3px}
+  .card .hint{font-size:12.5px;color:var(--ink-3);margin:0 0 16px}
+  .stepn{font-family:var(--mono);font-size:11px;color:var(--clay);letter-spacing:.1em;font-weight:600}
+  label{display:block;font-size:12.5px;font-weight:600;margin:14px 0 5px}
+  label .opt{font-weight:400;color:var(--ink-3)}
+  input,select{width:100%;font:inherit;font-size:14px;padding:9px 11px;border:1px solid var(--rule);
+    border-radius:8px;background:var(--sunk);color:var(--ink)}
+  input:focus,select:focus{outline:2px solid var(--clay);outline-offset:1px;background:var(--card)}
+  input.mono{font-family:var(--mono);letter-spacing:.04em}
+  input[readonly]{color:var(--ink-2);border-style:dashed;background:transparent}
+  .row{display:grid;grid-template-columns:1fr 1fr;gap:12px}
+  @media(max-width:520px){.row{grid-template-columns:1fr}}
+  .note{font-size:12px;margin:6px 0 0;min-height:16px}
+  .ok{color:var(--reg)} .bad{color:var(--stop)} .warnc{color:var(--warn)}
+  .derived{font-family:var(--mono);font-size:11px;color:var(--reg);letter-spacing:.06em;text-transform:uppercase}
+  .chips{display:flex;flex-wrap:wrap;gap:6px;margin-top:8px}
+  .chip{font-family:var(--mono);font-size:11.5px;padding:4px 9px;border-radius:20px;border:1px solid var(--rule);
+    background:var(--sunk);cursor:pointer;color:var(--ink-2)}
+  .chip:hover{border-color:var(--clay);color:var(--clay)}
+  .seg{display:flex;gap:0;border:1px solid var(--rule);border-radius:9px;overflow:hidden;margin-top:4px}
+  .seg button{flex:1;font:inherit;font-size:13px;padding:9px 6px;background:var(--sunk);border:0;
+    border-right:1px solid var(--rule);cursor:pointer;color:var(--ink-2)}
+  .seg button:last-child{border-right:0}
+  .seg button[aria-pressed="true"]{background:var(--clay);color:#fff;font-weight:600}
+  .ladder{display:flex;gap:4px;margin:2px 0 8px}
+  .ladder i{flex:1;height:6px;border-radius:3px;background:var(--rule)}
+  .lvl{font-family:var(--mono);font-size:12.5px;font-weight:600}
+  .verdict{border-radius:9px;padding:12px 14px;margin-top:12px;font-size:13.5px}
+  .verdict.go{background:var(--reg-soft);border-left:3px solid var(--reg)}
+  .verdict.no{background:var(--stop-soft);border-left:3px solid var(--stop)}
+  .verdict.wait{background:var(--warn-soft);border-left:3px solid var(--warn)}
+  .verdict b{display:block;margin-bottom:3px}
+  table{border-collapse:collapse;width:100%;font-size:12.5px}
+  th,td{text-align:left;padding:7px 8px;border-bottom:1px solid var(--rule-soft)}
+  th{font-family:var(--mono);font-size:10.5px;text-transform:uppercase;letter-spacing:.06em;color:var(--ink-3);font-weight:500}
+  td.mono{font-family:var(--mono);font-variant-numeric:tabular-nums}
+  .req{color:var(--clay);font-weight:600}
+  .nreq{color:var(--ink-3)}
+  .met{color:var(--reg);font-weight:600}
+  .counter{display:flex;gap:14px;margin-top:14px;padding-top:14px;border-top:1px solid var(--rule-soft)}
+  .counter div{flex:1}
+  .counter .k{font-family:var(--mono);font-size:24px;font-weight:600;line-height:1}
+  .counter .l{font-size:11.5px;color:var(--ink-3);margin-top:4px}
+  .regbox{font-family:var(--mono);font-size:11.5px;background:var(--sunk);border:1px solid var(--rule);
+    border-radius:8px;padding:10px 12px;margin-top:10px;overflow-x:auto;white-space:pre;line-height:1.75}
+  details{margin-top:16px;border-top:1px solid var(--rule-soft);padding-top:12px}
+  summary{cursor:pointer;font-size:13px;font-weight:600;color:var(--ink-2)}
+  footer{margin-top:34px;padding-top:18px;border-top:1px solid var(--rule);font-size:12.5px;color:var(--ink-3);max-width:74ch}
+  .m{font-family:var(--mono);font-size:.92em}
+</style>
+
+<div class="wrap">
+  <p class="eyebrow">ZenXii · Document Engine · working prototype</p>
+  <h1>Issuer identity, asked the other way round</h1>
+  <p class="sub">Every field here behaves as proposed. The register match runs against <b>53 real rows
+  parsed out of HPBOSE's published affiliation list</b> — so when it fills your school name, stage range
+  and validity, that is the board's own document answering, not a mock.</p>
+
+  <div class="grid">
+
+    <!-- ================= LEFT: the flow ================= -->
+    <div class="card">
+      <p class="stepn">STEP 0</p>
+      <h2>What are you issuing?</h2>
+      <p class="hint">This is the whole idea: the document decides what we need to ask. Nothing else does.</p>
+      <div class="seg" id="docseg">
+        <button data-doc="bonafide" aria-pressed="true">Bonafide</button>
+        <button data-doc="cbse_tc" aria-pressed="false">CBSE Transfer Certificate</button>
+        <button data-doc="hp_tc" aria-pressed="false">HP State TC</button>
+      </div>
+
+      <div id="stagewrap" hidden>
+        <label>Class the student is leaving from</label>
+        <select id="stage">
+          <option value="10">Class 10</option>
+          <option value="12sci">Class 12 — Science</option>
+          <option value="12arts">Class 12 — Arts</option>
+          <option value="12comm">Class 12 — Commerce</option>
+        </select>
+        <p class="note" id="stagenote"></p>
+      </div>
+
+      <p class="stepn" style="margin-top:22px">STEP 1</p>
+      <h2>One number</h2>
+      <p class="hint">UDISE is 2 state + 2 district + 3 block + 4 school, so it answers two questions by itself. Skippable — it is not universal.</p>
+      <label>UDISE+ code <span class="opt">— optional</span></label>
+      <input class="mono" id="udise" maxlength="11" inputmode="numeric" placeholder="11 digits">
+      <p class="note" id="udisenote"></p>
+      <div class="chips">
+        <span class="chip" data-fill="udise" data-v="02010100101">02… Himachal</span>
+        <span class="chip" data-fill="udise" data-v="09310113101">09… Uttar Pradesh</span>
+      </div>
+
+      <p class="stepn" style="margin-top:22px">STEP 2</p>
+      <h2>Board, and its number</h2>
+      <label>Affiliating board</label>
+      <select id="board">
+        <option value="">— not recorded —</option>
+        <option value="HPBOSE">HPBOSE — Himachal Pradesh</option>
+        <option value="CBSE">CBSE</option>
+        <option value="UNAFFILIATED">Unaffiliated / private</option>
+      </select>
+
+      <label>Affiliation number</label>
+      <input class="mono" id="affno" maxlength="20" placeholder="Choose a board first" disabled>
+      <p class="note" id="affnote"></p>
+      <div class="chips" id="affchips"></div>
+
+      <div id="matchbox" hidden>
+        <p class="derived" style="margin:16px 0 0">↓ returned by the board's register</p>
+        <div class="row">
+          <div><label>Registered school name</label><input id="rname" readonly></div>
+          <div><label>District</label><input id="rdist" readonly></div>
+        </div>
+        <div class="row">
+          <div><label>Recognised for</label><input id="rcls" class="mono" readonly></div>
+          <div><label>Valid session</label><input id="rsess" class="mono" readonly></div>
+        </div>
+        <div class="regbox" id="regrow"></div>
+      </div>
+
+      <p class="stepn" style="margin-top:22px">STEP 3</p>
+      <h2>Who signs</h2>
+      <label>Head of institution</label>
+      <input id="head" placeholder="Name as it will print">
+    </div>
+
+    <!-- ================= RIGHT: consequence ================= -->
+    <div>
+      <div class="card">
+        <h2>Issuer level</h2>
+        <p class="hint">Computed exactly as <span class="m">levelOf()</span> does.</p>
+        <div class="ladder" id="ladder"><i></i><i></i><i></i><i></i></div>
+        <div class="lvl" id="lvltext">0 · Unrecorded</div>
+        <div id="verdict" class="verdict no"><b>Nothing may be issued yet</b>No issuer identity recorded.</div>
+
+        <div class="counter">
+          <div><div class="k" id="askedNow">10</div><div class="l">fields asked today, always</div></div>
+          <div><div class="k ok" id="askedNew">2</div><div class="l">fields this document needs</div></div>
+        </div>
+      </div>
+
+      <div class="card" style="margin-top:16px">
+        <h2>What this document asserts</h2>
+        <p class="hint">And therefore what must be evidenced.</p>
+        <table id="claims"><tbody></tbody></table>
+      </div>
+
+      <div class="card" style="margin-top:16px">
+        <h2>Today, for contrast</h2>
+        <p class="hint">The same school, current build.</p>
+        <div class="verdict no" style="margin-top:0">
+          <b>1 · Claimed — permanently</b>
+          “The affiliation is claimed but no instrument is on file. Attach it before issuing.”
+          <div style="margin-top:8px;font-size:12.5px;color:var(--ink-3)">
+            There is no upload control, so the rung is unreachable — and nothing checks
+            <span class="m">mayIssue()</span> before issuing anyway.
+          </div>
+        </div>
+      </div>
+    </div>
+  </div>
+
+  <details>
+    <summary>How the register match works, and where the data came from</summary>
+    <p style="max-width:74ch;color:var(--ink-2);font-size:13.5px">
+      <span class="m">hpbose.org/Admin/Upload/HPBoSE.Affiliation.List.pdf</span> — 84 pages, ~14,700 rows,
+      a real text layer. Fetched, parsed with PyMuPDF, and 53 rows embedded here verbatim with their
+      affiliation code, school code, name, district, PIN, <b>recognised class range</b> and
+      <b>session</b>. Matching a typed affiliation number against that register is the same act a human
+      reviewer performs — which is why it counts as verification rather than a pretence of it.
+      One row reads <span class="m">NOC TO CBSE</span>: the register even tracks a school leaving for
+      another board.
+    </p>
+  </details>
+
+  <footer>
+    Prototype only — nothing here writes to ZenXii. CBSE deliberately has no register path: its
+    affiliated-schools page returned <span class="m">HTTP 403</span>, so the honest fallback is shown
+    instead. Behaviour follows <span class="m">ISSUER_UX.md</span>; citations <span class="m">C‑nn</span>
+    refer to the conflict register.
+  </footer>
+</div>
+
+<script>
+const HP_REGISTER = [["14014","1577","ADARSH PUBLIC SCHOOL HAMIRPUR","HAMIRPUR","177001","9th-+2(Sci)","2026-27"],["13561","1682","SILVER LINE PUBLIC SCHOOL PATTA","HAMIRPUR","176041","9th-10th(C)","2026-27"],["12720","4736","KIDS INTERNATIONAL SCHOOL SULTANPUR","CHAMBA","176314","9th-12th(Sci)(C)","2026-27"],["13512","1619","SARVODYA PUBLIC HIGH SCHOOL KAROT","HAMIRPUR","176108","9th-10th(C)","2026-27"],["13613","5293","RIGVEDA PUBLIC SCHOOL HAMIRPUR","HAMIRPUR","177001","9th-10th11th-12th(Sci)","2026-27"],["12550","5498","GLOBAL PUBLIC SCHOOL KIHAR","CHAMBA","176320","9th-10th(C)","2026-27"],["12544","5216","D.R.M. VISION PUBLIC SCHOOL PUKHRI","CHAMBA","176319","9th-10th","2026-27"],["14049","1580","K.KEY PUBLIC SR.SEC.SCHOOL HAMIRPUR","HAMIRPUR","177001","9th-+2(Sci.)(C)","2026-27"],["14086","5472","DREAMS PUBLIC SCHOOL AWAHDEVI","HAMIRPUR","177021","9th-12th(Sci/Comm)","2026-27"],["12703","1273","ST.STEPHENS SR.SEC.SCHOOL CHAMBA","CHAMBA","176310","9th-+2(Sci/Comm)","2026-27"],["14067","1532","A. N. M PUBLIC SR.SEC. SCHOOL","HAMIRPUR","176049","9th-+2(Sci.)","2026-27"],["14056","1573","HIM ACADEMY PUBLIC SCHOOL HIRA NAGAR","HAMIRPUR","177001","9th-+2(Sci/Comm)","2026-27"],["12545","5244","SNOW VALLEY PUBLIC SCHOOL MANJEER","CHAMBA","176312","9th-10th(C)","2026-27"],["14045","1655","BRIGHT SUN SR.SEC.SCHOOL MAHRE","HAMIRPUR","174305","9th-+2(Sci.)(C)","2026-27"],["14066","1463","ALMIGHTY PUBLIC SCHOOL ANU KHURD","HAMIRPUR","177001","NOCTOCBSE","2026-27"],["14088","5299","HIM MODERN PUBLIC SCHOOL BARU (MOHIN)","HAMIRPUR","177001","9th-12th(Arts)11th-12th(Sci)","2026-27"],["14009","1491","SHANTI NIKETAN SR.SEC.SCHOOL BARSAR(MEHRE)","HAMIRPUR","174305","9th-+2(Arts)(C)","2026-27"],["14006","1479","PUBLIC MODEL SR.SEC. SCHOOL BAMBLOH(UHAL)","HAMIRPUR","177022","9th-+2(Sci)","2026-27"],["14076","1634","HIM GURUKUL PUBLIC SCHOOL LADRAUR","HAMIRPUR","176043","9th-12th(Sci)","2026-27"],["14065","1572","THE MAGNET PUBLIC SCHOOL GHANAL KHURD","HAMIRPUR","177001","9th-+2(Sc.)11th-12th(Comm)","2026-27"],["13516","1582","SAVITRI PUBLIC HIGH SCHOOL HAMIRPUR","HAMIRPUR","177001","9th-10th(C)","2026-27"],["14060","1502","NEELAM PUBLIC SR.SEC. SCHOOL BIHRU(BIJHARI)","HAMIRPUR","176040","9th-+2(Sci)","2026-27"],["14083","1667","LILY LITTLE FLOWER SCHOOL NALTI AT HAR","HAMIRPUR","177001","9th-+2(Sci)","2026-27"],["12553","5497","ST. XAVIERS SCHOOL SAROL","CHAMBA","176310","9th-10th","2026-27"],["12722","5471","JAWAHAR PUBLIC SCHOOL SALOONI","CHAMBA","176320","9th-12th(Sci)(C)","2026-27"],["14091","1588","JOLLY CONVENT PUBLIC SCHOOL JAHU","HAMIRPUR","176048","9th-12th(Sci)(C)","2026-27"],["16121","1808","RISHI VALLEY CONVENT SCHOOL BASDI GARH","KANGRA","176093","9th-10th(C)NOCTOCBSE","2026-27"],["13569","1528","SHIVA PUBLIC SCHOOL CHANDRUHI","HAMIRPUR","177024","9th-10th","2026-27"],["12717","1247","LITTLE ANGEL'S SCHOOL BANIKHET","CHAMBA","176303","9th-12th(Sci./Com)(C)","2026-27"],["12712","1290","KIDS CAMP PUBLIC SCHOOL CHOWARI","CHAMBA","176302","9th-+2(Sci)","2026-27"],["14020","1578","AIM PUBLIC SR.SEC.SCHOOL HAMIRPUR","HAMIRPUR","177001","9th-+2(Sci)(C)","2026-27"],["14061","1563","GEETANJALI PUBLIC SCHOOL","HAMIRPUR","177041","9th-+2(Sci.)(C)","2026-27"],["14062","1656","LITTLE ANGEL PUBLIC SCHOOL MEHRE","HAMIRPUR","174305","9th-+2(Sc./Com)","2026-27"],["14034","1514","NAV BHARAT PUBLIC SCHOOL BIJHRI(KOTLA)","HAMIRPUR","176040","9th-12th(Sci)(C)NOCTOCBSE","2026-27"],["13565","1706","SUN RISE PUBLIC HIGH SCHOOL SOHARI","HAMIRPUR","174311","9th-10th(C)","2026-27"],["14069","1657","SHIVA PUBLIC SR.SEC. SCHOOL MOHALWIN","HAMIRPUR","174309","9th-+2(Arts/Sci.)","2026-27"],["12715","1379","HIM PUSHAP PUBLIC SCHOOL MOURA TELKA","CHAMBA","176312","9th--+2th(Sci)(C)","2026-27"],["12716","1361","D.C.M.GURUKUL PUBLIC SCHOOL LACHORI","CHAMBA","176308","9th-12th(Sci)(C)","2026-27"],["13546","1461","ARYAN PUBLIC SCHOOL ANU(HAMIRPUR)","HAMIRPUR","177005","9th-10th","2026-27"],["13529","1515","ADHAR PUBLIC SCHOOL BIR","HAMIRPUR","176110","9th-10th","2026-27"],["13552","1711","MOTHER MARY PUBLIC SCHOOL SUJANPUR TIHRA","HAMIRPUR","176110","9th-10th(C)","2026-27"],["12721","4735","TINY TOTS PLAYWAY SCHOOL","CHAMBA","176310","9th-+2th(Arts)(C)","2026-27"],["14073","4742","HAMIRPUR SR.SEC. SCHOOL HAMIRPUR","HAMIRPUR","177001","11th-12th(Sci)","2026-27"],["14078","1615","BAL GURUKUL PUBLIC SCHOOL KANGOO","HAMIRPUR","177040","9th-+2(Sci)(C)","2026-27"],["14064","1726","SAI PUBLIC SR.SEC.SCHOOL UKHLI","HAMIRPUR","176042","9th-+2(Sci)","2026-27"],["13563","1665","BE STAR PUBLIC SCHOOL NALTI","HAMIRPUR","177001","9th-10th","2026-27"],["16020","2017","D.A.V.PUBLIC SCHOOL GOHJU","KANGRA","176208","9th-10th11th-12th(Sci)","2026-27"],["13536","1674","PUBLIC MODEL HIGH SCHOOL PANOH CHAURI","HAMIRPUR","176111","9th-10th","2026-27"],["13530","1567","D.A.V.PUBLIC SCHOOL GUBBAR","HAMIRPUR","177028","9th-10th","2026-27"],["14054","1602","ARYAN PUBLIC SCHOOL JHANDI","HAMIRPUR","176041","9th-+2(Sci.)(C)","2026-27"],["12714","1346","PARAMOUNT PUBLIC SCHOOL KIHAR","CHAMBA","176320","9th-+2(Arts/Sci)(C)","2026-27"],["12547","5470","HOLY HILLS PUBLIC SCHOOL SAHO","CHAMBA","176314","9th-10th(C)","2026-27"],["14007","1576","SILVER BELL SR.SEC.SCHOOL HAMIRPUR","HAMIRPUR","177001","9th-+2(Sci)","2026-27"]];
+
+const STATES = {'01':'Jammu & Kashmir','02':'Himachal Pradesh','03':'Punjab','04':'Chandigarh',
+ '05':'Uttarakhand','06':'Haryana','07':'Delhi','08':'Rajasthan','09':'Uttar Pradesh','10':'Bihar',
+ '11':'Sikkim','12':'Arunachal Pradesh','13':'Nagaland','14':'Manipur','15':'Mizoram','16':'Tripura',
+ '17':'Meghalaya','18':'Assam','19':'West Bengal','20':'Jharkhand','21':'Odisha','22':'Chhattisgarh',
+ '23':'Madhya Pradesh','24':'Gujarat','27':'Maharashtra','29':'Karnataka','30':'Goa','31':'Lakshadweep',
+ '32':'Kerala','33':'Tamil Nadu','34':'Puducherry','35':'Andaman & Nicobar'};
+
+const BOARDS = {
+  HPBOSE:{label:'HPBOSE', pattern:/^\d{4,6}$/, hint:'HPBOSE affiliation codes are 4–6 digits.', register:true},
+  CBSE:{label:'CBSE', pattern:/^\d{7}$/, hint:'CBSE affiliation numbers are 7 digits.', register:false},
+  UNAFFILIATED:{label:'Unaffiliated', pattern:null, hint:'An unaffiliated school issues no board-recognised certificate.', register:false}
+};
+
+/* what each document ASSERTS — the whole design in one table */
+const DOCS = {
+  bonafide:{name:'Bonafide certificate', asks:2, stage:false, claims:[
+    ['This person is enrolled here','school record','no'],
+    ['Head of institution signs','name that prints','yes']
+  ], needs:{board:false, affno:false, head:true}},
+  cbse_tc:{name:'CBSE Transfer Certificate', asks:6, stage:true, claims:[
+    ['Enrolment and leaving details','school record','no'],
+    ['Prints <span class="m">Affiliation No.</span> + School Code','CBSE Annexure-I header','yes'],
+    ['Date of birth per Admission &amp; Withdrawal Register','the register itself','yes'],
+    ['Head of institution signs','name that prints','yes']
+  ], needs:{board:true, affno:true, head:true}},
+  hp_tc:{name:'HP State Transfer Certificate', asks:5, stage:true, claims:[
+    ['Enrolment and leaving details','school record','no'],
+    ['School is HPBOSE-affiliated','the board register','yes'],
+    ['Recognised for the class being left','register class range','yes'],
+    ['Head of institution signs','name that prints','yes']
+  ], needs:{board:true, affno:true, head:true}}
+};
+
+let doc='bonafide', match=null;
+const $=id=>document.getElementById(id);
+
+/* Escape at the sink. Nothing untrusted reaches innerHTML in THIS file — the
+   register is a constant and user input goes through textContent — but in the
+   real product the school name and class range come from a parsed PDF and from
+   the school itself, so the pattern to copy is this one, not the shortcut. */
+const esc=v=>String(v==null?'':v).replace(/[&<>"']/g,c=>
+  ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));
+
+/* ---------- parse a register class range into a capability ---------- */
+function capability(cls){
+  const s=(cls||'').toUpperCase().replace(/\s+/g,'');
+  if(/^NOCTOCBSE$/.test(s)) return {min:0, max:0, streams:[], noc:true};
+  const noc=/NOCTOCBSE/.test(s);
+  const max = /(\+2|12TH)/.test(s) ? 12 : (/10TH/.test(s) ? 10 : 0);
+  /* The floor matters as much as the ceiling: "11th-12th(Sci)" is NOT a
+     class-10 recognition, and checking only max let that through. */
+  const mm = s.match(/^(\d{1,2})TH/);
+  const min = mm ? parseInt(mm[1],10) : 9;
+  const streams=[];
+  /* The register abbreviates Science as "Sci", "Sci." AND "Sc." — matching
+     only /SCI/ silently dropped Science from "9th-+2(Sc./Com)". */
+  if(/SCI|SC\.|SC\//.test(s)) streams.push('sci');
+  if(/ARTS/.test(s)) streams.push('arts');
+  if(/COMM|COM\b|\/COM/.test(s)) streams.push('comm');
+  return {min, max, streams, noc};
+}
+function stageOk(cap, sel){
+  if(!cap) return null;
+  const want = sel==='10' ? null : sel.replace('12','');
+  const cls  = sel==='10' ? 10 : 12;
+  if(cls < cap.min) return {ok:false, why:'the register shows recognition starting at class '+cap.min};
+  if(cls > cap.max) return {ok:false, why:'the register shows recognition only to class '+(cap.max||'—')};
+  if(want && cap.streams.length && !cap.streams.includes(want))
+    return {ok:false, why:'recognised streams are '+cap.streams.join(', ')+' — not '+want};
+  return {ok:true};
+}
+
+/* ---------- render ---------- */
+function render(){
+  const D=DOCS[doc];
+  const board=$('board').value, affno=$('affno').value.trim(), head=$('head').value.trim();
+
+  // stage selector only where the document carries a class
+  $('stagewrap').hidden = !D.stage;
+
+  // ---- level, exactly as levelOf() sequences it
+  let level=0, why='No issuer identity recorded.';
+  const needsId = D.needs.board;
+  if(!needsId){
+    level = head ? 3 : 0;
+    why = head ? '' : 'The head of institution has not been recorded.';
+  } else if(board && BOARDS[board]){
+    const spec=BOARDS[board];
+    const shapeOk = !spec.pattern || spec.pattern.test(affno);
+    if(!affno || !shapeOk){ level=0; why='The affiliation number is missing or the wrong shape.'; }
+    else if(!head){ level=1; why='The head of institution has not been recorded.'; }
+    else if(match){ level=3; why=''; }
+    else if(spec.register){ level=1; why='Not found in the board register.'; }
+    else { level=1; why='No register published by this board — claim recorded, instrument optional.'; }
+  }
+
+  const names=['Unrecorded','Claimed','Evidenced','Verified'];
+  const tone=['var(--stop)','var(--warn)','var(--clay)','var(--reg)'][level];
+  [...$('ladder').children].forEach((el,i)=>{ el.style.background = i<=level ? tone : 'var(--rule)'; });
+  $('lvltext').textContent = level+' · '+names[level];
+  $('lvltext').style.color = tone;
+
+  // ---- stage capability check
+  let stageBlock=null;
+  if(D.stage && match){
+    const cap=capability(match[5]);
+    const r=stageOk(cap, $('stage').value);
+    if(cap.noc && cap.max===0){
+      stageBlock='This school holds only an NOC to CBSE in the register — no HPBOSE class recognition.';
+      $('stagenote').className='note bad'; $('stagenote').textContent='⚠ '+stageBlock;
+    } else if(r && !r.ok){
+      stageBlock=r.why;
+      $('stagenote').className='note bad';
+      $('stagenote').textContent='⚠ Register says “'+match[5]+'” — '+r.why+'.';
+    } else {
+      $('stagenote').className='note ok';
+      $('stagenote').textContent='✓ Register shows “'+match[5]+'” — covers this class.';
+    }
+  } else if(D.stage){
+    $('stagenote').className='note'; $('stagenote').textContent='';
+  }
+
+  // ---- verdict, gated PER CLAIM
+  const v=$('verdict');
+  if(stageBlock){
+    v.className='verdict no';
+    v.innerHTML='<b>'+D.name+' — blocked</b>The register does not cover this class, so the certificate would assert recognition the board has not granted.';
+  } else if(level>=2){
+    v.className='verdict go';
+    v.innerHTML='<b>'+D.name+' — may be issued</b>'+
+      (match?'Verified against HPBOSE’s published register, session '+esc(match[6])+'. Re-check when that session ends.'
+            :'Everything this document asserts is evidenced.');
+  } else if(level===1){
+    v.className='verdict wait';
+    v.innerHTML='<b>'+D.name+' — not yet</b>'+why+
+      (BOARDS[board]&&!BOARDS[board].register?' Attach the instrument when convenient — it does not block anything else.':'');
+  } else {
+    v.className='verdict no';
+    v.innerHTML='<b>'+D.name+' — not yet</b>'+why;
+  }
+
+  // ---- counters + claims table
+  $('askedNew').textContent=D.asks;
+  const rows=D.claims.map(c=>{
+    const need=c[2]==='yes';
+    let state='<span class="nreq">—</span>';
+    if(need) state = (level>=2||(!needsId&&head)) ? '<span class="met">evidenced</span>' : '<span class="req">needed</span>';
+    return '<tr><td>'+c[0]+'</td><td class="mono" style="color:var(--ink-3)">'+c[1]+'</td><td>'+state+'</td></tr>';
+  }).join('');
+  $('claims').querySelector('tbody').innerHTML=
+    '<tr><th>Assertion</th><th>Source of truth</th><th>Evidence</th></tr>'+rows;
+}
+
+/* ---------- board / affiliation behaviour ---------- */
+function onBoard(){
+  const b=$('board').value, spec=BOARDS[b];
+  const inp=$('affno');
+  match=null; $('matchbox').hidden=true;
+  inp.value='';
+  inp.disabled=!spec;
+  inp.placeholder = spec ? (spec.register?'Type or tap a real code below':'e.g. 2780004') : 'Choose a board first';
+  $('affnote').textContent = spec ? spec.hint : '';
+  $('affnote').className='note';
+  const chips=$('affchips');
+  chips.innerHTML='';
+  if(spec&&spec.register){
+    HP_REGISTER.slice(0,4).forEach(r=>{
+      const c=document.createElement('span');
+      c.className='chip'; c.dataset.fill='affno'; c.dataset.v=r[0];
+      c.textContent=r[0]+' · '+r[2].split(' ').slice(0,2).join(' ');
+      chips.appendChild(c);
+    });
+  }
+  render();
+}
+
+function onAff(){
+  const b=$('board').value, spec=BOARDS[b], v=$('affno').value.trim();
+  const n=$('affnote');
+  match=null; $('matchbox').hidden=true;
+  if(!spec||!v){ n.textContent=spec?spec.hint:''; n.className='note'; render(); return; }
+
+  // the misfile catch — 11 digits opening with a real census state code
+  if(/^\d{11}$/.test(v) && STATES[v.slice(0,2)]){
+    n.className='note warnc';
+    n.textContent='That looks like a UDISE code for '+STATES[v.slice(0,2)]+' — is it? It belongs in the field above.';
+    render(); return;
+  }
+  if(spec.pattern && !spec.pattern.test(v)){
+    n.className='note bad'; n.textContent=spec.hint; render(); return;
+  }
+  if(spec.register){
+    match=HP_REGISTER.find(r=>r[0]===v)||null;
+    if(match){
+      n.className='note ok'; n.textContent='✓ Found in HPBOSE’s published register.';
+      $('rname').value=match[2]; $('rdist').value=match[3]+' — '+match[4];
+      $('rcls').value=match[5]; $('rsess').value=match[6];
+      $('regrow').textContent=
+        'affi '+match[0]+'   code '+match[1]+'   '+match[2]+'\n'+
+        match[3]+' '+match[4]+'   class '+match[5]+'   session '+match[6];
+      $('matchbox').hidden=false;
+    } else {
+      n.className='note bad';
+      n.textContent='Not in the register. Check the number, or attach the instrument instead.';
+    }
+  } else {
+    n.className='note ok';
+    n.textContent='Shape is valid. '+spec.label+' publishes no register we can reach, so this stays a claim.';
+  }
+  render();
+}
+
+function onUdise(){
+  const v=$('udise').value.trim(), n=$('udisenote');
+  if(!v){ n.textContent=''; n.className='note'; return; }
+  if(!/^\d{1,11}$/.test(v)){ n.className='note bad'; n.textContent='Digits only.'; return; }
+  if(v.length<11){ n.className='note'; n.textContent=v.length+' of 11 digits.'; return; }
+  const st=STATES[v.slice(0,2)];
+  if(!st){ n.className='note bad'; n.textContent='“'+v.slice(0,2)+'” is not a census state code.'; return; }
+  n.className='note ok';
+  n.textContent='✓ '+st+' · district '+v.slice(2,4)+' · block '+v.slice(4,7)+' — derived, not asked.';
+}
+
+/* ---------- wiring ---------- */
+$('docseg').addEventListener('click',e=>{
+  const b=e.target.closest('button'); if(!b) return;
+  doc=b.dataset.doc;
+  [...$('docseg').children].forEach(x=>x.setAttribute('aria-pressed', String(x===b)));
+  render();
+});
+document.addEventListener('click',e=>{
+  const c=e.target.closest('.chip'); if(!c) return;
+  const f=$(c.dataset.fill); f.value=c.dataset.v;
+  (c.dataset.fill==='udise'?onUdise:onAff)();
+});
+$('board').addEventListener('change',onBoard);
+$('affno').addEventListener('input',onAff);
+$('udise').addEventListener('input',onUdise);
+$('head').addEventListener('input',render);
+$('stage').addEventListener('change',render);
+render();
+</script>
