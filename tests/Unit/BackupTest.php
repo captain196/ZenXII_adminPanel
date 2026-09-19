@@ -526,8 +526,10 @@ class BackupService
 
     public function humanSize(int $bytes): string
     {
-        if ($bytes >= 1048576) return round($bytes / 1048576, 1) . ' MB';
-        if ($bytes >= 1024)    return round($bytes / 1024,    1) . ' KB';
+        // number_format (not round) so a whole value keeps its one decimal:
+        // round(1.0, 1) stringifies to "1" (→ "1 KB"), number_format gives "1.0".
+        if ($bytes >= 1048576) return number_format($bytes / 1048576, 1) . ' MB';
+        if ($bytes >= 1024)    return number_format($bytes / 1024,    1) . ' KB';
         return $bytes . ' B';
     }
 }
