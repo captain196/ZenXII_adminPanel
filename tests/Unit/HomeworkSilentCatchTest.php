@@ -39,14 +39,20 @@ class HomeworkSilentCatchTest extends TestCase
     public function test_bug002_all_six_firestore_catches_now_log(): void
     {
         $expected = [
-            'get_homework_detail teacherMarks' =>
-                "Homework::get_homework_detail — teacherMarks query failed",
-            'get_submissions teacherMarks' =>
-                "Homework::get_submissions — teacherMarks query failed",
-            'get_submissions roster' =>
-                "Homework::get_submissions — students roster query failed",
-            'get_subjects_for_class' =>
-                "Homework::get_subjects_for_class — Firestore query failed",
+            // A later refactor (verified 2026-09-19) consolidated the
+            // get_homework_detail + get_submissions teacherMarks/roster reads
+            // into the shared _merge_submissions() helper, and renamed
+            // get_subjects_for_class() to the private _subjects_for_class().
+            // BUG-002's guarantee is unchanged — every Firestore-read catch STILL
+            // emits log_message('error', ...); only the method names in the log
+            // strings moved. Each substring below was verified against the
+            // current source (Homework.php: 1679, 1736, 710, 757, 789).
+            '_merge_submissions teacherMarks' =>
+                "Homework::_merge_submissions — teacherMarks query failed",
+            '_merge_submissions roster' =>
+                "Homework::_merge_submissions — students roster query failed",
+            '_subjects_for_class' =>
+                "Homework::_subjects_for_class — Firestore query failed",
             'get_students_for_class' =>
                 "Homework::get_students_for_class — Firestore query failed",
             'get_class_sections' =>
