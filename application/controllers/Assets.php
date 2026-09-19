@@ -6,12 +6,15 @@ defined('BASEPATH') or exit('No direct script access allowed');
  *
  * Sub-modules: Registry, Categories, Assignments, Maintenance, Depreciation
  *
- * Firebase paths:
- *   Schools/{school}/Operations/Assets/Assets/{AST0001}
- *   Schools/{school}/Operations/Assets/Categories/{ACAT0001}
- *   Schools/{school}/Operations/Assets/Assignments/{ASN0001}
- *   Schools/{school}/Operations/Assets/Maintenance/{MNT0001}
- *   Schools/{school}/Operations/Assets/Counters/{type}
+ * Canonical storage: Firestore (RTDB retired 2026-09-19; census was empty
+ * fleet-wide, so this was a clean cutover with no backfill). All docs are
+ * school-scoped via Firestore_service::docId() ({schoolId}_{entityId}) and
+ * carry an auto-injected schoolId (setEntity), so queries use schoolWhere():
+ *   assets/{schoolId}_{AST0001}
+ *   assetCategories/{schoolId}_{ACAT0001}
+ *   assetAssignments/{schoolId}_{ASN0001}
+ *   assetMaintenance/{schoolId}_{MNT0001}
+ *   sequential ids via Firestore_service::nextSchoolCounter (canonical counter).
  *
  * Accounting integration:
  *   Purchase → journal (Dr 11xx Fixed Asset, Cr 1010/1020)
@@ -32,31 +35,33 @@ class Assets extends MY_Controller
         );
     }
 
-    // ── Path Helpers ────────────────────────────────────────────────────
-    private function _ast(string $sub = ''): string
+    // ── Firestore collections (canonical storage) ──────────────────────
+    private const COL_ASSETS = 'assets';
+    private const COL_CATS   = 'assetCategories';
+    private const COL_ASN    = 'assetAssignments';
+    private const COL_MNT    = 'assetMaintenance';
+
+    /** Entity id from a schoolWhere() row's doc id ({schoolId}_{entityId}). */
+    private function _eid(array $row): string
     {
-        $b = "Schools/{$this->school_name}/Operations/Assets";
-        return $sub !== '' ? "{$b}/{$sub}" : $b;
+        $docId  = (string) ($row['id'] ?? '');
+        $prefix = $this->fs->schoolId() . '_';
+        return strpos($docId, $prefix) === 0 ? substr($docId, strlen($prefix)) : $docId;
     }
-    private function _assets(string $id = ''): string
+
+    /** Fields of a schoolWhere() row (accepts both {id,data} and raw shapes). */
+    private function _data(array $row): array
     {
-        return $id !== '' ? $this->_ast("Assets/{$id}") : $this->_ast('Assets');
+        return (isset($row['data']) && is_array($row['data'])) ? $row['data'] : $row;
     }
-    private function _cats(string $id = ''): string
+
+    /** Next sequential id via the canonical per-school atomic counter (reused,
+     *  no duplicate id authority). Returns '' on failure so the caller fails
+     *  closed rather than minting a colliding id. */
+    private function _gen_id(string $kind, string $prefix): string
     {
-        return $id !== '' ? $this->_ast("Categories/{$id}") : $this->_ast('Categories');
-    }
-    private function _assignments(string $id = ''): string
-    {
-        return $id !== '' ? $this->_ast("Assignments/{$id}") : $this->_ast('Assignments');
-    }
-    private function _maintenance(string $id = ''): string
-    {
-        return $id !== '' ? $this->_ast("Maintenance/{$id}") : $this->_ast('Maintenance');
-    }
-    private function _counters(string $type): string
-    {
-        return $this->_ast("Counters/{$type}");
+        $n = $this->fs->nextSchoolCounter('asset' . $kind);
+        return $n > 0 ? sprintf('%s%04d', $prefix, $n) : '';
     }
 
     // ====================================================================
@@ -80,11 +85,9 @@ class Assets extends MY_Controller
     public function get_categories()
     {
         $this->_require_role(self::VIEW_ROLES, '', 'Assets', 'view');
-        $cats = $this->firebase->get($this->_cats());
+        $rows = $this->fs->schoolWhere(self::COL_CATS);
         $list = [];
-        if (is_array($cats)) {
-            foreach ($cats as $id => $c) { $c['id'] = $id; $list[] = $c; }
-        }
+        foreach ($rows as $row) { $c = $this->_data($row); $c['id'] = $this->_eid($row); $list[] = $c; }
         $this->json_success(['categories' => $list]);
     }
 
@@ -99,8 +102,10 @@ class Assets extends MY_Controller
         if (!in_array($method, ['SLM', 'WDV'], true)) $method = 'SLM';
 
         $isNew = ($id === '');
-        if ($isNew) { $id = $this->operations_accounting->next_id($this->_counters('Category'), 'ACAT'); }
-        else { $id = $this->safe_path_segment($id, 'category_id'); }
+        if ($isNew) {
+            $id = $this->_gen_id('Category', 'ACAT');
+            if ($id === '') $this->json_error('Could not allocate a category id. Please retry.');
+        } else { $id = $this->safe_path_segment($id, 'category_id'); }
 
         $data = [
             'name' => $name,
@@ -111,7 +116,7 @@ class Assets extends MY_Controller
         ];
         if ($isNew) $data['created_at'] = date('c');
 
-        $this->firebase->set($this->_cats($id), $data);
+        $this->fs->setEntity(self::COL_CATS, $id, $data);
         $this->json_success(['id' => $id, 'message' => 'Category saved.']);
     }
 
@@ -119,15 +124,15 @@ class Assets extends MY_Controller
     {
         $this->_require_role(self::MANAGE_ROLES, '', 'Assets', 'manage');
         $id = $this->safe_path_segment(trim($this->input->post('id') ?? ''), 'category_id');
-        $assets = $this->firebase->get($this->_assets());
-        if (is_array($assets)) {
-            foreach ($assets as $a) {
-                if (($a['category_id'] ?? '') === $id) {
-                    $this->json_error('Cannot delete: assets use this category.');
-                }
+        // Scan this school's assets (schoolId-only query — no composite index) and
+        // refuse deletion while any asset still references the category.
+        $rows = $this->fs->schoolWhere(self::COL_ASSETS);
+        foreach ($rows as $row) {
+            if (($this->_data($row)['category_id'] ?? '') === $id) {
+                $this->json_error('Cannot delete: assets use this category.');
             }
         }
-        $this->firebase->delete($this->_cats(), $id);
+        $this->fs->removeEntity(self::COL_CATS, $id);
         $this->json_success(['message' => 'Category deleted.']);
     }
 
@@ -139,11 +144,9 @@ class Assets extends MY_Controller
     public function get_assets()
     {
         $this->_require_role(self::VIEW_ROLES, '', 'Assets', 'view');
-        $assets = $this->firebase->get($this->_assets());
+        $rows = $this->fs->schoolWhere(self::COL_ASSETS);
         $list = [];
-        if (is_array($assets)) {
-            foreach ($assets as $id => $a) { $a['id'] = $id; $list[] = $a; }
-        }
+        foreach ($rows as $row) { $a = $this->_data($row); $a['id'] = $this->_eid($row); $list[] = $a; }
         $this->json_success($this->operations_accounting->paginate(
             $list, 'assets',
             $this->input->get('page'),
@@ -174,17 +177,18 @@ class Assets extends MY_Controller
         $isNew = ($id === '');
         $existingAsset = null;
         if ($isNew) {
-            $id = $this->operations_accounting->next_id($this->_counters('Asset'), 'AST');
+            $id = $this->_gen_id('Asset', 'AST');
+            if ($id === '') $this->json_error('Could not allocate an asset id. Please retry.');
         } else {
             $id = $this->safe_path_segment($id, 'asset_id');
-            $existingAsset = $this->firebase->get($this->_assets($id));
+            $existingAsset = $this->fs->getEntity(self::COL_ASSETS, $id);
             if (!is_array($existingAsset)) $this->json_error('Asset not found.');
         }
 
         // Get category info for depreciation
         $depRate = 10; $depMethod = 'SLM';
         if ($categoryId !== '') {
-            $cat = $this->firebase->get($this->_cats($categoryId));
+            $cat = $this->fs->getEntity(self::COL_CATS, $categoryId);
             if (is_array($cat)) {
                 $depRate   = (float) ($cat['depreciation_rate'] ?? 10);
                 $depMethod = $cat['method'] ?? 'SLM';
@@ -222,7 +226,7 @@ class Assets extends MY_Controller
             $data['purchase_journal_id'] = $journalId;
         }
 
-        $this->firebase->set($this->_assets($id), $data);
+        $this->fs->setEntity(self::COL_ASSETS, $id, $data);
         $this->json_success(['id' => $id, 'message' => 'Asset saved.']);
     }
 
@@ -232,34 +236,31 @@ class Assets extends MY_Controller
         $id = $this->safe_path_segment(trim($this->input->post('id') ?? ''), 'asset_id');
 
         // Check active assignments
-        $assignments = $this->firebase->get($this->_assignments());
-        if (is_array($assignments)) {
-            foreach ($assignments as $a) {
-                if (($a['asset_id'] ?? '') === $id && ($a['status'] ?? '') === 'Active') {
-                    return $this->json_error('Cannot delete: asset is currently assigned.');
-                }
+        $asnRows = $this->fs->schoolWhere(self::COL_ASN);
+        foreach ($asnRows as $row) {
+            $a = $this->_data($row);
+            if (($a['asset_id'] ?? '') === $id && ($a['status'] ?? '') === 'Active') {
+                return $this->json_error('Cannot delete: asset is currently assigned.');
             }
         }
 
         // OPS-5 FIX: Cascade delete maintenance records for this asset
-        $maintenance = $this->firebase->get($this->_maintenance());
-        if (is_array($maintenance)) {
-            foreach ($maintenance as $mid => $m) {
-                if (($m['asset_id'] ?? '') === $id) {
-                    $this->firebase->delete($this->_maintenance(), $mid);
-                }
+        $mntRows = $this->fs->schoolWhere(self::COL_MNT);
+        foreach ($mntRows as $row) {
+            if (($this->_data($row)['asset_id'] ?? '') === $id) {
+                $this->fs->removeEntity(self::COL_MNT, $this->_eid($row));
             }
         }
 
         // OPS-5 FIX: Reverse purchase journal if asset had one
         // Operations_accounting does not have a reverse_journal() method yet,
         // so we log a warning for manual follow-up.
-        $asset = $this->firebase->get($this->_assets($id));
+        $asset = $this->fs->getEntity(self::COL_ASSETS, $id);
         if (is_array($asset) && !empty($asset['purchase_journal_id'])) {
             log_message('info', "Asset {$id} deleted — purchase journal '{$asset['purchase_journal_id']}' may need manual reversal.");
         }
 
-        $this->firebase->delete($this->_assets(), $id);
+        $this->fs->removeEntity(self::COL_ASSETS, $id);
         $this->json_success(['message' => 'Asset deleted.']);
     }
 
@@ -271,14 +272,13 @@ class Assets extends MY_Controller
     {
         $this->_require_role(self::VIEW_ROLES, '', 'Assets', 'view');
         $filterAssetId = trim($this->input->get('asset_id') ?? '');
-        $assignments = $this->firebase->get($this->_assignments());
+        $rows = $this->fs->schoolWhere(self::COL_ASN);
         $list = [];
-        if (is_array($assignments)) {
-            foreach ($assignments as $id => $a) {
-                if ($filterAssetId !== '' && ($a['asset_id'] ?? '') !== $filterAssetId) continue;
-                $a['id'] = $id;
-                $list[] = $a;
-            }
+        foreach ($rows as $row) {
+            $a = $this->_data($row);
+            if ($filterAssetId !== '' && ($a['asset_id'] ?? '') !== $filterAssetId) continue;
+            $a['id'] = $this->_eid($row);
+            $list[] = $a;
         }
         $this->json_success(['assignments' => $list]);
     }
@@ -293,10 +293,11 @@ class Assets extends MY_Controller
         if ($assignedTo === '') $this->json_error('Assigned-to is required (staff name, room, or department).');
 
         // Verify asset
-        $asset = $this->firebase->get($this->_assets($assetId));
+        $asset = $this->fs->getEntity(self::COL_ASSETS, $assetId);
         if (!is_array($asset)) $this->json_error('Asset not found.');
 
-        $asnId = $this->operations_accounting->next_id($this->_counters('Assignment'), 'ASN');
+        $asnId = $this->_gen_id('Assignment', 'ASN');
+        if ($asnId === '') $this->json_error('Could not allocate an assignment id. Please retry.');
 
         $data = [
             'asset_id'    => $assetId,
@@ -310,7 +311,7 @@ class Assets extends MY_Controller
             'created_at'  => date('c'),
         ];
 
-        $this->firebase->set($this->_assignments($asnId), $data);
+        $this->fs->setEntity(self::COL_ASN, $asnId, $data);
         $this->json_success(['id' => $asnId, 'message' => "Asset assigned to {$assignedTo}."]);
     }
 
@@ -319,11 +320,11 @@ class Assets extends MY_Controller
         $this->_require_role(self::MANAGE_ROLES, '', 'Assets', 'edit');
         $asnId = $this->safe_path_segment(trim($this->input->post('assignment_id') ?? ''), 'assignment_id');
 
-        $asn = $this->firebase->get($this->_assignments($asnId));
+        $asn = $this->fs->getEntity(self::COL_ASN, $asnId);
         if (!is_array($asn)) $this->json_error('Assignment not found.');
         if (($asn['status'] ?? '') !== 'Active') $this->json_error('Assignment is not active.');
 
-        $this->firebase->update($this->_assignments($asnId), [
+        $this->fs->updateEntity(self::COL_ASN, $asnId, [
             'return_date' => date('Y-m-d'),
             'status'      => 'Returned',
             'returned_by' => $this->admin_name,
@@ -342,14 +343,13 @@ class Assets extends MY_Controller
     {
         $this->_require_role(self::VIEW_ROLES, '', 'Assets', 'view');
         $filterAssetId = trim($this->input->get('asset_id') ?? '');
-        $maint = $this->firebase->get($this->_maintenance());
+        $rows = $this->fs->schoolWhere(self::COL_MNT);
         $list = [];
-        if (is_array($maint)) {
-            foreach ($maint as $id => $m) {
-                if ($filterAssetId !== '' && ($m['asset_id'] ?? '') !== $filterAssetId) continue;
-                $m['id'] = $id;
-                $list[] = $m;
-            }
+        foreach ($rows as $row) {
+            $m = $this->_data($row);
+            if ($filterAssetId !== '' && ($m['asset_id'] ?? '') !== $filterAssetId) continue;
+            $m['id'] = $this->_eid($row);
+            $list[] = $m;
         }
         usort($list, function ($a, $b) {
             return strcmp($b['date'] ?? '', $a['date'] ?? '');
@@ -379,12 +379,14 @@ class Assets extends MY_Controller
         if (!in_array($status, ['Scheduled', 'InProgress', 'Completed'], true)) $status = 'Completed';
 
         // Verify asset
-        $asset = $this->firebase->get($this->_assets($assetId));
+        $asset = $this->fs->getEntity(self::COL_ASSETS, $assetId);
         if (!is_array($asset)) $this->json_error('Asset not found.');
 
         $isNew = ($id === '');
-        if ($isNew) { $id = $this->operations_accounting->next_id($this->_counters('Maintenance'), 'MNT'); }
-        else { $id = $this->safe_path_segment($id, 'maintenance_id'); }
+        if ($isNew) {
+            $id = $this->_gen_id('Maintenance', 'MNT');
+            if ($id === '') $this->json_error('Could not allocate a maintenance id. Please retry.');
+        } else { $id = $this->safe_path_segment($id, 'maintenance_id'); }
 
         $data = [
             'asset_id'   => $assetId,
@@ -400,7 +402,7 @@ class Assets extends MY_Controller
         ];
         if ($isNew) $data['created_at'] = date('c');
 
-        $this->firebase->set($this->_maintenance($id), $data);
+        $this->fs->setEntity(self::COL_MNT, $id, $data);
         $this->json_success(['id' => $id, 'message' => 'Maintenance record saved.']);
     }
 
@@ -416,8 +418,10 @@ class Assets extends MY_Controller
     {
         $this->_require_role(self::MANAGE_ROLES, '', 'Assets', 'edit');
 
-        $assets = $this->firebase->get($this->_assets());
-        if (!is_array($assets) || empty($assets)) $this->json_error('No assets found.');
+        $rows = $this->fs->schoolWhere(self::COL_ASSETS);
+        if (empty($rows)) $this->json_error('No assets found.');
+        $assets = [];
+        foreach ($rows as $row) { $assets[$this->_eid($row)] = $this->_data($row); }
 
         // Validate accounts
         $this->operations_accounting->validate_accounts(['5050', '1150']);
@@ -469,14 +473,13 @@ class Assets extends MY_Controller
 
         $totalDep = round($totalDep, 2);
 
-        // Batch update all assets in a single multi-path PATCH request
-        $batchData = [];
+        // Persist per-asset updates. Firestore has no atomic multi-document PATCH
+        // like RTDB's multi-path write, so each asset is updated independently;
+        // the last_dep_date month-guard above makes a partial run safely
+        // re-runnable (already-depreciated assets are skipped next time).
         foreach ($updates as $id => $upd) {
-            foreach ($upd as $field => $value) {
-                $batchData["{$id}/{$field}"] = $value;
-            }
+            $this->fs->updateEntity(self::COL_ASSETS, $id, $upd);
         }
-        $this->firebase->update($this->_assets(), $batchData);
 
         // Create depreciation journal
         $month = date('F Y');
@@ -499,12 +502,13 @@ class Assets extends MY_Controller
     public function get_depreciation_report()
     {
         $this->_require_role(self::VIEW_ROLES, '', 'Assets', 'view');
-        $assets = $this->firebase->get($this->_assets());
+        $rows = $this->fs->schoolWhere(self::COL_ASSETS);
         $list = [];
-        if (is_array($assets)) {
-            foreach ($assets as $id => $a) {
+        {
+            foreach ($rows as $row) {
+                $a = $this->_data($row);
                 $list[] = [
-                    'id'              => $id,
+                    'id'              => $this->_eid($row),
                     'name'            => $a['name'] ?? '',
                     'purchase_cost'   => (float) ($a['purchase_cost'] ?? 0),
                     'current_value'   => (float) ($a['current_value'] ?? 0),
