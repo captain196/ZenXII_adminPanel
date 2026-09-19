@@ -47,7 +47,15 @@ class Holiday_legacy_inventory extends MY_Controller
             return $this->_json(['status' => 'error', 'message' => 'Access denied.'], 403);
         }
 
-        $schoolId   = trim((string) ($this->input->get('school_id') ?: $this->school_id));
+        // TENANT ISOLATION: ALLOWED_ROLES admits school-scoped roles (School Super
+        // Admin / Admin / Principal), so a client-supplied ?school_id must NOT be
+        // honoured for them — otherwise a school admin could read another school's
+        // legacy holiday stores. Only the platform 'Super Admin' (cross-tenant by
+        // design) may inventory an arbitrary school; every school-scoped role is
+        // pinned to its OWN session tenant regardless of the query string.
+        $schoolId = ((string) $this->admin_role === 'Super Admin')
+            ? trim((string) ($this->input->get('school_id') ?: $this->school_id))
+            : (string) $this->school_id;
         $schoolName = $schoolId; // canonical: name == id
         $year       = (int) ($this->input->get('year') ?: date('Y'));
         if ($schoolId === '') {
