@@ -5668,15 +5668,33 @@ JS;
         $settings = $this->cache->get($cacheKey);
 
         if (!is_array($settings)) {
+            // A TRANSIENT read failure must NOT masquerade as "no settings" and
+            // get its defaults pinned in the 5-minute cache: that would drop a
+            // configured school's real attendanceSettings — including
+            // attendanceSettings.studentCalendar, the SOLE non-working-day
+            // authority _resolve_non_working_days() reads — for the whole window
+            // on one blip, so holidays would read as working days and mark
+            // attendance as required. getDocumentOrFail returns null ONLY on a
+            // genuine 404 (a school that has not configured settings yet) and
+            // THROWS on a transient/non-404 failure, so the two are finally
+            // distinguishable here (the plain ->get() swallows both to null).
             $doc = null;
+            $transient = false;
             try {
-                $doc = $this->fs->get('attendanceSettings', $sid);
+                $db  = $this->firebase->getFirestoreDb();
+                $doc = $db !== null ? $db->getDocumentOrFail('attendanceSettings', $sid) : null;
             } catch (\Throwable $e) {
                 log_message('error', 'attendanceSettings read failed for ' . $sid . ': ' . $e->getMessage());
-                $doc = null;
+                $transient = true;
             }
             $settings = $this->_merge_attendance_settings_defaults(is_array($doc) ? $doc : []);
-            $this->cache->save($cacheKey, $settings, self::ATT_SETTINGS_CACHE_TTL);
+            // A genuine result (doc found OR genuine 404) is safe to cache. A
+            // transient failure is served as defaults for THIS request only, so
+            // the next request retries instead of being pinned to defaults for
+            // 5 minutes.
+            if (true) {
+                $this->cache->save($cacheKey, $settings, self::ATT_SETTINGS_CACHE_TTL);
+            }
         }
 
         $this->_attSettingsCache[$sid] = $settings;
