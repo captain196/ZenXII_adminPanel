@@ -901,10 +901,22 @@ class Doc_templates extends MY_Controller
             $blocking = [];
             $warnings = [];
 
-            /* 1 — every REQUIRED contract key is bound by some object. */
+            /* 1 — every contract key is bound by some object.
+             *
+             * This used to iterate keysFor(), which returns a LIST, as though it
+             * were a map: $key was 0, 1, 2… and $def was the key STRING, so the
+             * guard read !empty('school.name'['required']) — false on every
+             * iteration, for every document type. Combined with $bound always
+             * being empty, nothing here could ever fire.
+             *
+             * The `required` flag it tested never existed: 'required' appears
+             * zero times in doc_types.php. The contract list IS the required
+             * set, which is exactly how validateBundle() reads it —
+             * `$required = array_keys($contract)` when no bound keys are given.
+             * get() returns key => definition, so the label is real too. */
             $bound = $this->_boundKeys($tpl);
-            foreach ($this->_contract()->keysFor($docType) as $key => $def) {
-                if (!empty($def['required']) && !in_array($key, $bound, true)) {
+            foreach ($this->_contract()->get($docType) as $key => $def) {
+                if (!in_array($key, $bound, true)) {
                     $blocking[] = ['type' => 'unbound', 'key' => $key,
                                    'message' => "Required field '{$def['label']}' is not on the template"];
                 }
@@ -958,7 +970,18 @@ class Doc_templates extends MY_Controller
         foreach ($this->_objects($tpl) as $o) {
             foreach ((array) ($o['content']['i18n'] ?? []) as $runs) {
                 foreach ((array) $runs as $run) {
-                    if (!empty($run['field'])) { $keys[(string) $run['field']] = true; }
+                    /* THE PERSISTED KEY IS 'f', NOT 'field'.
+                       This read 'field', which the designer has never written —
+                       designer.js emits `f:` 70 times and `field:` not once, and
+                       Doc_block_service::…() one file away already reads $r['f'].
+                       So $bound came back EMPTY for every template, which killed
+                       both checks that depend on it: the required-field gate
+                       below and the off-contract gate. The endpoint documented as
+                       the one publish is gated on was enforcing a line-height
+                       rule and nothing else. 'field' is still accepted in case a
+                       document was written by something that used it. */
+                    $key = $run['f'] ?? $run['field'] ?? null;
+                    if ($key !== null && $key !== '') { $keys[(string) $key] = true; }
                 }
             }
         }
