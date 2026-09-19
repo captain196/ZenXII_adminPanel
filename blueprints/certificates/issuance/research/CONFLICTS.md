@@ -1,6 +1,6 @@
 # Conflict register
 
-**53 entries here, plus 8 in `gap-closure-north-northeast.md` and 15 in `central-defence-and-ctsa.md` — 72 distinct IDs, no collisions.** They were not: successive research streams each appended without
+**54 entries here, plus 8 in `gap-closure-north-northeast.md` and 15 in `central-defence-and-ctsa.md` — 72 distinct IDs, no collisions.** They were not: successive research streams each appended without
 checking the highest number in use, so `C-9`, `C-19`, `C-20` and `C-16b` were each issued twice.
 The second of each is now `C-9a`, `C-19a`, `C-20a`, `C-16c`. **The `C-16b` collision was the
 damaging one — the two entries sharing that ID contradicted each other**, so a citation of "C-16b"
@@ -66,6 +66,7 @@ with their evidence** — the convenient one was never allowed to quietly win.
 | C-61 | UP gap does NOT close — but the register-is-authority thesis is evidenced | **limited · evidences the module's premise** |
 | C-62 | **The TC's most litigated function is PROOF OF DATE OF BIRTH** | **synthesis · changes risk profile** |
 | C-63 | **Board audit: 42 of 43 — DBSE was the one hole** | **coverage · new HUMAN-ONLY item** |
+| C-64 | **Evidence Act s.65B has ZERO coverage** | **open dimension · not researched** |
 | C-45–C-59 | central defence + CTSA stream — see `central-defence-and-ctsa.md` | **15 entries, held in that file** |
 | C-12a, C-16d, C-19b, C-40–C-44 | north/northeast stream — see `gap-closure-north-northeast.md` §3 | **8 entries, held in that file** |
 
@@ -1725,3 +1726,52 @@ every state and UT, plus the central and international boards — yes, and DBSE 
 The specialised and open-schooling long tail — no, only as a category.** Whether that tail matters
 depends on whether ZenXii expects madrasa, Sanskrit or open schools as tenants, which is a product
 question rather than a research one.
+
+---
+
+## C-64 · A compliance dimension with ZERO coverage — Evidence Act s.65B
+
+*Added 2026-09-20, found by auditing what "government compliance" covers rather than assuming the
+programme's own scope was the whole of it.*
+
+Across the entire `blueprints/certificates/` tree:
+
+| dimension | files mentioning it |
+|---|---|
+| DigiLocker | 12 |
+| IT Act | 11 |
+| retention | 11 |
+| DSC | 9 |
+| digital signature · e-sign | 5 |
+| DPDP | 3 |
+| **Evidence Act** | **0** |
+| **Section 65B** | **0** |
+
+**Section 65B of the Indian Evidence Act governs the admissibility of electronic records** — and a
+certificate this system produces is an electronic record. The programme has researched, at length,
+**who may issue** a certificate and **what it must say**. It has never asked **whether the thing we
+output is admissible as evidence**, or what has to accompany it if it is tendered.
+
+**This is not academic, and C-62 is why.** That entry established, from three independent
+jurisdictions, that **the TC's most litigated function in India is proof of date of birth** — 33 of
+33 Himachal High Court judgments mentioning a transfer certificate concern using it as evidence of a
+minor's age, chiefly in rape and kidnapping prosecutions, and UP's Reg. 7 Ch. III lets a school's
+record correct a Board's own certificate.
+
+**So the single most consequential use of our output is as evidence in court — and we have done no
+work at all on the rules that govern electronic evidence.**
+
+### What is open
+
+- Whether a TC rendered and stored by ZenXii is a "computer output" within s.65B, and what the
+  accompanying certificate would have to state.
+- Who signs that certificate — the section requires a person occupying a responsible official
+  position in relation to the device. For a SaaS tenant, **is that the school or the vendor?**
+- Whether the **immutable publish snapshot** already satisfies the integrity limb, or whether it
+  needs a hash chain and a contemporaneous record of the producing system.
+- How this interacts with the **DigiLocker/DLTS** path already researched, where the issued artefact
+  is a **signed XML** rather than our PDF.
+
+**Recorded as an open dimension, not researched.** Naming it is the finding; closing it is a
+separate piece of work, and it is closeable — `indiankanoon.org` answers direct fetches even with
+the search budget spent, and s.65B is among the most litigated provisions in Indian law.
