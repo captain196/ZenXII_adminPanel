@@ -100,6 +100,55 @@ final class IssuerReconcileTest extends TestCase
             '"UP" is not evidence of a mismatch — it is an absence of evidence.');
     }
 
+    /**
+     * A submitted blank is an instruction, not an absence.
+     *
+     * Only non-empty values used to reach the write, so a wrong value could be
+     * overwritten but never REMOVED — and the value most likely to be wrong
+     * here is a UDISE code misfiled as an affiliation number, which prints on
+     * marksheets.
+     */
+    public function test_a_cleared_box_clears_the_stored_value(): void
+    {
+        $stored = $this->stored(['affiliationNo' => '09310113101']); // a misfiled UDISE code
+        $r = \Issuer_identity::reconcile($stored, [
+            'affiliationBoard' => 'CBSE', 'affiliationNo' => '',
+        ]);
+        $this->assertSame('', $r['fields']['affiliationNo'] ?? null,
+            'A misfiled number cannot be removed, only overwritten.');
+        $this->assertTrue($r['claimMoved'],
+            'Clearing the claim is a change to it, so the verification must not survive.');
+        $this->assertSame([], $r['verification']);
+    }
+
+    public function test_an_unaffiliated_school_does_not_keep_an_old_number(): void
+    {
+        $stored = $this->stored(['affiliationNo' => '1234567']);
+        $r = \Issuer_identity::reconcile($stored, [
+            'affiliationBoard' => 'UNAFFILIATED', 'affiliationNo' => '',
+        ]);
+        $this->assertSame('', $r['fields']['affiliationNo'] ?? null,
+            'An unaffiliated school kept an affiliation number, which still prints.');
+    }
+
+    /** But a number typed ALONGSIDE "unaffiliated" is a contradiction, not a clear. */
+    public function test_a_number_typed_with_unaffiliated_is_reported_not_discarded(): void
+    {
+        $r = \Issuer_identity::reconcile($this->stored(), [
+            'affiliationBoard' => 'UNAFFILIATED', 'affiliationNo' => '1234567',
+        ]);
+        $this->assertArrayHasKey('affiliationNo', $r['errors'],
+            'Silently dropping the number teaches the user nothing.');
+    }
+
+    /** Absence still means absence: a door that sends no key changes no key. */
+    public function test_an_unsent_key_is_not_treated_as_a_clear(): void
+    {
+        $r = \Issuer_identity::reconcile($this->stored(), ['phone' => '9999999999']);
+        $this->assertArrayNotHasKey('affiliationNo', $r['fields'],
+            'A door that did not send the key just wiped it.');
+    }
+
     public function test_canonical_state_resolves_spacing_and_ampersands(): void
     {
         $this->assertSame('jammu and kashmir', \Issuer_identity::canonicalState('Jammu & Kashmir'));

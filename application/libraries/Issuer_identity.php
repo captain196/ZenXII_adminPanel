@@ -262,7 +262,25 @@ class Issuer_identity
            A number cannot be validated without knowing which board issued it,
            which is why the two fields were never independently checkable and
            why one of them holds a UDISE code today. */
+        /* A SUBMITTED BLANK IS AN INSTRUCTION, NOT AN ABSENCE.
+           Only non-empty values used to reach $out, so a wrong value could be
+           overwritten but never REMOVED — and the one value most likely to be
+           wrong here is a UDISE code misfiled as an affiliation number, which
+           prints on marksheets. Clearing it was impossible. The distinction is
+           between a key the door did not send (leave it alone) and a key it
+           sent empty (the user cleared the box, so clear the field). */
+        $noSubmitted = array_key_exists('affiliationNo', $in);
         $no = trim((string) ($in['affiliationNo'] ?? ''));
+
+        /* An unaffiliated school has no number, so switching to it must not
+           leave the old one behind to keep printing on marksheets.
+           Only when the box is EMPTY, though: a number typed alongside
+           "unaffiliated" is a contradiction the user should be told about, not
+           something we silently discard. That error fires below. */
+        if ($no === '' && ($noSubmitted || ($board !== '' && !self::BOARDS[$board]['needsNo']))) {
+            $out['affiliationNo'] = '';
+        }
+
         if ($no !== '') {
             if ($board === '') {
                 $errors['affiliationNo'] = 'Choose a board first — the format depends on it.';
@@ -280,7 +298,11 @@ class Issuer_identity
             }
         }
 
+        $udiseSubmitted = array_key_exists('udiseCode', $in);
         $udise = trim((string) ($in['udiseCode'] ?? ''));
+        if ($udise === '' && $udiseSubmitted) {
+            $out['udiseCode'] = '';          // same rule: a cleared box clears the field
+        }
         if ($udise !== '') {
             if (!preg_match(self::UDISE_PATTERN, $udise)) {
                 $errors['udiseCode'] = 'A UDISE+ code is exactly 11 digits.';
