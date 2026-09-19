@@ -1946,18 +1946,21 @@ class Health_check extends MY_Controller
                     return $this->_p(count($items) . ' items checked — all above minimum stock');
                 },
             ],
-            /* 4. Assets — Overdue Maintenance */
+            /* 4. Assets — Overdue Maintenance. Reads the Firestore assetMaintenance
+                  collection (Assets migrated off RTDB in commit 609ba747); the old
+                  RTDB Operations/Assets/Maintenance node is retired. */
             [
                 'name' => 'Asset Maintenance Due',
-                'fn'   => function() use ($fb, $opsBase) {
-                    $maint = $fb->get("{$opsBase}/Assets/Maintenance");
-                    if (!is_array($maint)) return $this->_p('No maintenance records — skipped');
+                'fn'   => function() {
+                    $rows = $this->fs->schoolWhere('assetMaintenance');
+                    if (empty($rows)) return $this->_p('No maintenance records — skipped');
                     $today = date('Y-m-d');
                     $overdue = [];
-                    foreach ($maint as $id => $m) {
+                    foreach ($rows as $row) {
+                        $m = (isset($row['data']) && is_array($row['data'])) ? $row['data'] : $row;
                         if (($m['status'] ?? '') !== 'Scheduled') continue;
                         if (!empty($m['next_due']) && $m['next_due'] <= $today) {
-                            $overdue[] = ($m['asset_name'] ?? $id) . ' (due: ' . $m['next_due'] . ')';
+                            $overdue[] = ($m['asset_name'] ?? '') . ' (due: ' . $m['next_due'] . ')';
                         }
                     }
                     if (!empty($overdue))
