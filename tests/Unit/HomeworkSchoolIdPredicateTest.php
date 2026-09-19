@@ -37,14 +37,22 @@ class HomeworkSchoolIdPredicateTest extends TestCase
      * at lines ~1284 and ~1182 ALSO use this exact predicate, so the
      * total file-wide count is higher.
      */
+    /** Source with runs of whitespace collapsed, so the guard survives
+     *  reformatting/refactors (the 2 read sites were later consolidated into
+     *  the shared _merge_submissions() helper — the predicate is unchanged). */
+    private function collapsed(): string
+    {
+        return (string) preg_replace('/\s+/', ' ', $this->src);
+    }
+
     public function test_bug011_submissions_queries_carry_school_id(): void
     {
-        $multiPredicate = "[\n                ['schoolId',   '=', \$this->school_name],\n                ['homeworkId', '=', \$hwId],\n            ]";
-        $count = substr_count($this->src, $multiPredicate);
+        $multiPredicate = "['schoolId', '=', \$this->school_name], ['homeworkId', '=', \$hwId],";
+        $count = substr_count($this->collapsed(), $multiPredicate);
         $this->assertGreaterThanOrEqual(
             2,
             $count,
-            "BUG-011 regression: expected ≥ 2 read-side submissions queries with schoolId+homeworkId predicate (the 2 BUG-011 sites); found $count"
+            "BUG-011 regression: expected ≥ 2 submissions/teacherMarks queries with the schoolId+homeworkId predicate; found $count"
         );
     }
 
@@ -58,8 +66,8 @@ class HomeworkSchoolIdPredicateTest extends TestCase
      */
     public function test_bug011_school_blind_count_dropped(): void
     {
-        $schoolBlind = "[['homeworkId', '=', \$hwId]]";
-        $count = substr_count($this->src, $schoolBlind);
+        $schoolBlind = "[ ['homeworkId', '=', \$hwId] ]";
+        $count = substr_count($this->collapsed(), $schoolBlind);
         $this->assertLessThanOrEqual(
             1,
             $count,

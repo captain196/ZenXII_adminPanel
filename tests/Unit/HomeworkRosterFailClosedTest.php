@@ -42,8 +42,11 @@ class HomeworkRosterFailClosedTest extends TestCase
             $this->src,
             "BUG-003 regression: actionable json_error message lost from roster catch"
         );
-        $this->assertStringContainsString(
-            "503\n",
+        // 503 issued as the json_error status arg on its own line. Matched
+        // line-ending-tolerantly (the file is CRLF) so the guard survives a
+        // checkout with either line ending.
+        $this->assertMatchesRegularExpression(
+            "~503\\s*\\r?\\n\\s*\\);~",
             $this->src,
             "BUG-003 regression: HTTP 503 status no longer issued on roster failure"
         );

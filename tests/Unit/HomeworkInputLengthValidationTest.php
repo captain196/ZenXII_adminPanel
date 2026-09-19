@@ -68,8 +68,12 @@ class HomeworkInputLengthValidationTest extends TestCase
             $this->src,
             "BUG-013 regression: update_homework description cap missing"
         );
-        $this->assertStringContainsString(
-            "if (\$subj !== '' && strlen(\$subj) > 100) \$this->json_error('Subject exceeds 100 characters.', 400);",
+        // The subject cap is enforced as `if (strlen($subj) > 100)`; the
+        // `$subj !== ''` guard that title/description carry is redundant for a
+        // length cap (an empty subject has strlen 0 < 100), so the code omits
+        // it here. Match the cap robustly, with or without that guard.
+        $this->assertMatchesRegularExpression(
+            "~strlen\\(\\\$subj\\)\\s*>\\s*100\\)\\s*\\\$this->json_error\\('Subject exceeds 100 characters\\.', 400\\);~",
             $this->src,
             "BUG-013 regression: update_homework subject cap missing"
         );
