@@ -1,6 +1,6 @@
 # Conflict register
 
-**60 entries here, plus 8 in `gap-closure-north-northeast.md` and 15 in `central-defence-and-ctsa.md` — 72 distinct IDs, no collisions.** They were not: successive research streams each appended without
+**61 entries here, plus 8 in `gap-closure-north-northeast.md` and 15 in `central-defence-and-ctsa.md` — 72 distinct IDs, no collisions.** They were not: successive research streams each appended without
 checking the highest number in use, so `C-9`, `C-19`, `C-20` and `C-16b` were each issued twice.
 The second of each is now `C-9a`, `C-19a`, `C-20a`, `C-16c`. **The `C-16b` collision was the
 damaging one — the two entries sharing that ID contradicted each other**, so a citation of "C-16b"
@@ -72,6 +72,7 @@ with their evidence** — the convenient one was never allowed to quietly win.
 | C-67 | **JJ Act s.94 ranks the school certificate FIRST for age** | **statutory · most consequential** |
 | C-68 | **Our PDF is not a signed document; "himself" forbids automation** | **product-binding** |
 | C-69 | **"Sign all" is not buildable — 10 docs / 10 minutes** | **UI-binding** |
+| C-70 | **DPDP: clock starts 13 May 2027 · US storage lawful · education half-exempt** | **corrects me twice** |
 | C-66a | IT Act s.9 — the statute behind DigiLocker's refusal | corroborates C-66 |
 | C-45–C-59 | central defence + CTSA stream — see `central-defence-and-ctsa.md` | **15 entries, held in that file** |
 | C-12a, C-16d, C-19b, C-40–C-44 | north/northeast stream — see `gap-closure-north-northeast.md` §3 | **8 entries, held in that file** |
@@ -2028,3 +2029,78 @@ record.** Rule 9A's *"may accept"* is not loose drafting — it is the only thin
 **Two research threads reached this from opposite directions** — DigiLocker case law and the
 signature statute — and landed on the same provision. That is the strongest form of corroboration
 this programme gets.
+
+---
+
+## C-70 · DPDP: the clock has not started, US storage is lawful, and education is exempt from half of s.9
+
+*Added 2026-09-20. Full working in `dpdp-childrens-data.md` (814 lines, gazette-sourced).*
+
+**Both the Act and the Rules are notified — and almost nothing that binds us is in force yet.**
+
+**G.S.R. 843(E)** (13 Nov 2025, F. No. AA-11038/1/2025-CL&ES) commences only s.1(2), s.2,
+ss.18–26 (the Board), s.35, ss.38–43 and s.44(1)&(3). **ss.7–10, ss.11–17 and ss.28–34 commence
+eighteen months later — 13 May 2027** — so **s.8, s.9, s.10, s.16 and the entire penalty Schedule
+are not yet enforceable.** **G.S.R. 846(E)** (13 Nov 2025, published 14 Nov) is the **final** Rules,
+not the January draft, and Rule 1(2)–(4) phases identically.
+
+**That is roughly twenty months of runway against a rulebook that is already complete.** There is
+nothing left to wait out — the text to build against exists today.
+
+### US storage is lawful, and the reasoning is the opposite of GDPR's
+
+**s.16 is a blacklist, not a whitelist.** Transfer is permitted by default and the Government *may*
+restrict to notified countries. **No country has ever been notified**, and s.16 is not in force in
+any case. **Rule 15** confirms data *"may be transferred outside the territory of India"*.
+
+**So the `nam5`/Ohio constraint recorded in `data-residency-and-consent-FACTS.md` is not a DPDP
+compliance problem.** Two caveats kept: **s.3(b)** means being in Ohio puts ZenXii *inside* the
+Act's reach rather than outside it, and **Rule 13(4)** is the only localisation hook — doubly
+contingent on an SDF notification *and* a Government data specification, neither of which exists.
+
+### Education is exempt from the tracking ban, not from consent
+
+**This was the corpus's highest-value open question and it is closed.** **Rule 12 + Fourth Schedule
+Part A.3** disapply **s.9(1) and s.9(3)** for an educational institution, conditioned on
+*"Processing is restricted to tracking and behavioural monitoring — (a) for the educational
+activities of such institution; or (b) in the interests of safety of children enrolled."*
+
+On the narrow reading the research adopts and justifies, **the s.9(3) tracking ban is largely lifted
+for schools; the s.9(1) consent duty is not.** Ordinary record processing still needs verifiable
+parental consent. **Flagged for legal opinion before commercial reliance** — the reading is
+defensible, not settled.
+
+**And that consent is easier than feared:** **Rule 10(1)(a)** permits reliance on *"reliable details
+of identity and age available with the Data Fiduciary"* — which a school already holds from
+admission. **DigiLocker is the fallback, not the requirement.**
+
+### The real exposure is security, and it lands on a known weakness
+
+**s.8(5) reasonable security safeguards carries ₹250 crore — the largest head in the Act** — and
+**Rule 6** now gives it a concrete checklist: encryption, access control, access logs with
+**one-year retention**, backups, and a processor contract.
+
+It lands on an architecture this repo already documents as weak: **`ModuleGate.kt` fails open**, and
+the real boundary is a **shared `firestore.rules` file that production has drifted from**. Under
+**s.2(u)** a rules gap is *"unauthorised processing"* — which has **no harm threshold** and expressly
+includes *"loss of access"*, so **an outage can be a reportable breach.**
+
+### Two corrections it made to us
+
+1. **To my own factual file.** I had listed the admission consent's silence on cross-border transfer
+   as a property worth noting. **Neither s.5 nor Rule 3 requires disclosing it** — a genuine
+   divergence from GDPR Art. 13(1)(f). Importing European intuitions would have manufactured a
+   finding. Corrected in place.
+2. **To my brief.** I told the agent that volume of *children's* data is an express Significant Data
+   Fiduciary factor. **It is not** — s.10(1) says *"the volume and sensitivity of personal data
+   processed"*, and children's data appears nowhere in s.10. My premise survives as inference only.
+
+### A product feature with a deadline
+
+**s.5(2)** obliges a **retrospective notice to every parent who consented before commencement.** That
+is a build item with a known date, not a policy question.
+
+### The one thing that could disturb this
+
+**CERT-In's 2022 directions** — Indian-jurisdiction log retention — are **unresearched**, and are the
+single item most likely to qualify the US-storage conclusion. Logged as the next thread.

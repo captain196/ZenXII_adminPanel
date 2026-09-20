@@ -48,7 +48,12 @@ this codebase does with anything.
 2. **Its stated purpose is "admission purposes."** Not enrolment, not the years of records that
    follow, not certificate issuance, not the Admission & Withdrawal Register that a transfer
    certificate transcribes years later.
-3. **It says nothing about where the data goes.** No mention of storage or processing outside India.
+3. ~~**It says nothing about where the data goes.**~~ **CORRECTED 2026-09-20 — this is not a
+   defect.** I listed the absence of any cross-border disclosure as a property worth noting, with the
+   implication it was a gap. The DPDP research establishes that **neither s.5 nor Rule 3 requires a
+   Data Fiduciary to disclose cross-border transfer** — a real divergence from GDPR Art. 13(1)(f),
+   and a place where importing European intuitions would have manufactured a finding. The consent is
+   silent on this because Indian law does not ask it to speak.
 4. **It is one checkbox**, not an itemised notice, and the person ticking it is whoever filled the
    form — there is no mechanism that establishes them as a parent or guardian.
 
