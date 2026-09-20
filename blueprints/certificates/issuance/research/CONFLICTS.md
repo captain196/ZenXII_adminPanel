@@ -1,6 +1,6 @@
 # Conflict register
 
-**55 entries here, plus 8 in `gap-closure-north-northeast.md` and 15 in `central-defence-and-ctsa.md` — 72 distinct IDs, no collisions.** They were not: successive research streams each appended without
+**56 entries here, plus 8 in `gap-closure-north-northeast.md` and 15 in `central-defence-and-ctsa.md` — 72 distinct IDs, no collisions.** They were not: successive research streams each appended without
 checking the highest number in use, so `C-9`, `C-19`, `C-20` and `C-16b` were each issued twice.
 The second of each is now `C-9a`, `C-19a`, `C-20a`, `C-16c`. **The `C-16b` collision was the
 damaging one — the two entries sharing that ID contradicted each other**, so a citation of "C-16b"
@@ -68,6 +68,7 @@ with their evidence** — the convenient one was never allowed to quietly win.
 | C-63 | **Board audit: 42 of 43 — DBSE was the one hole** | **coverage · new HUMAN-ONLY item** |
 | C-64 | **Evidence Act s.65B has ZERO coverage** | **CLOSED by `electronic-evidence-s63.md`** |
 | C-65 | **s.65B is REPEALED — s.63 BSA governs, and demands more** | **statute change · product gap** |
+| C-66 | **DigiLocker does NOT sidestep s.63 — Rule 9A is permissive** | **corrects my own hypothesis** |
 | C-45–C-59 | central defence + CTSA stream — see `central-defence-and-ctsa.md` | **15 entries, held in that file** |
 | C-12a, C-16d, C-19b, C-40–C-44 | north/northeast stream — see `gap-closure-north-northeast.md` §3 | **8 entries, held in that file** |
 
@@ -1827,3 +1828,35 @@ describe both parts and confirm both are required, but none quotes the form or d
 Also unexamined: whether the **DigiLocker/DLTS** route, where the artefact is **signed XML** held by
 a government intermediary, authenticates differently from a PDF we render. The two paths have never
 been compared on admissibility.
+
+
+---
+
+## C-66 · DigiLocker does not solve admissibility — Rule 9A is permissive, and a High Court refused it on a leaving certificate
+
+*Added 2026-09-20. Corrects a hypothesis I put in writing before testing it.*
+
+I proposed the DigiLocker route might authenticate differently from a PDF we render, making it
+*"the safer issuance channel for exactly the documents that end up in court."* **Testing it produced
+the reverse, on our exact document type.**
+
+**Rule 9A** (IT (Digital Locker Facilities) Rules 2016, notified 8.2.2017) says issuers *"**may**
+start issuing and Requesters **may** start accepting"* documents *"at par with the physical
+documents"* **[A]**. **The verb is permissive in both limbs** — it is an entitlement to rely, not a
+duty to accept.
+
+**And a High Court has declined to enforce it, for a School Leaving Certificate.** In
+**Hritika Mitra v. The Registrar, Ravenshaw University** (Orissa HC, W.P.(C) 8537/2021, 25.06.2021)
+**[A]** the petitioner argued exactly that DigiLocker documents *"are deemed to be at par with the
+original physical documents in terms of Rule 9A"*. The court **rejected** it: mark sheets might pass
+digitally, but documents requiring physical verification — **specifically the School Leaving
+Certificate** — must be produced in original. Admission denied.
+
+**Kept honest:** that is an **admission-requirement** case, not an **evidence** case, and the two do
+not collapse. But a search for judgments on DigiLocker documents as evidence, or requiring a
+s.65B/s.63 certificate for one, returned **no matching results** — so there is nothing on the other
+side of the ledger either.
+
+**Consequence: DigiLocker may still be worth building** — reach, convenience and issuer verification
+are untouched, and the compliance plan's reasons stand — **but not on the theory that it solves
+admissibility, because nothing established here supports that.**

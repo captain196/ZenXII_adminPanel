@@ -146,7 +146,72 @@ supplies one or ships documents its own users cannot tender in court.
 - **What qualifies as the Part B expert** — **not established.** H.S. Rai gestures at *"an expert
   from postal authorities or the courier company"* for the facts before it, which is domain-specific
   and no guide to ours.
-- Whether the **DigiLocker/DLTS** route sidesteps this: there the issued artefact is **signed XML**
-  held by a government intermediary, which may authenticate differently from a PDF we render. The
-  two paths were researched separately and have never been compared on admissibility.
+- ~~Whether the **DigiLocker/DLTS** route sidesteps this~~ — **answered in §7, and the answer is no.**
 - Whether a **hash chain** across issued documents is warranted, or a per-document hash suffices.
+
+
+---
+
+## 7 · DigiLocker does NOT sidestep this — and I had it backwards
+
+I proposed that the DigiLocker route might authenticate differently and be *"the safer issuance
+channel for exactly the documents that end up in court."* **The evidence says the opposite, and it
+says it about our document specifically.**
+
+### Rule 9A is permissive, not mandatory
+
+**Rule 9A**, *Information Technology (Preservation and Retention of Information by Intermediaries
+Providing Digital Locker Facilities) Rules 2016*, notified **8.2.2017**, effective **21.7.2016** —
+titled *"Issuing certificates or documents in Digital Locker System and accepting certificates or
+documents shared from Digital Locker Account at par with Physical Documents"* **[A]**:
+
+> *"Issuers **may** start issuing and Requesters **may** start accepting digitally (or
+> electronically) signed certificates or documents shared from subscribers' Digital Locker accounts
+> **at par with the physical documents**."*
+
+> *"…when accessed or accepted by a requester through the URI, it shall be deemed to have been shared
+> by the issuer directly in electronic form."*
+
+**The verb is "may", in both limbs.** Rule 9A permits a requester to accept; it does not oblige one.
+The parity is an entitlement to rely, not a duty to accept — and everything in the corpus about
+schools demanding originals survives it.
+
+### A High Court has already refused to enforce that parity — for a School Leaving Certificate
+
+**Hritika Mitra v. The Registrar, Ravenshaw University**, High Court of Orissa at Cuttack,
+**W.P.(C) 8537 of 2021**, decided **25.06.2021** **[A]**.
+
+The petitioner argued precisely the proposition I was testing — *"documents issued under the
+DigiLocker system are deemed to be at par with the original physical documents in terms of
+Rule 9A."*
+
+**The court rejected it.** It held that while digitally certified documents might suffice for some
+items such as mark sheets, mandatory documents requiring physical verification — **specifically the
+School Leaving Certificate** — must be produced in original. Relief of the kind sought *"can be
+granted only in exceptional circumstances and in the rarest of rare cases."* **Admission denied.**
+
+**Of every document class this could have turned on, it turned on the leaving certificate.**
+
+### The distinction that keeps this honest
+
+**Hritika Mitra is an admission-requirement case, not an evidence case.** It decides whether an
+institution may insist on a physical original, not whether a DigiLocker document is admissible under
+s.63 BSA. Those are different questions and I am not going to collapse them.
+
+**But the search for the evidence question returned nothing at all**: a query for judgments accepting
+or rejecting a DigiLocker document as evidence, or requiring a s.65B/s.63 certificate for one,
+returned **no matching results**. So:
+
+| question | answer |
+|---|---|
+| Does Rule 9A *oblige* acceptance? | **No — "may", both limbs** |
+| Has a court enforced Rule 9A parity for a leaving certificate? | **No — Orissa HC declined** |
+| Has any court ruled on DigiLocker documents as *evidence* under s.65B/s.63? | **Not found** |
+
+**So DigiLocker cannot be relied on to avoid the s.63 certificate.** It may still be worth building
+for reach, convenience and issuer verification — the compliance plan's reasons are untouched — but
+**not on the theory that it solves admissibility. It does not, on anything established here.**
+
+**Correcting the record:** my suggestion that DigiLocker would be the safer channel for
+court-bound documents was a hypothesis, and testing it produced the reverse. The one judgment on
+point went against parity, on our exact document type.
