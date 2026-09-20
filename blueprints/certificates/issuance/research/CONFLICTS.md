@@ -1,6 +1,6 @@
 # Conflict register
 
-**56 entries here, plus 8 in `gap-closure-north-northeast.md` and 15 in `central-defence-and-ctsa.md` — 72 distinct IDs, no collisions.** They were not: successive research streams each appended without
+**57 entries here, plus 8 in `gap-closure-north-northeast.md` and 15 in `central-defence-and-ctsa.md` — 72 distinct IDs, no collisions.** They were not: successive research streams each appended without
 checking the highest number in use, so `C-9`, `C-19`, `C-20` and `C-16b` were each issued twice.
 The second of each is now `C-9a`, `C-19a`, `C-20a`, `C-16c`. **The `C-16b` collision was the
 damaging one — the two entries sharing that ID contradicted each other**, so a citation of "C-16b"
@@ -69,6 +69,7 @@ with their evidence** — the convenient one was never allowed to quietly win.
 | C-64 | **Evidence Act s.65B has ZERO coverage** | **CLOSED by `electronic-evidence-s63.md`** |
 | C-65 | **s.65B is REPEALED — s.63 BSA governs, and demands more** | **statute change · product gap** |
 | C-66 | **DigiLocker does NOT sidestep s.63 — Rule 9A is permissive** | **corrects my own hypothesis** |
+| C-67 | **JJ Act s.94 ranks the school certificate FIRST for age** | **statutory · most consequential** |
 | C-45–C-59 | central defence + CTSA stream — see `central-defence-and-ctsa.md` | **15 entries, held in that file** |
 | C-12a, C-16d, C-19b, C-40–C-44 | north/northeast stream — see `gap-closure-north-northeast.md` §3 | **8 entries, held in that file** |
 
@@ -1860,3 +1861,64 @@ side of the ledger either.
 **Consequence: DigiLocker may still be worth building** — reach, convenience and issuer verification
 are untouched, and the compliance plan's reasons stand — **but not on the theory that it solves
 admissibility, because nothing established here supports that.**
+
+---
+
+## C-67 · Statute ranks the school's certificate FIRST for age — above the municipal birth certificate
+
+*Added 2026-09-20. Elevates C-62 from an observed pattern to a statutory hierarchy.*
+
+C-62 established, from three jurisdictions, that **the TC's most litigated function is proof of date
+of birth** — 33 of 33 Himachal judgments mentioning a transfer certificate concern using it as
+evidence of a minor's age. That was a pattern in the case law. **It is more than a pattern.**
+
+**Juvenile Justice (Care and Protection of Children) Act 2015, s.94(2)**, reproduced by the Supreme
+Court in **State of Uttar Pradesh v. Anurudh**, 2026 INSC 47 (09.01.2026, Karol J) **[A]**:
+
+> **(i)** *the date of birth certificate from the school, or the matriculation or equivalent
+> certificate from the concerned examination Board, **if available; and in the absence thereof;***
+>
+> **(ii)** *the birth certificate given by a corporation or a municipal authority or a panchayat;*
+>
+> **(iii)** *and only in the absence of (i) and (ii) above, age shall be determined by an ossification
+> test or any other latest medical age determination test.*
+
+### Read the ordering
+
+**The school's certificate is in clause (i). The municipal birth certificate is in clause (ii), and
+is reached only *"in the absence"* of clause (i).** Medical testing is last, and only when both
+documentary tiers fail.
+
+**So a document a school issues outranks the State's own birth certificate for determining a
+child's age.** Not as a matter of judicial habit — by the ordering of the section.
+
+The presumption is rebuttable, not conclusive: **Rishipal Singh Solanki v. State of U.P.**,
+(2022) 8 SCC 602 **[A]** holds the s.94(2) documents raise a *"presumption of juvenility"* that is
+*"not conclusive proof"* and *"may be rebutted by contra evidence"*, and that a *"mechanical view
+regarding the age of a person cannot be adopted solely on the basis of medical opinion."*
+
+### Why this is the most consequential finding in the programme
+
+Juvenility decides **whether a person is tried as a child or as an adult.** The document that
+statute consults *first* to decide that is the one this module renders.
+
+Three things follow, and they compound:
+
+1. **A wrong date of birth is not a data-quality defect.** It is an error in the document the law
+   reaches for before it reaches for the birth certificate, in a determination that changes which
+   court a person stands in. C-62 said the DOB carries the legal weight; **s.94 says the law goes
+   here first.**
+2. **It tightens the s.63 problem rather than sitting beside it.** The artefact statute ranks first
+   as age evidence must *also* clear the electronic-records bar to be looked at — and C-65
+   established the s.63 certificate is unavoidable for anything we issue, because the "produce the
+   original device" exception cannot reach a SaaS product.
+3. **It is an argument for the per-issued-document hash, from the other direction.** A certificate
+   whose integrity cannot be demonstrated is a certificate whose presumption is easier to rebut.
+
+### Honest limit
+
+The Supreme Court text lists *"date of birth certificate from the school"* first within clause (i),
+alongside the matriculation certificate as an alternative. **Whether there is an internal ordering
+*within* clause (i) is not established here** — one summary read it as matriculation-then-school,
+which the quoted text does not support. What is established, and is what matters, is that
+**both sit in clause (i), above the municipal certificate in clause (ii).**
