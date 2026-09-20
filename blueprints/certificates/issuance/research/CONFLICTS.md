@@ -1,6 +1,6 @@
 # Conflict register
 
-**57 entries here, plus 8 in `gap-closure-north-northeast.md` and 15 in `central-defence-and-ctsa.md` — 72 distinct IDs, no collisions.** They were not: successive research streams each appended without
+**60 entries here, plus 8 in `gap-closure-north-northeast.md` and 15 in `central-defence-and-ctsa.md` — 72 distinct IDs, no collisions.** They were not: successive research streams each appended without
 checking the highest number in use, so `C-9`, `C-19`, `C-20` and `C-16b` were each issued twice.
 The second of each is now `C-9a`, `C-19a`, `C-20a`, `C-16c`. **The `C-16b` collision was the
 damaging one — the two entries sharing that ID contradicted each other**, so a citation of "C-16b"
@@ -70,6 +70,9 @@ with their evidence** — the convenient one was never allowed to quietly win.
 | C-65 | **s.65B is REPEALED — s.63 BSA governs, and demands more** | **statute change · product gap** |
 | C-66 | **DigiLocker does NOT sidestep s.63 — Rule 9A is permissive** | **corrects my own hypothesis** |
 | C-67 | **JJ Act s.94 ranks the school certificate FIRST for age** | **statutory · most consequential** |
+| C-68 | **Our PDF is not a signed document; "himself" forbids automation** | **product-binding** |
+| C-69 | **"Sign all" is not buildable — 10 docs / 10 minutes** | **UI-binding** |
+| C-66a | IT Act s.9 — the statute behind DigiLocker's refusal | corroborates C-66 |
 | C-45–C-59 | central defence + CTSA stream — see `central-defence-and-ctsa.md` | **15 entries, held in that file** |
 | C-12a, C-16d, C-19b, C-40–C-44 | north/northeast stream — see `gap-closure-north-northeast.md` §3 | **8 entries, held in that file** |
 
@@ -1922,3 +1925,106 @@ alongside the matriculation certificate as an alternative. **Whether there is an
 *within* clause (i) is not established here** — one summary read it as matriculation-then-school,
 which the quoted text does not support. What is established, and is what matters, is that
 **both sit in clause (i), above the municipal certificate in clause (ii).**
+
+---
+
+## C-68 · What we render today is not a signed document — and "himself" forbids automation, not ink
+
+*Added 2026-09-20. Full working in `signing-and-esign.md` (824 lines).*
+
+**A typed name plus a rendered seal image is not a signature in Indian law.** It is neither a
+**s.3** digital signature (no asymmetric crypto, no key pair) nor a **s.3A** electronic signature —
+s.3A(1)(b) admits *only* techniques in the **Second Schedule**, of which there are exactly **two**,
+both PKI-based. It fails s.3A(2)(a)/(b) (creation data linked to and under the signatory's control)
+and (c)/(d) (alteration detectable). **The seal image adds nothing legally.**
+
+**s.5 does not rescue it.** s.5 deems a signature requirement satisfied only where an electronic
+signature is *"affixed in such manner as may be prescribed"* — so nothing is standing on that bridge.
+
+Issuing is not thereby *unlawful*. The exposure is narrower and sharper: rules such as **Goa r.127**
+say a certificate not in the prescribed form and signed by the Head *"is not valid"* (C-28).
+
+### The obvious engineering shortcut is expressly closed
+
+The tempting design — one organisational key held by the ERP, signing everything — is ruled out by
+the CCA in terms **[B]**:
+
+> *"Document signer certificate is **not a replacement for the signature** of the authorised
+> signatory of the organisation."*
+
+**So an ERP-held key is a seal, not a signature.** Worth having as an extra layer; never a substitute.
+
+### "Signed by the Head himself" survives e-signature — what it does not survive is automation
+
+The sharpest question in the brief, and it resolves cleanly. **Keshab Chandra Mandal** (SC, 1950),
+quoted at length by the Allahabad High Court **[A]** — the intent to exclude signature *by an agent*
+is gathered
+
+> *"from the use of the word 'himself' or 'by him' or 'under his hand' or 'personally.'"*
+
+**So "himself" is a rule about agency, not about ink.** And *Vikas Gupta v. Union of India*
+(Allahabad HC, 08.09.2022) **[A]** holds a document requiring signature takes effect once signed
+*"whether physically or digitally."*
+
+**Four independent sources converge**: IT Act s.15 (*"exclusive control"*), Second Schedule entry 2
+(*"sole authentication control"*), the CCA document-signer FAQ, and *Keshab Chandra Mandal*.
+**A head of institution may sign electronically. A system may not sign for them.**
+
+### A load-bearing negative
+
+**School certificates are NOT within s.1(4)/the First Schedule** — a closed list of four
+(negotiable instrument, power of attorney, trust, will) **[A]**. So the electronic-signature regime
+applies to us **in full**. Had it gone the other way, no engineering would have made these documents
+signed at all.
+
+---
+
+## C-69 · A "sign all" button is not buildable — 10 documents, 10 minutes
+
+*Added 2026-09-20.*
+
+**CCA e-authentication guidelines v1.9 (09.09.2026), §10, remote key storage [B]:**
+
+> *"Each secure session initiated by the subscriber to access private key functions shall: (a) Be
+> valid for a maximum lifetime of **10 minutes** … (c) Be valid for a single operation … or **for a
+> defined set of not more than 10 documents** where the Session Token is single-use and
+> cryptographically bound to the exact list of document hashes explicitly authorised by the
+> subscriber, their count, and the transaction …"*
+
+**This decides a UI, not a policy.** Bulk-signing a session's leavers in one click is not a feature
+we are choosing not to build — **the ceremony forbids it.** The session is bound to *the exact list
+of document hashes and their count*, so a queue of ten is the unit, and the head authorises each
+batch.
+
+**The good news is that the real workload fits.** Transfer and bonafide certificates are issued in
+handfuls, not thousands — two to four signing ceremonies a month for a typical school. **The design
+is a signing queue batched in tens, not a "sign all 1,500" button**, and that is a constraint to
+build around rather than a blocker.
+
+### Why the s.63 problem does not go away
+
+**Signing does not cure admissibility.** A validly e-signed PDF still needs the **s.63 Part A/Part B
+certificate** (C-65) to be looked at as an electronic record. The two regimes are separate and
+cumulative: **s.3A/s.5 make it *signed*; s.63 makes it *admissible*.**
+
+---
+
+## C-66a · The statutory reason DigiLocker parity failed — IT Act s.9
+
+*Added 2026-09-20. Explains C-66 rather than qualifying it.*
+
+C-66 recorded that the Orissa High Court **refused to enforce Rule 9A parity for a School Leaving
+Certificate** (*Hritika Mitra*), and treated it as one judgment. **It is not an aberration — there is
+a statute behind it.**
+
+**IT Act 2000, s.9 [A]**, verified independently:
+
+> *"Nothing contained in sections 6, 7 and 8 shall confer a right upon any person to insist that any
+> Ministry or Department …"* accept or issue documents in electronic form.
+
+**So no one has a right to insist that a government or government-funded body accept an electronic
+record.** Rule 9A's *"may accept"* is not loose drafting — it is the only thing s.9 permits it to say.
+
+**Two research threads reached this from opposite directions** — DigiLocker case law and the
+signature statute — and landed on the same provision. That is the strongest form of corroboration
+this programme gets.
