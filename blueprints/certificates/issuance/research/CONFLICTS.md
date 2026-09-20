@@ -1,6 +1,6 @@
 # Conflict register
 
-**61 entries here, plus 8 in `gap-closure-north-northeast.md` and 15 in `central-defence-and-ctsa.md` — 72 distinct IDs, no collisions.** They were not: successive research streams each appended without
+**62 entries here, plus 8 in `gap-closure-north-northeast.md` and 15 in `central-defence-and-ctsa.md` — 72 distinct IDs, no collisions.** They were not: successive research streams each appended without
 checking the highest number in use, so `C-9`, `C-19`, `C-20` and `C-16b` were each issued twice.
 The second of each is now `C-9a`, `C-19a`, `C-20a`, `C-16c`. **The `C-16b` collision was the
 damaging one — the two entries sharing that ID contradicted each other**, so a citation of "C-16b"
@@ -73,6 +73,7 @@ with their evidence** — the convenient one was never allowed to quietly win.
 | C-68 | **Our PDF is not a signed document; "himself" forbids automation** | **product-binding** |
 | C-69 | **"Sign all" is not buildable — 10 docs / 10 minutes** | **UI-binding** |
 | C-70 | **DPDP: clock starts 13 May 2027 · US storage lawful · education half-exempt** | **corrects me twice** |
+| C-71 | **CERT-In binds NOW — and its Direction contradicts its own FAQ** | **in force since 2022** |
 | C-66a | IT Act s.9 — the statute behind DigiLocker's refusal | corroborates C-66 |
 | C-45–C-59 | central defence + CTSA stream — see `central-defence-and-ctsa.md` | **15 entries, held in that file** |
 | C-12a, C-16d, C-19b, C-40–C-44 | north/northeast stream — see `gap-closure-north-northeast.md` §3 | **8 entries, held in that file** |
@@ -2104,3 +2105,62 @@ is a build item with a known date, not a policy question.
 
 **CERT-In's 2022 directions** — Indian-jurisdiction log retention — are **unresearched**, and are the
 single item most likely to qualify the US-storage conclusion. Logged as the next thread.
+
+---
+
+## C-71 · CERT-In: the obligation already in force, and the Direction contradicts its own FAQ
+
+*Added 2026-09-20. Chased because C-70 named it the thing most likely to disturb the US-storage
+conclusion. Full working in `certin-directions-2022.md`.*
+
+**It does not overturn US storage. It does something more useful: it is the only cyber-security
+obligation here that has bound us since 2022**, while DPDP's operative provisions wait until
+**13 May 2027**.
+
+**It reaches us** — the Directions bind *"body corporate"* among others, and *"Individual citizens
+are not covered"* is the only carve-out. **s.70B(7) IT Act** backs them with *"imprisonment … up to
+one year or … fine … up to one lakh rupees or with both."*
+
+### The conflict, between two CERT-In documents
+
+| instrument | text |
+|---|---|
+| **Direction** 28.04.2022 ¶(iv) | logs *"shall be maintained **within the Indian jurisdiction**"* |
+| **CERT-In FAQ** May 2022, **Q35** | *"**The logs may be stored outside India also** as long as the obligation to produce logs to CERT-In is adhered to … in a reasonable time."* |
+
+**The FAQ is materially more permissive than the instrument it clarifies**, and both are official.
+Recorded, not resolved. Our US-hosted logs are acceptable on the FAQ's reading and not on the
+Direction's; industry relies on Q35. **The producibility duty holds either way.**
+
+### The gap is not geography — the logs largely do not exist
+
+| requirement | posture |
+|---|---|
+| *"logs of **all** their ICT systems"* | **`log_threshold = 1` — errors only** |
+| **180-day rolling retention** | **no retention or rotation policy in the repo** |
+| Indian jurisdiction | Ohio box · `us-central1` functions · US Firestore |
+| NTP from **NIC/NPL** | not configured |
+| **6-hour** incident reporting | no process |
+
+**`log_threshold = 1` means the system records errors, not activity.** So there is nothing to retain
+for 180 days and nothing to produce — the location question is downstream of a more basic one.
+
+### It interlocks with C-70, and the timing is backwards
+
+**DPDP Rule 6** independently requires access logs with **one-year retention** under the s.8(5)
+duty that carries **₹250 crore**. So two regimes want logs we are not keeping. **The longer
+requirement is the one not yet in force; the one in force today is the one being missed.**
+
+### Method worth reusing
+
+`cert-in.org.in` **403s the agent fetcher and serves normally to `curl` with a browser
+User-Agent** — the same route the DPDP pass found for `meity.gov.in`. Two government sources now
+behave this way; **treat a 403 from a `.gov.in`/`.org.in` host as a fetcher artefact, not as
+absence.**
+
+### Not established
+
+Whether a school ERP is also an *"intermediary"* (would not change the log duty, but pulls in the
+2021 Guidelines) · whether CERT-In has ever **enforced** ¶(iv) for offshore logs · and **Annexure I**,
+the reportable-incident list, which decides what the six-hour clock starts on and must be read
+before any reporting process is designed.
