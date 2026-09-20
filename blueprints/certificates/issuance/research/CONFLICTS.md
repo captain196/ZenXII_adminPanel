@@ -1,6 +1,6 @@
 # Conflict register
 
-**54 entries here, plus 8 in `gap-closure-north-northeast.md` and 15 in `central-defence-and-ctsa.md` — 72 distinct IDs, no collisions.** They were not: successive research streams each appended without
+**55 entries here, plus 8 in `gap-closure-north-northeast.md` and 15 in `central-defence-and-ctsa.md` — 72 distinct IDs, no collisions.** They were not: successive research streams each appended without
 checking the highest number in use, so `C-9`, `C-19`, `C-20` and `C-16b` were each issued twice.
 The second of each is now `C-9a`, `C-19a`, `C-20a`, `C-16c`. **The `C-16b` collision was the
 damaging one — the two entries sharing that ID contradicted each other**, so a citation of "C-16b"
@@ -66,7 +66,8 @@ with their evidence** — the convenient one was never allowed to quietly win.
 | C-61 | UP gap does NOT close — but the register-is-authority thesis is evidenced | **limited · evidences the module's premise** |
 | C-62 | **The TC's most litigated function is PROOF OF DATE OF BIRTH** | **synthesis · changes risk profile** |
 | C-63 | **Board audit: 42 of 43 — DBSE was the one hole** | **coverage · new HUMAN-ONLY item** |
-| C-64 | **Evidence Act s.65B has ZERO coverage** | **open dimension · not researched** |
+| C-64 | **Evidence Act s.65B has ZERO coverage** | **CLOSED by `electronic-evidence-s63.md`** |
+| C-65 | **s.65B is REPEALED — s.63 BSA governs, and demands more** | **statute change · product gap** |
 | C-45–C-59 | central defence + CTSA stream — see `central-defence-and-ctsa.md` | **15 entries, held in that file** |
 | C-12a, C-16d, C-19b, C-40–C-44 | north/northeast stream — see `gap-closure-north-northeast.md` §3 | **8 entries, held in that file** |
 
@@ -1775,3 +1776,54 @@ work at all on the rules that govern electronic evidence.**
 **Recorded as an open dimension, not researched.** Naming it is the finding; closing it is a
 separate piece of work, and it is closeable — `indiankanoon.org` answers direct fetches even with
 the search budget spent, and s.65B is among the most litigated provisions in Indian law.
+
+
+---
+
+## C-65 · The provision everyone cites is repealed, and its successor asks for more
+
+*Added 2026-09-20. Closes C-64. Full working in `electronic-evidence-s63.md`.*
+
+**The Indian Evidence Act 1872 is replaced by the Bharatiya Sakshya Adhiniyam 2023, and s.65B's
+successor is s.63 BSA [A].** Any citation of "section 65B" — in this codebase, or in advice to a
+school — now names a provision that does not govern. The case law carries over; **the certificate
+requirement does not.**
+
+### Three findings that bind the product
+
+**1 · The certificate is always mandatory for us.** *Arjun Panditrao Khotkar* (2020 SCC OnLine SC
+571), applied in *Sundar @ Sundarrajan* (SC, 21.03.2023) **[A]**: *"The required certificate under
+Section 65-B(4) is unnecessary if the original device itself is produced."* **That exception cannot
+reach a SaaS product** — nobody is producing a Lightsail instance in an Indian courtroom. The escape
+route the case law offers is closed to us by construction. (Same judgment: *Shafhi Mohammad*
+overruled, *Tomaso Bruno* **per incuriam**, *Anvar P.V.* reaffirmed.)
+
+**2 · s.63 is heavier than s.65B was.** The Schedule certificate requires *"the **disclosure of hash
+value** of the electronic/digital record along with a **further certification by an expert**"*
+**[A]** — **Part A** carries the record and its hash, **Part B** carries the expert. Omit either and
+*"the document becomes inadmissible."*
+
+**3 · We hash the wrong artefact — and the timing is lucky.** The module already computes
+`sha256` over **real PDF bytes** and freezes it into the immutable snapshot as `proofPdfHash`, with
+a guard against a fabricated hash. But that is the hash of **one specimen proof per published
+template version**. Part A wants the hash of **the record being tendered** — this student's
+certificate, on this date — and **nothing persists that.** Because **no print path is wired yet**
+(all 8 `document_targets.php` rows `wired => false`), there is no backlog: designing it in now costs
+a field, retrofitting it later costs a year of unauthenticatable certificates.
+
+### The part that is not an engineering question
+
+**Part B wants an expert — a person with qualifications, not a role somebody holds.** s.65B's
+*"responsible official position in relation to the operation of the relevant device"* was already
+awkward where the vendor operates the device and the school manages the activity. An expert makes it
+sharper: a school clerk is not one. **If schools cannot produce an expert, the product either
+supplies one or ships documents its own users cannot tender in court.** That is commercial and
+contractual before it is technical, and it is recorded rather than answered.
+
+### Not established
+
+The **verbatim Schedule text**, and **what qualifies as the Part B expert** — the judgments retrieved
+describe both parts and confirm both are required, but none quotes the form or defines the expert.
+Also unexamined: whether the **DigiLocker/DLTS** route, where the artefact is **signed XML** held by
+a government intermediary, authenticates differently from a PDF we render. The two paths have never
+been compared on admissibility.
