@@ -215,3 +215,55 @@ for reach, convenience and issuer verification — the compliance plan's reasons
 **Correcting the record:** my suggestion that DigiLocker would be the safer channel for
 court-bound documents was a hypothesis, and testing it produced the reverse. The one judgment on
 point went against parity, on our exact document type.
+
+
+---
+
+## 8 · Who the Part B expert is — two readings, and the difference is commercial
+
+**Not resolved. Framed, because the two candidate readings have very different consequences and it
+is worth knowing which question is open.**
+
+### Reading (a) — any person with relevant expertise
+
+The judgments say only *"an expert"*. In **H.S. Rai** the court gestured at *"an expert from postal
+authorities or the courier company"* for the facts before it — a domain person, not a credentialed
+forensic examiner. On this reading a suitably qualified technical person could sign Part B, and a
+vendor could plausibly supply one.
+
+### Reading (b) — a notified Examiner of Electronic Evidence under s.79A IT Act
+
+**s.79A IT Act 2000 [A]:**
+
+> *"79A. Central Government to notify Examiner of Electronic Evidence.—The Central Government may,
+> for the purposes … agency of the Central Government or a State Government as an Examiner …"*
+
+And courts hold the notification is constitutive, not descriptive: **unless an agency is formally
+notified under s.79A it cannot act in that capacity** — *Shyam Sunder Prasad v. Central Bureau of
+Investigation* (Allahabad HC, 2022) **[A]**.
+
+**On this reading a school could not self-certify at all**, nor could a vendor: Part B would require
+routing every issued certificate — or at least every one that ends up in evidence — through one of a
+small number of notified government agencies.
+
+### What is actually established
+
+**Nothing links the two.** A targeted search for judgments connecting the s.63 BSA Part B expert to
+a s.79A Examiner returned **no such judgment**. The BSA cases discuss *"an expert"*; the s.79A cases
+discuss notification; **no retrieved authority joins them.**
+
+| question | status |
+|---|---|
+| Does Part B require *an* expert? | **Established [A]** — and its absence is fatal (*State v. Aman*) |
+| Must that expert be a s.79A notified Examiner? | **NOT ESTABLISHED — no authority found either way** |
+| Can a school or its vendor supply one? | **Follows from the above; therefore open** |
+
+### Why this is the right place to stop
+
+The gap between (a) and (b) is the gap between *"add a signatory step"* and *"every certificate that
+might be litigated must pass through a government forensic agency."* **Guessing which one is true
+would be worse than leaving it open**, because both are plausible on the text and the product
+decision is not reversible once schools are told which it is.
+
+**This needs a lawyer, not another search.** It is the single highest-value question in the whole
+electronic-evidence thread, and it is the one thing here that research of this kind cannot close.
