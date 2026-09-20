@@ -1565,17 +1565,48 @@ class Sis extends MY_Controller
             'tc_key'      => $tcKey,
         ];
 
-        // Update Firestore student doc
+        /* WHAT THIS CERTIFICATE SAYS, CAPTURED AS ISSUED.
+         *
+         * print_tc() re-resolves the student and school documents on every
+         * print, so a TC issued today and reprinted in three years renders
+         * three-years-from-now's data, and nothing recorded the original. A
+         * date of birth corrected in between reprints silently, and neither
+         * copy can be shown to be the issued one.
+         *
+         * That is worse here than ordinary drift. JJ Act 2015 s.94(2) puts a
+         * school's date-of-birth certificate in clause (i), ABOVE the municipal
+         * birth certificate in clause (ii), for determining a child's age — and
+         * that determination decides whether a person is tried as a child or an
+         * adult. BSA 2023 s.63 separately requires a record's hash value and
+         * algorithm before it is admissible at all.
+         *
+         * The digest is over the CONTENT as issued, deliberately not over a
+         * rendered PDF: two prints can differ, so no single PDF is "the"
+         * record. And it proves only that the content has not moved — it does
+         * not prove who issued it. Signing is IT Act s.3A/s.5 and a separate
+         * problem; treating a digest as a signature would be exactly the
+         * reassuring mistake to avoid. */
+        $this->load->library('Issued_document_record');
+        $schoolDoc = $this->fs->get('schools', $this->school_id) ?: [];
+        $issuedSnapshot = Issued_document_record::snapshot($student, $schoolDoc, $tcData);
+        $tcData['content_digest']   = Issued_document_record::digest($issuedSnapshot);
+        $tcData['content_digest_at'] = date('c');
+
+        // Update Firestore student doc — the full snapshot lives here, where it
+        // is bounded per student, and never in tcIndex (see below).
         $tcHistory = $student['TC'] ?? [];
-        $tcHistory[$tcKey] = $tcData;
+        $tcHistory[$tcKey] = $tcData + ['content_snapshot' => $issuedSnapshot];
         $this->fs->updateEntity('students', $userId, [
             'status'    => 'TC',
             'TC'        => $tcHistory,
             'updatedAt' => date('c'),
         ]);
 
-        // Store TC in school's tcIndex for fast listing
-        $schoolDoc = $this->fs->get('schools', $this->school_id);
+        /* Store TC in school's tcIndex for fast listing — DIGEST ONLY.
+           tcIndex accumulates every TC the school has ever issued onto one
+           document, so a full content snapshot per certificate would walk it
+           into the 1MB Firestore cap (BUG-029's failure mode). The digest is
+           71 bytes; the evidence it anchors lives on the student. */
         $tcIndex = $schoolDoc['tcIndex'] ?? [];
         $tcIndex[$tcKey] = $tcData;
         $this->fs->update('schools', $this->school_id, ['tcIndex' => $tcIndex]);
