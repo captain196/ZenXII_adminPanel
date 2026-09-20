@@ -92,6 +92,35 @@ zero production callers. So **nothing has been issued through it yet, and there 
 unhashable documents.** Designing a per-issued-document hash now costs a field; adding it after a
 year of issuance means a year of certificates that cannot be authenticated.
 
+## 4a · The field list, and proof that Part B omission is fatal
+
+**The certificate's substantive contents**, paraphrased from the statute by the court in
+**H.S. Rai v. Paramjeet Singh Oberoi** (CS 873/18, Delhi District Court, 20.02.2026) **[A]** — s.63(4)
+requires *"a certificate in prescribed form … submitted along with the electronic record"*, which must
+
+> *"identify the electronic record, describe manner of production, provide device details, state
+> **hash value and algorithm**, and be signed by person responsible for operation of relevant
+> device."*
+
+**"Hash value AND algorithm"** is a concrete field pair, and it happens to be the shape the module
+already emits: the stored value is literally `'sha256:' . hash('sha256', $pdf)`, so the algorithm
+travels with the digest rather than being implied. That part of the requirement is already met in
+form — it is the *scope* of what we hash that is wrong (§4).
+
+**And Part B is not a formality.** In **State v. Aman @ Chinu & Anr** (Cr. Case 286/2025, Delhi
+District Court, ACJM-01, Tis Hazari, 01.08.2026) **[A]** the certificates were *"either in general or
+… given only in Part-A"*, and the court held the
+
+> *"absence of Part-B of the certificate which is also a necessity under Section 63 BSA and its form
+> provided in the Schedule"*
+
+meant *"such certificates cannot render the electronic records liable for being admitted in
+evidence."*
+
+**That is a decided criminal case in which electronic evidence was excluded because Part B was
+missing.** So the expert limb is not a drafting nicety that courts overlook in practice — it has
+already been the reason evidence failed.
+
 ## 5 · The question that is not technical
 
 **Part B wants an expert. Who is it?**
@@ -110,8 +139,13 @@ supplies one or ships documents its own users cannot tender in court.
 
 ## 6 · Open
 
-- The **verbatim Schedule text** for Part A and Part B — not retrieved.
-- **What qualifies as the Part B expert** — not established.
+- The **verbatim Schedule text** for Part A and Part B — **not retrieved**, and the negative is now
+  better founded: five judgments that discuss the certificate in detail were read, and **none
+  reproduces the Schedule**. They paraphrase it. Getting the form itself needs the Act text, and
+  `indiacode.nic.in` returned **HTTP 403**.
+- **What qualifies as the Part B expert** — **not established.** H.S. Rai gestures at *"an expert
+  from postal authorities or the courier company"* for the facts before it, which is domain-specific
+  and no guide to ours.
 - Whether the **DigiLocker/DLTS** route sidesteps this: there the issued artefact is **signed XML**
   held by a government intermediary, which may authenticate differently from a PDF we render. The
   two paths were researched separately and have never been compared on admissibility.
