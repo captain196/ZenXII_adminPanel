@@ -1607,7 +1607,14 @@ class Sis extends MY_Controller
            document, so a full content snapshot per certificate would walk it
            into the 1MB Firestore cap (BUG-029's failure mode). The digest is
            71 bytes; the evidence it anchors lives on the student. */
-        $tcIndex = $schoolDoc['tcIndex'] ?? [];
+        /* RE-READ, rather than reuse the copy fetched above for the snapshot.
+           tcIndex is a read-modify-write on the school document with no lock and
+           no CAS — BUG-028's shape, pre-existing here. Reusing the earlier copy
+           would widen that race window across the student write in between, so
+           the snapshot work would have made an existing weakness worse. One
+           extra read per issuance is nothing; TCs go out in handfuls. */
+        $schoolDocNow = $this->fs->get('schools', $this->school_id) ?: $schoolDoc;
+        $tcIndex = $schoolDocNow['tcIndex'] ?? [];
         $tcIndex[$tcKey] = $tcData;
         $this->fs->update('schools', $this->school_id, ['tcIndex' => $tcIndex]);
 
