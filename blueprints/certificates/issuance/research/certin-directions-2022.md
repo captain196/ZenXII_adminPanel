@@ -60,17 +60,42 @@ Checked in the repository **[A]**:
 
 | requirement | our posture |
 |---|---|
-| *"logs of **all** their ICT systems"* | **`log_threshold = 1` — errors only.** An errors-only log is not a log of the system; ordinary access and operation are not recorded at all. |
+| *"logs of **all** their ICT systems"* | **Mixed — see the correction below.** The CI file log is `log_threshold = 1`, errors only. But authentication *is* separately and durably recorded. |
 | **180-day rolling retention** | **No retention or rotation policy exists in the repo.** The `180` matches are unrelated documents. Nothing guarantees any window. |
 | **Indian jurisdiction** | Application logs on the Ohio box, Cloud Functions logs in `us-central1`, Firestore in the US project. **Nothing in India.** |
 | **NTP from NIC/NPL** | Not configured; the hosts use their providers' defaults. |
 | **6-hour reporting** | No process found. |
 | **Producibility to CERT-In** | No mechanism, and no Point of Contact recorded. |
 
-**The interesting part is that location is the least of it.** The FAQ probably forgives the
-geography. What it does not forgive is that **the logs largely do not exist** — `log_threshold = 1`
-means the system records errors, not activity, so there is nothing to retain for 180 days and
-nothing to produce.
+### Correction — authentication logging already exists, and is durable
+
+**I first wrote that "the logs largely do not exist". That was half wrong, and the half that is
+wrong matters.** Checked directly:
+
+- **`Security_telemetry::emit()` persists to Firestore** — `firestoreSet($this->collection, …)`
+  into the **`security_events`** collection, *after* writing a structured `log_message` line.
+- It is **initialised in `Admin_login.php:112`**, and the registered event types cover the whole
+  authentication surface: **`ADMIN_LOGIN_SUCCESS`, `ADMIN_LOGIN_FAILED`, `ADMIN_LOGIN_LOCKED`,
+  `ADMIN_LOGIN_AUTHZ_MISSING`**.
+- So the `log_message('info', 'Login OK …')` at `Admin_login.php:450` **is** discarded by the
+  threshold — but the event itself survives in Firestore, with the IP.
+
+**I was one step from building a second authentication audit alongside a working one.** The
+architecture is better than the file-log threshold suggests; what is thin is everything *around*
+those events.
+
+### So what is actually missing
+
+**Not the auth events. Three things around them:**
+
+1. **Retention.** Nothing rotated or retained anything — no guaranteed 180-day window, and no way to
+   state what the window was. **Addressed** by `scripts/log_retention.php` (dry-run by default).
+   **`security_events` in Firestore has no TTL either** — that is a separate, unaddressed half.
+2. **Breadth.** `log_threshold = 1` still means ordinary activity outside authentication is not in
+   the file log. The threshold is **already env-configurable** (`LOG_THRESHOLD`), so this is an
+   operational decision rather than a code change, and it is not made here.
+3. **Producibility.** There is no export path. Logs split across a Firestore collection and files on
+   one box cannot currently be handed to CERT-In *"in reasonable time"* as Q35 requires.
 
 **And this interlocks with C-70.** DPDP **Rule 6** independently requires access logs with
 **one-year retention** as part of the s.8(5) reasonable-security duty carrying ₹250 crore. So two

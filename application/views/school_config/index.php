@@ -1422,6 +1422,9 @@ function loadConfig() {
  * there is no second copy here to drift out of step with the first.
  */
 var IIBoards = [];
+/* True only while ii_registered_name holds a value WE suggested, so the note
+   saying so survives iiEvaluate() and disappears the moment the user edits. */
+var iiNameSuggested = false;
 
 function renderIssuerIdentity(ii) {
     ii = ii || {};
@@ -1444,6 +1447,7 @@ function renderIssuerIdentity(ii) {
        it can never overwrite a name someone actually read off an instrument. */
     var iiNameSuggestion = (!ii.registeredName && ii.registeredNameSuggestion)
         ? ii.registeredNameSuggestion : '';
+    iiNameSuggested = false;
 
     var ro = ii.recognitionOrder || {};
     var map = {
@@ -1466,14 +1470,16 @@ function renderIssuerIdentity(ii) {
     /* Apply the suggestion to the empty input and say plainly that it IS a
        suggestion. A silently prefilled field reads as a recorded fact, which is
        the opposite of what this tab is for. */
-    var nameEl  = document.getElementById('ii_registered_name');
-    var nameHint = document.getElementById('ii_n_name');
+    var nameEl = document.getElementById('ii_registered_name');
     if (nameEl && iiNameSuggestion && !nameEl.value) {
         nameEl.value = iiNameSuggestion;
-        if (nameHint) {
-            nameHint.textContent =
-                'Suggested from your school name — correct it if the affiliation instrument reads differently.';
-        }
+        /* The NOTE is not written here. iiEvaluate() owns ii_n_name and runs
+           immediately below, and it blanks that element whenever the field is
+           non-empty — which this prefill has just made it. Writing the note
+           here put it on screen for one frame and then wiped it, so the field
+           was silently prefilled and the user was never told it was a guess.
+           Found by testing the page rather than by reading it. */
+        iiNameSuggested = true;
     }
 
     iiEvaluate(ii);
@@ -1535,8 +1541,12 @@ function iiEvaluate(server) {
     else if (!/^\d{11}$/.test(udise)) iiNote('ii_n_udise', 'A UDISE+ code is exactly 11 digits.', 'bad');
     else iiNote('ii_n_udise', 'Format accepted.', 'good');
 
-    iiNote('ii_n_name', name ? '' :
-        'A certificate printed with a name the board does not recognise cannot be checked by whoever receives it.',
+    iiNote('ii_n_name',
+        name
+            ? (iiNameSuggested
+                ? 'Suggested from your school name — correct it if the affiliation instrument reads differently.'
+                : '')
+            : 'A certificate printed with a name the board does not recognise cannot be checked by whoever receives it.',
         name ? '' : 'bad');
     iiNote('ii_n_head', head ? 'Prints as the signatory of record.' :
         'The Principal signs and carries the exposure.', head ? '' : 'bad');
@@ -1618,7 +1628,10 @@ function saveIssuerIdentity() {
      'ii_registered_name','ii_head_of_institution'].forEach(function (id) {
         var el = document.getElementById(id);
         if (!el) return;
-        el.addEventListener('input',  function () { iiEvaluate(null); });
+        el.addEventListener('input',  function () {
+            if (el.id === 'ii_registered_name') { iiNameSuggested = false; }
+            iiEvaluate(null);
+        });
         el.addEventListener('change', function () { iiEvaluate(null); });
     });
 })();

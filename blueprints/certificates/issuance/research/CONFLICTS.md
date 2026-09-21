@@ -2142,8 +2142,17 @@ Direction's; industry relies on Q35. **The producibility duty holds either way.*
 | NTP from **NIC/NPL** | not configured |
 | **6-hour** incident reporting | no process |
 
-**`log_threshold = 1` means the system records errors, not activity.** So there is nothing to retain
-for 180 days and nothing to produce — the location question is downstream of a more basic one.
+**CORRECTED 2026-09-20.** I wrote that the logs largely do not exist. **Authentication logging does
+exist and is durable**: `Security_telemetry::emit()` writes to the Firestore **`security_events`**
+collection, is initialised at `Admin_login.php:112`, and covers `ADMIN_LOGIN_SUCCESS`, `FAILED`,
+`LOCKED` and `AUTHZ_MISSING`. The discarded `log_message('info', 'Login OK …')` is a *second* record
+of an event already captured — **I was one step from building a duplicate audit alongside a working
+one.**
+
+What is genuinely missing is the ring around those events: **retention** (now addressed for files by
+`scripts/log_retention.php`; `security_events` still has no TTL), **breadth** (`log_threshold = 1`
+leaves non-auth activity unlogged — but it is env-configurable, so operational not structural), and
+**producibility** (no export path, and Q35's duty is to produce *in reasonable time*).
 
 ### It interlocks with C-70, and the timing is backwards
 
