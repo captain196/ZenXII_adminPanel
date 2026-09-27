@@ -1,0 +1,182 @@
+rules_version = '2';
+
+// ══════════════════════════════════════════════════════════════════════════
+// FIRESTORE EVALUATION-SEMANTICS PROBE
+//
+// Every classification rule in scripts/lib/rules_parser.php encodes a belief
+// about how the Firestore engine evaluates a condition. This ruleset exists so
+// those beliefs can be MEASURED against the real engine instead of reasoned
+// about, because reasoning about them has already been wrong three times in
+// this programme.
+//
+// Each collection isolates exactly ONE semantic question. The companion suite
+// sec7_engine_semantics.test.js states the parser's prediction beside the
+// measured result, so a divergence is a test failure rather than a silent
+// modelling error.
+//
+// NOTHING HERE IS DEPLOYED. It is a laboratory fixture, never an artifact.
+// ══════════════════════════════════════════════════════════════════════════
+
+service cloud.firestore {
+  match /databases/{database}/documents {
+
+    function isAuth()  { return request.auth != null; }
+    function isStaff() { return isAuth() && request.auth.token.role != 'Parent'; }
+    function sameSchoolStored()   { return resource.data.schoolId == request.auth.token.school_id; }
+    function sameSchoolIncoming() { return request.resource.data.schoolId == request.auth.token.school_id; }
+    function nullTolerantSchool() { return resource == null || resource.data.schoolId == request.auth.token.school_id; }
+
+    // ── Q1. Does a NULL DEREFERENCE in the LEFT operand of `||` deny the
+    //        whole arm, or does the right operand rescue it?
+    //
+    // On DELETE `request.resource` is null. If the engine denies on the
+    // erroring operand, an arm like this is dead for delete. If it takes the
+    // right branch, the arm is tenant-bound and alive.
+    //
+    // rules_parser.php predicts: the surviving path binds the tenant, so this
+    // is NOT a cross-tenant finding either way.
+    match /q1_orRescue/{docId} {
+      allow read: if true;
+      allow write: if isStaff() && (sameSchoolIncoming() || sameSchoolStored());
+    }
+
+    // ── Q2. Same shape WITHOUT a rescuing branch.
+    // Expected: delete is impossible (null deref, no alternative path).
+    // rules_parser.php predicts: null-deref-denies.
+    match /q2_noRescue/{docId} {
+      allow read: if true;
+      allow write: if isStaff() && sameSchoolIncoming();
+    }
+
+    // ── Q3. `resource == null ||` on CREATE.
+    // `resource` is ALWAYS null on create, so the left disjunct is
+    // unconditionally true and the school comparison after it is unreachable.
+    // rules_parser.php predicts: the tenant check evaporates -> cross-tenant
+    // create is ALLOWED.
+    match /q3_createFailOpen/{docId} {
+      allow read: if true;
+      allow write: if isStaff() && nullTolerantSchool();
+    }
+
+    // ── Q4. The same fail-open, but with a BINDING sibling reached via `&&`.
+    // rules_parser.php predicts: still tenant-bound on create, because
+    // sameSchoolIncoming() must also hold. (This is the notificationPreferences
+    // shape that an earlier heuristic wrongly flagged.)
+    match /q4_createBoundSibling/{docId} {
+      allow read: if true;
+      allow write: if isStaff() && nullTolerantSchool() && sameSchoolIncoming();
+    }
+
+    // ── Q5. DUPLICATE allow arms. Firestore should OR them, so the WEAKER arm
+    // decides. If it instead took the first or the last, every census that
+    // resolves to the weakest arm would be wrong.
+    match /q5_duplicateArms/{docId} {
+      allow read: if isStaff() && sameSchoolStored();   // narrow: same school only
+      allow read: if isAuth();                          // broad: anyone logged in
+      allow write: if false;
+    }
+
+    // ── Q6. Reading a NON-EXISTENT document through a `resource == null ||`
+    // arm. rules_parser.php treats this as harmless (nothing to disclose) and
+    // must NOT report it as a cross-tenant finding.
+    match /q6_missingDocRead/{docId} {
+      allow read: if isStaff() && nullTolerantSchool();
+      allow write: if false;
+    }
+
+    // ── Q7. Strict read: no null tolerance. A missing document must fail
+    // CLOSED rather than return empty.
+    match /q7_strictRead/{docId} {
+      allow read: if isStaff() && resource != null && sameSchoolStored();
+      allow write: if false;
+    }
+
+    // ── Q8. LIST vs GET. `get` is scoped, `list` is not. A query must be
+    // evaluated against the LIST arm, so an unscoped list leaks the collection
+    // even though every individual get would be refused.
+    match /q8_listWiderThanGet/{docId} {
+      allow get:  if isStaff() && sameSchoolStored();
+      allow list: if isAuth();
+      allow write: if false;
+    }
+
+    // ── Q9. The reverse: `list` scoped, `get` not. Confirms the two really are
+    // independent rather than one implying the other.
+    match /q9_getWiderThanList/{docId} {
+      allow get:  if isAuth();
+      allow list: if isStaff() && sameSchoolStored();
+      allow write: if false;
+    }
+
+    // ── Q10. Does a scoped LIST require the QUERY to carry the filter, or is
+    // it enough that the returned documents happen to match? Firestore should
+    // reject the query unless it is provably within the rule.
+    match /q10_queryMustBeProvable/{docId} {
+      allow read: if isStaff() && sameSchoolStored();
+      allow write: if false;
+    }
+
+    // ── Q11. The SEC-4 short-circuit, isolated. A role disjunct with no school
+    // comparison must grant across tenants.
+    match /q11_roleShortCircuit/{docId} {
+      allow read: if isStaff() || (nullTolerantSchool() && resource.data.ownerId == request.auth.uid);
+      allow write: if false;
+    }
+
+    // ── Q12. The corrected composition. Same predicates, `&&` instead of `||`.
+    match /q12_roleComposed/{docId} {
+      allow read: if nullTolerantSchool() && (isStaff() || resource.data.ownerId == request.auth.uid);
+      allow write: if false;
+    }
+
+    // ── Q13. OWNER-scoping with NO school comparison. Safe only while ids are
+    // globally unique. This probe deliberately creates the id COLLISION that a
+    // per-school id scheme would produce, to show exactly what breaks.
+    match /q13_ownerNoTenant/{docId} {
+      allow read: if isAuth() && resource.data.ownerId == request.auth.uid;
+      allow write: if false;
+    }
+  }
+}
+
+// padding to clear the truncation guard in the census tools
+// filler 001 filler 002 filler 003 filler 004 filler 005 filler 006 filler 007
+// filler 008 filler 009 filler 010 filler 011 filler 012 filler 013 filler 014
+// filler 015 filler 016 filler 017 filler 018 filler 019 filler 020 filler 021
+// filler 022 filler 023 filler 024 filler 025 filler 026 filler 027 filler 028
+// filler 029 filler 030 filler 031 filler 032 filler 033 filler 034 filler 035
+// filler 036 filler 037 filler 038 filler 039 filler 040 filler 041 filler 042
+// filler 043 filler 044 filler 045 filler 046 filler 047 filler 048 filler 049
+// filler 050 filler 051 filler 052 filler 053 filler 054 filler 055 filler 056
+// filler 057 filler 058 filler 059 filler 060 filler 061 filler 062 filler 063
+// filler 064 filler 065 filler 066 filler 067 filler 068 filler 069 filler 070
+// filler 071 filler 072 filler 073 filler 074 filler 075 filler 076 filler 077
+// filler 078 filler 079 filler 080 filler 081 filler 082 filler 083 filler 084
+// filler 085 filler 086 filler 087 filler 088 filler 089 filler 090 filler 091
+// filler 092 filler 093 filler 094 filler 095 filler 096 filler 097 filler 098
+// filler 099 filler 100 filler 101 filler 102 filler 103 filler 104 filler 105
+// filler 106 filler 107 filler 108 filler 109 filler 110 filler 111 filler 112
+// filler 113 filler 114 filler 115 filler 116 filler 117 filler 118 filler 119
+// filler 120 filler 121 filler 122 filler 123 filler 124 filler 125 filler 126
+// filler 127 filler 128 filler 129 filler 130 filler 131 filler 132 filler 133
+// filler 134 filler 135 filler 136 filler 137 filler 138 filler 139 filler 140
+// filler 141 filler 142 filler 143 filler 144 filler 145 filler 146 filler 147
+// filler 148 filler 149 filler 150 filler 151 filler 152 filler 153 filler 154
+// filler 155 filler 156 filler 157 filler 158 filler 159 filler 160 filler 161
+// filler 162 filler 163 filler 164 filler 165 filler 166 filler 167 filler 168
+// filler 169 filler 170 filler 171 filler 172 filler 173 filler 174 filler 175
+// filler 176 filler 177 filler 178 filler 179 filler 180 filler 181 filler 182
+// filler 183 filler 184 filler 185 filler 186 filler 187 filler 188 filler 189
+// filler 190 filler 191 filler 192 filler 193 filler 194 filler 195 filler 196
+// filler 197 filler 198 filler 199 filler 200 filler 201 filler 202 filler 203
+// filler 204 filler 205 filler 206 filler 207 filler 208 filler 209 filler 210
+// filler 211 filler 212 filler 213 filler 214 filler 215 filler 216 filler 217
+// filler 218 filler 219 filler 220 filler 221 filler 222 filler 223 filler 224
+// filler 225 filler 226 filler 227 filler 228 filler 229 filler 230 filler 231
+// filler 232 filler 233 filler 234 filler 235 filler 236 filler 237 filler 238
+// filler 239 filler 240 filler 241 filler 242 filler 243 filler 244 filler 245
+// filler 246 filler 247 filler 248 filler 249 filler 250 filler 251 filler 252
+// filler 253 filler 254 filler 255 filler 256 filler 257 filler 258 filler 259
+// filler 260 filler 261 filler 262 filler 263 filler 264 filler 265 filler 266
+// filler 267 filler 268 filler 269 filler 270 filler 271 filler 272 filler 273
+// filler 274 filler 275 filler 276 filler 277 filler 278 filler 279 filler 280

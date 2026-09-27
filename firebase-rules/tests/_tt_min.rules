@@ -1,0 +1,317 @@
+rules_version = '2';
+
+service cloud.firestore {
+  match /databases/{database}/documents {
+
+    function isAuth() {
+      return request.auth != null;
+    }
+
+    function tenantActive(schoolId) {
+      let ctrl = get(/databases/$(database)/documents/schoolControl/$(schoolId));
+      let sch  = get(/databases/$(database)/documents/schools/$(schoolId));
+      return ctrl != null
+        && ctrl.data.lifecycle.state in [
+          'active', 'trialing', 'expiring_soon', 'grace'
+        ]
+        && (
+          sch == null
+          || !('adminDisabled' in sch.data)
+          || sch.data.adminDisabled.value != true
+        )
+        // ── INSTITUTION AXIS (Institution Lifecycle, 2026-08-21) ──────
+        // Third gate, composed most-restrictive-wins with the two above.
+        //
+        // ABSENT ⇒ ALLOWED. A tenant with no `institution` block behaves
+        // exactly as it did before this clause existed, so the axis is
+        // completely INERT until a state is explicitly written for a
+        // school. That is what makes this deployable without a backfill.
+        //
+        // Denied here: ARCHIVED (retention only — access is SA-mediated
+        // and out of band), PROSPECT and ONBOARDING (no parent/teacher
+        // users exist yet; admin configuration runs through the PHP
+        // backend, whose service account bypasses these rules).
+        //
+        // NOT denied here: CLOSED. A closed school stays client-READABLE
+        // so parents can still reach their child's records and download
+        // certificates. The read-only half of CLOSED (denying client
+        // WRITES while permitting reads) needs the read/write arms split,
+        // which is Phase 6 (closure) work — it is enforced server-side by
+        // Lifecycle_resolver in this phase and is deliberately NOT faked
+        // here. See INSTITUTION_LIFECYCLE_IMPLEMENTATION.md §Known limits.
+        //
+        // Cost: ZERO additional document reads — `sch` is already fetched
+        // above for the adminDisabled check.
+        && (
+          sch == null
+          || !('institution' in sch.data)
+          || !(sch.data.institution is map)
+          || !('state' in sch.data.institution)
+          || sch.data.institution.state in ['ACTIVE', 'CLOSING', 'CLOSED']
+        );
+    }
+
+    function isSameSchool() {
+      return isAuth()
+        && tenantActive(request.auth.token.school_id)
+        && (
+          resource == null ||
+          resource.data.schoolId == request.auth.token.school_id ||
+          resource.data.schoolCode == request.auth.token.school_id
+        );
+    }
+
+    function isSameSchoolStrict() {
+      return isAuth()
+        && tenantActive(request.auth.token.school_id)
+        && resource != null
+        && (
+          resource.data.schoolId == request.auth.token.school_id ||
+          resource.data.schoolCode == request.auth.token.school_id
+        );
+    }
+
+    function institutionAllowsWrite(schoolId) {
+      let sch = get(/databases/$(database)/documents/schools/$(schoolId));
+      return sch == null
+        || !('institution' in sch.data)
+        || !(sch.data.institution is map)
+          || !('state' in sch.data.institution)
+        || sch.data.institution.state in ['ACTIVE', 'CLOSING'];
+    }
+
+    function isStaffForSafety() {
+      return isAuth()
+        && !(request.auth.token.role in ['Student', 'student', 'Parent', 'parent', 'Guardian', 'guardian']);
+    }
+
+    function isSameSchoolSafetyWrite() {
+      return isAuth()
+        && institutionAllowsWrite(request.auth.token.school_id)
+        && request.resource.data.schoolId is string
+        && request.resource.data.schoolId.size() > 0
+        && request.resource.data.schoolId == request.auth.token.school_id;
+    }
+
+    function isSameSchoolWrite() {
+      return isAuth()
+        && tenantActive(request.auth.token.school_id)
+        && institutionAllowsWrite(request.auth.token.school_id)
+        && request.resource.data.schoolId is string
+        && request.resource.data.schoolId.size() > 0
+        // D7 (2026-07-12): schoolCode write-arm removed — every current
+        // Admin/Teacher/Parent write sets schoolId (audited: no schoolId-less
+        // write exists), so the spoofable `schoolCode == school_id` fallback
+        // (F-2) was vestigial on the write path. Read-side isSameSchool()/
+        // isSameSchoolStrict() KEEP their schoolCode arm to still serve legacy
+        // schoolCode-only documents on reads.
+        && request.resource.data.schoolId == request.auth.token.school_id;
+    }
+
+    function isAdmin() {
+      return isAuth()
+        && tenantActive(request.auth.token.school_id)
+        && (
+          // True admin LABELS only. 'Principal' REMOVED (audit C3): a Principal is
+          // not an admin by default, so trusting the bare label let a panel-
+          // restricted Principal write freely to staff/students/sections via the
+          // client SDK (escalation-by-label). A Principal who IS meant to be an
+          // admin gets ROLE_ADMIN → the CF sets staffCapabilities.admin==true and
+          // the capability arm below grants them — so no legitimate admin loses
+          // access, but the unearned label grant is gone.
+          request.auth.token.role in ['Admin', 'admin', 'School Super Admin', 'school_super_admin', 'Super Admin', 'super_admin']
+          || (
+            exists(/databases/$(database)/documents/staffCapabilities/$(request.auth.uid))
+            && get(/databases/$(database)/documents/staffCapabilities/$(request.auth.uid)).data.admin == true
+          )
+        );
+    }
+
+    function isStaff() {
+      return isAuth()
+        && tenantActive(request.auth.token.school_id)
+        && !(request.auth.token.role in ['Student', 'student', 'Parent', 'parent', 'Guardian', 'guardian']);
+    }
+
+    function isActiveStaff() {
+      return !exists(/databases/$(database)/documents/staff/$(request.auth.token.school_id + '_' + request.auth.uid))
+        || get(/databases/$(database)/documents/staff/$(request.auth.token.school_id + '_' + request.auth.uid))
+             .data.get('status', 'Active') == 'Active';
+    }
+
+    function marksAssignmentOk(schoolId, session, className, section, subjectCode, assignClassSeg, assignSectionSeg) {
+      let perSectionPath = /databases/$(database)/documents/subjectAssignments/$(schoolId + '_' + session + '_' + assignClassSeg + '_' + assignSectionSeg + '_' + subjectCode);
+      let classWidePath  = /databases/$(database)/documents/subjectAssignments/$(schoolId + '_' + session + '_' + assignClassSeg + '_' + '_ALL_' + '_' + subjectCode);
+      return (
+        exists(perSectionPath)
+        && get(perSectionPath).data.teacherId == request.auth.uid
+        && get(perSectionPath).data.get('archived', false) != true
+        && get(perSectionPath).data.schoolId == schoolId
+        && get(perSectionPath).data.className == className
+        && get(perSectionPath).data.section == section
+      ) || (
+        exists(classWidePath)
+        && get(classWidePath).data.teacherId == request.auth.uid
+        && get(classWidePath).data.get('archived', false) != true
+        && get(classWidePath).data.schoolId == schoolId
+        && get(classWidePath).data.className == className
+      );
+    }
+
+    function isSuperAdmin() {
+      return isAuth() && request.auth.token.role in ['Super Admin', 'super_admin'];
+    }
+
+    function staffCapsExist() {
+      return exists(/databases/$(database)/documents/staffCapabilities/$(request.auth.uid));
+    }
+
+    function hasCapability(module) {
+      return !staffCapsExist()
+        || get(/databases/$(database)/documents/staffCapabilities/$(request.auth.uid))
+             .data.get('modules', []).hasAny([module]);
+    }
+
+    function rbacLevelRank(l) {
+      return l == 'manage' ? 3 : (l == 'edit' ? 2 : 1);
+    }
+
+    function hasCapabilityLevel(module, level) {
+      return !staffCapsExist()
+        || (
+          get(/databases/$(database)/documents/staffCapabilities/$(request.auth.uid))
+            .data.get('modules', []).hasAny([module])
+          && rbacLevelRank(
+               get(/databases/$(database)/documents/staffCapabilities/$(request.auth.uid))
+                 .data.get('levels', {}).get(module, 'view')
+             ) >= rbacLevelRank(level)
+        );
+    }
+
+    function driverIs(staffId) {
+      return isStaff()
+        && request.auth.uid is string
+        && request.auth.uid != ''
+        && request.auth.uid == staffId;
+    }
+
+    function isDriverOfTrip() {
+      return driverIs(resource.data.driver_staff_id);
+    }
+
+    function hasClientMetadata() {
+      return request.resource.data.get('app_version', '') is string
+        && request.resource.data.get('app_version', '') != ''
+        && request.resource.data.get('client_platform', '') is string
+        && request.resource.data.get('client_platform', '') in ['android', 'ios', 'web']
+        && request.resource.data.get('client_timestamp', 0) is int;
+    }
+
+    function isOwnStudent() {
+      return isAuth() && (
+        resource == null ||
+        resource.data.get('studentId', '')  == request.auth.uid ||
+        resource.data.get('student_id', '') == request.auth.uid
+      );
+    }
+
+    function isLinkedChild() {
+      return isAuth()
+        && resource != null
+        && request.auth.token.get('parent_db_key', '') != ''
+        && get(/databases/$(database)/documents/students/$(resource.data.get('schoolId','') + '_' + resource.data.get('studentId',''))).data.get('parentDbKey','') == request.auth.token.parent_db_key;
+    }
+
+    function isStaffOrOwnStudent() {
+      return isStaff() || (isSameSchool() && isOwnStudent());
+    }
+
+    function reportingManagerOk() {
+      let rm = request.resource.data.get('reportingManagerId', '');
+      return rm == ''
+        || (
+          rm != request.resource.data.get('staffId', '')
+          && exists(/databases/$(database)/documents/staff/$(request.resource.data.schoolId + '_' + rm))
+        );
+    }
+
+    function examVisible(schoolId, examId) {
+      return isStaff()
+        || get(/databases/$(database)/documents/exams/$(schoolId + '_' + examId)).data.status in ['Published', 'Completed'];
+    }
+
+    match /schools/{docId} {
+      allow read: if isAuth()
+        && tenantActive(docId)
+        && (
+          resource.data.schoolId == request.auth.token.school_id ||
+          docId == request.auth.token.school_id
+        );
+      allow write: if isSuperAdmin();
+    }
+
+    match /staff/{docId} {
+      allow read: if isSameSchool();
+      // Phase 0E (Staff Lifecycle security hardening): `isAdmin()` alone
+      // proves the caller is an admin of SOME active tenant — it does NOT
+      // bind the write to the target document's school (same defect as
+      // `locations` above, fixed the same way). Split so isSameSchoolWrite()
+      // pins request.resource.data.schoolId on create+update, and
+      // isSameSchool() pins resource.data.schoolId on delete.
+      allow create, update: if isAdmin() && isSameSchoolWrite() && reportingManagerOk();
+      allow delete: if isAdmin() && isSameSchool();
+    }
+
+    match /timetables/{docId} {
+      allow read: if isSameSchool();
+      // TT-D1 — CLOSED 2026-08-31 (Master Timetable switchover, gate B).
+      // Authorised deliberately, not edited silently: the note this replaces
+      // said resolving the conflict was the P0 #4 owner's call, and this
+      // change is that call being made rather than assumed.
+      //
+      // `timetables` is no longer a collection anyone authors. It is the
+      // compatibility PROJECTION of the published canonical timetable version,
+      // written by Timetable_plan_store::projectPublishedVersion through the
+      // service account — which bypasses these rules entirely, so the one
+      // sanctioned writer is unaffected by denying every client.
+      //
+      // Nothing legitimate is lost. Both apps are read-only here (re-verified
+      // across both repositories), the legacy admin editors refuse in PHP
+      // before they reach a write (Timetable_service::_refuseLegacyWrite), and
+      // the rollover tool now refuses projected documents
+      // (Rollover_projection_guard). What the old arms admitted was exactly
+      // the illegitimate case: any staff account — driver, peon, security —
+      // creating, rewriting or DELETING a school's timetable from a client,
+      // and after the switchover silently forking the derived copy away from
+      // the canonical version it mirrors.
+      //
+      // P0 #4's tenant binding is PRESERVED, not undone: `false` denies a
+      // strict superset of what isSameSchoolWrite()/isSameSchool() denied, so
+      // every cross-tenant write those arms blocked is still blocked. The
+      // five P0 #4 assertions that asserted same-school staff CAN write are
+      // updated in the same change (tests/timetable_sec.test.js x3 —
+      // create, update, delete; tests/homework_authorship.test.js x2); every
+      // cross-tenant assertion they own passes unchanged.
+      //
+      // Read stays isSameSchool(): the Teacher and Parent apps depend on it.
+      allow write: if false;
+    }
+
+    match /timetableSettings/{docId} {
+      allow read: if isSameSchool();
+      allow create: if isAdmin() && isSameSchoolWrite();
+      allow update: if isAdmin() && isSameSchool() && isSameSchoolWrite();
+      allow delete: if isAdmin() && isSameSchool();
+    }
+
+    match /substitutes/{docId} {
+      allow read: if isSameSchool();
+      allow create: if isAdmin() && isSameSchoolWrite();
+      allow update: if isAdmin() && isSameSchool() && isSameSchoolWrite();
+      allow delete: if isAdmin() && isSameSchool();
+    }
+
+    match /schoolControl/{docId}    { allow read, write: if false; }
+
+  }
+}

@@ -6,7 +6,15 @@
  * from every isAdmin()-gated write. The fold adds a second arm that recognises a
  * true admin via the server-maintained staffCapabilities/{uid}.admin flag.
  *
- * Target: /subjects write (allow write: if isAdmin();) — a clean isAdmin()-only arm.
+ * Target: /rbacRoles write (allow write: if isAdmin();) — a clean isAdmin()-only arm.
+ *
+ * NOTE (CAL-D1, 2026-09-01): this probe used /subjects until the CAL-D1 tenant-
+ * binding restoration returned that collection to `allow write: if false` — the
+ * server-only posture SEC-3 wave 4 deployed to production on 2026-08-21 and which
+ * the repository ruleset had never received. /subjects was only ever a VEHICLE for
+ * exercising isAdmin(), never an assertion that subjects should be client-writable,
+ * so the probe moves to another collection whose arm is still isAdmin()-only. What
+ * this file tests — the fold's two arms — is unchanged.
  *
  * Verifies:
  *   1. legacy admin (role='Admin')                         → ALLOW (role arm, unchanged)
@@ -58,7 +66,7 @@ function asUser(uid, role) {
 }
 // The isAdmin()-gated write under test.
 function writeSubject(db) {
-  return db.doc(`subjects/${SCHOOL}_S1`).set({ schoolId: SCHOOL, name: 'Maths' });
+  return db.doc(`rbacRoles/${SCHOOL}_R1`).set({ schoolId: SCHOOL, name: 'Probe Role' });
 }
 
 describe('FOLD isAdmin() — legacy role arm still works', () => {

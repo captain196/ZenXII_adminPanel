@@ -142,9 +142,28 @@ describe('EXAM-LIFECYCLE Phase 2 — /exams visibility matrix', () => {
     );
   });
 
-  test('admin → write exam ALLOWED', async () => {
+  /**
+   * UPDATED 2026-09-01 (CAL-D1). This asserted that an admin could write an
+   * exam FROM A CLIENT. That was true when this file was written on 6 June,
+   * and stopped being true on 21 August when SEC-3 wave 4 deployed the
+   * server-only posture for `exams`.
+   *
+   * The assertion was not simply flipped. The authority was traced first:
+   *   - the admin panel writes exams SERVER-SIDE through Entity_firestore_sync
+   *     (Admin SDK, which bypasses rules entirely);
+   *   - no admin-panel JavaScript writes `exams` via the client SDK;
+   *   - neither the Teacher nor the Parent app contains a single write verb
+   *     for exams — both repositories are read-only queries.
+   * So no supported client write path exists, and none is required. The
+   * deployed posture is correct and this test was stale.
+   *
+   * What it now protects is stronger: a bare `isAdmin()` write arm would let
+   * an admin of one school write ANOTHER school's exams, because isAdmin()
+   * binds the caller's tenant and never the written document.
+   */
+  test('admin → client-side exam write DENIED (server-only)', async () => {
     const db = authedDb(SCHOOL_ID, 'admin');
-    await assertSucceeds(
+    await assertFails(
       db.doc(`exams/${SCHOOL_ID}_EX_NEW`).set({
         schoolId: SCHOOL_ID, session: SESSION, examId: 'EX_NEW',
         status: 'Draft', startDate: '2025-12-09',
