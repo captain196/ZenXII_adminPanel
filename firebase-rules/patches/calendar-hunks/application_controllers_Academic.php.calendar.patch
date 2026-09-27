@@ -1,0 +1,182 @@
+--- a/application/controllers/Academic.php
++++ b/application/controllers/Academic.php
+@@ -1531,0 +1847,61 @@ class Academic extends MY_Controller
++    /**
++     * CAL-P3B — warn, then require explicit confirmation, before arranging cover
++     * on a date the school is not teaching.
++     *
++     * WHY A GATE AT ALL. Saving a cover NOTIFIES the covering teacher. Without
++     * this, a school could push somebody to cover a lesson on a declared student
++     * holiday, and the first they would know of it is the notification.
++     *
++     * WHY CONFIRMATION AND NOT REFUSAL. Special sessions on a closure day are
++     * legitimate — a revision class before a board exam, a make-up session. A
++     * flat refusal would remove a real workflow to prevent an unlikely mistake.
++     * The market evidence is the same for invigilation: working a non-working
++     * day is normal and handled as workload, not as an impossibility. So the
++     * operator is told plainly and then allowed to proceed on purpose.
++     *
++     * WHY IT LIVES HERE AND NOT IN Substitute_service. The Substitute programme
++     * owns what a cover IS and how it is written. This is the Calendar telling
++     * the operator what the date MEANS before that write happens. The service's
++     * signature, validation and persistence are untouched, so the two programmes
++     * stay separable.
++     *
++     * FAIL-OPEN, DELIBERATELY. The gate engages only on a definite `false`. An
++     * unconfigured tenant (null) or an unreadable calendar (null) passes
++     * straight through, because a calendar outage must not stop a school
++     * arranging cover for a lesson that is genuinely running.
++     *
++     * @return array|null null to proceed; a response array to return instead
++     */
++    private function _non_instruction_cover_gate(string $dateStr): ?array
++    {
++        if (trim($dateStr) === '') return null;
++
++        $cal = $this->_student_calendar_for_date($dateStr);
++
++        // Only a definite "no instruction" gates. null never does.
++        if (($cal['instruction'] ?? null) !== false) return null;
++
++        $confirmed = filter_var(
++            (string) ($this->input->post('confirm_non_instruction') ?? ''),
++            FILTER_VALIDATE_BOOLEAN
++        );
++        if ($confirmed) {
++            // Recorded so the trail shows the operator was told and chose to
++            // continue, rather than looking like an ordinary cover.
++            log_message('info', sprintf(
++                'Academic::save_substitute — cover confirmed on a non-instruction date '
++                . '(school=%s date=%s reason=%s source=%s)',
++                $this->school_id, $dateStr,
++                (string) ($cal['reason'] ?? ''), (string) ($cal['source'] ?? '')
++            ));
++            return null;
++        }
++
++        return [
++            'needsConfirmation' => true,
++            'calendar'          => $cal,
++            'message'           => ($cal['message'] ?? '')
++                ?: 'No classes are scheduled on this date.',
++        ];
++    }
++
+@@ -1534,0 +1911,9 @@ class Academic extends MY_Controller
++
++        // CAL-P3B — before anything is written or anybody is notified.
++        $gate = $this->_non_instruction_cover_gate(
++            trim($this->input->post('date') ?? ''));
++        if ($gate !== null) {
++            return $this->json_error($gate['message']
++                . ' Confirm that cover is still needed before this is saved.', 409);
++        }
++
+@@ -2229 +2775,8 @@ class Academic extends MY_Controller
+-                'message' => 'This teacher has no classes on ' . $dayOfWeek,
++                // Never assert "no classes" off a read we could not complete.
++                'message' => $complete
++                    ? 'This teacher has no classes on ' . $dayOfWeek
++                    : 'The timetable could not be read in full, so this teacher\'s '
++                      . $dayOfWeek . ' classes cannot be listed. Do NOT treat this as '
++                      . 'an empty day — reload before arranging cover.',
++                'completeness' => ['complete' => $complete, 'cap' => self::SUBSTITUTE_SCAN_LIMIT],
++                'calendar'     => $this->_student_calendar_for_date($dateStr),
+@@ -2336,0 +2961,12 @@ class Academic extends MY_Controller
++            // ACAD-D13: the admin arranges cover from this list. Saying it is
++            // partial is the difference between a known gap and a class nobody
++            // turns up to.
++            'completeness' => ['complete' => $complete, 'cap' => self::SUBSTITUTE_SCAN_LIMIT],
++            // The screen shows these beside the load so a limit is visible
++            // BEFORE somebody arranges cover that will be refused.
++            'coverPolicy'  => [
++                'maxCoverPeriodsPerDay'  => (int) ($coverPolicy['maxCoverPeriodsPerDay']  ?? 0),
++                'maxCoverPeriodsPerWeek' => (int) ($coverPolicy['maxCoverPeriodsPerWeek'] ?? 0),
++            ],
++            // CAL-P3 — advisory. See _student_calendar_for_date().
++            'calendar'     => $this->_student_calendar_for_date($dateStr),
+@@ -2339,0 +2976,84 @@ class Academic extends MY_Controller
++    /**
++     * CAL-P3 — is regular instruction scheduled for students on this date?
++     *
++     * THE PRINCIPLE THIS IMPLEMENTS. The published timetable is the school's
++     * NORMAL schedule; the student calendar says whether that schedule is
++     * operational on a particular date. Those are different questions, and the
++     * data model already keeps them apart: `timetables` documents are keyed
++     * `{school}_{session}_{sectionKey}_{WEEKDAY}`, so there is no per-date
++     * timetable document to suppress. Deleting one would remove that subject
++     * from EVERY Monday, not from one holiday. The operational answer therefore
++     * has to be composed at the point a DATE is turned into a weekday — here.
++     *
++     * WHY `instruction` AND NOT `attendance`. Arranging cover is about whether a
++     * lesson runs, not about whether a register is taken. On an exam-only day
++     * `instruction` is false while `attendance` is true, and there is no
++     * ordinary period to cover; on a special working day or a half day
++     * `instruction` is true and cover IS needed. `instruction` is the dimension
++     * that matches the question this screen asks.
++     *
++     * ADVISORY, DELIBERATELY. Nothing here refuses to list periods or blocks a
++     * substitute being saved. Refusing would change the Substitute programme's
++     * write semantics, which this programme does not own — so the calendar is
++     * reported and the decision to act on it is left to the operator and to the
++     * owner of that workflow.
++     *
++     * NULL is a real answer: an unconfigured tenant resolves to null rather than
++     * to an invented true or false, and a read failure is reported as such so
++     * the screen can say "could not check" instead of implying "all clear".
++     */
++    private function _student_calendar_for_date(string $dateStr): array
++    {
++        $out = ['instruction' => null, 'reason' => null,
++                'source' => 'unavailable', 'message' => ''];
++
++        if ($dateStr === '') return $out;
++
++        try {
++            $ts = strtotime($dateStr);
++            if ($ts === false) return $out;
++            $y = (int) date('Y', $ts); $m = (int) date('n', $ts); $d = (int) date('j', $ts);
++            $iso = date('Y-m-d', $ts);
++
++            $hol = $swd = [];
++            try {
++                $this->load->library('holiday_service');
++                $this->holiday_service->init(
++                    $this->fs, (string) $this->school_id, (string) $this->session_year);
++                // STUDENT audience. A staff-only closure must never read as
++                // "no lesson to cover" — it is precisely when cover IS needed.
++                $hol = $this->holiday_service->holidays_in_month($y, $m, 'students');
++                $swd = $this->holiday_service->special_working_days_in_month($y, $m, 'students');
++            } catch (\Throwable $e) {
++                log_message('error', 'Academic::_student_calendar_for_date holidays: ' . $e->getMessage());
++                return $out;
++            }
++
++            $this->load->library('student_calendar_reader');
++            $this->student_calendar_reader->init(
++                $this->fs, (string) $this->school_id, (string) $this->session_year);
++
++            $r = $this->student_calendar_reader->resolveDate($iso, [
++                'holiday'           => isset($hol[$d]),
++                'specialWorkingDay' => isset($swd[$d]),
++            ]);
++
++            $out['instruction'] = $r['instruction'];
++            $out['reason']      = $r['reason'];
++            $out['source']      = $r['source'];
++
++            if ($r['instruction'] === false) {
++                $name = isset($hol[$d]) ? (string) $hol[$d] : '';
++                $out['message'] = $name !== ''
++                    ? "No classes are scheduled on this date — {$name}. Cover is not normally needed."
++                    : 'No classes are scheduled on this date. Cover is not normally needed.';
++            } elseif ($r['instruction'] === null) {
++                $out['message'] = 'The school calendar could not be checked for this date.';
++            }
++        } catch (\Throwable $e) {
++            log_message('error', 'Academic::_student_calendar_for_date failed: ' . $e->getMessage());
++        }
++
++        return $out;
++    }
++

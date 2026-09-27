@@ -1,0 +1,74 @@
+--- a/application/views/academic/index.php
++++ b/application/views/academic/index.php
+@@ -643,0 +638,3 @@ html{font-size:16px !important}
++                <!-- CAL-P3 — what the school calendar says about the chosen date.
++                     Advisory only; it never hides the periods or blocks cover. -->
++                <div id="subCalendarNote" role="status" style="display:none;margin:12px 0;padding:10px 13px;background:#fff8e6;border-left:3px solid #e0a800;border-radius:0 4px 4px 0;font-size:13px;color:#6b5411"></div>
+@@ -3349,0 +3727,16 @@ AC.sub = {
++            // CAL-P3 — the school calendar for THIS date. The timetable is the
++            // normal schedule; this says whether it actually runs today. Purely
++            // advisory: the periods are still listed and cover can still be
++            // arranged, because scheduling on a closure is the operator's call.
++            (function(){
++                var box=document.getElementById('subCalendarNote');
++                if(!box) return;
++                var c=d.calendar||{};
++                if(c.message){
++                    box.textContent=c.message;
++                    box.style.display='block';
++                } else { box.style.display='none'; box.textContent=''; }
++            })();
++            // Kept so a candidate who has reached the school's limit can be
++            // marked in the list, rather than only when the save refuses.
++            AC.sub._policy=d.coverPolicy||{maxCoverPeriodsPerDay:0,maxCoverPeriodsPerWeek:0};
+@@ -3497,15 +3905,35 @@ AC.sub = {
+-        withBtn(btn,post('academic/save_substitute',{
+-            date:date,
+-            absent_teacher_id:absEl.value,
+-            absent_teacher_name:absName,
+-            assignments:JSON.stringify(assignments),
+-            reason:reason
+-        })).then(function(d){
+-            if(d.status==='success'){
+-                AC.sub.hideForm();
+-                AC.sub.load();
+-                toast('Substitute'+(assignments.length>1?'s':'')+' assigned for '+assignments.length+' period'+(assignments.length>1?'s':''),true);
+-            } else toast(d.message||'Save failed',false);
+-        }).catch(function(err){
+-            toast('Network error: '+(err.message||err),false);
+-        });
++        // CAL-P3B — the server refuses a cover on a non-instruction date until
++        // the operator confirms it on purpose. The retry carries an explicit
++        // flag; it is NEVER set automatically, because the whole point is that a
++        // human is told before anybody is notified they are covering a lesson on
++        // a day the school is shut.
++        var _sendCover = function(confirmed){
++            var payload = {
++                date:date,
++                absent_teacher_id:absEl.value,
++                absent_teacher_name:absName,
++                assignments:JSON.stringify(assignments),
++                reason:reason
++            };
++            if(confirmed) payload.confirm_non_instruction = '1';
++            return withBtn(btn,post('academic/save_substitute',payload)).then(function(d){
++                if(d.status==='success'){
++                    AC.sub.hideForm();
++                    AC.sub.load();
++                    toast('Substitute'+(assignments.length>1?'s':'')+' assigned for '+assignments.length+' period'+(assignments.length>1?'s':''),true);
++                    return;
++                }
++                // One retry only, and only when the operator agrees.
++                if(!confirmed && d && d.message && /confirm that cover is still needed/i.test(d.message)){
++                    if(window.confirm(d.message + '\n\nArrange cover anyway?')){
++                        return _sendCover(true);
++                    }
++                    toast('Cover not arranged.',false);
++                    return;
++                }
++                toast(d.message||'Save failed',false);
++            }).catch(function(err){
++                toast('Network error: '+(err.message||err),false);
++            });
++        };
++        _sendCover(false);

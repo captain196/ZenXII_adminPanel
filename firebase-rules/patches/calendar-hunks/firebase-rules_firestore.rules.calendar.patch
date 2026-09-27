@@ -1,0 +1,55 @@
+--- a/firebase-rules/firestore.rules
++++ b/firebase-rules/firestore.rules
+@@ -376 +670,6 @@ service cloud.firestore {
+-      allow write: if isAdmin();
++      // CAL-D1 restoration: server-only, matching the SEC-3 wave-4 posture deployed
++      // 2026-08-21. isAdmin() binds the CALLER's tenant but never the WRITTEN
++      // document, so an admin of one school could create, overwrite or delete
++      // another school's records. Proven on the emulator by
++      // firebase-rules/tests/cal_d1_tenant_binding.test.js.
++      allow write: if false;
+@@ -726,3 +1116,12 @@ service cloud.firestore {
+-      allow read: if isStaff()
+-                  || (isSameSchool() && resource.data.status in ['Published', 'Completed']);
+-      allow write: if isAdmin();
++      // CAL-D1b: isStaff() proves only that the CALLER's tenant is active. On the
++      // LEFT of the disjunction it short-circuits the same-school test entirely,
++      // so any staff member of any school could read any school's exams. Binding
++      // the tenant FIRST is the deployed shape.
++      allow read: if isSameSchool()
++                  && (isStaff() || resource.data.status in ['Published', 'Completed']);
++      // CAL-D1 restoration: server-only, matching the SEC-3 wave-4 posture deployed
++      // 2026-08-21. isAdmin() binds the CALLER's tenant but never the WRITTEN
++      // document, so an admin of one school could create, overwrite or delete
++      // another school's records. Proven on the emulator by
++      // firebase-rules/tests/cal_d1_tenant_binding.test.js.
++      allow write: if false;
+@@ -756,3 +1155,9 @@ service cloud.firestore {
+-      allow read: if isStaff()
+-                  || (isSameSchool() && examVisible(resource.data.schoolId, resource.data.examId));
+-      allow write: if isAdmin();
++      // CAL-D1b — same short-circuit as exams above, same fix.
++      allow read: if isSameSchool()
++                  && (isStaff() || examVisible(resource.data.schoolId, resource.data.examId));
++      // CAL-D1 restoration: server-only, matching the SEC-3 wave-4 posture deployed
++      // 2026-08-21. isAdmin() binds the CALLER's tenant but never the WRITTEN
++      // document, so an admin of one school could create, overwrite or delete
++      // another school's records. Proven on the emulator by
++      // firebase-rules/tests/cal_d1_tenant_binding.test.js.
++      allow write: if false;
+@@ -1486 +2217,6 @@ service cloud.firestore {
+-      allow write: if isAdmin();
++      // CAL-D1 restoration: server-only, matching the SEC-3 wave-4 posture deployed
++      // 2026-08-21. isAdmin() binds the CALLER's tenant but never the WRITTEN
++      // document, so an admin of one school could create, overwrite or delete
++      // another school's records. Proven on the emulator by
++      // firebase-rules/tests/cal_d1_tenant_binding.test.js.
++      allow write: if false;
+@@ -2091 +3325,6 @@ service cloud.firestore {
+-      allow write: if isAdmin();
++      // CAL-D1 restoration: server-only, matching the SEC-3 wave-4 posture deployed
++      // 2026-08-21. isAdmin() binds the CALLER's tenant but never the WRITTEN
++      // document, so an admin of one school could create, overwrite or delete
++      // another school's records. Proven on the emulator by
++      // firebase-rules/tests/cal_d1_tenant_binding.test.js.
++      allow write: if false;

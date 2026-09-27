@@ -3962,6 +3962,800 @@
           "order": "ASCENDING"
         }
       ]
+    },
+    {
+      "_comment": "Student Entitlements Phase B (2026-08-08) — approval queue: schoolId==, status==, ordered by requestedAt. Sorted by REQUEST AGE, not effectiveFrom, per the adversarial review's M2 (an approver works oldest-request-first; effectiveFrom ordering buries a stale request behind future-dated ones). MANDATORY: equality filters + orderBy on a DIFFERENT field cannot be served by index merging. NOTE — the per-student read (schoolId==, studentId==, status==, no orderBy) deliberately has NO composite index: it is equality-only, so Firestore serves it by merging single-field indexes, and Google's own guidance is to prefer merging there to reduce indexing cost. Do not 'helpfully' add that composite back; it would add a write-amplification cost to every studentEntitlements write for no measurable read benefit (the query is bounded to one student's handful of rows). Re-evaluate only if that read ever gains an orderBy or a range filter.",
+      "collectionGroup": "studentEntitlements",
+      "queryScope": "COLLECTION",
+      "fields": [
+        {
+          "fieldPath": "schoolId",
+          "order": "ASCENDING"
+        },
+        {
+          "fieldPath": "status",
+          "order": "ASCENDING"
+        },
+        {
+          "fieldPath": "requestedAt",
+          "order": "ASCENDING"
+        }
+      ]
+    },
+    {
+      "_comment": "F12.1 M1 (2026-08-07) — vehicleCompliance: expiring/failing-rule sweep for the compliance dashboard (schoolId==, status==, expires_on order).",
+      "collectionGroup": "vehicleCompliance",
+      "queryScope": "COLLECTION",
+      "fields": [
+        {
+          "fieldPath": "schoolId",
+          "order": "ASCENDING"
+        },
+        {
+          "fieldPath": "status",
+          "order": "ASCENDING"
+        },
+        {
+          "fieldPath": "expires_on",
+          "order": "ASCENDING"
+        }
+      ]
+    },
+    {
+      "_comment": "F12.1 M1 (2026-08-07) — vehicleCompliance: per-vehicle rule-checklist read (schoolId==, vehicleId==, rule_code order).",
+      "collectionGroup": "vehicleCompliance",
+      "queryScope": "COLLECTION",
+      "fields": [
+        {
+          "fieldPath": "schoolId",
+          "order": "ASCENDING"
+        },
+        {
+          "fieldPath": "vehicleId",
+          "order": "ASCENDING"
+        },
+        {
+          "fieldPath": "rule_code",
+          "order": "ASCENDING"
+        }
+      ]
+    },
+    {
+      "_comment": "F12.1 M1 (2026-08-07) — vehicleCompliancePosture: fleet dashboard sorted by risk tier then score.",
+      "collectionGroup": "vehicleCompliancePosture",
+      "queryScope": "COLLECTION",
+      "fields": [
+        {
+          "fieldPath": "schoolId",
+          "order": "ASCENDING"
+        },
+        {
+          "fieldPath": "tier",
+          "order": "ASCENDING"
+        },
+        {
+          "fieldPath": "score",
+          "order": "ASCENDING"
+        }
+      ]
+    },
+    {
+      "_comment": "F13.1 M1 (2026-08-08) — live-position lookup by trip. The parent map is a POINT READ on {schoolId}_{vehicleId} and needs no index; this serves the admin/staff 'positions for this trip' query and the M2 stale sweeper.",
+      "collectionGroup": "vehicleLivePositions",
+      "queryScope": "COLLECTION",
+      "fields": [
+        {
+          "fieldPath": "schoolId",
+          "order": "ASCENDING"
+        },
+        {
+          "fieldPath": "tripId",
+          "order": "ASCENDING"
+        }
+      ]
+    },
+    {
+      "_comment": "F13.1 M1 (2026-08-08) — stale-session sweep: live docs still flagged tracking-enabled, ordered by last fix. Backs the M2 sweeper that closes sessions abandoned by a crashed driver app.",
+      "collectionGroup": "vehicleLivePositions",
+      "queryScope": "COLLECTION",
+      "fields": [
+        {
+          "fieldPath": "schoolId",
+          "order": "ASCENDING"
+        },
+        {
+          "fieldPath": "live_tracking_enabled",
+          "order": "ASCENDING"
+        },
+        {
+          "fieldPath": "recorded_at",
+          "order": "ASCENDING"
+        }
+      ]
+    },
+    {
+      "_comment": "F13.1 M1 (2026-08-08) — breadcrumb trail for one GPS session in time order. Not queried by F13.1 itself (replay is F13.2) but shipped now because index builds take time and the data accumulates from day one.",
+      "collectionGroup": "vehicleBreadcrumbs",
+      "queryScope": "COLLECTION",
+      "fields": [
+        {
+          "fieldPath": "schoolId",
+          "order": "ASCENDING"
+        },
+        {
+          "fieldPath": "gps_session_id",
+          "order": "ASCENDING"
+        },
+        {
+          "fieldPath": "recorded_at",
+          "order": "ASCENDING"
+        }
+      ]
+    },
+    {
+      "_comment": "F13.1 M1 (2026-08-08) — retention fallback ONLY. Native Firestore TTL on expires_at needs no composite index; this exists so a cron sweep is possible if TTL is unavailable in the project (D-3 option B).",
+      "collectionGroup": "vehicleBreadcrumbs",
+      "queryScope": "COLLECTION",
+      "fields": [
+        {
+          "fieldPath": "schoolId",
+          "order": "ASCENDING"
+        },
+        {
+          "fieldPath": "expires_at",
+          "order": "ASCENDING"
+        }
+      ]
+    },
+    {
+      "_comment": "TMS F14 Phase 1g (2026-08-12) — Transport request worklist (schoolId==, session==, status==). ONE index serves both the filtered worklist and the unfiltered 'all' view, because schoolId+session is a prefix; listTransportRequests() orders its conditions session-then-status specifically so a second index is not needed.",
+      "collectionGroup": "transportRequests",
+      "queryScope": "COLLECTION",
+      "fields": [
+        {
+          "fieldPath": "schoolId",
+          "order": "ASCENDING"
+        },
+        {
+          "fieldPath": "session",
+          "order": "ASCENDING"
+        },
+        {
+          "fieldPath": "status",
+          "order": "ASCENDING"
+        }
+      ]
+    },
+    {
+      "_comment": "TMS F14 (2026-08-12) — per-student state on ONE trip (schoolId==, tripId==, studentId==), used by the QR scan state machine before every event. The existing schoolId+tripId+event_at index cannot serve it (studentId is not a prefix field). Deliberately NOT adding an event_type index: F14 filters event types in PHP after a single trip-scoped read, so a fourth index would build and cost for nothing.",
+      "collectionGroup": "transportAttendance",
+      "queryScope": "COLLECTION",
+      "fields": [
+        {
+          "fieldPath": "schoolId",
+          "order": "ASCENDING"
+        },
+        {
+          "fieldPath": "tripId",
+          "order": "ASCENDING"
+        },
+        {
+          "fieldPath": "studentId",
+          "order": "ASCENDING"
+        }
+      ]
+    },
+    {
+      "collectionGroup": "studentRoutes",
+      "queryScope": "COLLECTION",
+      "fields": [
+        {
+          "fieldPath": "schoolId",
+          "order": "ASCENDING"
+        },
+        {
+          "fieldPath": "studentId",
+          "order": "ASCENDING"
+        },
+        {
+          "fieldPath": "status",
+          "order": "ASCENDING"
+        },
+        {
+          "fieldPath": "session",
+          "order": "ASCENDING"
+        }
+      ]
+    },
+    {
+      "_comment": "Visitor Management MVP (2026-08-09) — visitor log, unfiltered: schoolId==, ordered by requestedAt DESC (Visitor_service::listLog with no filters).",
+      "collectionGroup": "visitPasses",
+      "queryScope": "COLLECTION",
+      "fields": [
+        {
+          "fieldPath": "schoolId",
+          "order": "ASCENDING"
+        },
+        {
+          "fieldPath": "requestedAt",
+          "order": "DESCENDING"
+        }
+      ]
+    },
+    {
+      "_comment": "Visitor Management MVP (2026-08-09) — visitor log filtered by status: schoolId==, status==, requestedAt order (Visitor_service::listLog with a status filter; also serves listPending's schoolId+status equality).",
+      "collectionGroup": "visitPasses",
+      "queryScope": "COLLECTION",
+      "fields": [
+        {
+          "fieldPath": "schoolId",
+          "order": "ASCENDING"
+        },
+        {
+          "fieldPath": "status",
+          "order": "ASCENDING"
+        },
+        {
+          "fieldPath": "requestedAt",
+          "order": "ASCENDING"
+        }
+      ]
+    },
+    {
+      "_comment": "Visitor Management MVP (2026-08-09) — visitor log filtered by purpose: schoolId==, purpose==, requestedAt order (Visitor_service::listLog with a purpose filter).",
+      "collectionGroup": "visitPasses",
+      "queryScope": "COLLECTION",
+      "fields": [
+        {
+          "fieldPath": "schoolId",
+          "order": "ASCENDING"
+        },
+        {
+          "fieldPath": "purpose",
+          "order": "ASCENDING"
+        },
+        {
+          "fieldPath": "requestedAt",
+          "order": "ASCENDING"
+        }
+      ]
+    },
+    {
+      "_comment": "Visitor Management MVP (2026-08-09) — on-campus dashboard: schoolId==, status IN [...], ordered by checkInAt DESC (Visitor_service::listOnCampus + the cron overstay sweep). Direction fixed 2026-08-09 during the adversarial audit — was declared ASCENDING while the actual query sorts DESC; Firestore can reverse-scan a single trailing sort field either way, but there's no reason to leave the declaration mismatched.",
+      "collectionGroup": "visitPasses",
+      "queryScope": "COLLECTION",
+      "fields": [
+        {
+          "fieldPath": "schoolId",
+          "order": "ASCENDING"
+        },
+        {
+          "fieldPath": "status",
+          "order": "ASCENDING"
+        },
+        {
+          "fieldPath": "checkInAt",
+          "order": "DESCENDING"
+        }
+      ]
+    },
+    {
+      "_comment": "Visitor Management MVP (2026-08-09) — watchlist listing: schoolId==, ordered by addedAt DESC (Visitor_service::listWatchlist).",
+      "collectionGroup": "visitorWatchlist",
+      "queryScope": "COLLECTION",
+      "fields": [
+        {
+          "fieldPath": "schoolId",
+          "order": "ASCENDING"
+        },
+        {
+          "fieldPath": "addedAt",
+          "order": "DESCENDING"
+        }
+      ]
+    },
+    {
+      "_comment": "Campus Access — Gate Pass (2026-08-09, field corrected 2026-08-10 BUG-054): pending queue: schoolId==, status==, ordered by updatedAt ASC (Gate_pass_service::listPending, oldest-request-first). Was declared on 'createdAt', a field this collection never actually writes (createEarlyLeaveRequest()/logLateEntry() only set 'createdBy') — every listPending() call was hitting FAILED_PRECONDITION and silently falling back to a full unindexed scan. Empirically confirmed post-deploy 2026-08-10: this index does NOT also serve listToday()'s open-backlog query (status IN [...], updatedAt DESC) — a prior comment here claimed IN + reverse-scan would cover it; live testing after this index went READY showed that shape STILL falling back. See the separate DESCENDING-status-IN index below, added for that exact shape.",
+      "collectionGroup": "campusAccessRequests",
+      "queryScope": "COLLECTION",
+      "fields": [
+        {
+          "fieldPath": "schoolId",
+          "order": "ASCENDING"
+        },
+        {
+          "fieldPath": "status",
+          "order": "ASCENDING"
+        },
+        {
+          "fieldPath": "updatedAt",
+          "order": "ASCENDING"
+        }
+      ]
+    },
+    {
+      "_comment": "Campus Access — Gate Pass (2026-08-09, field corrected 2026-08-10 BUG-054): today's list, unfiltered: schoolId==, ordered by updatedAt DESC (Gate_pass_service::listToday, recentRows query). Was declared on 'createdAt' — same dead-field bug as the index above. Confirmed working via live testing 2026-08-10 (0 fallback hits).",
+      "collectionGroup": "campusAccessRequests",
+      "queryScope": "COLLECTION",
+      "fields": [
+        {
+          "fieldPath": "schoolId",
+          "order": "ASCENDING"
+        },
+        {
+          "fieldPath": "updatedAt",
+          "order": "DESCENDING"
+        }
+      ]
+    },
+    {
+      "_comment": "Campus Access — Gate Pass (added 2026-08-10, BUG-054 follow-up): today's list, open-backlog query: schoolId==, status IN [pending_approval,approved], ordered by updatedAt DESC (Gate_pass_service::listToday, openRows query). Added after live testing showed the ASCENDING 3-field index above does NOT get reused for this shape via reverse-scan the way a plain equality filter would — IN + the opposite sort direction needed its own explicit index. Confirmed via isolated per-query testing (Q1/Q2 0 fallback hits with the two indexes above; Q3 — this exact shape — still 1 fallback hit before this index existed).",
+      "collectionGroup": "campusAccessRequests",
+      "queryScope": "COLLECTION",
+      "fields": [
+        {
+          "fieldPath": "schoolId",
+          "order": "ASCENDING"
+        },
+        {
+          "fieldPath": "status",
+          "order": "ASCENDING"
+        },
+        {
+          "fieldPath": "updatedAt",
+          "order": "DESCENDING"
+        }
+      ]
+    },
+    {
+      "_comment": "Campus Access — unified ledger (2026-08-09) — muster/roll-call scan: schoolId==, ordered by timestamp DESC (Gate_pass_service::muster).",
+      "collectionGroup": "campusAccessEvents",
+      "queryScope": "COLLECTION",
+      "fields": [
+        {
+          "fieldPath": "schoolId",
+          "order": "ASCENDING"
+        },
+        {
+          "fieldPath": "timestamp",
+          "order": "DESCENDING"
+        }
+      ]
+    },
+    {
+      "_comment": "Visitor Management MVP (2026-08-09, added during the adversarial audit — was missing from the original index list) — directory typeahead: schoolId==, ordered by name ASC (Visitor_service::searchVisitors). Verified working against real Firestore without this index during the audit (~1.6-2s/call, unindexed scan) — declared now for correctness/defensiveness rather than relying on that continuing to hold as data volume grows.",
+      "collectionGroup": "visitors",
+      "queryScope": "COLLECTION",
+      "fields": [
+        {
+          "fieldPath": "schoolId",
+          "order": "ASCENDING"
+        },
+        {
+          "fieldPath": "name",
+          "order": "ASCENDING"
+        }
+      ]
+    },
+    {
+      "_comment": "RECONCILED FROM DEPLOYED graderadmin (2026-08-12): live in Firebase but absent from git — created outside this repo and never written back. Kept so a deploy from this file cannot drop it.",
+      "collectionGroup": "auditArchive",
+      "queryScope": "COLLECTION",
+      "fields": [
+        {
+          "fieldPath": "schoolId",
+          "order": "ASCENDING"
+        },
+        {
+          "fieldPath": "appId",
+          "order": "ASCENDING"
+        },
+        {
+          "fieldPath": "timestampMs",
+          "order": "DESCENDING"
+        }
+      ]
+    },
+    {
+      "_comment": "RECONCILED FROM DEPLOYED graderadmin (2026-08-12): live in Firebase but absent from git — created outside this repo and never written back. Kept so a deploy from this file cannot drop it.",
+      "collectionGroup": "auditLogs",
+      "queryScope": "COLLECTION",
+      "fields": [
+        {
+          "fieldPath": "schoolId",
+          "order": "ASCENDING"
+        },
+        {
+          "fieldPath": "appId",
+          "order": "ASCENDING"
+        },
+        {
+          "fieldPath": "timestampMs",
+          "order": "DESCENDING"
+        }
+      ]
+    },
+    {
+      "_comment": "RECONCILED FROM DEPLOYED graderadmin (2026-08-12): live in Firebase but absent from git — created outside this repo and never written back. Kept so a deploy from this file cannot drop it.",
+      "collectionGroup": "crmApplications",
+      "queryScope": "COLLECTION",
+      "fields": [
+        {
+          "fieldPath": "schoolId",
+          "order": "ASCENDING"
+        },
+        {
+          "fieldPath": "session",
+          "order": "ASCENDING"
+        },
+        {
+          "fieldPath": "class",
+          "order": "ASCENDING"
+        },
+        {
+          "fieldPath": "created_at",
+          "order": "DESCENDING"
+        }
+      ]
+    },
+    {
+      "_comment": "RECONCILED FROM DEPLOYED graderadmin (2026-08-12): live in Firebase but absent from git — created outside this repo and never written back. Kept so a deploy from this file cannot drop it.",
+      "collectionGroup": "crmApplications",
+      "queryScope": "COLLECTION",
+      "fields": [
+        {
+          "fieldPath": "schoolId",
+          "order": "ASCENDING"
+        },
+        {
+          "fieldPath": "session",
+          "order": "ASCENDING"
+        },
+        {
+          "fieldPath": "created_at",
+          "order": "DESCENDING"
+        }
+      ]
+    },
+    {
+      "_comment": "RECONCILED FROM DEPLOYED graderadmin (2026-08-12): live in Firebase but absent from git — created outside this repo and never written back. Kept so a deploy from this file cannot drop it.",
+      "collectionGroup": "crmApplications",
+      "queryScope": "COLLECTION",
+      "fields": [
+        {
+          "fieldPath": "schoolId",
+          "order": "ASCENDING"
+        },
+        {
+          "fieldPath": "session",
+          "order": "ASCENDING"
+        },
+        {
+          "fieldPath": "searchTokens",
+          "arrayConfig": "CONTAINS"
+        },
+        {
+          "fieldPath": "created_at",
+          "order": "DESCENDING"
+        }
+      ]
+    },
+    {
+      "_comment": "RECONCILED FROM DEPLOYED graderadmin (2026-08-12): live in Firebase but absent from git — created outside this repo and never written back. Kept so a deploy from this file cannot drop it.",
+      "collectionGroup": "crmApplications",
+      "queryScope": "COLLECTION",
+      "fields": [
+        {
+          "fieldPath": "schoolId",
+          "order": "ASCENDING"
+        },
+        {
+          "fieldPath": "session",
+          "order": "ASCENDING"
+        },
+        {
+          "fieldPath": "source",
+          "order": "ASCENDING"
+        },
+        {
+          "fieldPath": "created_at",
+          "order": "DESCENDING"
+        }
+      ]
+    },
+    {
+      "_comment": "RECONCILED FROM DEPLOYED graderadmin (2026-08-12): live in Firebase but absent from git — created outside this repo and never written back. Kept so a deploy from this file cannot drop it.",
+      "collectionGroup": "crmApplications",
+      "queryScope": "COLLECTION",
+      "fields": [
+        {
+          "fieldPath": "schoolId",
+          "order": "ASCENDING"
+        },
+        {
+          "fieldPath": "session",
+          "order": "ASCENDING"
+        },
+        {
+          "fieldPath": "stage",
+          "order": "ASCENDING"
+        },
+        {
+          "fieldPath": "class",
+          "order": "ASCENDING"
+        },
+        {
+          "fieldPath": "created_at",
+          "order": "DESCENDING"
+        }
+      ]
+    },
+    {
+      "_comment": "RECONCILED FROM DEPLOYED graderadmin (2026-08-12): live in Firebase but absent from git — created outside this repo and never written back. Kept so a deploy from this file cannot drop it.",
+      "collectionGroup": "crmApplications",
+      "queryScope": "COLLECTION",
+      "fields": [
+        {
+          "fieldPath": "schoolId",
+          "order": "ASCENDING"
+        },
+        {
+          "fieldPath": "session",
+          "order": "ASCENDING"
+        },
+        {
+          "fieldPath": "stage",
+          "order": "ASCENDING"
+        },
+        {
+          "fieldPath": "created_at",
+          "order": "DESCENDING"
+        }
+      ]
+    },
+    {
+      "_comment": "RECONCILED FROM DEPLOYED graderadmin (2026-08-12): live in Firebase but absent from git — created outside this repo and never written back. Kept so a deploy from this file cannot drop it.",
+      "collectionGroup": "crmApplications",
+      "queryScope": "COLLECTION",
+      "fields": [
+        {
+          "fieldPath": "schoolId",
+          "order": "ASCENDING"
+        },
+        {
+          "fieldPath": "session",
+          "order": "ASCENDING"
+        },
+        {
+          "fieldPath": "status",
+          "order": "ASCENDING"
+        },
+        {
+          "fieldPath": "class",
+          "order": "ASCENDING"
+        },
+        {
+          "fieldPath": "created_at",
+          "order": "DESCENDING"
+        }
+      ]
+    },
+    {
+      "_comment": "RECONCILED FROM DEPLOYED graderadmin (2026-08-12): live in Firebase but absent from git — created outside this repo and never written back. Kept so a deploy from this file cannot drop it.",
+      "collectionGroup": "crmApplications",
+      "queryScope": "COLLECTION",
+      "fields": [
+        {
+          "fieldPath": "schoolId",
+          "order": "ASCENDING"
+        },
+        {
+          "fieldPath": "session",
+          "order": "ASCENDING"
+        },
+        {
+          "fieldPath": "status",
+          "order": "ASCENDING"
+        },
+        {
+          "fieldPath": "created_at",
+          "order": "DESCENDING"
+        }
+      ]
+    },
+    {
+      "_comment": "RECONCILED FROM DEPLOYED graderadmin (2026-08-12): live in Firebase but absent from git — created outside this repo and never written back. Kept so a deploy from this file cannot drop it.",
+      "collectionGroup": "crmApplications",
+      "queryScope": "COLLECTION",
+      "fields": [
+        {
+          "fieldPath": "schoolId",
+          "order": "ASCENDING"
+        },
+        {
+          "fieldPath": "session",
+          "order": "ASCENDING"
+        },
+        {
+          "fieldPath": "status",
+          "order": "ASCENDING"
+        },
+        {
+          "fieldPath": "source",
+          "order": "ASCENDING"
+        },
+        {
+          "fieldPath": "created_at",
+          "order": "DESCENDING"
+        }
+      ]
+    },
+    {
+      "_comment": "RECONCILED FROM DEPLOYED graderadmin (2026-08-12): live in Firebase but absent from git — created outside this repo and never written back. Kept so a deploy from this file cannot drop it.",
+      "collectionGroup": "galleryMedia",
+      "queryScope": "COLLECTION",
+      "fields": [
+        {
+          "fieldPath": "albumId",
+          "order": "ASCENDING"
+        },
+        {
+          "fieldPath": "isArchived",
+          "order": "ASCENDING"
+        },
+        {
+          "fieldPath": "uploadedAt",
+          "order": "DESCENDING"
+        }
+      ]
+    },
+    {
+      "_comment": "RECONCILED FROM DEPLOYED graderadmin (2026-08-12): live in Firebase but absent from git — created outside this repo and never written back. Kept so a deploy from this file cannot drop it.",
+      "collectionGroup": "leaveApplications",
+      "queryScope": "COLLECTION",
+      "fields": [
+        {
+          "fieldPath": "schoolId",
+          "order": "ASCENDING"
+        },
+        {
+          "fieldPath": "studentId",
+          "order": "ASCENDING"
+        },
+        {
+          "fieldPath": "createdAt",
+          "order": "DESCENDING"
+        }
+      ]
+    },
+    {
+      "_comment": "RECONCILED FROM DEPLOYED graderadmin (2026-08-12): live in Firebase but absent from git — created outside this repo and never written back. Kept so a deploy from this file cannot drop it.",
+      "collectionGroup": "payments",
+      "queryScope": "COLLECTION",
+      "fields": [
+        {
+          "fieldPath": "status",
+          "order": "ASCENDING"
+        },
+        {
+          "fieldPath": "paid_date",
+          "order": "DESCENDING"
+        }
+      ]
+    },
+    {
+      "_comment": "Employment History Phase 1 (2026-08-17): Staff_employment_history_service::recordChanges() finds the currently-open timeline entry for one staff+attribute before closing it (schoolId==, staffId==, attribute==, effectiveTo== — equality-only but on 4 fields, past what single-field-index merging serves). This is the ONLY index this phase's code actually issues; no read surface/report query exists yet, so no second index was added speculatively.",
+      "collectionGroup": "staffEmploymentTimeline",
+      "queryScope": "COLLECTION",
+      "fields": [
+        {
+          "fieldPath": "schoolId",
+          "order": "ASCENDING"
+        },
+        {
+          "fieldPath": "staffId",
+          "order": "ASCENDING"
+        },
+        {
+          "fieldPath": "attribute",
+          "order": "ASCENDING"
+        },
+        {
+          "fieldPath": "effectiveTo",
+          "order": "ASCENDING"
+        }
+      ]
+    },
+    {
+      "_comment": "Employment History Read Surface (2026-08-17): Staff::get_employment_history() reads the full chronological event log for one staff member (schoolId==, staffId==, orderBy changed_at) to render the Staff Profile History tab. This exact index was anticipated and deliberately deferred at Phase 1 ('no read surface/report query exists yet') — this is the phase that resolves it into a real requirement.",
+      "collectionGroup": "staffEmploymentEvents",
+      "queryScope": "COLLECTION",
+      "fields": [
+        {
+          "fieldPath": "schoolId",
+          "order": "ASCENDING"
+        },
+        {
+          "fieldPath": "staffId",
+          "order": "ASCENDING"
+        },
+        {
+          "fieldPath": "changed_at",
+          "order": "ASCENDING"
+        }
+      ]
+    },
+    {
+      "collectionGroup": "entitlementAllocations",
+      "queryScope": "COLLECTION",
+      "fields": [
+        {
+          "fieldPath": "schoolId",
+          "order": "ASCENDING"
+        },
+        {
+          "fieldPath": "demandId",
+          "order": "ASCENDING"
+        },
+        {
+          "fieldPath": "status",
+          "order": "ASCENDING"
+        }
+      ]
+    },
+    {
+      "collectionGroup": "entitlementAllocations",
+      "queryScope": "COLLECTION",
+      "fields": [
+        {
+          "fieldPath": "schoolId",
+          "order": "ASCENDING"
+        },
+        {
+          "fieldPath": "studentId",
+          "order": "ASCENDING"
+        },
+        {
+          "fieldPath": "session",
+          "order": "ASCENDING"
+        },
+        {
+          "fieldPath": "status",
+          "order": "ASCENDING"
+        }
+      ]
+    },
+    {
+      "collectionGroup": "entitlementAllocations",
+      "queryScope": "COLLECTION",
+      "fields": [
+        {
+          "fieldPath": "schoolId",
+          "order": "ASCENDING"
+        },
+        {
+          "fieldPath": "entitlementId",
+          "order": "ASCENDING"
+        },
+        {
+          "fieldPath": "status",
+          "order": "ASCENDING"
+        }
+      ]
+    },
+    {
+      "collectionGroup": "substitutePolicy",
+      "queryScope": "COLLECTION",
+      "fields": [
+        {
+          "fieldPath": "schoolId",
+          "order": "ASCENDING"
+        },
+        {
+          "fieldPath": "session",
+          "order": "DESCENDING"
+        }
+      ]
     }
   ],
   "fieldOverrides": [

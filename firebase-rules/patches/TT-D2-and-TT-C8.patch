@@ -1,0 +1,76 @@
+--- firestore.rules.tt_d2_before	2026-08-31 17:30:18.270207300 +0530
++++ firestore.rules	2026-08-31 22:20:15.450497300 +0530
+@@ -2083,11 +2083,23 @@
+     // ── Timetable Settings ──────────────────────────────────────
+     // P0 #4 — doc id is {schoolId}_{session} and the doc carries schoolId
+     // (Timetable_service.php). Same tenant binding as timetables above.
+-    // NOTE: `read` is left as isAuth() deliberately — tightening it is a
+-    // separate, out-of-scope finding (a Teacher-app query filters client-side
+-    // and would break). Not part of P0 #4.
++    //
++    // TT-D2 — READ TIGHTENED 2026-08-31 (Master Timetable switchover, gate D).
++    // The note this replaces recorded `read: isAuth()` as a deliberate
++    // out-of-scope deferral, on the premise that "a Teacher-app query filters
++    // client-side and would break". That premise was checked rather than
++    // assumed, and it no longer holds: NEITHER app reads this collection at
++    // all. A grep across both repositories finds no query and no document read
++    // of `timetableSettings` — it is written by the admin panel and consumed
++    // server-side. `isAuth()` was therefore granting every signed-in user of
++    // every tenant a read of every school's bell times and period structure in
++    // exchange for nothing.
++    //
++    // `timetables` next door has always been isSameSchool(). Leaving the
++    // settings that describe it readable platform-wide made the tenant scope on
++    // the timetable itself decorative.
+     match /timetableSettings/{docId} {
+-      allow read: if isAuth();
++      allow read: if isSameSchool();
+       allow create: if isAdmin() && isSameSchoolWrite();
+       allow update: if isAdmin() && isSameSchool() && isSameSchoolWrite();
+       allow delete: if isAdmin() && isSameSchool();
+@@ -2095,9 +2107,28 @@
+ 
+     // ── Substitutes ─────────────────────────────────────────────
+     // P0 #4 — docs carry schoolId + session (Substitute_service.php).
+-    // `read` left as isAuth() for the same reason as timetableSettings.
++    //
++    // TT-D2 — READ TIGHTENED 2026-08-31 (Master Timetable switchover, gate D).
++    // This is the more serious half. A substitute row is not configuration: it
++    // names the absent teacher, the covering teacher, the date, the class and
++    // the period. `isAuth()` made every school's daily staff-absence record
++    // readable by any signed-in account on the platform, parents included.
++    //
++    // The deferral was real when it was written — the apps queried this
++    // collection by `date` alone and scoped it on the handset, so an
++    // isSameSchool() read arm would have denied the query outright. All three
++    // of those queries now carry `whereEqualTo("schoolId", …)` server-side
++    // (Teacher: TimetableFirestoreRepository + DashboardViewModel; Parent:
++    // TimetableFirestoreRepository), and the composite index they need
++    // (substitutes: schoolId ASC, date ASC) is already deployed.
++    //
++    // DEPLOYMENT ORDER MATTERS HERE, AND IT IS NOT STYLISTIC. The Teacher
++    // dashboard's scoped query is not yet released. Deploying this rule before
++    // that build rolls out denies the OLD build's unscoped query and empties
++    // the dashboard's cover notice for every teacher still on it. The apps ship
++    // first; this rule follows.
+     match /substitutes/{docId} {
+-      allow read: if isAuth();
++      allow read: if isSameSchool();
+       allow create: if isAdmin() && isSameSchoolWrite();
+       allow update: if isAdmin() && isSameSchool() && isSameSchoolWrite();
+       allow delete: if isAdmin() && isSameSchool();
+@@ -3561,6 +3592,14 @@
+     match /timetablePlans/{docId}        { allow read, write: if false; }
+     match /timetableVersions/{docId}     { allow read, write: if false; }
+     match /timetableVersionDays/{docId}  { allow read, write: if false; }
++    // TT-C8 — the publish concurrency token. One document per (school,
++    // session), carrying no business data: only a value that changes on every
++    // publish, so the "is another timetable already in force?" check and the
++    // write that acts on it commit as one step. A client that could write it
++    // could hand two administrators the same token and let both publish, which
++    // is the defect this closes. Written only by the service account, which
++    // bypasses these rules; nothing reads it but the publish transition.
++    match /timetablePublishGuards/{docId} { allow read, write: if false; }
+     // ── Deny everything else (catch-all) ─────────────────────────
+     match /{document=**} {
+       allow read, write: if false;

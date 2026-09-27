@@ -1,0 +1,124 @@
+--- firestore.rules.tt_d1_before	2026-08-31 16:30:00.844101300 +0530
++++ firestore.rules	2026-08-31 22:20:15.450497300 +0530
+@@ -2047,28 +2047,59 @@
+     // hole at zero legitimate cost.
+     match /timetables/{docId} {
+       allow read: if isSameSchool();
+-      // TT-D1 (OPEN, deliberately NOT changed): no client authors timetables —
+-      // verified read-only in BOTH apps (Teacher: queryDocumentsAs/.get();
+-      // Parent: none), so isStaff() here is unnecessary privilege: any account
+-      // (driver, peon, security) can CREATE/UPDATE/DELETE a school's timetable
+-      // via the client SDK. Proven in tests/homework_authorship.test.js.
+-      // Tightening to isAdmin() (as timetableSettings/substitutes below already
+-      // do) FAILS 3 non-regression assertions owned by the P0 #4 programme,
+-      // which explicitly asserts same-school staff CAN write timetables.
+-      // Resolving that conflict is the P0 #4 owner's call, not a silent edit.
+-      allow create: if isStaff() && isSameSchoolWrite();
+-      allow update: if isStaff() && isSameSchool() && isSameSchoolWrite();
+-      allow delete: if isStaff() && isSameSchool();
++      // TT-D1 — CLOSED 2026-08-31 (Master Timetable switchover, gate B).
++      // Authorised deliberately, not edited silently: the note this replaces
++      // said resolving the conflict was the P0 #4 owner's call, and this
++      // change is that call being made rather than assumed.
++      //
++      // `timetables` is no longer a collection anyone authors. It is the
++      // compatibility PROJECTION of the published canonical timetable version,
++      // written by Timetable_plan_store::projectPublishedVersion through the
++      // service account — which bypasses these rules entirely, so the one
++      // sanctioned writer is unaffected by denying every client.
++      //
++      // Nothing legitimate is lost. Both apps are read-only here (re-verified
++      // across both repositories), the legacy admin editors refuse in PHP
++      // before they reach a write (Timetable_service::_refuseLegacyWrite), and
++      // the rollover tool now refuses projected documents
++      // (Rollover_projection_guard). What the old arms admitted was exactly
++      // the illegitimate case: any staff account — driver, peon, security —
++      // creating, rewriting or DELETING a school's timetable from a client,
++      // and after the switchover silently forking the derived copy away from
++      // the canonical version it mirrors.
++      //
++      // P0 #4's tenant binding is PRESERVED, not undone: `false` denies a
++      // strict superset of what isSameSchoolWrite()/isSameSchool() denied, so
++      // every cross-tenant write those arms blocked is still blocked. The
++      // five P0 #4 assertions that asserted same-school staff CAN write are
++      // updated in the same change (tests/timetable_sec.test.js x3 —
++      // create, update, delete; tests/homework_authorship.test.js x2); every
++      // cross-tenant assertion they own passes unchanged.
++      //
++      // Read stays isSameSchool(): the Teacher and Parent apps depend on it.
++      allow write: if false;
+     }
+ 
+     // ── Timetable Settings ──────────────────────────────────────
+     // P0 #4 — doc id is {schoolId}_{session} and the doc carries schoolId
+     // (Timetable_service.php). Same tenant binding as timetables above.
+-    // NOTE: `read` is left as isAuth() deliberately — tightening it is a
+-    // separate, out-of-scope finding (a Teacher-app query filters client-side
+-    // and would break). Not part of P0 #4.
++    //
++    // TT-D2 — READ TIGHTENED 2026-08-31 (Master Timetable switchover, gate D).
++    // The note this replaces recorded `read: isAuth()` as a deliberate
++    // out-of-scope deferral, on the premise that "a Teacher-app query filters
++    // client-side and would break". That premise was checked rather than
++    // assumed, and it no longer holds: NEITHER app reads this collection at
++    // all. A grep across both repositories finds no query and no document read
++    // of `timetableSettings` — it is written by the admin panel and consumed
++    // server-side. `isAuth()` was therefore granting every signed-in user of
++    // every tenant a read of every school's bell times and period structure in
++    // exchange for nothing.
++    //
++    // `timetables` next door has always been isSameSchool(). Leaving the
++    // settings that describe it readable platform-wide made the tenant scope on
++    // the timetable itself decorative.
+     match /timetableSettings/{docId} {
+-      allow read: if isAuth();
++      allow read: if isSameSchool();
+       allow create: if isAdmin() && isSameSchoolWrite();
+       allow update: if isAdmin() && isSameSchool() && isSameSchoolWrite();
+       allow delete: if isAdmin() && isSameSchool();
+@@ -2076,9 +2107,28 @@
+ 
+     // ── Substitutes ─────────────────────────────────────────────
+     // P0 #4 — docs carry schoolId + session (Substitute_service.php).
+-    // `read` left as isAuth() for the same reason as timetableSettings.
++    //
++    // TT-D2 — READ TIGHTENED 2026-08-31 (Master Timetable switchover, gate D).
++    // This is the more serious half. A substitute row is not configuration: it
++    // names the absent teacher, the covering teacher, the date, the class and
++    // the period. `isAuth()` made every school's daily staff-absence record
++    // readable by any signed-in account on the platform, parents included.
++    //
++    // The deferral was real when it was written — the apps queried this
++    // collection by `date` alone and scoped it on the handset, so an
++    // isSameSchool() read arm would have denied the query outright. All three
++    // of those queries now carry `whereEqualTo("schoolId", …)` server-side
++    // (Teacher: TimetableFirestoreRepository + DashboardViewModel; Parent:
++    // TimetableFirestoreRepository), and the composite index they need
++    // (substitutes: schoolId ASC, date ASC) is already deployed.
++    //
++    // DEPLOYMENT ORDER MATTERS HERE, AND IT IS NOT STYLISTIC. The Teacher
++    // dashboard's scoped query is not yet released. Deploying this rule before
++    // that build rolls out denies the OLD build's unscoped query and empties
++    // the dashboard's cover notice for every teacher still on it. The apps ship
++    // first; this rule follows.
+     match /substitutes/{docId} {
+-      allow read: if isAuth();
++      allow read: if isSameSchool();
+       allow create: if isAdmin() && isSameSchoolWrite();
+       allow update: if isAdmin() && isSameSchool() && isSameSchoolWrite();
+       allow delete: if isAdmin() && isSameSchool();
+@@ -3542,6 +3592,14 @@
+     match /timetablePlans/{docId}        { allow read, write: if false; }
+     match /timetableVersions/{docId}     { allow read, write: if false; }
+     match /timetableVersionDays/{docId}  { allow read, write: if false; }
++    // TT-C8 — the publish concurrency token. One document per (school,
++    // session), carrying no business data: only a value that changes on every
++    // publish, so the "is another timetable already in force?" check and the
++    // write that acts on it commit as one step. A client that could write it
++    // could hand two administrators the same token and let both publish, which
++    // is the defect this closes. Written only by the service account, which
++    // bypasses these rules; nothing reads it but the publish transition.
++    match /timetablePublishGuards/{docId} { allow read, write: if false; }
+     // ── Deny everything else (catch-all) ─────────────────────────
+     match /{document=**} {
+       allow read, write: if false;

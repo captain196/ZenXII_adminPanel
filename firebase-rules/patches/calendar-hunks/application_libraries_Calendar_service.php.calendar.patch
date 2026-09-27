@@ -1,0 +1,102 @@
+--- a/application/libraries/Calendar_service.php
++++ b/application/libraries/Calendar_service.php
+@@ -48,0 +61,81 @@ class Calendar_service
++    /**
++     * CAL-PERF-1 — read-through cache for the calendar event list.
++     *
++     * MEASURED, NOT GUESSED. A cold `sessionWhere('calendarEvents')` costs
++     * ~1.9 SECONDS on this deployment, reproducibly, **returning zero
++     * documents** — so the cost is the Firestore round trip (TLS + query) per
++     * PHP process, not the payload. Measured with
++     * `application/controllers/Calendar_perf_probe.php` across three separate
++     * processes: 1936 ms, 1899 ms, 1905 ms cold; ~440 ms warm in-process.
++     *
++     * This method reads the WHOLE event list and filters by month in PHP, and
++     * the Academic Planner calls it again on every prev/next month click. So
++     * paging through a year of the calendar paid twelve identical ~1.9s reads.
++     *
++     * The cache is deliberately modelled on `Holiday_service`, which already
++     * uses exactly this two-tier shape (per-request memo + short file TTL) over
++     * the same collection — this is the established pattern here, not a new one.
++     *
++     * CORRECTNESS OVER SPEED. `Calendar_service` is the ONLY writer of
++     * `calendarEvents`, so both write paths invalidate this cache explicitly.
++     * An administrator therefore never sees their own save go missing, which is
++     * the failure mode that would make a cache worse than the latency.
++     * A read failure caches nothing.
++     */
++    private const CACHE_TTL     = 120;   // seconds; 0 disables the file tier
++    private const CACHE_VERSION = 1;
++
++    /** @var array<string,array> per-request memo, keyed school+session */
++    private static $memo = [];
++
++    private function _cacheKey(): string
++    {
++        return 'cal_events_v' . self::CACHE_VERSION . '_'
++             . md5($this->schoolId . '|' . $this->session);
++    }
++
++    private function _cacheFile(): ?string
++    {
++        if (self::CACHE_TTL <= 0 || $this->schoolId === '') return null;
++        $dir = APPPATH . 'cache/calendar_events';
++        if (!is_dir($dir)) @mkdir($dir, 0775, true);
++        return is_dir($dir) ? $dir . '/' . $this->_cacheKey() . '.json' : null;
++    }
++
++    /** Called by BOTH write paths. Never let a stale list outlive a save. */
++    private function _invalidateCache(): void
++    {
++        unset(self::$memo[$this->_cacheKey()]);
++        $f = $this->_cacheFile();
++        if ($f !== null && is_file($f)) @unlink($f);
++    }
++
++    /** The raw document list, cached. Null means "could not read". */
++    private function _cachedDocs(): ?array
++    {
++        $key = $this->_cacheKey();
++        if (isset(self::$memo[$key])) return self::$memo[$key];
++
++        $file = $this->_cacheFile();
++        if ($file !== null && is_file($file)
++            && (time() - (int) @filemtime($file)) < self::CACHE_TTL) {
++            $raw = @file_get_contents($file);
++            $dec = ($raw !== false) ? json_decode($raw, true) : null;
++            if (is_array($dec)) { self::$memo[$key] = $dec; return $dec; }
++        }
++
++        try {
++            $docs = $this->fs->sessionWhere(self::COLLECTION, []);
++        } catch (\Throwable $e) {
++            // Do NOT cache a failure — a transient error must not persist as
++            // "this school has no calendar" for the next two minutes.
++            log_message('error', 'Calendar_service::_cachedDocs read failed: ' . $e->getMessage());
++            return null;
++        }
++
++        $docs = is_array($docs) ? $docs : [];
++        self::$memo[$key] = $docs;
++        if ($file !== null) @file_put_contents($file, json_encode($docs), LOCK_EX);
++        return $docs;
++    }
++
+@@ -53 +146 @@ class Calendar_service
+-            $fsDocs = $this->fs->sessionWhere(self::COLLECTION, []);
++            $fsDocs = $this->_cachedDocs();
+@@ -148,0 +281,3 @@ class Calendar_service
++        // CAL-PERF-1 — this class is the ONLY writer, so the cached list must die
++        // here or an administrator would not see their own save.
++        $this->_invalidateCache();
+@@ -184,0 +321,10 @@ class Calendar_service
++        // ACAD-D9: same shape as ACAD-D8 in Substitute_service. The delete was
++        // swallowed while _audit() and the success return ran regardless, so a
++        // failed removal told the operator the event was gone, wrote an audit
++        // entry recording a deletion that never happened, and left the event
++        // live. calendarEvents is also where HOLIDAYS live (Holiday_service
++        // reads them), so a holiday that "failed to delete" keeps suppressing
++        // attendance while the admin believes it was removed.
++        // CAL-PERF-1 — invalidate BEFORE the delete as well as after, so a
++        // failure part-way cannot leave a list that still contains the event.
++        $this->_invalidateCache();

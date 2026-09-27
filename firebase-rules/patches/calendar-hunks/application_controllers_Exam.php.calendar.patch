@@ -1,0 +1,122 @@
+--- a/application/controllers/Exam.php
++++ b/application/controllers/Exam.php
+@@ -310,0 +334,5 @@ class Exam extends MY_Controller
++        // Phase 0.2B (G-09 propagation) — additive, does not alter $subjects.
++        $subjectCodes = $this->_build_subject_codes_map($structure);
++
++        // CAL-D9 — resolved once per render; see _non_scheduling_dates().
++        $examCal = $this->_non_scheduling_dates();
+@@ -322 +351,6 @@ class Exam extends MY_Controller
+-            'holidays'   => $this->_holiday_dates(),
++            'holidays'   => $examCal['dates'],
++            // CAL-D9: [] once the student calendar is readable, because weekly
++            // closures are already inside `holidays`. Falls back to the legacy
++            // Sunday-only guess ONLY when the calendar could not be read, so an
++            // outage degrades to today's behaviour rather than to no skipping.
++            'weekendDays' => $examCal['calendarOk'] ? [] : [0],
+@@ -371,0 +408,3 @@ class Exam extends MY_Controller
++        // CAL-D9 — resolved once per render; see _non_scheduling_dates().
++        $examCal = $this->_non_scheduling_dates();
++
+@@ -379 +419,2 @@ class Exam extends MY_Controller
+-            'holidays'   => $this->_holiday_dates(), // UX-2.0.1-B P6-B (see create())
++            'holidays'   => $examCal['dates'],            // CAL-D9 (see create())
++            'weekendDays' => $examCal['calendarOk'] ? [] : [0],
+@@ -433,5 +510,43 @@ class Exam extends MY_Controller
+-        // HC-1 (holiday convergence): consume the canonical Holiday_service —
+-        // the single read abstraction over calendarEvents — instead of an
+-        // inline query. Identical date set + one normalization path (type/
+-        // category, startDate/start_date, range expansion, cancelled-skip).
+-        // Firestore-only; no RTDB.
++        return $this->_non_scheduling_dates()['dates'];
++    }
++
++    /**
++     * CAL-D9 — dates the datesheet builder should not lay an exam on.
++     *
++     * WHAT WAS WRONG. This used `all_holiday_dates()` with no audience, which
++     * defaults to `'staff'`. So the builder avoided STAFF-only closures (a
++     * teacher training day) but happily proposed exams on STUDENT-only closures
++     * — the days with no candidates in the building. The weekly pattern was
++     * worse still: the view hardcoded `weekend: [0]`, so a five-day school was
++     * offered Saturdays.
++     *
++     * WHY THE UNION, AND WHY IT IS NOT A MERGING OF DOMAINS. An exam needs two
++     * populations present at once: students to sit it and staff to invigilate.
++     * Neither calendar alone answers that. Both sets come from the SAME
++     * `calendarEvents` ledger, differing only by the `appliesTo` audience filter
++     * — this reads institutional events, and never touches the staff
++     * WORK-SCHEDULE authority (Work_schedules / Policy_assignment_service),
++     * which stays exactly where it is. The student/staff domain separation is
++     * about who decides working time, not about who may read a declared holiday.
++     *
++     * ADVISORY, NOT A BLOCK. Nothing here rejects a date. There is no
++     * server-side exam-date validation anywhere in this module (verified), so
++     * this only shapes what Auto-sequence proposes; an administrator can still
++     * place a paper on any date deliberately. That matters, because scheduling
++     * an exam on a non-working day is normal practice — it is handled as
++     * invigilator workload, not as an impossibility.
++     *
++     * WINDOW. Resolved over a fixed span around today rather than an academic
++     * session, because no session-window helper exists in this codebase and
++     * inventing one here would be a second, unowned authority.
++     *
++     * @return array{dates: string[], calendarOk: bool}
++     */
++    private function _non_scheduling_dates(): array
++    {
++        $dates = [];
++        $calendarOk = false;
++
++        // 1. STUDENT side — the canonical student calendar. Covers the weekly
++        //    pattern, nth-weekday closures and student holidays, and correctly
++        //    RE-OPENS a declared special working day.
+@@ -440,2 +555,24 @@ class Exam extends MY_Controller
+-            $this->holiday_service->init($this->fs, (string) $this->school_id, (string) $this->session_year);
+-            return array_keys($this->holiday_service->all_holiday_dates());
++            $this->holiday_service->init(
++                $this->fs, (string) $this->school_id, (string) $this->session_year);
++
++            $this->load->library('student_calendar_reader');
++            $this->student_calendar_reader->init(
++                $this->fs, (string) $this->school_id, (string) $this->session_year);
++
++            $cursor = new \DateTimeImmutable(date('Y-m-01', strtotime('-3 months')));
++            for ($i = 0; $i < 18; $i++) {
++                $m = (int) $cursor->format('n');
++                $y = (int) $cursor->format('Y');
++
++                $hol = $this->holiday_service->holidays_in_month($y, $m, 'students');
++                $swd = $this->holiday_service->special_working_days_in_month($y, $m, 'students');
++
++                $nw = $this->student_calendar_reader
++                    ->resolveMonth($y, $m, $hol, $swd)['nonWorking'];
++
++                foreach (array_keys($nw) as $day) {
++                    $dates[sprintf('%04d-%02d-%02d', $y, $m, (int) $day)] = true;
++                }
++                $cursor = $cursor->modify('+1 month');
++            }
++            $calendarOk = (bool) $this->student_calendar_reader->load_ok();
+@@ -443,2 +580,2 @@ class Exam extends MY_Controller
+-            log_message('error', 'Exam::_holiday_dates Holiday_service failed: ' . $e->getMessage());
+-            return [];
++            log_message('error', 'Exam::_non_scheduling_dates student calendar failed: '
++                . $e->getMessage());
+@@ -445,0 +583,16 @@ class Exam extends MY_Controller
++
++        // 2. STAFF side — institutional closures that apply to staff. Without
++        //    these the builder would propose a paper on a day with nobody to
++        //    invigilate it.
++        try {
++            foreach (array_keys($this->holiday_service->all_holiday_dates('staff')) as $d) {
++                $dates[$d] = true;
++            }
++        } catch (\Throwable $e) {
++            log_message('error', 'Exam::_non_scheduling_dates staff holidays failed: '
++                . $e->getMessage());
++        }
++
++        $out = array_keys($dates);
++        sort($out);
++        return ['dates' => $out, 'calendarOk' => $calendarOk];

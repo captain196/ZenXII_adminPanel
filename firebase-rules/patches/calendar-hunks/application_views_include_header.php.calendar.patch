@@ -1,0 +1,6 @@
+--- a/application/views/include/header.php
++++ b/application/views/include/header.php
+@@ -746,0 +863,3 @@
++                    <!-- CALENDAR PROGRAMME — student school-week authority. Distinct from
++                         Work Schedules (staff working time) under HR. -->
++                    <li><a href="<?= base_url('student_calendar') ?>"><i class="fa fa-circle-o"></i>School Week</a></li>

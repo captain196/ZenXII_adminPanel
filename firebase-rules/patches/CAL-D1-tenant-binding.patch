@@ -1,0 +1,85 @@
+--- C:/Users/91865/AppData/Local/Temp/claude/c--xampp-htdocs-ZenX-school/b2fbc19e-6c7d-4593-9bd4-e4a78ec06375/scratchpad/rules_restore.bak	2026-09-01 15:41:44.423733800 +0530
++++ firebase-rules/firestore.rules	2026-09-01 15:47:58.612116400 +0530
+@@ -667,7 +667,12 @@
+     // ── Subjects ─────────────────────────────────────────────────
+     match /subjects/{docId} {
+       allow read: if isSameSchool();
+-      allow write: if isAdmin();
++      // CAL-D1 restoration: server-only, matching the SEC-3 wave-4 posture deployed
++      // 2026-08-21. isAdmin() binds the CALLER's tenant but never the WRITTEN
++      // document, so an admin of one school could create, overwrite or delete
++      // another school's records. Proven on the emulator by
++      // firebase-rules/tests/cal_d1_tenant_binding.test.js.
++      allow write: if false;
+     }
+ 
+     // ── Subject Assignments (canonical: who teaches what to which class/section) ──
+@@ -1108,9 +1113,18 @@
+     // exam reads via Exam_read are unaffected. tenantActive isolation
+     // is inherited through isStaff()/isSameSchool().
+     match /exams/{docId} {
+-      allow read: if isStaff()
+-                  || (isSameSchool() && resource.data.status in ['Published', 'Completed']);
+-      allow write: if isAdmin();
++      // CAL-D1b: isStaff() proves only that the CALLER's tenant is active. On the
++      // LEFT of the disjunction it short-circuits the same-school test entirely,
++      // so any staff member of any school could read any school's exams. Binding
++      // the tenant FIRST is the deployed shape.
++      allow read: if isSameSchool()
++                  && (isStaff() || resource.data.status in ['Published', 'Completed']);
++      // CAL-D1 restoration: server-only, matching the SEC-3 wave-4 posture deployed
++      // 2026-08-21. isAdmin() binds the CALLER's tenant but never the WRITTEN
++      // document, so an admin of one school could create, overwrite or delete
++      // another school's records. Proven on the emulator by
++      // firebase-rules/tests/cal_d1_tenant_binding.test.js.
++      allow write: if false;
+     }
+ 
+     // examVisible — inherit a schedule's visibility from its PARENT exam's
+@@ -1138,9 +1152,15 @@
+     // passingMarks only). examSchedule docs reliably carry schoolId+examId.
+     // Backend (Admin SDK) bypasses rules → Exam_read server reads unaffected.
+     match /examSchedule/{docId} {
+-      allow read: if isStaff()
+-                  || (isSameSchool() && examVisible(resource.data.schoolId, resource.data.examId));
+-      allow write: if isAdmin();
++      // CAL-D1b — same short-circuit as exams above, same fix.
++      allow read: if isSameSchool()
++                  && (isStaff() || examVisible(resource.data.schoolId, resource.data.examId));
++      // CAL-D1 restoration: server-only, matching the SEC-3 wave-4 posture deployed
++      // 2026-08-21. isAdmin() binds the CALLER's tenant but never the WRITTEN
++      // document, so an admin of one school could create, overwrite or delete
++      // another school's records. Proven on the emulator by
++      // firebase-rules/tests/cal_d1_tenant_binding.test.js.
++      allow write: if false;
+     }
+ 
+     // ── Marks ────────────────────────────────────────────────────
+@@ -2194,7 +2214,12 @@
+     // ── Calendar Events ─────────────────────────────────────────
+     match /calendarEvents/{docId} {
+       allow read: if isSameSchool();
+-      allow write: if isAdmin();
++      // CAL-D1 restoration: server-only, matching the SEC-3 wave-4 posture deployed
++      // 2026-08-21. isAdmin() binds the CALLER's tenant but never the WRITTEN
++      // document, so an admin of one school could create, overwrite or delete
++      // another school's records. Proven on the emulator by
++      // firebase-rules/tests/cal_d1_tenant_binding.test.js.
++      allow write: if false;
+     }
+ 
+     // ── Curriculum ──────────────────────────────────────────────
+@@ -3297,7 +3322,12 @@
+       // Admins read all via the panel (Admin SDK, bypasses rules).
+       // Was isSameSchool() — leaked every staff appraisal to any same-school token.
+       allow read: if resource.data.staffId == request.auth.uid || (isAdmin() && isSameSchool());
+-      allow write: if isAdmin();
++      // CAL-D1 restoration: server-only, matching the SEC-3 wave-4 posture deployed
++      // 2026-08-21. isAdmin() binds the CALLER's tenant but never the WRITTEN
++      // document, so an admin of one school could create, overwrite or delete
++      // another school's records. Proven on the emulator by
++      // firebase-rules/tests/cal_d1_tenant_binding.test.js.
++      allow write: if false;
+     }
+ 
+     // ── RBAC Roles ──────────────────────────────────────────────

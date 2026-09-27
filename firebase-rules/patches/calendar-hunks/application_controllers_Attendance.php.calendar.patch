@@ -1,0 +1,175 @@
+--- a/application/controllers/Attendance.php
++++ b/application/controllers/Attendance.php
+@@ -1078 +1094 @@ JS;
+-                'sundays'     => $this->_get_sundays($year, $monthNum),
++                'sundays'     => $this->_weekly_closure_days($year, $monthNum),
+@@ -1145 +1162 @@ JS;
+-            'sundays'     => $this->_get_sundays($year, $monthNum),
++            'sundays'     => $this->_weekly_closure_days($year, $monthNum),
+@@ -1500,0 +1519,8 @@ JS;
++        // CAL-B1 residual. ACAD-D18 established the house rule for live marking —
++        // a calendar-read failure must never break the school day, but it must
++        // never be SILENT either, because this gate is read negatively: a date
++        // absent from the map is treated as a working day. That guard was wired
++        // into save() and never into this path or bulk_mark_student(), so the
++        // identical event was loud on one endpoint and invisible on two others.
++        // Behaviour is deliberately unchanged; only the silence is fixed.
++        $this->_log_if_calendar_unreadable('mark_student_day', $day, $monthNum, $year);
+@@ -1617,0 +1644,4 @@ JS;
++        // CAL-B1 residual — see mark_student_day(). Bulk writes a whole section
++        // at once, so an unevaluated holiday gate here is the widest-blast-radius
++        // version of the same silence.
++        $this->_log_if_calendar_unreadable('bulk_mark_student', $day, $monthNum, $year);
+@@ -4991 +5678,16 @@ JS;
+-     * Get Sunday day numbers for a month
++     * Day numbers closed by the school's WEEKLY PATTERN for a month.
++     *
++     * CAL-D10 / Phase 5C — this used to be a second, independent
++     * `date('w') === 0` implementation living alongside the one in
++     * attendance_helper. Two hardcoded authorities meant the register grid and
++     * the marking engine could disagree about which days the school is open,
++     * and neither could ever express a five-day week.
++     *
++     * Both now resolve through Student_calendar_reader. A school that has
++     * configured nothing still gets exactly the Sundays it got before — proven
++     * day-for-day over 36 months by StudentCalendarLegacyEquivalenceTest — so
++     * this is a de-duplication, not a behaviour change.
++     *
++     * Holidays and special working days are deliberately NOT folded in here:
++     * the callers send them as their own payload keys and the front-end renders
++     * them differently. This answers the weekly pattern only.
+@@ -4993 +5695 @@ JS;
+-    private function _get_sundays(int $year, int $month): array
++    private function _weekly_closure_days(int $year, int $month): array
+@@ -4995 +5697,15 @@ JS;
+-        $sundays = [];
++        try {
++            $this->load->library('student_calendar_reader');
++            $this->student_calendar_reader->init(
++                $this->fs, (string) $this->school_id, (string) $this->session_year);
++
++            return array_values(array_keys(
++                $this->student_calendar_reader->resolveMonth($year, $month, [], [])['nonWorking']
++            ));
++        } catch (\Throwable $e) {
++            log_message('error', 'Attendance::_weekly_closure_days fell back to the legacy '
++                . 'weekly rule: ' . $e->getMessage());
++        }
++
++        // Legacy rule, byte-identical to what this method always returned.
++        $days = [];
+@@ -5026 +5753,36 @@ JS;
+-        return nw_days_from_holidays($holidayDayMap, $monthNum, $year);
++        // ── Phase 5B — THE canonical student calendar authority ──────────
++        //
++        // The weekly pattern used to be the literal `date('w') === 0` inside
++        // nw_days_from_holidays(). It is now an effective-dated, per-tenant
++        // policy resolved through Student_calendar_reader, which selects the
++        // version in force ON EACH DATE — so a month in the past keeps
++        // resolving against the policy that was live then, even after the
++        // school changes its week.
++        //
++        // A tenant that has configured nothing resolves through the explicit
++        // legacyStudentPattern() (Sunday closed, nothing else), which reproduces
++        // the old helper exactly — proven day-for-day across 36 months by
++        // StudentCalendarLegacyEquivalenceTest. Deploying this changes no
++        // school's behaviour until an administrator states a policy.
++        try {
++            $this->load->library('student_calendar_reader');
++            $this->student_calendar_reader->init(
++                $this->fs, (string) $this->school_id, (string) $this->session_year);
++
++            return $this->student_calendar_reader->resolveMonth(
++                $year, $monthNum, $holidayDayMap, $swdDayMap
++            )['nonWorking'];
++        } catch (\Throwable $e) {
++            // Never let a calendar-configuration failure break the school day —
++            // the same house rule Holiday_service follows. Fall through to the
++            // legacy computation, whose output is identical for any tenant that
++            // has not configured a pattern.
++            log_message('error', 'Attendance::_resolve_non_working_days fell back to the '
++                . 'legacy weekly rule (school=' . $this->school_id . '): ' . $e->getMessage());
++        }
++
++        $nonWorking = nw_days_from_holidays($holidayDayMap, $monthNum, $year);
++        foreach ($swdDayMap as $day => $name) {
++            unset($nonWorking[(int) $day]);
++        }
++        return $nonWorking;
+@@ -6222 +7209,4 @@ JS;
+-                $dayWise = enforce_holidays_on_string($dayWise, $daysInMonth, $nonWorking);
++                // CAL-5E: preserve explicit marks on OTHER days. Editing one day
++                // must not re-stamp a real P/A/L/T recorded months ago just
++                // because a holiday has since been declared on that date.
++                $dayWise = enforce_holidays_on_string($dayWise, $daysInMonth, $nonWorking, true);
+@@ -7080,0 +8094,70 @@ JS;
++    /**
++     * ACAD-D18 — could the holiday calendar actually be READ this request?
++     *
++     * Holiday_service::load_ok() answers false ONLY on a real read failure; a
++     * genuinely empty calendar answers true. Callers that reason negatively over
++     * the holiday map (every "is today a working day?" test) need this to tell
++     * "no holiday declared" apart from "I could not look".
++     *
++     * Kept separate from _is_holiday() so the gate's return type and behaviour
++     * are unchanged — this only makes the uncertainty reportable.
++     */
++    /**
++     * CAL-B1 — record that a marking gate could not actually be evaluated.
++     *
++     * The non-working-day gate is read NEGATIVELY: a date absent from the map is
++     * a working day. Holiday_service returns an empty map both for "nothing
++     * declared" and for a failed read, and Student_calendar_reader does the same
++     * for its own configuration, so an unreadable calendar silently OPENS the
++     * gate on every marking endpoint.
++     *
++     * ACAD-D18 already settled the policy for live marking — denying instead
++     * would leave a teacher unable to mark a genuine working day, so the school
++     * day keeps running — and recorded the fail-open-vs-closed question as an
++     * operational decision for the owner rather than a code one. What was never
++     * finished is COVERAGE: save() logged it, mark_student_day() and
++     * bulk_mark_student() did not.
++     *
++     * Logging only. No behaviour change, by design.
++     */
++    private function _log_if_calendar_unreadable(
++        string $endpoint, int $day, int $monthNum, int $year
++    ): void {
++        try {
++            $holidayOk = $this->_holiday_calendar_readable();
++
++            $calendarOk = true;
++            $this->load->library('student_calendar_reader');
++            $this->student_calendar_reader->init(
++                $this->fs, (string) $this->school_id, (string) $this->session_year);
++            $calendarOk = (bool) $this->student_calendar_reader->load_ok();
++
++            if ($holidayOk && $calendarOk) return;
++
++            log_message('error', sprintf(
++                'Attendance::%s — the non-teaching-day gate was NOT fully evaluated '
++                . '(school=%s session=%s date=%04d-%02d-%02d holidays=%s calendar=%s); '
++                . 'marking was allowed to proceed.',
++                $endpoint, $this->school_id, $this->session_year, $year, $monthNum, $day,
++                $holidayOk  ? 'readable' : 'UNREADABLE',
++                $calendarOk ? 'readable' : 'UNREADABLE'
++            ));
++        } catch (\Throwable $e) {
++            // The observability path must never be able to break marking.
++            log_message('error', 'Attendance::_log_if_calendar_unreadable failed: '
++                . $e->getMessage());
++        }
++    }
++
++    private function _holiday_calendar_readable(): bool
++    {
++        try {
++            $this->load->library('holiday_service');
++            $this->holiday_service->init($this->fs, (string) $this->school_id, (string) $this->session_year);
++            return (bool) $this->holiday_service->load_ok();
++        } catch (\Throwable $e) {
++            log_message('error', 'Attendance::_holiday_calendar_readable failed: ' . $e->getMessage());
++            return false;
++        }
++    }
++
