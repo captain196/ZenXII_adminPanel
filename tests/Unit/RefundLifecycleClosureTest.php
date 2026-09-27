@@ -13,7 +13,8 @@
  *
  *   service reduction (Transport_service)
  *     -> demand recalculation
- *     -> overpayment detected, ₹5,000 excess on ₹12,000 paid
+ *     -> overpayment detected: paid 12,000, liability fell to 5,000,
+ *        excess ₹7,000  (basisPaid - basisNet - basisFine)
  *     -> feeRefunds/SCH_FAREAUDIT1_ref_auto_transport_STU0030_2026-27, pending
  *     -> approved
  *     -> processed, mode bank_transfer,

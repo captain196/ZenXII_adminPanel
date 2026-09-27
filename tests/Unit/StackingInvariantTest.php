@@ -165,7 +165,10 @@ final class StackingInvariantTest extends TestCase
         $src = $this->src(self::FEES);
         $at  = strpos($src, 'ACC_CONCESSION_EXCEEDS_CHARGE path=legacy');
         $this->assertNotFalse($at, 'the legacy over-grant signal is missing');
-        $window = substr($src, max(0, $at - 1400), 2200);
+        // 2026-09-14 — was a ±1400/2200 character window. Bounded by the enclosing
+        // method now, so the clamp and its signal are checked wherever they sit in
+        // it rather than only while they stay within a byte budget.
+        $window = $this->enclosingMethod($src, $at);
         $this->assertStringContainsString('$discountAmount > $amount', $window,
             'the report must be driven by the over-grant condition itself');
         $this->assertStringContainsString('$discountAmount = $amount;', $window,
@@ -206,5 +209,26 @@ final class StackingInvariantTest extends TestCase
             'a 750 counter waiver against a 600 balance is refused down to 600 — so the '
             . 'concession and the waiver together can never exceed the original charge');
         $this->assertGreaterThanOrEqual(0.0, $outstanding - $waiver);
+    }
+
+    /**
+     * The enclosing method body around $at.
+     *
+     * Replaces a fixed character window. A window silently stops covering the
+     * line it was written to pin the moment code is inserted nearby — the
+     * assertion then passes or fails on a truncated string rather than on the
+     * property it claims to test.
+     */
+    private function enclosingMethod(string $s, int $at): string
+    {
+        $start = strrpos(substr($s, 0, $at), '    function ');
+        foreach (['    public function ', '    private function ', '    protected function '] as $sig) {
+            $p = strrpos(substr($s, 0, $at), $sig);
+            if ($p !== false && ($start === false || $p > $start)) $start = $p;
+        }
+        if ($start === false) return $s;
+        $end = preg_match('/\n    (?:public|private|protected) function /', $s, $m,
+                          PREG_OFFSET_CAPTURE, $at) ? $m[0][1] : strlen($s);
+        return substr($s, $start, $end - $start);
     }
 }

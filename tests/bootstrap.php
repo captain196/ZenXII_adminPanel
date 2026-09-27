@@ -13,6 +13,21 @@
  *  5. Provides global CI stubs (log_message, redirect, show_error, base_url).
  */
 
+// ── Run limits ─────────────────────────────────────────────────────────────────
+// The full suite exceeds BOTH of XAMPP php.ini's CLI caps: it exhausts the 512M
+// memory_limit part-way, and it runs past max_execution_time=300. Either one kills
+// the process with a fatal BEFORE PHPUnit prints its "Tests: … Failures: …" summary
+// — so a crashed run leaves no summary at all, and any CI step or reader grepping
+// for "Failures:" sees nothing and reads a crash as a clean pass. That is how the
+// project baseline came to be quoted from truncated runs.
+//
+// Set here rather than in phpunit.xml's <ini> block: PHPUnit applies those after
+// bootstrap, and max_execution_time in particular did not take effect there
+// (verified 2026-09-13 — the bare run still died at 300s with the <ini> present).
+// A test run is not a web request and must not inherit a web request's limits.
+ini_set('memory_limit', '1G');
+set_time_limit(0);
+
 // ── Paths ──────────────────────────────────────────────────────────────────────
 define('FCPATH',   realpath(__DIR__ . '/../') . DIRECTORY_SEPARATOR);
 define('BASEPATH', realpath(__DIR__ . '/../system') . DIRECTORY_SEPARATOR);
