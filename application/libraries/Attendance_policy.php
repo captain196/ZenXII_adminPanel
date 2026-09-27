@@ -210,6 +210,26 @@ class Attendance_policy
             return $this->_reject($base, 'on_leave');
         }
 
+        // ── Gate 6a: Special Working Day (Phase D, 2026-08-18) ───────
+        // The strongest calendar override — this date is a genuinely normal
+        // working day for this employee, regardless of weekly-off/holiday or
+        // even a stale manual H/O mark. Skips Gate 6b entirely: a punch here
+        // is classified P/T/M like any ordinary day, never the rest-day
+        // extra-work (W) path — those are semantically different (W means
+        // "worked despite it being a rest day"; a Special Working Day means
+        // it was never a rest day to begin with).
+        if (!empty($context['isSpecialWorkingDay'])) {
+            $swdWindows = $this->_resolve_windows($policy, $shiftId);
+            $swdNowMin  = $this->_now_minutes($context);
+            if ($swdNowMin === null) {
+                return $this->_reject($base, 'window_closed');
+            }
+            if ($direction === 'out') {
+                return $this->_evaluate_checkout($base, $swdWindows, $swdNowMin, $context);
+            }
+            return $this->_evaluate_checkin($base, $swdWindows, $swdNowMin, $currentMark);
+        }
+
         // ── Gate 6b: rest day (weekly-off / holiday) → extra work ────
         // A rest day is not a normal attendance day. If the school allows
         // working on rest days, an on-campus punch is recorded as EXTRA (W)

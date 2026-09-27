@@ -75,7 +75,9 @@ class Staff_attendance_finaliser
     /**
      * Finalise past vacant days for the given month keys.
      *
-     * @param array  $policy    schools/{id}.attendancePolicy (weeklyOffs, autoAbsent)
+     * @param array  $policy    schools/{id}.attendancePolicy — only `autoAbsent` is
+     *                          read. The weekly-off calendar is NOT taken from here
+     *                          (N-35); it is resolved per employee, per date.
      * @param string $todayISO  'Y-m-d' in the school timezone (resolved by caller)
      * @param array  $monthKeys ['YYYY-MM', ...] to process (typically current + prev)
      * @param int    $maxDocs   safety cap on docs scanned per run
@@ -106,7 +108,11 @@ class Staff_attendance_finaliser
         // docs with only past 'A' days are re-examined only when holidays exist.
         $hasHolidays = !empty($this->ci->holiday_service->all_holiday_dates());
 
-        $weeklyOffs = (array) ($policy['weeklyOffs'] ?? []);
+        // N-35: the tenant-wide weeklyOffs list is GONE. Each employee resolves
+        // their own calendar through the same authority payroll uses. Loaded
+        // once here, resolved in memory per employee — Policy_assignment_service
+        // performs no I/O, so this stays one read regardless of headcount.
+        $this->_loadScheduleIndex();
 
         foreach ($monthKeys as $monthKey) {
             if (!preg_match('/^\d{4}-\d{2}$/', (string) $monthKey)) continue;
@@ -148,7 +154,14 @@ class Staff_attendance_finaliser
                 } catch (\Throwable $e) { $out['skipped']++; continue; }
                 $freshDayWise = is_array($fresh) ? (string) ($fresh['dayWise'] ?? $dayWise) : $dayWise;
 
-                $resolved = $this->_overlay($freshDayWise, $monthKey, $weeklyOffs, $todayISO);
+                // FAIL CLOSED (N-35). null = this employee's calendar cannot be
+                // resolved for this month — no assignment, an overlap, or a period
+                // predating any assignment. Marking 'A' on a day whose working
+                // status is unknown is exactly the N-23 harm, so skip entirely.
+                $nonWorking = $this->_nonWorkingDays($staffId, $monthKey);
+                if ($nonWorking === null) { $out['skipped']++; continue; }
+
+                $resolved = $this->_overlay($freshDayWise, $monthKey, $nonWorking, $todayISO, $staffId);
                 if ($resolved === $freshDayWise) continue;   // race resolved it already
 
                 $filled = 0;
@@ -241,8 +254,15 @@ class Staff_attendance_finaliser
      * to 'H'. This fixes days auto-absented BEFORE the holiday was authored in the
      * Academic Calendar. Only 'A' (and 'V') are eligible — P/L/T/M/W/O are genuine
      * marks and are never touched. workingDays is unaffected (neither A nor H counts).
+     *
+     * N-35: takes DATE-RESOLVED non-working day numbers for THIS employee, not a
+     * tenant-wide weekday list. Weekday names no longer appear in this file —
+     * the calendar is decided upstream, per person, by the same authority payroll
+     * uses. Two employees in one school can now differ on the same Sunday.
+     *
+     * @param array $nonWorkingDays [dayNumber => true] for this employee/month
      */
-    private function _overlay(string $dayWise, string $monthKey, array $weeklyOffs, string $todayISO): string
+    private function _overlay(string $dayWise, string $monthKey, array $nonWorkingDays, string $todayISO, string $staffId = ''): string
     {
         $len = strlen($dayWise);
         for ($d = 1; $d <= $len; $d++) {
@@ -250,26 +270,218 @@ class Staff_attendance_finaliser
             if ($ch !== 'V' && $ch !== 'A') continue;         // only unmarked / auto-absent
             $dateISO = sprintf('%s-%02d', $monthKey, $d);
             if ($dateISO >= $todayISO) continue;              // today + future untouched
+            // Trail 2 Priority 1 (2026-08-18) — the department EFFECTIVE on
+            // this date, resolved per-day rather than read once from the live
+            // field before the loop. Same reasoning as _nonWorkingDays(); see
+            // _departmentAsOf()'s docblock. Memoised, so this costs at most
+            // one lookup per distinct date across the whole run.
+            $department = $this->_departmentAsOf($staffId, $dateISO);
             // FAIL CLOSED (audit finding M3): if the per-date holiday lookup errors
             // we must NOT default the day to Absent — the finaliser PERSISTS its
             // result, so a transient outage would permanently mark staff Absent on an
             // actual holiday and feed payroll. Skip the day (leave it as-is); the
             // next daily run retries it. (run() also fail-closes the whole run when
             // the calendar is unreadable via holiday_service->load_ok().)
-            try { $isHol = $this->ci->holiday_service->is_holiday($dateISO); }
+            try {
+                $isHol = $this->ci->holiday_service->is_holiday($dateISO, 'staff', $department, $staffId);
+                // Phase D — Special Working Day beats holiday/weekly-off: an
+                // unmarked/auto-absented day here is a genuine miss on what is
+                // now a normal working day, never O/H.
+                $isSwd = $this->ci->holiday_service->is_special_working_day($dateISO, 'staff', $department, $staffId);
+            }
             catch (\Throwable $e) { continue; }
-            if ($isHol) {
+            if ($isSwd) {
+                if ($ch === 'V') $dayWise[$d - 1] = 'A';
+            } elseif ($isHol) {
                 $dayWise[$d - 1] = 'H';                        // V→H or retroactive A→H
             } elseif ($ch === 'V') {
-                if (in_array(date('D', strtotime($dateISO)), $weeklyOffs, true)) {
-                    $dayWise[$d - 1] = 'O';
-                } else {
-                    $dayWise[$d - 1] = 'A';
-                }
+                // Scheduled OFF + no work -> O.  Scheduled WORKING + no work -> A.
+                $dayWise[$d - 1] = isset($nonWorkingDays[$d]) ? 'O' : 'A';
             }
             // $ch === 'A' and not a holiday → leave the genuine Absent untouched.
         }
         return $dayWise;
+    }
+
+    // ─────────────────────────────────────────────────────────────────────
+    //  N-35 — the employee-specific calendar
+    // ─────────────────────────────────────────────────────────────────────
+
+    private array $catalogue      = [];
+    private array $assignments    = [];
+    private array $staffDept      = [];
+    private array $calendarCache  = [];
+    private bool  $indexLoaded    = false;
+
+    /**
+     * One read of the catalogue, the assignments and the staff department map.
+     * Resolution itself is pure and in-memory, so headcount does not add reads —
+     * a per-employee query inside the loop would be N round-trips.
+     */
+    private function _loadScheduleIndex(): void
+    {
+        if ($this->indexLoaded) return;
+        $this->indexLoaded = true;
+
+        require_once APPPATH . 'libraries/Policy_assignment_service.php';
+
+        $school = $this->fs->get('schools', $this->schoolId);
+        $policy = is_array($school['attendancePolicy'] ?? null) ? $school['attendancePolicy'] : [];
+        foreach ((array) ($policy['workSchedules'] ?? []) as $s) {
+            if (is_array($s) && !empty($s['scheduleId'])) {
+                $this->catalogue[(string) $s['scheduleId']] = $s;
+            }
+        }
+
+        foreach ($this->_unwrap($this->fs->schoolWhere('staffScheduleAssignments', [])) as $a) {
+            $type = (string) ($a['attachmentType'] ?? '');
+            $id   = (string) ($a['attachmentId'] ?? '');
+            if ($type === '') { $type = 'staff'; $id = (string) ($a['staffId'] ?? ''); }
+            $this->assignments[] = [
+                'attachmentType' => $type,
+                'attachmentId'   => $id,
+                'policyId'       => (string) ($a['policyId'] ?? $a['scheduleId'] ?? ''),
+                'effectiveFrom'  => (string) ($a['effectiveFrom'] ?? ''),
+                'effectiveTo'    => (string) ($a['effectiveTo'] ?? ''),
+            ];
+        }
+
+        foreach ($this->_unwrap($this->fs->schoolWhere('staff', [])) as $s) {
+            $sid = trim((string) ($s['staffId'] ?? $s['staff_id'] ?? ''));
+            if ($sid !== '') {
+                $this->staffDept[$sid] = trim((string) ($s['department'] ?? $s['Department'] ?? ''));
+            }
+        }
+
+        // NO-N+1: _departmentAsOf() memoises per (staffId|date), and the shared
+        // history service memoises per (staffId|attribute) — init() does not
+        // clear that cache — so a run already costs ONE timeline query per
+        // staff member rather than one per staff-day. Over a whole roster that
+        // is still N round trips, every one of which this single warm replaces.
+        //
+        // Same call, same reasoning and the same fail-open contract as the
+        // payroll roster loop (Hr.php). Warming is idempotent, read-only, and a
+        // failed warm simply leaves the per-staff reads in place, so the run
+        // degrades in speed and never in correctness. Warm/cold equivalence is
+        // asserted in EmploymentTimelineQueryCountTest.
+        try {
+            $this->ci->load->library('staff_employment_history_service');
+            $this->ci->staff_employment_history_service
+                ->init($this->fs, $this->schoolId, 'finaliser')
+                ->warmTimeline();
+        } catch (\Throwable $e) {
+            log_message('error', 'Staff_attendance_finaliser: timeline warm failed, '
+                . 'falling back to per-staff reads: ' . $e->getMessage());
+        }
+    }
+
+    /** Firestore rows arrive as ['id'=>…, 'data'=>[…]]; flatten defensively. */
+    private function _unwrap(array $docs): array
+    {
+        $out = [];
+        foreach ($docs as $d) {
+            if (!is_array($d)) continue;
+            $out[] = (isset($d['data']) && is_array($d['data'])) ? $d['data'] : $d;
+        }
+        return $out;
+    }
+
+    /**
+     * Non-working day NUMBERS for one employee in one month.
+     *
+     * @return array|null [dayNumber => true], or NULL when the calendar cannot be
+     *         resolved — no assignment, an overlap, or a period predating every
+     *         assignment. NULL is never treated as "no days off"; the caller skips
+     *         the employee entirely. A guessed calendar is what N-23 was.
+     */
+    private function _nonWorkingDays(string $staffId, string $monthKey): ?array
+    {
+        $key = $staffId . '|' . $monthKey;
+        if (array_key_exists($key, $this->calendarCache)) return $this->calendarCache[$key];
+
+        [$y, $m] = array_map('intval', explode('-', $monthKey));
+        $days    = (int) date('t', mktime(0, 0, 0, $m, 1, $y));
+        $ctx     = [
+            'policies'             => $this->catalogue,
+            'assignments'          => $this->assignments,
+            'staffId'              => $staffId,
+            'department'           => $this->staffDept[$staffId] ?? '',
+            'organisationPolicyId' => null,
+        ];
+
+        $out = [];
+        for ($d = 1; $d <= $days; $d++) {
+            $date = sprintf('%s-%02d', $monthKey, $d);
+            // Trail 2 Priority 1 (2026-08-18) — resolve the department that
+            // was EFFECTIVE on this date, not the live staff.Department the
+            // bulk index loaded. See _departmentAsOf()'s docblock. This
+            // matters most here of all the Attendance surfaces, because the
+            // finaliser PERSISTS its overlay.
+            $ctx['department'] = $this->_departmentAsOf($staffId, $date);
+            $r    = \Policy_assignment_service::resolve($ctx, $date);
+
+            if (!empty($r['block'])) {
+                // Unresolvable on ANY day of the month → the whole month is
+                // unsafe to finalise for this employee. Logged, never guessed.
+                log_message('error', sprintf(
+                    'Staff_attendance_finaliser: %s unresolved for %s (%s) — skipped, not defaulted.',
+                    $staffId, $date, $r['block']));
+                return $this->calendarCache[$key] = null;
+            }
+
+            $offs = (array) ($r['policy']['weeklyOffs'] ?? []);
+            if (!in_array(date('D', strtotime($date)), $offs, true)) continue;
+            // Phase D — a Special Working Day overrides an otherwise-off
+            // weekly-off day back to working; never counted non-working here.
+            try {
+                if ($this->ci->holiday_service->is_special_working_day($date, 'staff', $ctx['department'], $staffId)) continue;
+            } catch (\Throwable $e) {}
+            $out[$d] = true;
+        }
+
+        return $this->calendarCache[$key] = $out;
+    }
+
+    /**
+     * Trail 2, Priority 1 (2026-08-18) — the department EFFECTIVE on $date,
+     * not the live `staff.Department` this class's bulk index loaded once
+     * per run.
+     *
+     * Same fix, same reasoning, and the same read-only resolver as
+     * Staff_attendance::_department_as_of() and Payroll's Phase J fix —
+     * Staff_employment_history_service::resolveAttributeAsOf() over the
+     * existing staffEmploymentTimeline. No second history system.
+     *
+     * This surface is the most consequential of the three: the finaliser
+     * PERSISTS its overlay into staffAttendanceSummary, which payroll then
+     * consumes. A future-dated transfer previously caused the nightly run
+     * to persist O/H/A marks resolved against the NEW department for dates
+     * that still belonged to the OLD one.
+     *
+     * FAILS OPEN to the live value (identical to pre-fix behaviour) — a run
+     * must never be blocked by an employment-history lookup. Memoised per
+     * (staffId|date) for the life of the run, so a month costs at most one
+     * lookup per distinct date rather than one per call.
+     */
+    private array $deptAsOfCache = [];
+
+    private function _departmentAsOf(string $staffId, string $date): string
+    {
+        $k = $staffId . '|' . $date;
+        if (array_key_exists($k, $this->deptAsOfCache)) return $this->deptAsOfCache[$k];
+
+        $live = $this->staffDept[$staffId] ?? '';
+        try {
+            $this->ci->load->library('staff_employment_history_service');
+            $svc = $this->ci->staff_employment_history_service
+                ->init($this->fs, $this->schoolId, 'finaliser');
+            $hist = $svc->resolveAttributeAsOf($staffId, 'department', $date);
+            if ($hist !== null && $hist !== '') return $this->deptAsOfCache[$k] = $hist;
+        } catch (\Throwable $e) {
+            log_message('error', 'Staff_attendance_finaliser::_departmentAsOf failed for '
+                . $staffId . ' ' . $date . ': ' . $e->getMessage());
+        }
+        return $this->deptAsOfCache[$k] = $live;
     }
 
     /** Count each dayWise char into the canonical 9-field count set. */

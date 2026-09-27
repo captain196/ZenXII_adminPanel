@@ -162,25 +162,30 @@ $att_can_manage = function_exists('has_permission') ? has_permission('Attendance
             </div>
         </div>
 
-        <!-- Working days -->
-        <div class="att-card">
-            <div class="att-card-title"><i class="fa fa-calendar-check-o"></i> Working Days</div>
-            <div style="font-size:12px;color:var(--att-t3);margin:-4px 0 12px;">Days attendance is expected. Highlighted days are working; the rest are treated as non-working.</div>
-            <div class="att-check-group" id="workingDaysGroup">
-                <label class="att-check-item checked"><input type="checkbox" value="Mon" checked> Mon</label>
-                <label class="att-check-item checked"><input type="checkbox" value="Tue" checked> Tue</label>
-                <label class="att-check-item checked"><input type="checkbox" value="Wed" checked> Wed</label>
-                <label class="att-check-item checked"><input type="checkbox" value="Thu" checked> Thu</label>
-                <label class="att-check-item checked"><input type="checkbox" value="Fri" checked> Fri</label>
-                <label class="att-check-item checked"><input type="checkbox" value="Sat" checked> Sat</label>
-                <label class="att-check-item"><input type="checkbox" value="Sun"> Sun</label>
-            </div>
-        </div>
+        <!-- CANONICAL-1 (2026-09-13): the "Working Days" weekday picker was REMOVED
+             from here. It wrote attendanceSettings.working_days, which the attendance
+             engine NEVER reads (dead writer / CAL-D10) — the school week is owned
+             solely by the School Week page (Student_calendar →
+             attendanceSettings.studentCalendar.versions[]), the one authority
+             _resolve_non_working_days() consults. Two weekday pickers were confusing;
+             this leaves ONE canonical place. Set the school week under Students →
+             School Week (student_calendar). -->
 
         <!-- Device toggles -->
         <div class="att-card">
             <div class="att-card-title"><i class="fa fa-plug"></i> Integrations</div>
 
+            <!-- DEV-2: these switches only bind once the settings have been
+                 saved at least once. Until then a registered reader of any type
+                 can still punch, and saying nothing would leave three switches
+                 reading OFF while the hardware works. -->
+            <div class="att-alert att-alert-info" id="methodsNotBinding" style="margin-bottom:14px;">
+                <i class="fa fa-info-circle"></i>
+                <span><strong>These switches are not in force yet.</strong>
+                Attendance settings have never been saved for this school, so a registered
+                device of any type can still record attendance. Press <em>Save Settings</em>
+                once to make these switches binding.</span>
+            </div>
             <div class="att-toggle-row">
                 <div>
                     <div class="att-toggle-label"><i class="fa fa-hand-pointer-o"></i> Biometric Enabled</div>
@@ -215,6 +220,30 @@ $att_can_manage = function_exists('has_permission') ? has_permission('Attendance
             </div>
         </div>
 
+        <!-- Regularization policy. The ceiling is the SCHOOL's choice: it ships
+             at 0 (no limit), which is exactly how the queue behaved before this
+             setting existed. -->
+        <div class="att-card" style="margin-top:18px;">
+            <div class="att-card-title"><i class="fa fa-user-clock"></i> Attendance Requests (Regularization)</div>
+
+            <div class="att-fg">
+                <label for="regMaxDays">Maximum regularized days per employee, per month</label>
+                <input type="number" id="regMaxDays" min="0" max="31" step="1" style="max-width:160px;">
+                <small style="color:var(--att-text3);font-size:11.5px;">
+                    Counts days already <strong>approved</strong> for that employee in the same month.
+                    Leave at <strong>0</strong> for no limit.
+                </small>
+            </div>
+
+            <div class="att-fg" style="margin-top:12px;">
+                <label for="regLimitMsg">Message shown to the reviewer when the limit is reached</label>
+                <input type="text" id="regLimitMsg" maxlength="300"
+                       placeholder="e.g. Monthly regularization limit reached — refer to the HOD.">
+                <small style="color:var(--att-text3);font-size:11.5px;">
+                    Optional. Leave blank to use the standard wording.
+                </small>
+            </div>
+        </div>
         <button class="att-btn att-btn-primary" id="btnSaveSettings">
             <i class="fa fa-check"></i> Save Settings
         </button>
@@ -432,6 +461,21 @@ $att_can_manage = function_exists('has_permission') ? has_permission('Attendance
         </div>
 
         <!-- Rest days + work-on-off -->
+        <!-- ══ N-36 (2026-08-18) — Working-Week Policy RETIRED ═════════════
+             Superseded by Work Schedules (Attendance → Work Schedules), which
+             Payroll, the punch path, the finaliser and the grid all now
+             resolve through via Policy_assignment_service. The old
+             working_week/* endpoints return 410 — this card is now a pointer,
+             not a form, so nobody lands on a screen that no longer works. -->
+        <div class="att-card" id="cardWorkingWeek" style="border-left:3px solid #BC5A3C">
+            <div class="att-card-title"><i class="fa fa-briefcase"></i> Working-Week Policy</div>
+            <div style="padding:10px 12px;border-radius:6px;background:rgba(37,99,235,.08);border:1px solid rgba(37,99,235,.25);color:#1d4ed8;font-size:13px">
+                This screen has moved. Configure your organisation's work schedules —
+                including weekly-offs and the days Payroll prices against — under
+                <a href="<?= base_url('work_schedules') ?>" style="color:#1d4ed8;font-weight:600">Attendance → Work Schedules</a>.
+            </div>
+        </div>
+
         <div class="att-card">
             <div class="att-card-title"><i class="fa fa-calendar-o"></i> Rest Days &amp; Extra Work</div>
             <div class="att-field" style="margin-bottom:14px">
@@ -456,12 +500,66 @@ $att_can_manage = function_exists('has_permission') ? has_permission('Attendance
                 </div>
                 <label class="att-switch"><input type="checkbox" id="autoAbsent" checked><span class="att-switch-slider"></span></label>
             </div>
+
+            <!-- ══ CALENDAR HALF-DAY PAY MODEL (2026-08-19) ══
+                 Tenant-scoped, OFF by default. Changes only EXPECTED WORK —
+                 an employee who completes the declared half-day is still paid
+                 a full normal day. The effective date is mandatory when
+                 enabled and is enforced server-side, because it is what stops
+                 historical payroll from being repriced on regeneration. -->
+            <div class="att-toggle-row">
+                <div>
+                    <div class="att-toggle-label"><i class="fa fa-adjust"></i> Calendar Half-Day reduces expected work</div>
+                    <div class="att-toggle-desc">A school-declared half-day expects 0.5 day instead of a full day. Completing it still pays a <b>full normal day</b> &mdash; only absence on such a day costs less.</div>
+                </div>
+                <label class="att-switch"><input type="checkbox" id="chdEnabled"><span class="att-switch-slider"></span></label>
+            </div>
+            <div id="chdDateRow" style="display:none;margin:-2px 2px 6px;padding:11px 12px;border-radius:9px;background:var(--att-amber-bg);border:1px solid var(--att-amber);">
+                <label for="chdFrom" style="display:block;font-size:12.5px;font-weight:600;color:var(--att-t2);margin-bottom:6px;">
+                    Effective from <span style="color:#b91c1c;">*</span>
+                </label>
+                <input type="date" id="chdFrom" class="att-input" style="max-width:220px;">
+                <div style="font-size:12px;color:var(--att-t3);margin-top:7px;line-height:1.5;">
+                    Payroll periods starting <b>on or after</b> this date use the new model. Earlier periods keep their original figures, so regenerating a closed month cannot change what was already paid. Required &mdash; the setting cannot be enabled without it.
+                </div>
+            </div>
             <div style="display:flex;gap:9px;align-items:flex-start;margin:2px 2px 6px;padding:10px 12px;border-radius:9px;background:var(--att-amber-bg);border:1px solid var(--att-amber);color:var(--att-t2);font-size:12.5px;line-height:1.5;">
                 <i class="fa fa-info-circle" style="color:var(--att-amber);margin-top:2px;flex-shrink:0;"></i>
                 <span>For a day to close as <b>Holiday&nbsp;(H)</b> instead of Absent, it must be added in the <b>Academic Calendar</b> as a Holiday &mdash; that's the single source of truth this setting reads. Weekly-offs above are handled here; festival/one-off holidays are not.
                     <a href="<?= base_url('academic') ?>#calendar" style="color:var(--gold,#BC5A3C);font-weight:600;text-decoration:none;white-space:nowrap;">Open Academic Calendar &rarr;</a>
                 </span>
             </div>
+            <!-- COMP-OFF POLICY (2026-08-22). Both settings REDUCE an entitlement
+                 the employee already earned by working a rest day, so both are
+                 OFF unless a school opts in. 0 = never expires / no cap, which is
+                 exactly the behaviour before these fields existed. Validated
+                 server-side; the UI hints are not the enforcement. -->
+            <div style="margin:2px 2px 6px;padding:11px 12px;border-radius:9px;background:var(--att-soft,#f7f7f5);border:1px solid var(--att-line,#e6e4df);">
+                <div style="font-size:12.5px;font-weight:600;color:var(--att-t2);margin-bottom:9px;">
+                    <i class="fa fa-clock-o"></i> Comp-Off policy
+                </div>
+
+                <label for="compOffExpiryDays" style="display:block;font-size:12.5px;font-weight:600;color:var(--att-t2);margin-bottom:5px;">
+                    Credits expire after
+                </label>
+                <input type="number" id="compOffExpiryDays" class="att-input" min="0" max="365" step="1"
+                       placeholder="0" style="max-width:140px;"> <span style="font-size:12.5px;color:var(--att-t3);">days</span>
+                <div style="font-size:12px;color:var(--att-t3);margin:5px 0 12px;line-height:1.5;">
+                    <b>0 = never expires</b> (current behaviour). A credit is stamped when it is earned, so turning this
+                    on later never lapses credits somebody has already banked.
+                </div>
+
+                <label for="compOffMaxBalanceDays" style="display:block;font-size:12.5px;font-weight:600;color:var(--att-t2);margin-bottom:5px;">
+                    Maximum balance
+                </label>
+                <input type="number" id="compOffMaxBalanceDays" class="att-input" min="0" max="365" step="0.5"
+                       placeholder="0" style="max-width:140px;"> <span style="font-size:12.5px;color:var(--att-t3);">days</span>
+                <div style="font-size:12px;color:var(--att-t3);margin-top:5px;line-height:1.5;">
+                    <b>0 = no cap</b> (current behaviour). At the cap, earning is <b>refused with a message</b> rather than
+                    silently dropped, so the person knows to use existing Comp-Off first.
+                </div>
+            </div>
+
             <div class="att-toggle-row">
                 <div>
                     <div class="att-toggle-label"><i class="fa fa-plus-circle"></i> Allow work on weekly-offs &amp; holidays</div>
@@ -484,6 +582,7 @@ $att_can_manage = function_exists('has_permission') ? has_permission('Attendance
 </section>
 </div><!-- .content-wrapper -->
 
+<script src="<?= base_url('assets/js/zx_dialog.js') ?>?v=1"></script>
 <script>
 /* Shared top-progress busy counter — global so BOTH the legacy settings closure
    and the isolated GPS closure below drive the SAME #attLoadbar. The bar stays
@@ -618,6 +717,13 @@ window.busyEnd   = function(){ window._attBusy = Math.max(0, window._attBusy - 1
     /* TAB 1: General Settings                              */
     /* ═════════════════════════════════════════════════════ */
 
+    /* N-36 (2026-08-18) — the Working-Week Policy card's JS (wwInit/wwLoad/
+       wwPreview/etc., ~130 lines) was removed here. The card is now a static
+       pointer to /work_schedules (see the view markup) — nothing left to
+       wire up. Superseded controller (Working_week.php) and its
+       working_week/* routes are retired, not deleted; see that file's
+       class docblock. */
+
     function loadSettings() {
         getData('attendance/get_settings').then(function(r){
             if (!r || !r.status) return;
@@ -625,18 +731,20 @@ window.busyEnd   = function(){ window._attBusy = Math.max(0, window._attBusy - 1
             if (d.late_threshold_student) document.getElementById('studentLateTime').value = d.late_threshold_student;
             if (d.late_threshold_staff) document.getElementById('staffLateTime').value = d.late_threshold_staff;
 
-            if (d.working_days && Array.isArray(d.working_days)) {
-                document.querySelectorAll('#workingDaysGroup .att-check-item').forEach(function(item){
-                    var cb = item.querySelector('input');
-                    var checked = d.working_days.indexOf(cb.value) !== -1;
-                    cb.checked = checked;
-                    item.classList.toggle('checked', checked);
-                });
-            }
+            // CANONICAL-1: the working-days picker was removed (dead writer).
+            // The school week is set under Students → School Week.
 
+            // DEV-2 — the switches bind only after a first save.
+            // .att-alert is display:none until it carries .show — setting an inline
+            // display here would lose to that rule and the banner would never appear.
+            var notBinding = document.getElementById('methodsNotBinding');
+            if (notBinding) notBinding.classList.toggle('show', r.configured === false);
             document.getElementById('toggleBiometric').checked = (d.biometric_enabled === true || d.biometric_enabled === 'true');
             document.getElementById('toggleRFID').checked = (d.rfid_enabled === true || d.rfid_enabled === 'true');
             document.getElementById('toggleFaceRec').checked = (d.face_recognition_enabled === true || d.face_recognition_enabled === 'true');
+            var regPol = d.regularization || {};
+            document.getElementById('regMaxDays').value = parseInt(regPol.maxDaysPerMonth, 10) || 0;
+            document.getElementById('regLimitMsg').value = regPol.limitMessage || '';
             settingsLoaded = true;
         }).catch(function(){
             showAlert('Failed to load settings. Please refresh the page.', 'error');
@@ -652,18 +760,14 @@ window.busyEnd   = function(){ window._attBusy = Math.max(0, window._attBusy - 1
         var btn = this;
         btn.classList.add('is-loading');
 
-        var days = [];
-        document.querySelectorAll('#workingDaysGroup input:checked').forEach(function(cb){
-            days.push(cb.value);
-        });
-
         postData('attendance/save_settings', {
             late_threshold_student: document.getElementById('studentLateTime').value,
             late_threshold_staff: document.getElementById('staffLateTime').value,
-            working_days: JSON.stringify(days),
             biometric_enabled: document.getElementById('toggleBiometric').checked ? '1' : '0',
             rfid_enabled: document.getElementById('toggleRFID').checked ? '1' : '0',
-            face_recognition_enabled: document.getElementById('toggleFaceRec').checked ? '1' : '0'
+            face_recognition_enabled: document.getElementById('toggleFaceRec').checked ? '1' : '0',
+            reg_max_days_per_month: document.getElementById('regMaxDays').value || '0',
+            reg_limit_message: document.getElementById('regLimitMsg').value || ''
         }).then(function(r){
             if (r.status) showAlert('Settings saved successfully', 'success');
             else showAlert(r.message || 'Failed to save settings', 'error');
@@ -834,18 +938,29 @@ window.busyEnd   = function(){ window._attBusy = Math.max(0, window._attBusy - 1
         }
     });
 
-    function editDevice(id, btn) {
+    async function editDevice(id, btn) {
         var dev = devices.find(function(d){ return d.id === id; });
         if (!dev) return;
 
-        var newName = prompt('Device Name:', dev.name);
+        // UI-D3: zxPrompt carries the current value and trims/validates itself.
+        var newName = await zxPrompt({
+            title: 'Rename device',
+            message: 'Device name:',
+            value: dev.name,
+            confirmText: 'Save name',
+            requiredMessage: 'Name cannot be empty.'
+        });
         if (newName === null) return;
-        newName = newName.trim();
-        if (!newName) { showAlert('Name cannot be empty', 'error'); return; }
 
-        var newLoc = prompt('Location:', dev.location || '');
+        var newLoc = await zxPrompt({
+            title: 'Device location',
+            message: 'Where is this device installed?',
+            value: dev.location || '',
+            placeholder: 'Optional',
+            confirmText: 'Save location',
+            required: false
+        });
         if (newLoc === null) return;
-        newLoc = newLoc.trim();
 
         if (btn) btn.classList.add('is-loading');
         postData('attendance/update_device', {
@@ -863,8 +978,8 @@ window.busyEnd   = function(){ window._attBusy = Math.max(0, window._attBusy - 1
         .finally(function(){ if (btn) btn.classList.remove('is-loading'); });
     }
 
-    function regenDeviceKey(id, btn) {
-        if (!confirm('Regenerate API key for this device? The old key will stop working.')) return;
+    async function regenDeviceKey(id, btn) {
+        if (!await zxConfirm({ title: 'Regenerate API key for this device? The old key will stop working.' })) return;
 
         if (btn) btn.classList.add('is-loading');
         postData('attendance/regenerate_key', { device_id: id })
@@ -880,8 +995,8 @@ window.busyEnd   = function(){ window._attBusy = Math.max(0, window._attBusy - 1
         .finally(function(){ if (btn) btn.classList.remove('is-loading'); });
     }
 
-    function deleteDevice(id, btn) {
-        if (!confirm('Delete this device permanently?')) return;
+    async function deleteDevice(id, btn) {
+        if (!await zxConfirm({ title: 'Delete this device permanently?' })) return;
 
         if (btn) btn.classList.add('is-loading');
         postData('attendance/delete_device', { device_id: id })
@@ -900,6 +1015,8 @@ window.busyEnd   = function(){ window._attBusy = Math.max(0, window._attBusy - 1
     loadSettings();
     loadHolidays();
     loadDevices();
+    // N-36 (2026-08-18) — wwInit() (working-week policy) removed; the card
+    // is a static pointer now, see loadSettings() comment above.
 
 })();
 </script>
@@ -1195,11 +1312,21 @@ window.busyEnd   = function(){ window._attBusy = Math.max(0, window._attBusy - 1
         if (mapReady && on) setTimeout(function(){ map.invalidateSize(); }, 40);
     }
     $('gpsEnabled').addEventListener('change', syncGeoEnabled);
+    if ($('chdEnabled')) $('chdEnabled').addEventListener('change', chdToggleDateRow);
 
     var loadFailed = false;
 
     // Apply a policy object to the form (reused on first load AND after save to
     // reflect any server-side normalisation, e.g. a clamped radius).
+    /* Calendar Half-Day: the effective-date field only exists while the
+       model is enabled, so an operator cannot leave a stale boundary behind
+       a disabled switch. Wired on change below. */
+    function chdToggleDateRow(){
+        var on  = $('chdEnabled') && $('chdEnabled').checked;
+        var row = $('chdDateRow');
+        if (row) row.style.display = on ? '' : 'none';
+    }
+
     function applyPolicy(p){
         p = p || {};
         var gps = p.gps || {}, geo = gps.geofence || {};
@@ -1250,6 +1377,19 @@ window.busyEnd   = function(){ window._attBusy = Math.max(0, window._attBusy - 1
         });
         $('allowWorkOnOff').checked = (p.allowWorkOnOff === true);
         $('autoAbsent').checked = (p.autoAbsent !== false);
+        // Calendar Half-Day pay model — OFF unless explicitly enabled.
+        $('chdEnabled').checked = (p.calendarHalfDayPayEnabled === true);
+        $('chdFrom').value      = p.calendarHalfDayPayEffectiveFrom || '';
+        // Comp-Off policy — 0 or absent means DISABLED, shown as an empty field
+        // so the placeholder ("0") reads as "not configured" rather than a value
+        // somebody set deliberately.
+        if ($('compOffExpiryDays')) {
+            $('compOffExpiryDays').value = (p.compOffExpiryDays > 0) ? p.compOffExpiryDays : '';
+        }
+        if ($('compOffMaxBalanceDays')) {
+            $('compOffMaxBalanceDays').value = (p.compOffMaxBalanceDays > 0) ? p.compOffMaxBalanceDays : '';
+        }
+        chdToggleDateRow();
 
         renderCampusList();
         if (mapReady) renderMap(true);
@@ -1356,8 +1496,26 @@ window.busyEnd   = function(){ window._attBusy = Math.max(0, window._attBusy - 1
             },
             weeklyOffs: (function(){ var a=[]; document.querySelectorAll('#weeklyOffsGroup input:checked').forEach(function(cb){ a.push(cb.value); }); return a; })(),
             allowWorkOnOff: $('allowWorkOnOff').checked,
-            autoAbsent: $('autoAbsent').checked
+            autoAbsent: $('autoAbsent').checked,
+            calendarHalfDayPayEnabled: $('chdEnabled').checked,
+            calendarHalfDayPayEffectiveFrom: $('chdFrom').value || '',
+            // Empty field means DISABLED, sent as 0. The server validates type
+            // and range and rejects anything else — this is a convenience, not
+            // the enforcement.
+            compOffExpiryDays: ($('compOffExpiryDays') && $('compOffExpiryDays').value !== '')
+                ? $('compOffExpiryDays').value : 0,
+            compOffMaxBalanceDays: ($('compOffMaxBalanceDays') && $('compOffMaxBalanceDays').value !== '')
+                ? $('compOffMaxBalanceDays').value : 0
         };
+        // Mirror of the server-side rule (Attendance::save_attendance_policy).
+        // The server refuses this too — this is only a faster, clearer message,
+        // never the enforcement point.
+        if (policy.calendarHalfDayPayEnabled && !policy.calendarHalfDayPayEffectiveFrom) {
+            gpsAlert('Set an effective date before enabling Calendar Half-Day pay. '
+                   + 'It is what prevents historical payroll from being repriced.', 'error');
+            var _d = $('chdFrom'); if (_d) _d.focus();
+            return;
+        }
         btn.disabled = true; btn.innerHTML = '<span class="att-spinner"></span> Saving…';
         saveBar('start');
         postData('attendance/save_attendance_policy', { policy: JSON.stringify(policy) }).then(function(r){
@@ -1380,11 +1538,12 @@ window.busyEnd   = function(){ window._attBusy = Math.max(0, window._attBusy - 1
         });
     });
 
-    // Day chips (weekly-offs + working days) — toggle on click. The <input> is
+    // Day chips (staff weekly-offs) — toggle on click. The <input> is
     // display:none, so we drive the toggle ourselves off the click and manually
     // flip both the checkbox and the .checked class. preventDefault stops the
     // wrapping <label> from ALSO toggling the checkbox (which would net to nothing).
-    ['weeklyOffsGroup','workingDaysGroup'].forEach(function(id){
+    // (CANONICAL-1: workingDaysGroup removed — student school week lives in Student_calendar.)
+    ['weeklyOffsGroup'].forEach(function(id){
         var wg = document.getElementById(id);
         if (!wg) return;
         function sync(item){ item.classList.toggle('checked', item.querySelector('input').checked); }

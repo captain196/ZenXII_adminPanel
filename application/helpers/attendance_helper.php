@@ -62,13 +62,43 @@ function nw_days_from_holidays(array $holidayDayMap, int $monthNum, int $year): 
  * Enforce holidays on an attendance string BEFORE saving.
  * This is the ONLY place holidays mutate data.
  */
-function enforce_holidays_on_string(string $attStr, int $daysInMonth, array $nonWorking): string
-{
+function enforce_holidays_on_string(
+    string $attStr,
+    int $daysInMonth,
+    array $nonWorking,
+    bool $preserveExplicitMarks = false
+): string {
     $attStr = str_pad($attStr, $daysInMonth, 'V');
     foreach ($nonWorking as $dayNum => $reason) {
-        if ($dayNum >= 1 && $dayNum <= $daysInMonth) {
-            $attStr[$dayNum - 1] = 'H';
+        if ($dayNum < 1 || $dayNum > $daysInMonth) continue;
+
+        // CAL-5E — HISTORICAL PROTECTION.
+        //
+        // This function stamps the WHOLE month. On the single-day edit path
+        // (_applyDayToSummary) that meant editing ONE day re-stamped every other
+        // day of the month against TODAY's calendar: declare a holiday for a
+        // past date, then touch any day in that month, and a real 'P' recorded
+        // months ago silently became 'H'. Nobody asked for that day to change.
+        //
+        // Effective dating cannot fix this one — it protects the WEEKLY PATTERN,
+        // but calendarEvents holidays are not versioned, so adding a holiday
+        // today genuinely does change what a past date resolves to.
+        //
+        // So the protection is stated on the RECORD instead of the rule: a day
+        // that already carries an explicit human mark (P/A/L/T) is evidence that
+        // somebody was actually there, and a save concerning a different day
+        // must not overwrite it. 'V' (never marked) still fills in normally, so
+        // genuine holidays continue to populate untouched days.
+        //
+        // Deliberately OPT-IN. The bulk month save passes false, because there
+        // the administrator is submitting the entire month on purpose and the
+        // stamp is the intent, not a side effect.
+        if ($preserveExplicitMarks
+            && in_array($attStr[$dayNum - 1], ['P', 'A', 'L', 'T'], true)) {
+            continue;
         }
+
+        $attStr[$dayNum - 1] = 'H';
     }
     return $attStr;
 }

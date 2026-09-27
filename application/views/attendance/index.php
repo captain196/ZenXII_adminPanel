@@ -48,7 +48,7 @@
             <div class="att-kpi-label">Late Arrivals Today</div>
         </div>
         <div class="att-kpi att-kpi-info att-kpi--clickable" role="link" tabindex="0"
-             data-href="<?= base_url('attendance/mark') ?>#staff" title="Open the staff register">
+             data-href="<?= base_url('attendance/staff') ?>" title="Open the staff register">
             <div class="att-kpi-icon"><i class="fa fa-user-circle"></i></div>
             <div class="att-kpi-value" id="attStatStaff"><div class="att-kpi-loading"></div></div>
             <div class="att-kpi-label">Staff Present Today</div>

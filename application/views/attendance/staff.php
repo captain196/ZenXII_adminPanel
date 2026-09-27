@@ -92,6 +92,45 @@
 .att-btn-outline:hover { background: var(--att-bg3); }
 
 /* ── Toolbar ── */
+/* ── Month lock (GAP-1) ── */
+.att-lock { display: flex; align-items: center; gap: 10px; }
+.att-lock-pill { display: inline-flex; align-items: center; gap: 6px; font-family: var(--att-font);
+    font-size: 11.5px; font-weight: 700; letter-spacing: .02em; padding: 5px 11px; border-radius: 999px;
+    border: 1px solid; white-space: nowrap; }
+.att-lock-pill.open   { color: #16a34a; border-color: rgba(22,163,74,.35); background: rgba(22,163,74,.10); }
+.att-lock-pill.locked { color: #dc2626; border-color: rgba(220,38,38,.35); background: rgba(220,38,38,.10); }
+.att-lock-pill.unknown{ color: #d97706; border-color: rgba(217,119,6,.35); background: rgba(217,119,6,.10); }
+.att-lock-months { font-family: var(--att-font); font-size: 11px; color: var(--att-text3); margin-top: 6px; }
+
+/* The locked banner. Deliberately loud: it answers the question the operator is
+   about to ask, which is why a register that looks editable is not. */
+.att-lock-banner { display: none; align-items: flex-start; gap: 10px; margin-bottom: 16px;
+    padding: 12px 14px; border-radius: 10px; border: 1px solid rgba(220,38,38,.3);
+    background: rgba(220,38,38,.07); color: var(--att-text); font-size: 13px; line-height: 1.55; }
+.att-lock-banner.show { display: flex !important; }
+.att-lock-banner i { color: #dc2626; font-size: 15px; margin-top: 2px; }
+
+/* Reason dialog — plain DOM. This view runs before jQuery loads, on purpose, so
+   it cannot reuse the HR panel's promptReason(); the behaviour is mirrored, not
+   the implementation. */
+.att-rsn-back { display: none; position: fixed; inset: 0; z-index: 5000; background: rgba(0,0,0,.45);
+    align-items: center; justify-content: center; padding: 20px; }
+.att-rsn-back.show { display: flex !important; }
+.att-rsn { width: 100%; max-width: 520px; background: var(--att-card); border: 1px solid var(--att-border);
+    border-radius: 14px; padding: 20px; box-shadow: 0 18px 50px rgba(0,0,0,.28); }
+.att-rsn h3 { margin: 0 0 4px; font-size: 16px; font-weight: 700; color: var(--att-text); }
+.att-rsn .warn { padding: 11px 13px; border-radius: 8px; background: rgba(217,119,6,.08);
+    border-left: 4px solid #d97706; font-size: 12.5px; line-height: 1.6; margin: 12px 0; }
+.att-rsn .warn b { display: block; margin-bottom: 4px; }
+.att-rsn .warn ul { margin: 6px 0 0; padding-left: 18px; }
+.att-rsn textarea { width: 100%; min-height: 84px; resize: vertical; padding: 10px 12px; font: inherit;
+    font-size: 13px; color: var(--att-text); background: var(--att-bg2); border: 1px solid var(--att-border);
+    border-radius: 8px; }
+.att-rsn textarea:focus { outline: 2px solid var(--att-primary); outline-offset: 1px; }
+.att-rsn-count { font-size: 11px; color: var(--att-text3); margin-top: 5px; }
+.att-rsn-actions { display: flex; justify-content: flex-end; gap: 8px; margin-top: 16px; }
+.att-rsn-err { color: #dc2626; font-size: 12px; margin-top: 8px; display: none; }
+.att-rsn-err.show { display: block; }
 .att-toolbar {
     display: flex; flex-wrap: wrap; gap: 10px; align-items: center;
     padding: 14px 20px; border-radius: var(--att-r);
@@ -186,6 +225,21 @@
 }
 .att-mgrid td.att-col-sunday { background: var(--att-sunday); border-left: 1px solid rgba(239,68,68,.10); border-right: 1px solid rgba(239,68,68,.10); }
 .att-mgrid td.att-col-holiday { background: var(--att-holiday); border-left: 1px solid rgba(139,92,246,.10); border-right: 1px solid rgba(139,92,246,.10); }
+/* Phase D — Special Working Day: a normally-off day turned working. Deliberately
+   NOT locked (unlike sunday/holiday below) — a genuinely normal editable cell,
+   just visually flagged so the override is legible at a glance. */
+.att-mgrid td.att-col-swd { background: rgba(16,163,74,.10); border-left: 1px solid rgba(16,163,74,.18); border-right: 1px solid rgba(16,163,74,.18); }
+.att-mgrid tbody tr:hover td.att-col-swd { background: rgba(16,163,74,.16); }
+/* Phase F — read-only Half-Day Leave overlay. An underline stripe, not a
+   background fill, so it composes with whatever else the cell already shows
+   (working day, SWD, dirty edit) instead of competing for the same paint.
+   Display-only: does not lock/unlock the cell and carries no marking or
+   payroll meaning by itself. */
+.att-mgrid td.att-col-hdleave { box-shadow: inset 0 -3px 0 0 rgba(217,119,6,.65); }
+.att-hdleave-dot {
+    display: inline-block; width: 6px; height: 6px; border-radius: 50%;
+    background: #d97706; margin-left: 2px; vertical-align: middle;
+}
 /* Future days: not yet editable. Kept visually uniform with the rest of the
    grid — only the date number is muted and the marks are lightly dimmed, so the
    future half doesn't read as a washed-out / broken block. */
@@ -205,6 +259,12 @@
 .att-mgrid tbody tr:hover td { background: var(--att-bg3); }
 .att-mgrid tbody tr:hover td.att-col-sunday { background: rgba(239,68,68,.12); }
 .att-mgrid tbody tr:hover td.att-col-holiday { background: rgba(139,92,246,.16); }
+
+/* N-35 — a row whose employee has no resolvable work schedule at all
+   (see Work Schedules → blocked panel for the same list). Every cell is
+   already individually locked via att-col-sunday; this just marks the row
+   itself so it doesn't read as an ordinary editable staff member. */
+.att-mgrid tbody tr.att-row-blocked td.att-td-name { color: #dc2626; }
 
 /* ── Day Cells ── */
 .att-cell {
@@ -374,6 +434,37 @@
     </div>
     <?php endif; ?>
 
+    <!-- Month lock (GAP-1) — state of the month on screen, and of the session. -->
+    <div class="att-lock-banner" id="attLockBanner" role="status">
+        <i class="fa fa-lock"></i>
+        <span id="attLockBannerText"></span>
+    </div>
+    <div class="att-lock-months" id="attLockedMonths"></div>
+
+    <!-- Re-opening a closed month asks for a reason, as the payroll unlock does. -->
+    <div class="att-rsn-back" id="attRsnBack" role="dialog" aria-modal="true" aria-labelledby="attRsnTitle">
+        <div class="att-rsn">
+            <h3 id="attRsnTitle"><i class="fa fa-unlock-alt"></i> Re-open a closed month</h3>
+            <div class="warn">
+                <b><i class="fa fa-exclamation-triangle"></i> You are re-opening a month that was closed.</b>
+                <ul>
+                    <li>Attendance for <b id="attRsnMonth"></b> becomes editable again.</li>
+                    <li>Any payslip already calculated from this month is <b>not</b> recalculated by this action.</li>
+                    <li>Your reason is audit-logged with your admin id and the time.</li>
+                </ul>
+            </div>
+            <label for="attRsnText" style="font-size:12.5px;font-weight:600;">Reason</label>
+            <textarea id="attRsnText" maxlength="500" placeholder="Why does this month need to be re-opened?"></textarea>
+            <div class="att-rsn-count"><span id="attRsnCount">0</span> / 10 characters minimum</div>
+            <div class="att-rsn-err" id="attRsnErr"></div>
+            <div class="att-rsn-actions">
+                <button type="button" class="att-btn att-btn-outline att-btn-sm" id="attRsnCancel">Cancel</button>
+                <button type="button" class="att-btn att-btn-primary att-btn-sm" id="attRsnOk" disabled>
+                    <i class="fa fa-unlock-alt"></i> Re-open month
+                </button>
+            </div>
+        </div>
+    </div>
     <!-- Summary KPIs (redesign) — populated by renderKpis() after each load -->
     <div class="att-kpis" id="attKpis"></div>
 
@@ -420,7 +511,10 @@
                 <i class="fa fa-refresh"></i> Refresh
             </button>
         </div>
-        <div style="flex:1 1 auto;"></div>
+        <div class="att-fg att-lock" style="align-self:flex-end;" id="attLockCtl">
+            <span class="att-lock-pill unknown" id="attLockPill"><i class="fa fa-circle-o-notch fa-spin"></i> Checking&hellip;</span>
+            <button type="button" class="att-btn att-btn-outline att-btn-sm" id="attLockBtn" style="display:none"></button>
+        </div>        <div style="flex:1 1 auto;"></div>
         <span class="att-status" id="attStatus" style="align-self:flex-end;">
             <span class="att-status-sp"></span><span id="attStatusText"></span>
         </span>
@@ -533,8 +627,11 @@
     var state = {
         staff: [],
         daysInMonth: 0,
-        sundays: [],
-        holidays: {},
+        nonWorkingDays: {},   /* staffId -> {day: true, ...} — N-35: per-employee, not a flat Sunday list */
+        scheduleBlocked: {},  /* staffId -> reason string, when that employee's schedule cannot be resolved at all */
+        holidayDays: {},         /* staffId -> {day: name, ...} — Phase D: per-employee, department-scoped */
+        specialWorkingDays: {},  /* staffId -> {day: name, ...} — Phase D: overrides weekly-off/holiday to working */
+        halfDayLeaveDays: {},    /* staffId -> {day: label, ...} — Phase F: display-only overlay, does not affect marking or LOP */
         month: '',
         year: 0,
         attendance: {},   /* staffId -> array of day chars */
@@ -604,29 +701,50 @@
     }
 
     /**
-     * Single source of truth for "can this day be edited?"
-     * Returns the lock reason ('future' | 'sunday' | 'holiday') if locked,
-     * otherwise null. Order matters: future wins over sunday/holiday so the
-     * toast message stays accurate when both apply.
+     * Single source of truth for "can this day be edited?" — N-35/Phase D:
+     * resolved PER EMPLOYEE, not per column. Two staff in this same grid can
+     * legitimately have different weekly-offs AND different applicable
+     * holidays (department-scoped) — see state.nonWorkingDays/holidayDays/
+     * specialWorkingDays, all populated per-staff from
+     * Policy_assignment_service + Holiday_service via attendance/fetch_staff.
      *
-     * Holidays are read live from state.holidays (refreshed every
-     * loadAttendance), so any holiday added or edited via /attendance/settings
-     * takes effect on the next Load click — no extra wiring needed.
+     * Returns the lock reason ('future' | 'blocked' | 'weeklyoff' | 'holiday')
+     * if locked, otherwise null. Order matters: future wins, then a
+     * fully-unresolvable schedule (the whole row is unsafe to mark), then a
+     * Special Working Day (overrides weekly-off/holiday back to a normal,
+     * unlocked day — checked BEFORE those, not after), then the per-employee
+     * weekly-off/holiday checks — so the toast message stays accurate when
+     * more than one applies.
+     *
+     * Holidays are read live from state.holidayDays (refreshed every
+     * loadAttendance), so any calendar change takes effect on the next Load
+     * click — no extra wiring needed.
      */
-    function dateLockReason(day) {
+    function dateLockReason(staffId, day) {
         if (dayState(day) === 'future') return 'future';
-        if (state.sundays && state.sundays.indexOf(day) !== -1) return 'sunday';
+        if (state.scheduleBlocked && state.scheduleBlocked[staffId]) return 'blocked';
+        var swd = state.specialWorkingDays && state.specialWorkingDays[staffId];
+        if (swd && swd[day] !== undefined) return null;   // Phase D — overrides everything below
+        var nwd = state.nonWorkingDays && state.nonWorkingDays[staffId];
+        if (nwd && nwd[day]) return 'weeklyoff';
+        var hol = state.holidayDays && state.holidayDays[staffId];
         // Use property-existence (not truthiness) so a holiday saved with an
         // empty name still locks the date.
-        if (state.holidays && state.holidays[day] !== undefined) return 'holiday';
+        if (hol && hol[day] !== undefined) return 'holiday';
         return null;
     }
 
-    function lockToastMessage(reason, day) {
-        if (reason === 'future')  return 'Future dates cannot be marked.';
-        if (reason === 'sunday')  return 'Sundays cannot be marked.';
+    function lockToastMessage(reason, day, staffId) {
+        if (reason === 'future')    return 'Future dates cannot be marked.';
+        if (reason === 'blocked') {
+            var why = (state.scheduleBlocked && state.scheduleBlocked[staffId]) || '';
+            return 'This employee has no resolvable work schedule for this period — assign one under '
+                 + 'Attendance → Work Schedules before marking attendance.' + (why ? ' (' + why + ')' : '');
+        }
+        if (reason === 'weeklyoff') return 'This is a scheduled weekly off for this employee.';
         if (reason === 'holiday') {
-            var label = (state.holidays && state.holidays[day]) ? state.holidays[day] : '';
+            var hol = state.holidayDays && state.holidayDays[staffId];
+            var label = (hol && hol[day]) ? hol[day] : '';
             return 'Holiday (' + (label || 'declared') + ') — attendance cannot be marked.';
         }
         return 'This date is locked.';
@@ -639,6 +757,186 @@
         setTimeout(function(){ elToast.classList.remove('show'); }, 3000);
     }
 
+    /* ── Month lock (GAP-1) ────────────────────────────────────────────
+       A closed month is not editable by anyone, whatever their permission, so
+       the effective gate is the permission AND the lock. Every site that read
+       CAN_EDIT now asks this instead — including the save guard, so a tab left
+       open across a month close cannot post into it. The server refuses
+       independently; this stops an operator spending an afternoon on a month
+       that was never going to save. */
+    var MONTH_LOCKED = false;
+    var LOCK_READABLE = true;
+    var LOCK_CAN_MANAGE = false;
+    var lockBusy = false;
+
+    function canEditNow() { return CAN_EDIT && !MONTH_LOCKED; }
+
+    function lockEls() {
+        return {
+            pill:   document.getElementById('attLockPill'),
+            btn:    document.getElementById('attLockBtn'),
+            banner: document.getElementById('attLockBanner'),
+            text:   document.getElementById('attLockBannerText')
+        };
+    }
+
+    /* Paint the state of the month now on screen. `lock` rides along with the
+       register payload, so this runs after every month load. */
+    function applyLockState(lock) {
+        lock = lock || {};
+        MONTH_LOCKED    = !!lock.isLocked;
+        LOCK_READABLE   = lock.readable !== false;
+        LOCK_CAN_MANAGE = !!lock.canManage;
+
+        var el = lockEls();
+        if (!el.pill) return;
+        var monthSel = document.getElementById('attMonth');
+        var month = monthSel ? monthSel.value : 'this month';
+
+        if (!LOCK_READABLE) {
+            /* The writer refuses when it cannot read the lock, so inviting an
+               edit here would only produce a failure at Save. */
+            el.pill.className = 'att-lock-pill unknown';
+            el.pill.innerHTML = '<i class="fa fa-question-circle"></i> Lock state unavailable';
+            el.text.innerHTML = '<b>The lock state for ' + esc(month) + ' could not be read.</b> '
+                + 'Editing is held back rather than risking a change to a closed month. Refresh to retry.';
+            el.banner.classList.add('show');
+        } else if (MONTH_LOCKED) {
+            el.pill.className = 'att-lock-pill locked';
+            el.pill.innerHTML = '<i class="fa fa-lock"></i> Closed';
+            el.text.innerHTML = '<b>' + esc(month) + ' is closed.</b> '
+                + 'Attendance for this month can no longer be changed — payroll may already have been '
+                + 'calculated from it.' + (LOCK_CAN_MANAGE ? ' You can re-open it, with a reason.' : '');
+            el.banner.classList.add('show');
+        } else {
+            el.pill.className = 'att-lock-pill open';
+            el.pill.innerHTML = '<i class="fa fa-unlock"></i> Open';
+            el.banner.classList.remove('show');
+        }
+
+        if (LOCK_CAN_MANAGE && LOCK_READABLE) {
+            el.btn.style.display = '';
+            el.btn.innerHTML = MONTH_LOCKED
+                ? '<i class="fa fa-unlock-alt"></i> Re-open month'
+                : '<i class="fa fa-lock"></i> Close month';
+            el.btn.disabled = lockBusy;
+        } else {
+            el.btn.style.display = 'none';
+        }
+
+        /* Repaint through the same path a permission change would use. */
+        if (elGridWrap) elGridWrap.classList.toggle('att-readonly', !canEditNow());
+        var save = document.getElementById('attSaveBtn');
+        if (save && !canEditNow()) save.disabled = true;
+    }
+
+    function setLockBusy(on, label) {
+        lockBusy = on;
+        var btn = lockEls().btn;
+        if (!btn) return;
+        btn.disabled = on;
+        if (on) btn.innerHTML = '<i class="fa fa-spinner fa-spin"></i> ' + (label || 'Working...');
+    }
+
+    /* Close the month. Confirmed, because it stops everyone editing it. */
+    function doLockMonth() {
+        var month = document.getElementById('attMonth').value;
+        if (!confirm('Close ' + month + '?\n\nNobody will be able to change staff attendance for '
+                   + month + ' until it is re-opened. Do this once the month is settled and payroll '
+                   + 'has been calculated from it.')) return;
+
+        setLockBusy(true, 'Closing...');
+        postData('attendance/lock_staff_attendance', { month: month })
+            .then(function (res) {
+                showToast((res && res.message) || (month + ' closed.'), 'success');
+                lockBusy = false;
+                loadAttendance();            /* re-read; never assume the new state */
+                loadLockedMonths();
+            })
+            .catch(function (e) {
+                lockBusy = false;
+                showToast((e && e.message) || 'Could not close the month.', 'error');
+                applyLockState({ isLocked: MONTH_LOCKED, readable: LOCK_READABLE, canManage: LOCK_CAN_MANAGE });
+            });
+    }
+
+    /* Re-open the month. Requires a reason of at least 10 characters — the same
+       bar Hr::unlock_payroll() sets for the equivalent act on a payroll run. */
+    function doUnlockMonth() {
+        var month = document.getElementById('attMonth').value;
+        var back  = document.getElementById('attRsnBack');
+        var text  = document.getElementById('attRsnText');
+        var ok    = document.getElementById('attRsnOk');
+        var count = document.getElementById('attRsnCount');
+        var err   = document.getElementById('attRsnErr');
+        if (!back) return;
+
+        document.getElementById('attRsnMonth').textContent = month;
+        text.value = '';
+        count.textContent = '0';
+        ok.disabled = true;
+        err.classList.remove('show');
+        back.classList.add('show');
+        setTimeout(function () { text.focus(); }, 60);
+
+        function onType() {
+            var n = text.value.trim().length;
+            count.textContent = n;
+            ok.disabled = n < 10;
+        }
+        function close() {
+            back.classList.remove('show');
+            text.removeEventListener('input', onType);
+            ok.onclick = null;
+            document.removeEventListener('keydown', onKey);
+        }
+        function onKey(ev) { if (ev.key === 'Escape') close(); }
+
+        text.addEventListener('input', onType);
+        document.addEventListener('keydown', onKey);
+        document.getElementById('attRsnCancel').onclick = close;
+        back.onclick = function (ev) { if (ev.target === back) close(); };
+
+        ok.onclick = function () {
+            var reason = text.value.trim();
+            if (reason.length < 10) return;     /* the server checks this too */
+
+            ok.disabled = true;
+            ok.innerHTML = '<i class="fa fa-spinner fa-spin"></i> Re-opening...';
+            err.classList.remove('show');
+
+            postData('attendance/unlock_staff_attendance', { month: month, reason: reason })
+                .then(function (res) {
+                    close();
+                    showToast((res && res.message) || (month + ' re-opened.'), 'success');
+                    loadAttendance();
+                    loadLockedMonths();
+                })
+                .catch(function (e) {
+                    /* Keep the dialog open so a retry does not lose the reason. */
+                    err.textContent = (e && e.message) || 'Could not re-open the month.';
+                    err.classList.add('show');
+                    ok.disabled = text.value.trim().length < 10;
+                    ok.innerHTML = '<i class="fa fa-unlock-alt"></i> Re-open month';
+                });
+        };
+    }
+
+    /* Which months of the session are closed. One query, so "is anything still
+       open?" is answerable without clicking through twelve months. */
+    function loadLockedMonths() {
+        var el = document.getElementById('attLockedMonths');
+        if (!el) return;
+
+        postData('attendance/staff_lock_status', {})
+            .then(function (res) {
+                var closed = (res.months || []).filter(function (m) { return m.isLocked; });
+                if (!closed.length) { el.textContent = ''; return; }
+                el.innerHTML = '<i class="fa fa-lock"></i> Closed this session: '
+                    + closed.map(function (m) { return esc(m.month); }).join(', ');
+            })
+            .catch(function () { el.textContent = ''; });   /* a summary line, never a blocker */
+    }
     function postData(url, data) {
         var fd = new FormData();
         fd.append(CSRF_NAME, CSRF_HASH);
@@ -755,6 +1053,15 @@
     });
 
     /* ── Load ── */
+    /* GAP-1 — one button, two acts. Which one is decided by the state the
+       server last reported, never by what the label happens to say. */
+    var lockBtnEl = document.getElementById('attLockBtn');
+    if (lockBtnEl) {
+        lockBtnEl.addEventListener('click', function () {
+            if (lockBusy || !LOCK_CAN_MANAGE || !LOCK_READABLE) return;
+            if (MONTH_LOCKED) { doUnlockMonth(); } else { doLockMonth(); }
+        });
+    }
     elLoadBtn.addEventListener('click', loadAttendance);
     // Redesign: month picker drives loading (no required "Load" click) …
     elMonth.addEventListener('change', loadAttendance);
@@ -780,6 +1087,10 @@
                 elLoadBtn.classList.remove('is-loading');
                 elLoadBtn.disabled = false;
                 if (!res || res.status === 'error') {
+                    // GAP-1: the lock state came with this payload, so a failed
+                    // load leaves it unknown. Say so, rather than leaving the pill
+                    // spinning and the register looking editable.
+                    applyLockState({ readable: false });
                     showToast(res ? res.message : 'Failed to load data.', 'error');
                     elEmpty.style.display = 'block';
                     if (elKpis) elKpis.innerHTML = '';
@@ -788,11 +1099,20 @@
                 }
                 state.staff = res.staff || [];
                 state.daysInMonth = parseInt(res.daysInMonth, 10) || 30;
-                state.sundays = res.sundays || [];
-                state.holidays = res.holidays || {};
+                state.nonWorkingDays = res.nonWorkingDays || {};
+                state.scheduleBlocked = res.scheduleBlocked || {};
+                // Phase D — per-staff now, not a flat shared map.
+                state.holidayDays = res.holidayDays || {};
+                state.specialWorkingDays = res.specialWorkingDays || {};
+                state.halfDayLeaveDays = res.halfDayLeaveDays || {};
                 state.month = res.month || mon;
                 state.year = parseInt(res.year, 10) || new Date().getFullYear();
                 state.dirty = new Set();
+
+                /* GAP-1 — the register now knows whether this month is closed.
+                   Painted BEFORE the empty-roster return below, so the state is
+                   right even for a month with no rows to show. */
+                applyLockState(res.lock);
 
                 if (state.staff.length === 0) {
                     showToast('No staff found for this month.', 'error');
@@ -827,7 +1147,7 @@
                 renderGrid();
                 renderKpis();
                 elGridWrap.style.display = 'block';
-                elGridWrap.classList.toggle('att-readonly', !CAN_EDIT);
+                elGridWrap.classList.toggle('att-readonly', !canEditNow());
                 elToolbar.classList.add('visible');
                 updateSaveBtn();
                 setStatus('ready', 'Updated · ' + state.month);
@@ -837,6 +1157,7 @@
                 elLoading.classList.remove('visible');
                 elLoadBtn.classList.remove('is-loading');
                 elLoadBtn.disabled = false;
+                applyLockState({ readable: false });   // GAP-1 — unknown, not open
                 showToast((e && e.message) ? e.message : 'Network error loading attendance.', 'error');
                 elEmpty.style.display = 'block';
                 if (elKpis) elKpis.innerHTML = '';
@@ -846,25 +1167,21 @@
 
     /* ── Render Grid ── */
     function renderGrid() {
-        var sundaySet = {};
-        state.sundays.forEach(function(d){ sundaySet[d] = true; });
-        var holidaySet = {};
-        Object.keys(state.holidays).forEach(function(d){ holidaySet[parseInt(d,10)] = state.holidays[d]; });
-
-        /* Header */
+        /* Header — school-wide facts only (future). Weekly-off AND holiday
+         * are both per EMPLOYEE now (N-35/Phase D), so neither can be shaded
+         * at the column level — a date might be a holiday for Teaching and a
+         * normal working day for Security. Per-row shading happens in the
+         * body loop below. */
         var dayNames = ['Sun','Mon','Tue','Wed','Thu','Fri','Sat'];
         var hHtml = '<tr><th class="att-th-idx">#</th><th class="att-th-name">Staff Name</th><th class="att-th-id">Dept</th>';
         for (var d = 1; d <= state.daysInMonth; d++) {
             var cls = 'att-th-day';
-            var isSun = sundaySet[d];
-            if (isSun) cls += ' att-col-sunday';
-            if (holidaySet[d]) cls += ' att-col-holiday';
             if (dayState(d) === 'future') cls += ' att-col-future';
             var dt = new Date(state.year, getMonthIndex(state.month), d);
             var dn = dayNames[dt.getDay()];
             hHtml += '<th class="' + cls + '" title="' + dn + ', ' + state.month + ' ' + d + '">';
-            hHtml += '<div style="line-height:1.2' + (isSun ? ';color:#dc2626;font-weight:900' : '') + '">' + d + '</div>';
-            hHtml += '<div style="font-size:8px;font-weight:' + (isSun ? '700' : '500') + ';letter-spacing:0;' + (isSun ? 'color:#dc2626;opacity:1' : 'opacity:.6') + '">' + dn.charAt(0) + '</div>';
+            hHtml += '<div style="line-height:1.2">' + d + '</div>';
+            hHtml += '<div style="font-size:8px;font-weight:500;letter-spacing:0;opacity:.6">' + dn.charAt(0) + '</div>';
             hHtml += '</th>';
         }
         hHtml += '<th class="att-th-summary">Summary</th></tr>';
@@ -874,26 +1191,48 @@
         var bHtml = '';
         state.staff.forEach(function(s, idx) {
             var att = state.attendance[s.id];
-            bHtml += '<tr data-sid="' + esc(s.id) + '">';
+            var blockedWhy = state.scheduleBlocked && state.scheduleBlocked[s.id];
+            var nwd = (state.nonWorkingDays && state.nonWorkingDays[s.id]) || {};
+            var hol = (state.holidayDays && state.holidayDays[s.id]) || {};
+            var swd = (state.specialWorkingDays && state.specialWorkingDays[s.id]) || {};
+            var hdLeave = (state.halfDayLeaveDays && state.halfDayLeaveDays[s.id]) || {};
+            var rowCls = blockedWhy ? ' att-row-blocked' : '';
+            bHtml += '<tr data-sid="' + esc(s.id) + '" class="' + rowCls + '"' +
+                (blockedWhy ? ' title="No resolvable work schedule — ' + esc(blockedWhy) + '"' : '') + '>';
             bHtml += '<td class="att-td-idx">' + (idx + 1) + '</td>';
             var nameTitle = s.designation ? s.name + ' — ' + s.designation : s.name;
-            bHtml += '<td class="att-td-name" title="' + esc(nameTitle) + '">' + esc(s.name) + '</td>';
+            bHtml += '<td class="att-td-name" title="' + esc(nameTitle) + '">' + esc(s.name)
+                   + (blockedWhy ? ' <i class="fa fa-exclamation-triangle" style="color:#dc2626" title="No resolvable work schedule"></i>' : '') + '</td>';
             bHtml += '<td class="att-td-id" style="font-size:10px;color:var(--att-text3)">' + esc(s.department || '-') + '</td>';
             for (var d = 0; d < state.daysInMonth; d++) {
                 var day = d + 1;
                 var v = att[d];
                 var tdCls = '';
-                if (sundaySet[day]) tdCls += ' att-col-sunday';
-                if (holidaySet[day]) tdCls += ' att-col-holiday';
+                var isSwd = swd[day] !== undefined;
+                if (isSwd) {
+                    tdCls += ' att-col-swd';                          /* Phase D — overrides weekly-off/holiday back to working */
+                } else if (blockedWhy) {
+                    tdCls += ' att-col-sunday';                       /* whole row locked — reuse the off-day shade */
+                } else if (nwd[day]) {
+                    tdCls += ' att-col-sunday';                       /* this employee's own weekly-off/rest day */
+                } else if (hol[day] !== undefined) {
+                    tdCls += ' att-col-holiday';                      /* this employee's own applicable holiday */
+                }
                 if (dayState(day) === 'future') tdCls += ' att-col-future';
+                // Phase F — display-only; never affects locking/editability.
+                var hasHdLeave = hdLeave[day] !== undefined;
+                if (hasHdLeave) tdCls += ' att-col-hdleave';
                 var dirtyMark = state.dirty.has(s.id) && att[d] !== state.original[s.id].charAt(d) ? ' att-dirty' : '';
                 var clock = v === 'T' ? '<span class="att-clock"><i class="fa fa-clock-o"></i></span>' : '';
+                var hdDot = hasHdLeave ? '<span class="att-hdleave-dot"></span>' : '';
                 // Only genuinely editable cells are keyboard-focusable.
-                var editable = CAN_EDIT && !dateLockReason(day);
+                var editable = canEditNow() && !dateLockReason(s.id, day);
                 var cellAttrs = editable ? ' tabindex="0" role="button" aria-label="Toggle mark, day ' + day + '"' : '';
-                bHtml += '<td class="' + tdCls + '">';
+                var cellTitle = isSwd ? ' title="Special Working Day' + (swd[day] ? ': ' + esc(swd[day]) : '') + '"'
+                    : (hasHdLeave ? ' title="Half-Day Leave' + (hdLeave[day] ? ': ' + esc(hdLeave[day]) : '') + ' — informational only, does not affect marking"' : '');
+                bHtml += '<td class="' + tdCls + '"' + cellTitle + '>';
                 bHtml += '<span class="att-cell' + dirtyMark + '" data-v="' + v + '" data-sid="' + esc(s.id) + '" data-d="' + d + '"' + cellAttrs + '>';
-                bHtml += v + clock + '</span></td>';
+                bHtml += v + clock + hdDot + '</span></td>';
             }
             bHtml += '<td class="att-td-summary">' + summaryText(att) + '</td>';
             bHtml += '</tr>';
@@ -928,7 +1267,7 @@
 
     function updateSaveBtn() {
         // View-only: Save can never enable, and no "unsaved" affordance shows.
-        if (!CAN_EDIT) {
+        if (!canEditNow()) {
             elSaveBtn.disabled = true;
             if (elDirty) elDirty.style.display = 'none';
             if (elToolbar) elToolbar.classList.remove('att-has-unsaved');
@@ -963,17 +1302,18 @@
     function toggleCell(cell) {
         if (!cell) return;
         // View-only users can read the register but never mutate it.
-        if (!CAN_EDIT) {
+        if (!canEditNow()) {
             showToast('View-only access — you can see attendance but can\'t mark or edit it.', 'error');
             return;
         }
         var sid = cell.getAttribute('data-sid');
         var d = parseInt(cell.getAttribute('data-d'), 10);
         var day = d + 1;
-        // Block edits on future dates, Sundays, and declared holidays.
-        var lock = dateLockReason(day);
+        // Block edits on future dates, this employee's scheduled weekly-offs,
+        // declared holidays, or an unresolvable schedule (N-35: per employee).
+        var lock = dateLockReason(sid, day);
         if (lock) {
-            showToast(lockToastMessage(lock, day), 'error');
+            showToast(lockToastMessage(lock, day, sid), 'error');
             return;
         }
         var curr = state.attendance[sid][d];
@@ -1056,7 +1396,7 @@
     /* ── Bulk Actions ── */
     document.querySelectorAll('[data-bulk]').forEach(function(btn) {
         btn.addEventListener('click', function() {
-            if (!CAN_EDIT) {
+            if (!canEditNow()) {
                 showToast('View-only access — bulk marking is disabled.', 'error');
                 return;
             }
@@ -1066,20 +1406,29 @@
                 showToast('Invalid day number.', 'error');
                 return;
             }
-            // Block bulk on future dates, Sundays, and declared holidays.
-            // Sundays/holidays are already off-days — re-stamping them
-            // would either be a no-op or override the school calendar.
-            var lock = dateLockReason(day);
-            if (lock) {
-                showToast(lockToastMessage(lock, day), 'error');
+            // Block bulk on future dates outright — that applies to every row
+            // identically. Weekly-off/holiday/blocked are now per EMPLOYEE
+            // (N-35), so bulk-marking skips only the staff for whom this
+            // specific day is locked, rather than refusing the whole action
+            // because at least one row happens to be off that day.
+            if (dayState(day) === 'future') {
+                showToast(lockToastMessage('future', day), 'error');
                 return;
             }
             var d = day - 1;
+            var applied = 0, skipped = 0;
             state.staff.forEach(function(s) {
+                if (dateLockReason(s.id, day)) { skipped++; return; }
                 state.attendance[s.id][d] = mark;
                 updateCell(s.id, d);
                 markDirty(s.id);
+                applied++;
             });
+            if (skipped > 0) {
+                showToast('Applied to ' + applied + ' staff — ' + skipped
+                    + ' skipped (weekly off, holiday, or no resolvable schedule on that day).',
+                    applied > 0 ? 'success' : 'error');
+            }
         });
     });
 
@@ -1223,7 +1572,7 @@
     }
 
     elSaveBtn.addEventListener('click', function() {
-        if (!CAN_EDIT) return;   // hardened: view-only can never save
+        if (!canEditNow()) return;   // hardened: view-only, or a closed month, can never save
         if (state.dirty.size === 0) return;
         var pastEdits = collectPastEdits();
         if (pastEdits.length > 0) {
@@ -1291,6 +1640,11 @@
     if (elMonth && elMonth.value) {
         loadAttendance();
     }
+
+    /* GAP-1 — which months of the session are closed. Independent of the
+       register load: it is session-wide, one query, and a failure here must
+       never hold up the month the operator actually asked for. */
+    loadLockedMonths();
 
 })();
 </script>

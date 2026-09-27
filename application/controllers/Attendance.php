@@ -250,17 +250,28 @@ class Attendance extends MY_Controller
      * page logic is duplicated; the shell is pure navigation chrome.
      * ───────────────────────────────────────────────────────────────── */
 
-    /** Mark Attendance shell — Student · Staff · QR Scan. */
+    /** Mark Attendance shell — Student · QR Scan. (Staff has its own page.) */
     public function mark()
     {
         $this->_require_role(self::VIEW_ROLES, 'attendance/mark', 'Attendance', 'view');
+        // The "Staff Attendance" tab was REMOVED on 2026-08-23. It embedded
+        // /attendance/staff — the very same page the sidebar opens under
+        // Staff & HR — so one register had two doors and an administrator could
+        // not tell which one they were meant to use.
+        //
+        // Staff attendance belongs to the employment lifecycle, so the Staff & HR
+        // door is the one that stayed. Nothing was deleted: the route, the action
+        // and the view are untouched and are now its single home. This shell is
+        // STUDENTS ONLY.
+        //
+        // A stale /attendance/mark#staff link degrades safely — _shell.php's
+        // activate() falls back to the first tab when a hash names no pane.
         $data['shell'] = [
             'title'    => 'Mark Attendance',
-            'subtitle' => "Take and edit today's attendance for students and staff",
+            'subtitle' => "Take and edit today's student attendance",
             'icon'     => 'fa-check-square-o',
             'tabs'     => [
                 ['key' => 'student', 'label' => 'Student Attendance', 'icon' => 'fa-users',    'url' => base_url('attendance/student') . '?embed=1'],
-                ['key' => 'staff',   'label' => 'Staff Attendance',   'icon' => 'fa-id-badge', 'url' => base_url('attendance/staff')   . '?embed=1'],
                 ['key' => 'scan',    'label' => 'QR Scan',            'icon' => 'fa-qrcode',   'url' => base_url('attendance/scan')    . '?embed=1'],
             ],
         ];
@@ -300,7 +311,12 @@ class Attendance extends MY_Controller
                 body:'status=pending'
             }).then(function(r){ return r.json(); }).then(function(r){
                 if (!r) return;
-                var n = (typeof r.count === 'number') ? r.count : Object.keys(r.batches||{}).length;
+                // BATCHES, not r.count. A regularization is filed per DATE but
+                // reviewed per REQUEST, and the screen behind this badge renders one
+                // card per batch — counting days made the badge say 3 where the
+                // reviewer then found a single three-day request.
+                var n = r.batches ? Object.keys(r.batches).length
+                      : ((typeof r.count === 'number') ? r.count : 0);
                 setBadge('regularization', n);
             }).catch(function(){});
         })();
@@ -1075,8 +1091,9 @@ JS;
             return $this->json_success([
                 'students'    => [],
                 'daysInMonth' => $daysInMonth,
-                'sundays'     => $this->_get_sundays($year, $monthNum),
+                'sundays'     => $this->_weekly_closure_days($year, $monthNum),
                 'holidays'    => $this->_get_holidays_for_month($month, $year),
+                'specialWorkingDays' => $this->_get_special_working_days_for_month($month, $year),
                 'month'       => $month,
                 'year'        => $year,
             ]);
@@ -1118,6 +1135,9 @@ JS;
             $byStudent = []; // empty ⇒ everyone vacant (same as a missing point-read)
         }
 
+        // SRNO for the register — zero extra reads (shared memoised snapshot).
+        $srMap = $this->_get_section_srno_map($class, $section);
+
         $students = [];
         foreach ($list as $studentId => $studentName) {
             $summaryDoc = $byStudent[$studentId] ?? [];
@@ -1130,6 +1150,7 @@ JS;
             $students[] = [
                 'id'         => $studentId,
                 'name'       => is_string($studentName) ? $studentName : (string) $studentId,
+                'sr_no'      => (string) ($srMap[$studentId] ?? ''),
                 'attendance' => $attStr,
                 'late'       => $this->_normalize_late_data($lateRaw),
             ];
@@ -1142,8 +1163,9 @@ JS;
         return $this->json_success([
             'students'    => $students,
             'daysInMonth' => $daysInMonth,
-            'sundays'     => $this->_get_sundays($year, $monthNum),
+            'sundays'     => $this->_weekly_closure_days($year, $monthNum),
             'holidays'    => $this->_get_holidays_for_month($month, $year),
+            'specialWorkingDays' => $this->_get_special_working_days_for_month($month, $year),
             'month'       => $month,
             'year'        => $year,
         ]);
@@ -1198,6 +1220,7 @@ JS;
 
         // Load holidays + governance config
         $this->load->helper('attendance');
+        $this->load->helper('attendance_merge');   // ATT-CAS-1 pure merge fn
         $nonWorking = $this->_resolve_non_working_days($monthNum, $year);
         // Defined BEFORE the governance block: the needs_approval branch below
         // reads the current summary via docId2($sid, $monthKey). Pre-fix this was
@@ -1288,9 +1311,10 @@ JS;
         // Collect every student we *couldn't* save and why, so the
         // admin UI can surface them as a warning instead of the user
         // discovering hours later that parent/teacher views are empty.
-        $skipped = [];   // [{studentId, name, reason}]
-        $batch = [];      // docId => full attendanceSummary payload (for one :batchWrite)
-        $batchMeta = [];  // docId => ['studentId'=>, 'name'=>]  (for saved/skipped mapping)
+        $skipped     = [];   // [{studentId, name, reason}]
+        $lockedInfo  = [];   // studentId => [locked day numbers] (D3 advisory)
+        $dailyBatch  = [];   // docId => per-day `attendance` payload (D2 convergence)
+        $lockCache   = [];   // date => bool locked (shared across students this save)
 
         foreach ($attData as $studentId => $attString) {
             $studentId = trim((string) $studentId);
@@ -1318,21 +1342,21 @@ JS;
                 continue;
             }
 
+            // Sanitize to valid marks only. Holiday enforcement is done INSIDE
+            // the CAS helper (against the merged server string, preserve=true) so
+            // an unmarked ('V') holiday isn't turned into a spurious per-day
+            // `attendance` 'H' event and a concurrent mark on another day survives.
             $cleanStr = $this->_sanitize_att_string((string) $attString, $daysInMonth);
-            $cleanStr = enforce_holidays_on_string($cleanStr, $daysInMonth, $nonWorking);
 
-            // Count statuses
-            $present = $absent = $leave = $holiday = $tardy = 0;
-            $working = 0;
-            for ($i = 0; $i < strlen($cleanStr); $i++) {
-                $ch = $cleanStr[$i];
-                if ($ch === 'P') { $present++; $working++; }
-                elseif ($ch === 'A') { $absent++; $working++; }
-                elseif ($ch === 'L') { $leave++; $working++; }
-                elseif ($ch === 'H') { $holiday++; }
-                elseif ($ch === 'T') { $tardy++; $working++; }
-            }
-            $pct = $working > 0 ? round(($present + $tardy) / $working * 100, 1) : 0;
+            // ATT-ADM-1: never record attendance before the student's admission
+            // date. save() guards this via _admission_allows(); the admin grid did
+            // not, so a mid-session joiner could be marked Absent for days before
+            // they enrolled. Blank (V) every position earlier than their first
+            // valid day this month; those days then stay excluded from the
+            // working-days denominator exactly like any unmarked day.
+            $admStr = (string) ($activeRoster[$studentId]['admissionDate'] ?? '');
+            $fvd    = $this->_admission_first_valid_day($admStr, $monthNum, $year, $daysInMonth);
+            for ($d = 1; $d < $fvd && $d <= $daysInMonth; $d++) { $cleanStr[$d - 1] = 'V'; }
 
             // Build late metadata.
             //
@@ -1356,73 +1380,45 @@ JS;
                 }
             }
 
-            // ── ACCUMULATE for one non-atomic :batchWrite (canonical store) ──
-            // Byte-identical payload to the previous per-student set(); the
-            // batch is committed once after the loop and each doc's independent
-            // status maps to saved / skipped[] exactly as the per-student path did.
+            // ── CAS read-modify-write of the canonical per-month summary ──
+            // (D1) never clobbers a concurrent single-day mark; (D3) refuses to
+            // overwrite an explicitly locked day; (D2) queues per-day
+            // `attendance` docs for every changed day into $dailyBatch.
             $studentName = $nameMap[$studentId] ?? $studentId;
-            $summaryDocId = $this->fs->docId2($studentId, $monthKey);
-            $batch[$summaryDocId] = [
-                'schoolId'   => $this->school_id,
-                'studentId'  => $studentId,
-                'studentName'=> $studentName,
-                'type'       => 'student',
-                'className'  => Firestore_service::classKey($class),
-                'section'    => Firestore_service::sectionKey($section),
-                // Canonical combined key ("Class 9th/Section A"). The Teacher
-                // dashboard's "Today's Attendance" card and the app query
-                // attendanceSummary by sectionKey; the per-day writer already
-                // stamps it, but this BULK writer was missing it → any class
-                // saved via the admin grid showed every student as unmarked on
-                // the Teacher dashboard (audit finding H6). Kept in sync here.
-                'sectionKey' => Firestore_service::buildSectionKey($class, $section),
-                'month'      => $monthKey,
-                'monthLabel' => $attKey,
-                'session'    => $session,
-                'dayWise'    => $cleanStr,
-                'present'    => $present,
-                'absent'     => $absent,
-                'leave'      => $leave,
-                'holiday'    => $holiday,
-                'tardy'      => $tardy,
-                'percentage' => $pct,
-                // Denominator fields the Parent app reads for its "N school days"
-                // label + %-derivation. The per-day/staff writers set these; this
-                // bulk writer omitted them, so grid-saved classes showed no school-
-                // day count in the Parent app (audit PAR-M3). V = unmarked/pad.
-                'totalDays'  => strlen($cleanStr),
-                'vacation'   => substr_count($cleanStr, 'V'),
-                'workingDays'=> max(0, strlen($cleanStr) - $holiday - substr_count($cleanStr, 'V')),
-                // Per-day arrival times for tardy marks: {day:int → {time:str}}
-                'lateTimes'  => $lateMap,
-                'updatedAt'  => date('c'),
-                'updatedBy'  => $this->admin_id,
-            ];
-            $batchMeta[$summaryDocId] = ['studentId' => $studentId, 'name' => $studentName];
+            $res = $this->_persist_student_month_cas(
+                $studentId, $studentName, $cleanStr, $class, $section,
+                $monthNum, $year, $nonWorking, $lateMap, $dailyBatch, $lockCache
+            );
+
+            if (!empty($res['locked'])) {
+                $lockedInfo[$studentId] = $res['locked'];
+            }
+            if ($res['ok']) {
+                $saved++;
+            } else {
+                log_message('error',
+                    "save_student_attendance: CAS summary write FAILED for {$studentId} "
+                    . "in {$class}/{$section} {$attKey} — see Firestore_service log"
+                );
+                $skipped[] = [
+                    'studentId' => $studentId,
+                    'name'      => $studentName,
+                    'reason'    => 'firestore_write_failed',
+                ];
+            }
         }
 
-        // ── ONE non-atomic Firestore :batchWrite (canonical store) ──
-        // Replaces N sequential set() calls with a single round-trip while
-        // preserving PER-STUDENT partial success: each doc's independent status
-        // maps to saved / skipped[] just like the per-student path. merge=true
-        // mirrors the previous set(..., true). Firestore-only; no RTDB. A write
-        // failure still lands the student in `skipped` (no silent-skip) so the
-        // admin UI surfaces it instead of parent/teacher views going empty.
-        if (!empty($batch)) {
-            $writeResults = $this->fs->batchWrite('attendanceSummary', $batch, true);
-            foreach ($batchMeta as $docId => $meta) {
-                if (!empty($writeResults[$docId])) {
-                    $saved++;
-                } else {
-                    log_message('error',
-                        "save_student_attendance: Firestore batch write FAILED for {$meta['studentId']} "
-                        . "in {$class}/{$section} {$attKey} — see Firestore_service log"
-                    );
-                    $skipped[] = [
-                        'studentId' => $meta['studentId'],
-                        'name'      => $meta['name'],
-                        'reason'    => 'firestore_write_failed',
-                    ];
+        // ── D2 convergence: flush per-day `attendance` docs in chunks ──
+        // (Firestore batch limit is 500; chunk well under it.) A per-day write
+        // failure is logged but never reverts the already-committed canonical
+        // summary — the summary remains the source of truth.
+        if (!empty($dailyBatch)) {
+            foreach (array_chunk($dailyBatch, 400, true) as $chunk) {
+                try {
+                    $this->fs->batchWrite('attendance', $chunk, true);
+                } catch (\Exception $e) {
+                    log_message('error', 'save_student_attendance: per-day attendance '
+                        . 'convergence batch failed (summary already saved): ' . $e->getMessage());
                 }
             }
         }
@@ -1439,6 +1435,9 @@ JS;
         return $this->json_success([
             'saved'   => $saved,
             'skipped' => $skipped,
+            // D3 advisory: days that were left untouched because the
+            // (class,section,date) is explicitly locked. UI can surface these.
+            'locked'  => $lockedInfo,
         ]);
     }
 
@@ -1460,8 +1459,10 @@ JS;
         if (!$class || !$section || !$month || !$studentId || !$day || !$mark) {
             return $this->json_error('Missing required fields.');
         }
-        // H-01 FIX: Teachers can only mark attendance for their assigned classes
-        if (!$this->_teacher_can_access($class, "Section {$section}")) {
+        // H-01 FIX: Teachers can only mark attendance for their assigned classes.
+        // C2: OR a live, admin-granted, date-scoped substitute coverage grant.
+        if (!$this->_teacher_can_access($class, "Section {$section}")
+            && !$this->_coverage_allows($class, $section, $month, $day)) {
             return $this->json_error('You are not assigned to this class/section.', 403);
         }
         if (!preg_match('/^[A-Za-z0-9_]+$/', $studentId)) {
@@ -1494,9 +1495,31 @@ JS;
             return $this->json_error('Invalid day number.');
         }
 
-        // Block marking on Sundays/holidays — must be 'H'  (HC-3: canonical source)
+        // ATT-ADM-1: refuse marking a student before their admission date (the
+        // admin single-day path lacked the guard save() has via _admission_allows).
+        $admRoster = $this->_get_active_roster($class, $section);
+        $admStr    = (string) ($admRoster[$studentId]['admissionDate'] ?? '');
+        if ($day < $this->_admission_first_valid_day($admStr, $monthNum, $year, $daysInMonth)) {
+            return $this->json_error("Cannot mark attendance before the student's admission date.", 422);
+        }
+
+        // Block marking on non-teaching days — must be 'H'  (canonical source)
         if ($mark !== 'H' && isset($this->_resolve_non_working_days($monthNum, $year)[$day])) {
             return $this->json_error("Day {$day} is a holiday/Sunday. Cannot mark as {$mark}.");
+        }
+        // CAL-B1 residual. ACAD-D18 established the house rule for live marking —
+        // a calendar-read failure must never break the school day, but it must
+        // never be SILENT either, because this gate is read negatively: a date
+        // absent from the map is treated as a working day. That guard was wired
+        // into save() and never into this path or bulk_mark_student(), so the
+        // identical event was loud on one endpoint and invisible on two others.
+        // Behaviour is deliberately unchanged; only the silence is fixed.
+        $this->_log_if_calendar_unreadable('mark_student_day', $day, $monthNum, $year);
+        // S4: opt-in strict mode blocks marking when the holiday calendar is
+        // unreadable (default off → fail-open per ACAD-D18).
+        if ($this->_calendar_strict() && !$this->_holiday_calendar_readable()) {
+            return $this->json_error('The holiday calendar could not be verified right now, and this '
+                . 'school requires it verified before marking. Please try again shortly.', 503);
         }
 
         // ── DATE GOVERNANCE: block future, route past to approval ──
@@ -1515,6 +1538,16 @@ JS;
                 );
             }
             return $this->json_error($govCheck['error'] ?? 'Date validation failed.');
+        }
+
+        // ATT-LOCK-1 (D3): respect an explicit admin/cron lock on this day.
+        // The day-oriented writers previously honored only the past-edit
+        // governance window, not attendanceLocks, so a class/date an admin (or
+        // the auto-lock cron) explicitly locked could still be overwritten here.
+        // save() enforces this via _stage; mirror the explicit-lock arm.
+        $lk = $this->_get_lock($class, $section, sprintf('%04d-%02d-%02d', $year, $monthNum, $day), true); // SEC-LOCK-1: write path fails closed
+        if (!empty($lk['locked'])) {
+            return $this->json_error('Attendance for this date is locked. File a correction request.', 423);
         }
 
         // Concurrency lock — mutex KEY ONLY (no RTDB I/O).
@@ -1585,8 +1618,10 @@ JS;
         if (!$class || !$section || !$month || !$day || !$mark) {
             return $this->json_error('Missing required fields.');
         }
-        // H-01 FIX: Teachers can only bulk-mark attendance for their assigned classes
-        if (!$this->_teacher_can_access($class, "Section {$section}")) {
+        // H-01 FIX: Teachers can only bulk-mark attendance for their assigned classes.
+        // C2: OR a live, admin-granted, date-scoped substitute coverage grant.
+        if (!$this->_teacher_can_access($class, "Section {$section}")
+            && !$this->_coverage_allows($class, $section, $month, $day)) {
             return $this->json_error('You are not assigned to this class/section.', 403);
         }
         if (!in_array($mark, $this->valid_marks)) {
@@ -1615,6 +1650,16 @@ JS;
         if ($mark !== 'H' && isset($this->_resolve_non_working_days($monthNum, $year)[$day])) {
             return $this->json_error("Day {$day} is a holiday/Sunday. Cannot bulk-mark as {$mark}.");
         }
+        // CAL-B1 residual — see mark_student_day(). Bulk writes a whole section
+        // at once, so an unevaluated holiday gate here is the widest-blast-radius
+        // version of the same silence.
+        $this->_log_if_calendar_unreadable('bulk_mark_student', $day, $monthNum, $year);
+        // S4: opt-in strict mode blocks marking when the holiday calendar is
+        // unreadable (default off → fail-open per ACAD-D18).
+        if ($this->_calendar_strict() && !$this->_holiday_calendar_readable()) {
+            return $this->json_error('The holiday calendar could not be verified right now, and this '
+                . 'school requires it verified before marking. Please try again shortly.', 503);
+        }
 
         // ── DATE GOVERNANCE: block future days; route past-window edits to the
         // correction workflow (parity with mark_student_day). Pre-fix, bulk
@@ -1633,6 +1678,14 @@ JS;
             return $this->json_error($govCheck['error'] ?? 'Date validation failed.');
         }
 
+        // ATT-LOCK-1 (D3): respect an explicit admin/cron lock on this day —
+        // bulk mark is the widest-blast-radius writer, so a locked date must
+        // refuse the whole section rather than silently overwrite it.
+        $lk = $this->_get_lock($class, $section, sprintf('%04d-%02d-%02d', $year, $monthNum, $day), true); // SEC-LOCK-1: write path fails closed
+        if (!empty($lk['locked'])) {
+            return $this->json_error('Attendance for this date is locked. File a correction request.', 423);
+        }
+
         $sectionRoot = $this->_resolve_section_root($class, $section);
         // R5 — roster from Firestore. The per-student attendance writes
         // below at `{sectionRoot}/Students/{id}/Attendance/{key}` are
@@ -1642,10 +1695,19 @@ JS;
             return $this->json_error('No students found.');
         }
 
+        // ATT-ADM-1: admission gate for bulk mark. Build the admissionDate map
+        // (the active roster carries it) so a whole-section mark never records a
+        // mid-session joiner Absent/Present for a day before they enrolled.
+        $admRoster = $this->_get_active_roster($class, $section);
+
         // Phase 7e — Firestore-first bulk mark.
         $bulkMarks = [];
         foreach ($list as $studentId => $name) {
             if (!is_string($studentId) || trim($studentId) === '') continue;
+            $admStr = (string) ($admRoster[$studentId]['admissionDate'] ?? '');
+            if ($day < $this->_admission_first_valid_day($admStr, $monthNum, $year, $daysInMonth)) {
+                continue;   // not yet admitted on this day — skip
+            }
             $bulkMarks[$studentId] = ['mark' => $mark, 'name' => is_string($name) ? $name : ''];
         }
         $fsOk = $this->_syncBulkDailyToFirestore($bulkMarks, $class, $section, $day, $attKey);
@@ -1656,11 +1718,8 @@ JS;
         // Student-attendance RTDB mirror REMOVED — Firestore is canonical
         // (written above via _syncBulkDailyToFirestore). Count students marked
         // for the response (unchanged behaviour).
-        $count = 0;
-        foreach ($list as $studentId => $name) {
-            if (!is_string($studentId) || trim($studentId) === '') continue;
-            $count++;
-        }
+        // Count reflects students ACTUALLY marked (admission-gated skips excluded).
+        $count = count($bulkMarks);
 
         $this->_log_attendance_change('BULK_MARK_STUDENT', [
             'targetType' => 'class', 'targetId' => "{$class}|{$section}",
@@ -1895,7 +1954,36 @@ JS;
             $allStaffLate = [];
         }
 
-        /* 4. Assemble response — shape IDENTICAL to legacy. */
+        // ── N-35 (grid consumer) — per-staff non-working days ──
+        // Two employees in this same grid can legitimately have different
+        // weekly-offs (department A = Sun only, department B = Sat+Sun), so a
+        // single tenant-wide 'sundays' array — reused for every row — is
+        // exactly the competing-authority defect the finaliser and punch path
+        // were already migrated away from. Resolved via the same canonical
+        // Policy_assignment_service the rest of N-35 uses.
+        //
+        // Moved ahead of the staff-list assembly below (Trail 2 Phase D,
+        // Finding #1, 2026-08-18) — the live overlay applied per staff needs
+        // this employee's nonWorkingDays/autoAbsent BEFORE building 'attendance'.
+        $deptByStaff = [];
+        foreach ($allTeachers as $sid => $profile) {
+            $deptByStaff[$sid] = is_array($profile) ? (string) ($profile['Department'] ?? '') : '';
+        }
+        $schedule = $this->_staff_grid_schedule(array_keys($allTeachers), $deptByStaff, $monthKeyISO);
+
+        // Trail 2 Phase D, Finding #1 — the SAME live-view overlay the staff
+        // self-view (Staff_attendance::me()) applies, so a day viewed on the
+        // admin grid before the nightly finaliser runs can no longer disagree
+        // with what that employee's own app already shows. Purely a read-time
+        // transform of the string handed back below — never writes anything.
+        require_once APPPATH . 'libraries/Staff_attendance_overlay.php';
+        $this->load->library('holiday_service');
+        $this->holiday_service->init($this->fs, $this->school_id, $this->session_year);
+        try { $nowTz = new \DateTime('now', new \DateTimeZone($schedule['timezone'])); }
+        catch (\Throwable $e) { $nowTz = new \DateTime('now', new \DateTimeZone('Asia/Kolkata')); }
+        $todayISO = $nowTz->format('Y-m-d');
+
+        /* 4. Assemble response — shape IDENTICAL to legacy (plus the overlay). */
         $staffList = [];
         foreach ($allTeachers as $staffId => $profile) {
             if (!is_string($staffId) || trim($staffId) === '') continue;
@@ -1905,11 +1993,29 @@ JS;
                 ? $allStaffAtt[$staffId] : '';
             $attStr = str_pad($attStr, $daysInMonth, 'V');
 
+            $dept  = is_array($profile) ? ($profile['Department']  ?? '') : '';
+            $desig = is_array($profile) ? ($profile['Designation'] ?? '') : '';
+
+            // A row whose whole-schedule is blocked (unresolvable) is never
+            // overlaid — showing computed O/H/A against an unknown calendar
+            // would be worse than leaving it Vacant; the row is already
+            // flagged via 'scheduleBlocked' for the UI to lock/warn on.
+            if (empty($schedule['blocked'][$staffId])) {
+                $attStr = \Staff_attendance_overlay::apply(
+                    $this->holiday_service,
+                    $attStr,
+                    $monthKeyISO,
+                    $schedule['autoAbsent'],
+                    $todayISO,
+                    $schedule['nonWorkingDays'][$staffId] ?? [],
+                    $staffId,
+                    $dept
+                );
+            }
+
             $lateRaw = isset($allStaffLate[$staffId]) && is_array($allStaffLate[$staffId])
                 ? $allStaffLate[$staffId] : [];
 
-            $dept  = is_array($profile) ? ($profile['Department']  ?? '') : '';
-            $desig = is_array($profile) ? ($profile['Designation'] ?? '') : '';
             $staffList[] = [
                 'id'          => $staffId,
                 'name'        => $name,
@@ -1924,13 +2030,250 @@ JS;
         });
 
         return $this->json_success([
-            'staff'       => $staffList,
-            'daysInMonth' => $daysInMonth,
-            'sundays'     => $this->_get_sundays($year, $monthNum),
-            'holidays'    => $this->_get_holidays_for_month($month, $year),
-            'month'       => $month,
-            'year'        => $year,
+            'staff'              => $staffList,
+            'daysInMonth'        => $daysInMonth,
+            'nonWorkingDays'     => $schedule['nonWorkingDays'],
+            // Phase D — per-staff, department/exception-filtered. Replaces the
+            // flat, school-wide 'holidays' every row used to shade identically.
+            'holidayDays'        => $schedule['holidayDays'],
+            'specialWorkingDays' => $schedule['specialWorkingDays'],
+            'halfDayLeaveDays'   => $schedule['halfDayLeaveDays'],
+            'scheduleBlocked'    => $schedule['blocked'],
+            'month'              => $month,
+            'year'               => $year,
+            // The grid must know BEFORE the operator marks a month whether it
+            // can be saved. Without this the register looked fully editable, a
+            // whole month could be filled in, and the refusal only arrived at
+            // Save — as a generic failure.
+            'lock'               => $this->_staff_month_lock_state($year, $monthNum),
         ]);
+    }
+
+    /**
+     * Per-staff non-working-day numbers for one month — the grid consumer of
+     * N-35. Resolved once via `Policy_assignment_service`, the same canonical
+     * engine `Staff_attendance_finaliser::_nonWorkingDays()` and
+     * `Staff_attendance::_resolve_employee_calendar()` already use; this is a
+     * THIRD call site tailored to the grid's own loading shape (many staff,
+     * whole month, rendered to the browser) rather than a shared instance
+     * method, matching the pattern the other two consumers already established
+     * (each consumer owns its own I/O shape; only the resolution/calendar
+     * maths is shared).
+     *
+     * Fail-closed: a staff member whose calendar cannot be resolved on ANY
+     * day of the month is reported in `blocked` with the reason, never
+     * guessed at — the caller must lock their whole row rather than silently
+     * treat every day as working.
+     *
+     * Phase D (2026-08-18): also returns per-staff, department/exception-
+     * filtered `holidayDays` and `specialWorkingDays` — a Special Working Day
+     * overrides an otherwise non-working day back to working (removed from
+     * `nonWorkingDays`), and holidays are no longer the single flat map every
+     * row shaded identically (a department-scoped holiday now only shades
+     * the rows it actually applies to).
+     *
+     * @param string[] $staffIds
+     * @param array<string,string> $deptByStaff  [staffId => department]
+     * @param string   $monthKey   'YYYY-MM'
+     * @return array{nonWorkingDays: array<string,array<int,bool>>, holidayDays: array<string,array<int,string>>, specialWorkingDays: array<string,array<int,string>>, blocked: array<string,string>}
+     */
+    private function _staff_grid_schedule(array $staffIds, array $deptByStaff, string $monthKey): array
+    {
+        require_once APPPATH . 'libraries/Policy_assignment_service.php';
+        $this->load->library('holiday_service');
+        $this->holiday_service->init($this->fs, $this->school_id, $this->session_year);
+
+        // NO-N+1: the roster loop below calls _department_as_of() for every
+        // staff member, and each cold resolve is its own Firestore query — so
+        // rendering this grid cost one round trip per employee before any row
+        // was drawn. Warming the tenant timeline once serves all of them from
+        // memory. This is a user-facing page, so the latency was directly
+        // visible.
+        //
+        // Same call, same reasoning and the same fail-open contract as the
+        // payroll roster loop (Hr.php) and the attendance finaliser: warming is
+        // idempotent and read-only, and a failed warm just leaves the per-staff
+        // reads in place — the grid degrades in speed, never in correctness.
+        // Warm/cold equivalence is asserted in EmploymentTimelineQueryCountTest.
+        try {
+            $this->load->library('staff_employment_history_service');
+            $this->staff_employment_history_service
+                ->init($this->fs, $this->school_id, (string) ($this->admin_id ?? ''))
+                ->warmTimeline();
+        } catch (\Throwable $e) {
+            log_message('error', 'Attendance::_staff_grid_schedule timeline warm failed, '
+                . 'falling back to per-staff reads: ' . $e->getMessage());
+        }
+
+        $catalogue   = [];
+        $assignments = [];
+        $policy      = [];
+        try {
+            $school = $this->fs->get('schools', $this->school_id);
+            $policy = is_array($school['attendancePolicy'] ?? null) ? $school['attendancePolicy'] : [];
+            foreach ((array) ($policy['workSchedules'] ?? []) as $s) {
+                if (is_array($s) && !empty($s['scheduleId'])) {
+                    $catalogue[(string) $s['scheduleId']] = $s;
+                }
+            }
+            $rows = $this->fs->schoolWhere('staffScheduleAssignments', []);
+            foreach ((is_array($rows) ? $rows : []) as $row) {
+                $a = is_array($row['data'] ?? null) ? $row['data'] : $row;
+                if (!is_array($a)) continue;
+                $type = (string) ($a['attachmentType'] ?? '');
+                $id   = (string) ($a['attachmentId'] ?? '');
+                if ($type === '') { $type = 'staff'; $id = (string) ($a['staffId'] ?? ''); }
+                $assignments[] = [
+                    'attachmentType' => $type, 'attachmentId' => $id,
+                    'policyId'       => (string) ($a['policyId'] ?? $a['scheduleId'] ?? ''),
+                    'effectiveFrom'  => (string) ($a['effectiveFrom'] ?? ''),
+                    'effectiveTo'    => (string) ($a['effectiveTo'] ?? ''),
+                ];
+            }
+        } catch (\Exception $e) {
+            log_message('error', 'Attendance::_staff_grid_schedule catalogue/assignments read failed: ' . $e->getMessage());
+        }
+
+        [$y, $m] = array_map('intval', explode('-', $monthKey));
+        $days = (int) date('t', mktime(0, 0, 0, $m, 1, $y));
+
+        // Phase F (2026-08-18) — read-only Half-Day Leave overlay. Half-day
+        // leave deliberately never writes an attendance mark (Hr.php's
+        // apply_leave() docblock: "does NOT mark attendance 'L' — the staff
+        // worked the other half"), so today the grid shows nothing for it,
+        // leaving admins to guess why a day's mark looks incomplete. This
+        // only SURFACES already-approved leave for display — it does not
+        // write to attendance/staffAttendanceSummary and does not change
+        // any working-day, LOP, or payroll count. Index-covered by the
+        // existing (applicantType, schoolId, status, appliedAt) composite —
+        // no new index required.
+        $halfDayLeaveDays = [];
+        try {
+            $staffIdSet = array_flip($staffIds);
+            $monthPrefix = $monthKey; // 'YYYY-MM'
+            $leaveDocs = $this->fs->schoolWhere('leaveApplications', [
+                ['applicantType', '==', 'staff'],
+                ['status', '==', 'approved'],
+            ], 'appliedAt', 'DESC', 500);
+            foreach ((is_array($leaveDocs) ? $leaveDocs : []) as $ld) {
+                $d = is_array($ld['data'] ?? null) ? $ld['data'] : $ld;
+                if (!is_array($d)) continue;
+                $isHalf = filter_var($d['halfDay'] ?? $d['half_day'] ?? false, FILTER_VALIDATE_BOOLEAN);
+                if (!$isHalf) continue;
+                $sid = (string) ($d['staffId'] ?? $d['applicantId'] ?? '');
+                if ($sid === '' || !isset($staffIdSet[$sid])) continue;
+                $date = (string) ($d['fromDate'] ?? $d['from_date'] ?? '');
+                if (strpos($date, $monthPrefix . '-') !== 0) continue;   // outside this month
+                $day = (int) substr($date, 8, 2);
+                if ($day < 1 || $day > $days) continue;
+                $typeName = (string) ($d['typeName'] ?? $d['type_name'] ?? 'Half-Day Leave');
+                $period   = (string) ($d['halfDayPeriod'] ?? $d['half_day_period'] ?? '');
+                $halfDayLeaveDays[$sid][$day] = $period !== '' ? "{$typeName} ({$period})" : $typeName;
+            }
+        } catch (\Exception $e) {
+            log_message('error', 'Attendance::_staff_grid_schedule half-day-leave overlay failed: ' . $e->getMessage());
+            $halfDayLeaveDays = [];   // display-only — never blocks the grid
+        }
+
+        $nonWorkingDays     = [];
+        $holidayDays        = [];
+        $specialWorkingDays = [];
+        $blocked            = [];
+        foreach ($staffIds as $staffId) {
+            $liveDept = $deptByStaff[$staffId] ?? '';
+            // Trail 2 Priority 1 (2026-08-18) — holidays_in_month()/
+            // special_working_days_in_month() are month-batch calls (one
+            // department for the whole month), so they resolve department
+            // AS OF THE PERIOD START — matching the exact granularity
+            // Payroll's Phase J fix already uses, deliberately, for the same
+            // reason (a full per-day split for these two batch calls would
+            // make the grid MORE precise than Payroll, which is inconsistent
+            // rather than safer). $ctx['department'] below is refreshed
+            // per-day instead, since that loop already resolves per date.
+            $periodStartDept = $this->_department_as_of($staffId, $monthKey . '-01', $liveDept);
+
+            $ctx = [
+                'policies'             => $catalogue,
+                'assignments'          => $assignments,
+                'staffId'              => $staffId,
+                'department'           => $periodStartDept,
+                'organisationPolicyId' => null,
+            ];
+
+            $swdMonth = $this->holiday_service->special_working_days_in_month(
+                (int) $y, (int) $m, 'staff', $periodStartDept, $staffId);
+            if (!empty($swdMonth)) $specialWorkingDays[$staffId] = $swdMonth;
+            $holMonth = $this->holiday_service->holidays_in_month(
+                (int) $y, (int) $m, 'staff', $periodStartDept, $staffId);
+            if (!empty($holMonth)) $holidayDays[$staffId] = $holMonth;
+
+            $days_ = [];
+            for ($d = 1; $d <= $days; $d++) {
+                $date = sprintf('%s-%02d', $monthKey, $d);
+                // Full per-day resolution here — this loop already calls
+                // Policy_assignment_service::resolve() once per date, so
+                // resolving department per-day too costs nothing extra.
+                $ctx['department'] = $this->_department_as_of($staffId, $date, $liveDept);
+                $r = \Policy_assignment_service::resolve($ctx, $date);
+                if (!empty($r['block'])) {
+                    $blocked[$staffId] = \Policy_assignment_service::explain($r);
+                    $days_ = null;
+                    break;
+                }
+                if (isset($swdMonth[$d])) continue;    // Phase D — SWD overrides weekly-off back to working
+                $offs = (array) ($r['policy']['weeklyOffs'] ?? []);
+                if (in_array(date('D', strtotime($date)), $offs, true)) $days_[$d] = true;
+            }
+            if ($days_ !== null) $nonWorkingDays[$staffId] = $days_;
+        }
+
+        return [
+            'nonWorkingDays'      => $nonWorkingDays,
+            'holidayDays'         => $holidayDays,
+            'specialWorkingDays'  => $specialWorkingDays,
+            'halfDayLeaveDays'    => $halfDayLeaveDays,
+            'blocked'             => $blocked,
+            // Trail 2 Phase D, Finding #1 (2026-08-18) — surfaced so the
+            // caller can run Staff_attendance_overlay::apply() with the same
+            // autoAbsent/timezone settings the staff self-view uses, off the
+            // school doc already read above (no extra Firestore read).
+            'autoAbsent'          => array_key_exists('autoAbsent', $policy) ? !empty($policy['autoAbsent']) : true,
+            'timezone'            => (is_string($policy['timezone'] ?? null) && $policy['timezone'] !== '') ? $policy['timezone'] : 'Asia/Kolkata',
+        ];
+    }
+
+    /**
+     * Trail 2, Priority 1 (2026-08-18) — the department EFFECTIVE on $date,
+     * not the live `staff.Department`/`department` field. Same fix as
+     * Staff_attendance::_department_as_of() and
+     * Staff_attendance_finaliser::_departmentAsOf() — reuses the SAME
+     * read-only Staff_employment_history_service::resolveAttributeAsOf()
+     * resolver over the SAME staffEmploymentTimeline. No second history
+     * system, no new writer; three call sites, one resolver.
+     *
+     * FAILS OPEN to $liveFallback on any error or when no timeline history
+     * exists (the common case) — this grid must never fail to render because
+     * an employment-history lookup was unavailable. Memoised per
+     * (staffId|date) for the life of the request.
+     */
+    private array $_deptAsOfMemo = [];
+
+    private function _department_as_of(string $staffId, string $date, string $liveFallback): string
+    {
+        $k = $staffId . '|' . $date;
+        if (array_key_exists($k, $this->_deptAsOfMemo)) return $this->_deptAsOfMemo[$k];
+
+        try {
+            $this->load->library('staff_employment_history_service');
+            $svc = $this->staff_employment_history_service
+                ->init($this->fs, $this->school_id, (string) ($this->admin_id ?? ''));
+            $hist = $svc->resolveAttributeAsOf($staffId, 'department', $date);
+            if ($hist !== null && $hist !== '') return $this->_deptAsOfMemo[$k] = $hist;
+        } catch (\Throwable $e) {
+            log_message('error', 'Attendance::_department_as_of failed for '
+                . $staffId . ' ' . $date . ': ' . $e->getMessage());
+        }
+        return $this->_deptAsOfMemo[$k] = $liveFallback;
     }
 
     /**
@@ -1993,22 +2336,21 @@ JS;
         $monthKey    = sprintf('%04d-%02d', $year, $monthNum);
         $tele        = isset($this->stream_b_telemetry) ? $this->stream_b_telemetry : null;
 
-        // 1. Lock check (cached). Replaces legacy RTDB lock-check helper.
-        $this->load->library('lock_cache');
-        $lock = $this->lock_cache->is_locked($this->school_id, $this->session_year, $monthKey);
-        if (!empty($lock['is_locked'])) {
-            if ($tele) $tele->update([
-                'cas_final_outcome' => 'month_locked',
-                'rtdb_writes_count' => 0,
-                'http_status'       => 400,
-            ]);
-            return $this->json_error("Staff attendance for {$month} {$year} is locked. Unlock before editing.");
-        }
+        // Trail 2 Phase D, Finding #2 (2026-08-18) — routed through the
+        // canonical Staff_attendance_writer::saveMonthForStaff() instead of
+        // a raw firestoreCommitBatch that wrote only the summary. The
+        // writer now owns lock check, per-day audit docs (only for days
+        // that actually changed), CAS retry, and atomicity — this
+        // controller stays orchestration-only, matching every other
+        // Staff_attendance/Attendance write path (mark_staff_day,
+        // bulk_mark_staff, punch). No second writer was created.
+        $this->load->library('staff_attendance_writer');
+        $this->staff_attendance_writer->init($this->firebase, $this->school_id, $this->session_year);
 
-        // 2. Batch-read existing summaries via F-SB-4 to capture __updateTime
-        //    for CAS protection. Replaces the per-staff RTDB N+1 read at
-        //    legacy line 1753 with a single Firestore query.
-        $existingSummaries = []; // staffId => ['__updateTime' => ..., 'dayWise' => ...]
+        // Batch-read existing summaries via F-SB-4 so each per-staff writer
+        // call can skip its own read on the happy (no-CAS-conflict) path —
+        // same query shape the pre-fix implementation already used.
+        $existingSummaries = []; // staffId => ['data' => ..., '__updateTime' => ...]
         try {
             $rows = $this->firebase->firestoreQuery('staffAttendanceSummary', [
                 ['schoolId', '==', $this->school_id],
@@ -2019,8 +2361,8 @@ JS;
                 $sid  = (string) ($data['staffId'] ?? '');
                 if ($sid !== '') {
                     $existingSummaries[$sid] = [
+                        'data'         => $data,
                         '__updateTime' => (string) ($data['__updateTime'] ?? ''),
-                        'dayWise'      => (string) ($data['dayWise']      ?? ''),
                     ];
                 }
             }
@@ -2034,24 +2376,17 @@ JS;
             return $this->json_error('Save failed; please retry.');
         }
 
-        // 3. Per-staff sequential commitBatch with CAS retry budget.
-        //    Phase V will replace this with commitBatchesParallel.
-        $this->load->helper('attendance');
-        $saved          = 0;
-        $skipped        = [];
-        $attemptsTotal  = 0;
         // Staff dayWise supports the full company-schedule status set that the
         // GPS punch writer (Staff_attendance_writer) produces. Pre-fix this map
         // and the sanitizer only knew P/A/L/H/T/V, so an admin grid save
         // rewrote M (half-day) / W (work-on-off) / O (weekly-off) → V and
         // dropped their counts — silently clobbering GPS-written payroll marks.
-        // Field names + workingDays formula are kept IDENTICAL to the canonical
-        // writer's STATUS_TO_FIELD / workingDays so both write paths agree.
-        $staffStatus    = ['P','A','L','H','T','V','M','W','O'];
-        $statusToField  = [
-            'P'=>'present','A'=>'absent','L'=>'leave','H'=>'holiday','T'=>'tardy',
-            'V'=>'void','M'=>'halfDay','W'=>'extraWorked','O'=>'weeklyOff',
-        ];
+        $staffStatus = ['P','A','L','H','T','V','M','W','O'];
+        $markedBy    = (string) ($this->admin_id ?? 'admin');
+
+        $saved         = 0;
+        $skipped       = [];
+        $attemptsTotal = 0;
 
         foreach ($attData as $staffId => $attString) {
             $staffId = trim((string) $staffId);
@@ -2061,72 +2396,39 @@ JS;
             }
             $cleanStr = $this->_sanitize_att_string($attString, $daysInMonth, $staffStatus);
 
-            // Compute ABSOLUTE counts from cleanStr across the full 9-field set.
-            // Writing every field (not just the 6 old ones) means the merge:true
-            // summary write can never leave a stale halfDay/extraWorked/weeklyOff
-            // count behind when dayWise legitimately loses those marks.
-            $counts = [
-                'present'=>0,'absent'=>0,'leave'=>0,'holiday'=>0,'tardy'=>0,
-                'void'=>0,'halfDay'=>0,'extraWorked'=>0,'weeklyOff'=>0,
-            ];
-            for ($i = 0; $i < $daysInMonth; $i++) {
-                $c = strtoupper($cleanStr[$i] ?? 'V');
-                $f = $statusToField[$c] ?? 'void';
-                $counts[$f]++;
-            }
-            // Parity with Staff_attendance_writer::workingDays (adds halfDay).
-            $workingDays = (int) ($counts['present'] + $counts['leave'] + $counts['tardy'] + $counts['halfDay']);
-
-            $summaryDocId = "{$this->school_id}_{$staffId}_{$monthKey}";
-            $captured     = $existingSummaries[$staffId]['__updateTime'] ?? '';
-
-            // CAS retry budget per-staff (3 retries)
-            $committed = false;
-            for ($attempt = 0; $attempt <= 3; $attempt++) {
-                $attemptsTotal++;
-                $precondition = ($captured !== '')
-                    ? ['updateTime' => $captured]
-                    : ['exists' => false];
-
-                $payload = array_merge([
-                    'schoolId'    => $this->school_id,
-                    'session'     => $this->session_year,
-                    'staffId'     => $staffId,
-                    'month'       => $monthKey,
-                    'year'        => $year,
-                    'monthNumber' => $monthNum,
-                    'dayWise'     => $cleanStr,
-                    'totalDays'   => $daysInMonth,
-                    '_updatedAt'  => date('c'),
-                ], $counts);
-                $payload['workingDays'] = $workingDays;
-
-                $ops = [
-                    ['op' => 'set', 'collection' => 'staffAttendanceSummary',
-                     'docId' => $summaryDocId, 'data' => $payload, 'merge' => true,
-                     'precondition' => $precondition],
-                ];
-                $ok = $this->firebase->firestoreCommitBatch($ops);
-                if ($ok === true) {
-                    $committed = true;
-                    break;
-                }
-                // CAS conflict or transient — re-read summary for fresh __updateTime
-                $fresh   = $this->firebase->firestoreGet('staffAttendanceSummary', $summaryDocId);
-                $captured = is_array($fresh) ? (string) ($fresh['__updateTime'] ?? '') : '';
-                usleep((50 * (1 << $attempt) + mt_rand(0, 50)) * 1000);
-            }
-            if ($committed) {
+            try {
+                $result = $this->staff_attendance_writer->saveMonthForStaff(
+                    $staffId,
+                    $monthKey,
+                    $cleanStr,
+                    ['markedBy' => $markedBy, 'source' => 'grid_month_save'],
+                    $existingSummaries[$staffId] ?? null
+                );
+                $attemptsTotal += $result['attempts'];
                 $saved++;
-            } else {
+            } catch (MonthLockedException $e) {
+                // Same contract as the pre-fix implementation: locked ⇒ stop,
+                // nothing partially saved, one clear error.
+                if ($tele) $tele->update([
+                    'cas_final_outcome' => 'month_locked',
+                    'rtdb_writes_count' => 0,
+                    'http_status'       => 400,
+                ]);
+                return $this->json_error("Staff attendance for {$month} {$year} is locked. Unlock before editing.");
+            } catch (CASRetryExhaustedException $e) {
                 $skipped[] = ['staffId' => $staffId, 'name' => $staffId, 'reason' => 'firestore_cas_exhausted'];
+            } catch (\InvalidArgumentException $e) {
+                $skipped[] = ['staffId' => $staffId, 'name' => $staffId, 'reason' => 'invalid_id_format'];
+            } catch (\Throwable $e) {
+                log_message('error', 'Attendance::_save_staff_attendance_fs writer failed for ' . $staffId . ': ' . $e->getMessage());
+                $skipped[] = ['staffId' => $staffId, 'name' => $staffId, 'reason' => 'writer_failure'];
             }
         }
 
         if ($tele) $tele->update([
             'cas_attempts'      => $attemptsTotal,
             'cas_final_outcome' => empty($skipped) ? 'success' : (count($skipped) === count($attData) ? 'all_failed' : 'partial'),
-            'cache_hit'         => (($lock['source'] ?? 'live') === 'cache'),
+            'cache_hit'         => false,
             'rtdb_writes_count' => 0,
         ]);
 
@@ -2437,16 +2739,31 @@ JS;
         // (read-through cache). Return only the general-settings keys so the
         // JSON response shape stays identical to the pre-migration contract.
         $settings = $this->_get_attendance_settings();
+
+        // DEV-2: has this school ever SAVED these settings? The method
+        // switches are only binding once it has — see _punch_method_blocked().
+        // Without this the screen shows three switches at their declared
+        // default of OFF while the corresponding devices are still allowed to
+        // punch, which is the same lie the enforcement fix just removed, told
+        // from the other side.
+        $configured = false;
+        try {
+            $doc = $this->fs->get('attendanceSettings', $this->school_id);
+            $configured = is_array($doc) && !empty($doc);
+        } catch (\Throwable $e) {
+            log_message('error', 'get_settings configured-probe failed: ' . $e->getMessage());
+        }
+
         $config = [
             'late_threshold_student'   => $settings['late_threshold_student'],
             'late_threshold_staff'     => $settings['late_threshold_staff'],
-            'working_days'             => $settings['working_days'],
             'biometric_enabled'        => $settings['biometric_enabled'],
             'rfid_enabled'             => $settings['rfid_enabled'],
             'face_recognition_enabled' => $settings['face_recognition_enabled'],
+            'regularization'           => $settings['regularization'],
         ];
 
-        return $this->json_success(['config' => $config]);
+        return $this->json_success(['config' => $config, 'configured' => $configured]);
     }
 
     /**
@@ -2456,23 +2773,45 @@ JS;
     public function save_settings()
     {
         $this->_require_role(self::MANAGE_ROLES, 'save_settings', 'strict');
+        // CANONICAL-1 (2026-09-13): `working_days` removed. The student school week
+        // is owned solely by Student_calendar (attendanceSettings.studentCalendar),
+        // the one authority _resolve_non_working_days() reads; attendanceSettings
+        // .working_days was a dead writer (CAL-D10) fed by a redundant picker.
         $allowed = [
             'late_threshold_student', 'late_threshold_staff',
-            'working_days', 'biometric_enabled', 'rfid_enabled', 'face_recognition_enabled',
+            'biometric_enabled', 'rfid_enabled', 'face_recognition_enabled',
+            'reg_max_days_per_month', 'reg_limit_message',
         ];
 
         $data = [];
         foreach ($allowed as $key) {
             $val = $this->input->post($key);
             if ($val !== null) {
+                if ($key === 'reg_max_days_per_month' || $key === 'reg_limit_message') {
+                    continue;   // folded into the regularization sub-map below
+                }
                 if (in_array($key, ['biometric_enabled', 'rfid_enabled', 'face_recognition_enabled'])) {
                     $data[$key] = filter_var($val, FILTER_VALIDATE_BOOLEAN);
-                } elseif ($key === 'working_days' && is_string($val)) {
-                    $data[$key] = json_decode($val, true) ?: [];
                 } else {
                     $data[$key] = $val;
                 }
             }
+        }
+
+        // Regularization policy — written as a sub-map so it merges cleanly
+        // beside `rules` and can grow without widening the flat key space.
+        // Validated here rather than trusted: a negative or absurd ceiling
+        // would silently disable or freeze the queue.
+        $regMax = $this->input->post('reg_max_days_per_month');
+        $regMsg = $this->input->post('reg_limit_message');
+        if ($regMax !== null || $regMsg !== null) {
+            $max = (int) $regMax;
+            if ($max < 0)  $max = 0;      // 0 = no ceiling
+            if ($max > 31) $max = 31;     // a month cannot have more days than this
+            $data['regularization'] = [
+                'maxDaysPerMonth' => $max,
+                'limitMessage'    => mb_substr(trim((string) $regMsg), 0, 300),
+            ];
         }
 
         if (empty($data)) {
@@ -2681,6 +3020,85 @@ JS;
         $allowWorkOnOff = !empty($in['allowWorkOnOff']);
         $autoAbsent     = array_key_exists('autoAbsent', $in) ? !empty($in['autoAbsent']) : true;
 
+        // ── CALENDAR HALF-DAY PAY MODEL (2026-08-19, authorized S4) ──
+        //
+        // Tenant-scoped, OFF by default. When enabled, a school-declared
+        // Calendar Half-Day contributes 0.5 to EXPECTED WORK instead of a
+        // full day (Hr::_half_day_weight consumes these two fields).
+        //
+        // ENABLING REQUIRES A VALID EFFECTIVE DATE. This is refused
+        // server-side, not merely disabled in the UI, because the date is
+        // what protects historical payroll: without a boundary an enabled
+        // tenant would reprice every past period the moment a closed run is
+        // regenerated. A missing/malformed date is a hard error rather than
+        // a silent fallback — silently ignoring it would leave an operator
+        // believing the feature is live when Hr::_half_day_weight() is in
+        // fact still returning 1.0.
+        $chdEnabled = !empty($in['calendarHalfDayPayEnabled']);
+        $chdFrom    = trim((string) ($in['calendarHalfDayPayEffectiveFrom'] ?? ''));
+        if ($chdEnabled) {
+            if ($chdFrom === '' || !preg_match('/^\d{4}-\d{2}-\d{2}$/', $chdFrom)) {
+                return $this->json_error(
+                    'Calendar Half-Day pay cannot be enabled without a valid effective date (YYYY-MM-DD). '
+                    . 'The effective date is what stops historical payroll from being repriced.', 400);
+            }
+            // Reject an unparseable-but-well-formed date (e.g. 2026-02-31).
+            [$y, $m, $d] = array_map('intval', explode('-', $chdFrom));
+            if (!checkdate($m, $d, $y)) {
+                return $this->json_error('Calendar Half-Day effective date is not a real calendar date.', 400);
+            }
+        } else {
+            // Never persist a stale boundary alongside a disabled flag.
+            $chdFrom = '';
+        }
+
+        // ── COMP-OFF POLICY (2026-08-22) ──────────────────────────────────
+        //
+        // Tenant-scoped, DISABLED by default, consumed by Hr::_comp_off_policy().
+        // Both settings REDUCE an entitlement the employee has already earned by
+        // working a rest day, so neither is inferred from a market norm — a
+        // school opts in explicitly or nothing changes.
+        //
+        //   compOffExpiryDays      0 = credits never lapse   (market: 30-90)
+        //   compOffMaxBalanceDays  0 = no ceiling            (market: 5-10)
+        //
+        // Validated server-side rather than only in the UI: a malformed value
+        // silently coerced to a default would leave an operator believing an
+        // expiry window is live when credits in fact never lapse.
+        $compOffExpiryRaw = $in['compOffExpiryDays'] ?? '';
+        $compOffCapRaw    = $in['compOffMaxBalanceDays'] ?? '';
+
+        $compOffExpiryDays    = 0;
+        $compOffMaxBalanceDays = 0.0;
+
+        if ($compOffExpiryRaw !== '' && $compOffExpiryRaw !== null) {
+            if (!is_numeric($compOffExpiryRaw) || (float) $compOffExpiryRaw != (int) $compOffExpiryRaw) {
+                return $this->json_error('Comp-Off expiry must be a whole number of days.', 400);
+            }
+            $compOffExpiryDays = (int) $compOffExpiryRaw;
+            if ($compOffExpiryDays < 0) {
+                return $this->json_error('Comp-Off expiry cannot be negative. Use 0 for "never expires".', 400);
+            }
+            // An upper bound stops a typo (3650) from reading as "never" while
+            // actually stamping a decade-long window onto every credit.
+            if ($compOffExpiryDays > 365) {
+                return $this->json_error('Comp-Off expiry cannot exceed 365 days.', 400);
+            }
+        }
+
+        if ($compOffCapRaw !== '' && $compOffCapRaw !== null) {
+            if (!is_numeric($compOffCapRaw)) {
+                return $this->json_error('Comp-Off balance cap must be a number of days.', 400);
+            }
+            $compOffMaxBalanceDays = round((float) $compOffCapRaw, 2);
+            if ($compOffMaxBalanceDays < 0) {
+                return $this->json_error('Comp-Off balance cap cannot be negative. Use 0 for "no cap".', 400);
+            }
+            if ($compOffMaxBalanceDays > 365) {
+                return $this->json_error('Comp-Off balance cap cannot exceed 365 days.', 400);
+            }
+        }
+
         // ── Build the canonical policy map (consumed by Attendance_policy) ──
         $policy = [
             'version'        => 1,
@@ -2711,12 +3129,61 @@ JS;
             'weeklyOffs'     => $weeklyOffs,
             'allowWorkOnOff' => $allowWorkOnOff,
             'autoAbsent'     => $autoAbsent,
+            'calendarHalfDayPayEnabled'       => $chdEnabled,
+            'calendarHalfDayPayEffectiveFrom' => $chdFrom,
+            // Comp-Off policy — 0 means DISABLED for both (validated above).
+            'compOffExpiryDays'               => $compOffExpiryDays,
+            'compOffMaxBalanceDays'           => $compOffMaxBalanceDays,
             'updatedAt' => date('c'),
             'updatedBy' => (string) ($this->admin_id ?? ''),
         ];
 
+        // ── Production hardening (2026-08-19) — P0 DATA-LOSS FIX ──
+        //
+        // This previously wrote `['attendancePolicy' => $policy]`. That is a
+        // NON-dotted key, so Firestore_rest_client::buildUpdateMask() emits
+        // updateMask.fieldPaths=attendancePolicy — which replaces the ENTIRE
+        // attendancePolicy map.
+        //
+        // $policy above is built fresh from POST input and contains only the
+        // nine keys this screen owns. It has never carried:
+        //     attendancePolicy.workSchedules[]      (Work_schedules.php)
+        //     attendancePolicy.workingWeek.versions[] (Working_week.php)
+        //
+        // So every save of this screen — including merely nudging a geofence
+        // radius — silently DESTROYED the tenant's whole work-schedule
+        // catalogue and every working-week version. That is not a race; it
+        // was deterministic on every write. Because an employee with no
+        // resolvable schedule BLOCKS payroll generation
+        // (Work_schedules::_blockedStaff), the blast radius was school-wide
+        // payroll failure.
+        //
+        // Fixed by writing DOTTED field paths, so the mask targets only the
+        // keys this screen actually owns and sibling keys in the nested map
+        // survive untouched. This is the pattern the REST client documents
+        // (B2.3.2-FIX R5) and that Hr::lock_payroll_month() already uses for
+        // `payrollLocks.{key}`. It also removes the lost-update race against
+        // the Work Schedules and Working Week screens for free: those write
+        // disjoint paths, so concurrent saves no longer clobber each other.
+        //
+        // Each value is still written WHOLESALE at its own path, so clearing
+        // (e.g. removing every geofence) still works exactly as before.
         try {
-            $this->fs->update('schools', $this->school_id, ['attendancePolicy' => $policy]);
+            $this->fs->update('schools', $this->school_id, [
+                'attendancePolicy.version'        => $policy['version'],
+                'attendancePolicy.enabledMethods' => $policy['enabledMethods'],
+                'attendancePolicy.gps'            => $policy['gps'],
+                'attendancePolicy.shifts'         => $policy['shifts'],
+                'attendancePolicy.weeklyOffs'     => $policy['weeklyOffs'],
+                'attendancePolicy.allowWorkOnOff' => $policy['allowWorkOnOff'],
+                'attendancePolicy.autoAbsent'     => $policy['autoAbsent'],
+                'attendancePolicy.calendarHalfDayPayEnabled'       => $policy['calendarHalfDayPayEnabled'],
+                'attendancePolicy.calendarHalfDayPayEffectiveFrom' => $policy['calendarHalfDayPayEffectiveFrom'],
+                'attendancePolicy.compOffExpiryDays'               => $policy['compOffExpiryDays'],
+                'attendancePolicy.compOffMaxBalanceDays'           => $policy['compOffMaxBalanceDays'],
+                'attendancePolicy.updatedAt'      => $policy['updatedAt'],
+                'attendancePolicy.updatedBy'      => $policy['updatedBy'],
+            ]);
         } catch (\Throwable $e) {
             log_message('error', 'Attendance::save_attendance_policy failed: ' . $e->getMessage());
             return $this->json_error('Could not save the attendance policy. Please retry.', 500);
@@ -2913,7 +3380,85 @@ JS;
             return $this->json_error('Firestore update failed; please retry.');
         }
 
+        // ── DEV-1 (2026-08-23): make the status toggle REAL ─────────────
+        // _validate_api_key() authenticates a punch from the key index alone
+        // and never reads the device's status, so before this an "inactive"
+        // device kept punching and the administrator was told it was disabled.
+        //
+        // Rather than add a device read to every punch, deactivation reuses the
+        // revocation this controller already performs on delete: drop the key
+        // from the index and bust its cached auth entry. Reactivation restores
+        // the index entry from the hash held on the device record — the raw key
+        // is never stored, and is not needed, because the index is keyed BY the
+        // hash the client's key will produce.
+        if (isset($updates['status'])) {
+            $this->_apply_device_status($deviceId, $updates['status']);
+        }
+
         return $this->json_success(['message' => 'Device updated.']);
+    }
+
+    /**
+     * Make a device's active/inactive status actually govern authentication.
+     *
+     * Best-effort by design: the status itself is already stored by the time
+     * this runs, and a failure here must not report the whole update as failed
+     * when it partly succeeded. Any failure is logged loudly, because a device
+     * that is marked inactive while still able to punch is precisely the state
+     * this exists to prevent.
+     */
+    private function _apply_device_status(string $deviceId, string $status): void
+    {
+        $dev = null;
+        try {
+            $dev = $this->fs->get('attendanceDevices', $this->fs->docId($deviceId));
+        } catch (\Exception $e) {
+            $dev = null;
+        }
+
+        $hash = is_array($dev) ? ($dev['apiKeyHash'] ?? $dev['api_key_hash'] ?? '') : '';
+        if (!is_string($hash) || $hash === '') {
+            log_message('error',
+                'update_device: device [' . $deviceId . '] has no key hash — its status change to ['
+                . $status . '] could NOT be applied to authentication.'
+            );
+            return;
+        }
+
+        if ($status === 'inactive') {
+            try { $this->fs->remove('attendanceDeviceKeys', $hash); } catch (\Exception $e) {
+                log_message('error', 'update_device: failed to revoke key index for [' . $deviceId
+                    . '] — the device may still be able to punch: ' . $e->getMessage());
+            }
+            $this->_cache_delete("api_key_{$hash}");   // instant, not TTL-delayed
+
+            $this->_log_attendance_change('DEVICE_DEACTIVATED', [
+                'targetType' => 'device',
+                'targetId'   => $deviceId,
+            ]);
+            return;
+        }
+
+        // Reactivate — rebuild the index entry the punch path authenticates against.
+        try {
+            $this->fs->set('attendanceDeviceKeys', $hash, [
+                'keyHash'       => $hash,
+                'deviceId'      => $deviceId,
+                'schoolId'      => $this->school_id,
+                'schoolName'    => $this->school_name,
+                'createdAt'     => date('c'),
+                'schemaVersion' => self::ATT_DEVICE_SCHEMA_VERSION,
+            ], true);
+        } catch (\Exception $e) {
+            log_message('error', 'update_device: failed to restore key index for [' . $deviceId
+                . '] — the device will NOT be able to punch: ' . $e->getMessage());
+            return;
+        }
+
+        $this->_log_attendance_change('DEVICE_REACTIVATED', [
+            'targetType' => 'device',
+            'targetId'   => $deviceId,
+        ]);
     }
 
     /**
@@ -3092,9 +3637,31 @@ JS;
             if ($schoolIdForCheck === '') {
                 return $this->json_error('Cannot resolve school identity for punch.', 500);
             }
-            $staffDoc = $this->fs->getEntity('staff', "{$schoolIdForCheck}_{$personId}");
+            // get() takes a RAW document id; getEntity() applies docId() =
+            // {schoolId}_{id} itself. Using getEntity() with an already-prefixed
+            // id produced {schoolId}_{schoolId}_{staffId}, which matches no
+            // document, so this check failed for every punch and the guard below
+            // returned 403 for every device. Fixed to get(), exactly matching the
+            // student branch at the top of this block.
+            //
+            // Deliberately NOT getEntity('staff', $personId): $schoolIdForCheck is
+            // derived from the API KEY, not the session, and this endpoint may run
+            // with no session at all. Letting getEntity() supply the prefix would
+            // silently re-bind the check to the session tenant.
+            $staffDoc = $this->fs->get('staff', "{$schoolIdForCheck}_{$personId}");
             if (empty($staffDoc) || !is_array($staffDoc)) {
                 return $this->json_error('Staff ID does not belong to this school.', 403);
+            }
+            // P0-5/B1 — parity with the GPS punch path. This branch previously
+            // verified only that the staff doc EXISTS, so an inactive/terminated
+            // employee could still punch from a biometric/RFID/face device, while
+            // Staff_attendance::_assert_staff_active() correctly rejected them on
+            // the GPS path. Same dual-case tolerance (status / Status) as that
+            // check. Tenant isolation is unchanged — the docId above is still
+            // built from the API-key-derived $schoolIdForCheck.
+            $sStatus = strtolower((string) ($staffDoc['status'] ?? $staffDoc['Status'] ?? ''));
+            if ($sStatus !== 'active') {
+                return $this->json_error('Staff member is not active.', 403);
             }
         }
 
@@ -3106,6 +3673,21 @@ JS;
         $devDocId = ($auth['school_id'] ?? $this->school_id) . '_' . $auth['device_id'];
         $deviceInfo_pre = $this->fs->get('attendanceDevices', $devDocId);
         $devType = is_array($deviceInfo_pre) ? ($deviceInfo_pre['type'] ?? '') : '';
+
+        // ── DEV-2 (2026-08-23): the method switch now actually switches ──
+        // Checked HERE because the device record is already in hand, so the
+        // gate costs no extra read. Refused before anything is written.
+        $methodBlock = $this->_punch_method_blocked($devType, (string) ($auth['school_id'] ?? $this->school_id));
+        if ($methodBlock !== '') {
+            log_message('error',
+                'api_punch refused: ' . $methodBlock . ' device=[' . $auth['device_id']
+                . '] school=[' . ($auth['school_id'] ?? '') . ']'
+            );
+            return $this->json_error(
+                'This attendance method is disabled for this school. Enable it in Attendance settings.',
+                403
+            );
+        }
         if ($devType === 'face_recognition' && $confidence < self::FACE_CONFIDENCE_THRESHOLD) {
             return $this->json_error('Confidence too low for face recognition. Score: ' . $confidence, 422);
         }
@@ -3671,7 +4253,11 @@ JS;
             }
         } else {
             try {
-                $staffDoc = $this->fs->getEntity('staff', "{$this->school_id}_{$personId}");
+                // get() not getEntity(): the id here is already prefixed with the
+                // tenant, and getEntity() would prefix it a second time. Matches
+                // the students branch directly above. Symptom was a silently blank
+                // staff name on the individual attendance report.
+                $staffDoc = $this->fs->get('staff', "{$this->school_id}_{$personId}");
                 if (is_array($staffDoc)) {
                     $personName = $staffDoc['Name'] ?? $staffDoc['name'] ?? '';
                 }
@@ -3856,19 +4442,71 @@ JS;
         }
         if (empty($need)) return;
 
+        // ── Phase 13 (Workstream D1) — batched, not one-round-trip-per-person ──
+        //
+        // This loop previously issued ONE SEQUENTIAL document read per unique
+        // unnamed person. Deduplication kept the read COUNT at one-per-person
+        // (as the docblock said), but every read was its own blocking round
+        // trip — the expensive part in this project's known high-latency
+        // Firestore environment. A page with 50 unnamed punches meant 50
+        // sequential RTTs before the log rendered.
+        //
+        // Now: one `IN` query per chunk of 30 ids per collection. Firestore
+        // still bills the same number of document reads, but 50 sequential
+        // RTTs collapse to 2. That is the whole point — round trips, not read
+        // count, are the bottleneck here.
+        //
+        // NOTE: `Firebase::firestoreGetParallel()` was considered and rejected —
+        // despite its name it is a plain sequential `foreach` over
+        // `getDocument()` (Firebase.php:1196-1218), so it would not have
+        // removed a single round trip.
+        //
+        // The healthy path is unaffected: rows that already carry a name never
+        // reach here ($need is empty → early return above), so a properly
+        // denormalised punch feed still costs ZERO reads.
+        //
+        // Fully best-effort, exactly as before: any failure falls back to the
+        // per-document reads, and any unresolved id simply keeps showing the id.
         $names = [];
+        $byCollection = ['students' => [], 'staff' => []];
         foreach ($need as $key => $meta) {
-            try {
-                if ($meta['staff']) {
-                    $doc = $this->fs->get('staff', "{$this->school_id}_{$meta['id']}");
-                    $nm  = is_array($doc) ? (string) ($doc['Name'] ?? $doc['name'] ?? '') : '';
-                } else {
-                    $doc = $this->fs->get('students', "{$this->school_id}_{$meta['id']}");
-                    $nm  = is_array($doc) ? (string) ($doc['Name'] ?? $doc['name'] ?? '') : '';
+            $byCollection[$meta['staff'] ? 'staff' : 'students'][$meta['id']] = $key;
+        }
+
+        foreach ($byCollection as $collection => $idToKey) {
+            if (empty($idToKey)) continue;
+            $ids       = array_keys($idToKey);
+            $idField   = ($collection === 'staff') ? 'staffId' : 'studentId';
+            $resolved  = [];
+
+            // Firestore caps IN at 30 values per query.
+            foreach (array_chunk($ids, 30) as $chunk) {
+                try {
+                    $rows = $this->fs->schoolWhere($collection, [[$idField, 'in', $chunk]]);
+                    foreach ((array) $rows as $r) {
+                        $d   = is_array($r) ? ($r['data'] ?? $r) : [];
+                        if (!is_array($d)) continue;
+                        $rid = (string) ($d[$idField] ?? $d['userId'] ?? '');
+                        $nm  = (string) ($d['Name'] ?? $d['name'] ?? '');
+                        if ($rid !== '' && $nm !== '') $resolved[$rid] = $nm;
+                    }
+                } catch (\Throwable $e) {
+                    log_message('error', "_resolve_punch_names: IN-batch failed for {$collection}: " . $e->getMessage());
                 }
-                if ($nm !== '') $names[$key] = $nm;
-            } catch (\Throwable $e) {
-                // best-effort — leave the id to display
+            }
+
+            // Per-document fallback ONLY for ids the batch could not resolve —
+            // e.g. legacy docs whose id field is absent. Bounded by the misses,
+            // never by the full set, so the common case adds nothing.
+            foreach ($idToKey as $id => $key) {
+                if (isset($resolved[$id])) { $names[$key] = $resolved[$id]; continue; }
+                try {
+                    $doc = $this->fs->get($collection, "{$this->school_id}_{$id}");
+                    $nm  = is_array($doc) ? (string) ($doc['Name'] ?? $doc['name'] ?? '') : '';
+                    if ($nm !== '') $names[$key] = $nm;
+                } catch (\Throwable $e) {
+                    // best-effort — leave the id to display
+                }
             }
         }
         if (empty($names)) return;
@@ -4134,8 +4772,11 @@ JS;
         if (!$class || !$section || !$attData) {
             return $this->json_error('class, section, and attendance required.');
         }
-        // H-01 FIX: Teachers can only mark attendance for their assigned classes
-        if (!$this->_teacher_can_access($class, "Section {$section}")) {
+        // H-01 FIX: Teachers can only mark attendance for their assigned classes.
+        // C2: OR a live, admin-granted substitute coverage grant for TODAY (this
+        // teacher-app path always writes the current day).
+        if (!$this->_teacher_can_access($class, "Section {$section}")
+            && !$this->_coverage_allows_today($class, $section)) {
             return $this->json_error('You are not assigned to this class/section.', 403);
         }
 
@@ -4145,20 +4786,53 @@ JS;
 
         $school  = $this->school_name;
         $session = $this->session_year;
-        $today   = (int) date('j');
-        $month   = date('F');
-        $year    = (int) date('Y');
-        $attKey  = "{$month} {$year}";
-        $monthNum = (int) date('n');
+
+        // ATT-API-PARITY (2026-09-15): this teacher-app "mark today" path must
+        // enforce the SAME gates as save()/mark_student_day/bulk_mark_student —
+        // previously it enforced NONE (no active-status, admission, holiday, lock
+        // or timezone check). Resolve the date in the SCHOOL timezone (not the
+        // app-default IST) so it agrees with every other endpoint's lock/holiday
+        // /governance logic.
+        $serverDate  = $this->_server_today();
+        $ts          = strtotime($serverDate);
+        $year        = (int) date('Y', $ts);
+        $monthNum    = (int) date('n', $ts);
+        $today       = (int) date('j', $ts);
+        $month       = date('F', $ts);
+        $attKey      = "{$month} {$year}";
         $daysInMonth = cal_days_in_month(CAL_GREGORIAN, $monthNum, $year);
 
-        // Phase 7e — Firestore-first then RTDB mirror.
+        // Holiday / non-working-day gate (canonical calendar) — parity with the
+        // other writers: a non-working day is not markable P/A/L/T.
+        if (isset($this->_resolve_non_working_days($monthNum, $year)[$today])) {
+            return $this->json_error('Today is a holiday / non-working day. Attendance cannot be marked.', 422);
+        }
+
+        // Lock gate — fails CLOSED on an unreadable lock (SEC-LOCK-1).
+        $lk = $this->_get_lock($class, $section, $serverDate, true);
+        if (!empty($lk['locked'])) {
+            return $this->json_error('Attendance for today is locked. File a correction request.', 423);
+        }
+
+        // Active roster (carries admissionDate): only active, already-admitted
+        // students may be marked — the client roster can be stale (TC'd student).
+        $roster = $this->_get_active_roster($class, $section);
+
+        // Phase 7e — Firestore-first (RTDB mirror removed).
         $bulkMarks = [];
+        $skipped   = [];
         foreach ($attData as $studentId => $mark) {
             $studentId = trim((string) $studentId);
             if (!preg_match('/^[A-Za-z0-9_]+$/', $studentId)) continue;
             $mark = strtoupper(trim((string) $mark));
-            if (!in_array($mark, $this->valid_marks)) continue;
+            // Only real teacher-assignable statuses. 'V' (sentinel) and 'H'
+            // (calendar-derived) are NEVER written from the client — a 'V' would
+            // erase an existing mark, an 'H' would fake a holiday.
+            if (!in_array($mark, ['P', 'A', 'L', 'T'], true)) { $skipped[] = $studentId; continue; }
+            // Active-status + admission gate (parity with save()).
+            if (!isset($roster[$studentId])) { $skipped[] = $studentId; continue; }
+            $admStr = (string) ($roster[$studentId]['admissionDate'] ?? '');
+            if (!$this->_admission_allows($admStr, $serverDate)) { $skipped[] = $studentId; continue; }
             $bulkMarks[$studentId] = ['mark' => $mark, 'name' => ''];
         }
         if (!empty($bulkMarks)) {
@@ -4168,19 +4842,13 @@ JS;
             }
         }
 
-        // Student-attendance RTDB mirror REMOVED (dayWise + Late nodes) —
-        // Firestore is canonical (written above via _syncBulkDailyToFirestore).
-        $saved = 0;
-        foreach ($bulkMarks as $studentId => $info) {
-            $saved++;
-        }
-
+        $saved = count($bulkMarks);
         $this->_log_attendance_change('MOBILE_MARK_STUDENT', [
             'targetType' => 'class', 'targetId' => "{$class}|{$section}",
-            'className' => $class, 'section' => $section, 'date' => date('Y-m-d'), 'count' => $saved,
+            'className' => $class, 'section' => $section, 'date' => $serverDate, 'count' => $saved,
         ]);
 
-        return $this->json_success(['saved' => $saved, 'date' => date('Y-m-d')]);
+        return $this->json_success(['saved' => $saved, 'skipped' => $skipped, 'date' => $serverDate]);
     }
 
     /**
@@ -4234,20 +4902,99 @@ JS;
         $tokSchoolId = $decoded['schoolId'];
         $studentId   = $decoded['studentId'];
 
+        // ── SEC-ID-1 (Phase 19L) — CANONICAL CREDENTIAL AUTHORITY ────────
+        // Credential VALIDITY is decided in exactly one place, so this
+        // consumer and Transport can never drift apart on what a legacy or
+        // superseded card is worth. Domain rules stay here: the Active-status
+        // gate below is attendance's business, not the credential's.
+        //
+        // ⚠ TODAY THIS CHANGES NOTHING. Every flag in config/id_card_flags.php
+        // ships false, so validateCredential() accepts legacy, V1 and V2
+        // exactly as this endpoint did before — verified by test. Wiring it
+        // now means enabling enforcement later is a config flip that has
+        // already been exercised in code, rather than a code change made under
+        // time pressure. Enforcement must NOT be switched on until SEC-ID-3
+        // telemetry has been deployed and observed and students have been
+        // reissued V2 cards; before that it would reject legitimate holders.
+        $this->load->library('Id_card_service', null, 'idCardSvc');
+        if (!$this->idCardSvc->isReady()) {
+            $this->idCardSvc->init($this->firebase, $this->fs, $this->school_name, (string) ($this->admin_id ?? 'scanner'));
+        }
+        $cred = $this->idCardSvc->validateCredential($decoded, Id_card_service::configuredFlags());
+        if (empty($cred['valid'])) {
+            // Precise code to the log, deliberately vague message to the
+            // scanner — the difference between "forged", "superseded" and
+            // "revoked" is exactly the oracle an attacker probes for.
+            log_message('error',
+                "SEC-ID-1 Attendance::scan_qr — credential rejected ({$cred['code']}) for {$tokSchoolId}/{$studentId}");
+            return $this->json_error(Id_card_service::rejectionMessage((string) $cred['code']));
+        }
+
         // Migration window — legacy 2-part (unsigned) tokens are still
         // accepted so existing printed ID cards keep working; logged so
         // we can flip acceptance off once every active card is reissued.
+        //
+        // ── SEC-ID-3 (Phase 19C) — LEVEL MUST BE 'error' ────────────────
+        // This line previously used log_message('warning', …) and was
+        // therefore NEVER WRITTEN. Two independent reasons, both verified
+        // against the framework in this repo:
+        //   1. system/core/Log.php:106 defines ONLY
+        //        ERROR=1, DEBUG=2, INFO=3, ALL=4
+        //      'WARNING' is not a level; Log::write_log() (:180) finds no
+        //      entry in $_levels and returns FALSE — the message is dropped
+        //      silently, with no error of its own.
+        //   2. config.php:104 sets log_threshold=1 (errors only), so even a
+        //      VALID 'debug'/'info' would be discarded in production.
+        // 'error' is consequently the only level that actually reaches the
+        // log on the production box. This is not severity inflation: the
+        // event IS the security signal that decides when unsigned tokens can
+        // be refused, and Transport_qr_attendance_service::decodeStudentToken
+        // already logs the very same event at 'error'. Using anything else
+        // here means the migration decision would be made on an empty log.
+        // DO NOT "downgrade" this to 'warning'/'notice' — that reintroduces
+        // the defect.
         if (!empty($decoded['legacy'])) {
-            log_message('warning',
-                "Attendance::scan_qr — legacy unsigned token used for {$tokSchoolId}/{$studentId} "
+            log_message('error',
+                "SEC-ID-3 Attendance::scan_qr — legacy unsigned token used for {$tokSchoolId}/{$studentId} "
                 . "(reissue this student's ID card to mint a signed token)"
             );
+        }
+
+        // ── SEC-ID-3b (Phase 19L) — V1 usage telemetry, separately gated ──
+        // V1 cards are signed but un-versioned. Until ID-MINT-1 was fixed the
+        // printed card minted V1 unconditionally, so V1 is (with legacy) the
+        // entire live population — and its usage must be countable before
+        // IDCARD_REJECT_V1 could ever be considered.
+        //
+        // Deliberately behind its OWN flag, default off: SEC-ID-3 must deploy
+        // as a pure observation change, and with V1 this common the line would
+        // otherwise fire on essentially every scan. Enable for a bounded
+        // window, observe, disable. Logs schoolId + studentId + consumer only
+        // — never the token, signature or secret.
+        if (($decoded['tokenVersion'] ?? '') === 'v1') {
+            try {
+                $this->config->load('id_card_flags', true);
+                if ((bool) $this->config->item('IDCARD_V1_TELEMETRY', 'id_card_flags')) {
+                    log_message('error',
+                        "SEC-ID-3b Attendance::scan_qr — V1 unversioned card used for {$tokSchoolId}/{$studentId} "
+                        . "(reissue to mint a versioned card)");
+                }
+            } catch (\Throwable $e) {
+                // Telemetry must never block a scan.
+                log_message('error', 'SEC-ID-3b flag read failed: ' . $e->getMessage());
+            }
         }
 
         // Tenant isolation. `school_name` is SCH_xxx in this codebase
         // per non-obvious-conventions memory.
         if ($tokSchoolId !== $this->school_name) {
-            log_message('warning',
+            // SEC-ID-3 (Phase 19C) — same dropped-level defect as above. A
+            // cross-tenant probe is the single most important thing this
+            // endpoint can record; it was being written to nowhere. The
+            // sec_telem emit below is a SEPARATE API whose second argument is
+            // a telemetry SEVERITY string, not a CI3 log level — it is
+            // correct as 'warning' and deliberately left unchanged.
+            log_message('error',
                 "Attendance::scan_qr — cross-school attempt: token={$tokSchoolId} caller={$this->school_name}"
             );
             // BUG-034: tenant-boundary security telemetry (Phase 6+ scope; mirror Homework BUG-014)
@@ -4465,6 +5212,19 @@ JS;
     public function approval_badge_counts()
     {
         $this->_require_role(self::VIEW_ROLES, 'approval_badge_counts', 'Attendance', 'view');
+
+        // Release the session file-lock now: the role check above has finished
+        // its session writes, and everything below only READS Firestore.
+        //
+        // This endpoint is polled from the header every 30s on EVERY page, and
+        // its five Firestore reads cost 5-9s on this deployment. With the files
+        // session driver each poll held the lock for that whole time, so the
+        // operator's own action queued behind a background badge refresh:
+        // save_class_matrix measured 9-12s elapsed against only 3.5s of
+        // Firestore (2026-09-12). Nothing after this point writes to the
+        // session -- json_success reads the CSRF hash, which lives in a cookie.
+        // Same pattern the Admin dashboard endpoints already use.
+        if (function_exists('session_write_close')) @session_write_close();
 
         // Returns a set of matching doc ids (keyed) so unions de-dupe for free.
         $idset = function (string $collection, array $conds): array {
@@ -4988,18 +5748,47 @@ JS;
     }
 
     /**
-     * Get Sunday day numbers for a month
+     * Day numbers closed by the school's WEEKLY PATTERN for a month.
+     *
+     * CAL-D10 / Phase 5C — this used to be a second, independent
+     * `date('w') === 0` implementation living alongside the one in
+     * attendance_helper. Two hardcoded authorities meant the register grid and
+     * the marking engine could disagree about which days the school is open,
+     * and neither could ever express a five-day week.
+     *
+     * Both now resolve through Student_calendar_reader. A school that has
+     * configured nothing still gets exactly the Sundays it got before — proven
+     * day-for-day over 36 months by StudentCalendarLegacyEquivalenceTest — so
+     * this is a de-duplication, not a behaviour change.
+     *
+     * Holidays and special working days are deliberately NOT folded in here:
+     * the callers send them as their own payload keys and the front-end renders
+     * them differently. This answers the weekly pattern only.
      */
-    private function _get_sundays(int $year, int $month): array
+    private function _weekly_closure_days(int $year, int $month): array
     {
-        $sundays = [];
+        try {
+            $this->load->library('student_calendar_reader');
+            $this->student_calendar_reader->init(
+                $this->fs, (string) $this->school_id, (string) $this->session_year);
+
+            return array_values(array_keys(
+                $this->student_calendar_reader->resolveMonth($year, $month, [], [])['nonWorking']
+            ));
+        } catch (\Throwable $e) {
+            log_message('error', 'Attendance::_weekly_closure_days fell back to the legacy '
+                . 'weekly rule: ' . $e->getMessage());
+        }
+
+        // Legacy rule, byte-identical to what this method always returned.
+        $days = [];
         $daysInMonth = cal_days_in_month(CAL_GREGORIAN, $month, $year);
         for ($d = 1; $d <= $daysInMonth; $d++) {
             if (date('w', mktime(0, 0, 0, $month, $d, $year)) == 0) {
-                $sundays[] = $d;
+                $days[] = $d;
             }
         }
-        return $sundays;
+        return $days;
     }
 
     /**
@@ -5015,20 +5804,69 @@ JS;
     private function _resolve_non_working_days(int $monthNum, int $year): array
     {
         $this->load->helper('attendance');
+        $swdDayMap = [];
         try {
             $this->load->library('holiday_service');
             $this->holiday_service->init($this->fs, (string) $this->school_id, (string) $this->session_year);
-            $holidayDayMap = $this->holiday_service->holidays_in_month($year, $monthNum);
+            // Phase D — explicit STUDENT audience. Student Attendance must
+            // never inherit a staff-only calendar event (e.g. a Teacher
+            // Training Day, appliesTo=['staff']) as a student holiday, and
+            // department/exceptStaff scoping is a staff-only concept the
+            // student side must never apply.
+            $holidayDayMap = $this->holiday_service->holidays_in_month($year, $monthNum, 'students');
+            // Special Working Day overrides Sunday/holiday for students too —
+            // same precedence as the staff grid (Working_calendar_service).
+            // A student-declared makeup Saturday/holiday-reversal must become
+            // a normal, markable working day, not stay force-stamped 'H'.
+            $swdDayMap = $this->holiday_service->special_working_days_in_month($year, $monthNum, 'students');
         } catch (\Throwable $e) {
             log_message('error', 'Attendance::_resolve_non_working_days HC-3 failed: ' . $e->getMessage());
             $holidayDayMap = [];
         }
-        return nw_days_from_holidays($holidayDayMap, $monthNum, $year);
+        // ── Phase 5B — THE canonical student calendar authority ──────────
+        //
+        // The weekly pattern used to be the literal `date('w') === 0` inside
+        // nw_days_from_holidays(). It is now an effective-dated, per-tenant
+        // policy resolved through Student_calendar_reader, which selects the
+        // version in force ON EACH DATE — so a month in the past keeps
+        // resolving against the policy that was live then, even after the
+        // school changes its week.
+        //
+        // A tenant that has configured nothing resolves through the explicit
+        // legacyStudentPattern() (Sunday closed, nothing else), which reproduces
+        // the old helper exactly — proven day-for-day across 36 months by
+        // StudentCalendarLegacyEquivalenceTest. Deploying this changes no
+        // school's behaviour until an administrator states a policy.
+        try {
+            $this->load->library('student_calendar_reader');
+            $this->student_calendar_reader->init(
+                $this->fs, (string) $this->school_id, (string) $this->session_year);
+
+            return $this->student_calendar_reader->resolveMonth(
+                $year, $monthNum, $holidayDayMap, $swdDayMap
+            )['nonWorking'];
+        } catch (\Throwable $e) {
+            // Never let a calendar-configuration failure break the school day —
+            // the same house rule Holiday_service follows. Fall through to the
+            // legacy computation, whose output is identical for any tenant that
+            // has not configured a pattern.
+            log_message('error', 'Attendance::_resolve_non_working_days fell back to the '
+                . 'legacy weekly rule (school=' . $this->school_id . '): ' . $e->getMessage());
+        }
+
+        $nonWorking = nw_days_from_holidays($holidayDayMap, $monthNum, $year);
+        foreach ($swdDayMap as $day => $name) {
+            unset($nonWorking[(int) $day]);
+        }
+        return $nonWorking;
     }
 
     /**
-     * HC-3: holidays (day => name) for a month for the register grid views.
-     * Canonical source = calendarEvents via Holiday_service (was RTDB).
+     * HC-3: holidays (day => name) for a month for the STUDENT register grid
+     * views (fetch_student_attendance's empty-roster branch and its normal
+     * response — the staff grid uses its own per-staff _staff_grid_schedule()
+     * since Phase D/N-35). Canonical source = calendarEvents via
+     * Holiday_service (was RTDB).
      */
     private function _get_holidays_for_month(string $monthName, int $year): array
     {
@@ -5037,9 +5875,31 @@ JS;
         try {
             $this->load->library('holiday_service');
             $this->holiday_service->init($this->fs, (string) $this->school_id, (string) $this->session_year);
-            return $this->holiday_service->holidays_in_month($year, $monthNum);
+            // Phase D — explicit STUDENT audience; see _resolve_non_working_days().
+            return $this->holiday_service->holidays_in_month($year, $monthNum, 'students');
         } catch (\Throwable $e) {
             log_message('error', 'Attendance::_get_holidays_for_month HC-3 failed: ' . $e->getMessage());
+            return [];
+        }
+    }
+
+    /**
+     * Phase D student-side wiring — Special Working Days (day => name) for the
+     * STUDENT register grid, mirroring _get_holidays_for_month(). Lets the
+     * front-end unlock a calendar-declared makeup day instead of leaving it
+     * shaded as a Sunday/holiday even though the backend already accepts a
+     * mark on it (see _resolve_non_working_days()).
+     */
+    private function _get_special_working_days_for_month(string $monthName, int $year): array
+    {
+        $monthNum = $this->month_map[$monthName] ?? 0;
+        if ($monthNum < 1) return [];
+        try {
+            $this->load->library('holiday_service');
+            $this->holiday_service->init($this->fs, (string) $this->school_id, (string) $this->session_year);
+            return $this->holiday_service->special_working_days_in_month($year, $monthNum, 'students');
+        } catch (\Throwable $e) {
+            log_message('error', 'Attendance::_get_special_working_days_for_month HC-3 failed: ' . $e->getMessage());
             return [];
         }
     }
@@ -5428,48 +6288,73 @@ JS;
         $classPrefixed   = Firestore_service::classKey($class);
         $sectionPrefixed = Firestore_service::sectionKey($section);
 
-        // ── Strategy 0: Roster_helper (R5 canonical Firestore source) ──
-        // Uses the compound `schoolId+className+section+status` index
-        // and the same `[uid => fields]` shape every other R5-migrated
-        // call site uses. Flatten to the legacy `[uid => name]` map
-        // expected by every caller of _get_section_students.
+        // ── LC-1 / ATT-1 — SINGLE BOTH-SHAPE ROSTER ─────────────────────
+        //
+        // THE DEFECT THIS CLOSES (🔴 HIGH — students could not be marked):
+        //
+        // Three strategies used to run here, each returning IMMEDIATELY on a
+        // non-empty result, and they queried DIFFERENT FIELD SHAPES:
+        //
+        //   Strategy 0  Roster_helper::for_class → className / section / status   (camelCase)
+        //   Strategy 1  schoolWhere              → Class / Section / Status       (PascalCase)
+        //   Strategy 2  schoolWhere              → Class / Section                (PascalCase)
+        //
+        // The `students` collection holds BOTH shapes (see the note at
+        // ~line 1218 recording the production incident: "students disappear
+        // from parent/teacher views after admin bulk saves"). So in a class
+        // holding, say, 20 camelCase and 5 PascalCase records, Strategy 0
+        // returned the 20 and RETURNED — and the 5 PascalCase students were
+        // silently absent from the attendance register. They could not be
+        // marked present OR absent; they simply were not there.
+        //
+        // The cascade LOOKED robust — four fallbacks — but each fallback only
+        // fires on a completely empty result, never on a PARTIAL one. That is
+        // the same non-empty short-circuit flaw the Red_flags fallback has.
+        //
+        // This feeds EIGHT call sites in this controller (marking, summaries,
+        // reports, exports), so the omission propagated across the module.
+        //
+        // Fixed by replacing all three with ONE pass over the shared
+        // request-memoised snapshot, filtered by _filterSectionRoster(),
+        // which reads BOTH shapes for class, section and status and treats a
+        // blank/lowercase status as Active — exactly what Strategy 2 was
+        // reaching for, done correctly and without the short-circuit.
+        //
+        // SESSION SEMANTICS DELIBERATELY PRESERVED: the previous strategies
+        // applied NO session predicate, so an empty session string is passed
+        // to keep behaviour identical. Whether attendance should additionally
+        // be session-scoped is a separate question, registered as ATT-2
+        // rather than silently changed here.
+        //
+        // SORTING: the old queries used a Firestore orderBy('Name'), which
+        // EXCLUDES documents lacking that exact field — camelCase-only
+        // records would have been dropped by the sort even after the
+        // predicate was fixed. Sorting is now done in PHP over both shapes.
+        //
+        // PERFORMANCE: strictly better. Up to three Firestore queries are
+        // replaced by the shared snapshot (memoised per request, file-cached,
+        // write-invalidated) that the capacity and roll guards already warm.
         try {
-            if (isset($this->roster) && method_exists($this->roster, 'for_class')) {
-                $rosterFull = $this->roster->for_class($classPrefixed, $sectionPrefixed);
-                if (!empty($rosterFull)) {
-                    $list = [];
-                    foreach ($rosterFull as $uid => $fields) {
-                        $list[$uid] = is_array($fields)
-                            ? (string) ($fields['Name'] ?? $uid)
-                            : (string) $uid;
-                    }
-                    return $list;
-                }
+            $rows = $this->_filterSectionRoster(
+                $this->_cachedStudentDocsForRollCheck(),
+                $classPrefixed, $sectionPrefixed, ''   // '' = no session filter (ATT-2)
+            );
+            if (!empty($rows)) {
+                usort($rows, static function ($a, $b) {
+                    $ad = is_array($a) ? ($a['data'] ?? $a) : [];
+                    $bd = is_array($b) ? ($b['data'] ?? $b) : [];
+                    return strcasecmp(
+                        trim((string) ($ad['Name'] ?? $ad['name'] ?? '')),
+                        trim((string) ($bd['Name'] ?? $bd['name'] ?? ''))
+                    );
+                });
+                $list = $this->_extractRosterFromStudentDocs($rows);
+                if (!empty($list)) return $list;
             }
-        } catch (\Exception $e) { /* fall through to strategy 1 */ }
-
-        // ── Strategy 1: canonical students collection (Active only) ──
-        try {
-            $studentDocs = $this->fs->schoolWhere('students', [
-                ['Class',   '==', $classPrefixed],
-                ['Section', '==', $sectionPrefixed],
-                ['Status',  '==', 'Active'],
-            ], 'Name', 'ASC');
-            $list = $this->_extractRosterFromStudentDocs($studentDocs);
-            if (!empty($list)) return $list;
-        } catch (\Exception $e) { /* try next strategy */ }
-
-        // ── Strategy 2: students collection without Status filter ──
-        // Catches docs whose `Status` field is missing, lowercase,
-        // "active", or any value other than the canonical "Active".
-        try {
-            $studentDocs = $this->fs->schoolWhere('students', [
-                ['Class',   '==', $classPrefixed],
-                ['Section', '==', $sectionPrefixed],
-            ], 'Name', 'ASC');
-            $list = $this->_extractRosterFromStudentDocs($studentDocs);
-            if (!empty($list)) return $list;
-        } catch (\Exception $e) { /* try next strategy */ }
+        } catch (\Exception $e) {
+            log_message('error', 'Attendance::_get_section_students roster read failed: ' . $e->getMessage());
+            /* fall through to the attendanceSummary derivation below */
+        }
 
         // ── Strategy 3: derive roster from attendanceSummary ──
         // Any student with a summary doc in this section is, by
@@ -5551,6 +6436,40 @@ JS;
     }
 
     /**
+     * SRNO map for a section — [uid => srNo] for the attendance register.
+     *
+     * Reuses the SAME request-memoised, file-cached, write-invalidated snapshot
+     * (_cachedStudentDocsForRollCheck) that _get_section_students and the roll
+     * guard already warm, so surfacing the permanent school register number on
+     * the attendance register costs ZERO extra Firestore reads. Students who
+     * predate SRNO enforcement legitimately map to '' (rendered as an em dash).
+     * Only the primary snapshot strategy is served here; if that path is
+     * unavailable the register still renders (name/id) without SR No.
+     */
+    private function _get_section_srno_map(string $class, string $section): array
+    {
+        $classPrefixed   = Firestore_service::classKey($class);
+        $sectionPrefixed = Firestore_service::sectionKey($section);
+        $out = [];
+        try {
+            $rows = $this->_filterSectionRoster(
+                $this->_cachedStudentDocsForRollCheck(),
+                $classPrefixed, $sectionPrefixed, ''   // '' = no session filter (ATT-2), same as _get_section_students
+            );
+            foreach ($rows as $doc) {
+                $s = is_array($doc) ? ($doc['data'] ?? $doc) : null;
+                if (!is_array($s)) continue;
+                $uid = $s['User Id'] ?? $s['studentId'] ?? ($doc['id'] ?? '');
+                if ($uid === '') continue;
+                $out[(string) $uid] = (string) ($s['srNo'] ?? $s['srNumber'] ?? $s['SR Number'] ?? '');
+            }
+        } catch (\Exception $e) {
+            log_message('error', 'Attendance::_get_section_srno_map failed: ' . $e->getMessage());
+        }
+        return $out;
+    }
+
+    /**
      * Build class/section list from session tree.
      * Supports both new format (Class 8th/Section A) and legacy (Class 8th 'A').
      * Results are file-cached for API_KEY_CACHE_TTL seconds to avoid repeated Firebase reads.
@@ -5626,6 +6545,56 @@ JS;
     /** @var array Per-request memo of merged attendance settings, keyed by schoolId */
     private $_attSettingsCache = [];
 
+    /** Device type → the settings flag that governs it. */
+    private const PUNCH_METHOD_FLAGS = [
+        'biometric'        => 'biometric_enabled',
+        'rfid'             => 'rfid_enabled',
+        'face_recognition' => 'face_recognition_enabled',
+    ];
+
+    /**
+     * Is this device's attendance METHOD switched off for the school?
+     *
+     * Returns '' when the punch may proceed, otherwise a short reason for the
+     * log. See DEV-2 for why an absent settings document allows rather than
+     * refuses: the declared default is false, but a school that has never
+     * opened the settings screen never chose it, and turning a decorative
+     * control into a silent hardware outage is not a fix.
+     *
+     * An unknown device type is NOT blocked — this gate governs the three
+     * methods the settings screen offers, and inventing a policy for a type
+     * nobody has declared would be guessing.
+     */
+    private function _punch_method_blocked(string $deviceType, string $schoolId): string
+    {
+        $flag = self::PUNCH_METHOD_FLAGS[$deviceType] ?? '';
+        if ($flag === '') {
+            return '';   // gps_self, manual, or a type with no switch
+        }
+
+        $doc = null;
+        try {
+            $doc = $this->fs->get('attendanceSettings', $schoolId);
+        } catch (\Throwable $e) {
+            // Unreadable settings must not take the readers down; the punch is
+            // authenticated and tenant-checked already.
+            log_message('error', 'attendanceSettings unreadable in method gate for '
+                . $schoolId . ': ' . $e->getMessage());
+            return '';
+        }
+
+        if (!is_array($doc) || empty($doc)) {
+            log_message('info',
+                'api_punch: no attendanceSettings for [' . $schoolId . '] — method [' . $deviceType
+                . '] allowed by default. Saving Attendance settings once will make the switch binding.'
+            );
+            return '';
+        }
+
+        $settings = $this->_merge_attendance_settings_defaults($doc);
+
+        return empty($settings[$flag]) ? ($deviceType . ' is disabled') : '';
+    }
     /**
      * Merge a raw attendanceSettings document over the canonical defaults.
      * Guarantees the general-settings keys and a `rules` sub-map are present.
@@ -5635,14 +6604,23 @@ JS;
         $defaults = [
             'late_threshold_student'   => '08:30',
             'late_threshold_staff'     => '09:00',
-            'working_days'             => ['Mon','Tue','Wed','Thu','Fri','Sat'],
+            // CANONICAL-1: `working_days` default removed — dead field (CAL-D10);
+            // the school week is owned by Student_calendar.studentCalendar.
             'biometric_enabled'        => false,
             'rfid_enabled'             => false,
             'face_recognition_enabled' => false,
+            // Regularization policy is the SCHOOL's. 0 = no ceiling, which is
+            // exactly the behaviour that existed before this setting did, so a
+            // school that configures nothing is unaffected. A default ceiling
+            // would be inventing a school's tolerance for missed punches.
+            'regularization'           => ['maxDaysPerMonth' => 0, 'limitMessage' => ''],
             'rules'                    => [],
         ];
         $merged = array_merge($defaults, $doc);
         if (!is_array($merged['rules'] ?? null)) $merged['rules'] = [];
+        if (!is_array($merged['regularization'] ?? null)) {
+            $merged['regularization'] = ['maxDaysPerMonth' => 0, 'limitMessage' => ''];
+        }
         return $merged;
     }
 
@@ -5692,7 +6670,7 @@ JS;
             // transient failure is served as defaults for THIS request only, so
             // the next request retries instead of being pinned to defaults for
             // 5 minutes.
-            if (true) {
+            if (!$transient) {
                 $this->cache->save($cacheKey, $settings, self::ATT_SETTINGS_CACHE_TTL);
             }
         }
@@ -5721,6 +6699,18 @@ JS;
     {
         $rules = $this->_get_attendance_settings()['rules'] ?? [];
         return is_array($rules) ? $rules : [];
+    }
+
+    /**
+     * S4 — tenant policy for an UNREADABLE non-working-day (holiday) calendar.
+     * Default FALSE preserves ACAD-D18 (never break the school day — mark anyway,
+     * loudly logged). When a school sets rules.strict_non_working_day = true, an
+     * unreadable calendar instead BLOCKS marking (fail-closed) so a mark can never
+     * land on a possibly-declared holiday the gate could not verify.
+     */
+    private function _calendar_strict(): bool
+    {
+        return !empty($this->_att_rules()['strict_non_working_day']);
     }
 
     /**
@@ -5770,6 +6760,110 @@ JS;
     //  payroll/month-close must call Lock_cache::is_locked_live().
     // ====================================================================
 
+    /**
+     * Lock state for one month, for the register to render.
+     *
+     * Uses is_locked_live(). Lock_cache is explicit that anything whose
+     * correctness depends on the freshest state must not read the cache, and a
+     * register that says "open" because of a stale cache entry invites an
+     * operator to spend ten minutes on a month that cannot be saved.
+     *
+     * Fails CLOSED-ish for display: an unreadable lock reports locked with an
+     * explanatory flag rather than inviting an edit that would be refused
+     * anyway — the writer itself refuses when the lock cannot be read.
+     */
+    private function _staff_month_lock_state(int $year, int $monthNum): array
+    {
+        $monthKey = sprintf('%04d-%02d', $year, $monthNum);
+
+        try {
+            $this->load->library('lock_cache');
+            $locked = $this->lock_cache->is_locked_live($this->school_id, $this->session_year, $monthKey);
+            return [
+                'monthKey'  => $monthKey,
+                'isLocked'  => (bool) $locked,
+                'readable'  => true,
+                'canManage' => function_exists('has_permission') ? has_permission('Attendance', 'manage') : false,
+            ];
+        } catch (\Throwable $e) {
+            log_message('error', '_staff_month_lock_state failed for ' . $monthKey . ': ' . $e->getMessage());
+            return [
+                'monthKey'  => $monthKey,
+                'isLocked'  => true,
+                'readable'  => false,
+                'canManage' => false,
+            ];
+        }
+    }
+    /**
+     * POST — lock state for every month of the current session.
+     *
+     * Existed as nothing at all before 2026-08-23: the lock could be set and
+     * cleared, but no surface could SEE it, so "is August closed?" was not a
+     * question an administrator could answer. Lock_cache's own docblock
+     * anticipated this ("Phase VI lock-management UI will own these
+     * invalidation calls"); this is that surface's read side.
+     *
+     * ONE query, not twelve reads: the lock documents for a session are fetched
+     * together and indexed by month. Rendering a year of lock state must not
+     * cost a round-trip per month.
+     */
+    public function staff_lock_status()
+    {
+        $this->_require_role(self::VIEW_ROLES, 'staff_lock_status', 'Attendance', 'view');
+
+        $rows = [];
+        try {
+            $rows = $this->fs->schoolWhere('staffAttendanceLocks', [
+                ['session', '==', $this->session_year],
+            ]);
+        } catch (\Throwable $e) {
+            log_message('error', 'staff_lock_status query failed: ' . $e->getMessage());
+            return $this->json_error('Could not read the lock state. Reload and try again.', 500);
+        }
+
+        $byMonth = [];
+        foreach ($rows as $entry) {
+            $d = is_array($entry) ? ($entry['data'] ?? $entry) : null;
+            if (!is_array($d)) continue;
+            $mk = (string) ($d['month'] ?? '');
+            if ($mk === '') continue;
+
+            $byMonth[$mk] = [
+                'monthKey'     => $mk,
+                'isLocked'     => !empty($d['isLocked']),
+                'lockedBy'     => (string) ($d['lockedBy'] ?? ''),
+                'lockedAtMs'   => (int) ($d['lockedAtMs'] ?? 0),
+                'unlockedBy'   => (string) ($d['unlockedBy'] ?? ''),
+                'unlockedAtMs' => (int) ($d['unlockedAtMs'] ?? 0),
+                'unlockReason' => (string) ($d['unlockReason'] ?? ''),
+            ];
+        }
+
+        // Every academic month of the session, in teaching order, so the UI
+        // shows the whole year rather than only the months someone has touched.
+        $months = [];
+        foreach ($this->academic_months as $name) {
+            $year     = $this->_resolve_year($name);
+            $monthNum = (int) date('n', strtotime("1 {$name} {$year}"));
+            $mk       = sprintf('%04d-%02d', $year, $monthNum);
+
+            $months[] = array_merge(
+                ['month' => $name, 'year' => $year, 'monthKey' => $mk, 'isLocked' => false,
+                 'lockedBy' => '', 'lockedAtMs' => 0, 'unlockedBy' => '', 'unlockedAtMs' => 0,
+                 'unlockReason' => ''],
+                $byMonth[$mk] ?? []
+            );
+        }
+
+        return $this->json_success([
+            'months'    => $months,
+            'session'   => $this->session_year,
+            // The panel gates the controls on this, and the endpoints enforce it
+            // again — the flag decides what is DRAWN, never what is permitted.
+            'canManage' => function_exists('has_permission') ? has_permission('Attendance', 'manage') : false,
+        ]);
+    }
     /**
      * POST — Lock staff attendance for a month (called after payroll finalization).
      * Writes a Firestore staffAttendanceLocks doc and invalidates Lock_cache.
@@ -5826,6 +6920,17 @@ JS;
         $month = trim((string) $this->input->post('month'));
         if (!$month) return $this->json_error('Month is required.');
 
+        // A REASON IS REQUIRED (>= 10 chars), mirroring Hr::unlock_payroll().
+        // Re-opening a closed month is the one action here that can put the
+        // register back out of step with a payslip already computed from it, so
+        // it carries the same accountability the payroll unlock already demands.
+        // Not a new policy — the same bar, applied to the same class of act.
+        $reason = trim((string) $this->input->post('reason'));
+        if (mb_strlen($reason) < 10) {
+            return $this->json_error('A reason of at least 10 characters is required to re-open a closed month.');
+        }
+        $reason = mb_substr($reason, 0, 500);
+
         $year     = $this->_resolve_year($month);
         $monthNum = (int) date('n', strtotime("1 {$month} {$year}"));
         if ($monthNum < 1 || $monthNum > 12) {
@@ -5846,6 +6951,7 @@ JS;
                 'isLocked'     => false,
                 'unlockedBy'   => $this->admin_name ?? $this->admin_id ?? 'system',
                 'unlockedAtMs' => (int) (microtime(true) * 1000),
+                'unlockReason' => $reason,
             ], true);
         } catch (\Throwable $e) {
             log_message('error', 'unlock_staff_attendance Firestore write failed: ' . $e->getMessage());
@@ -5859,6 +6965,7 @@ JS;
             'targetType' => 'staff',
             'attKey'   => $attKey,
             'monthKey' => $monthKey,
+            'reason'   => $reason,
         ]);
 
         return $this->json_success(['message' => "Staff attendance unlocked for {$attKey}."]);
@@ -6237,7 +7344,10 @@ JS;
                 // Apply the single day, then re-stamp holidays/Sundays as 'H'
                 // for the rest of the month.
                 $dayWise[$day - 1] = $mark;
-                $dayWise = enforce_holidays_on_string($dayWise, $daysInMonth, $nonWorking);
+                // CAL-5E: preserve explicit marks on OTHER days. Editing one day
+                // must not re-stamp a real P/A/L/T recorded months ago just
+                // because a holiday has since been declared on that date.
+                $dayWise = enforce_holidays_on_string($dayWise, $daysInMonth, $nonWorking, true);
                 // EXPLICIT-MARK-WINS: an actual attendance mark (P/A/L/T) on a
                 // non-working day means the day was really worked — an admin-
                 // approved correction, or a deliberate save on a Sunday/holiday.
@@ -6487,6 +7597,189 @@ JS;
             log_message('error', "Student attendance summary Firestore sync failed for {$studentId}: " . $e->getMessage());
             return false;
         }
+    }
+
+    /**
+     * ATT-CAS-1 / ATT-LOCK-1 / ATT-CONV-1 — persist ONE student's full-month
+     * attendance string SAFELY for the bulk grid save (save_student_attendance).
+     *
+     * Replaces that endpoint's original blind `batchWrite('attendanceSummary',
+     * merge=true)` of a client-supplied month string, which had three
+     * long-standing HIGH defects:
+     *   D1 (lost update): a plain read-less merge-set overwrote the whole
+     *       `dayWise`, silently reverting a concurrent single-day writer's mark.
+     *   D3 (lock bypass): it ignored `attendanceLocks`, so an explicitly locked
+     *       class/date could still be overwritten through the month grid.
+     *   D2 (store divergence): it wrote ONLY `attendanceSummary`, never the
+     *       per-day `attendance` docs that dashboard/summary()/save()-prefetch read.
+     *
+     * MERGE SEMANTICS (deliberate): a 'V' (unmarked) position in the client
+     * string DEFERS to the current server value — a mark made on some other day
+     * after the admin loaded the grid is preserved, never clobbered. A real mark
+     * (P/A/L/H/T) is authoritative for that one day (last-writer-wins, audited).
+     * The grid therefore never reverts a concurrent NEW mark; it also does not
+     * support clearing a day back to unmarked (removals go through the
+     * correction workflow). An explicitly locked day is left untouched and
+     * reported back so the UI can surface it.
+     *
+     * @param array   &$dailyBatch  accumulator: docId => per-day attendance payload (D2)
+     * @param array   &$lockCache   date => bool locked, shared across students in this save
+     * @return array  ['ok'=>bool, 'changed'=>int[], 'locked'=>int[]]
+     */
+    private function _persist_student_month_cas(
+        string    $studentId,
+        string    $studentName,
+        string    $clientStr,
+        string    $class,
+        string    $section,
+        int       $monthNum,
+        int       $year,
+        array     $nonWorking,
+        \stdClass $lateMap,
+        array     &$dailyBatch,
+        array     &$lockCache
+    ): array {
+        $daysInMonth = cal_days_in_month(CAL_GREGORIAN, $monthNum, $year);
+        $monthKey    = sprintf('%04d-%02d', $year, $monthNum);
+        $docId       = $this->fs->docId2($studentId, $monthKey);
+        $hasCas      = isset($this->firebase) && method_exists($this->firebase, 'firestoreGet');
+
+        $clientStr = str_pad(substr($clientStr, 0, $daysInMonth), $daysInMonth, 'V');
+
+        $changedDays = [];
+        $lockedDays  = [];
+
+        $maxTries = $hasCas ? 4 : 1;
+        for ($try = 0; $try < $maxTries; $try++) {
+            // ── Read current dayWise WITH its __updateTime for the CAS precondition ──
+            $doc = null; $precondition = null;
+            if ($hasCas) {
+                try { $doc = $this->firebase->firestoreGet('attendanceSummary', $docId); } catch (\Exception $e) {}
+                $ut = is_array($doc) ? (string) ($doc['__updateTime'] ?? '') : '';
+                $precondition = ($ut !== '') ? ['updateTime' => $ut] : ['exists' => false];
+            } else {
+                try { $doc = $this->fs->get('attendanceSummary', $docId); } catch (\Exception $e) {}
+            }
+            $curStr = ($doc && is_string($doc['dayWise'] ?? null) && $doc['dayWise'] !== '')
+                ? $doc['dayWise'] : str_repeat('V', $daysInMonth);
+            $curStr = str_pad(substr($curStr, 0, $daysInMonth), $daysInMonth, 'V');
+
+            // ── Pure merge: client 'V' defers to server; real mark wins ──
+            $mm          = att_merge_month_marks($curStr, $clientStr, $daysInMonth);
+            $merged      = $mm['merged'];
+            $changedDays = [];
+            $lockedDays  = [];
+            // D3: reject any candidate change that falls on an explicitly locked
+            // day (revert it to the server value); check locks only for days that
+            // actually changed, cached across students in this save.
+            foreach ($mm['changed'] as $day) {
+                $date = sprintf('%04d-%02d-%02d', $year, $monthNum, $day);
+                if (!array_key_exists($date, $lockCache)) {
+                    $lk = $this->_get_lock($class, $section, $date, true); // SEC-LOCK-1: CAS write path fails closed
+                    $lockCache[$date] = !empty($lk['locked']);
+                }
+                if ($lockCache[$date]) {
+                    $merged[$day - 1] = $curStr[$day - 1];   // never overwrite a locked day
+                    $lockedDays[]     = $day;
+                    continue;
+                }
+                $changedDays[] = $day;
+            }
+            // Re-stamp holidays/Sundays as 'H' but preserve explicit marks (CAL-5E parity).
+            $merged = enforce_holidays_on_string($merged, $daysInMonth, $nonWorking, true);
+
+            if (empty($changedDays)) {
+                // Every client mark equalled the server or was locked — nothing to write.
+                return ['ok' => true, 'changed' => [], 'locked' => $lockedDays];
+            }
+
+            // S5 (SEC-LOCK-TOCTOU): a FINAL, fresh, fail-closed lock re-read for
+            // every changed day, immediately before the CAS write — shrinking the
+            // check→write window to near-zero so a lock set mid-save is honoured.
+            // (Full cross-doc atomicity of lock+summary would need a Firestore
+            // transaction spanning both docs; that is a deliberate non-goal here.)
+            foreach ($changedDays as $k => $day) {
+                $date = sprintf('%04d-%02d-%02d', $year, $monthNum, $day);
+                $lk = $this->_get_lock($class, $section, $date, true);
+                if (!empty($lk['locked'])) {
+                    $merged[$day - 1] = $curStr[$day - 1];   // revert — never overwrite a now-locked day
+                    $lockedDays[]     = $day;
+                    unset($changedDays[$k]);
+                }
+            }
+            $changedDays = array_values($changedDays);
+            if (empty($changedDays)) {
+                return ['ok' => true, 'changed' => [], 'locked' => $lockedDays];
+            }
+
+            // ── CAS write of the canonical summary ──
+            $ok = $this->_syncStudentSummaryToFirestore(
+                $studentId, $class, $section, $monthNum, $year, $merged, $studentName, $precondition
+            );
+            if ($ok) {
+                // Preserve/refresh admin-owned arrival times (merge:true keeps other fields).
+                if (!empty(get_object_vars($lateMap))) {
+                    try { $this->fs->set('attendanceSummary', $docId, ['lateTimes' => $lateMap], true); } catch (\Exception $e) {}
+                }
+                // D2 convergence: queue a per-day `attendance` doc for each changed day.
+                foreach ($changedDays as $day) {
+                    $this->_queue_daily_attendance_doc(
+                        $dailyBatch, $studentId, $studentName, $merged[$day - 1],
+                        $class, $section, $day, $monthNum, $year
+                    );
+                }
+                return ['ok' => true, 'changed' => $changedDays, 'locked' => $lockedDays];
+            }
+            // Precondition conflict (or transient) — brief backoff, then re-read + re-merge.
+            if ($try < $maxTries - 1) usleep(40000 * ($try + 1));
+        }
+        return ['ok' => false, 'changed' => [], 'locked' => $lockedDays];
+    }
+
+    /**
+     * ATT-CONV-1 — build ONE per-day `attendance` doc and accumulate it into a
+     * batch. Doc shape is byte-compatible with _syncDailyToFirestore so grid,
+     * single-day, teacher-app and QR writers all produce identical per-day rows.
+     * Summary convergence is NOT done here (the caller already wrote the summary
+     * via CAS) — this only keeps the secondary per-day store convergent.
+     */
+    private function _queue_daily_attendance_doc(
+        array  &$batch,
+        string $studentId,
+        string $studentName,
+        string $mark,
+        string $class,
+        string $section,
+        int    $day,
+        int    $monthNum,
+        int    $year
+    ): void {
+        $date       = sprintf('%04d-%02d-%02d', $year, $monthNum, $day);
+        $classKey   = Firestore_service::classKey($class);
+        $sectionKey = Firestore_service::sectionKey($section);
+        require_once APPPATH . 'libraries/Entity_firestore_sync.php';
+        $cs    = Entity_firestore_sync::normalizeClassSection($classKey, $sectionKey);
+        $docId = "{$this->school_name}_{$date}_{$studentId}";
+
+        $batch[$docId] = [
+            'schoolId'    => $this->school_name,
+            'session'     => $this->session_year,
+            'date'        => $date,
+            'type'        => 'student',
+            'className'   => $cs['className'] !== '' ? $cs['className'] : $classKey,
+            'section'     => $cs['section']   !== '' ? $cs['section']   : $sectionKey,
+            'classOrder'  => $cs['classOrder'],
+            'sectionCode' => $cs['sectionCode'],
+            'sectionKey'  => "{$classKey}/{$sectionKey}",
+            'studentId'   => $studentId,
+            'studentName' => $studentName,
+            'status'      => $mark,
+            'markedBy'    => $this->admin_id ?? $this->session->userdata('admin_id') ?? 'system',
+            'markedAt'    => date('c'),
+            'late'        => $mark === 'T',
+            'lateMinutes' => 0,
+            'notified'    => false,
+        ];
     }
 
     /**
@@ -6909,10 +8202,45 @@ JS;
      *
      * @return array{locked:bool, lockedBy:?string, lockedAt:?string}
      */
-    private function _get_lock(string $class, string $section, string $date): array
+    /**
+     * SEC-CSRF-1 — CSRF defence for the CSRF-excluded, Bearer-only Teacher-app
+     * endpoints (attendance/save, attendance/correction/submit). They are
+     * excluded from CI's global CSRF because the app authenticates with a Bearer
+     * token, not the CSRF cookie. Requiring the Bearer header here restores the
+     * protection: a forged cross-site request rides the session cookie but cannot
+     * attach the victim's Firebase token, so it is rejected. json_error() exits.
+     */
+    private function _require_app_token(string $ctx): void
+    {
+        $auth = (string) ($this->input->get_request_header('Authorization', true) ?? '');
+        if (stripos($auth, 'Bearer ') !== 0) {
+            log_message('error', "SEC-CSRF-1: {$ctx} called without a Bearer token (school="
+                . ($this->school_id ?? '') . ' admin=' . ($this->admin_id ?? '') . ')');
+            $this->json_error('This action requires the mobile app. Please retry from the app.', 401);
+        }
+    }
+
+    private function _get_lock(string $class, string $section, string $date, bool $failClosed = false): array
     {
         $docId = $this->_lock_doc_id($class, $section, $date);
-        $doc   = $this->fs->get('attendanceLocks', $docId);
+
+        // SEC-LOCK-1: on the WRITE path the lock gate is read NEGATIVELY (absence
+        // ⇒ unlocked), so a silent read failure would fail OPEN and let a mark
+        // land on a finalized/locked day. When $failClosed is set, read fail-loud
+        // and treat a read ERROR as LOCKED — refusing the write is safer than
+        // silently overwriting locked attendance. A genuinely absent doc (null,
+        // no throw) still means "not locked", so normal marking is unaffected.
+        if ($failClosed) {
+            try {
+                $doc = $this->fs->getOrFail('attendanceLocks', $docId);
+            } catch (\Throwable $e) {
+                log_message('error', 'Attendance::_get_lock fail-closed (treating as LOCKED): ' . $e->getMessage());
+                return ['locked' => true, 'lockedBy' => null, 'lockedAt' => null,
+                        'lockReason' => 'Lock state could not be verified; write refused for safety.'];
+            }
+        } else {
+            $doc = $this->fs->get('attendanceLocks', $docId);
+        }
         if (!is_array($doc)) {
             return ['locked' => false, 'lockedBy' => null, 'lockedAt' => null];
         }
@@ -6944,7 +8272,7 @@ JS;
         $today = $this->_server_today();
         if ($date !== $today) return 'S3_LOCKED';
 
-        $lock = $this->_get_lock($class, $section, $date);
+        $lock = $this->_get_lock($class, $section, $date, true); // SEC-LOCK-1: _stage gates writes; fail closed
 
         // Explicit lock takes precedence over everything below.
         if (!empty($lock['locked'])) return 'S3_LOCKED';
@@ -7040,31 +8368,54 @@ JS;
 
         $out = [];
 
-        // Strategy 0 — Roster_helper (R5 canonical Firestore source)
+        // ── LC-1 / ATT-1 (companion fix) ────────────────────────────────
+        //
+        // This method had the SAME defect as _get_section_students(): a
+        // camelCase Roster_helper query, then a PascalCase `Class`/`Section`
+        // query, with a non-empty short-circuit between them. Its per-row
+        // status handling was already both-shape tolerant — but RETRIEVAL was
+        // not, so PascalCase students never reached that check when any
+        // camelCase student existed.
+        //
+        // This roster carries `admissionDate`, which drives mid-session
+        // admission handling (a child admitted on the 20th must not be shown
+        // absent for the 1st–19th). A student missing from here is therefore
+        // not merely absent from a list — their attendance is wrong.
+        //
+        // Replaced with one both-shape pass over the shared memoised
+        // snapshot. Status semantics are preserved exactly, including the
+        // blank-defaults-to-Active rule below.
         try {
-            if (isset($this->roster) && method_exists($this->roster, 'for_class')) {
-                $rows = $this->roster->for_class($classPrefixed, $sectionPrefixed);
-                if (is_array($rows) && !empty($rows)) {
-                    foreach ($rows as $uid => $fields) {
-                        if (!is_array($fields)) continue;
-                        $statusVal = (string) ($fields['Status'] ?? $fields['status'] ?? 'Active');
-                        if (strcasecmp($statusVal, 'Active') !== 0) continue;
-                        $out[(string) $uid] = [
-                            'name' => (string) ($fields['Name'] ?? $fields['name'] ?? $uid),
-                            'admissionDate' => (string) (
-                                $fields['admissionDate']
-                                    ?? $fields['Admission Date']
-                                    ?? $fields['admission_date']
-                                    ?? ''
-                            ),
-                        ];
-                    }
-                    if (!empty($out)) return $out;
-                }
+            $rows = $this->_filterSectionRoster(
+                $this->_cachedStudentDocsForRollCheck(),
+                $classPrefixed, $sectionPrefixed, ''   // '' = no session filter (ATT-2)
+            );
+            foreach ($rows as $row) {
+                $d = is_array($row) ? ($row['data'] ?? $row) : null;
+                if (!is_array($d)) continue;
+                $uid = (string) ($d['User Id'] ?? $d['studentId'] ?? $d['userId'] ?? '');
+                if ($uid === '') continue;
+                $out[$uid] = [
+                    'name' => (string) ($d['Name'] ?? $d['name'] ?? $uid),
+                    'admissionDate' => (string) (
+                        $d['admissionDate']
+                            ?? $d['Admission Date']
+                            ?? $d['admission_date']
+                            ?? ''
+                    ),
+                ];
             }
-        } catch (\Exception $e) { /* fall through */ }
+            if (!empty($out)) {
+                uasort($out, static fn($a, $b) => strcasecmp((string) $a['name'], (string) $b['name']));
+                return $out;
+            }
+        } catch (\Exception $e) {
+            log_message('error', 'Attendance::_get_active_roster snapshot read failed: ' . $e->getMessage());
+            /* fall through to the legacy query below */
+        }
 
-        // Strategy 1 — direct students collection query
+        // Strategy 1 — direct students collection query (legacy fallback,
+        // reached only when the snapshot is unavailable or yields nothing)
         try {
             $docs = $this->fs->schoolWhere('students', [
                 ['Class',   '==', $classPrefixed],
@@ -7096,6 +8447,76 @@ JS;
      * Is $date (YYYY-MM-DD) a holiday in the school's calendar?
      * Reuses the existing attendance helper to read non-working days.
      */
+    /**
+     * ACAD-D18 — could the holiday calendar actually be READ this request?
+     *
+     * Holiday_service::load_ok() answers false ONLY on a real read failure; a
+     * genuinely empty calendar answers true. Callers that reason negatively over
+     * the holiday map (every "is today a working day?" test) need this to tell
+     * "no holiday declared" apart from "I could not look".
+     *
+     * Kept separate from _is_holiday() so the gate's return type and behaviour
+     * are unchanged — this only makes the uncertainty reportable.
+     */
+    /**
+     * CAL-B1 — record that a marking gate could not actually be evaluated.
+     *
+     * The non-working-day gate is read NEGATIVELY: a date absent from the map is
+     * a working day. Holiday_service returns an empty map both for "nothing
+     * declared" and for a failed read, and Student_calendar_reader does the same
+     * for its own configuration, so an unreadable calendar silently OPENS the
+     * gate on every marking endpoint.
+     *
+     * ACAD-D18 already settled the policy for live marking — denying instead
+     * would leave a teacher unable to mark a genuine working day, so the school
+     * day keeps running — and recorded the fail-open-vs-closed question as an
+     * operational decision for the owner rather than a code one. What was never
+     * finished is COVERAGE: save() logged it, mark_student_day() and
+     * bulk_mark_student() did not.
+     *
+     * Logging only. No behaviour change, by design.
+     */
+    private function _log_if_calendar_unreadable(
+        string $endpoint, int $day, int $monthNum, int $year
+    ): void {
+        try {
+            $holidayOk = $this->_holiday_calendar_readable();
+
+            $calendarOk = true;
+            $this->load->library('student_calendar_reader');
+            $this->student_calendar_reader->init(
+                $this->fs, (string) $this->school_id, (string) $this->session_year);
+            $calendarOk = (bool) $this->student_calendar_reader->load_ok();
+
+            if ($holidayOk && $calendarOk) return;
+
+            log_message('error', sprintf(
+                'Attendance::%s — the non-teaching-day gate was NOT fully evaluated '
+                . '(school=%s session=%s date=%04d-%02d-%02d holidays=%s calendar=%s); '
+                . 'marking was allowed to proceed.',
+                $endpoint, $this->school_id, $this->session_year, $year, $monthNum, $day,
+                $holidayOk  ? 'readable' : 'UNREADABLE',
+                $calendarOk ? 'readable' : 'UNREADABLE'
+            ));
+        } catch (\Throwable $e) {
+            // The observability path must never be able to break marking.
+            log_message('error', 'Attendance::_log_if_calendar_unreadable failed: '
+                . $e->getMessage());
+        }
+    }
+
+    private function _holiday_calendar_readable(): bool
+    {
+        try {
+            $this->load->library('holiday_service');
+            $this->holiday_service->init($this->fs, (string) $this->school_id, (string) $this->session_year);
+            return (bool) $this->holiday_service->load_ok();
+        } catch (\Throwable $e) {
+            log_message('error', 'Attendance::_holiday_calendar_readable failed: ' . $e->getMessage());
+            return false;
+        }
+    }
+
     private function _is_holiday(string $date): bool
     {
         $parts = explode('-', $date);
@@ -7130,6 +8551,77 @@ JS;
         return date('Y-m-d', $ts) <= $serverDate;
     }
 
+    /**
+     * PHASE C2 — substitute / coverage authorisation.
+     *
+     * ADDITIVE to _teacher_can_access(). Returns TRUE only when an Admin has
+     * granted this exact substitute (=$this->admin_id, their uid) a live,
+     * non-revoked coverage grant for exactly this class + section + calendar
+     * date. It never widens access on its own: it is consulted ONLY when the
+     * owner check has already failed, and every grant is one date + one section.
+     *
+     * $month is the month name (must be a known month), $day the day-of-month.
+     * A malformed month yields false (the endpoint's own month validation then
+     * returns the precise error). Never trusts a client tenant id — the school
+     * comes from $this->school_id and the substitute uid from the session.
+     */
+    private function _coverage_allows(string $class, string $section, string $month, int $day): bool
+    {
+        if (!isset($this->month_map[$month]) || $day < 1) return false;
+        $teacherId = (string) ($this->admin_id ?? '');
+        if ($teacherId === '') return false;
+        $year     = $this->_resolve_year($month);
+        $monthNum = (int) $this->month_map[$month];
+        $date     = sprintf('%04d-%02d-%02d', $year, $monthNum, $day);
+        return $this->_coverage_allows_on($class, $section, $date);
+    }
+
+    /** Coverage check for the teacher-app path, which always marks today. */
+    private function _coverage_allows_today(string $class, string $section): bool
+    {
+        return $this->_coverage_allows_on($class, $section, date('Y-m-d'));
+    }
+
+    private function _coverage_allows_on(string $class, string $section, string $date): bool
+    {
+        $teacherId = (string) ($this->admin_id ?? '');
+        if ($teacherId === '') return false;
+        try {
+            $this->load->library('attendance_coverage_service');
+            return (new Attendance_coverage_service())
+                ->init($this->fs, (string) $this->school_id, (string) $this->session_year)
+                ->can_cover($teacherId, $class, $section, $date);
+        } catch (\Throwable $e) {
+            // Fail CLOSED: an unreadable grant store must never open the gate.
+            log_message('error', 'coverage check failed (fail-closed): ' . $e->getMessage());
+            return false;
+        }
+    }
+
+    /**
+     * ATT-ADM-1 (2026-09-13) — first day-of-month on which attendance may be
+     * recorded for a student, given their admissionDate. save() already guards
+     * mid-session joiners via _admission_allows(); this is the month-oriented
+     * companion so the ADMIN writers (save_student_attendance / bulk_mark_student
+     * / mark_student_day) never mark a student Absent for days before they
+     * enrolled. Blank/unparseable admission = no restriction (returns 1), exactly
+     * like _admission_allows(). Returns daysInMonth+1 when the student is admitted
+     * only AFTER this month (nothing is markable this month).
+     */
+    private function _admission_first_valid_day(string $admStr, int $monthNum, int $year, int $daysInMonth): int
+    {
+        $admStr = trim($admStr);
+        if ($admStr === '') return 1;
+        $ts = strtotime($admStr);
+        if ($ts === false) return 1;
+        $ay = (int) date('Y', $ts);
+        $am = (int) date('n', $ts);
+        $ad = (int) date('j', $ts);
+        if ($ay < $year || ($ay === $year && $am < $monthNum)) return 1;                 // admitted before this month
+        if ($ay > $year || ($ay === $year && $am > $monthNum)) return $daysInMonth + 1;  // admitted after this month
+        return max(1, min($ad, $daysInMonth + 1));                                        // admitted mid-month
+    }
+
     /* ================================================================
        PHASE 1 — POST /attendance/save  (smart default-Present)
        ================================================================
@@ -7158,6 +8650,11 @@ JS;
        ================================================================ */
     public function save()
     {
+        // SEC-CSRF-1: this route is in csrf_exclude_uris (it is a Bearer-token
+        // Teacher-app endpoint; the admin browser marks via save_student instead).
+        // Without CSRF, a session-cookie forgery could drive it — so require the
+        // app token. A cross-site request cannot forge the victim's Bearer header.
+        $this->_require_app_token('attendance/save');
         $this->_require_role(self::MARK_ROLES, 'attendance/save', null, 'edit');
 
         $class   = trim((string) $this->input->post('class'));
@@ -7185,12 +8682,61 @@ JS;
         if (!is_array($leave))  $leave  = [];
         if (!is_array($late))   $late   = [];
 
-        // Server-resolved date — body MUST NOT carry one
+        // Server-resolved date. The body normally MUST NOT carry one.
+        //
+        // C1 (offline queue) DATE-PIN: an offline client may send `mark_date`
+        // (YYYY-MM-DD) — the day the teacher actually marked. It is NOT a
+        // licence to backdate: it is only a SAFETY assertion so a flush that is
+        // reconnecting on a later day cannot be silently recorded against the
+        // wrong (current) day. When present it simply seeds $serverDate; the
+        // ordinary _stage() gate below then returns S3_LOCKED for ANY non-today
+        // date (→ 423 "file a correction"), so a stale/future mark_date is
+        // rejected exactly like any other backdated write. A mark_date equal to
+        // today is byte-for-byte identical to omitting it, so the online path is
+        // completely unchanged. This adds no new write capability — only the
+        // ability for the server to REFUSE a mis-dated offline replay.
         $serverDate = $this->_server_today();
+        $markDate = trim((string) $this->input->post('mark_date'));
+        if ($markDate !== '') {
+            $dp = \DateTime::createFromFormat('Y-m-d', $markDate);
+            if (!$dp || $dp->format('Y-m-d') !== $markDate) {
+                return $this->json_error('Invalid mark_date. Expected YYYY-MM-DD.', 400);
+            }
+            $serverDate = $markDate;
+        }
 
-        // Holiday gate
+        // Holiday gate.
+        //
+        // ACAD-D18 — this gate is read NEGATIVELY: a date absent from the holiday
+        // map is a working day. Holiday_service returns an empty map both for "no
+        // holidays declared" and for a failed calendar read, so an unreadable
+        // calendar silently opened the gate and attendance was recorded on a real
+        // holiday.
+        //
+        // The behaviour is deliberately UNCHANGED here — the house rule for live
+        // marking is that a calendar-read failure must never break the school day
+        // (see Holiday_service::_query_firestore, "fail open for punch flows").
+        // Denying instead would leave a teacher unable to mark a genuine working
+        // day. What changes is that the failure is no longer silent: it is logged,
+        // and the caller is told the check could not be performed.
+        //
+        // Whether live student marking SHOULD instead be denied on an unreadable
+        // calendar is an operational policy decision, not a code one, and is
+        // recorded for the owner rather than taken here.
+        $holidayCheckOk = $this->_holiday_calendar_readable();
         if ($this->_is_holiday($serverDate)) {
             return $this->json_error('Cannot mark attendance on a declared holiday.', 422);
+        }
+        if (!$holidayCheckOk) {
+            log_message('error', 'Attendance::save — holiday calendar unreadable (school='
+                . $this->school_id . ' date=' . $serverDate . '); the holiday gate was '
+                . 'NOT evaluated and marking was allowed to proceed.');
+            // S4: schools that opted into strict mode block instead of failing open.
+            if ($this->_calendar_strict()) {
+                return $this->json_error(
+                    'The holiday calendar could not be verified right now, and this school '
+                    . 'requires it verified before attendance is marked. Please try again shortly.', 503);
+            }
         }
 
         // Stage gate (also enforces lock + after-18:00)
@@ -7708,6 +9254,29 @@ JS;
     {
         $this->_require_cron_token();
 
+        // S6 (platform-scheduling): the target tenant must be EXPLICIT, not
+        // silently inherited from the caller's session/claims. A fleet scheduler
+        // discovers tenants from `schools` and calls this once per tenant with
+        // ?school_id=SCH_XXXX; we validate it, resolve that tenant's session from
+        // its own doc, and re-scope fs to it. Absent (legacy/CLI) → the
+        // session-derived tenant is used, exactly as before (backward-compatible).
+        $reqSchool = trim((string) ($this->input->get('school_id') ?: $this->input->post('school_id')));
+        if ($reqSchool !== '') {
+            if (!preg_match('/^[A-Za-z0-9_]{3,40}$/', $reqSchool)) {
+                return $this->json_error('Invalid school_id.', 400);
+            }
+            try {
+                $sdoc = $this->firebase->firestoreGet('schools', $reqSchool);
+            } catch (\Throwable $e) { $sdoc = null; }
+            if (!is_array($sdoc) || empty($sdoc)) {
+                return $this->json_error('Unknown school_id.', 404);
+            }
+            $this->school_id   = $reqSchool;
+            $this->school_name = $reqSchool;                       // canonical: name == id
+            $this->session_year = (string) ($sdoc['currentSession'] ?? $this->session_year);
+            $this->fs->init($this->school_name, $this->session_year); // re-scope reads/writes
+        }
+
         $serverDate = $this->_server_today();
         $nowIso     = $this->_server_now()->format('c');
 
@@ -7836,6 +9405,9 @@ JS;
      */
     public function correction_submit()
     {
+        // SEC-CSRF-1: CSRF-excluded Bearer-token Teacher-app endpoint — require
+        // the app token so a session-cookie CSRF cannot file forged corrections.
+        $this->_require_app_token('attendance/correction/submit');
         $this->_require_role(self::MARK_ROLES, 'correction_submit', null, 'edit');
 
         $studentId    = trim((string) $this->input->post('studentId'));
@@ -8066,6 +9638,92 @@ JS;
        punch uses (source='correction'), keeping counts/workingDays right.
        ================================================================ */
 
+    /**
+     * Tenant regularization policy, resolved from attendanceSettings.
+     *
+     * Every value here is the SCHOOL's to choose. The defaults are the
+     * do-nothing values — no ceiling, no buffer — so a school that has
+     * configured nothing behaves exactly as it did before this existed. A
+     * default ceiling would be this codebase inventing a school's tolerance for
+     * missed punches, which is not ours to set.
+     *
+     *   maxDaysPerMonth   int    0 = no ceiling. Counts APPROVED regularization
+     *                            days for the employee in the request's month.
+     *                            Modelled on Asanify's Validation Rules, which
+     *                            limit by count of days over a period.
+     *   limitMessage      string what the reviewer is told when the ceiling is
+     *                            hit. Asanify makes this customisable; so does
+     *                            this, because the useful wording is
+     *                            school-specific ("raise with your HOD", etc).
+     */
+    private $_regPolicy = null;
+
+    private function _regularization_policy(): array
+    {
+        if (is_array($this->_regPolicy)) {
+            return $this->_regPolicy;
+        }
+
+        $settings = $this->_get_attendance_settings();
+        $raw = is_array($settings['regularization'] ?? null) ? $settings['regularization'] : [];
+
+        $max = (int) ($raw['maxDaysPerMonth'] ?? 0);
+        if ($max < 0) $max = 0;
+
+        $msg = trim((string) ($raw['limitMessage'] ?? ''));
+        if ($msg === '') {
+            $msg = 'This employee has reached the regularization limit set for a month.';
+        }
+
+        return $this->_regPolicy = [
+            'maxDaysPerMonth' => $max,
+            'limitMessage'    => mb_substr($msg, 0, 300),
+        ];
+    }
+
+    /**
+     * Would approving this request break the school's monthly ceiling?
+     *
+     * Counts days ALREADY APPROVED for the same employee in the same month.
+     * Deliberately counts approved days rather than submitted ones: a pending
+     * queue is not consumption, and refusing on the strength of requests that
+     * may yet be rejected would make the ceiling depend on review order.
+     *
+     * Returns '' to proceed, or the reason code to skip on.
+     */
+    private function _regularization_over_limit(string $staffId, string $date): string
+    {
+        $pol = $this->_regularization_policy();
+        if ($pol['maxDaysPerMonth'] <= 0) {
+            return '';                       // no ceiling configured — the default
+        }
+
+        $prefix = substr($date, 0, 7);       // YYYY-MM
+        if ($prefix === '') return '';
+
+        try {
+            $rows = $this->fs->schoolWhere('attendanceRegularizations', [
+                ['personType', '==', 'staff'],
+                ['staffId',    '==', $staffId],
+                ['status',     '==', 'approved'],
+            ]);
+        } catch (\Throwable $e) {
+            // A ceiling that cannot be counted must not block the queue; the
+            // school's limit is an administrative control, not a safety one.
+            log_message('error', 'regularization limit count failed for ' . $staffId . ': ' . $e->getMessage());
+            return '';
+        }
+
+        $used = 0;
+        foreach ($rows as $entry) {
+            $d = is_array($entry) ? ($entry['data'] ?? $entry) : null;
+            if (!is_array($d)) continue;
+            if (strpos((string) ($d['date'] ?? ''), $prefix) === 0) $used++;
+        }
+
+        return ($used >= $pol['maxDaysPerMonth']) ? 'over_monthly_limit' : '';
+    }
+
     /** Roles allowed to approve/reject staff regularizations (adds HR Manager). */
     private const STAFF_REG_DECIDE_ROLES = [
         'Super Admin', 'School Super Admin', 'Admin', 'Principal', 'Vice Principal', 'HR Manager',
@@ -8130,6 +9788,187 @@ JS;
         ]);
     }
 
+    /** Request-scoped cache of the school's payroll locks. */
+    private $_payrollLocks = null;
+
+    /**
+     * Is the payroll month covering this date already locked?
+     *
+     * Payroll locks live on the schools profile document as
+     * `payrollLocks.{YYYY}_{MonthName}` and are written by
+     * Hr::lock_payroll_month() only after a finalised monthly run. Once that
+     * lock is set the payslips for the month are closed, so the attendance the
+     * payslips were computed from must stop moving too — otherwise the register
+     * and the payslip disagree and nothing downstream notices.
+     *
+     * FAILS CLOSED on an unreadable lock. That matches the deliberate stance
+     * already taken for the attendance month lock, where Lock_cache rethrows
+     * rather than returning an empty array so an infrastructure hiccup can
+     * never be mistaken for "unlocked". The cost of the strict reading is a
+     * reviewer retrying; the cost of the lax one is a silent payroll
+     * discrepancy that only surfaces when someone audits a payslip by hand.
+     *
+     * @return string '' when the write may proceed, otherwise the skip reason
+     */
+    private function _payroll_month_locked(string $dateISO): string
+    {
+        if ($this->_payrollLocks === null) {
+            try {
+                $doc = $this->fs->get('schools', $this->fs->docId('profile'));
+                $this->_payrollLocks = (is_array($doc) && is_array($doc['payrollLocks'] ?? null))
+                    ? $doc['payrollLocks']
+                    : [];
+            } catch (\Throwable $e) {
+                log_message('error',
+                    'staff_regularization_decide: payroll lock unreadable — refusing the write: '
+                    . $e->getMessage()
+                );
+                $this->_payrollLocks = false;   // distinguishable from "none set"
+            }
+        }
+
+        if ($this->_payrollLocks === false) {
+            return 'payroll_lock_unreadable';
+        }
+
+        $ts = strtotime($dateISO);
+        if ($ts === false) {
+            return 'bad_request';
+        }
+        $key  = date('Y', $ts) . '_' . date('F', $ts);
+        $lock = $this->_payrollLocks[$key] ?? null;
+
+        return (is_array($lock) && !empty($lock['locked'])) ? 'payroll_locked' : '';
+    }
+    /**
+     * Tell the requester what happened to their regularization.
+     *
+     * Goes through emit_push()/MARK_REGISTRY like every other push in this
+     * codebase — never a second sender. The dedupe key is the request plus the
+     * decision, so a retried decision cannot notify twice, and a later opposite
+     * decision on a re-filed request still gets through.
+     *
+     * Best-effort: a push failure must never fail the decision. The register is
+     * already written and the request already decided by the time this runs;
+     * losing a notification is a smaller harm than losing the decision.
+     */
+    private function _notify_regularization_decision(
+        string $staffId, string $rid, string $date, string $decision, string $mark
+    ): void {
+        if ($staffId === '') return;
+
+        $body = ($decision === 'approved')
+            ? ('Your attendance request for ' . $date . ' was approved'
+               . ($mark !== '' ? ' (' . $mark . ').' : '.'))
+            : ('Your attendance request for ' . $date . ' was not approved.');
+
+        try {
+            $this->emit_push('STAFF_REG_DECIDED', 'reg_' . $rid . '_' . $decision, [
+                'staffId'     => $staffId,
+                'pushType'    => 'regularization_' . $decision,
+                'title'       => ($decision === 'approved') ? 'Attendance Request Approved'
+                                                            : 'Attendance Request Rejected',
+                'body'        => $body,
+                'requestId'   => $rid,
+                'date'        => $date,
+                'decision'    => $decision,
+                'appliedMark' => $mark,
+            ]);
+        } catch (\Throwable $e) {
+            log_message('error', 'regularization decision push failed for ' . $rid . ': ' . $e->getMessage());
+        }
+    }
+    /**
+     * Compare-and-swap a regularization request into a decided state.
+     *
+     * The precondition is the document version observed by the SAME read that
+     * judged the request still pending. That pairing is what makes "it was
+     * pending" and "I am deciding it" a single atomic step: if another reviewer
+     * decided it in between, the document has moved on, the precondition fails
+     * and this attempt is refused rather than overwriting their decision.
+     *
+     * @param string $rid        request document id
+     * @param array  $data       fields to merge on success
+     * @param string $updateTime version the caller read; '' means unversioned
+     * @return string SUCCESS | CONFLICT | FAILURE
+     */
+    private function _reg_claim(string $rid, array $data, string $updateTime): string
+    {
+        // No CAS primitive, or a document with no server version: fall back to
+        // the plain merge this code did before. Strictly no worse than the old
+        // behaviour, and logged so the degradation is visible rather than
+        // silently assumed to be atomic.
+        if ($updateTime === '' || !method_exists($this->firebase, 'firestoreCommitBatchStatus')) {
+            log_message('info',
+                'staff_regularization_decide: unguarded write for [' . $rid . ']'
+                . ' (updateTime=' . ($updateTime === '' ? 'none' : 'present') . ')'
+            );
+            return $this->fs->set('attendanceRegularizations', $rid, $data, true) ? 'SUCCESS' : 'FAILURE';
+        }
+
+        $res = $this->firebase->firestoreCommitBatchStatus([[
+            'op'           => 'update',
+            'collection'   => 'attendanceRegularizations',
+            'docId'        => $rid,
+            'merge'        => true,
+            'data'         => $data,
+            'precondition' => ['updateTime' => $updateTime],
+        ]]);
+
+        $status = (string) ($res['status'] ?? 'FAILURE');
+        if ($status === 'SUCCESS') return 'SUCCESS';
+
+        if ($status === 'PRECONDITION_CONFLICT') {
+            log_message('info',
+                'staff_regularization_decide: [' . $rid . '] was decided by another reviewer first'
+            );
+            return 'CONFLICT';
+        }
+
+        log_message('error',
+            'staff_regularization_decide: claim failed for [' . $rid . '] status=' . $status
+            . ' message=' . (string) ($res['message'] ?? '')
+        );
+        return 'FAILURE';
+    }
+
+    /**
+     * Return a claimed request to `pending` after the register write failed.
+     *
+     * The claim is taken BEFORE the attendance write so two reviewers cannot
+     * both stamp the day. When that write then fails — a locked month, a
+     * Firestore error — the request must not be left reading "approved" over a
+     * day that was never corrected: the reviewer would see a decided request,
+     * the employee would see an uncorrected register, and nobody would be told.
+     * Releasing it puts the request back in the queue where it can be acted on.
+     *
+     * Deliberately unguarded: we hold the claim, so there is no competing writer
+     * to lose to, and a precondition failure here would strand the request in
+     * exactly the state this is trying to avoid. A failure IS logged loudly,
+     * because it leaves the one inconsistency this path cannot self-heal.
+     */
+    private function _reg_release(string $rid, string $why): void
+    {
+        $ok = $this->fs->set('attendanceRegularizations', $rid, [
+            'status'      => 'pending',
+            'appliedMark' => '',
+            'reviewedBy'  => '',
+            'reviewedAt'  => null,
+        ], true);
+
+        if (!$ok) {
+            log_message('error',
+                'staff_regularization_decide: STRANDED — [' . $rid . '] is marked approved but the'
+                . ' attendance write failed (' . $why . ') and the release also failed.'
+                . ' The request must be re-opened by hand.'
+            );
+            return;
+        }
+
+        log_message('info',
+            'staff_regularization_decide: released [' . $rid . '] back to pending (' . $why . ')'
+        );
+    }
     /**
      * POST /attendance/staff_regularization/decide
      * Body: doc_id (single) OR batch_id (whole request); decision (approve|reject);
@@ -8145,7 +9984,11 @@ JS;
         $docId    = trim((string) $this->input->post('doc_id'));
         $batchId  = trim((string) $this->input->post('batch_id'));
         $decision = strtolower(trim((string) $this->input->post('decision')));
-        $remarks  = trim((string) $this->input->post('remarks'));
+        // Capped: remarks are stored on the request document and echoed back to
+        // the employee in the app. Unbounded free text is a document-size hazard
+        // (a pasted page would fail the write with no useful message) and there is
+        // no review note that needs more than this.
+        $remarks  = mb_substr(trim((string) $this->input->post('remarks')), 0, 500);
         $override = strtoupper(trim((string) $this->input->post('mark')));   // optional
 
         if (!in_array($decision, ['approve', 'reject'], true)) {
@@ -8204,13 +10047,39 @@ JS;
                 continue;
             }
 
+            // ── CLAIM THE REQUEST BEFORE ACTING ON IT ───────────────────
+            // Re-read at the version we are about to write against. Two
+            // reviewers working the same queue (Principal and HR Manager is the
+            // ordinary case) both passed the `pending` test above and both
+            // proceeded: the day was stamped twice, two audit rows were written,
+            // and if they chose different marks the request recorded one mark
+            // while the register showed the other. The compare-and-swap makes
+            // exactly one of them the decider.
+            $fresh = $this->firebase->firestoreGet('attendanceRegularizations', $rid);
+            if (!is_array($fresh)) {
+                $skipped[] = ['id' => $rid, 'reason' => 'not_found'];
+                continue;
+            }
+            if ((string) ($fresh['status'] ?? 'pending') !== 'pending') {
+                $skipped[] = ['id' => $rid, 'reason' => 'already_decided'];
+                continue;
+            }
+            $version = (string) ($fresh['__updateTime'] ?? '');
+
             if ($decision === 'reject') {
-                $this->fs->set('attendanceRegularizations', $rid, [
+                $claim = $this->_reg_claim($rid, [
                     'status'     => 'rejected',
                     'reviewedBy' => $userId,
                     'reviewedAt' => $nowIso,
                     'remarks'    => $remarks,
-                ], true);
+                ], $version);
+
+                if ($claim !== 'SUCCESS') {
+                    $skipped[] = ['id' => $rid, 'reason' => $claim === 'CONFLICT' ? 'concurrently_decided' : 'write_failed'];
+                    continue;
+                }
+
+                $this->_notify_regularization_decision($staffId, $rid, $date, 'rejected', '');
                 $this->_audit_write([
                     'action' => 'STAFF_REG_REJECT', 'stage' => 'CORRECTION',
                     'targetType' => 'staff', 'targetId' => $staffId, 'date' => $date,
@@ -8222,12 +10091,24 @@ JS;
 
             // ── SELF-APPROVAL GUARD (audit finding H1) ──────────────────
             // The approver ($userId) is the reviewer's own Firebase uid
-            // (MY_Controller: admin_id = RAW uid). A privileged reviewer
-            // (Principal/VP/HR) must NOT approve their OWN missed-punch
-            // regularization — that is self-service payroll fraud with a
-            // clean audit naming them as both subject and approver. Require a
-            // different approver. (Self-REJECT is harmless and still allowed.)
+            // (MY_Controller: admin_id = RAW uid), and a regularization's
+            // staffId is the requester's uid — the Firestore create rule pins
+            // staffId == request.auth.uid, the same identity the GPS punch path
+            // derives from the token. A privileged reviewer (Principal/VP/HR)
+            // must NOT approve their OWN missed-punch regularization: that is
+            // self-service payroll fraud with a clean audit naming them as both
+            // subject and approver. Require a different approver. (Self-REJECT
+            // is harmless and still allowed.)
             if ($staffId !== '' && $staffId === $userId) {
+                // AUDITED (2026-08-23): the refusal used to be silent, so the one
+                // event a reviewer would most want to hide left no trace anywhere.
+                // A blocked attempt is exactly what an audit trail is for.
+                $this->_audit_write([
+                    'action' => 'STAFF_REG_SELF_APPROVAL_BLOCKED', 'stage' => 'CORRECTION',
+                    'targetType' => 'staff', 'targetId' => $staffId, 'date' => $date,
+                    'reason' => 'reviewer attempted to approve their own regularization',
+                    'requestId' => $rid,
+                ]);
                 $skipped[] = ['id' => $rid, 'reason' => 'self_approval_forbidden'];
                 continue;
             }
@@ -8235,9 +10116,52 @@ JS;
             // ── approve: apply the corrected mark via the canonical writer ──
             // requestedStatus is constrained to {P, M} by the Firestore create
             // rule + the app; the override (admin manual) may be any staff mark.
-            $reqMark   = strtoupper((string) ($d['requestedStatus'] ?? 'P'));
+            // From $fresh, not $d: $d came from the list query and may be stale,
+            // and this value decides the mark that lands on the register.
+            $reqMark   = strtoupper((string) ($fresh['requestedStatus'] ?? $d['requestedStatus'] ?? 'P'));
             $finalMark = $overrideOk ? $override
                 : (in_array($reqMark, $staffStatus, true) ? $reqMark : 'P');
+
+            // ── SCHOOL'S OWN MONTHLY CEILING ────────────────────────────
+            // Off unless the school sets one. Checked before the payroll guard
+            // because it is the cheaper refusal and needs no lock read.
+            $overLimit = $this->_regularization_over_limit($staffId, $date);
+            if ($overLimit !== '') {
+                // The SCHOOL's own wording travels with the refusal. Asanify makes
+                // this message customisable for the same reason: the useful sentence
+                // ("refer to the HOD") is organisation-specific, and a generic one
+                // leaves the reviewer with no next step.
+                $pol = $this->_regularization_policy();
+                $skipped[] = [
+                    'id'      => $rid,
+                    'reason'  => $overLimit,
+                    'message' => $pol['limitMessage'],
+                ];
+                continue;
+            }
+            // ── PAYROLL PERIOD GUARD ────────────────────────────────────
+            // Refuse before claiming: a locked payroll month means the payslip
+            // for this day has already been computed and closed. See
+            // _payroll_month_locked() for why an unreadable lock also refuses.
+            $payLock = $this->_payroll_month_locked($date);
+            if ($payLock !== '') {
+                $skipped[] = ['id' => $rid, 'reason' => $payLock];
+                continue;
+            }
+            // Claim FIRST, then stamp the register. The reverse order let both
+            // reviewers in a race write attendance before either had claimed.
+            $claim = $this->_reg_claim($rid, [
+                'status'      => 'approved',
+                'appliedMark' => $finalMark,
+                'reviewedBy'  => $userId,
+                'reviewedAt'  => $nowIso,
+                'remarks'     => $remarks,
+            ], $version);
+
+            if ($claim !== 'SUCCESS') {
+                $skipped[] = ['id' => $rid, 'reason' => $claim === 'CONFLICT' ? 'concurrently_decided' : 'write_failed'];
+                continue;
+            }
 
             try {
                 if (!$writerReady) {
@@ -8251,21 +10175,22 @@ JS;
                     'correctionId' => $rid,
                 ]);
             } catch (MonthLockedException $e) {
+                $this->_reg_release($rid, 'month_locked');
                 $skipped[] = ['id' => $rid, 'reason' => 'month_locked'];
                 continue;
             } catch (\Throwable $e) {
                 log_message('error', 'staff_regularization_decide writer failed for ' . $rid . ': ' . $e->getMessage());
+                $this->_reg_release($rid, 'write_failed');
                 $skipped[] = ['id' => $rid, 'reason' => 'write_failed'];
                 continue;
             }
 
-            $this->fs->set('attendanceRegularizations', $rid, [
-                'status'      => 'approved',
-                'appliedMark' => $finalMark,
-                'reviewedBy'  => $userId,
-                'reviewedAt'  => $nowIso,
-                'remarks'     => $remarks,
-            ], true);
+            // The requester is told the outcome of their own request. Two
+            // events, on decision — the pattern Pocket HRMS ships as
+            // "Regularization Accepted" / "Regularization Rejected". No
+            // reminder cadence is emitted: none of the surveyed vendor
+            // documentation establishes one, and inventing one is policy.
+            $this->_notify_regularization_decision($staffId, $rid, $date, 'approved', $finalMark);
             $this->_audit_write([
                 'action' => 'STAFF_REG_APPROVE', 'stage' => 'CORRECTION',
                 'targetType' => 'staff', 'targetId' => $staffId, 'date' => $date,

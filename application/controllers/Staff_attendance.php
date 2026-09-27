@@ -62,9 +62,27 @@ class Staff_attendance extends MY_Controller
         $this->session_year = $this->_resolve_session($this->school_id);
 
         if ($this->school_id === '' || $this->session_year === '') {
+            // The teacher app renders this `message` verbatim on screen, so it
+            // must read as a sentence to a teacher rather than as a diagnosis
+            // of our token plumbing. "Unable to resolve school/session from
+            // token" named internals, told them nothing they could act on, and
+            // was observed on the device.
+            //
+            // WHICH of the two is missing is what actually helps debugging, and
+            // that stays here in the log. ('error', not 'warning' — CI3 drops
+            // the 'warning' level entirely, so it would vanish.)
+            log_message('error', 'Staff_attendance: unresolved tenant context'
+                . ' school_id=[' . $this->school_id . ']'
+                . ' session_year=[' . $this->session_year . ']'
+                . ' uid=[' . (string) ($claims['uid'] ?? '') . ']');
+
             header('Content-Type: application/json');
             http_response_code(409);
-            echo json_encode(['status' => 'error', 'message' => 'Unable to resolve school/session from token.']);
+            echo json_encode([
+                'status'  => 'error',
+                'message' => 'We couldn\'t verify your school session. '
+                           . 'Please try again — if this keeps happening, sign out and sign in again.',
+            ]);
             exit;
         }
 
@@ -195,15 +213,40 @@ class Staff_attendance extends MY_Controller
         // ── Context: holiday flag (cached) + current day mark (READ 2) ──
         $this->load->library('holiday_service');
         $this->holiday_service->init($this->fs, $this->school_id, $this->session_year);
-        $isHoliday = $this->holiday_service->is_holiday($dateISO);
+
+        // N-33 department resolved by _resolve_employee_calendar() below —
+        // read it first so the holiday/SWD checks can be department-scoped
+        // too (Phase D). A cheap, memoised call; no extra Firestore read.
+        $calDept = $this->_resolve_employee_calendar($staffId, $dateISO)['department'] ?? '';
+        $isHoliday = $this->holiday_service->is_holiday($dateISO, 'staff', $calDept, $staffId);
+        $isSpecialWorkingDay = $this->holiday_service->is_special_working_day($dateISO, 'staff', $calDept, $staffId);
 
         $summaryId = "{$this->school_id}_{$staffId}_{$monthKey}";
         $summary   = $this->fs->get('staffAttendanceSummary', $summaryId);
         $dayWise   = is_array($summary) ? (string) ($summary['dayWise'] ?? '') : '';
         $currentMark = (strlen($dayWise) >= $day) ? strtoupper($dayWise[$day - 1]) : 'V';
 
-        // Weekly-off for today (from policy.weeklyOffs, engine-authoritative).
-        $isWeeklyOff = in_array($now->format('D'), (array) ($policy['weeklyOffs'] ?? []), true);
+        // ── N-35: THE EMPLOYEE'S OWN CALENDAR, RESOLVED BEFORE CLASSIFICATION ──
+        //
+        // This must precede evaluate(). Gate 6b is the ONLY place `W` can ever be
+        // stamped, and it fires on this flag alone. If the flag is wrong the punch
+        // falls through to Gate 7 and is recorded P/T — the fact that the employee
+        // worked a scheduled rest day is then gone from the record for good, and
+        // no later process (payroll included) can recover it.
+        //
+        // FAIL CLOSED (D2): an unresolvable schedule REFUSES the punch. It must not
+        // fall through to normal P/T/M/A classification, and it must not borrow the
+        // tenant-wide list. Classifying against an unknown calendar is what N-23 was.
+        $cal = $this->_resolve_employee_calendar($staffId, $dateISO);
+        if ($cal['block'] !== null) {
+            return $this->json_error(
+                'Attendance cannot be marked: this employee has no work schedule for '
+                . $dateISO . ' (' . $cal['block'] . '). '
+                . 'Assign one under HR & Payroll → Work Schedules, then try again.',
+                ['blocked' => $cal['block'], 'staff_id' => $staffId, 'date' => $dateISO]
+            );
+        }
+        $isWeeklyOff = $cal['isNonWorking'];
 
         // On check-out, resolve today's check-in time so the engine can classify
         // full vs half day by hours worked. Only read when checking out.
@@ -214,12 +257,13 @@ class Staff_attendance extends MY_Controller
         // ── Decision: pure business-rule engine ──
         $this->load->library('attendance_policy');
         $decision = $this->attendance_policy->evaluate($policy, $request, [
-            'serverTime'     => $serverTime,
-            'currentDayMark' => $currentMark,
-            'isHoliday'      => $isHoliday,
-            'isWeeklyOff'    => $isWeeklyOff,
-            'checkInMinutes' => $checkInMinutes,
-            'shiftId'        => 'default',
+            'serverTime'           => $serverTime,
+            'currentDayMark'       => $currentMark,
+            'isHoliday'            => $isHoliday,
+            'isWeeklyOff'          => $isWeeklyOff,
+            'isSpecialWorkingDay'  => $isSpecialWorkingDay,
+            'checkInMinutes'       => $checkInMinutes,
+            'shiftId'              => 'default',
         ]);
 
         // ── Persist status (only when the engine says so) ──
@@ -260,7 +304,7 @@ class Staff_attendance extends MY_Controller
 
         return $this->json_success([
             'apiVersion'     => 1,
-            'message'        => $this->_punch_message($decision, $direction),
+            'message'        => $this->_punch_message($decision, $direction, $checkInMinutes),
             'direction'      => $direction,
             'status'         => $decision['mark'],     // P|T|null
             'mark'           => $decision['mark'],
@@ -316,17 +360,34 @@ class Staff_attendance extends MY_Controller
         // the nightly finaliser persists the same marks for payroll.
         $this->load->library('holiday_service');
         $this->holiday_service->init($this->fs, $this->school_id, $this->session_year);
-        $curDayWise  = $this->_overlay_daywise((string) ($curSum['dayWise'] ?? ''),  $monthKey, $pol, $dateISO);
-        $prevDayWise = $this->_overlay_daywise((string) ($prevSum['dayWise'] ?? ''), $prevKey,  $pol, $dateISO);
+
+        // N-35/Phase D: this employee's department is fixed (not per-date), so
+        // resolve it once, before the overlay calls that need it.
+        $todayCal        = $this->_resolve_employee_calendar($staffId, $dateISO);
+        $todayIsWeeklyOff = $todayCal['isNonWorking'];
+        $todayDept        = $todayCal['department'] ?? '';
+
+        $curDayWise  = $this->_overlay_daywise((string) ($curSum['dayWise'] ?? ''),  $monthKey, $pol, $dateISO,
+                                              $this->_non_working_days($staffId, $monthKey), $staffId, $todayDept);
+        $prevDayWise = $this->_overlay_daywise((string) ($prevSum['dayWise'] ?? ''), $prevKey,  $pol, $dateISO,
+                                              $this->_non_working_days($staffId, $prevKey), $staffId, $todayDept);
 
         $todayStatus = (strlen($curDayWise) >= $day) ? strtoupper($curDayWise[$day - 1]) : 'V';
         $counts = $this->_count_daywise($curDayWise);
 
         // Rest-day flags for TODAY (overlay leaves today untouched) so the app
         // can offer the "work on a rest day = extra" flow.
+        // N-35: the app's "work on a rest day" prompt must reflect THIS employee's
+        // schedule. An unresolvable calendar reports false — the flag only ever
+        // OFFERS the extra-work flow, and offering it wrongly is worse than not
+        // offering it. The punch itself is refused separately, upstream.
+        // Phase D — department/individual-scoped, matching the punch path.
         $todayIsHoliday = false;
-        try { $todayIsHoliday = $this->holiday_service->is_holiday($dateISO); } catch (\Throwable $e) {}
-        $todayIsWeeklyOff = in_array($now->format('D'), (array) ($pol['weeklyOffs'] ?? []), true);
+        $todayIsSpecialWorkingDay = false;
+        try {
+            $todayIsHoliday = $this->holiday_service->is_holiday($dateISO, 'staff', $todayDept, $staffId);
+            $todayIsSpecialWorkingDay = $this->holiday_service->is_special_working_day($dateISO, 'staff', $todayDept, $staffId);
+        } catch (\Throwable $e) {}
 
         $history = av_build_history([
             $prevKey  => $prevDayWise,
@@ -459,6 +520,7 @@ class Staff_attendance extends MY_Controller
                 'regularized'    => $todayRegularized,
                 'isHoliday'      => $todayIsHoliday,
                 'isWeeklyOff'    => $todayIsWeeklyOff,
+                'isSpecialWorkingDay' => $todayIsSpecialWorkingDay,
                 'allowWorkOnOff' => !empty($pol['allowWorkOnOff']),
             ],
             'month'      => [
@@ -611,6 +673,203 @@ class Staff_attendance extends MY_Controller
      * at check-out. Reads the attendancePunches audit rows already written by
      * check-in — no schema change.
      */
+    /**
+     * N-35 — resolve THIS employee's calendar for ONE date, before classification.
+     *
+     * Runs on the punch path with a person waiting, so it is deliberately three
+     * targeted reads rather than the finaliser's bulk index: the school doc for
+     * the catalogue, this employee's assignments plus the department assignments,
+     * and the staff doc for the department. Memoised per request.
+     *
+     * @return array ['block' => ?string, 'isNonWorking' => bool]
+     *         `block` non-null means the calendar is UNKNOWN. The caller must
+     *         refuse the punch — never classify against an unknown calendar.
+     */
+    private function _resolve_employee_calendar(string $staffId, string $dateISO): array
+    {
+        // Two caches, deliberately. $ctxMemo holds the LOADED data per employee —
+        // resolving a whole month must not repeat the three reads 31 times.
+        // $memo holds the per-date answer, which is pure computation on top.
+        static $memo = [], $ctxMemo = [];
+        $key = $staffId . '|' . $dateISO;
+        if (isset($memo[$key])) return $memo[$key];
+
+        require_once APPPATH . 'libraries/Policy_assignment_service.php';
+
+        if (isset($ctxMemo[$staffId])) {
+            $ctx = $ctxMemo[$staffId];
+            if ($ctx === null) {
+                return $memo[$key] = ['block' => 'calendar_unreadable', 'isNonWorking' => false, 'department' => ''];
+            }
+            // Trail 2 Phase D §0/Priority 1 (2026-08-18) — resolve the
+            // department effective ON $dateISO, never the live value cached
+            // in $ctx. See _department_as_of()'s own docblock for why.
+            $deptAsOf = $this->_department_as_of($staffId, $dateISO, (string) ($ctx['department'] ?? ''));
+            $ctx['department'] = $deptAsOf;
+            $r = Policy_assignment_service::resolve($ctx, $dateISO);
+            if (!empty($r['block'])) {
+                return $memo[$key] = ['block' => (string) $r['block'], 'isNonWorking' => false, 'department' => $deptAsOf];
+            }
+            return $memo[$key] = [
+                'block'        => null,
+                'isNonWorking' => in_array(date('D', strtotime($dateISO)),
+                                           (array) ($r['policy']['weeklyOffs'] ?? []), true),
+                'department'   => $deptAsOf,
+            ];
+        }
+
+        $flat = static function (array $docs): array {
+            $out = [];
+            foreach ($docs as $d) {
+                if (!is_array($d)) continue;
+                $out[] = (isset($d['data']) && is_array($d['data'])) ? $d['data'] : $d;
+            }
+            return $out;
+        };
+
+        try {
+            $school = $this->fs->get('schools', $this->school_id);
+            $policy = is_array($school['attendancePolicy'] ?? null) ? $school['attendancePolicy'] : [];
+
+            $catalogue = [];
+            foreach ((array) ($policy['workSchedules'] ?? []) as $s) {
+                if (is_array($s) && !empty($s['scheduleId'])) {
+                    $catalogue[(string) $s['scheduleId']] = $s;
+                }
+            }
+
+            $staff = $flat([$this->fs->get('staff', $this->fs->docId($staffId))]);
+            $dept  = trim((string) ($staff[0]['department'] ?? $staff[0]['Department'] ?? ''));
+
+            $assignments = [];
+            foreach ($flat($this->fs->schoolWhere('staffScheduleAssignments', [])) as $a) {
+                $type = (string) ($a['attachmentType'] ?? '');
+                $id   = (string) ($a['attachmentId'] ?? '');
+                if ($type === '') { $type = 'staff'; $id = (string) ($a['staffId'] ?? ''); }
+                $assignments[] = [
+                    'attachmentType' => $type,
+                    'attachmentId'   => $id,
+                    'policyId'       => (string) ($a['policyId'] ?? $a['scheduleId'] ?? ''),
+                    'effectiveFrom'  => (string) ($a['effectiveFrom'] ?? ''),
+                    'effectiveTo'    => (string) ($a['effectiveTo'] ?? ''),
+                ];
+            }
+
+            $ctxMemo[$staffId] = [
+                'policies'             => $catalogue,
+                'assignments'          => $assignments,
+                'staffId'              => $staffId,
+                'department'           => $dept,   // LIVE value — the as-of resolution happens per-date below
+                'organisationPolicyId' => null,
+            ];
+
+            // Trail 2 Phase D §0/Priority 1 — same as-of resolution as the
+            // warm path above.
+            $deptAsOf = $this->_department_as_of($staffId, $dateISO, $dept);
+            $ctx = $ctxMemo[$staffId];
+            $ctx['department'] = $deptAsOf;
+            $r = Policy_assignment_service::resolve($ctx, $dateISO);
+
+            if (!empty($r['block'])) {
+                return $memo[$key] = ['block' => (string) $r['block'], 'isNonWorking' => false, 'department' => $deptAsOf];
+            }
+
+            $offs = (array) ($r['policy']['weeklyOffs'] ?? []);
+            $dow  = date('D', strtotime($dateISO));
+
+            return $memo[$key] = [
+                'block'        => null,
+                'isNonWorking' => in_array($dow, $offs, true),
+                'department'   => $deptAsOf,
+            ];
+        } catch (\Throwable $e) {
+            // A read failure is NOT "a normal working day". Refuse rather than
+            // classify against a calendar we could not load.
+            log_message('error', 'Staff_attendance calendar resolve failed for '
+                . $staffId . ' ' . $dateISO . ': ' . $e->getMessage());
+            $ctxMemo[$staffId] = null;   // do not retry the failed read all month
+            return $memo[$key] = ['block' => 'calendar_unreadable', 'isNonWorking' => false, 'department' => ''];
+        }
+    }
+
+    /**
+     * Trail 2, Priority 1 (2026-08-18) — the department that was EFFECTIVE on
+     * $dateISO, not the live `staff.Department` field.
+     *
+     * THE BUG THIS CLOSES. Staff::transfer_staff() and promote_staff() both
+     * write `staff.Department` IMMEDIATELY, whatever effective date the admin
+     * chose (that is the established, deliberate pattern in this codebase —
+     * the effective date governs the employment-history timeline, not the
+     * live field). Payroll was taught to resolve the historical value in
+     * Trail 2 Phase J; Attendance never was. So a transfer dated two weeks
+     * out silently changed TODAY's holiday/SWD/weekly-off scoping for that
+     * employee the instant HR clicked Transfer — the department-scoped
+     * Holiday_service lookups downstream of this method all received the
+     * NEW department for dates that still belong to the OLD one.
+     *
+     * Reuses the SAME read-only resolver Payroll already uses
+     * (Staff_employment_history_service::resolveAttributeAsOf) over the SAME
+     * staffEmploymentTimeline projection — no second history system, no new
+     * collection, no new writer.
+     *
+     * FAILS OPEN to $liveFallback (the current live value, i.e. exactly the
+     * pre-fix behaviour) whenever the timeline can't answer: no history
+     * recorded for this employee (the overwhelmingly common case — every
+     * staff member whose department has never changed), a read error, or the
+     * service being unavailable. Attendance must never refuse a punch because
+     * an employment-history lookup was unavailable; a slightly-stale
+     * department is strictly better than a blocked employee, and it is
+     * identical to how this code behaved before this fix.
+     *
+     * Memoised per (staffId|dateISO) — the finaliser resolves whole months,
+     * and this must not add 31 Firestore queries to that path.
+     */
+    private function _department_as_of(string $staffId, string $dateISO, string $liveFallback): string
+    {
+        static $deptMemo = [];
+        $k = $staffId . '|' . $dateISO;
+        if (array_key_exists($k, $deptMemo)) return $deptMemo[$k];
+
+        try {
+            $this->load->library('staff_employment_history_service');
+            $svc = $this->staff_employment_history_service
+                ->init($this->fs, $this->school_id, (string) ($this->admin_id ?? ''));
+            $hist = $svc->resolveAttributeAsOf($staffId, 'department', $dateISO);
+            if ($hist !== null && $hist !== '') return $deptMemo[$k] = $hist;
+        } catch (\Throwable $e) {
+            log_message('error', 'Staff_attendance::_department_as_of failed for '
+                . $staffId . ' ' . $dateISO . ': ' . $e->getMessage());
+        }
+        return $deptMemo[$k] = $liveFallback;
+    }
+
+    /**
+     * Non-working day NUMBERS for one employee across one month, for the live
+     * overlay. Returns [] when the calendar is unresolvable — the caller must
+     * treat that as "label nothing", never as "no days off".
+     */
+    private function _non_working_days(string $staffId, string $monthKey): array
+    {
+        if (!preg_match('/^\d{4}-\d{2}$/', $monthKey)) return [];
+        [$y, $m] = array_map('intval', explode('-', $monthKey));
+        $days = (int) date('t', mktime(0, 0, 0, $m, 1, $y));
+
+        $out = [];
+        for ($d = 1; $d <= $days; $d++) {
+            $dateISO = sprintf('%s-%02d', $monthKey, $d);
+            $cal = $this->_resolve_employee_calendar($staffId, $dateISO);
+            if ($cal['block'] !== null) return [];      // unknown month → label nothing
+            if (!$cal['isNonWorking']) continue;
+            // Phase D — a Special Working Day overrides an otherwise-off
+            // weekly-off day back to working; it must not be labelled 'O'.
+            try {
+                if ($this->holiday_service->is_special_working_day($dateISO, 'staff', $cal['department'] ?? '', $staffId)) continue;
+            } catch (\Throwable $e) {}
+            $out[$d] = true;
+        }
+        return $out;
+    }
+
     private function _today_checkin_minutes(string $staffId, string $dateISO): ?int
     {
         try {
@@ -639,43 +898,34 @@ class Staff_attendance extends MY_Controller
      * ('V') day with Absent (A), or weekly-off (O) / holiday (H) when the day
      * is a rest day. Today and future days are left untouched. Pure transform
      * (needs holiday_service already init'd).
+     *
+     * Phase D: $staffId/$department scope the holiday/Special-Working-Day
+     * checks to this employee. A Special Working Day beats everything —
+     * an unmarked past SWD day is a genuine miss (auto-absents like any
+     * other working day), never labelled O/H, mirroring
+     * Working_calendar_service's precedence exactly.
      */
-    private function _overlay_daywise(string $dayWise, string $monthKey, array $policy, string $todayISO): string
+    /**
+     * Trail 2 Phase D, Finding #1 (2026-08-18) — thin wrapper. The actual
+     * overlay logic now lives in Staff_attendance_overlay::apply(), shared
+     * with Attendance::_fetch_staff_attendance_fs() (the admin grid), so the
+     * two surfaces can no longer disagree about a pre-finalization day's
+     * state. See that class's docblock for the full rationale.
+     */
+    private function _overlay_daywise(string $dayWise, string $monthKey, array $policy, string $todayISO, array $nonWorkingDays = [], string $staffId = '', string $department = ''): string
     {
-        if ($dayWise === '') return $dayWise;
-        $weeklyOffs = (array) ($policy['weeklyOffs'] ?? []);
-        // autoAbsent (default ON): close past unmarked working days as Absent (A).
-        // When OFF, leave them Vacant (V); weekly-offs/holidays are still labelled O/H.
+        require_once APPPATH . 'libraries/Staff_attendance_overlay.php';
         $autoAbsent = array_key_exists('autoAbsent', $policy) ? !empty($policy['autoAbsent']) : true;
-        $len = strlen($dayWise);
-        for ($d = 1; $d <= $len; $d++) {
-            $ch = strtoupper($dayWise[$d - 1]);
-            // Only unmarked ('V') and previously auto-absented ('A') days are
-            // eligible. Processing 'A' lets a holiday added to the Academic
-            // Calendar AFTER a day was auto-absented retroactively show as 'H'
-            // in the live view (kept in sync with Staff_attendance_finaliser).
-            if ($ch !== 'V' && $ch !== 'A') continue;
-            $dateISO = sprintf('%s-%02d', $monthKey, $d);
-            if ($dateISO >= $todayISO) continue;                    // today + future untouched
-            // Fail closed on a per-date lookup error: leave the day as-is rather
-            // than flipping a possible holiday to Absent (is_holiday itself never
-            // throws — it fails open to "no holiday" — so this is belt-and-braces).
-            try { $isHol = $this->holiday_service->is_holiday($dateISO); }
-            catch (\Throwable $e) { continue; }
-            if ($isHol) {
-                $dayWise[$d - 1] = 'H';                              // V→H or retroactive A→H
-            } elseif ($ch === 'V') {
-                $dow = date('D', strtotime($dateISO));
-                if (in_array($dow, $weeklyOffs, true)) {
-                    $dayWise[$d - 1] = 'O';
-                } elseif ($autoAbsent) {
-                    $dayWise[$d - 1] = 'A';
-                }
-                // else: autoAbsent OFF → leave the day Vacant (V)
-            }
-            // $ch === 'A' and not a holiday → leave the genuine Absent untouched.
-        }
-        return $dayWise;
+        return \Staff_attendance_overlay::apply(
+            $this->holiday_service,
+            $dayWise,
+            $monthKey,
+            $autoAbsent,
+            $todayISO,
+            (array) ($nonWorkingDays ?? []),
+            $staffId,
+            $department
+        );
     }
 
     /** Count each status char in a dayWise string → keyed totals. */
@@ -691,10 +941,18 @@ class Staff_attendance extends MY_Controller
     }
 
     /** Human message for an accepted punch, covering half-day / extra / short-day. */
-    private function _punch_message(array $decision, string $direction): string
+    private function _punch_message(array $decision, string $direction, ?int $checkInMinutes = null): string
     {
         $mark = $decision['mark'] ?? null;
         if ($direction === 'out') {
+            // ATT-D2: a check-out with no check-in for the day is accepted as an
+            // audit punch, but it records nothing — no mark, no summary, no
+            // worked hours. Saying "Checked out." there tells the employee their
+            // day is on file when it is not.
+            if ($checkInMinutes === null) {
+                return 'No check-in was recorded today, so there is nothing to check out of. '
+                     . 'Ask your admin to regularize this day.';
+            }
             if ($mark === 'M') return 'Checked out — half day recorded.';
             if ($mark === 'A') return 'Checked out — below minimum hours; marked absent.';
             return 'Checked out.';

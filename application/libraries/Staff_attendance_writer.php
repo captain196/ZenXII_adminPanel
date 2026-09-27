@@ -435,6 +435,181 @@ class Staff_attendance_writer
     }
 
     /**
+     * Trail 2 (Work Schedule → Calendar → Attendance → Leave/LOP → Payroll),
+     * Phase D, Finding #2, 2026-08-18.
+     *
+     * Whole-month save for ONE staff member — the canonical writer's answer
+     * to Attendance::_save_staff_attendance_fs()'s previous raw-batch
+     * bypass, which wrote only the summary and skipped per-day
+     * staffAttendance docs entirely (no audit trail for a grid save, unlike
+     * every other write path in this file).
+     *
+     * Deliberately a FULL RECOMPUTE from $newDayWise, not a delta — unlike
+     * markSingleDay()/bulkMarkDay() (exactly one day changes, so a delta is
+     * simplest and cheapest), a whole-month save can change many days at
+     * once, and delta math over N simultaneous transitions is unnecessary
+     * complexity for no benefit; recomputing all 9 counts from the finished
+     * string is O(daysInMonth) either way and matches what the CALLER
+     * (Attendance::_save_staff_attendance_fs()) already computed before
+     * this method existed.
+     *
+     * Per-day staffAttendance docs are written ONLY for days whose
+     * character actually changed vs. the summary's existing dayWise — a
+     * day left alone gets no audit entry, no duplicate record, and no
+     * disturbance to whatever the punch/finaliser/leave-reversal path
+     * already wrote for it. Every changed day's write plus the one CAS-
+     * protected summary write happen in a SINGLE atomic firestoreCommitBatch
+     * — a full month is at most (daysInMonth + 1) ops, far under Firestore's
+     * 500-op batch ceiling, so atomicity is preserved exactly like
+     * markSingleDay()'s two-op batch, just wider.
+     *
+     * @param string     $staffId
+     * @param string     $monthKey        'YYYY-MM'
+     * @param string     $newDayWise      Target dayWise for the whole month (already sanitized/padded by the caller)
+     * @param array      $context         ['markedBy'=>string, 'source'=>string] — same shape as markSingleDay()
+     * @param array|null $preReadSummary  Optional ['data'=>array, '__updateTime'=>string] from a batch F-SB-4
+     *                                    read the caller already did for ALL staff this month — avoids one
+     *                                    Firestore read per staff on the happy (no-CAS-conflict) path. Only
+     *                                    used on the FIRST attempt; a CAS conflict always re-reads fresh.
+     *
+     * @throws MonthLockedException        if lock cache says month is locked
+     * @throws CASRetryExhaustedException  after max CAS retries fail
+     * @throws \InvalidArgumentException   on bad input
+     *
+     * @return array ['ok'=>bool, 'attempts'=>int, 'fs_reads'=>int, 'fs_writes'=>int,
+     *               'duration_ms'=>int, 'changed_days'=>int, 'cache_source'=>string]
+     */
+    public function saveMonthForStaff(
+        string $staffId,
+        string $monthKey,
+        string $newDayWise,
+        array $context = [],
+        ?array $preReadSummary = null
+    ): array {
+        if (!$this->ready) {
+            throw new \LogicException('Staff_attendance_writer not initialised; call init() first');
+        }
+        if ($staffId === '' || !preg_match('/^[A-Za-z0-9_\-]+$/', $staffId)) {
+            throw new \InvalidArgumentException('staffId required and must be a safe identifier');
+        }
+        if (!preg_match('/^\d{4}-\d{2}$/', $monthKey)) {
+            throw new \InvalidArgumentException("monthKey must be YYYY-MM, got '{$monthKey}'");
+        }
+        $year     = (int) substr($monthKey, 0, 4);
+        $monthNum = (int) substr($monthKey, 5, 2);
+        $daysIn   = (int) cal_days_in_month(CAL_GREGORIAN, $monthNum, $year);
+
+        // Sanitize/pad exactly like every other write path — an unknown
+        // char is never silently written; it becomes 'V' (Vacant), matching
+        // Staff_attendance_writer's own ALLOWED_STATUS contract elsewhere.
+        $clean = str_pad(strtoupper(substr($newDayWise, 0, $daysIn)), $daysIn, 'V');
+        for ($i = 0; $i < $daysIn; $i++) {
+            if (!in_array($clean[$i], self::ALLOWED_STATUS, true)) $clean[$i] = 'V';
+        }
+
+        $t0 = microtime(true);
+
+        // 1. Lock check (cached) — identical contract to every other writer entry point.
+        $lock = $this->lock_cache->is_locked($this->schoolId, $this->sessionYear, $monthKey);
+        if (!empty($lock['is_locked'])) {
+            throw new MonthLockedException("month {$monthKey} is locked for {$this->schoolId}");
+        }
+
+        $summaryDocId = $this->_summary_doc_id($staffId, $monthKey);
+        $fsReads  = 0;
+        $fsWrites = 0;
+
+        for ($attempt = 0; $attempt <= self::CAS_MAX_RETRIES; $attempt++) {
+            if ($attempt === 0 && $preReadSummary !== null) {
+                $sum      = $preReadSummary['data'] ?? null;
+                $captured = (string) ($preReadSummary['__updateTime'] ?? '');
+            } else {
+                $sum = $this->firebase->firestoreGet('staffAttendanceSummary', $summaryDocId);
+                $fsReads++;
+                $captured = is_array($sum) ? (string) ($sum['__updateTime'] ?? '') : '';
+            }
+
+            $oldDayWise = is_array($sum) ? (string) ($sum['dayWise'] ?? '') : '';
+            $oldDayWise = str_pad(substr($oldDayWise, 0, $daysIn), $daysIn, 'V');
+            $precondition = ($captured !== '') ? ['updateTime' => $captured] : ['exists' => false];
+
+            // Full recompute of all 9 counts from $clean (see docblock — not a delta).
+            $counts = ['present'=>0,'absent'=>0,'leave'=>0,'holiday'=>0,'tardy'=>0,
+                       'void'=>0,'halfDay'=>0,'extraWorked'=>0,'weeklyOff'=>0];
+            for ($i = 0; $i < $daysIn; $i++) {
+                $field = self::STATUS_TO_FIELD[$clean[$i]] ?? 'void';
+                $counts[$field]++;
+            }
+            $workingDays = (int) ($counts['present'] + $counts['leave'] + $counts['tardy'] + $counts['halfDay']);
+
+            $summaryPayload = array_merge([
+                'schoolId'    => $this->schoolId,
+                'session'     => $this->sessionYear,
+                'staffId'     => $staffId,
+                'month'       => $monthKey,
+                'year'        => $year,
+                'monthNumber' => $monthNum,
+                'dayWise'     => $clean,
+                'totalDays'   => $daysIn,
+                '_updatedAt'  => date('c'),
+            ], $counts);
+            $summaryPayload['workingDays'] = $workingDays;
+
+            $ops = [
+                ['op' => 'set', 'collection' => 'staffAttendanceSummary', 'docId' => $summaryDocId,
+                 'data' => $summaryPayload, 'merge' => true, 'precondition' => $precondition],
+            ];
+
+            // Per-day audit doc ONLY for days that actually changed.
+            $changedDays = 0;
+            for ($i = 0; $i < $daysIn; $i++) {
+                if ($clean[$i] === $oldDayWise[$i]) continue;
+                $changedDays++;
+                $day     = $i + 1;
+                $dateISO = sprintf('%s-%02d', $monthKey, $day);
+                $ops[] = [
+                    'op' => 'set', 'collection' => 'staffAttendance',
+                    'docId' => $this->_att_doc_id($dateISO, $staffId),
+                    'data' => [
+                        'schoolId'       => $this->schoolId,
+                        'session'        => $this->sessionYear,
+                        'date'           => $dateISO,
+                        'staffId'        => $staffId,
+                        'status'         => $clean[$i],
+                        'markedBy'       => (string) ($context['markedBy'] ?? 'unknown'),
+                        'markedAt'       => date('c'),
+                        'source'         => (string) ($context['source'] ?? 'grid_month_save'),
+                        'lateMinutes'    => 0,
+                        'previousStatus' => $oldDayWise[$i],
+                        '_updatedAt'     => date('c'),
+                    ],
+                ];
+            }
+
+            $ok = $this->firebase->firestoreCommitBatch($ops);
+            $fsWrites += count($ops);
+            if ($ok === true) {
+                return [
+                    'ok'           => true,
+                    'attempts'     => $attempt + 1,
+                    'fs_reads'     => $fsReads,
+                    'fs_writes'    => $fsWrites,
+                    'duration_ms'  => (int) ((microtime(true) - $t0) * 1000),
+                    'changed_days' => $changedDays,
+                    'cache_source' => $lock['source'] ?? 'unknown',
+                ];
+            }
+            // CAS conflict or transient — re-read fresh on the next attempt.
+            $this->_backoff($attempt);
+        }
+
+        throw new CASRetryExhaustedException(
+            "CAS retry exhausted for staffAttendanceSummary/{$summaryDocId} after "
+            . (self::CAS_MAX_RETRIES + 1) . ' attempts'
+        );
+    }
+
+    /**
      * Autofill: broadcast same status to M staff on a date.
      * Thin wrapper over bulkMarkDay.
      */

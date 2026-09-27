@@ -106,6 +106,7 @@
 .sa-grid th.sa-th-pct { width:112px; }
 .sa-grid th.sa-col-sun { background:rgba(239,68,68,.10); color:#dc2626; }
 .sa-grid th.sa-col-hol { background:rgba(139,92,246,.14); color:#7c3aed; }
+.sa-grid th.sa-col-swd { background:rgba(5,150,105,.14); color:#059669; }
 
 .sa-grid td {
     padding:4px; text-align:center; border-bottom:1px solid var(--sa-border);
@@ -148,6 +149,9 @@
 
 .sa-grid td.sa-col-sun { background:var(--sa-sun-bg); border-left:1px solid rgba(239,68,68,.10); border-right:1px solid rgba(239,68,68,.10); }
 .sa-grid td.sa-col-hol { background:var(--sa-hol-bg); border-left:1px solid rgba(139,92,246,.10); border-right:1px solid rgba(139,92,246,.10); }
+/* Special Working Day: a calendar-declared makeup working day. Unlocked
+   (unlike sa-col-sun/sa-col-hol below), tinted green to signal "working". */
+.sa-grid td.sa-col-swd { background:rgba(5,150,105,.08); border-left:1px solid rgba(5,150,105,.10); border-right:1px solid rgba(5,150,105,.10); }
 /* Future days: not yet editable. Kept visually uniform with the rest of the
    grid — only the date number is muted and the marks are lightly dimmed, so the
    future half doesn't read as a washed-out / broken block. */
@@ -505,6 +509,7 @@
         daysInMonth: 0,
         sundays: [],
         holidays: {},
+        specialWorkingDays: {},
         month: '',
         year: 0,
         attendance: {},
@@ -579,6 +584,10 @@
      */
     function dateLockReason(day) {
         if (dayState(day) === 'future') return 'future';
+        // Phase D — a calendar-declared Special Working Day overrides
+        // Sunday/holiday and unlocks the cell (same precedence as the staff
+        // grid's dateLockReason(staffId, day)).
+        if (state.specialWorkingDays && state.specialWorkingDays[day] !== undefined) return null;
         if (state.sundays && state.sundays.indexOf(day) !== -1) return 'sunday';
         // Use property-existence (not truthiness) so a holiday saved with an
         // empty name still locks the date.
@@ -687,6 +696,7 @@
                 state.daysInMonth = parseInt(res.daysInMonth, 10) || 30;
                 state.sundays = res.sundays || [];
                 state.holidays = res.holidays || {};
+                state.specialWorkingDays = res.specialWorkingDays || {};
                 state.month = res.month || mon;
                 state.year = parseInt(res.year, 10) || new Date().getFullYear();
                 state.dirty = new Set();
@@ -762,6 +772,9 @@
         state.sundays.forEach(function(d){ sundaySet[d] = true; });
         var holidaySet = {};
         Object.keys(state.holidays).forEach(function(d){ holidaySet[parseInt(d,10)] = state.holidays[d]; });
+        // Phase D — Special Working Day overrides Sunday/holiday shading below.
+        var swdSet = {};
+        Object.keys(state.specialWorkingDays || {}).forEach(function(d){ swdSet[parseInt(d,10)] = state.specialWorkingDays[d]; });
 
         /* Day names for header */
         var dayNames = ['Sun','Mon','Tue','Wed','Thu','Fri','Sat'];
@@ -770,13 +783,17 @@
         var hHtml = '<tr><th class="sa-th-idx">#</th><th class="sa-th-student">Student</th>';
         for (var d = 1; d <= state.daysInMonth; d++) {
             var cls = 'sa-th-day';
-            if (sundaySet[d]) cls += ' sa-col-sun';
-            if (holidaySet[d]) cls += ' sa-col-hol';
+            if (swdSet[d] !== undefined) {
+                cls += ' sa-col-swd';
+            } else {
+                if (sundaySet[d]) cls += ' sa-col-sun';
+                if (holidaySet[d]) cls += ' sa-col-hol';
+            }
             if (dayState(d) === 'future') cls += ' sa-col-future';
             var dt = new Date(state.year, getMonthIndex(state.month), d);
             var dn = dayNames[dt.getDay()];
             hHtml += '<th class="' + cls + '" title="' + dn + ', ' + state.month + ' ' + d + '">';
-            var isSun = sundaySet[d];
+            var isSun = sundaySet[d] && swdSet[d] === undefined;
             hHtml += '<div style="line-height:1.2' + (isSun ? ';color:#dc2626;font-weight:900' : '') + '">' + d + '</div>';
             hHtml += '<div style="font-size:8px;font-weight:' + (isSun ? '700' : '500') + ';letter-spacing:0;' + (isSun ? 'color:#dc2626;opacity:1' : 'opacity:.6') + '">' + dn.charAt(0) + '</div>';
             hHtml += '</th>';
@@ -796,15 +813,21 @@
             bHtml += '<div class="sa-avatar ' + avColor + '">' + getInitials(s.name) + '</div>';
             bHtml += '<div class="sa-stu-info">';
             bHtml += '<div class="sa-stu-name" title="' + esc(s.name) + '">' + esc(s.name) + '</div>';
-            bHtml += '<div class="sa-stu-id">' + esc(s.id) + '</div>';
+            // SR No. (permanent school register number) shown when present —
+            // students admitted before SRNO enforcement legitimately have none.
+            bHtml += '<div class="sa-stu-id">' + (s.sr_no ? 'SR ' + esc(s.sr_no) + ' &middot; ' : '') + esc(s.id) + '</div>';
             bHtml += '</div></div></td>';
 
             for (var d = 0; d < state.daysInMonth; d++) {
                 var day = d + 1;
                 var v = att[d];
                 var tdCls = '';
-                if (sundaySet[day]) tdCls += ' sa-col-sun';
-                if (holidaySet[day]) tdCls += ' sa-col-hol';
+                if (swdSet[day] !== undefined) {
+                    tdCls += ' sa-col-swd';
+                } else {
+                    if (sundaySet[day]) tdCls += ' sa-col-sun';
+                    if (holidaySet[day]) tdCls += ' sa-col-hol';
+                }
                 if (dayState(day) === 'future') tdCls += ' sa-col-future';
                 var dirtyMark = state.dirty.has(s.id) && att[d] !== state.original[s.id].charAt(d) ? ' sa-dirty' : '';
                 var lateDot = v === 'T' ? '<span class="sa-late-dot"></span>' : '';

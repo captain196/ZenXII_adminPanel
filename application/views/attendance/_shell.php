@@ -22,19 +22,32 @@ $activeKey  = $shell['active'] ?? ($shellTabs[0]['key'] ?? '');
 <link rel="stylesheet" href="<?= base_url('assets/css/attendance_design_system.css') ?>?v=2.1.0">
 
 <style>
-/* Shell chrome — scoped to .att-shell so it can't leak into embedded pages. */
-.att-shell { --sh-accent:#2f6fbf; }
+/* Shell chrome — scoped to .att-shell so it can't leak into embedded pages.
+   Theme-driven: the accent is the global brand token (--gold / terracotta) and
+   every surface/text/border reads the admin theme tokens, so the header follows
+   Day/Night exactly like the rest of the panel. The #hex after each var() is a
+   safety fallback only (used if a token is ever missing). */
+.att-shell {
+    --sh-accent: var(--gold, #BC5A3C);
+    --sh-accent-ring: var(--gold-ring, rgba(188,90,60,.35));
+    --sh-t1:  var(--att-t1, var(--t1, #1b2733));
+    --sh-t2:  var(--att-t2, var(--t2, #38444f));
+    --sh-t3:  var(--att-t3, var(--t3, #6b7a89));
+    --sh-bd:  var(--att-border, var(--border, #e4e9ef));
+    --sh-bg1: var(--att-bg,  var(--bg,  #ffffff));
+    --sh-bg2: var(--att-bg2, var(--bg2, #f2f5f8));
+}
 .att-shell .att-shell-head { display:flex; align-items:center; gap:14px; margin-bottom:14px; }
 .att-shell .att-shell-ico { width:46px; height:46px; border-radius:12px; display:flex; align-items:center; justify-content:center;
     background:var(--sh-accent); color:#fff; font-size:20px; flex:0 0 auto; }
-.att-shell .att-shell-title { font-size:20px; font-weight:700; color:var(--att-t1,#1b2733); line-height:1.15; }
-.att-shell .att-shell-sub { font-size:12.5px; color:var(--att-t3,#6b7a89); margin-top:2px; }
+.att-shell .att-shell-title { font-size:20px; font-weight:700; color:var(--sh-t1); line-height:1.15; }
+.att-shell .att-shell-sub { font-size:12.5px; color:var(--sh-t3); margin-top:2px; }
 
 .att-shell .att-shell-tabs { display:flex; flex-wrap:wrap; gap:8px; margin-bottom:12px;
-    border-bottom:1px solid var(--att-bd,#e4e9ef); padding-bottom:12px; }
+    border-bottom:1px solid var(--sh-bd); padding-bottom:12px; }
 .att-shell .att-shell-tab { display:inline-flex; align-items:center; gap:8px; cursor:pointer; user-select:none;
-    font-size:13.5px; font-weight:600; color:var(--att-t2,#38444f); background:var(--att-bg2,#f2f5f8);
-    border:1px solid var(--att-bd,#e4e9ef); border-radius:10px; padding:9px 15px; transition:all .15s; }
+    font-size:13.5px; font-weight:600; color:var(--sh-t2); background:var(--sh-bg2);
+    border:1px solid var(--sh-bd); border-radius:10px; padding:9px 15px; transition:all .15s; }
 .att-shell .att-shell-tab:hover { border-color:var(--sh-accent); color:var(--sh-accent); }
 .att-shell .att-shell-tab.active { background:var(--sh-accent); border-color:var(--sh-accent); color:#fff; }
 .att-shell .att-shell-tab { min-height:44px; }
@@ -56,18 +69,18 @@ $activeKey  = $shell['active'] ?? ($shellTabs[0]['key'] ?? '');
    position:fixed aligns with the real viewport (not the tall auto-height iframe). */
 .att-shell .att-shell-frame.shell-frame-pinned { position:fixed !important; top:0 !important; left:0 !important; width:100% !important; height:100vh !important; z-index:4000 !important; }
 .att-shell .att-shell-spin { position:absolute; inset:0; display:flex; align-items:center; justify-content:center;
-    background:var(--att-bg1,#fff); z-index:2; }
+    background:var(--sh-bg1); z-index:2; }
 .att-shell .att-shell-spin.hidden { display:none; }
-.att-shell .att-shell-spin .sp { width:30px; height:30px; border-radius:50%; border:3px solid var(--att-bd,#e4e9ef);
+.att-shell .att-shell-spin .sp { width:30px; height:30px; border-radius:50%; border:3px solid var(--sh-bd);
     border-top-color:var(--sh-accent); animation:attSpin .7s linear infinite; }
 @keyframes attSpin { to { transform:rotate(360deg); } }
 @media (prefers-reduced-motion:reduce){ .att-shell .att-shell-spin .sp { animation:none; } }
 /* Failure state — replaces an endlessly-spinning frame with a real recovery UI. */
 .att-shell .att-shell-error { position:absolute; inset:0; z-index:3; display:none; flex-direction:column;
-    align-items:center; justify-content:center; gap:14px; padding:26px; text-align:center; background:var(--att-bg1,#fff); }
-.att-shell .att-shell-error.show { display:flex; }
+    align-items:center; justify-content:center; gap:14px; padding:26px; text-align:center; background:var(--sh-bg1); }
+.att-shell .att-shell-error.show { display:flex !important; }
 .att-shell .att-shell-error .em { font-size:26px; }
-.att-shell .att-shell-error .msg { font-size:14px; color:var(--att-t2,#38444f); max-width:44ch; }
+.att-shell .att-shell-error .msg { font-size:14px; color:var(--sh-t2); max-width:44ch; }
 .att-shell .att-shell-retry { font-size:13.5px; font-weight:700; color:#fff; background:var(--sh-accent); border:0;
     border-radius:9px; padding:9px 18px; cursor:pointer; min-height:40px; }
 .att-shell .att-shell-retry:hover { filter:brightness(.95); }

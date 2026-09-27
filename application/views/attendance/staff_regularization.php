@@ -28,6 +28,15 @@ $att_can_manage = function_exists('has_permission') ? has_permission('Attendance
     padding:8px 14px; border-radius:9px; display:flex; align-items:center; gap:7px; }
 .sr-refresh:hover { border-color: var(--sr-accent); color: var(--sr-accent); }
 
+.sr-notice { position: relative; margin: 0 0 16px; padding: 12px 38px 12px 14px; border-radius: 10px;
+    border: 1px solid; font-size: 13.5px; line-height: 1.5; }
+.sr-notice.stop { color: var(--sr-red, #dc2626); border-color: rgba(220,38,38,.35); background: rgba(220,38,38,.08); }
+.sr-notice.warn { color: var(--t1, #1b2733); border-color: rgba(217,119,6,.4); background: rgba(217,119,6,.1); }
+.sr-notice ul { margin: 6px 0 0; padding-left: 18px; }
+.sr-notice li { margin: 3px 0; }
+.sr-notice-x { position: absolute; top: 6px; right: 8px; border: 0; background: none; cursor: pointer;
+    font-size: 20px; line-height: 1; color: inherit; opacity: .6; padding: 2px 6px; min-height: 32px; }
+.sr-notice-x:hover { opacity: 1; }
 .sr-tabs { display: flex; gap: 8px; margin: 0 0 18px; flex-wrap: wrap; }
 .sr-tab { font: inherit; font-size: 13px; font-weight: 600; border: 1px solid var(--border,#d8e0ea);
     background: var(--bg2,#f4f7fb); color: var(--t2,#3a4a5b); padding: 8px 16px; border-radius: 999px; cursor: pointer; display:flex; gap:7px; align-items:center; }
@@ -102,10 +111,15 @@ $att_can_manage = function_exists('has_permission') ? has_permission('Attendance
     <div class="sr-banner" role="status"><i class="fa-solid fa-lock"></i> View-only — you can review regularization requests, but approving or rejecting needs Attendance manage access.</div>
     <?php endif; ?>
 
+    <div class="sr-notice" id="srNotice" role="alert" style="display:none"></div>
     <div class="sr-tabs" id="srTabs">
         <button class="sr-tab active" data-status="pending">Pending <span class="sr-cnt" id="cnt-pending">·</span></button>
         <button class="sr-tab" data-status="approved">Approved</button>
         <button class="sr-tab" data-status="rejected">Rejected</button>
+        <!-- Withdrawn by the employee. Reachable once the R-X1 rules patch is
+             deployed; the tab is harmless before that (the filter simply
+             returns nothing) and means a withdrawal is never invisible. -->
+        <button class="sr-tab" data-status="cancelled">Withdrawn</button>
         <button class="sr-tab" data-status="all">All</button>
     </div>
 
@@ -120,6 +134,7 @@ $att_can_manage = function_exists('has_permission') ? has_permission('Attendance
 
 <div class="sr-toast" id="srToast"></div>
 
+<script src="<?= base_url('assets/js/zx_dialog.js') ?>?v=1"></script>
 <script>
 /* Native DOM + fetch (NO jQuery). jQuery loads in the footer AFTER this inline
    script, so any $() here would throw and kill the page (blank list, dead tabs).
@@ -141,6 +156,54 @@ $att_can_manage = function_exists('has_permission') ? has_permission('Attendance
     var _busy = 0;
     function busyStart(){ _busy++; var b = document.getElementById('attLoadbar'); if (b) b.classList.add('on'); }
     function busyEnd(){ _busy = Math.max(0, _busy - 1); if (!_busy){ var b = document.getElementById('attLoadbar'); if (b) b.classList.remove('on'); } }
+    // Why a request could not be decided. The endpoint answers in codes; an
+    // administrator needs a sentence AND the next move, or the queue becomes a
+    // support ticket. Every code the server can emit is listed here — an
+    // unrecognised one falls back to showing the raw code rather than swallowing
+    // it, so a new reason surfaces as ugly text instead of silence.
+    var SKIP_REASONS = {
+        self_approval_forbidden:
+            'You cannot approve your own regularization — ask another reviewer to decide it.',
+        payroll_locked:
+            'Payroll for that month is already locked, so its attendance can no longer ' +
+            'change — the payslips were calculated from it. If the correction is genuinely ' +
+            'due it has to be handled as a payroll adjustment, not an attendance edit.',
+        payroll_lock_unreadable:
+            'The payroll lock could not be read, so the change was refused rather than ' +
+            'risking a locked month. Try again in a moment.',
+        over_monthly_limit:
+            'This employee has reached the monthly regularization limit set for the school.',
+        month_locked:
+            'That month is locked, so its attendance can no longer be changed. ' +
+            'Unlocking a month is not available in the panel — ask your administrator.',
+        already_decided:
+            'Already decided — refresh to see the current status.',
+        concurrently_decided:
+            'Another reviewer decided this first — refresh to see their decision.',
+        write_failed:
+            'The attendance register could not be updated, so the request was left pending. Try again.',
+        not_found:
+            'That request no longer exists — refresh the list.',
+        not_staff:
+            'Not a staff request — nothing was changed.',
+        bad_request:
+            'That request is missing a staff member or a valid date, so it cannot be applied.'
+    };
+
+    function skipHtml(skipped){
+        var seen = {}, out = [];
+        (skipped || []).forEach(function(sk){
+            var code = (sk && sk.reason) || 'unknown';
+            if (seen[code]) return;
+            seen[code] = true;
+            // A message sent BY THE SERVER wins: that is how a school's own
+            // wording for its own policy reaches the reviewer. The code map is
+            // the fallback for reasons that carry no message.
+            if (sk && sk.message) { out.push(esc(sk.message)); return; }
+            out.push(SKIP_REASONS[code] || ('Could not be applied (' + esc(code) + ').'));
+        });
+        return out;
+    }
     function initial(n){ n=(n||'?').trim(); return n?n.charAt(0).toUpperCase():'?'; }
     function fmtTime(iso){ if(!iso) return ''; try{ var d=new Date(iso); if(isNaN(d.getTime()))return ''; return d.toLocaleTimeString([],{hour:'2-digit',minute:'2-digit'});}catch(e){return '';} }
     function toast(msg){ var t=document.getElementById('srToast'); t.textContent=msg; t.classList.add('show'); setTimeout(function(){t.classList.remove('show');},2600); }
@@ -203,8 +266,8 @@ $att_can_manage = function_exists('has_permission') ? has_permission('Attendance
             if (status === 'pending' && CAN_MANAGE){
                 actions = '<div class="sr-actions">'+
                     '<label>Apply as</label>'+
-                    '<select class="sr-mark"><option value="">Present</option><option value="T">Late (T)</option><option value="M">Half-day (M)</option><option value="L">Leave (L)</option><option value="W">Work-on-off (W)</option></select>'+
-                    '<input class="sr-remarks" type="text" placeholder="Remarks (optional)">'+
+                    '<select class="sr-mark" title="Which mark to stamp on the day"><option value="">As requested</option><option value="P">Present (P)</option><option value="T">Late (T)</option><option value="M">Half-day (M)</option><option value="L">Leave (L)</option><option value="W">Work-on-off (W)</option></select>'+
+                    '<input class="sr-remarks" type="text" maxlength="500" placeholder="Remarks (optional)">'+
                     '<button class="sr-btn reject" data-batch="'+esc(bid)+'" data-decision="reject">Reject</button>'+
                     '<button class="sr-btn approve" data-batch="'+esc(bid)+'" data-decision="approve">Approve</button>'+
                 '</div>';
@@ -240,6 +303,20 @@ $att_can_manage = function_exists('has_permission') ? has_permission('Attendance
         }).catch(function(e){ listEl.innerHTML = stateBox('⚠️', (e && e.message) || 'Could not load requests. Reload the page and try again.'); });
     }
 
+    // A persistent, dismissible explanation. Used whenever a decision was
+    // refused or only partly applied — those need to be READ, not glimpsed.
+    function showNotice(lines, partial, heading){
+        var el = document.getElementById('srNotice');
+        if (!el) return;
+        el.className = 'sr-notice ' + (partial ? 'warn' : 'stop');
+        el.innerHTML =
+            '<button type="button" class="sr-notice-x" aria-label="Dismiss">&times;</button>' +
+            '<strong>' + esc(heading || 'Nothing was changed:') + '</strong>' +
+            '<ul>' + lines.map(function(l){ return '<li>' + l + '</li>'; }).join('') + '</ul>';
+        el.style.display = 'block';
+        el.querySelector('.sr-notice-x').addEventListener('click', function(){ el.style.display = 'none'; });
+        el.scrollIntoView({ block: 'nearest' });
+    }
     document.getElementById('srTabs').addEventListener('click', function(e){
         var btn = e.target.closest('.sr-tab'); if (!btn) return;
         this.querySelectorAll('.sr-tab').forEach(function(t){ t.classList.remove('active'); });
@@ -249,11 +326,11 @@ $att_can_manage = function_exists('has_permission') ? has_permission('Attendance
     });
     document.getElementById('srRefresh').addEventListener('click', load);
 
-    listEl.addEventListener('click', function(e){
+    listEl.addEventListener('click', async function(e){
         var btn = e.target.closest('.sr-btn'); if (!btn || btn.disabled) return;
         if (!CAN_MANAGE) { toast("View-only — you don't have manage access."); return; }
         var bid = btn.getAttribute('data-batch'), decision = btn.getAttribute('data-decision');
-        if (decision === 'reject' && !confirm('Reject this regularization request?')) return;
+        if (decision === 'reject' && !await zxConfirm({ title: 'Reject this regularization request?' })) return;
         var card = btn.closest('.sr-card');
         var remarksEl = card.querySelector('.sr-remarks'), markEl = card.querySelector('.sr-mark');
         var remarks = remarksEl ? remarksEl.value : '', mark = markEl ? markEl.value : '';
@@ -269,9 +346,28 @@ $att_can_manage = function_exists('has_permission') ? has_permission('Attendance
         post(DECIDE_URL, { batch_id: bid, decision: decision, remarks: remarks, mark: mark }).then(function(res){
             if (res && res.status === 'success'){
                 // appliedCount / skippedCount are TOP-LEVEL (json_success merge), not res.data.*
-                toast(decision === 'approve'
-                    ? ('Approved '+(res.appliedCount||0)+' day(s)'+(res.skippedCount?', '+res.skippedCount+' skipped':''))
-                    : 'Request rejected');
+                var applied = res.appliedCount || 0;
+                var reasons = skipHtml(res.skipped);
+
+                if (applied === 0 && reasons.length){
+                    // NOTHING happened. This is a failure however the transport
+                    // dressed it up, so it must not read as success — and it must
+                    // stay on screen, because a toast that vanishes takes the only
+                    // explanation with it.
+                    showNotice(reasons, false);
+                    restoreBtns();
+                    return;
+                }
+
+                if (reasons.length){
+                    showNotice(reasons, true, (decision === 'approve'
+                        ? 'Applied to ' + applied + ' day(s). The rest were not applied:'
+                        : 'Rejected ' + applied + ' day(s). The rest were not applied:'));
+                } else {
+                    toast(decision === 'approve'
+                        ? ('Approved ' + applied + ' day(s)')
+                        : 'Request rejected');
+                }
                 load();
             } else {
                 toast((res && res.message) || 'Action failed');
