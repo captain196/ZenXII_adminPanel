@@ -119,15 +119,40 @@
                 // in the footer never fires for fetch, and every attendance page
                 // uses fetch). On a 401/403 whose body reads as an auth failure,
                 // break OUT of any embed iframe to the login page. (FE-C1)
+                //
+                // 2026-08-10: CSRF-token staleness fix. csrfToken was a one-time
+                // page-load snapshot with nothing anywhere refreshing it — every
+                // json_success()/json_error() response already carries a live
+                // csrf_token field (MY_Controller::json_success/json_error), so
+                // this now keeps the in-memory token in sync on every response,
+                // app-wide, not just Campus Access. That alone doesn't save the
+                // ONE request that happens to straddle the csrf_expire boundary
+                // (CI rejects it before any controller code — and thus any fresh
+                // token — ever runs), so a 403 that ISN'T our own JSON error shape
+                // (i.e. CI's raw framework CSRF-rejection page, not app-level 403)
+                // now reloads the page automatically with a clear message instead
+                // of leaving the user stuck on that raw, unstyled error page.
                 return _fetch.call(this, input, init).then(function (res) {
                     if (res && (res.status === 401 || res.status === 403)) {
                         res.clone().text().then(function (txt) {
-                            var msg = '';
-                            try { msg = (JSON.parse(txt || '{}').message) || ''; } catch (e) {}
-                            if (/session|expired|log\s*in|deactivat|subscription|unauthor/i.test(msg)) {
-                                try { (window.top || window).location.href = LOGIN_URL; }
-                                catch (e) { window.location.href = LOGIN_URL; }
+                            var parsed = null;
+                            try { parsed = JSON.parse(txt || '{}'); } catch (e) {}
+                            if (parsed) {
+                                if (parsed.csrf_token) csrfToken = parsed.csrf_token;
+                                var msg = parsed.message || '';
+                                if (/session|expired|log\s*in|deactivat|subscription|unauthor/i.test(msg)) {
+                                    try { (window.top || window).location.href = LOGIN_URL; }
+                                    catch (e) { window.location.href = LOGIN_URL; }
+                                }
+                            } else if (res.status === 403 && !window.__csrfReloadPrompted) {
+                                window.__csrfReloadPrompted = true;
+                                alert('Your session security token expired. The page will now reload — please repeat your last action.');
+                                location.reload();
                             }
+                        }).catch(function () {});
+                    } else if (res && res.ok) {
+                        res.clone().json().then(function (j) {
+                            if (j && j.csrf_token) csrfToken = j.csrf_token;
                         }).catch(function () {});
                     }
                     return res;
@@ -583,47 +608,120 @@
                 <a href="<?= base_url('school_config/admission_payment') ?>"><i class="fa fa-credit-card"></i><span>Admission Payment</span></a>
             </li>
             <?php endif; ?>
-
             <!-- ═══════════════════════════════════════════════════════════
-                 STEP 2 — STAFF (hire teachers and admin staff first)
-                 Staff list → New Staff → HR & Payroll (departments, recruitment, leave, payroll, appraisals)
-                 ═══════════════════════════════════════════════════════════ -->
-            <?php if (isset($school_features) && in_array('Staff Management', $school_features) && ($can('HR') || $can('SIS'))): ?>
-            <li class="g-sec">Staff</li>
-            <?php /* Supersession (Tier 3): the "Departments & Roles" (Org) sidebar door
-               was COLLAPSED into "Staff & Roles" (Staff_access Tab 1) — the 3-tab
-               superset that edits the SAME schools.staffRoles/departments. Org routes
-               stay live (deep links + backfill_legacy_departments), only the duplicate
-               menu entry is removed. Re-add the <li> to base_url('org') to restore. */ ?>
-            <?php if ($can('Admin Users')): ?>
-            <li class="sidebar-single">
-                <a href="<?= base_url('staff_access') ?>"><i class="fa fa-shield"></i><span>Staff &amp; Roles</span></a>
-            </li>
-            <?php endif; ?>
-            <li class="treeview">
-                <a href="#"><i class="fa fa-user-o"></i><span>Staff Records</span><span class="pull-right-container"><i class="fa fa-angle-left pull-right"></i></span></a>
-                <ul class="treeview-menu">
-                    <li><a href="<?= base_url('staff/all_staff') ?>"><i class="fa fa-circle-o"></i>All Staff</a></li>
-                    <li><a href="<?= base_url('staff/new_staff') ?>"><i class="fa fa-circle-o"></i>New Staff</a></li>
-                </ul>
-            </li>
-            <?php endif; ?>
+                 STEP 2 — STAFF  (one menu, ordered by the employment lifecycle)
 
-            <?php if (isset($school_features) && in_array('Staff Management', $school_features) && $can('HR')): ?>
+                 CONSOLIDATED 2026-08-23. Staff features had been spread across
+                 four separate top-level entries — "Staff & Roles", "Staff
+                 Records", "HR & Payroll" and "Staff Attendance" — so a school
+                 administrator had to know which of the four held the thing they
+                 wanted. They are now one menu, ordered the way an employment
+                 actually runs: hire → record → schedule → attend → pay →
+                 appraise.
+
+                 EVERY GATE IS PRESERVED PER ITEM, not merged. The four blocks
+                 had FOUR different conditions, and collapsing them under one
+                 would have silently removed access:
+
+                   Staff Records     Staff Management && (HR || SIS)
+                   Staff & Roles     …and additionally Admin Users
+                   HR & Payroll      Staff Management && HR
+                   Staff Attendance  Staff Management && Attendance
+
+                 So each <li> keeps its own condition and the menu itself shows
+                 only if at least one child would. Someone with Attendance but
+                 not HR still sees Staff Attendance and nothing else, exactly as
+                 before.
+                 ═══════════════════════════════════════════════════════════ -->
+            <?php
+              $sfStaff        = isset($school_features) && in_array('Staff Management', $school_features);
+              $mStaffRecords  = $sfStaff && ($can('HR') || $can('SIS'));
+              $mStaffRoles    = $mStaffRecords && $can('Admin Users');
+              $mHr            = $sfStaff && $can('HR');
+              $mStaffAtt      = $sfStaff && $can('Attendance');
+              $mStaffAny      = $mStaffRecords || $mStaffRoles || $mHr || $mStaffAtt;
+            ?>
+            <?php if ($mStaffAny): ?>
+            <li class="g-sec">Staff</li>
             <li class="treeview">
-                <a href="#"><i class="fa fa-id-card-o"></i><span>HR &amp; Payroll</span><span class="pull-right-container"><small class="label pull-right bg-red approval-badge" id="badgeHr" style="display:none">0</small><i class="fa fa-angle-left pull-right"></i></span></a>
+                <a href="#"><i class="fa fa-users"></i><span>Staff &amp; HR</span><span class="pull-right-container"><small class="label pull-right bg-red approval-badge" id="badgeHr" style="display:none">0</small><i class="fa fa-angle-left pull-right"></i></span></a>
                 <ul class="treeview-menu">
-                    <li><a href="<?= base_url('hr') ?>"><i class="fa fa-circle-o"></i>Dashboard</a></li>
-                    <li><a href="<?= base_url('hr/departments') ?>"><i class="fa fa-circle-o"></i>Departments</a></li>
+
+                    <?php if ($mHr): ?>
+                    <li><a href="<?= base_url('hr') ?>"><i class="fa fa-circle-o"></i>HR Dashboard</a></li>
+                    <?php endif; ?>
+
+                    <?php /* ── Hire ── */ ?>
+                    <?php if ($mHr): ?>
                     <li><a href="<?= base_url('hr/recruitment') ?>"><i class="fa fa-circle-o"></i>Recruitment</a></li>
                     <li><a href="<?= base_url('ats') ?>"><i class="fa fa-circle-o"></i>Applicant Tracking</a></li>
+                    <?php endif; ?>
+
+                    <?php /* ── Record ──
+                       Supersession (Tier 3): the "Departments & Roles" (Org) door was
+                       COLLAPSED into "Staff & Roles" (Staff_access Tab 1) — the 3-tab
+                       superset that edits the SAME schools.staffRoles/departments. Org
+                       routes stay live (deep links + backfill_legacy_departments); only
+                       the duplicate menu entry is gone. Re-add a <li> to base_url('org')
+                       to restore.
+
+                       Supersession (Staff Lifecycle audit, 2026-08-21): the HR
+                       "Departments" tab was a THIRD editor of schools.departments. Its
+                       two extra fields — head_staff_id and department status — were
+                       verified DEAD: written but read by nothing. Its menu entry was
+                       removed then, and on 2026-08-23 the dead tab itself was removed
+                       from the HR page.
+
+                       `hr/get_departments` stays live and is read by five views
+                       (edit_staff, new_staff, teacher_profile and two HR tabs) for
+                       their department dropdowns. The save/delete WRITERS already
+                       moved to Staff_access — Org.php calls them "former" — so only
+                       the reader still matters here. */ ?>
+                    <?php if ($mStaffRecords): ?>
+                    <li><a href="<?= base_url('staff/all_staff') ?>"><i class="fa fa-circle-o"></i>All Staff</a></li>
+                    <li><a href="<?= base_url('staff/new_staff') ?>"><i class="fa fa-circle-o"></i>Add Staff</a></li>
+                    <?php endif; ?>
+                    <?php if ($mStaffRoles): ?>
+                    <li><a href="<?= base_url('staff_access') ?>"><i class="fa fa-circle-o"></i>Departments &amp; Roles</a></li>
+                    <?php endif; ?>
+
+                    <?php /* ── Schedule &amp; attend ──
+                       Work Schedules sits here because the controller gates on
+                       require_permission('HR'), so gating the link anywhere else would
+                       show a link that then refuses the user.
+
+                       Staff Attendance keeps its own Attendance gate and is deliberately
+                       NOT in the student "Attendance" menu below — staff and student
+                       attendance are separate systems and must not be merged. It sits
+                       here because this is where somebody looks for it. */ ?>
+                    <?php if ($mHr): ?>
+                    <li><a href="<?= base_url('work_schedules') ?>"><i class="fa fa-circle-o"></i>Work Schedules</a></li>
+                    <?php endif; ?>
+                    <?php if ($mStaffAtt): ?>
+                    <li><a href="<?= base_url('attendance/staff') ?>"><i class="fa fa-clock-o"></i>Staff Attendance</a></li>
+                    <?php endif; ?>
+                    <?php if ($mHr): ?>
                     <li><a href="<?= base_url('hr/leaves') ?>"><i class="fa fa-circle-o"></i>Leave Management<small class="label pull-right bg-red" id="badgeLeaveMgmt" style="display:none">0</small></a></li>
+                    <?php endif; ?>
+
+                    <?php /* ── Pay ──
+                       Compensation carries salary components, pay grades, structures,
+                       statutory configuration (PF/ESI/PT/TDS), wage definition and
+                       Full & Final policy. Gated on HR, matching
+                       Compensation::__construct's require_permission('HR') exactly. */ ?>
+                    <?php if ($mHr): ?>
                     <li><a href="<?= base_url('hr/payroll') ?>"><i class="fa fa-circle-o"></i>Payroll</a></li>
+                    <li><a href="<?= base_url('compensation') ?>"><i class="fa fa-circle-o"></i>Compensation &amp; Statutory</a></li>
+                    <?php endif; ?>
+
+                    <?php /* ── Develop ── */ ?>
+                    <?php if ($mHr): ?>
                     <li><a href="<?= base_url('hr/appraisals') ?>"><i class="fa fa-circle-o"></i>Appraisals</a></li>
+                    <?php endif; ?>
+
                 </ul>
             </li>
             <?php endif; ?>
-
             <!-- ═══════════════════════════════════════════════════════════
                  STEP 3 — STUDENTS (admit students and manage records)
                  Admission CRM → Student Info System → Certificates
@@ -650,11 +748,28 @@
                 <ul class="treeview-menu">
                     <li><a href="<?= base_url('sis') ?>"><i class="fa fa-circle-o"></i>Dashboard</a></li>
                     <li><a href="<?= base_url('sis/students') ?>"><i class="fa fa-circle-o"></i>Student Records</a></li>
+                    <?php /* 2026-08-29 — the SIS "Classes & Sections" entry is REMOVED.
+                             The standalone listing screen is retired, and section
+                             strength/occupancy belongs to Academic Setup (school_config,
+                             Sections tab) which is already its own sidebar entry. A second
+                             SIS entry pointing at the same tab was duplicate navigation,
+                             not a feature. Do not re-add it. */ ?>
                     <li><a href="<?= base_url('sis/studentAdmission') ?>"><i class="fa fa-circle-o"></i>Admission</a></li>
                     <li><a href="<?= base_url('sis/master_student') ?>"><i class="fa fa-circle-o"></i>Import Students</a></li>
                     <li><a href="<?= base_url('sis/id_card') ?>"><i class="fa fa-circle-o"></i>ID Cards</a></li>
                     <li><a href="<?= base_url('sis/promote') ?>"><i class="fa fa-circle-o"></i>Promotion</a></li>
                     <li><a href="<?= base_url('sis/tc') ?>"><i class="fa fa-circle-o"></i>Transfer Certificates</a></li>
+                    <?php
+                    // Phase 9 (2026-08-13) — SRNO re-admission confirm screen.
+                    // Client-side visibility only; Readmission::confirm()'s own
+                    // hard role-name check (Super Admin/School Super Admin/
+                    // Principal) remains the sole authorization boundary. Mirrors
+                    // the same gate this program already uses for repairAuthBtn/
+                    // similar role-restricted UI affordances.
+                    $sis_readmission_roles = ['Super Admin', 'School Super Admin', 'Principal'];
+                    if (in_array($admin_role ?? '', $sis_readmission_roles, true)): ?>
+                    <li><a href="<?= base_url('sis/readmission_ui') ?>"><i class="fa fa-circle-o"></i>Re-admission</a></li>
+                    <?php endif; ?>
                 </ul>
             </li>
             <?php endif; ?>
@@ -682,6 +797,7 @@
             <?php if (isset($school_features) && in_array('Class Management', $school_features) && $can('Academic')): ?>
             <li class="sidebar-single"><a href="<?= base_url('academic') ?>"><i class="fa fa-university"></i><span>Academic Planner</span></a></li>
             <?php endif; ?>
+
 
             <?php if (isset($school_features) && in_array('Class Management', $school_features) && $can('LMS')): ?>
             <li class="treeview">
@@ -744,6 +860,9 @@
                     <li><a href="<?= base_url('attendance/approvals') ?>"><i class="fa fa-circle-o"></i>Approvals<small class="label pull-right bg-red" id="badgeApprovals" style="display:none">0</small></a></li>
                     <li><a href="<?= base_url('attendance/control') ?>"><i class="fa fa-circle-o"></i>Control &amp; Locks</a></li>
                     <li><a href="<?= base_url('attendance/reports') ?>"><i class="fa fa-circle-o"></i>Reports &amp; Logs</a></li>
+                    <!-- CALENDAR PROGRAMME — student school-week authority. Distinct from
+                         Work Schedules (staff working time) under HR. -->
+                    <li><a href="<?= base_url('student_calendar') ?>"><i class="fa fa-circle-o"></i>School Week</a></li>
                     <li><a href="<?= base_url('attendance/settings') ?>"><i class="fa fa-circle-o"></i>Settings</a></li>
                 </ul>
             </li>
@@ -769,6 +888,11 @@
                     <li class="g-sub-sec">1 &middot; Setup</li>
                     <li><a href="<?= base_url('fee_management/categories') ?>"><i class="fa fa-circle-o"></i>Titles &amp; Categories</a></li>
                     <li><a href="<?= base_url('fees/fees_chart') ?>"><i class="fa fa-circle-o"></i>Fee Chart</a></li>
+                    <?php /* Sits in Setup because it decides what the school OFFERS, before any
+                             bill exists — not alongside the screens that apply a concession to a
+                             particular student. Both benefits ship OFF; the screen itself says
+                             that a verified relationship is not a discount. */ ?>
+                    <li><a href="<?= base_url('financial_policies') ?>"><i class="fa fa-circle-o"></i>Benefits &amp; Policies</a></li>
 
                     <li class="g-sub-sec">2 &middot; Create Bills</li>
                     <li><a href="<?= base_url('fees/generate_demands') ?>"><i class="fa fa-circle-o"></i>Generate Demands</a></li>
@@ -826,9 +950,18 @@
             <?php endif; ?>
 
             <!-- ═══════════════════════════════════════════════════════════
-                 CAMPUS — communication, events, gallery, operations
+                 CAMPUS — communication, events, gallery
                  ═══════════════════════════════════════════════════════════ -->
-            <?php if (isset($school_features) && (in_array('Notice and Announcement',$school_features)||in_array('School Management',$school_features)) && ($can('Communication') || $can('Events') || $can('Operations'))): ?>
+            <?php /* PHASE 1 (2026-08-30) — the `|| $can('Operations')` clause was removed
+                     from this heading. Operations is now its own section below and brings
+                     its own heading, so this one no longer has to speak for it.
+
+                     This changes no item. A user holding an Operations child but no
+                     Communication/Events used to get the word "Campus" above the group;
+                     they now get the word "Operations" above the same group, with the same
+                     rows, the same links and the same padlocks. Verified per profile by
+                     rendering this file against 24 permission profiles before and after. */ ?>
+            <?php if (isset($school_features) && (in_array('Notice and Announcement',$school_features)||in_array('School Management',$school_features)) && ($can('Communication') || $can('Events'))): ?>
             <li class="g-sec">Campus</li>
             <?php endif; ?>
 
@@ -877,7 +1010,25 @@
             </li>
             <?php endif; ?>
 
+            <!-- ═══════════════════════════════════════════════════════════
+                 OPERATIONS — library, transport, hostel, inventory, assets, campus access
+
+                 PROMOTED 2026-08-30 out from under "Campus", where it had been filed
+                 with communication and events. Nothing else about it changed: same gate,
+                 same eight rows, same per-item $can() checks, same nav-locked padlocks,
+                 same routes. The heading below reuses the group's OWN gate, so the
+                 heading and the group appear and disappear together — a Reports-only
+                 user cannot end up with an empty "Operations" heading.
+
+                 Deliberately NOT changed here (needs separate approval):
+                   • the domain split into Student Services / Administration / Security
+                   • nesting Live Fleet Map under Transport — for a user without
+                     Transport both rows render LOCKED, and a locked parent is not
+                     expandable, so nesting would hide a row that is visible today.
+                     That fails the "visibility must stay identical" condition.
+                 ═══════════════════════════════════════════════════════════ -->
             <?php if ($can('Operations')): ?>
+            <li class="g-sec">Operations</li>
             <?php
                 // Operations sub-items render for everyone in the group, but each
                 // link is only clickable when the role holds that sub-permission
@@ -888,9 +1039,28 @@
                     ['Dashboard', 'operations', 'Operations'],
                     ['Library',   'library',    'Library'],
                     ['Transport', 'transport',  'Transport'],
+                    // F13.2 — Admin live fleet map. Gated on the SAME 'Transport'
+                    // permission as the module above, so it inherits the existing
+                    // greyed-and-locked treatment for roles without access; the
+                    // controller still enforces Transport:view server-side.
+                    ['Live Fleet Map', 'transport_fleet', 'Transport'],
                     ['Hostel',    'hostel',     'Hostel'],
                     ['Inventory', 'inventory',  'Inventory'],
-                    ['Assets',    'assets',     'Assets'],
+                    // 2026-08-31 — target is 'assets/registry', NOT bare 'assets'.
+                    // The repo serves a real ./assets/ directory (CSS, JS, images), so
+                    // Apache's mod_dir resolves the bare path as that directory and
+                    // 301s to /assets/ before CodeIgniter ever sees the request; the
+                    // listing is then denied. Verified live: /assets → 301 → 403, while
+                    // every named tab returns 200.
+                    //
+                    // 'registry' is not merely the first sub-route that happens to work:
+                    // it is the controller's OWN default — Assets::index() reads
+                    // uri->segment(2, 'registry') and the view repeats that default — so
+                    // this renders byte-identically to what bare 'assets' was meant to.
+                    // Route, controller and permission are untouched; $route['assets']
+                    // stays live for any existing bookmark.
+                    ['Assets',    'assets/registry', 'Assets'],
+                    ['Campus Access', 'campus_access', 'Campus Access'],
                 ];
             ?>
             <li class="treeview">
@@ -908,7 +1078,10 @@
             <!-- ═══════════════════════════════════════════════════════════
                  SETTINGS & SYSTEM
                  ═══════════════════════════════════════════════════════════ -->
-            <?php if ($can('Admin Users') || $can('Reports')): ?>
+            <?php /* Configuration added: Maps & Location lives in this group, so a
+                     Configuration-only operator must still get the group heading —
+                     without it the link renders orphaned above the footer. */ ?>
+            <?php if ($can('Admin Users') || $can('Reports') || $can('Configuration')): ?>
             <li class="g-sec">Settings</li>
             <?php endif; ?>
 
@@ -922,6 +1095,16 @@
 
             <?php if ($can('Device Management')): ?>
             <li class="sidebar-single"><a href="<?= base_url('device_management') ?>"><i class="fa fa-mobile"></i><span>Device Management</span></a></li>
+            <?php endif; ?>
+
+            <?php /* Maps & Location — provider + credentials for the Admin fleet map,
+                     the Parent live bus map and the Teacher surface, plus the campus
+                     geofence. The page and its routes already existed (Maps_config)
+                     but were reachable only by typing the URL, so no operator could
+                     discover them. Gated on Configuration, matching the controller:
+                     view to open, edit to save, manage to activate. */ ?>
+            <?php if ($can('Configuration')): ?>
+            <li class="sidebar-single"><a href="<?= base_url('maps_config') ?>"><i class="fa fa-map-o"></i><span>Map Configuration</span></a></li>
             <?php endif; ?>
 
             <?php if ($can('Admin Users')): ?>

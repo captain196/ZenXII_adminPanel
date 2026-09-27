@@ -21,6 +21,23 @@ $dob         = $s['DOB'] ?? '';
 $classOrd    = $s['Class'] ?? '';
 $section     = $s['Section'] ?? '';
 $rollNo      = $s['Roll No'] ?? '';
+
+// ── SRNO-1 (Phase 19C) — the TC's "Adm No." was printing $rollNo ─────────
+// A Transfer Certificate is a legal document the student carries to the
+// receiving school, and Roll No is the wrong identifier for it in two ways:
+//   • it is CLASS/SESSION-SCOPED and is reassigned on promotion and on a
+//     section transfer, so it does not identify the student after they leave;
+//   • it is free text ("A12") and is not unique within the school.
+// The permanent school-scoped identifiers are `admissionNo` (allocated by
+// Admission_no_service, the canonical Admission Number) and `srNo` (allocated
+// by Sr_no_service, preserved across re-admission by design). Prefer the
+// admission number, fall back to SRNO, and otherwise leave the dotted line
+// BLANK — a blank line on a certificate is correct and fillable by hand,
+// whereas a confidently-printed wrong number is a data-integrity failure on a
+// document the school cannot retract once issued.
+$admissionNo = trim((string) ($s['admissionNo'] ?? $s['admission_no'] ?? ''));
+$srNo        = trim((string) ($s['srNo'] ?? $s['srNumber'] ?? $s['SR Number'] ?? ''));
+$admNoPrint  = $admissionNo !== '' ? $admissionNo : $srNo;
 $admDate     = $s['Admission Date'] ?? '';
 $rawAddr     = $s['Address'] ?? '';
 $address     = is_array($rawAddr)
@@ -430,7 +447,11 @@ body {
         <span>School Code No. <span class="dotted"><?= htmlspecialchars($schoolCode) ?></span></span>
     </div>
     <div class="tc-meta-row">
-        <span>Adm No. <span class="dotted"><?= htmlspecialchars($rollNo) ?></span></span>
+        <!-- SRNO-1: permanent identifier, never Roll No — see top of file -->
+        <span>Adm No. <span class="dotted"><?= htmlspecialchars($admNoPrint) ?></span></span>
+        <?php if ($srNo !== '' && $srNo !== $admNoPrint): ?>
+        <span>SR No. <span class="dotted"><?= htmlspecialchars($srNo) ?></span></span>
+        <?php endif; ?>
         <span>School Aff.No. <span class="dotted"><?= htmlspecialchars($schoolAffNo) ?></span></span>
     </div>
 

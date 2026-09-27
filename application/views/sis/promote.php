@@ -266,6 +266,7 @@
                                        title="Select / deselect all">
                             </th>
                             <th style="width:50px;">#</th>
+                            <th>SR No.</th>
                             <th>Student ID</th>
                             <th>Name</th>
                             <th>Current Class</th>
@@ -366,13 +367,16 @@ function previewPromotion() {
         var tbody = document.getElementById('previewTbody');
         document.getElementById('previewCount').textContent = previewStudents.length;
         if (!previewStudents.length) {
-            tbody.innerHTML = '<tr><td colspan="6" style="text-align:center;color:var(--t3);padding:28px;">No students found in the selected class/section.</td></tr>';
+            tbody.innerHTML = '<tr><td colspan="7" style="text-align:center;color:var(--t3);padding:28px;">No students found in the selected class/section.</td></tr>';
             document.getElementById('pmSelectBar').style.display = 'none';
         } else {
             tbody.innerHTML = previewStudents.map(function(s, i) {
                 // PM-SELECT 2026-05-26: per-row checkbox defaults to CHECKED.
+                // SR No. is the permanent school register number; show it when
+                // present (students admitted before SRNO enforcement have none).
+                var srCell = s.sr_no ? '<strong>' + esc(s.sr_no) + '</strong>' : '<span style="color:var(--t3);">—</span>';
                 return '<tr><td><input type="checkbox" class="pm-row-chk" value="' + esc(s.user_id) + '" checked onchange="pmUpdateCount()"></td>'
-                    + '<td>' + (i+1) + '</td><td><code>' + esc(s.user_id) + '</code></td>'
+                    + '<td>' + (i+1) + '</td><td>' + srCell + '</td><td><code>' + esc(s.user_id) + '</code></td>'
                     + '<td>' + esc(s.name) + '</td><td>' + esc(s.class) + '</td>'
                     + '<td>' + esc(s.section) + '</td></tr>';
             }).join('');

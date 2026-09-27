@@ -15,23 +15,66 @@
         </ol>
     </div>
 
+    <?php $pendingScheduleReview = $staff_data['pendingScheduleReview'] ?? null; ?>
+    <?php if (!empty($hr_manage) && is_array($pendingScheduleReview)): ?>
+    <!-- ══ PENDING WORK SCHEDULE REVIEW BANNER (Trail 2 Priority 3/4,
+         2026-08-19) ══ Persistent (Firestore-backed staff.pendingScheduleReview),
+         only shown to an admin who holds HR:manage (the same authority
+         needed to actually resolve it via Work Schedules). Set when a
+         post-transfer schedule composition attempt fails; cleared by
+         Dismiss or the next successful composition attempt. -->
+    <div class="nsa-alert-banner" id="scheduleReviewBanner" style="background:#fff7ed;border:1px solid #fdba74;color:#9a3412;border-radius:8px;padding:12px 16px;margin-bottom:16px;display:flex;align-items:center;gap:12px;">
+        <i class="fa fa-exclamation-triangle" style="font-size:18px;flex-shrink:0;"></i>
+        <div style="flex:1;font-size:13px;line-height:1.5;">
+            <strong>Work Schedule needs review.</strong>
+            <?= htmlspecialchars((string) ($pendingScheduleReview['reason'] ?? ''), ENT_QUOTES, 'UTF-8') ?>
+            <?php if (!empty($pendingScheduleReview['effectiveFrom'])): ?>
+                (intended effective <?= htmlspecialchars((string) $pendingScheduleReview['effectiveFrom'], ENT_QUOTES, 'UTF-8') ?>)
+            <?php endif; ?>
+            <?php if (!empty($pendingScheduleReview['since'])): ?>
+                <span style="opacity:.75;">— flagged <?= htmlspecialchars(date('Y-m-d', strtotime((string) $pendingScheduleReview['since'])), ENT_QUOTES, 'UTF-8') ?></span>
+            <?php endif; ?>
+        </div>
+        <a class="nsa-btn nsa-btn-ghost" style="white-space:nowrap;" href="<?= base_url('work_schedules') ?>" target="_blank" rel="noopener">
+            <i class="fa fa-external-link"></i> Go to Work Schedules
+        </a>
+        <button type="button" class="nsa-btn nsa-btn-ghost" style="white-space:nowrap;" onclick="dismissScheduleReview()">Dismiss</button>
+    </div>
+    <?php endif; ?>
+
+    <?php if (!empty($teaching_needs_assignment)): ?>
+    <!-- ══ CROSS-D1: the hire is not finished ══
+         A teaching hire with no subjectAssignments row for this session has a
+         working login into an empty app. Advisory only — it never blocks the
+         profile, and it links to the module that actually resolves it. -->
+    <div class="nsa-alert-banner" id="teachingAssignmentBanner" style="background:#eff6ff;border:1px solid #93c5fd;color:#1e40af;border-radius:8px;padding:12px 16px;margin-bottom:16px;display:flex;align-items:center;gap:12px;">
+        <i class="fa fa-graduation-cap" style="font-size:18px;flex-shrink:0;"></i>
+        <div style="flex:1;font-size:13px;line-height:1.5;">
+            <strong>This teacher has no classes yet.</strong>
+            They can sign in to the Teacher app, but it will show no classes, no
+            students and no timetable until they are assigned a subject and section
+            for this session.
+        </div>
+        <a class="nsa-btn nsa-btn-ghost" style="white-space:nowrap;" href="<?= base_url('academic') ?>" target="_blank" rel="noopener">
+            <i class="fa fa-external-link"></i> Assign subjects
+        </a>
+    </div>
+    <?php endif; ?>
+
     <!-- ── Layout ── -->
     <div class="nsa-layout">
 
-        <!-- Sidebar nav -->
-        <aside class="nsa-sidebar">
-            <div class="nsa-sidebar-title">Form Sections</div>
-            <a class="nsa-nav-item active" href="#sec-basic"><i class="fa fa-user"></i> <span>Basic Info</span></a>
-            <a class="nsa-nav-item" href="#sec-guardian"><i class="fa fa-users"></i> <span>Guardian</span></a>
-            <a class="nsa-nav-item" href="#sec-address"><i class="fa fa-map-marker"></i> <span>Address</span></a>
-            <a class="nsa-nav-item" href="#sec-qualification"><i class="fa fa-graduation-cap"></i> <span>Qualification</span></a>
-            <a class="nsa-nav-item" href="#sec-bank"><i class="fa fa-university"></i> <span>Bank Details</span></a>
-            <a class="nsa-nav-item" href="#sec-salary"><i class="fa fa-money"></i> <span>Salary</span></a>
-            <a class="nsa-nav-item" href="#sec-docs"><i class="fa fa-file-text-o"></i> <span>Documents</span></a>
-        </aside>
+        <!-- The sidebar jump-nav was replaced by the stepper below: two
+             navigators for the same ten sections is the duplication this screen
+             was already suffering from, and the old list had drifted anyway —
+             it never listed Statutory ID, and could not list Employee Lifecycle. -->
 
         <!-- Main form -->
         <div class="nsa-main">
+
+            <!-- ── Stepper (edit mode: every step reachable) ── -->
+            <div class="nsa-stepper" id="editStepper"></div>
+            <div class="nsa-stepper-progress"><div class="nsa-stepper-progress-bar" id="editProgressBar"></div></div>
             <form action="<?= base_url('staff/edit_staff/' . htmlspecialchars($staff_data['User ID'])) ?>"
                   method="post"
                   id="edit_staff_form"
@@ -40,7 +83,7 @@
            value="<?= $this->security->get_csrf_hash() ?>">
 
                 <!-- ══ BASIC INFORMATION ══ -->
-                <div class="nsa-section" id="sec-basic">
+                <div class="nsa-section nsa-step-panel" id="sec-basic" data-step="0">
                     <div class="nsa-section-head">
                         <i class="fa fa-user"></i>
                         <h3>Basic Information</h3>
@@ -156,9 +199,25 @@
 
                             <div class="nsa-field">
                                 <label for="employment_type">Employment Type</label>
-                                <input type="text" id="employment_type" name="employment_type"
-                                       value="<?= htmlspecialchars($staff_data['Employment Type'] ?? '') ?>"
-                                       class="nsa-input" placeholder="e.g. Full-time" required>
+                                <?php
+                                // UX-D2. A stored value outside this list is KEPT and shown as
+                                // selected: 9 staff have none and several carry legacy spellings,
+                                // and silently rewriting somebody's employment type because the
+                                // dropdown had no matching option would be a data change nobody
+                                // asked for.
+                                $etTypes   = ['Full-time', 'Part-time', 'Contract', 'Probation', 'Temporary', 'Consultant', 'Intern'];
+                                $etCurrent = (string) ($staff_data['Employment Type'] ?? '');
+                                $etKnown   = in_array($etCurrent, $etTypes, true);
+                                ?>
+                                <select id="employment_type" name="employment_type" class="nsa-input" required>
+                                    <option value="">-- Select Employment Type --</option>
+                                    <?php foreach ($etTypes as $t): ?>
+                                        <option value="<?= htmlspecialchars($t) ?>"<?= $etCurrent === $t ? ' selected' : '' ?>><?= htmlspecialchars($t) ?></option>
+                                    <?php endforeach; ?>
+                                    <?php if ($etCurrent !== '' && !$etKnown): ?>
+                                        <option value="<?= htmlspecialchars($etCurrent) ?>" selected><?= htmlspecialchars($etCurrent) ?> (existing)</option>
+                                    <?php endif; ?>
+                                </select>
                             </div>
 
                             <div class="nsa-field">
@@ -167,6 +226,54 @@
                                     <option value="">-- Select Department --</option>
                                 </select>
                             </div>
+
+                            <?php
+                                $currentReportingManagerId = $staff_data['reportingManagerId'] ?? '';
+                                $ownStaffId = $staff_data['staffId'] ?? $staff_data['User ID'] ?? '';
+                            ?>
+                            <!-- Reporting Manager (Phase 2C — Staff Lifecycle). Optional; server
+                                 re-validates same-school/Active/self-reference/cycle regardless
+                                 of this list's contents. Self excluded client-side (defense in
+                                 depth only — the server rejects self-reference unconditionally). -->
+                            <div class="nsa-field">
+                                <label for="reporting_manager_id">Reporting Manager</label>
+                                <select id="reporting_manager_id" name="reporting_manager_id" class="nsa-input"
+                                        data-own-staff-id="<?= htmlspecialchars($ownStaffId, ENT_QUOTES, 'UTF-8') ?>"
+                                        data-current-value="<?= htmlspecialchars($currentReportingManagerId, ENT_QUOTES, 'UTF-8') ?>">
+                                    <option value="">-- None --</option>
+                                    <?php if ($currentReportingManagerId !== ''): ?>
+                                    <!-- Rendered server-side so the CURRENTLY assigned manager is always
+                                         shown even if Inactive — the Active-only staff-list endpoint below
+                                         would silently omit them, making the field look empty otherwise. -->
+                                    <option value="<?= htmlspecialchars($currentReportingManagerId, ENT_QUOTES, 'UTF-8') ?>" selected>
+                                        <?= htmlspecialchars(($reporting_manager_name ?? $currentReportingManagerId) . (($reporting_manager_status ?? '') === 'Inactive' ? ' (Inactive)' : ''), ENT_QUOTES, 'UTF-8') ?>
+                                    </option>
+                                    <?php endif; ?>
+                                </select>
+                                <small id="reportingManagerInactiveWarning"
+                                       style="<?= (isset($reporting_manager_status) && $reporting_manager_status === 'Inactive') ? '' : 'display:none;' ?>color:var(--nsa-red,#dc2626);font-size:11px;">
+                                    <i class="fa fa-exclamation-triangle"></i>
+                                    This Reporting Manager is currently Inactive. Please review and reassign.
+                                </small>
+                            </div>
+
+                            <?php if (!empty($hrms_capability_enabled) && !empty($locations)): ?>
+                            <div class="nsa-field">
+                                <label>Location</label>
+                                <select id="location_id" name="location_id" class="nsa-input">
+                                    <?php $currentLocationId = (string) ($staff_data['locationId'] ?? ''); ?>
+                                    <?php foreach ($locations as $loc):
+                                        $selected = ($currentLocationId !== '')
+                                            ? ($currentLocationId === $loc['locationId'])
+                                            : !empty($loc['isDefault']); ?>
+                                        <option value="<?= htmlspecialchars($loc['locationId'], ENT_QUOTES, 'UTF-8') ?>" <?= $selected ? 'selected' : '' ?>>
+                                            <?= htmlspecialchars($loc['name'], ENT_QUOTES, 'UTF-8') ?><?= !empty($loc['isDefault']) ? ' (default)' : '' ?>
+                                        </option>
+                                    <?php endforeach; ?>
+                                </select>
+                                <small style="color:var(--nsa-muted);font-size:11px;">Configure in System Settings → Organisation.</small>
+                            </div>
+                            <?php endif; ?>
 
                             <!-- Teacher capability — shown only when a Teacher role is selected -->
                             <div id="teacherExtraFields" class="nsa-col-2" style="display:none;">
@@ -190,7 +297,7 @@
                 </div>
 
                 <!-- ══ GUARDIAN DETAILS ══ -->
-                <div class="nsa-section" id="sec-guardian">
+                <div class="nsa-section nsa-step-panel" id="sec-guardian" data-step="1">
                     <div class="nsa-section-head">
                         <i class="fa fa-users"></i>
                         <h3>Guardian Details</h3>
@@ -274,7 +381,7 @@
                 </div>
 
                 <!-- ══ STATUTORY IDs ══ -->
-                <div class="nsa-section" id="sec-statutory">
+                <div class="nsa-section nsa-step-panel" id="sec-statutory" data-step="2">
                     <div class="nsa-section-head">
                         <i class="fa fa-id-card-o"></i>
                         <h3>Statutory Identification</h3>
@@ -318,7 +425,7 @@
                 </div>
 
                 <!-- ══ ADDRESS ══ -->
-                <div class="nsa-section" id="sec-address">
+                <div class="nsa-section nsa-step-panel" id="sec-address" data-step="3">
                     <div class="nsa-section-head">
                         <i class="fa fa-map-marker"></i>
                         <h3>Address Details</h3>
@@ -408,7 +515,7 @@
                 </div>
 
                 <!-- ══ QUALIFICATION ══ -->
-                <div class="nsa-section" id="sec-qualification">
+                <div class="nsa-section nsa-step-panel" id="sec-qualification" data-step="4">
                     <div class="nsa-section-head">
                         <i class="fa fa-graduation-cap"></i>
                         <h3>Qualification Details</h3>
@@ -449,7 +556,7 @@
                 </div>
 
                 <!-- ══ BANK DETAILS ══ -->
-                <div class="nsa-section" id="sec-bank">
+                <div class="nsa-section nsa-step-panel" id="sec-bank" data-step="5">
                     <div class="nsa-section-head">
                         <i class="fa fa-university"></i>
                         <h3>Bank Details</h3>
@@ -490,7 +597,7 @@
                 </div>
 
                 <!-- ══ SALARY ══ -->
-                <div class="nsa-section" id="sec-salary">
+                <div class="nsa-section nsa-step-panel" id="sec-salary" data-step="5">
                     <div class="nsa-section-head">
                         <i class="fa fa-money"></i>
                         <h3>Salary Details</h3>
@@ -526,7 +633,7 @@
                 </div>
 
                 <!-- ══ DOCUMENTS & PHOTO ══ -->
-                <div class="nsa-section" id="sec-docs">
+                <div class="nsa-section nsa-step-panel" id="sec-docs" data-step="6">
                     <div class="nsa-section-head">
                         <i class="fa fa-file-text-o"></i>
                         <h3>Documents &amp; Photo</h3>
@@ -655,19 +762,14 @@
                                 </div>
                                 <?php endif; ?>
 
-                                <!-- New Aadhar upload -->
-                                <div class="nsa-file-wrap" id="wrap_Aadhar" style="margin-top:10px;">
-                                    <input type="file" name="Aadhar" id="aadhar"
-                                           accept=".pdf,.jpg,.jpeg,.png"
-                                           onchange="nsaFileChosen(this,'wrap_Aadhar')">
-                                    <div class="nsa-file-label">
-                                        <div class="nsa-file-icon"><i class="fa fa-id-card"></i></div>
-                                        <div class="nsa-file-text">
-                                            <strong>Replace Aadhar</strong>
-                                            PDF, JPG, PNG · max 2MB
-                                        </div>
-                                    </div>
-                                    <div class="nsa-file-name" id="fn_Aadhar"></div>
+                                <!-- UX-D3: replacing the Aadhar happens under HR Documents >
+                                     Identity Proof, further down this same step. Two upload
+                                     controls for one document on one screen is what this
+                                     removes; any file already on the record still shows above. -->
+                                <div class="nsa-doc-pointer" style="margin-top:10px;">
+                                    <i class="fa fa-info-circle"></i>
+                                    <span>To add or replace this document, use
+                                          <strong>HR Documents &rarr; Identity Proof</strong> below.</span>
                                 </div>
                             </div>
 
@@ -675,18 +777,387 @@
                     </div>
                 </div>
 
-                <!-- ══ ACTION BAR ══ -->
-                <div class="nsa-action-bar">
-                    <button type="button" class="nsa-btn nsa-btn-ghost" onclick="window.history.back()">
-                        <i class="fa fa-arrow-left"></i> Cancel
+                <!-- ══ HR DOCUMENTS (Staff HR Advanced Capability Programme, Phase A,
+                     2026-08-18) ══
+                     Deliberately separate from "Documents & Photo" above, which is a
+                     pre-existing, unrelated Photo/Aadhar mechanism
+                     ($this->firebase->uploadFile() direct into staff.Doc{}) — this
+                     section covers the NEW document types added via the canonical,
+                     reusable Document Service (Staff::upload_staff_document() etc.),
+                     which genuinely didn't exist before this phase (appointment
+                     letter, qualification/experience certificates, employment
+                     contract). AJAX, not part of the big form submit above — each
+                     upload takes effect immediately, independent of "Save Changes". -->
+                <div class="nsa-section nsa-step-panel" id="sec-hr-docs" data-step="6">
+                    <div class="nsa-section-head">
+                        <i class="fa fa-briefcase"></i>
+                        <h3>HR Documents</h3>
+                    </div>
+                    <div class="nsa-section-body">
+                        <div class="nsa-grid nsa-grid-2" id="hrDocsGrid" data-staff-id="<?= htmlspecialchars($staff_data['User ID'] ?? '') ?>">
+                            <?php foreach ([
+                                'appointment_letter'        => 'Appointment Letter',
+                                'staff_id_proof'            => 'Identity Proof',
+                                'qualification_certificate' => 'Qualification Certificate',
+                                'experience_certificate'    => 'Previous Experience Certificate',
+                                'employment_contract'       => 'Employment Contract',
+                            ] as $hrDocType => $hrDocLabel): ?>
+                            <div class="nsa-field hr-doc-field" data-type="<?= htmlspecialchars($hrDocType) ?>">
+                                <label><?= htmlspecialchars($hrDocLabel) ?></label>
+                                <div class="hr-doc-current" style="font-size:12px;color:var(--nsa-muted);margin-bottom:6px;">
+                                    <i class="fa fa-spinner fa-spin"></i> Checking...
+                                </div>
+                                <div class="nsa-file-wrap">
+                                    <input type="file" class="hr-doc-file" accept=".pdf,.jpg,.jpeg,.png">
+                                    <div class="nsa-file-label">
+                                        <div class="nsa-file-icon"><i class="fa fa-upload"></i></div>
+                                        <div class="nsa-file-text">
+                                            <strong>Upload / Replace</strong>
+                                            PDF, JPG, PNG · max 5MB — uploads immediately
+                                        </div>
+                                    </div>
+                                </div>
+                            </div>
+                            <?php endforeach; ?>
+                        </div>
+                    </div>
+                </div>
+
+                <!-- ══ EMPLOYEE LIFECYCLE ══
+                     These are not form actions. Each opens its own workflow and
+                     writes its own record, independent of "Save Changes". They
+                     sat in the form action bar, which put nine buttons in one
+                     non-wrapping sticky row, implied they were part of saving,
+                     and pushed Save to the end of seven unrelated controls. -->
+                <div class="nsa-section nsa-step-panel" id="sec-lifecycle" data-step="7">
+                    <div class="nsa-section-head">
+                        <i class="fa fa-random"></i>
+                        <h3>Employee Lifecycle</h3>
+                    </div>
+                    <div class="nsa-section-body">
+                        <p class="nsa-lifecycle-hint">
+                            Each of these is a separate record with its own approval trail.
+                            They save on their own &mdash; you do not need to press Save Changes afterwards.
+                        </p>
+                        <div class="nsa-lifecycle-grid">
+                            <button type="button" id="openOnboardingModalBtn" class="nsa-lifecycle-btn" onclick="openOnboardingModal()">
+                                <i class="fa fa-list-ol"></i>
+                                <span class="nsa-lifecycle-label">Onboarding</span>
+                                <span class="nsa-lifecycle-sub">Joining checklist</span>
+                            </button>
+                            <button type="button" id="openPromotionModalBtn" class="nsa-lifecycle-btn" onclick="openPromotionModal()">
+                                <i class="fa fa-arrow-up"></i>
+                                <span class="nsa-lifecycle-label">Record Promotion</span>
+                                <span class="nsa-lifecycle-sub">Designation or grade change</span>
+                            </button>
+                            <button type="button" id="openTransferModalBtn" class="nsa-lifecycle-btn" onclick="openTransferModal()">
+                                <i class="fa fa-exchange"></i>
+                                <span class="nsa-lifecycle-label">Transfer</span>
+                                <span class="nsa-lifecycle-sub">Department or campus move</span>
+                            </button>
+                            <button type="button" id="openNoticeModalBtn" class="nsa-lifecycle-btn" onclick="openNoticeModal()">
+                                <i class="fa fa-sign-out"></i>
+                                <span class="nsa-lifecycle-label">Notice Period</span>
+                                <span class="nsa-lifecycle-sub">Resignation and last working day</span>
+                            </button>
+                            <button type="button" id="openClearanceModalBtn" class="nsa-lifecycle-btn" onclick="openClearanceModal()">
+                                <i class="fa fa-check-square-o"></i>
+                                <span class="nsa-lifecycle-label">Clearance</span>
+                                <span class="nsa-lifecycle-sub">Department sign-off</span>
+                            </button>
+                            <button type="button" id="openExitDocsModalBtn" class="nsa-lifecycle-btn" onclick="openExitDocsModal()">
+                                <i class="fa fa-file-text"></i>
+                                <span class="nsa-lifecycle-label">Exit Documents</span>
+                                <span class="nsa-lifecycle-sub">Relieving and experience letters</span>
+                            </button>
+                            <button type="button" id="openExitSummaryModalBtn" class="nsa-lifecycle-btn" onclick="openExitSummaryModal()">
+                                <i class="fa fa-list-alt"></i>
+                                <span class="nsa-lifecycle-label">Exit Summary</span>
+                                <span class="nsa-lifecycle-sub">Full separation record</span>
+                            </button>
+                        </div>
+                    </div>
+                </div>
+
+                <!-- ══ WIZARD FOOTER ══
+                     Save Changes stays reachable on EVERY step. This is an edit
+                     screen: the record is already complete, so there is no
+                     "finish the wizard first" moment to wait for, and an admin
+                     who came to fix one field must be able to save from where
+                     they are. -->
+                <div class="nsa-wizard-footer">
+                    <button type="button" class="nsa-btn nsa-btn-ghost" id="editBackBtn" onclick="editWizardBack()">
+                        <i class="fa fa-arrow-left"></i> Back
                     </button>
-                    <button type="button" id="updateStaffBtn"
-                            class="nsa-btn nsa-btn-primary">
-                        <i class="fa fa-save"></i> Save Changes
-                    </button>
+                    <div class="nsa-wizard-footer-status" id="editFooterStatus"></div>
+                    <div class="nsa-wizard-footer-actions">
+                        <button type="button" class="nsa-btn nsa-btn-ghost" id="editNextBtn" onclick="editWizardNext()">
+                            Next <i class="fa fa-arrow-right"></i>
+                        </button>
+                        <button type="button" id="updateStaffBtn"
+                                class="nsa-btn nsa-btn-primary">
+                            <i class="fa fa-save"></i> Save Changes
+                        </button>
+                    </div>
                 </div>
 
             </form>
+
+            <!-- ══ PROMOTION MODAL (Staff HR Advanced Capability Programme,
+                 Phase 1, 2026-08-18) ══
+                 Deliberately OUTSIDE <form id="edit_staff_form"> — its inputs
+                 carry no `name` attribute and are read directly by ID, so a
+                 FormData(form) submit of the main "Save Changes" action can
+                 never accidentally sweep a promotion field into an unrelated
+                 save. A dedicated action, not a reuse of the generic edit
+                 form: shows CURRENT values read-only next to NEW value
+                 inputs, requires a reason, and calls Staff::promote_staff()
+                 directly — never modifies Payroll/salary, never introduces a
+                 new employment-history event type (see the endpoint's own
+                 docblock for why). -->
+            <div class="nsa-modal-overlay" id="promotionModalOverlay" style="display:none;">
+                <div class="nsa-modal" style="max-width:560px;">
+                    <div class="nsa-modal-title"><i class="fa fa-arrow-up"></i> Record Promotion</div>
+                    <p style="font-size:12.5px;color:var(--nsa-muted);margin:-6px 0 14px;">
+                        A deliberate HR action — recorded as an effective-dated employment-history
+                        episode, separate from a routine profile edit. Leave a field's "New" value
+                        empty to leave it unchanged.
+                    </p>
+                    <div class="nsa-grid nsa-grid-2">
+                        <div class="nsa-field">
+                            <label>Current Position</label>
+                            <input type="text" id="promoCurrentPosition" class="nsa-input" disabled>
+                        </div>
+                        <div class="nsa-field">
+                            <label>New Position</label>
+                            <input type="text" id="promoNewPosition" class="nsa-input" placeholder="Leave empty to keep current">
+                        </div>
+                        <div class="nsa-field">
+                            <label>Current Department</label>
+                            <input type="text" id="promoCurrentDepartment" class="nsa-input" disabled>
+                        </div>
+                        <div class="nsa-field">
+                            <label>New Department</label>
+                            <select id="promoNewDepartment" class="nsa-input">
+                                <option value="">Leave empty to keep current</option>
+                            </select>
+                        </div>
+                        <div class="nsa-field">
+                            <label>Current Reporting Manager</label>
+                            <input type="text" id="promoCurrentManager" class="nsa-input" disabled>
+                        </div>
+                        <div class="nsa-field">
+                            <label>New Reporting Manager</label>
+                            <select id="promoNewManager" class="nsa-input">
+                                <option value="">Leave empty to keep current</option>
+                            </select>
+                        </div>
+                        <div class="nsa-field">
+                            <label>Effective Date</label>
+                            <input type="date" id="promoEffectiveFrom" class="nsa-input">
+                        </div>
+                        <div class="nsa-field" style="grid-column:1/-1;">
+                            <label>Reason <span class="nsa-optional-tag">visible in the employment-history audit trail</span></label>
+                            <textarea id="promoReason" class="nsa-input" rows="2" placeholder="e.g. Promoted to Senior Teacher based on Q2 appraisal recommendation"></textarea>
+                        </div>
+                    </div>
+                    <div class="nsa-modal-actions">
+                        <button type="button" class="nsa-btn nsa-btn-ghost" onclick="closePromotionModal()">Cancel</button>
+                        <button type="button" class="nsa-btn nsa-btn-primary" id="submitPromotionBtn" onclick="submitPromotion()">
+                            <i class="fa fa-check"></i> Record Promotion
+                        </button>
+                    </div>
+                </div>
+            </div>
+
+            <!-- ══ TRANSFER MODAL (Trail 2 Phase I, 2026-08-18; Work
+                 Schedule decision point added Priority 3/4, 2026-08-19) ══
+                 Deliberately OUTSIDE <form id="edit_staff_form"> — same
+                 reasoning as the Promotion modal. Calls Staff::transfer_staff()
+                 directly — that endpoint itself still does NOT touch Work
+                 Schedules (Work_schedules::save_assignment() remains the
+                 sole writer of staffScheduleAssignments; no second writer
+                 was added). The optional "Work Schedule" choice below is
+                 explicit human opt-in composed at the UI level: on a
+                 successful transfer, submitTransfer() separately calls the
+                 EXISTING save_assignment() only if "Change" was chosen —
+                 never inferred from the department change. Only rendered
+                 for an admin who independently holds HR:manage (the
+                 authority save_assignment() itself requires); everyone
+                 else keeps the original passive hint, unchanged. -->
+            <div class="nsa-modal-overlay" id="transferModalOverlay" style="display:none;">
+                <div class="nsa-modal" style="max-width:560px;">
+                    <div class="nsa-modal-title"><i class="fa fa-exchange"></i> Transfer Staff</div>
+                    <p style="font-size:12.5px;color:var(--nsa-muted);margin:-6px 0 14px;">
+                        Moves this employee's department and/or reporting manager, effective on a
+                        date you choose — past, today, or future.
+                        <?php if (empty($hr_manage)): ?>
+                        If this transfer also needs a new
+                        Work Schedule, set that separately under <strong>Attendance → Work Schedules →
+                        Assignments</strong> once this is saved.
+                        <?php endif; ?>
+                    </p>
+                    <div class="nsa-grid nsa-grid-2">
+                        <div class="nsa-field">
+                            <label>Current Department</label>
+                            <input type="text" id="transferCurrentDepartment" class="nsa-input" disabled>
+                        </div>
+                        <div class="nsa-field">
+                            <label>New Department</label>
+                            <select id="transferNewDepartment" class="nsa-input">
+                                <option value="">Leave empty to keep current</option>
+                            </select>
+                        </div>
+                        <div class="nsa-field">
+                            <label>Current Reporting Manager</label>
+                            <input type="text" id="transferCurrentManager" class="nsa-input" disabled>
+                        </div>
+                        <div class="nsa-field">
+                            <label>New Reporting Manager</label>
+                            <select id="transferNewManager" class="nsa-input">
+                                <option value="">Leave empty to keep current</option>
+                            </select>
+                        </div>
+                        <div class="nsa-field" style="grid-column:1/-1;">
+                            <label>Effective Date <span class="req">*</span></label>
+                            <input type="date" id="transferEffectiveFrom" class="nsa-input" required>
+                        </div>
+                        <?php if (!empty($hr_manage)): ?>
+                        <div class="nsa-field" style="grid-column:1/-1;border-top:1px dashed var(--nsa-border,#e5e7eb);padding-top:12px;margin-top:2px;">
+                            <label>Does this employee also need a new Work Schedule?</label>
+                            <div style="display:flex;gap:16px;font-size:13px;margin:4px 0 8px;">
+                                <label style="display:flex;align-items:center;gap:6px;font-weight:normal;">
+                                    <input type="radio" name="transferScheduleChoice" value="keep" checked onchange="onTransferScheduleChoiceChange()"> Keep current Work Schedule
+                                </label>
+                                <label style="display:flex;align-items:center;gap:6px;font-weight:normal;">
+                                    <input type="radio" name="transferScheduleChoice" value="change" onchange="onTransferScheduleChoiceChange()"> Change Work Schedule
+                                </label>
+                            </div>
+                            <select id="transferNewSchedule" class="nsa-input" style="display:none;">
+                                <option value="">Select a Work Schedule…</option>
+                            </select>
+                            <p style="font-size:11.5px;color:var(--nsa-muted);margin:6px 0 0;">
+                                Never inferred from the department — an explicit choice, applied via the
+                                existing Work Schedules assignment writer, effective the same date as the transfer above.
+                            </p>
+                        </div>
+                        <?php endif; ?>
+                        <div class="nsa-field" style="grid-column:1/-1;">
+                            <label>Reason <span class="nsa-optional-tag">visible in the employment-history audit trail</span></label>
+                            <textarea id="transferReason" class="nsa-input" rows="2" placeholder="e.g. Moved to Senior School to cover the Grade 9 vacancy"></textarea>
+                        </div>
+                    </div>
+                    <div class="nsa-modal-actions">
+                        <button type="button" class="nsa-btn nsa-btn-ghost" onclick="closeTransferModal()">Cancel</button>
+                        <button type="button" class="nsa-btn nsa-btn-primary" id="submitTransferBtn" onclick="submitTransfer()">
+                            <i class="fa fa-check"></i> Record Transfer
+                        </button>
+                    </div>
+                </div>
+            </div>
+
+            <!-- ══ NOTICE PERIOD MODAL (Staff HR Advanced Capability
+                 Programme, Phase 2, 2026-08-18) ══
+                 Also outside <form id="edit_staff_form"> — same reasoning as
+                 the Promotion modal. Content is rendered entirely by JS
+                 (noticeRenderState()) since the modal's shape genuinely
+                 differs by state (no notice / pending decision / awaiting
+                 separation / completed) rather than being one static form. -->
+            <div class="nsa-modal-overlay" id="noticeModalOverlay" style="display:none;">
+                <div class="nsa-modal" style="max-width:560px;">
+                    <div class="nsa-modal-title"><i class="fa fa-sign-out"></i> Notice Period</div>
+                    <div id="noticeModalBody">
+                        <p style="color:var(--nsa-muted);font-size:13px;"><i class="fa fa-spinner fa-spin"></i> Loading…</p>
+                    </div>
+                    <div class="nsa-modal-actions">
+                        <button type="button" class="nsa-btn nsa-btn-ghost" onclick="closeNoticeModal()">Close</button>
+                    </div>
+                </div>
+            </div>
+
+            <!-- ══ CLEARANCE MODAL (Staff HR Advanced Capability Programme,
+                 Phase 3, 2026-08-18) ══ Outside the main form, same reasoning
+                 as Promotion/Notice Period. -->
+            <div class="nsa-modal-overlay" id="clearanceModalOverlay" style="display:none;">
+                <div class="nsa-modal" style="max-width:620px;">
+                    <div class="nsa-modal-title"><i class="fa fa-check-square-o"></i> Clearance / Handover</div>
+                    <div id="clearanceModalBody">
+                        <p style="color:var(--nsa-muted);font-size:13px;"><i class="fa fa-spinner fa-spin"></i> Loading…</p>
+                    </div>
+                    <div class="nsa-modal-actions">
+                        <button type="button" class="nsa-btn nsa-btn-ghost" onclick="closeClearanceModal()">Close</button>
+                    </div>
+                </div>
+            </div>
+
+            <!-- ══ ONBOARDING MODAL (Staff HR Advanced Capability Programme,
+                 Phase 6, 2026-08-19) ══ Outside the main form, same
+                 reasoning as Clearance — its closest precedent (a
+                 configurable, per-item checklist with a recomputed overall
+                 status). Manual-initiate (HR clicks "Start Onboarding"),
+                 not auto-triggered from new_staff() — composes at the
+                 workflow level rather than touching that already-proven
+                 creation flow. -->
+            <div class="nsa-modal-overlay" id="onboardingModalOverlay" style="display:none;">
+                <div class="nsa-modal" style="max-width:620px;">
+                    <div class="nsa-modal-title"><i class="fa fa-list-ol"></i> Onboarding Checklist</div>
+                    <div id="onboardingModalBody">
+                        <p style="color:var(--nsa-muted);font-size:13px;"><i class="fa fa-spinner fa-spin"></i> Loading…</p>
+                    </div>
+                    <div class="nsa-modal-actions">
+                        <button type="button" class="nsa-btn nsa-btn-ghost" onclick="closeOnboardingModal()">Close</button>
+                    </div>
+                </div>
+            </div>
+
+            <!-- ══ EXIT DOCUMENTS MODAL (Staff HR Advanced Capability
+                 Programme, Phase 4, 2026-08-18) ══ Pure links — the print
+                 view itself (staff/print_exit_document) does its own
+                 Inactive+exitDate gate server-side and refuses gracefully,
+                 so no extra client-side precondition is duplicated here. -->
+            <div class="nsa-modal-overlay" id="exitDocsModalOverlay" style="display:none;">
+                <div class="nsa-modal" style="max-width:440px;">
+                    <div class="nsa-modal-title"><i class="fa fa-file-text"></i> Exit Documents</div>
+                    <p style="font-size:12.5px;color:var(--nsa-muted);margin:-6px 0 14px;">
+                        Only available once this staff member is separated (Inactive with a recorded
+                        last working day). Opens a printable page in a new tab.
+                    </p>
+                    <div style="display:flex;flex-direction:column;gap:8px;">
+                        <button type="button" class="nsa-btn nsa-btn-ghost" onclick="printExitDocument('relieving')"><i class="fa fa-file-text-o"></i> Relieving Letter</button>
+                        <button type="button" class="nsa-btn nsa-btn-ghost" onclick="printExitDocument('experience')"><i class="fa fa-file-text-o"></i> Experience Certificate</button>
+                        <button type="button" class="nsa-btn nsa-btn-ghost" onclick="printExitDocument('service')"><i class="fa fa-file-text-o"></i> Service Certificate</button>
+                    </div>
+                    <div class="nsa-modal-actions">
+                        <button type="button" class="nsa-btn nsa-btn-ghost" onclick="closeExitDocsModal()">Close</button>
+                    </div>
+                </div>
+            </div>
+
+            <!-- ══ EXIT SUMMARY MODAL (Staff HR Advanced Capability
+                 Programme, Phase 5, 2026-08-18) ══ READ-ONLY aggregation —
+                 every figure shown is fetched verbatim from its own owning
+                 module (the compensation engine's latest finalized/paid pay
+                 slip, Leave's balance doc, this programme's own Notice
+                 Period / Clearance records). Nothing on this modal is
+                 computed here; there is no encashment, notice-recovery,
+                 withholding, tax, or final amount owed figure anywhere on
+                 this screen. -->
+            <div class="nsa-modal-overlay" id="exitSummaryModalOverlay" style="display:none;">
+                <div class="nsa-modal" style="max-width:620px;">
+                    <div class="nsa-modal-title"><i class="fa fa-list-alt"></i> Exit Summary</div>
+                    <p style="font-size:12.5px;color:var(--nsa-muted);margin:-6px 0 14px;">
+                        Read-only. Aggregates figures already recorded elsewhere — no amount on this
+                        screen is calculated here.
+                    </p>
+                    <div id="exitSummaryModalBody">
+                        <p style="color:var(--nsa-muted);font-size:13px;"><i class="fa fa-spinner fa-spin"></i> Loading…</p>
+                    </div>
+                    <div class="nsa-modal-actions">
+                        <button type="button" class="nsa-btn nsa-btn-ghost" onclick="closeExitSummaryModal()">Close</button>
+                    </div>
+                </div>
+            </div>
+
         </div><!-- /.nsa-main -->
     </div><!-- /.nsa-layout -->
 
@@ -695,6 +1166,7 @@
 
 
 <script src="<?= base_url('assets/js/india_geo.js') ?>"></script>
+<script src="<?= base_url('assets/js/zx_dialog.js') ?>?v=1"></script>
 <script>
 
 /* ── Toast ── */
@@ -742,6 +1214,129 @@ function updateNetSalary() {
 }
 
 /* ── Inline validation ── */
+/* ═══════════════════════════════════════════════════════════════
+   EDIT WIZARD
+   Same eight-step shape as Add Staff, with one deliberate difference:
+   every step is unlocked from the start. Add Staff gates progress because
+   it is building a record that does not exist yet; here the record is
+   already complete and valid, so gating would only stand between an admin
+   and the one field they came to change.
+   ═══════════════════════════════════════════════════════════════ */
+var EDIT_STEPS = [
+    { title: 'Basic Info',     icon: 'fa-user' },
+    { title: 'Guardian',       icon: 'fa-users' },
+    { title: 'Statutory ID',   icon: 'fa-id-card-o' },
+    { title: 'Address',        icon: 'fa-map-marker' },
+    { title: 'Qualification',  icon: 'fa-graduation-cap' },
+    { title: 'Compensation',   icon: 'fa-money' },
+    { title: 'Documents',      icon: 'fa-folder-open' },
+    { title: 'Lifecycle',      icon: 'fa-random' }
+];
+var editCurrentStep = 0;
+var editVisited = { 0: true };
+
+function editPanels() {
+    return Array.prototype.slice.call(document.querySelectorAll('.nsa-step-panel'));
+}
+
+function renderEditStepper() {
+    var bar = document.getElementById('editStepper');
+    if (!bar) return;
+    bar.innerHTML = '';
+
+    // A step showing a validation error must say so, otherwise a failed save
+    // looks like nothing happened when the offending field is on another step.
+    var errSteps = {};
+    document.querySelectorAll('.has-error').forEach(function (el) {
+        var panel = el.closest('.nsa-step-panel');
+        if (panel) errSteps[parseInt(panel.getAttribute('data-step'), 10)] = true;
+    });
+
+    EDIT_STEPS.forEach(function (s, i) {
+        var el = document.createElement('button');
+        el.type = 'button';
+        var cls = 'nsa-step';
+        if (i === editCurrentStep) cls += ' active';
+        if (editVisited[i]) cls += ' visited';
+        if (errSteps[i]) cls += ' has-error';
+        el.className = cls;
+        el.setAttribute('aria-current', i === editCurrentStep ? 'step' : 'false');
+        el.innerHTML =
+            '<span class="nsa-step-circle">' + (errSteps[i] ? '!' : (i + 1)) + '</span>' +
+            '<span class="nsa-step-label">' + s.title + '</span>';
+        el.addEventListener('click', function () { editShowStep(i); });
+        bar.appendChild(el);
+    });
+
+    var pct = Math.round((editCurrentStep / (EDIT_STEPS.length - 1)) * 100);
+    var pb = document.getElementById('editProgressBar');
+    if (pb) pb.style.width = pct + '%';
+    var st = document.getElementById('editFooterStatus');
+    if (st) st.textContent = 'Step ' + (editCurrentStep + 1) + ' of ' + EDIT_STEPS.length
+                           + ' \u00b7 ' + EDIT_STEPS[editCurrentStep].title;
+}
+
+function editShowStep(i) {
+    if (i < 0 || i >= EDIT_STEPS.length) return;
+    editPanels().forEach(function (el) {
+        var step = parseInt(el.getAttribute('data-step'), 10);
+        if (step === i) {
+            el.style.display = 'block';
+            el.classList.remove('nsa-step-in');
+            void el.offsetWidth;
+            requestAnimationFrame(function () { el.classList.add('nsa-step-in'); });
+        } else {
+            el.style.display = 'none';
+            el.classList.remove('nsa-step-in');
+        }
+    });
+    editCurrentStep = i;
+    editVisited[i] = true;
+
+    var back = document.getElementById('editBackBtn');
+    var next = document.getElementById('editNextBtn');
+    if (back) back.style.visibility = (i === 0) ? 'hidden' : 'visible';
+    if (next) next.style.visibility = (i === EDIT_STEPS.length - 1) ? 'hidden' : 'visible';
+
+    renderEditStepper();
+    window.scrollTo({ top: 0, behavior: 'smooth' });
+}
+
+function editWizardBack() { editShowStep(editCurrentStep - 1); }
+function editWizardNext() { editShowStep(editCurrentStep + 1); }
+
+/**
+ * Reveal the first field that failed validation. Without this a save can fail
+ * silently: validateEditForm() marks the field and returns false, but the field
+ * is on a hidden step, so the operator sees no error and no save.
+ */
+function editRevealFirstError() {
+    var bad = document.querySelector('.has-error');
+    if (!bad) { renderEditStepper(); return false; }
+    var panel = bad.closest('.nsa-step-panel');
+    if (panel) {
+        var step = parseInt(panel.getAttribute('data-step'), 10);
+        if (step !== editCurrentStep) editShowStep(step);
+    }
+    renderEditStepper();
+    try { bad.focus({ preventScroll: true }); } catch (e) { /* older browsers */ }
+    bad.scrollIntoView({ behavior: 'smooth', block: 'center' });
+    return true;
+}
+
+document.addEventListener('DOMContentLoaded', function () {
+    if (!document.getElementById('editStepper')) return;
+
+    // Deep links from elsewhere in the panel still work: #sec-salary opens the
+    // step that section now lives on rather than scrolling to a hidden node.
+    var start = 0;
+    if (window.location.hash) {
+        var target = document.querySelector('.nsa-step-panel' + window.location.hash);
+        if (target) start = parseInt(target.getAttribute('data-step'), 10) || 0;
+    }
+    editShowStep(start);
+});
+
 function validateEditForm() {
     var isValid = true;
 
@@ -844,6 +1439,32 @@ document.addEventListener('DOMContentLoaded', function() {
         });
     })();
 
+    /* ── Reporting Manager (Phase 2C) — reuses the existing HR staff-list
+       endpoint (Active-only, same-school), excludes the staff member
+       themselves. The currently-assigned manager (Active or Inactive) is
+       already rendered server-side as a pre-selected option, so this only
+       ADDS the rest of the choices without duplicating that one. Server-side
+       validation on submit is authoritative regardless of this list. ── */
+    (function() {
+        var sel = document.getElementById('reporting_manager_id');
+        if (!sel) return;
+        var ownId = sel.getAttribute('data-own-staff-id') || '';
+        var currentValue = sel.getAttribute('data-current-value') || '';
+        fetch('<?= base_url("hr/get_staff_list") ?>', { headers: { 'X-Requested-With': 'XMLHttpRequest' } })
+            .then(function(r) { return r.json(); })
+            .then(function(resp) {
+                var staff = resp.staff || (resp.data && resp.data.staff) || [];
+                staff.forEach(function(s) {
+                    if (s.id === ownId || s.id === currentValue) return; // no self-report; current option already rendered
+                    var opt = document.createElement('option');
+                    opt.value = s.id;
+                    opt.textContent = s.name + (s.position ? ' — ' + s.position : '');
+                    sel.appendChild(opt);
+                });
+            })
+            .catch(function() { /* non-fatal — field stays optional */ });
+    })();
+
     /* ── Load departments from HR module ── */
     var _deptRoles = {};   // department name → allowed staff-role IDs (Departments & Roles)
     (function(){
@@ -904,7 +1525,7 @@ document.addEventListener('DOMContentLoaded', function() {
     var updateBtn = document.getElementById('updateStaffBtn');
     if (updateBtn) {
         updateBtn.addEventListener('click', function() {
-            if (!validateEditForm()) return;
+            if (!validateEditForm()) { editRevealFirstError(); return; }
             submitEditForm();
         });
     }
@@ -1023,8 +1644,32 @@ document.addEventListener('DOMContentLoaded', function() {
         .split(',').map(function(s){ return s.trim(); }).filter(Boolean);
     var _subjectsLoading = false, _subjectsLoaded = false;
 
+    /* CT-D1: does this role TEACH? Gated on the catalogue's own declaration
+       rather than one hardcoded id. ROLE_CLASS_TEACHER ships with the SAME
+       category ('Teaching') and the SAME flags (['can_teach', ...]) as
+       ROLE_TEACHER, so hiding Teaching Subjects from it left a Class Teacher
+       unable to hold teaching_subjects — while Academic's picker still
+       offered them (Position falls back to the role label "Class Teacher",
+       which the designation regex matches) and the assignment write then
+       refused with "Add this subject to their teaching_subjects in Staff
+       profile first" — the very field this gate hid. A closed loop.
+       Both arms are needed: shipped roles carry flags, custom roles
+       (Staff_access::save_role) are written WITHOUT a flags key. Falls back
+       to the two shipped teaching ids before the catalogue loads, so
+       behaviour is never worse than before. */
+    function roleCanTeach(rid) {
+        var r = (typeof _roleData !== 'undefined' && _roleData) ? _roleData[rid] : null;
+        if (!r) return rid === 'ROLE_TEACHER' || rid === 'ROLE_CLASS_TEACHER';
+        var f = r.flags;
+        if (f && typeof f.indexOf === 'function' && f.indexOf('can_teach') !== -1) return true;
+        return (r.category || '') === 'Teaching';
+    }
+
     function isTeacherSelected() {
-        return _selectedRoles.indexOf('ROLE_TEACHER') !== -1;
+        for (var i = 0; i < _selectedRoles.length; i++) {
+            if (roleCanTeach(_selectedRoles[i])) return true;
+        }
+        return false;
     }
 
     function recheckTeachingVisibility() {
@@ -1177,6 +1822,911 @@ function submitEditForm() {
             btn.innerHTML = '<i class="fa fa-save"></i> Save Changes';
         }
     }
+}
+
+/* ══ HR DOCUMENTS (Staff HR Advanced Capability Programme, Phase A) ══
+   Independent AJAX widget — each upload takes effect immediately via
+   Staff::upload_staff_document()/get_staff_documents(), unrelated to the
+   big "Save Changes" form submit above. */
+(function () {
+    var $grid = $('#hrDocsGrid');
+    if (!$grid.length) return;
+    var staffId = $grid.data('staff-id');
+
+    function esc(s) {
+        return $('<div>').text(s == null ? '' : String(s)).html();
+    }
+
+    function renderCurrent($field, ref) {
+        var $cur = $field.find('.hr-doc-current');
+        if (!ref) {
+            $cur.html('<i class="fa fa-minus-circle" style="color:var(--nsa-muted);"></i> Not uploaded yet');
+            return;
+        }
+        var statusIcon = { verified: 'fa-check-circle', rejected: 'fa-times-circle', pending: 'fa-clock-o' }[ref.verificationStatus] || 'fa-clock-o';
+        var statusColor = { verified: '#059669', rejected: '#dc2626', pending: '#d97706' }[ref.verificationStatus] || '#d97706';
+        $cur.html(
+            '<i class="fa ' + statusIcon + '" style="color:' + statusColor + ';"></i> ' +
+            'Uploaded <span style="text-transform:capitalize;color:' + statusColor + ';">(' + esc(ref.verificationStatus || 'pending') + ')</span> ' +
+            (ref.url ? '&nbsp;<a href="' + esc(ref.url) + '" target="_blank">View</a>' : '')
+        );
+    }
+
+    function loadHrDocuments() {
+        if (!staffId) return;
+        $.get('<?= base_url("staff/get_staff_documents") ?>', { staff_id: staffId }, function (res) {
+            var byType = {};
+            (res && res.documents ? res.documents : []).forEach(function (d) { byType[d.type] = d; });
+            $grid.find('.hr-doc-field').each(function () {
+                var type = $(this).data('type');
+                renderCurrent($(this), byType[type] || null);
+            });
+        }, 'json').fail(function () {
+            $grid.find('.hr-doc-current').html('<i class="fa fa-exclamation-triangle"></i> Could not load document status.');
+        });
+    }
+
+    $grid.on('change', '.hr-doc-file', function () {
+        var $input = $(this);
+        var $field = $input.closest('.hr-doc-field');
+        var type = $field.data('type');
+        var file = this.files && this.files[0];
+        if (!file || !staffId) return;
+
+        var fd = new FormData();
+        fd.append('staff_id', staffId);
+        fd.append('type', type);
+        fd.append('document', file);
+
+        $field.find('.hr-doc-current').html('<i class="fa fa-spinner fa-spin"></i> Uploading...');
+        $.ajax({
+            url: '<?= base_url("staff/upload_staff_document") ?>',
+            method: 'POST', data: fd, processData: false, contentType: false, dataType: 'json',
+            success: function (res) {
+                if (res && res.status && res.status !== 'error') {
+                    nsaShowAlert('success', res.message || 'Document uploaded.');
+                    loadHrDocuments();
+                } else {
+                    nsaShowAlert('error', (res && res.message) || 'Upload failed.');
+                    loadHrDocuments();
+                }
+                $input.val('');
+            },
+            error: function () {
+                nsaShowAlert('error', 'Server error during upload — please try again.');
+                loadHrDocuments();
+                $input.val('');
+            }
+        });
+    });
+
+    loadHrDocuments();
+})();
+
+/* ══ PROMOTION MODAL (Staff HR Advanced Capability Programme, Phase 1) ══
+   Global functions — called from onclick= attributes, so deliberately NOT
+   nested inside the HR-documents IIFE above. Independent AJAX action,
+   entirely separate from the main "Save Changes" form submit. */
+var PROMO_STAFF_ID = <?= json_encode($staff_data['User ID'] ?? '') ?>;
+var PROMO_CURRENT_POSITION = <?= json_encode($staff_data['position'] ?? $staff_data['Position'] ?? '') ?>;
+var PROMO_CURRENT_DEPARTMENT = <?= json_encode($staff_data['department'] ?? $staff_data['Department'] ?? '') ?>;
+var PROMO_CURRENT_MANAGER_ID = <?= json_encode($currentReportingManagerId ?? '') ?>;
+var _promoDeptLoaded = false, _promoMgrLoaded = false;
+var HR_MANAGE = <?= json_encode(!empty($hr_manage)) ?>;
+
+function dismissScheduleReview() {
+    var banner = document.getElementById('scheduleReviewBanner');
+    var btn = banner ? banner.querySelector('button') : null;
+    if (btn) { btn.disabled = true; btn.textContent = 'Dismissing…'; }
+    var fd = new FormData();
+    fd.append('staff_id', PROMO_STAFF_ID);
+    $.ajax({
+        url: '<?= base_url("staff/clear_pending_schedule_review") ?>',
+        method: 'POST', data: fd, processData: false, contentType: false, dataType: 'json',
+        success: function (res) {
+            if (res && res.status && res.status !== 'error') { if (banner) banner.remove(); }
+            else { nsaShowAlert('error', (res && res.message) || 'Could not dismiss the reminder.'); if (btn) { btn.disabled = false; btn.textContent = 'Dismiss'; } }
+        },
+        error: function () {
+            nsaShowAlert('error', 'Server error — please try again.');
+            if (btn) { btn.disabled = false; btn.textContent = 'Dismiss'; }
+        }
+    });
+}
+
+function openPromotionModal() {
+    document.getElementById('promoCurrentPosition').value = PROMO_CURRENT_POSITION || '(none set)';
+    document.getElementById('promoCurrentDepartment').value = PROMO_CURRENT_DEPARTMENT || '(none set)';
+    document.getElementById('promoNewPosition').value = '';
+    document.getElementById('promoEffectiveFrom').value = '';
+    document.getElementById('promoReason').value = '';
+
+    if (!_promoDeptLoaded) {
+        _promoDeptLoaded = true;
+        fetch('<?= base_url("hr/get_departments") ?>')
+            .then(function (r) { return r.json(); })
+            .then(function (r) {
+                if (r.status !== 'success') return;
+                var sel = document.getElementById('promoNewDepartment');
+                (r.departments || []).forEach(function (d) {
+                    if ((d.status || 'Active') !== 'Active') return;
+                    var opt = document.createElement('option');
+                    opt.value = d.name; opt.textContent = d.name;
+                    sel.appendChild(opt);
+                });
+            }).catch(function () {});
+    }
+
+    if (!_promoMgrLoaded) {
+        _promoMgrLoaded = true;
+        fetch('<?= base_url("hr/get_staff_list") ?>', { headers: { 'X-Requested-With': 'XMLHttpRequest' } })
+            .then(function (r) { return r.json(); })
+            .then(function (resp) {
+                var staff = resp.staff || (resp.data && resp.data.staff) || [];
+                var sel = document.getElementById('promoNewManager');
+                var currentText = '(none set)';
+                staff.forEach(function (s) {
+                    if (s.id === PROMO_STAFF_ID) return; // no self-report
+                    if (s.id === PROMO_CURRENT_MANAGER_ID) currentText = s.name;
+                    var opt = document.createElement('option');
+                    opt.value = s.id; opt.textContent = s.name + (s.position ? ' — ' + s.position : '');
+                    sel.appendChild(opt);
+                });
+                document.getElementById('promoCurrentManager').value = currentText;
+            }).catch(function () {
+                document.getElementById('promoCurrentManager').value = PROMO_CURRENT_MANAGER_ID || '(none set)';
+            });
+    }
+
+    document.getElementById('promotionModalOverlay').style.display = 'flex';
+}
+
+function closePromotionModal() {
+    document.getElementById('promotionModalOverlay').style.display = 'none';
+}
+
+function submitPromotion() {
+    var newPosition = document.getElementById('promoNewPosition').value.trim();
+    var newDepartment = document.getElementById('promoNewDepartment').value;
+    var newManager = document.getElementById('promoNewManager').value;
+    var effectiveFrom = document.getElementById('promoEffectiveFrom').value;
+    var reason = document.getElementById('promoReason').value.trim();
+
+    if (!newPosition && !newDepartment && !newManager) {
+        nsaShowAlert('error', 'Set at least one new value (position, department, or reporting manager).');
+        return;
+    }
+
+    var btn = document.getElementById('submitPromotionBtn');
+    btn.disabled = true;
+    btn.innerHTML = '<i class="fa fa-spinner fa-spin"></i> Recording…';
+
+    var fd = new FormData();
+    fd.append('staff_id', PROMO_STAFF_ID);
+    if (newPosition) fd.append('new_position', newPosition);
+    if (newDepartment) fd.append('new_department', newDepartment);
+    // Only submitted when the user actually picked someone — an empty
+    // selection means "leave unchanged", NOT "clear the manager" (empty
+    // string is a distinct, valid server-side value meaning "cleared").
+    // This modal is not the place to clear an existing manager.
+    if (newManager) fd.append('new_reporting_manager_id', newManager);
+    if (effectiveFrom) fd.append('effective_from', effectiveFrom);
+    if (reason) fd.append('reason', reason);
+
+    $.ajax({
+        url: '<?= base_url("staff/promote_staff") ?>',
+        method: 'POST', data: fd, processData: false, contentType: false, dataType: 'json',
+        success: function (res) {
+            btn.disabled = false;
+            btn.innerHTML = '<i class="fa fa-check"></i> Record Promotion';
+            if (res && res.status && res.status !== 'error') {
+                nsaShowAlert('success', res.message || 'Promotion recorded.');
+                if (res.warning) nsaShowAlert('warning', res.warning);
+                closePromotionModal();
+                setTimeout(function () { window.location.reload(); }, 1200);
+            } else {
+                nsaShowAlert('error', (res && res.message) || 'Could not record the promotion.');
+            }
+        },
+        error: function () {
+            btn.disabled = false;
+            btn.innerHTML = '<i class="fa fa-check"></i> Record Promotion';
+            nsaShowAlert('error', 'Server error — please try again.');
+        }
+    });
+}
+
+/* ══ TRANSFER MODAL (Trail 2 Phase I) ══
+   Same department/manager-dropdown loading pattern as the Promotion
+   modal above — deliberately duplicated rather than shared, matching how
+   this file already keeps each modal's script self-contained. Reuses the
+   PROMO_STAFF_ID/PROMO_CURRENT_* globals already declared above (this
+   page's one staff record, one set of "current" values — no need for a
+   second copy). */
+var _transferDeptLoaded = false, _transferMgrLoaded = false;
+
+var _transferSchedulesLoaded = false;
+
+function onTransferScheduleChoiceChange() {
+    var change = document.querySelector('input[name="transferScheduleChoice"]:checked');
+    var sel = document.getElementById('transferNewSchedule');
+    if (!sel) return;
+    sel.style.display = (change && change.value === 'change') ? '' : 'none';
+}
+
+function openTransferModal() {
+    document.getElementById('transferCurrentDepartment').value = PROMO_CURRENT_DEPARTMENT || '(none set)';
+    document.getElementById('transferNewDepartment').value = '';
+    document.getElementById('transferEffectiveFrom').value = '';
+    document.getElementById('transferReason').value = '';
+
+    var keepRadio = document.querySelector('input[name="transferScheduleChoice"][value="keep"]');
+    if (keepRadio) keepRadio.checked = true;
+    onTransferScheduleChoiceChange();
+
+    if (HR_MANAGE && !_transferSchedulesLoaded) {
+        _transferSchedulesLoaded = true;
+        fetch('<?= base_url("work_schedules/get_data") ?>')
+            .then(function (r) { return r.json(); })
+            .then(function (r) {
+                if (r.status !== 'success') return;
+                var sel = document.getElementById('transferNewSchedule');
+                if (!sel) return;
+                (r.schedules || []).forEach(function (s) {
+                    var opt = document.createElement('option');
+                    opt.value = s.scheduleId; opt.textContent = s.name || s.scheduleId;
+                    sel.appendChild(opt);
+                });
+            }).catch(function () {});
+    }
+
+    if (!_transferDeptLoaded) {
+        _transferDeptLoaded = true;
+        fetch('<?= base_url("hr/get_departments") ?>')
+            .then(function (r) { return r.json(); })
+            .then(function (r) {
+                if (r.status !== 'success') return;
+                var sel = document.getElementById('transferNewDepartment');
+                (r.departments || []).forEach(function (d) {
+                    if ((d.status || 'Active') !== 'Active') return;
+                    var opt = document.createElement('option');
+                    opt.value = d.name; opt.textContent = d.name;
+                    sel.appendChild(opt);
+                });
+            }).catch(function () {});
+    }
+
+    if (!_transferMgrLoaded) {
+        _transferMgrLoaded = true;
+        fetch('<?= base_url("hr/get_staff_list") ?>', { headers: { 'X-Requested-With': 'XMLHttpRequest' } })
+            .then(function (r) { return r.json(); })
+            .then(function (resp) {
+                var staff = resp.staff || (resp.data && resp.data.staff) || [];
+                var sel = document.getElementById('transferNewManager');
+                var currentText = '(none set)';
+                staff.forEach(function (s) {
+                    if (s.id === PROMO_STAFF_ID) return; // no self-report
+                    if (s.id === PROMO_CURRENT_MANAGER_ID) currentText = s.name;
+                    var opt = document.createElement('option');
+                    opt.value = s.id; opt.textContent = s.name + (s.position ? ' — ' + s.position : '');
+                    sel.appendChild(opt);
+                });
+                document.getElementById('transferCurrentManager').value = currentText;
+            }).catch(function () {
+                document.getElementById('transferCurrentManager').value = PROMO_CURRENT_MANAGER_ID || '(none set)';
+            });
+    }
+
+    document.getElementById('transferModalOverlay').style.display = 'flex';
+}
+
+function closeTransferModal() {
+    document.getElementById('transferModalOverlay').style.display = 'none';
+}
+
+function submitTransfer() {
+    var newDepartment = document.getElementById('transferNewDepartment').value;
+    var newManager = document.getElementById('transferNewManager').value;
+    var effectiveFrom = document.getElementById('transferEffectiveFrom').value;
+    var reason = document.getElementById('transferReason').value.trim();
+
+    if (!newDepartment && !newManager) {
+        nsaShowAlert('error', 'Set at least one new value (department or reporting manager).');
+        return;
+    }
+    if (!effectiveFrom) {
+        nsaShowAlert('error', 'Effective date is required for a transfer.');
+        return;
+    }
+
+    var btn = document.getElementById('submitTransferBtn');
+    btn.disabled = true;
+    btn.innerHTML = '<i class="fa fa-spinner fa-spin"></i> Recording…';
+
+    var fd = new FormData();
+    fd.append('staff_id', PROMO_STAFF_ID);
+    if (newDepartment) fd.append('new_department', newDepartment);
+    // Same "empty selection = leave unchanged, not clear" contract as the
+    // Promotion modal — see that function's own comment for why.
+    if (newManager) fd.append('new_reporting_manager_id', newManager);
+    fd.append('effective_from', effectiveFrom);
+    if (reason) fd.append('reason', reason);
+
+    var scheduleChoice = document.querySelector('input[name="transferScheduleChoice"]:checked');
+    var wantsScheduleChange = HR_MANAGE && scheduleChoice && scheduleChoice.value === 'change';
+    var newScheduleId = wantsScheduleChange ? document.getElementById('transferNewSchedule').value : '';
+    if (wantsScheduleChange && !newScheduleId) {
+        nsaShowAlert('error', 'Select the new Work Schedule, or choose "Keep current".');
+        return;
+    }
+
+    $.ajax({
+        url: '<?= base_url("staff/transfer_staff") ?>',
+        method: 'POST', data: fd, processData: false, contentType: false, dataType: 'json',
+        success: function (res) {
+            if (!(res && res.status)) {
+                btn.disabled = false;
+                btn.innerHTML = '<i class="fa fa-check"></i> Record Transfer';
+                nsaShowAlert('error', (res && res.message) || 'Could not record the transfer.');
+                return;
+            }
+
+            nsaShowAlert('success', res.message || 'Transfer recorded.');
+            if (res.warning) nsaShowAlert('warning', res.warning);
+            closeTransferModal();
+
+            // The transfer itself has ALREADY succeeded at this point —
+            // department transfer and schedule assignment are independent
+            // facts, so nothing below this line can undo it. It only
+            // decides whether to also attempt the explicit, opted-in
+            // schedule composition via the existing save_assignment writer.
+            if (!wantsScheduleChange) {
+                setTimeout(function () { window.location.reload(); }, 1200);
+                return;
+            }
+
+            btn.innerHTML = '<i class="fa fa-spinner fa-spin"></i> Updating Work Schedule…';
+            _composeTransferScheduleChange(PROMO_STAFF_ID, newScheduleId, effectiveFrom)
+                .then(function () {
+                    nsaShowAlert('success', 'Work Schedule updated to match the transfer.');
+                })
+                .catch(function (err) {
+                    nsaShowAlert('warning',
+                        'Transfer was recorded, but the Work Schedule change could not be completed ('
+                        + (err && err.message ? err.message : 'unknown error')
+                        + '). A reminder has been added to this page.');
+                    return _flagPendingScheduleReview(PROMO_STAFF_ID,
+                        'Work Schedule composition failed after transfer: ' + (err && err.message ? err.message : 'unknown error'),
+                        effectiveFrom);
+                })
+                .then(function () {
+                    btn.disabled = false;
+                    btn.innerHTML = '<i class="fa fa-check"></i> Record Transfer';
+                    setTimeout(function () { window.location.reload(); }, 1200);
+                });
+        },
+        error: function () {
+            btn.disabled = false;
+            btn.innerHTML = '<i class="fa fa-check"></i> Record Transfer';
+            nsaShowAlert('error', 'Server error — please try again.');
+        }
+    });
+}
+
+/**
+ * Composes the optional post-transfer schedule change purely by calling the
+ * EXISTING, UNMODIFIED Work_schedules::save_assignment() — first to close
+ * whatever staff-level assignment is currently open (if any), then to open
+ * the new one, both effective the same date as the transfer. Never writes
+ * staffScheduleAssignments directly. Returns a Promise; a rejection means
+ * "the transfer already succeeded but this follow-up did not" — the caller
+ * treats that as an independent, recoverable fact, not a failure to roll
+ * back.
+ */
+function _composeTransferScheduleChange(staffId, newScheduleId, effectiveFrom) {
+    return fetch('<?= base_url("work_schedules/get_data") ?>')
+        .then(function (r) { return r.json(); })
+        .then(function (r) {
+            if (r.status !== 'success') throw new Error('Could not load current Work Schedule assignments.');
+            var current = (r.assignments || []).find(function (a) {
+                return a.attachmentType === 'staff' && a.attachmentId === staffId && !a.effectiveTo;
+            });
+            if (!current) return Promise.resolve();
+
+            var closeTo = new Date(effectiveFrom + 'T00:00:00');
+            closeTo.setDate(closeTo.getDate() - 1);
+            var closeToISO = closeTo.toISOString().slice(0, 10);
+
+            var fd = new FormData();
+            fd.append('assignment_id', current.assignmentId);
+            fd.append('attachment_type', 'staff');
+            fd.append('attachment_id', staffId);
+            fd.append('schedule_id', current.policyId);
+            fd.append('effective_from', current.effectiveFrom);
+            fd.append('effective_to', closeToISO);
+            return $.ajax({
+                url: '<?= base_url("work_schedules/save_assignment") ?>',
+                method: 'POST', data: fd, processData: false, contentType: false, dataType: 'json',
+            }).then(function (res) {
+                if (!(res && res.status)) throw new Error((res && res.message) || 'Could not close the current Work Schedule assignment.');
+            });
+        })
+        .then(function () {
+            var fd = new FormData();
+            fd.append('attachment_type', 'staff');
+            fd.append('attachment_id', staffId);
+            fd.append('schedule_id', newScheduleId);
+            fd.append('effective_from', effectiveFrom);
+            fd.append('effective_to', '');
+            return $.ajax({
+                url: '<?= base_url("work_schedules/save_assignment") ?>',
+                method: 'POST', data: fd, processData: false, contentType: false, dataType: 'json',
+            });
+        })
+        .then(function (res) {
+            if (!(res && res.status)) throw new Error((res && res.message) || 'Could not create the new Work Schedule assignment.');
+        });
+}
+
+function _flagPendingScheduleReview(staffId, reason, effectiveFrom) {
+    var fd = new FormData();
+    fd.append('staff_id', staffId);
+    fd.append('reason', reason);
+    fd.append('effective_from', effectiveFrom);
+    return $.ajax({
+        url: '<?= base_url("staff/flag_pending_schedule_review") ?>',
+        method: 'POST', data: fd, processData: false, contentType: false, dataType: 'json',
+    }).catch(function () { /* best-effort — the toast already told the admin */ });
+}
+
+/* ══ NOTICE PERIOD MODAL (Staff HR Advanced Capability Programme,
+   Phase 2) ══
+   complete_notice_period() is intentionally called ONLY after the
+   existing, unmodified staff/set_status endpoint has already succeeded —
+   this UI never bypasses that endpoint or duplicates its logic. */
+function openNoticeModal() {
+    document.getElementById('noticeModalOverlay').style.display = 'flex';
+    noticeLoad();
+}
+function closeNoticeModal() {
+    document.getElementById('noticeModalOverlay').style.display = 'none';
+}
+
+function noticeLoad() {
+    var body = document.getElementById('noticeModalBody');
+    body.innerHTML = '<p style="color:var(--nsa-muted);font-size:13px;"><i class="fa fa-spinner fa-spin"></i> Loading…</p>';
+    $.get('<?= base_url("staff/get_notice_period") ?>', { staff_id: PROMO_STAFF_ID }, function (res) {
+        noticeRenderState((res && res.notice) ? res.notice : null);
+    }, 'json').fail(function () {
+        body.innerHTML = '<p style="color:var(--nsa-red,#dc2626);font-size:13px;">Could not load notice period status.</p>';
+    });
+}
+
+function esc(s) { return $('<div>').text(s == null ? '' : String(s)).html(); }
+
+function noticeRenderState(notice) {
+    var body = document.getElementById('noticeModalBody');
+    var status = notice ? notice.status : null;
+
+    if (!status || status === 'withdrawn' || status === 'rejected' || status === 'completed') {
+        // No active notice — offer to open one. A withdrawn/rejected/
+        // completed record stays in Firestore for history but no longer
+        // blocks a fresh submission.
+        var priorNote = '';
+        if (status === 'rejected') priorNote = '<p style="font-size:12px;color:var(--nsa-muted);">A previous notice period was rejected on ' + esc((notice.decidedAt || '').slice(0, 10)) + '.</p>';
+        if (status === 'completed') priorNote = '<p style="font-size:12px;color:var(--nsa-muted);">A previous notice period was completed on ' + esc((notice.updatedAt || '').slice(0, 10)) + '.</p>';
+        body.innerHTML =
+            priorNote +
+            '<div class="nsa-field"><label>Notice Start Date</label>' +
+            '<input type="date" id="noticeStartDate" class="nsa-input"></div>' +
+            '<div class="nsa-field"><label>Reason</label>' +
+            '<textarea id="noticeReason" class="nsa-input" rows="2" placeholder="e.g. Resigned to pursue further studies"></textarea></div>' +
+            '<button type="button" class="nsa-btn nsa-btn-primary" style="margin-top:10px;" onclick="noticeSubmit()">' +
+            '<i class="fa fa-flag"></i> Open Notice Period</button>';
+        return;
+    }
+
+    if (status === 'pending') {
+        body.innerHTML =
+            '<div class="nsa-field"><label>Notice Start</label><input class="nsa-input" disabled value="' + esc(notice.noticeStartDate) + '"></div>' +
+            '<div class="nsa-field"><label>Expected Last Working Day</label><input class="nsa-input" disabled value="' + esc(notice.expectedLastWorkingDay) + ' (' + esc(notice.noticeDurationDays) + ' days notice)"></div>' +
+            (notice.reason ? '<div class="nsa-field"><label>Reason</label><textarea class="nsa-input" rows="2" disabled>' + esc(notice.reason) + '</textarea></div>' : '') +
+            '<div class="nsa-field"><label>Adjusted Last Working Day <span class="nsa-optional-tag">only needed for Waive/Reduce</span></label>' +
+            '<input type="date" id="noticeActualLwd" class="nsa-input" max="' + esc(notice.expectedLastWorkingDay) + '"></div>' +
+            '<div class="nsa-field"><label>Decision Note</label><textarea id="noticeDecisionNote" class="nsa-input" rows="2"></textarea></div>' +
+            '<div style="display:flex;flex-wrap:wrap;gap:8px;margin-top:10px;">' +
+            '<button type="button" class="nsa-btn nsa-btn-primary" onclick="noticeDecide(\'approve\')"><i class="fa fa-check"></i> Approve</button>' +
+            '<button type="button" class="nsa-btn nsa-btn-ghost" onclick="noticeDecide(\'waive\')"><i class="fa fa-forward"></i> Waive (Release Early)</button>' +
+            '<button type="button" class="nsa-btn nsa-btn-ghost" onclick="noticeDecide(\'reduce\')"><i class="fa fa-compress"></i> Reduce</button>' +
+            '<button type="button" class="nsa-btn nsa-btn-ghost" onclick="noticeDecide(\'reject\')" style="color:var(--nsa-red,#dc2626);"><i class="fa fa-times"></i> Reject</button>' +
+            '</div>' +
+            '<button type="button" class="nsa-btn nsa-btn-ghost" style="margin-top:8px;font-size:12px;" onclick="noticeWithdraw()">Withdraw this notice period</button>';
+        return;
+    }
+
+    if (status === 'approved' || status === 'waived' || status === 'reduced') {
+        body.innerHTML =
+            '<p style="font-size:13px;">Notice period <strong>' + esc(status) + '</strong>. Last working day: <strong>' + esc(notice.actualLastWorkingDay) + '</strong>.</p>' +
+            (notice.decisionNote ? '<p style="font-size:12px;color:var(--nsa-muted);">' + esc(notice.decisionNote) + '</p>' : '') +
+            '<button type="button" class="nsa-btn nsa-btn-primary" style="margin-top:8px;" onclick="noticeCompleteSeparation()">' +
+            '<i class="fa fa-sign-out"></i> Complete Separation</button>' +
+            '<p style="font-size:11px;color:var(--nsa-muted);margin-top:8px;">Marks the staff member Inactive via the existing Separation workflow, then closes this notice period.</p>';
+        return;
+    }
+
+    body.innerHTML = '<p style="font-size:13px;color:var(--nsa-muted);">Unrecognized notice period state.</p>';
+}
+
+function noticeSubmit() {
+    var startDate = document.getElementById('noticeStartDate').value;
+    var reason = document.getElementById('noticeReason').value.trim();
+    var fd = new FormData();
+    fd.append('staff_id', PROMO_STAFF_ID);
+    if (startDate) fd.append('notice_start_date', startDate);
+    if (reason) fd.append('reason', reason);
+    $.ajax({
+        url: '<?= base_url("staff/submit_resignation") ?>', method: 'POST', data: fd,
+        processData: false, contentType: false, dataType: 'json',
+        success: function (res) {
+            if (res && res.status && res.status !== 'error') { nsaShowAlert('success', res.message || 'Notice period opened.'); noticeLoad(); }
+            else nsaShowAlert('error', (res && res.message) || 'Could not open notice period.');
+        },
+        error: function () { nsaShowAlert('error', 'Server error — please try again.'); }
+    });
+}
+
+function noticeDecide(decision) {
+    var actualLwd = document.getElementById('noticeActualLwd').value;
+    var note = document.getElementById('noticeDecisionNote').value.trim();
+    if ((decision === 'waive' || decision === 'reduce') && !actualLwd) {
+        nsaShowAlert('error', 'Set the adjusted last working day for ' + decision + '.');
+        return;
+    }
+    var fd = new FormData();
+    fd.append('staff_id', PROMO_STAFF_ID);
+    fd.append('decision', decision);
+    if (actualLwd) fd.append('actual_last_working_day', actualLwd);
+    if (note) fd.append('decision_note', note);
+    $.ajax({
+        url: '<?= base_url("staff/decide_notice_period") ?>', method: 'POST', data: fd,
+        processData: false, contentType: false, dataType: 'json',
+        success: function (res) {
+            if (res && res.status && res.status !== 'error') { nsaShowAlert('success', res.message || 'Decision recorded.'); noticeLoad(); }
+            else nsaShowAlert('error', (res && res.message) || 'Could not record the decision.');
+        },
+        error: function () { nsaShowAlert('error', 'Server error — please try again.'); }
+    });
+}
+
+async function noticeWithdraw() {
+    if (!await zxConfirm({ title: 'Withdraw this notice period?' })) return;
+    var fd = new FormData();
+    fd.append('staff_id', PROMO_STAFF_ID);
+    $.ajax({
+        url: '<?= base_url("staff/withdraw_resignation") ?>', method: 'POST', data: fd,
+        processData: false, contentType: false, dataType: 'json',
+        success: function (res) {
+            if (res && res.status && res.status !== 'error') { nsaShowAlert('success', 'Notice period withdrawn.'); noticeLoad(); }
+            else nsaShowAlert('error', (res && res.message) || 'Could not withdraw.');
+        },
+        error: function () { nsaShowAlert('error', 'Server error — please try again.'); }
+    });
+}
+
+/* Chains the EXISTING, unmodified staff/set_status endpoint (Inactive) —
+   the exact same call the pre-existing separation modal already makes —
+   then, only on its success, calls complete_notice_period() to close the
+   notice record out. set_status()'s own logic is never duplicated here. */
+async function noticeCompleteSeparation() {
+    if (!await zxConfirm({ title: 'Mark this staff member Inactive and complete the notice period? This uses the existing Separation workflow.' })) return;
+    var fd = new FormData();
+    fd.append('status', 'Inactive');
+    fd.append('reason', 'Resignation — notice period completed');
+    $.ajax({
+        url: '<?= base_url("staff/set_status/") ?>' + encodeURIComponent(PROMO_STAFF_ID),
+        method: 'POST', data: fd, processData: false, contentType: false, dataType: 'json',
+        success: function (res) {
+            if (!res || !res.status) {
+                nsaShowAlert('error', (res && res.message) || 'Separation failed.');
+                return;
+            }
+            var fd2 = new FormData();
+            fd2.append('staff_id', PROMO_STAFF_ID);
+            $.ajax({
+                url: '<?= base_url("staff/complete_notice_period") ?>', method: 'POST', data: fd2,
+                processData: false, contentType: false, dataType: 'json',
+                success: function (res2) {
+                    nsaShowAlert('success', 'Staff separated and notice period completed.');
+                    if (!res2 || !res2.status) nsaShowAlert('warning', (res2 && res2.message) || 'Separation succeeded, but the notice record could not be closed out — check the audit log.');
+                    noticeLoad();
+                },
+                error: function () { nsaShowAlert('warning', 'Separation succeeded, but closing the notice record failed — please retry.'); noticeLoad(); }
+            });
+        },
+        error: function () { nsaShowAlert('error', 'Server error during separation — please try again.'); }
+    });
+}
+
+/* ══ CLEARANCE / HANDOVER MODAL (Staff HR Advanced Capability Programme,
+   Phase 3) ══ */
+function openClearanceModal() {
+    document.getElementById('clearanceModalOverlay').style.display = 'flex';
+    clearanceLoad();
+}
+function closeClearanceModal() {
+    document.getElementById('clearanceModalOverlay').style.display = 'none';
+}
+
+function clearanceLoad() {
+    var body = document.getElementById('clearanceModalBody');
+    body.innerHTML = '<p style="color:var(--nsa-muted);font-size:13px;"><i class="fa fa-spinner fa-spin"></i> Loading…</p>';
+    $.get('<?= base_url("staff/get_clearance") ?>', { staff_id: PROMO_STAFF_ID }, function (res) {
+        clearanceRenderState((res && res.clearance) ? res.clearance : null);
+    }, 'json').fail(function () {
+        body.innerHTML = '<p style="color:var(--nsa-red,#dc2626);font-size:13px;">Could not load clearance status.</p>';
+    });
+}
+
+var CLEARANCE_STATUS_COLOR = { pending: '#d97706', cleared: '#059669', flagged: '#dc2626' };
+var CLEARANCE_STATUS_ICON  = { pending: 'fa-clock-o', cleared: 'fa-check-circle', flagged: 'fa-flag' };
+
+function clearanceRenderState(clearance) {
+    var body = document.getElementById('clearanceModalBody');
+
+    if (!clearance || clearance.status !== 'in_progress') {
+        var priorNote = (clearance && clearance.status === 'completed')
+            ? '<p style="font-size:12px;color:var(--nsa-muted);">A previous clearance process was completed on ' + esc((clearance.completedAt || '').slice(0, 10)) + '.</p>'
+            : '';
+        body.innerHTML = priorNote +
+            '<p style="font-size:13px;color:var(--nsa-muted);margin-bottom:10px;">No clearance process is currently open for this staff member.</p>' +
+            '<button type="button" class="nsa-btn nsa-btn-primary" onclick="clearanceInitiate()"><i class="fa fa-flag"></i> Start Clearance Process</button>';
+        return;
+    }
+
+    var depts = clearance.departments || {};
+    var rows = '';
+    Object.keys(depts).forEach(function (dept) {
+        var d = depts[dept] || {};
+        var st = d.status || 'pending';
+        var color = CLEARANCE_STATUS_COLOR[st] || '#d97706';
+        var icon = CLEARANCE_STATUS_ICON[st] || 'fa-clock-o';
+        rows +=
+            '<div style="display:flex;align-items:center;justify-content:space-between;gap:10px;padding:8px 0;border-bottom:1px solid var(--nsa-border,#e2e8f0);">' +
+            '<div><i class="fa ' + icon + '" style="color:' + color + ';margin-right:6px;"></i><strong>' + esc(dept) + '</strong>' +
+            (d.note ? '<div style="font-size:11px;color:var(--nsa-muted);margin-top:2px;">' + esc(d.note) + '</div>' : '') + '</div>' +
+            '<div style="display:flex;gap:6px;">' +
+            '<button type="button" class="nsa-btn nsa-btn-ghost" style="padding:4px 10px;font-size:11px;" onclick="clearanceUpdateDept(' + JSON.stringify(dept) + ',\'cleared\')">Clear</button>' +
+            '<button type="button" class="nsa-btn nsa-btn-ghost" style="padding:4px 10px;font-size:11px;color:#dc2626;" onclick="clearanceUpdateDept(' + JSON.stringify(dept) + ',\'flagged\')">Flag</button>' +
+            '</div></div>';
+    });
+
+    body.innerHTML =
+        '<p style="font-size:12px;color:var(--nsa-muted);margin-bottom:8px;">Every department must be marked Cleared before this process can complete. A Flagged department blocks completion.</p>' +
+        rows;
+}
+
+function clearanceInitiate() {
+    var fd = new FormData();
+    fd.append('staff_id', PROMO_STAFF_ID);
+    $.ajax({
+        url: '<?= base_url("staff/initiate_clearance") ?>', method: 'POST', data: fd,
+        processData: false, contentType: false, dataType: 'json',
+        success: function (res) {
+            if (res && res.status && res.status !== 'error') { nsaShowAlert('success', res.message || 'Clearance started.'); clearanceLoad(); }
+            else nsaShowAlert('error', (res && res.message) || 'Could not start clearance.');
+        },
+        error: function () { nsaShowAlert('error', 'Server error — please try again.'); }
+    });
+}
+
+async function clearanceUpdateDept(dept, status) {
+    var note = '';
+    if (status === 'flagged') {
+        // UI-D3: optional, so the dialog does not force a value.
+        note = await zxPrompt({
+            title: 'Flag ' + dept,
+            message: 'Reason for flagging this department (optional):',
+            placeholder: 'Optional',
+            confirmText: 'Flag department',
+            required: false
+        });
+        if (note === null) return;
+    }
+    var fd = new FormData();
+    fd.append('staff_id', PROMO_STAFF_ID);
+    fd.append('department', dept);
+    fd.append('dept_status', status);
+    if (note) fd.append('note', note);
+    $.ajax({
+        url: '<?= base_url("staff/update_clearance_department") ?>', method: 'POST', data: fd,
+        processData: false, contentType: false, dataType: 'json',
+        success: function (res) {
+            if (res && res.status && res.status !== 'error') {
+                nsaShowAlert('success', res.overall_status === 'completed' ? 'Clearance fully completed!' : 'Department updated.');
+                clearanceLoad();
+            } else {
+                nsaShowAlert('error', (res && res.message) || 'Could not update department.');
+            }
+        },
+        error: function () { nsaShowAlert('error', 'Server error — please try again.'); }
+    });
+}
+
+/* ══ ONBOARDING CHECKLIST MODAL (Staff HR Advanced Capability Programme,
+   Phase 6) ══ */
+function openOnboardingModal() {
+    document.getElementById('onboardingModalOverlay').style.display = 'flex';
+    onboardingLoad();
+}
+function closeOnboardingModal() {
+    document.getElementById('onboardingModalOverlay').style.display = 'none';
+}
+
+function onboardingLoad() {
+    var body = document.getElementById('onboardingModalBody');
+    body.innerHTML = '<p style="color:var(--nsa-muted);font-size:13px;"><i class="fa fa-spinner fa-spin"></i> Loading…</p>';
+    $.get('<?= base_url("staff/get_onboarding") ?>', { staff_id: PROMO_STAFF_ID }, function (res) {
+        onboardingRenderState((res && res.onboarding) ? res.onboarding : null);
+    }, 'json').fail(function () {
+        body.innerHTML = '<p style="color:var(--nsa-red,#dc2626);font-size:13px;">Could not load onboarding status.</p>';
+    });
+}
+
+var ONBOARDING_STATUS_COLOR = { pending: '#d97706', done: '#059669', skipped: '#64748b' };
+var ONBOARDING_STATUS_ICON  = { pending: 'fa-clock-o', done: 'fa-check-circle', skipped: 'fa-minus-circle' };
+
+function onboardingRenderState(onboarding) {
+    var body = document.getElementById('onboardingModalBody');
+
+    if (!onboarding || onboarding.status !== 'in_progress') {
+        var priorNote = (onboarding && onboarding.status === 'completed')
+            ? '<p style="font-size:12px;color:var(--nsa-muted);">A previous onboarding checklist was completed on ' + esc((onboarding.completedAt || '').slice(0, 10)) + '.</p>'
+            : '';
+        body.innerHTML = priorNote +
+            '<p style="font-size:13px;color:var(--nsa-muted);margin-bottom:10px;">No onboarding checklist is currently open for this staff member.</p>' +
+            '<button type="button" class="nsa-btn nsa-btn-primary" onclick="onboardingInitiate()"><i class="fa fa-flag"></i> Start Onboarding</button>';
+        return;
+    }
+
+    var tasks = onboarding.tasks || {};
+    var rows = '';
+    Object.keys(tasks).forEach(function (task) {
+        var t = tasks[task] || {};
+        var st = t.status || 'pending';
+        var color = ONBOARDING_STATUS_COLOR[st] || '#d97706';
+        var icon = ONBOARDING_STATUS_ICON[st] || 'fa-clock-o';
+        rows +=
+            '<div style="display:flex;align-items:center;justify-content:space-between;gap:10px;padding:8px 0;border-bottom:1px solid var(--nsa-border,#e2e8f0);">' +
+            '<div><i class="fa ' + icon + '" style="color:' + color + ';margin-right:6px;"></i><strong>' + esc(task) + '</strong>' +
+            (t.note ? '<div style="font-size:11px;color:var(--nsa-muted);margin-top:2px;">' + esc(t.note) + '</div>' : '') + '</div>' +
+            '<div style="display:flex;gap:6px;">' +
+            '<button type="button" class="nsa-btn nsa-btn-ghost" style="padding:4px 10px;font-size:11px;" onclick="onboardingUpdateTask(' + JSON.stringify(task) + ',\'done\')">Done</button>' +
+            '<button type="button" class="nsa-btn nsa-btn-ghost" style="padding:4px 10px;font-size:11px;color:#64748b;" onclick="onboardingUpdateTask(' + JSON.stringify(task) + ',\'skipped\')">N/A</button>' +
+            '</div></div>';
+    });
+
+    body.innerHTML =
+        '<p style="font-size:12px;color:var(--nsa-muted);margin-bottom:8px;">Every task must be marked Done or N/A before this checklist can complete.</p>' +
+        rows;
+}
+
+function onboardingInitiate() {
+    var fd = new FormData();
+    fd.append('staff_id', PROMO_STAFF_ID);
+    $.ajax({
+        url: '<?= base_url("staff/initiate_onboarding") ?>', method: 'POST', data: fd,
+        processData: false, contentType: false, dataType: 'json',
+        success: function (res) {
+            if (res && res.status && res.status !== 'error') { nsaShowAlert('success', res.message || 'Onboarding started.'); onboardingLoad(); }
+            else nsaShowAlert('error', (res && res.message) || 'Could not start onboarding.');
+        },
+        error: function () { nsaShowAlert('error', 'Server error — please try again.'); }
+    });
+}
+
+async function onboardingUpdateTask(task, status) {
+    var note = '';
+    if (status === 'skipped') {
+        // UI-D3: optional, so the dialog does not force a value.
+        note = await zxPrompt({
+            title: 'Mark "' + task + '" not applicable',
+            message: 'Reason (optional):',
+            placeholder: 'Optional',
+            confirmText: 'Mark N/A',
+            required: false
+        });
+        if (note === null) return;
+    }
+    var fd = new FormData();
+    fd.append('staff_id', PROMO_STAFF_ID);
+    fd.append('task', task);
+    fd.append('task_status', status);
+    if (note) fd.append('note', note);
+    $.ajax({
+        url: '<?= base_url("staff/update_onboarding_task") ?>', method: 'POST', data: fd,
+        processData: false, contentType: false, dataType: 'json',
+        success: function (res) {
+            if (res && res.status && res.status !== 'error') {
+                nsaShowAlert('success', res.overall_status === 'completed' ? 'Onboarding fully completed!' : 'Task updated.');
+                onboardingLoad();
+            } else {
+                nsaShowAlert('error', (res && res.message) || 'Could not update task.');
+            }
+        },
+        error: function () { nsaShowAlert('error', 'Server error — please try again.'); }
+    });
+}
+
+/* ══ EXIT DOCUMENTS MODAL (Staff HR Advanced Capability Programme,
+   Phase 4) ══ Simple links — no AJAX round-trip needed before opening the
+   print view; the print endpoint enforces its own Inactive+exitDate gate
+   server-side. */
+function openExitDocsModal() {
+    document.getElementById('exitDocsModalOverlay').style.display = 'flex';
+}
+function closeExitDocsModal() {
+    document.getElementById('exitDocsModalOverlay').style.display = 'none';
+}
+function printExitDocument(type) {
+    window.open('<?= base_url("staff/print_exit_document/") ?>' + encodeURIComponent(PROMO_STAFF_ID) + '?type=' + encodeURIComponent(type), '_blank');
+}
+
+/* ══ EXIT SUMMARY MODAL (Staff HR Advanced Capability Programme, Phase 5)
+   ══ READ-ONLY aggregation view. Every value rendered below comes straight
+   from Staff::get_exit_summary()'s response — this file performs no
+   arithmetic on money figures, only display formatting. */
+function nsaFmtCurrency(v) {
+    var n = Number(v || 0);
+    return '₹' + n.toLocaleString('en-IN', { maximumFractionDigits: 2 });
+}
+function openExitSummaryModal() {
+    document.getElementById('exitSummaryModalOverlay').style.display = 'flex';
+    exitSummaryLoad();
+}
+function closeExitSummaryModal() {
+    document.getElementById('exitSummaryModalOverlay').style.display = 'none';
+}
+function exitSummaryLoad() {
+    var body = document.getElementById('exitSummaryModalBody');
+    body.innerHTML = '<p style="color:var(--nsa-muted);font-size:13px;"><i class="fa fa-spinner fa-spin"></i> Loading…</p>';
+    $.ajax({
+        url: '<?= base_url("staff/get_exit_summary") ?>', method: 'GET',
+        data: { staff_id: PROMO_STAFF_ID }, dataType: 'json',
+        success: function (res) {
+            if (res && res.status && res.summary) {
+                exitSummaryRender(res.summary);
+            } else {
+                body.innerHTML = '<p style="color:#c0392b;font-size:13px;">' + ((res && res.message) || 'Could not load exit summary.') + '</p>';
+            }
+        },
+        error: function () { body.innerHTML = '<p style="color:#c0392b;font-size:13px;">Server error — please try again.</p>'; }
+    });
+}
+function exitSummaryRender(s) {
+    var body = document.getElementById('exitSummaryModalBody');
+    var rows = '';
+    rows += '<div class="nsa-field"><label>Last Working Day</label><input class="nsa-input" disabled value="' + esc(s.lastWorkingDay || '—') + '"></div>';
+
+    var payslip = s.latestPayslip;
+    var payslipText = payslip
+        ? (payslip.month + ' ' + payslip.year + ' — Net: ' + nsaFmtCurrency(payslip.net_pay) + ', Gross: ' + nsaFmtCurrency(payslip.gross)
+            + ', Deductions: ' + nsaFmtCurrency(payslip.total_deductions) + ', LWP days: ' + (payslip.lwp_days || 0))
+        : 'No finalized/paid payroll run found for this staff member.';
+    rows += '<div class="nsa-field"><label>Latest Finalized Payroll</label><input class="nsa-input" disabled value="' + esc(payslipText) + '"></div>';
+
+    var leaveBal = s.leaveBalance;
+    var leaveText = (leaveBal && Object.keys(leaveBal).length)
+        ? Object.keys(leaveBal).map(function (k) { return k + ': ' + leaveBal[k]; }).join(' | ')
+        : 'No leave balance record found.';
+    rows += '<div class="nsa-field"><label>Leave Balance</label><input class="nsa-input" disabled value="' + esc(leaveText) + '"></div>';
+
+    var clearance = s.clearance;
+    var clearanceText = clearance ? ('Overall: ' + (clearance.status || 'pending')) : 'Clearance not yet initiated.';
+    rows += '<div class="nsa-field"><label>Existing Dues (Clearance Status)</label><input class="nsa-input" disabled value="' + esc(clearanceText) + '"></div>';
+
+    rows += '<div class="nsa-field"><label>Pending Reimbursements</label><input class="nsa-input" disabled value="Not tracked in ZenX (no expense/reimbursement claim workflow exists)."></div>';
+
+    body.innerHTML = rows;
 }
 </script>
 
@@ -1456,9 +3006,119 @@ function submitEditForm() {
     box-shadow: 0 -4px 16px rgba(15,23,42,.10);
     padding: 16px 22px;
     display: flex; align-items: center; justify-content: flex-end; gap: 12px;
+    /* wrap, not overflow: this row is sticky, so anything running past the
+       viewport width would be unreachable rather than merely ugly. */
+    flex-wrap: wrap;
     /* Keep Save reachable on a long form without scrolling to the bottom. */
     position: sticky; bottom: 12px; z-index: 20;
     border: 1px solid var(--nsa-border, #e2e8f0);
+}
+
+/* ── Wizard: same visual language as Add Staff ── */
+.nsa-layout { grid-template-columns: 1fr; }
+.nsa-stepper {
+    display: flex; align-items: flex-start; justify-content: space-between; gap: 4px;
+    background: var(--nsa-white);
+    border-radius: var(--nsa-radius);
+    box-shadow: var(--nsa-shadow);
+    padding: 18px 16px 14px;
+    overflow-x: auto;
+}
+.nsa-step {
+    display: flex; flex-direction: column; align-items: center; gap: 6px;
+    flex: 1; min-width: 84px; position: relative; text-align: center;
+    cursor: pointer; background: none; border: 0; font: inherit; color: inherit;
+}
+.nsa-step:not(:last-child)::after {
+    content: ''; position: absolute; top: 15px; left: calc(50% + 21px); right: calc(-50% + 21px);
+    height: 2px; background: var(--nsa-border); z-index: 0;
+}
+.nsa-step.visited:not(:last-child)::after { background: var(--nsa-teal); }
+.nsa-step-circle {
+    width: 30px; height: 30px; border-radius: 50%;
+    display: flex; align-items: center; justify-content: center;
+    font-size: 12.5px; font-weight: 700;
+    background: var(--nsa-bg); border: 2px solid var(--nsa-border); color: var(--nsa-muted);
+    z-index: 1; transition: all .15s;
+}
+.nsa-step.active .nsa-step-circle { border-color: var(--nsa-teal); background: var(--nsa-teal); color: #fff; box-shadow: 0 0 0 4px rgba(188,90,60,.15); }
+.nsa-step.visited .nsa-step-circle { border-color: var(--nsa-teal); background: #fff; color: var(--nsa-teal); }
+.nsa-step.has-error .nsa-step-circle { border-color: #dc2626; background: #fee2e2; color: #991b1b; }
+.nsa-step-label { font-size: 10.5px; font-weight: 600; color: var(--nsa-muted); max-width: 100px; line-height: 1.25; transition: color .15s; }
+.nsa-step.active .nsa-step-label { color: var(--nsa-navy); }
+.nsa-step.visited .nsa-step-label { color: var(--nsa-teal); }
+.nsa-step.has-error .nsa-step-label { color: #991b1b; }
+.nsa-step:hover .nsa-step-circle { transform: scale(1.1); border-color: var(--nsa-teal); }
+.nsa-step:hover .nsa-step-label { color: var(--nsa-teal); }
+.nsa-step:focus-visible { outline: 2px solid var(--nsa-teal); outline-offset: 3px; border-radius: 6px; }
+
+.nsa-stepper-progress { height: 4px; background: var(--nsa-border); border-radius: 4px; margin: 8px 0 22px; overflow: hidden; }
+.nsa-stepper-progress-bar { height: 100%; background: var(--nsa-teal); transition: width .25s ease; }
+
+.nsa-step-panel { display: none; opacity: 0; transform: translateY(10px);
+                  transition: opacity .28s ease, transform .28s ease; }
+.nsa-step-panel.nsa-step-in { opacity: 1; transform: translateY(0); }
+
+.nsa-wizard-footer {
+    position: sticky; bottom: 12px;
+    background: var(--nsa-white);
+    border-radius: var(--nsa-radius);
+    box-shadow: 0 4px 20px rgba(12,30,56,.14);
+    padding: 14px 22px;
+    display: flex; align-items: center; justify-content: space-between; gap: 12px;
+    flex-wrap: wrap;
+    z-index: 20;
+}
+.nsa-wizard-footer-status { font-size: 12.5px; color: var(--nsa-muted); font-weight: 600; }
+.nsa-wizard-footer-actions { display: flex; align-items: center; gap: 10px; flex-wrap: wrap; }
+
+@media (prefers-reduced-motion: reduce) {
+    .nsa-step-panel { transition: none; }
+}
+
+/* ── Pointer to where documents actually live (UX-D3) ── */
+.nsa-doc-pointer {
+    display: flex; align-items: flex-start; gap: 9px;
+    padding: 11px 13px; border-radius: 9px;
+    background: var(--nsa-bg, #f8fafc);
+    border: 1px dashed var(--nsa-border, #e2e8f0);
+    font-size: 12.5px; line-height: 1.5; color: var(--nsa-muted, #64748b);
+}
+.nsa-doc-pointer > i { color: var(--nsa-teal, #BC5A3C); margin-top: 1px; }
+
+/* ── Employee lifecycle: workflows, not form controls ── */
+.nsa-lifecycle-hint {
+    margin: 0 0 14px; font-size: 13px; line-height: 1.5;
+    color: var(--nsa-muted, #64748b);
+}
+.nsa-lifecycle-grid {
+    display: grid; gap: 10px;
+    grid-template-columns: repeat(auto-fill, minmax(210px, 1fr));
+}
+.nsa-lifecycle-btn {
+    display: flex; flex-direction: column; align-items: flex-start; gap: 3px;
+    padding: 13px 15px; text-align: left; cursor: pointer;
+    background: var(--nsa-white, #fff);
+    border: 1px solid var(--nsa-border, #e2e8f0);
+    border-radius: 10px;
+    transition: border-color .15s ease, box-shadow .15s ease, transform .15s ease;
+}
+.nsa-lifecycle-btn:hover {
+    border-color: var(--nsa-gold, #BC5A3C);
+    box-shadow: 0 3px 12px rgba(15,23,42,.08);
+    transform: translateY(-1px);
+}
+.nsa-lifecycle-btn:focus-visible {
+    outline: 2px solid var(--nsa-gold, #BC5A3C); outline-offset: 2px;
+}
+.nsa-lifecycle-btn > i {
+    font-size: 15px; color: var(--nsa-gold, #BC5A3C); margin-bottom: 2px;
+}
+.nsa-lifecycle-label {
+    font-size: 13.5px; font-weight: 600; color: var(--nsa-text, #22160F);
+}
+.nsa-lifecycle-sub {
+    font-size: 11.5px; line-height: 1.35; color: var(--nsa-muted, #64748b);
 }
 
 /* ── Phone input-group (+91 prefix), parity with Add Staff ── */
@@ -1529,4 +3189,24 @@ function submitEditForm() {
     cursor: pointer; padding: 0 2px; line-height: 1; opacity: .7;
 }
 .nsa-role-remove:hover { opacity: 1; }
+
+/* ── Promotion Modal (Staff HR Advanced Capability Programme, Phase 1) ── */
+.nsa-modal-overlay {
+    position: fixed; inset: 0; background: rgba(34,22,15,.45);
+    display: flex; align-items: center; justify-content: center; z-index: 9999;
+    padding: 20px;
+}
+.nsa-modal {
+    background: var(--nsa-white, #fff); border-radius: 14px; padding: 24px 26px;
+    width: 100%; max-height: 90vh; overflow-y: auto;
+    box-shadow: 0 20px 60px rgba(0,0,0,.25);
+}
+.nsa-modal-title {
+    font-family: 'Lora', serif; font-size: 19px; font-weight: 600;
+    color: var(--nsa-text, #22160F); margin-bottom: 4px;
+    display: flex; align-items: center; gap: 9px;
+}
+.nsa-modal-actions {
+    display: flex; justify-content: flex-end; gap: 10px; margin-top: 18px;
+}
 </style>

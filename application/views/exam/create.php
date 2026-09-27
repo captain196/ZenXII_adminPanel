@@ -360,7 +360,15 @@
   })();
   var zxbModel    = { scope: { classes: [] },
                       defaults: { total: 100, passing: 33, durationMins: 120 },
-                      calendar: { holidays: [], weekend: [0] },   // reserved hook (P6-B); unused in P1
+                      // CAL-D9: `weekend` is supplied by the server from the STUDENT
+                      // calendar. It arrives EMPTY once that calendar is readable —
+                      // weekly and nth-weekday closures are already expanded into
+                      // `holidays` as real dates, which is the only way an
+                      // alternating pattern like "2nd and 4th Saturday" can be
+                      // expressed at all. It falls back to [0] (Sunday) only when the
+                      // calendar could not be read, so an outage degrades to the old
+                      // behaviour rather than to no skipping at all.
+                      calendar: { holidays: [], weekend: <?= json_encode($weekendDays ?? [0]) ?> },
                       subjects: {} };
   var zxbExpanded = {}; // subjects whose per-class override panel is open
 

@@ -336,7 +336,7 @@ html, body {
     font-family: var(--sans);
     animation: alertIn .2s ease;
 }
-.sa-alert.show { display: flex; }
+.sa-alert.show { display: flex !important; }
 @keyframes alertIn {
     from { opacity: 0; transform: translateY(-5px); }
     to   { opacity: 1; transform: translateY(0); }

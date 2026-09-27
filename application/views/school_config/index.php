@@ -384,8 +384,84 @@
         <button class="sc-tab" data-tab="reportcard">
             <i class="fa fa-file-text-o"></i> Report Card
         </button>
+        <!-- Phase 1 ZenX HRMS — hidden by default; shown only when the
+             tenant has HRMS_CORE_CAPABILITY (see renderOrganisation()).
+             Not enabled for a tenant = this tab is invisible, i.e. the page
+             behaves exactly as it did before this feature existed. -->
+        <button class="sc-tab" data-tab="onboarding">
+            <i class="fa fa-list-ul"></i> Onboarding
+        </button>        <button class="sc-tab" data-tab="notifications">
+            <i class="fa fa-bell-o"></i> Notifications
+        </button>        <button class="sc-tab" data-tab="organisation" id="scTabOrganisation" style="display:none;">
+            <i class="fa fa-sitemap"></i> Organisation
+        </button>
     </div>
 
+    <!-- ════════════════════════════════════════════════════════ -->
+    <!-- TAB: Onboarding checklist                               -->
+    <!-- The reader (Staff::_onboarding_tasks) and the whole      -->
+    <!-- checklist already existed; nothing wrote this list, so   -->
+    <!-- it was configurable only with database access.           -->
+    <!-- ════════════════════════════════════════════════════════ -->
+    <div class="sc-pane" id="tab-onboarding">
+        <div class="sc-step-hint">
+            The tasks HR works through when a new employee joins. Leave this empty to use
+            the built-in checklist. Changes apply to checklists started from now on —
+            anyone already being onboarded keeps the tasks their checklist was opened with.
+        </div>
+
+        <div id="onbLoading" style="padding:24px;text-align:center;color:var(--t3);">
+            <i class="fa fa-spinner fa-spin"></i> Loading checklist&hellip;
+        </div>
+
+        <div id="onbError" style="display:none;padding:16px;border-radius:8px;
+             background:rgba(220,38,38,.08);border:1px solid rgba(220,38,38,.3);color:#dc2626;">
+            <i class="fa fa-exclamation-triangle"></i> <span id="onbErrorText"></span>
+        </div>
+
+        <div id="onbEditor" style="display:none;">
+            <div id="onbUsingDefault" style="display:none;margin-bottom:12px;font-size:12.5px;color:var(--t3);">
+                <i class="fa fa-info-circle"></i> This school is using the built-in checklist.
+                Add tasks below to replace it.
+            </div>
+
+            <div id="onbRows"></div>
+
+            <button class="sc-btn" id="onbAddRow" style="margin-top:10px;">
+                <i class="fa fa-plus"></i> Add task
+            </button>
+
+            <div style="margin-top:18px;display:flex;gap:8px;align-items:center;">
+                <button class="sc-btn" id="onbSave"><i class="fa fa-check"></i> Save checklist</button>
+                <span id="onbStatus" style="font-size:12.5px;color:var(--t3);"></span>
+            </div>
+        </div>
+    </div>
+    <!-- ════════════════════════════════════════════════════════ -->
+    <!-- TAB: Notifications                                      -->
+    <!-- Per-school control over which alerts this school sends.  -->
+    <!-- Enforced in Push_enqueue_service, the single choke point -->
+    <!-- every notification producer passes through.              -->
+    <!-- ════════════════════════════════════════════════════════ -->
+    <div class="sc-pane" id="tab-notifications">
+        <div class="sc-step-hint">
+            Choose which notifications this school sends. Switching one off stops it for
+            <strong>everyone</strong> in this school — parents and staff alike — and takes
+            effect immediately. Anything left on behaves exactly as before.
+        </div>
+
+        <div id="notifLoading" style="padding:24px;text-align:center;color:var(--t3);">
+            <i class="fa fa-spinner fa-spin"></i> Loading notification settings&hellip;
+        </div>
+
+        <div id="notifError" style="display:none;padding:16px;border-radius:8px;
+             background:rgba(220,38,38,.08);border:1px solid rgba(220,38,38,.3);color:#dc2626;">
+            <i class="fa fa-exclamation-triangle"></i>
+            <span id="notifErrorText"></span>
+        </div>
+
+        <div id="notifGroups" style="display:none;"></div>
+    </div>
     <!-- ════════════════════════════════════════════════════════ -->
     <!-- TAB: Profile                                            -->
     <!-- ════════════════════════════════════════════════════════ -->
@@ -480,9 +556,18 @@
 
         <div class="sc-card">
             <div class="sc-card-title"><i class="fa fa-file-text-o"></i> School Documents</div>
+            <!-- CANONICAL-2 (2026-09-13): disambiguate these from the FUNCTIONAL calendar.
+                 These slots only store a reference PDF/image (a scanned year-planner) and
+                 a download link — they do NOT create holidays or working days and do NOT
+                 affect student attendance. The calendar that actually drives attendance is
+                 Academics → Academic Planner → Academic Calendar (calendarEvents). -->
+            <div style="font-size:12px;color:var(--t3);margin:-6px 0 12px;padding:8px 10px;background:rgba(188,90,60,.06);border-left:3px solid var(--gold);border-radius:0 4px 4px 0;">
+                <strong>Reference files only.</strong> Uploading a file here does <strong>not</strong> set holidays or working days.
+                To set holidays that affect attendance, use <strong>Academics → Academic Calendar</strong>.
+            </div>
             <div class="sc-grid sc-grid-2">
                 <div class="sc-field">
-                    <label>Holidays Calendar</label>
+                    <label>Holidays Calendar <span style="font-weight:400;color:var(--t3);">(reference PDF)</span></label>
                     <div style="display:flex;align-items:center;gap:10px;">
                         <input type="file" id="docHolidays" accept=".pdf,.jpg,.jpeg,.png,.gif,.webp,.doc,.docx" style="display:none;">
                         <button class="sc-btn sc-btn-ghost sc-btn-sm" onclick="document.getElementById('docHolidays').click()">
@@ -496,7 +581,7 @@
                     <div style="font-size:11px;color:var(--t3);margin-top:4px;">PDF, Image, or Document · Max 5 MB</div>
                 </div>
                 <div class="sc-field">
-                    <label>Academic Calendar</label>
+                    <label>Academic Calendar <span style="font-weight:400;color:var(--t3);">(reference PDF)</span></label>
                     <div style="display:flex;align-items:center;gap:10px;">
                         <input type="file" id="docAcademic" accept=".pdf,.jpg,.jpeg,.png,.gif,.webp,.doc,.docx" style="display:none;">
                         <button class="sc-btn sc-btn-ghost sc-btn-sm" onclick="document.getElementById('docAcademic').click()">
@@ -605,11 +690,11 @@
 
                     <div style="display:flex;flex-direction:column;gap:8px;padding:10px;background:var(--bg3);border-radius:8px;margin-bottom:12px;">
                         <label style="display:flex;align-items:center;gap:8px;cursor:pointer;"><input type="checkbox" id="rollCopySections" checked> Copy class &amp; section structure</label>
-                        <label style="display:flex;align-items:center;gap:8px;cursor:pointer;"><input type="checkbox" id="rollPromote"> Promote students (Class N &rarr; N+1, Class 12 &rarr; Alumni)</label>
+                        <label style="display:flex;align-items:center;gap:8px;cursor:pointer;"><input type="checkbox" id="rollPromote"> Promote students (Class N &rarr; N+1; your highest class &rarr; Alumni)</label>
                         <label style="display:flex;align-items:center;gap:8px;cursor:pointer;"><input type="checkbox" id="rollSetActive"> Set target session as ACTIVE after rollover</label>
                     </div>
                     <div id="rollPromoteWarn" style="display:none;background:rgba(217,119,6,.12);border:1px solid rgba(217,119,6,.45);border-radius:8px;padding:10px;font-size:12px;color:#92400e;margin-bottom:12px;">
-                        <b>Heads up:</b> Student promotion updates each student's <code>session</code> and <code>className</code> in place. After rollover the source session will show NO active students (historical marks/attendance/fees remain intact with their original session stamp). Class 12 students become <code>status=Alumni</code>.
+                        <b>Heads up:</b> Student promotion updates each student's <code>session</code> and <code>className</code> in place. After rollover the source session will show NO active students (historical marks/attendance/fees remain intact with their original session stamp). Students in your school&rsquo;s highest configured class complete their schooling and become <code>status=Alumni</code> &mdash; they are not moved into a new class. Which class that is comes from your Classes &amp; Sections setup, so if you are adding a higher class next year, configure it before running the rollover.
                     </div>
 
                     <!-- ────────────────────────────────────────────────
@@ -736,6 +821,47 @@
             </div>
         </div>
 
+        <!-- ══ ADM-AGE-1 · CLASS-VS-AGE ADMISSION POLICY ══════════════════
+             Lives in the Classes tab because an age band is a property of a
+             class. Off until the school states a rule — ZenX does not invent
+             one, because the band differs by state, by board and by the
+             school's own cut-off date. -->
+        <div class="sc-card" id="agePolicyCard">
+            <div class="sc-card-title"><span><i class="fa fa-birthday-cake"></i> Admission Age Policy</span></div>
+            <div style="font-size:12px;color:var(--t3);margin-bottom:12px;">
+                Checks a student's age against the class they are being admitted to.
+                Age is measured <b>as on the cut-off date</b>, the way a registrar applies it
+                &mdash; a child who turns 6 the day after the cut-off is 5 for this purpose.
+                Leave a class blank to exempt it.
+            </div>
+            <div style="display:flex;gap:14px;flex-wrap:wrap;align-items:flex-end;margin-bottom:14px;">
+                <div>
+                    <label style="display:block;font-size:11.5px;font-weight:600;margin-bottom:4px;">Enforcement</label>
+                    <select id="agePolicyMode" class="sc-input" style="min-width:210px;">
+                        <option value="off">Off &mdash; do not check age</option>
+                        <option value="warn">Warn &mdash; admit, but flag a mismatch</option>
+                        <option value="block">Block &mdash; refuse a mismatch</option>
+                    </select>
+                </div>
+                <div>
+                    <label style="display:block;font-size:11.5px;font-weight:600;margin-bottom:4px;">Age as on (MM-DD)</label>
+                    <input type="text" id="agePolicyCutoff" class="sc-input" placeholder="03-31"
+                           maxlength="5" style="width:120px;">
+                </div>
+            </div>
+            <div style="font-size:11.5px;color:var(--t3);margin-bottom:8px;">
+                <b>Warn</b> is the safer default. Genuine exceptions exist &mdash; a child returning
+                from abroad, a lateral entry, an RTE age-appropriate placement that is deliberately
+                off-band. Blocking those trains staff to work around the system.
+            </div>
+            <div id="agePolicyBands"></div>
+            <div style="margin-top:12px;">
+                <button class="sc-btn sc-btn-primary sc-btn-sm" onclick="saveAgePolicy()">
+                    <i class="fa fa-save"></i> Save Age Policy
+                </button>
+            </div>
+        </div>
+
         <div style="display:flex;gap:10px;flex-wrap:wrap;">
             <button class="sc-btn sc-btn-primary" onclick="saveClasses()">
                 <i class="fa fa-save"></i> Save Class List
@@ -777,6 +903,95 @@
             <div id="sectionMatrixWrap" style="position:relative;min-height:80px;">
                 <div id="sectionMatrixLoader" style="text-align:center;padding:30px 0;color:var(--t3);display:none;"></div>
                 <div id="sectionMatrix"></div>
+            </div>
+
+            <!-- ══ PHASE 20.2 (P20.2-UI-1) — SECTION STRENGTH & OCCUPANCY ══
+                 The matrix above manages which sections EXIST. This table
+                 manages how many seats each one has, and shows truthful
+                 occupancy computed server-side by the canonical roster rule.
+                 Before this, capacity was reachable only from the legacy
+                 Classes screen, which had no clickable path at all. -->
+            <div id="seatsPanel" style="display:none;margin-top:22px;">
+                <div style="display:flex;align-items:center;justify-content:space-between;flex-wrap:wrap;gap:10px;margin-bottom:10px;">
+                    <!-- Collapsible header. The whole heading is the control, so
+                         the hit target is large; the summary line stays visible
+                         when collapsed so occupancy totals are readable without
+                         expanding. -->
+                    <h4 style="margin:0;font-size:15px;color:var(--t1);">
+                        <!-- Starts collapsed to match the default in
+                             _seatsPrefRead(); renderSeats() re-applies the
+                             operator's stored choice before revealing the panel. -->
+                        <a href="#" id="seatsToggle" onclick="toggleSeats(event)"
+                           role="button" aria-expanded="false" aria-controls="seatsBodyWrap"
+                           style="color:inherit;text-decoration:none;display:inline-flex;align-items:center;gap:8px;">
+                            <i class="fa fa-chevron-down" id="seatsChevron"
+                               style="color:var(--gold);font-size:12px;width:12px;transform:rotate(-90deg);transition:transform .15s;"></i>
+                            <i class="fa fa-users" style="color:var(--gold);"></i>
+                            Section Strength &amp; Occupancy
+                        </a>
+                    </h4>
+                    <span id="seatsSummary" style="font-size:12px;color:var(--t2);"></span>
+                </div>
+                <div style="overflow-x:auto;display:none;" id="seatsBodyWrap">
+                    <table class="table table-condensed" id="seatsTable" style="margin-bottom:0;font-size:13px;">
+                        <thead>
+                            <tr>
+                                <th style="width:22%;">Class</th>
+                                <th style="width:14%;">Section</th>
+                                <th style="width:12%;text-align:right;">Capacity</th>
+                                <th style="width:12%;text-align:right;">Occupied</th>
+                                <th style="width:12%;text-align:right;">Available</th>
+                                <th style="width:16%;">Status</th>
+                                <th style="width:12%;text-align:right;">Action</th>
+                            </tr>
+                        </thead>
+                        <tbody id="seatsBody"></tbody>
+                    </table>
+                </div>
+                <p id="seatsFootnote" style="margin:10px 2px 0;font-size:11.5px;color:var(--t3);display:none;">
+                    Occupancy counts <strong>active</strong> students in the selected session only.
+                    Sections showing <em>not set</em> have never had a capacity configured and fall back to 40.
+                </p>
+            </div>
+
+            <!-- Capacity editor — Bootstrap 3 modal, matching the existing
+                 school_config dialogs. No native alert/confirm/prompt. -->
+            <div class="modal fade" id="capacityModal" tabindex="-1" role="dialog" aria-labelledby="capacityModalLabel">
+              <div class="modal-dialog modal-sm" role="document">
+                <div class="modal-content">
+                  <div class="modal-header">
+                    <button type="button" class="close" data-dismiss="modal" aria-label="Close"><span aria-hidden="true">&times;</span></button>
+                    <h4 class="modal-title" id="capacityModalLabel">Section Capacity</h4>
+                  </div>
+                  <div class="modal-body">
+                    <input type="hidden" id="capClassKey">
+                    <input type="hidden" id="capSection">
+                    <p style="margin:0 0 10px;font-weight:600;" id="capClassName"></p>
+                    <p style="margin:0 0 4px;font-size:13px;color:var(--t2);">
+                      Current capacity: <span id="capCurrent"></span>
+                    </p>
+                    <p style="margin:0 0 14px;font-size:13px;color:var(--t2);">
+                      Currently occupied: <span id="capOccupied"></span>
+                    </p>
+                    <div class="form-group" style="margin-bottom:8px;">
+                      <label for="capInput" style="font-size:13px;">New capacity</label>
+                      <input type="number" min="1" max="500" step="1" class="form-control" id="capInput" placeholder="e.g. 40">
+                    </div>
+                    <div id="capWarn" class="alert alert-warning"
+                         style="display:none;font-size:12.5px;padding:9px 11px;margin:10px 0 6px;"></div>
+                    <div id="capConfirmRow" style="display:none;margin-bottom:4px;">
+                      <label style="font-weight:400;font-size:12.5px;">
+                        <input type="checkbox" id="capConfirm">
+                        I understand — save this capacity anyway
+                      </label>
+                    </div>
+                  </div>
+                  <div class="modal-footer">
+                    <button type="button" class="btn btn-default btn-sm" data-dismiss="modal">Cancel</button>
+                    <button type="button" class="btn btn-primary btn-sm" id="capSaveBtn" onclick="saveCapacity()">Save Capacity</button>
+                  </div>
+                </div>
+              </div>
             </div>
 
             <!-- Save bar -->
@@ -1161,6 +1376,60 @@
         </div>
     </div>
 
+    <!-- ════════════════════════════════════════════════════════ -->
+    <!-- TAB: Organisation (Phase 1 ZenX HRMS)                    -->
+    <!-- ════════════════════════════════════════════════════════ -->
+    <div class="sc-pane" id="tab-organisation">
+        <div class="sc-card">
+            <h4 style="margin-top:0;">Organisation type &amp; terminology</h4>
+            <p style="color:var(--t3); font-size:12px;">Changing terminology never changes how the underlying data works — it only relabels what's shown on screen.</p>
+            <div style="display:flex; gap:16px; flex-wrap:wrap; margin-bottom:16px;">
+                <div>
+                    <label style="display:block; font-size:11px; color:var(--t3); margin-bottom:4px;">Organisation type</label>
+                    <select id="orgTypeSelect" class="form-control" style="width:220px;">
+                        <option value="EDUCATION">Education</option>
+                        <option value="CORPORATE">Corporate</option>
+                        <option value="RETAIL">Retail</option>
+                    </select>
+                </div>
+                <button class="btn btn-primary" id="orgTypeSaveBtn" style="align-self:flex-end; height:34px;">Save type</button>
+            </div>
+            <div style="display:flex; gap:16px; flex-wrap:wrap; align-items:flex-end;">
+                <div>
+                    <label style="display:block; font-size:11px; color:var(--t3); margin-bottom:4px;">"Staff" is called</label>
+                    <input type="text" id="orgTermPerson" class="form-control" style="width:180px;" maxlength="60">
+                </div>
+                <div>
+                    <label style="display:block; font-size:11px; color:var(--t3); margin-bottom:4px;">"Campus" is called</label>
+                    <input type="text" id="orgTermLocation" class="form-control" style="width:180px;" maxlength="60">
+                </div>
+                <div>
+                    <label style="display:block; font-size:11px; color:var(--t3); margin-bottom:4px;">"Principal / HOD" is called</label>
+                    <input type="text" id="orgTermManager" class="form-control" style="width:180px;" maxlength="60">
+                </div>
+                <button class="btn btn-primary" id="orgTermSaveBtn" style="height:34px;">Save terminology</button>
+            </div>
+        </div>
+
+        <div class="sc-card">
+            <h4 style="margin-top:0;" id="orgLocationsHeading">Locations</h4>
+            <div style="display:flex; gap:8px; margin-bottom:14px;">
+                <input type="text" id="orgLocationNewName" class="form-control" style="max-width:280px;" placeholder="e.g. North Campus" maxlength="120">
+                <button class="btn btn-primary" id="orgLocationAddBtn">Add</button>
+            </div>
+            <p class="text-muted" style="margin:-6px 0 12px; font-size:12px;">
+                ESI applies in areas the government has notified, so a school with more than one
+                campus can legitimately have one covered and another not. Leave a location on
+                <em>Use school setting</em> unless you know otherwise &mdash; it then follows the
+                statutory configuration rather than being switched off.
+            </p>
+            <table class="table" id="orgLocationsTable">
+                <thead><tr><th>Name</th><th>Default</th><th style="width:190px;">ESI applicable</th><th style="width:160px;">Actions</th></tr></thead>
+                <tbody id="orgLocationsBody"><!-- JS-rendered --></tbody>
+            </table>
+        </div>
+    </div>
+
 </div><!-- /.sc-wrap -->
 </div><!-- /.content-wrapper -->
 
@@ -1202,13 +1471,253 @@ document.getElementById('scTabs').addEventListener('click', function(e) {
     if (btn.dataset.tab === 'sections') {
         loadAllSections();    // uses its own inline (scoped) loader, not the overlay
     }
+    if (btn.dataset.tab === 'onboarding') {
+        loadOnboardingTasks();
+    }
+    if (btn.dataset.tab === 'notifications') {
+        // Re-read on every visit rather than caching: a preference changed in
+        // another session must not keep showing as its old value here.
+        loadNotificationSettings();
+    }
 });
+
+/* ── Deep link: open a tab from the URL hash ─────────────────
+   Other screens link straight to a tab — e.g. Student Admission's
+   "Change capacity" points at school_config#sections, because capacity
+   lives on the Sections tab and used to send the operator to the legacy
+   per-class page instead.
+
+   Without this the link lands on the DEFAULT tab and the operator has to
+   hunt for Sections, which is the same dead end in a nicer wrapper. Reuses
+   the existing click handler by clicking the button rather than
+   duplicating the pane/loader logic — one tab-activation path, not two. */
+(function openTabFromHash() {
+    var want = (window.location.hash || '').replace(/^#/, '').trim();
+    if (!want) return;
+    var btn = document.querySelector('.sc-tab[data-tab="' + want.replace(/"/g, '') + '"]');
+    if (btn) btn.click();
+})();
 
 /* ── POST helper ────────────────────────────────────────────── */
 function _readCsrfCookie() {
     var match = document.cookie.match(new RegExp('(?:^|;\\s*)' + CSRFN + '=([^;]+)'));
     return match ? decodeURIComponent(match[1]) : CSRFT;
 }
+/* ── Onboarding checklist (per school) ─────────────────────────────────
+   Whole-list replace: the list is short, its order is meaningful to whoever
+   works the checklist, and replacing makes the change one before/after rather
+   than a stream of moves. */
+var onbSaving = false;
+
+function loadOnboardingTasks() {
+    var load = document.getElementById('onbLoading');
+    var err  = document.getElementById('onbError');
+    var ed   = document.getElementById('onbEditor');
+    if (!ed) return;
+
+    load.style.display = '';
+    err.style.display  = 'none';
+    ed.style.display   = 'none';
+
+    post('school_config/get_onboarding_tasks', {}, function (r) {
+        load.style.display = 'none';
+
+        if (!r || r.status !== 'success') {
+            document.getElementById('onbErrorText').textContent =
+                (r && r.message) || 'Could not load the checklist.';
+            err.style.display = '';
+            return;
+        }
+
+        renderOnboardingRows(r.tasks || []);
+        document.getElementById('onbUsingDefault').style.display = r.usingDefault ? '' : 'none';
+        ed.style.display = '';
+    });
+}
+
+function renderOnboardingRows(tasks) {
+    var wrap = document.getElementById('onbRows');
+    wrap.innerHTML = '';
+    if (!tasks.length) { addOnboardingRow(''); return; }
+    tasks.forEach(function (t) { addOnboardingRow(t); });
+}
+
+function addOnboardingRow(value) {
+    var wrap = document.getElementById('onbRows');
+    var row  = document.createElement('div');
+    row.style.cssText = 'display:flex;gap:8px;align-items:center;margin-bottom:8px;';
+    row.innerHTML =
+        '<input type="text" class="onb-task" maxlength="120" placeholder="e.g. ID card issued" '
+      + 'style="flex:1;padding:8px 10px;font-size:13px;border:1px solid var(--border);'
+      + 'border-radius:6px;background:var(--bg);color:var(--t1);">'
+      + '<button class="sc-btn onb-del" title="Remove this task"><i class="fa fa-times"></i></button>';
+    wrap.appendChild(row);
+    row.querySelector('.onb-task').value = value || '';
+}
+
+document.addEventListener('click', function (ev) {
+    if (!ev.target.closest) return;
+
+    if (ev.target.closest('#onbAddRow')) { addOnboardingRow(''); return; }
+
+    var del = ev.target.closest('.onb-del');
+    if (del) {
+        var rows = document.querySelectorAll('#onbRows > div');
+        // Never leave the editor with nothing to type into.
+        if (rows.length <= 1) { del.parentNode.querySelector('.onb-task').value = ''; return; }
+        del.parentNode.remove();
+        return;
+    }
+
+    if (ev.target.closest('#onbSave')) {
+        if (onbSaving) return;
+
+        var tasks = [];
+        document.querySelectorAll('#onbRows .onb-task').forEach(function (i) {
+            var v = (i.value || '').trim();
+            if (v) tasks.push(v);
+        });
+
+        if (!tasks.length && !confirm('Save an empty checklist?\n\n'
+                + 'The built-in checklist will be used instead.')) return;
+
+        onbSaving = true;
+        var btn = document.getElementById('onbSave');
+        var st  = document.getElementById('onbStatus');
+        btn.disabled = true;
+        st.textContent = 'Saving...';
+
+        post('school_config/save_onboarding_tasks', { tasks: JSON.stringify(tasks) }, function (r) {
+            onbSaving = false;
+            btn.disabled = false;
+
+            if (!r || r.status !== 'success') {
+                st.textContent = '';
+                alert((r && r.message) || 'Could not save the checklist.');
+                return;
+            }
+            st.textContent = (r.message || 'Saved.') + ' ' + (r.note || '');
+            loadOnboardingTasks();          // re-read; never assume
+        });
+    }
+});
+/* ── Notifications (per school) ─────────────────────────────────────────
+   Reads and writes one event at a time: a per-event write is a per-event
+   audit row, which is what makes "who switched the fee reminders off, and
+   when" answerable later. */
+var notifBusy = {};
+
+function loadNotificationSettings() {
+    var load = document.getElementById('notifLoading');
+    var err  = document.getElementById('notifError');
+    var body = document.getElementById('notifGroups');
+    if (!body) return;
+
+    load.style.display = '';
+    err.style.display  = 'none';
+    body.style.display = 'none';
+
+    post('school_config/get_notification_settings', {}, function (r) {
+        load.style.display = 'none';
+
+        if (!r || r.status !== 'success' || !r.groups) {
+            document.getElementById('notifErrorText').textContent =
+                (r && r.message) || 'Could not load notification settings.';
+            err.style.display = '';
+            return;
+        }
+
+        renderNotificationSettings(r.groups);
+        body.style.display = '';
+    });
+}
+
+function renderNotificationSettings(groups) {
+    var body = document.getElementById('notifGroups');
+    var html = '';
+
+    if (!groups.length) {
+        body.innerHTML = '<div style="padding:24px;text-align:center;color:var(--t3);">'
+                       + 'No configurable notifications.</div>';
+        return;
+    }
+
+    groups.forEach(function (g) {
+        html += '<div style="margin-bottom:22px;">'
+             +  '<div style="font-size:12px;font-weight:700;text-transform:uppercase;'
+             +  'letter-spacing:.4px;color:var(--t3);margin-bottom:8px;">' + scEsc(g.group) + '</div>'
+             +  '<div style="overflow-x:auto;"><table class="sc-table"><tbody>';
+
+        (g.events || []).forEach(function (e) {
+            var meta = e.updatedBy
+                ? ('<div style="font-size:11px;color:var(--t3);margin-top:2px;">Last changed by '
+                    + scEsc(e.updatedBy) + (e.updatedAt ? ' on ' + scEsc(String(e.updatedAt).substring(0, 10)) : '')
+                    + '</div>')
+                : '';
+
+            html += '<tr>'
+                 +  '<td>' + scEsc(e.label) + meta + '</td>'
+                 +  '<td style="width:150px;text-align:right;">'
+                 +    '<button class="sc-btn" data-notif-mark="' + scEsc(e.mark) + '" '
+                 +      'data-notif-next="' + (e.enabled ? '0' : '1') + '">'
+                 +      (e.enabled
+                            ? '<i class="fa fa-bell"></i> On'
+                            : '<i class="fa fa-bell-slash-o"></i> Off')
+                 +    '</button>'
+                 +  '</td>'
+                 + '</tr>';
+        });
+
+        html += '</tbody></table></div></div>';
+    });
+
+    body.innerHTML = html;
+}
+
+/** Minimal escaper — this renders operator-authored text into innerHTML. */
+function scEsc(v) {
+    var d = document.createElement('div');
+    d.textContent = (v == null ? '' : String(v));
+    return d.innerHTML;
+}
+
+document.addEventListener('click', function (ev) {
+    var btn = ev.target.closest ? ev.target.closest('[data-notif-mark]') : null;
+    if (!btn) return;
+
+    var mark = btn.getAttribute('data-notif-mark');
+    if (notifBusy[mark]) return;                 // no double-fire
+
+    var next = btn.getAttribute('data-notif-next') === '1';
+
+    // Switching OFF stops the alert for everyone in the school, so it is
+    // confirmed. Switching back on is not.
+    if (!next && !confirm('Stop sending this notification?\n\n'
+            + 'Nobody in this school will receive it until it is switched back on.')) {
+        return;
+    }
+
+    notifBusy[mark] = true;
+    var original = btn.innerHTML;
+    btn.disabled = true;
+    btn.innerHTML = '<i class="fa fa-spinner fa-spin"></i> Saving';
+
+    post('school_config/save_notification_setting',
+        { mark: mark, enabled: next ? '1' : '0' },
+        function (r) {
+            notifBusy[mark] = false;
+            btn.disabled = false;
+
+            if (!r || r.status !== 'success') {
+                btn.innerHTML = original;        // never show a state we did not save
+                alert((r && r.message) || 'Could not save. Please try again.');
+                return;
+            }
+            // Re-read rather than flipping the label locally: the row also
+            // carries who changed it and when.
+            loadNotificationSettings();
+        });
+});
 function post(url, data, cb, opts) {
     // Always read the latest CSRF token from the cookie to avoid stale-token errors
     // (e.g., when switching between SA panel and school panel tabs)
@@ -1279,6 +1788,9 @@ function loadConfig() {
         renderSessions(d.sessions || [], d.active_session || '');
         renderBoard(d.board || {});
         renderClasses(d.classes || []);
+        // ADM-AGE-1 — drawn from the same class list, so the two can never show a
+        // different set of classes.
+        renderAgePolicy(d.classes || [], d.admission_age_policy || {});
         renderClassSelects(d.classes || [], d.sessions || [], d.active_session || '');
         var streams = (d.streams && typeof d.streams === 'object' && !Array.isArray(d.streams)) ? d.streams : {};
         CFG.streams = streams;
@@ -1286,8 +1798,169 @@ function loadConfig() {
         populateStreamDropdown(streams);
         renderReportCardTemplate(d.report_card_template || 'classic');
         renderRcConfig(d.report_card_config || {});
+        renderOrganisation(d.organisation || {});
     });
 }
+
+
+/* ══════════ ORGANISATION (Phase 1 ZenX HRMS) ══════════
+ * Entirely capability-gated on the client too, mirroring the server: when
+ * hrms_capability_enabled is false the tab stays hidden and none of this
+ * fires an extra request — a tenant without the capability sees exactly
+ * the page it always saw. */
+function renderOrganisation(org) {
+    var tabBtn = document.getElementById('scTabOrganisation');
+    if (!org || !org.hrms_capability_enabled) {
+        if (tabBtn) tabBtn.style.display = 'none';
+        return;
+    }
+    if (tabBtn) tabBtn.style.display = '';
+
+    var typeEl = document.getElementById('orgTypeSelect');
+    if (typeEl) typeEl.value = org.org_type || 'EDUCATION';
+
+    var terms = org.terms || {};
+    var pEl = document.getElementById('orgTermPerson');
+    var lEl = document.getElementById('orgTermLocation');
+    var mEl = document.getElementById('orgTermManager');
+    if (pEl) pEl.value = terms.person || '';
+    if (lEl) lEl.value = terms.location || '';
+    if (mEl) mEl.value = terms.manager || '';
+
+    var headingEl = document.getElementById('orgLocationsHeading');
+    if (headingEl) headingEl.textContent = terms.location ? (terms.location + 's') : 'Locations';
+
+    loadLocations();
+}
+
+function saveOrgType() {
+    var val = document.getElementById('orgTypeSelect').value;
+    post('school_config/save_profile', { org_type: val }, function(d) {
+        toast(d.message || (d.status === 'success' ? 'Saved.' : 'Failed.'), d.status === 'success');
+        if (d.status === 'success') loadConfig();
+    });
+}
+
+function saveTerminology() {
+    post('school_config/save_terminology', {
+        person:   document.getElementById('orgTermPerson').value,
+        location: document.getElementById('orgTermLocation').value,
+        manager:  document.getElementById('orgTermManager').value,
+    }, function(d) {
+        toast(d.message || (d.status === 'success' ? 'Saved.' : 'Failed.'), d.status === 'success');
+        if (d.status === 'success') loadConfig();
+    });
+}
+
+function loadLocations() {
+    post('workforce_locations/get_data', {}, function(d) {
+        if (d.status !== 'success') { toast(d.message || 'Failed to load locations.', false); return; }
+        renderLocationsTable(d.locations || []);
+    }, { loader: false });
+}
+
+function renderLocationsTable(locations) {
+    var body = document.getElementById('orgLocationsBody');
+    if (!body) return;
+    body.innerHTML = '';
+    locations.forEach(function(loc) {
+        var tr = document.createElement('tr');
+
+        var nameTd = document.createElement('td');
+        var nameInput = document.createElement('input');
+        nameInput.type = 'text';
+        nameInput.className = 'form-control input-sm';
+        nameInput.value = loc.name;
+        nameInput.maxLength = 120;
+        nameTd.appendChild(nameInput);
+
+        var defaultTd = document.createElement('td');
+        defaultTd.textContent = loc.isDefault ? 'Yes' : '';
+
+        // ESI applicability. TRI-STATE: '' means the school has not decided,
+        // and an undecided location INHERITS the tenant-wide statutory setting.
+        // A two-state control would force every location to be explicitly on or
+        // off the moment this screen shipped.
+        var esiTd = document.createElement('td');
+        var esiSel = document.createElement('select');
+        esiSel.className = 'form-control input-sm';
+        [['', 'Use school setting'], ['1', 'Applicable here'], ['0', 'Not applicable here']]
+            .forEach(function (o) {
+                var opt = document.createElement('option');
+                opt.value = o[0];
+                opt.textContent = o[1];
+                esiSel.appendChild(opt);
+            });
+        esiSel.value = (loc.esiApplicable === true) ? '1'
+                     : (loc.esiApplicable === false) ? '0' : '';
+        esiTd.appendChild(esiSel);
+
+        var actionsTd = document.createElement('td');
+        var saveBtn = document.createElement('button');
+        saveBtn.className = 'btn btn-xs btn-primary';
+        saveBtn.textContent = 'Save';
+        saveBtn.style.marginRight = '6px';
+        saveBtn.onclick = function() {
+            saveLocation(loc.locationId, nameInput.value, esiSel.value);
+        };
+        actionsTd.appendChild(saveBtn);
+
+        if (!loc.isDefault) {
+            var delBtn = document.createElement('button');
+            delBtn.className = 'btn btn-xs btn-danger';
+            delBtn.textContent = 'Delete';
+            delBtn.onclick = function() { deleteLocation(loc.locationId); };
+            actionsTd.appendChild(delBtn);
+        }
+
+        tr.appendChild(nameTd);
+        tr.appendChild(defaultTd);
+        tr.appendChild(esiTd);
+        tr.appendChild(actionsTd);
+        body.appendChild(tr);
+    });
+}
+
+function addLocation() {
+    var nameEl = document.getElementById('orgLocationNewName');
+    var name = nameEl.value.trim();
+    if (!name) { toast('Enter a name first.', false); return; }
+    post('workforce_locations/save', { name: name }, function(d) {
+        toast(d.message || (d.status === 'success' ? 'Added.' : 'Failed.'), d.status === 'success');
+        if (d.status === 'success') { nameEl.value = ''; loadLocations(); }
+    });
+}
+
+function saveLocation(locationId, name, esiApplicable) {
+    name = (name || '').trim();
+    if (!name) { toast('Name cannot be empty.', false); return; }
+    // esi_applicable is ALWAYS sent from this screen, including as '' for
+    // "use the school setting". The server treats an ABSENT field as "leave it
+    // alone", so omitting it here would make the determination unchangeable
+    // back to undecided once it had been set.
+    post('workforce_locations/save', {
+        location_id: locationId,
+        name: name,
+        esi_applicable: (esiApplicable === undefined || esiApplicable === null) ? '' : esiApplicable
+    }, function(d) {
+        toast(d.message || (d.status === 'success' ? 'Saved.' : 'Failed.'), d.status === 'success');
+        if (d.status === 'success') loadLocations();
+    });
+}
+
+function deleteLocation(locationId) {
+    if (!confirm('Delete this location? Staff assigned to it must be reassigned first.')) return;
+    post('workforce_locations/delete', { location_id: locationId }, function(d) {
+        toast(d.message || (d.status === 'success' ? 'Deleted.' : 'Failed.'), d.status === 'success');
+        if (d.status === 'success') loadLocations();
+    });
+}
+
+document.addEventListener('DOMContentLoaded', function() {
+    var t = document.getElementById('orgTypeSaveBtn');       if (t) t.addEventListener('click', saveOrgType);
+    var tm = document.getElementById('orgTermSaveBtn');      if (tm) tm.addEventListener('click', saveTerminology);
+    var al = document.getElementById('orgLocationAddBtn');   if (al) al.addEventListener('click', addLocation);
+});
 
 /* ══════════ PROFILE ══════════ */
 function renderProfile(p) {
@@ -1573,7 +2246,9 @@ window.rollPreview = function() {
                  + '<ul style="margin:0 0 6px 18px;padding:0;">'
                  + '<li>' + d.sections_to_copy + ' section(s) in source</li>'
                  + '<li>' + d.active_students + ' active student(s) in source</li>'
-                 + '<li>' + (d.graduating || 0) + ' student(s) in Class 12 (would graduate if promoted)</li>'
+                 + '<li>' + (d.graduating || 0) + ' student(s) in '
+                 + (d.graduating_class || 'your highest class')
+                 + ' (would complete schooling and become Alumni if promoted)</li>'
                  + '<li>Target already has: ' + d.existing_sections + ' section(s), ' + d.existing_students + ' student(s)</li>'
                  + '</ul>';
         if (d.warnings && d.warnings.length) {
@@ -1598,7 +2273,7 @@ window.rollExecute = function() {
 
     var warn = 'Execute rollover ' + from + ' \u2192 ' + to + '?\n\n';
     if (copy) warn += '  \u2022 Copy class/section structure\n';
-    if (prom) warn += '  \u2022 PROMOTE students (Class N \u2192 N+1, Class 12 \u2192 Alumni)\n';
+    if (prom) warn += '  \u2022 PROMOTE students (Class N \u2192 N+1; your highest configured class \u2192 Alumni)\n';
     if (act)  warn += '  \u2022 Set ' + to + ' as the ACTIVE session\n';
     warn += '\nThis cannot be automatically reversed. Proceed?';
     _confirmModal({
@@ -2346,6 +3021,85 @@ window.saveBoard = function() {
 /* ══════════ CLASSES ══════════ */
 var showDeleted = false;
 
+/* ── ADM-AGE-1 · age-policy editor ──────────────────────────────────────── */
+var AGE_POLICY = {};
+
+/* Bands are rendered FROM the class list, so a school cannot band a class it
+   does not run, and a newly added class appears here the moment it is saved. */
+function renderAgePolicy(classes, policy) {
+    AGE_POLICY = policy || {};
+    var modeEl = document.getElementById('agePolicyMode');
+    var cutEl  = document.getElementById('agePolicyCutoff');
+    if (!modeEl || !cutEl) return;
+
+    modeEl.value = AGE_POLICY.mode || 'off';
+    cutEl.value  = AGE_POLICY.cutoff || '03-31';
+
+    var bands = AGE_POLICY.bands || {};
+    var live  = (classes || []).filter(function (c) { return !c.deleted; });
+    var wrap  = document.getElementById('agePolicyBands');
+    if (!live.length) {
+        wrap.innerHTML = '<div class="sc-empty">Define your classes above first — age bands are set per class.</div>';
+        return;
+    }
+
+    wrap.innerHTML =
+        '<div style="display:grid;grid-template-columns:1fr 90px 90px;gap:8px;'
+      + 'font-size:11px;font-weight:700;color:var(--t3);text-transform:uppercase;'
+      + 'letter-spacing:.05em;padding:0 2px 6px;">'
+      +   '<div>Class</div><div>Min age</div><div>Max age</div>'
+      + '</div>'
+      + live.map(function (c) {
+            var nm = c.label || c.key || '';
+            var b  = bands[nm] || bands[String(nm).replace('Class ', '')] || {};
+            var v  = function (x) { return (x === null || x === undefined) ? '' : x; };
+            return '<div style="display:grid;grid-template-columns:1fr 90px 90px;gap:8px;'
+                 + 'align-items:center;padding:3px 2px;">'
+                 +   '<div style="font-size:12.5px;">' + esc(nm) + '</div>'
+                 +   '<input type="number" class="sc-input sc-age-min" data-class="' + esc(nm) + '" '
+                 +     'min="0" max="30" value="' + esc(v(b.min)) + '" placeholder="—">'
+                 +   '<input type="number" class="sc-input sc-age-max" data-class="' + esc(nm) + '" '
+                 +     'min="0" max="30" value="' + esc(v(b.max)) + '" placeholder="—">'
+                 + '</div>';
+        }).join('');
+}
+
+function saveAgePolicy() {
+    // post() urlencodes a FLAT map, and PHP parses bands[Class 1][min] out of that
+    // into a nested array — so no FormData is needed and the CSRF handling in
+    // post() is reused rather than reimplemented.
+    var payload = {
+        mode:   document.getElementById('agePolicyMode').value,
+        cutoff: document.getElementById('agePolicyCutoff').value.trim()
+    };
+
+    // Only classes with at least one bound are sent; the server treats an absent
+    // class as unbanded rather than as zero, which would refuse every admission.
+    document.querySelectorAll('.sc-age-min').forEach(function (el) {
+        var cls = el.getAttribute('data-class');
+        var max = document.querySelector('.sc-age-max[data-class="' + cls.replace(/"/g, '\\"') + '"]');
+        var mn  = el.value.trim(), mx = max ? max.value.trim() : '';
+        if (mn === '' && mx === '') { if (AGE_POLICY.bands) delete AGE_POLICY.bands[cls]; return; }
+        AGE_POLICY.bands = AGE_POLICY.bands || {};
+        AGE_POLICY.bands[cls] = { min: mn === '' ? null : +mn, max: mx === '' ? null : +mx };
+        payload['bands[' + cls + '][min]'] = mn;
+        payload['bands[' + cls + '][max]'] = mx;
+    });
+
+    post('school_config/save_age_policy', payload, function (d) {
+        toast(d.message, d.status === 'success');
+        if (d.status === 'success') {
+            // Keep the in-memory copy in step so switching tabs and back does not
+            // redraw the editor from a stale policy.
+            CFG.admission_age_policy = {
+                mode:   document.getElementById('agePolicyMode').value,
+                cutoff: document.getElementById('agePolicyCutoff').value.trim(),
+                bands:  AGE_POLICY.bands || {}
+            };
+        }
+    });
+}
+
 function renderClasses(classes) {
     var wrap = document.getElementById('classList');
     var visible = classes.filter(function(c) { return showDeleted || !c.deleted; });
@@ -2505,17 +3259,46 @@ window.softDeleteClass = function(key) {
     }).then(function(ok) {
         if (!ok) return;
 
-        // Remove from local CFG immediately
-        CFG.classes = (CFG.classes || []).filter(function(c) { return c.key !== key; });
-        renderClasses(CFG.classes);
-        renderClassSelects(CFG.classes, CFG.sessions || [], CFG.active_session || '');
+        /* ── PHASE 20.1c (P20-F12, second instance) ─────────────────────
+         *
+         * Same phantom-success defect as deleteStream, and more serious here:
+         * Phase 20.1 hardened soft_delete_class() so it REFUSES while any
+         * section of the class still holds active students, and Phase 20.1c
+         * made it refuse when that check cannot be evaluated. This handler
+         * removed the class from the local list before calling the server and
+         * then discarded every error — so the operator saw the class vanish
+         * precisely when the server had protected it.
+         *
+         * Server first; mutate local state only on confirmed success.
+         */
+        var _busy = softDeleteClass._busy || (softDeleteClass._busy = {});
+        if (_busy[key]) return;              // duplicate-click protection
+        _busy[key] = true;
 
-        // Also delete from server (best-effort — may not exist if not yet saved)
         post('school_config/soft_delete_class', { class_key: key }, function(d) {
-            if (d.status === 'success') {
-                toast('Class removed.');
+            _busy[key] = false;
+
+            var msg = (d && d.message) ? String(d.message) : '';
+            var notFound = (d && d.reason === 'not_found') || /does not exist|not found/i.test(msg);
+
+            if ((d && d.status === 'success') || notFound) {
+                CFG.classes = (CFG.classes || []).filter(function(c) { return c.key !== key; });
+                renderClasses(CFG.classes);
+                renderClassSelects(CFG.classes, CFG.sessions || [], CFG.active_session || '');
+                if (d && d.status === 'success') toast('Class removed.');
+                return;
             }
-            // Don't show error if server says "not found" — class may have been UI-only
+
+            // Refusal — the class MUST stay visible. Distinguish "cannot
+            // delete" from "could not verify" so the operator knows whether to
+            // reassign students or simply retry.
+            if (d && d.reason === 'dependencies_undetermined') {
+                toast(msg || 'Could not verify what uses this class. Nothing was changed — please retry.', false);
+            } else if (d && d.dependencies) {
+                toast(msg || 'Cannot remove: this class is still in use.', false);
+            } else {
+                toast(msg || 'Remove failed. Nothing was changed.', false);
+            }
         });
     });
 };
@@ -2579,6 +3362,10 @@ var _secOriginal = {};   // { classKey: ['A','B'] } — from server
 var _secCurrent  = {};   // { classKey: ['A','B','C'] } — user edits
 var _defaultLetters = ['A','B','C','D','E','F'];
 
+/* P20.2-CAP-2 — server-computed seat detail, keyed { classKey: { label: {...} } } */
+var _secSeats  = {};
+var _secLabels = {};
+
 var _availableStreams = []; // from server
 
 function loadAllSections() {
@@ -2600,6 +3387,17 @@ function loadAllSections() {
         _secOriginal = {};
         _secCurrent  = {};
         _availableStreams = d.streams || [];
+
+        /* P20.2-CAP-2 — seat detail comes from the SERVER, computed by the
+           canonical roster rule. Nothing here recomputes occupancy: the
+           backend is the only authority, so the table and the capacity guard
+           cannot disagree (the defect SEC-11 closed). */
+        _secSeats = {};
+        _secLabels = {};
+        (d.classes || []).forEach(function(cls) {
+            _secSeats[cls.key]  = cls.seats || {};
+            _secLabels[cls.key] = cls.label || cls.node || cls.key;
+        });
 
         // Collect all letters used across all classes to build column headers
         var allLetters = _defaultLetters.slice();
@@ -2629,6 +3427,7 @@ function loadAllSections() {
         allLetters.sort();
 
         renderMatrix(d.classes || [], allLetters);
+        renderSeats();   // P20.2-UI-1 — strength/occupancy table below the matrix
         updateChangeCount();
     });
 }
@@ -3033,6 +3832,197 @@ window.deleteSection = function(classKey, letter, sess) {
     });
 };
 
+/* ══════════ PHASE 20.2 — SECTION STRENGTH & OCCUPANCY (P20.2-UI-1) ══════════
+   Renders server-computed seat data. Deliberately performs NO occupancy or
+   capacity arithmetic of its own beyond formatting: the backend resolves both
+   through the canonical engine, and duplicating either rule in JS is how a UI
+   starts disagreeing with the guard that actually blocks admissions. */
+
+function renderSeats() {
+    var body    = document.getElementById('seatsBody');
+    var panel   = document.getElementById('seatsPanel');
+    var summary = document.getElementById('seatsSummary');
+    if (!body || !panel) return;
+
+    var rows = [], totCap = 0, totOcc = 0, nSec = 0, unset = 0, anyUnknown = false;
+
+    Object.keys(_secSeats).forEach(function(classKey) {
+        var seats = _secSeats[classKey] || {};
+        Object.keys(seats).sort().forEach(function(label) {
+            var s = seats[label] || {};
+            nSec++;
+            totCap += (s.capacity || 0);
+            if (s.occupied === null || s.occupied === undefined) { anyUnknown = true; }
+            else { totOcc += s.occupied; }
+            if (!s.capacity_configured) unset++;
+
+            var occTxt = (s.occupied === null || s.occupied === undefined) ? '—' : s.occupied;
+            var avlTxt = (s.available === null || s.available === undefined) ? '—' : s.available;
+
+            var capTxt = s.capacity_configured
+                ? '<strong>' + s.capacity + '</strong>'
+                : '<span style="color:#b45309;">' + s.capacity + '</span> '
+                  + '<small style="color:#b45309;">not set</small>';
+
+            var status;
+            if (s.occupied === null || s.occupied === undefined) {
+                status = '<span class="label label-default">Unknown</span>';
+            } else if (s.over > 0) {
+                status = '<span class="label label-danger">Over by ' + s.over + '</span>';
+            } else if (s.available === 0) {
+                status = '<span class="label label-warning">Full</span>';
+            } else {
+                status = '<span class="label label-success">Open</span>';
+            }
+
+            rows.push(
+                '<tr>'
+              + '<td>' + esc(_secLabels[classKey] || classKey) + '</td>'
+              + '<td>' + esc(label) + '</td>'
+              + '<td style="text-align:right;">' + capTxt + '</td>'
+              + '<td style="text-align:right;">' + occTxt + '</td>'
+              + '<td style="text-align:right;">' + avlTxt + '</td>'
+              + '<td>' + status + '</td>'
+              + '<td style="text-align:right;">'
+              +   '<button type="button" class="btn btn-xs btn-default" '
+              +   'onclick="openCapacityEditor(\'' + esc(classKey) + '\',\'' + esc(label) + '\')">'
+              +   '<i class="fa fa-pencil"></i> Capacity</button>'
+              + '</td>'
+              + '</tr>'
+            );
+        });
+    });
+
+    if (!rows.length) {
+        panel.style.display = 'none';
+        return;
+    }
+
+    body.innerHTML = rows.join('');
+    summary.innerHTML = nSec + ' section' + (nSec === 1 ? '' : 's')
+        + ' · ' + totCap + ' seats'
+        + (anyUnknown ? ' · occupancy partially unavailable' : ' · ' + totOcc + ' occupied')
+        + (unset ? ' · <span style="color:#b45309;">' + unset + ' without configured capacity</span>' : '');
+    // Apply the collapse state BEFORE revealing the panel, otherwise the table
+    // paints expanded for a frame and then snaps shut. loadAllSections()
+    // rebuilds this panel on every session switch and after every capacity
+    // save, so this also stops it silently re-expanding.
+    applySeatsCollapsed(_seatsPrefRead());
+    panel.style.display = 'block';
+}
+
+/* ── Collapse / expand the seats table ──────────────────────────────────────
+   The table runs one row per section (35 on a mid-size school), which pushes
+   the section matrix off screen. Collapsing keeps the summary line visible —
+   totals and the "N without configured capacity" warning stay readable without
+   expanding, so nothing actionable is hidden by collapsing.
+
+   The choice is remembered per browser. localStorage may throw in private
+   modes, so every access is guarded and simply degrades to "not remembered". */
+var SEATS_COLLAPSE_KEY = 'zx_seats_collapsed';
+
+/* Default is COLLAPSED. The table runs one row per section (35 on a mid-size
+   school) and would otherwise push the section matrix — the primary control on
+   this tab — off screen on every load. The summary line stays visible when
+   collapsed, so totals and the "N without configured capacity" warning are
+   still readable without expanding.
+
+   Only an explicit stored '0' (the operator expanded it) opens it. A missing
+   key, or localStorage throwing in private mode, both fall back to collapsed. */
+function _seatsPrefRead() {
+    try { return localStorage.getItem(SEATS_COLLAPSE_KEY) !== '0'; }
+    catch (e) { return true; }
+}
+function _seatsPrefWrite(collapsed) {
+    try { localStorage.setItem(SEATS_COLLAPSE_KEY, collapsed ? '1' : '0'); }
+    catch (e) { /* private mode — not remembered, still works this session */ }
+}
+
+function applySeatsCollapsed(collapsed) {
+    var wrap     = document.getElementById('seatsBodyWrap');
+    var note     = document.getElementById('seatsFootnote');
+    var chevron  = document.getElementById('seatsChevron');
+    var toggle   = document.getElementById('seatsToggle');
+    if (!wrap) return;
+
+    wrap.style.display = collapsed ? 'none' : '';
+    if (note)    note.style.display = collapsed ? 'none' : '';
+    if (chevron) chevron.style.transform = collapsed ? 'rotate(-90deg)' : '';
+    if (toggle)  toggle.setAttribute('aria-expanded', collapsed ? 'false' : 'true');
+}
+
+window.toggleSeats = function(ev) {
+    if (ev && ev.preventDefault) ev.preventDefault();
+    var wrap = document.getElementById('seatsBodyWrap');
+    if (!wrap) return;
+    var collapsed = (wrap.style.display !== 'none');   // about to become collapsed
+    applySeatsCollapsed(collapsed);
+    _seatsPrefWrite(collapsed);
+};
+
+window.openCapacityEditor = function(classKey, label) {
+    var s = (_secSeats[classKey] || {})[label] || {};
+    document.getElementById('capClassKey').value = classKey;
+    document.getElementById('capSection').value  = label;
+    document.getElementById('capClassName').textContent = (_secLabels[classKey] || classKey) + ' — Section ' + label;
+    document.getElementById('capCurrent').textContent   =
+        s.capacity + (s.capacity_configured ? '' : ' (not configured — engine fallback)');
+    document.getElementById('capOccupied').textContent  =
+        (s.occupied === null || s.occupied === undefined) ? 'unavailable' : s.occupied;
+    document.getElementById('capInput').value = s.capacity_configured ? s.capacity : '';
+    document.getElementById('capWarn').style.display = 'none';
+    // Reset the confirm ROW too, not just the checkbox: it is revealed by a
+    // confirm_required refusal and is never hidden again, so opening a second
+    // section afterwards showed it an over-capacity confirm it had not earned.
+    document.getElementById('capConfirmRow').style.display = 'none';
+    document.getElementById('capConfirm').checked = false;
+    document.getElementById('capSaveBtn').disabled = false;
+    $('#capacityModal').modal('show');
+};
+
+window.saveCapacity = function() {
+    var btn       = document.getElementById('capSaveBtn');
+    var classKey  = document.getElementById('capClassKey').value;
+    var section   = document.getElementById('capSection').value;
+    var capacity  = document.getElementById('capInput').value.trim();
+    var confirmed = document.getElementById('capConfirm').checked ? '1' : '0';
+    var sess      = document.getElementById('secSessSel').value;
+
+    if (!/^\d{1,4}$/.test(capacity) || parseInt(capacity, 10) < 1) {
+        toast('Capacity must be a whole number of at least 1.', false);
+        return;
+    }
+
+    btn.disabled = true;                       // duplicate-submit protection
+    post('school_config/save_section_capacity', {
+        class_key: classKey, section: section, session: sess,
+        capacity: capacity, confirm_over_capacity: confirmed
+    }, function(d) {
+        btn.disabled = false;
+
+        if (d && d.status === 'success') {
+            $('#capacityModal').modal('hide');
+            toast(d.message, true);
+            loadAllSections();                 // re-read from the server
+            return;
+        }
+
+        /* Reduction below occupancy — the server refused pending explicit
+           confirmation and told us WHY, with real numbers. Show its message
+           rather than inventing one client-side. Nothing was saved. */
+        if (d && d.reason === 'confirm_required') {
+            var w = document.getElementById('capWarn');
+            w.innerHTML = '<i class="fa fa-exclamation-triangle"></i> ' + esc(d.message)
+                        + '<br><small>No student will be removed, transferred or renumbered.</small>';
+            w.style.display = 'block';
+            document.getElementById('capConfirmRow').style.display = 'block';
+            return;
+        }
+
+        toast((d && d.message) ? d.message : 'Capacity was not saved.', false);
+    });
+};
+
 /* ══════════ SUBJECTS ══════════ */
 
 // Reset subject editor when class dropdown changes
@@ -3292,6 +4282,11 @@ window.subSaveAll = function() {
         var failed = (d && d.failed) ? d.failed
                     : (d && d.data && d.data.failed) ? d.data.failed : [];
         renderBulkSubjectFailures(failed);
+        // A subject the operator removed can legitimately survive the save —
+        // it is still assigned to teachers, or the dependency check could not
+        // be evaluated. It reappears in the list either way, so say WHY rather
+        // than letting it look like the delete silently failed.
+        renderKeptSubjects((d && d.kept) ? d.kept : []);
 
         if (d.status === 'success') {
             // Reload to get generated codes
@@ -3336,6 +4331,40 @@ function renderBulkSubjectFailures(failed) {
       + '<table style="width:100%;font-size:12px;border-collapse:collapse;">'
       + '<thead><tr style="text-align:left;color:var(--t2);">'
       + '<th style="padding:4px 8px;">Subject</th><th style="padding:4px 8px;">Reason</th>'
+      + '</tr></thead>'
+      + '<tbody>' + rows + '</tbody></table></div>';
+}
+
+// Subjects that were removed in the editor but deliberately KEPT in Firestore.
+// Amber, not red: nothing failed, the save refused a destructive step it could
+// not prove was safe.
+function renderKeptSubjects(kept) {
+    var host = document.getElementById('subBulkKept');
+    if (!host) {
+        host = document.createElement('div');
+        host.id = 'subBulkKept';
+        host.style.cssText = 'margin-top:12px;';
+        var anchorEl = document.getElementById('subBulkFailures') || document.getElementById('subSummary');
+        if (anchorEl && anchorEl.parentNode) anchorEl.parentNode.insertBefore(host, anchorEl.nextSibling);
+    }
+    if (!kept || !kept.length) { host.innerHTML = ''; return; }
+
+    var rows = '';
+    kept.forEach(function(k) {
+        var nm  = esc(k.name || k.subject_code || '?');
+        var why = esc(k.reason || 'not removed');
+        rows += '<tr><td style="padding:4px 8px;">' + nm + '</td>'
+              + '<td style="padding:4px 8px;color:#b45309;">' + why + '</td></tr>';
+    });
+    host.innerHTML =
+        '<div style="border:1px solid #b45309;border-radius:6px;padding:10px;background:rgba(180,83,9,0.08);">'
+      + '<div style="font-weight:600;margin-bottom:6px;color:#b45309;">'
+      + '<i class="fa fa-exclamation-triangle"></i> '
+      + kept.length + ' subject(s) could not be removed and are still in the list'
+      + '</div>'
+      + '<table style="width:100%;font-size:12px;border-collapse:collapse;">'
+      + '<thead><tr style="text-align:left;color:var(--t2);">'
+      + '<th style="padding:4px 8px;">Subject</th><th style="padding:4px 8px;">Why it stayed</th>'
       + '</tr></thead>'
       + '<tbody>' + rows + '</tbody></table></div>';
 }
@@ -3425,18 +4454,64 @@ window.deleteStream = function(key) {
     }).then(function(ok) {
         if (!ok) return;
 
-        // Remove from local UI immediately
-        if (!CFG.streams || Array.isArray(CFG.streams)) CFG.streams = {};
-        delete CFG.streams[key];
-        renderStreams(CFG.streams);
-        populateStreamDropdown(CFG.streams);
+        /* ── PHASE 20.1c (P20-F12) — PHANTOM SUCCESS ────────────────────
+         *
+         * THE DEFECT THIS CLOSES: this handler deleted the stream from local
+         * state and re-rendered BEFORE calling the server, then reported only
+         * the success case and swallowed every error ("Don't show error if
+         * server says not found").
+         *
+         * So when the server correctly REFUSED — a 409 because live sections
+         * or students still reference the stream, or the Phase 20.1b
+         * fail-closed path because the dependency state could not be verified
+         * — the operator watched the stream disappear and was told nothing.
+         * The entire fail-closed backend was invisible on this path: the
+         * server protected the data, and the UI reported the opposite.
+         *
+         * Now: call the server FIRST, and only mutate local state once it
+         * confirms. Failures are surfaced, and a refusal leaves the row
+         * exactly where it is. Fail closed in the UI as well as the backend.
+         */
+        var _busy = deleteStream._busy || (deleteStream._busy = {});
+        if (_busy[key]) return;              // duplicate-click protection
+        _busy[key] = true;
 
-        // Also delete from server (best-effort — may not exist if not yet saved)
         post('school_config/delete_stream', { stream_key: key }, function(d) {
-            if (d.status === 'success') {
+            _busy[key] = false;
+
+            if (d && d.status === 'success') {
+                if (!CFG.streams || Array.isArray(CFG.streams)) CFG.streams = {};
+                delete CFG.streams[key];
+                renderStreams(CFG.streams);
+                populateStreamDropdown(CFG.streams);
                 toast('Stream deleted.');
+                return;
             }
-            // Don't show error if server says "not found" — stream may have been UI-only
+
+            // A stream that was never saved server-side is genuinely absent —
+            // that alone may clear locally. Everything else is a real refusal
+            // and MUST leave the UI unchanged.
+            var msg = (d && d.message) ? String(d.message) : '';
+            // The server's not-found path uses plain json_error() and carries
+            // no `reason`, so match its message too rather than changing the
+            // server's response shape for a purely cosmetic case.
+            var notFound = (d && d.reason === 'not_found') || /does not exist/i.test(msg);
+            if (notFound) {
+                if (!CFG.streams || Array.isArray(CFG.streams)) CFG.streams = {};
+                delete CFG.streams[key];
+                renderStreams(CFG.streams);
+                populateStreamDropdown(CFG.streams);
+                return;
+            }
+
+            // Distinguish "cannot delete" from "server error" for the operator.
+            if (d && d.reason === 'dependencies_undetermined') {
+                toast(msg || 'Could not verify what uses this stream. Nothing was changed — please retry.', false);
+            } else if (d && d.dependencies) {
+                toast(msg || 'Cannot delete: this stream is still in use.', false);
+            } else {
+                toast(msg || 'Delete failed. Nothing was changed.', false);
+            }
         });
     });
 };

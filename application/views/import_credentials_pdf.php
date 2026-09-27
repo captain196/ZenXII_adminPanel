@@ -7,7 +7,8 @@
  * layout is deliberately table-based. Kept self-contained (all CSS inline).
  *
  * Expected vars:
- *   $rows        array of ['name'=>, 'phone'=>, 'userId'=>, 'password'=>]
+ *   $rows        array of ['name'=>, 'phone'=>, 'userId'=>, 'password'=>,
+ *                          'srNo'=>, 'admissionNo'=>]   (last two optional)
  *   $entityLabel 'Student' | 'Staff'
  *   $title       heading, e.g. "Student Login Credentials"
  *   $schoolName  school display name
@@ -21,6 +22,22 @@ $schoolName  = $schoolName ?? '';
 $sessionYear = $sessionYear ?? '';
 $generatedAt = $generatedAt ?? date('d-m-Y H:i');
 $e = function ($v) { return htmlspecialchars((string) $v, ENT_QUOTES, 'UTF-8'); };
+
+// Phase 11 (P11-G1) — SR No. / Admission No. columns. This view is SHARED with
+// the staff import, which has neither, so the columns are DATA-DRIVEN rather
+// than switched on $entityLabel: they appear only when the caller actually
+// supplied the values. The staff PDF is therefore byte-identical to before.
+//
+// APAAR is deliberately NOT here and must not be added — it is PII under the
+// masked + audited-reveal policy, and this sheet is printed and handed out.
+$hasSrNo = false;
+$hasAdmNo = false;
+foreach ($rows as $__r) {
+    if (trim((string) ($__r['srNo'] ?? '')) !== '') $hasSrNo = true;
+    if (trim((string) ($__r['admissionNo'] ?? '')) !== '') $hasAdmNo = true;
+    if ($hasSrNo && $hasAdmNo) break;
+}
+$colCount = 5 + ($hasSrNo ? 1 : 0) + ($hasAdmNo ? 1 : 0);
 ?>
 <style>
   .cred-doc { font-family: sans-serif; color: #1e293b; }
@@ -47,6 +64,7 @@ $e = function ($v) { return htmlspecialchars((string) $v, ENT_QUOTES, 'UTF-8'); 
   .col-uid  { font-family: monospace; font-weight: 700; color: #1e3a8a; white-space: nowrap; }
   .col-pwd  { font-family: monospace; font-weight: 700; color: #b91c1c; white-space: nowrap; }
   .col-phone { white-space: nowrap; }
+  .col-ident { font-family: monospace; white-space: nowrap; color: #334155; }
   .cell-blank { color: #cbd5e1; }
   .cred-foot { margin-top: 16px; font-size: 8.5px; color: #94a3b8; border-top: 1px solid #e2e8f0; padding-top: 6px; }
 </style>
@@ -74,24 +92,30 @@ $e = function ($v) { return htmlspecialchars((string) $v, ENT_QUOTES, 'UTF-8'); 
         <th>Name</th>
         <th>Mobile Number</th>
         <th>User ID</th>
+        <?php if ($hasSrNo): ?><th>SR No.</th><?php endif; ?>
+        <?php if ($hasAdmNo): ?><th>Admission No.</th><?php endif; ?>
         <th>Default Password</th>
       </tr>
     </thead>
     <tbody>
       <?php if (empty($rows)): ?>
-        <tr><td colspan="5" style="text-align:center;color:#94a3b8;padding:18px;">No users to list.</td></tr>
+        <tr><td colspan="<?= (int) $colCount ?>" style="text-align:center;color:#94a3b8;padding:18px;">No users to list.</td></tr>
       <?php else: ?>
         <?php foreach ($rows as $i => $r):
           $name  = trim((string) ($r['name'] ?? ''));
           $phone = trim((string) ($r['phone'] ?? ''));
           $uid   = trim((string) ($r['userId'] ?? ''));
           $pwd   = trim((string) ($r['password'] ?? ''));
+          $srNo  = trim((string) ($r['srNo'] ?? ''));
+          $admNo = trim((string) ($r['admissionNo'] ?? ''));
         ?>
         <tr>
           <td class="col-idx"><?= $i + 1 ?></td>
           <td><?= $name !== '' ? $e($name) : '<span class="cell-blank">—</span>' ?></td>
           <td class="col-phone"><?= $phone !== '' ? $e($phone) : '<span class="cell-blank"></span>' ?></td>
           <td class="col-uid"><?= $e($uid) ?></td>
+          <?php if ($hasSrNo): ?><td class="col-ident"><?= $srNo !== '' ? $e($srNo) : '<span class="cell-blank">—</span>' ?></td><?php endif; ?>
+          <?php if ($hasAdmNo): ?><td class="col-ident"><?= $admNo !== '' ? $e($admNo) : '<span class="cell-blank">—</span>' ?></td><?php endif; ?>
           <td class="col-pwd"><?= $pwd !== '' ? $e($pwd) : '<span class="cell-blank">—</span>' ?></td>
         </tr>
         <?php endforeach; ?>

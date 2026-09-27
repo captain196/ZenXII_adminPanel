@@ -87,7 +87,21 @@ $selectedFees = is_array($selected_exempted_fees ?? null) ? array_keys($selected
                                        class="sa-input" readonly>
                             </div>
 
+                                                        <!-- Roll number. Sis::edit_student already reads `Roll No`, mirrors it
+                                 to rollNo and runs the Phase 14.1 uniqueness check against this
+                                 pupil's class and section BEFORE writing — but no field ever posted
+                                 it, so that check could never fire, and a duplicate roll number
+                                 (which blocks promotion and rollover under D21) had nowhere to be
+                                 corrected. Class/Section stay read-only above: moving a pupil is
+                                 the transfer and promotion screens' job, not this one. -->
                             <div class="sa-field">
+                                <label>Roll No</label>
+                                <input type="text" name="Roll No"
+                                       value="<?= htmlspecialchars($student_data['Roll No'] ?? ($student_data['rollNo'] ?? ''), ENT_QUOTES, 'UTF-8') ?>"
+                                       class="sa-input" autocomplete="off">
+                            </div>
+
+<div class="sa-field">
                                 <label>Section</label>
                                 <input type="text" name="section"
                                        value="<?= htmlspecialchars($student_data['Section'] ?? '', ENT_QUOTES, 'UTF-8') ?>"
@@ -98,7 +112,7 @@ $selectedFees = is_array($selected_exempted_fees ?? null) ? array_keys($selected
                                 <label>Date of Birth <span class="req">*</span></label>
                                 <input type="text" name="dob"
                                        value="<?= htmlspecialchars($student_data['DOB'] ?? '', ENT_QUOTES, 'UTF-8') ?>"
-                                       class="sa-input datepicker" placeholder="dd-mm-yyyy" required>
+                                       class="sa-input datepicker" placeholder="dd-mm-yyyy">
                             </div>
 
                             <div class="sa-field">
@@ -116,27 +130,27 @@ $selectedFees = is_array($selected_exempted_fees ?? null) ? array_keys($selected
                                 <label>Admission Date <span class="req">*</span></label>
                                 <input type="text" name="admission_date"
                                        value="<?= htmlspecialchars($student_data['Admission Date'] ?? '', ENT_QUOTES, 'UTF-8') ?>"
-                                       class="sa-input datepicker" placeholder="dd-mm-yyyy" required>
+                                       class="sa-input datepicker" placeholder="dd-mm-yyyy">
                             </div>
 
                             <div class="sa-field">
                                 <label>Email <span class="req">*</span></label>
                                 <input type="email" name="email"
                                        value="<?= htmlspecialchars($student_data['Email'] ?? '', ENT_QUOTES, 'UTF-8') ?>"
-                                       class="sa-input" required>
+                                       class="sa-input">
                             </div>
 
                             <div class="sa-field">
                                 <label>Phone Number <span class="req">*</span></label>
                                 <input type="text" name="phone_number"
                                        value="<?= htmlspecialchars($student_data['Phone Number'] ?? '', ENT_QUOTES, 'UTF-8') ?>"
-                                       class="sa-input" required>
+                                       class="sa-input">
                             </div>
 
                             <div class="sa-field">
                                 <label>Blood Group <span class="req">*</span></label>
                                 <?php $bg = $student_data['Blood Group'] ?? ''; ?>
-                                <select name="blood_group" class="sa-select" required>
+                                <select name="blood_group" class="sa-select">
                                     <option value="">Select</option>
                                     <?php foreach (['A+','A-','B+','B-','O+','O-','AB+','AB-','Unknown'] as $g): ?>
                                     <option value="<?= $g ?>" <?= $bg === $g ? 'selected' : '' ?>><?= $g ?></option>
@@ -147,7 +161,7 @@ $selectedFees = is_array($selected_exempted_fees ?? null) ? array_keys($selected
                             <div class="sa-field">
                                 <label>Category <span class="req">*</span></label>
                                 <?php $cat = $student_data['Category'] ?? ''; ?>
-                                <select name="category" class="sa-select" required>
+                                <select name="category" class="sa-select">
                                     <option value="">Select</option>
                                     <?php foreach (['General','OBC','SC','ST'] as $c): ?>
                                     <option value="<?= $c ?>" <?= $cat === $c ? 'selected' : '' ?>><?= $c ?></option>
@@ -172,42 +186,42 @@ $selectedFees = is_array($selected_exempted_fees ?? null) ? array_keys($selected
                                 <label>Father's Name <span class="req">*</span></label>
                                 <input type="text" name="father_name"
                                        value="<?= htmlspecialchars($student_data['Father Name'] ?? '', ENT_QUOTES, 'UTF-8') ?>"
-                                       class="sa-input" required>
+                                       class="sa-input">
                             </div>
 
                             <div class="sa-field">
                                 <label>Father's Occupation <span class="req">*</span></label>
                                 <input type="text" name="father_occupation"
                                        value="<?= htmlspecialchars($student_data['Father Occupation'] ?? '', ENT_QUOTES, 'UTF-8') ?>"
-                                       class="sa-input" required>
+                                       class="sa-input">
                             </div>
 
                             <div class="sa-field">
                                 <label>Father's Contact <span class="req">*</span></label>
                                 <input type="text" name="guard_contact"
                                        value="<?= htmlspecialchars($student_data['Guard Contact'] ?? '', ENT_QUOTES, 'UTF-8') ?>"
-                                       class="sa-input" required>
+                                       class="sa-input">
                             </div>
 
                             <div class="sa-field">
                                 <label>Guardian Relation <span class="req">*</span></label>
                                 <input type="text" name="guard_relation"
                                        value="<?= htmlspecialchars($student_data['Guard Relation'] ?? '', ENT_QUOTES, 'UTF-8') ?>"
-                                       class="sa-input" required>
+                                       class="sa-input">
                             </div>
 
                             <div class="sa-field">
                                 <label>Mother's Name <span class="req">*</span></label>
                                 <input type="text" name="mother_name"
                                        value="<?= htmlspecialchars($student_data['Mother Name'] ?? '', ENT_QUOTES, 'UTF-8') ?>"
-                                       class="sa-input" required>
+                                       class="sa-input">
                             </div>
 
                             <div class="sa-field">
                                 <label>Mother's Occupation <span class="req">*</span></label>
                                 <input type="text" name="mother_occupation"
                                        value="<?= htmlspecialchars($student_data['Mother Occupation'] ?? '', ENT_QUOTES, 'UTF-8') ?>"
-                                       class="sa-input" required>
+                                       class="sa-input">
                             </div>
 
                         </div>
@@ -227,13 +241,13 @@ $selectedFees = is_array($selected_exempted_fees ?? null) ? array_keys($selected
                                 <label>Street <span class="req">*</span></label>
                                 <input type="text" name="street"
                                        value="<?= htmlspecialchars($addr['Street'] ?? '', ENT_QUOTES, 'UTF-8') ?>"
-                                       class="sa-input" required>
+                                       class="sa-input">
                             </div>
 
                             <div class="sa-field">
                                 <label>State <span class="req">*</span></label>
                                 <?php $curState = $addr['State'] ?? ''; ?>
-                                <select name="state" id="state" class="sa-select" required>
+                                <select name="state" id="state" class="sa-select">
                                     <option value="">Select State</option>
                                     <?php foreach (['Andhra Pradesh','Arunachal Pradesh','Assam','Bihar','Chhattisgarh','Goa','Gujarat','Haryana','Himachal Pradesh','Jharkhand','Karnataka','Kerala','Madhya Pradesh','Maharashtra','Manipur','Meghalaya','Mizoram','Nagaland','Odisha','Punjab','Rajasthan','Sikkim','Tamil Nadu','Telangana','Tripura','Uttar Pradesh','Uttarakhand','West Bengal','Andaman and Nicobar Islands','Chandigarh','Dadra and Nagar Haveli and Daman and Diu','Delhi','Jammu and Kashmir','Ladakh','Lakshadweep','Puducherry'] as $st): ?>
                                     <option value="<?= $st ?>" <?= $curState === $st ? 'selected' : '' ?>><?= $st ?></option>
@@ -245,7 +259,7 @@ $selectedFees = is_array($selected_exempted_fees ?? null) ? array_keys($selected
                                 <label>District <span class="req">*</span></label>
                                 <select name="city" id="city" class="sa-select"
                                         data-india-district="state"
-                                        data-india-selected="<?= htmlspecialchars($addr['City'] ?? '', ENT_QUOTES, 'UTF-8') ?>" required>
+                                        data-india-selected="<?= htmlspecialchars($addr['City'] ?? '', ENT_QUOTES, 'UTF-8') ?>">
                                     <option value="<?= htmlspecialchars($addr['City'] ?? '', ENT_QUOTES, 'UTF-8') ?>"
                                             selected><?= htmlspecialchars($addr['City'] ?? 'Select District', ENT_QUOTES, 'UTF-8') ?></option>
                                 </select>
@@ -255,7 +269,7 @@ $selectedFees = is_array($selected_exempted_fees ?? null) ? array_keys($selected
                                 <label>Postal Code <span class="req">*</span></label>
                                 <input type="text" name="postal_code"
                                        value="<?= htmlspecialchars($addr['PostalCode'] ?? '', ENT_QUOTES, 'UTF-8') ?>"
-                                       class="sa-input" placeholder="6-digit PIN" required>
+                                       class="sa-input" placeholder="6-digit PIN">
                             </div>
 
                         </div>
@@ -275,21 +289,21 @@ $selectedFees = is_array($selected_exempted_fees ?? null) ? array_keys($selected
                                 <label>Previous Class <span class="req">*</span></label>
                                 <input type="text" name="pre_class"
                                        value="<?= htmlspecialchars($student_data['Pre Class'] ?? '', ENT_QUOTES, 'UTF-8') ?>"
-                                       class="sa-input" required>
+                                       class="sa-input">
                             </div>
 
                             <div class="sa-field">
                                 <label>Previous School Name <span class="req">*</span></label>
                                 <input type="text" name="pre_school"
                                        value="<?= htmlspecialchars($student_data['Pre School'] ?? '', ENT_QUOTES, 'UTF-8') ?>"
-                                       class="sa-input" required>
+                                       class="sa-input">
                             </div>
 
                             <div class="sa-field">
                                 <label>Marks % <span class="req">*</span></label>
                                 <input type="text" name="pre_marks"
                                        value="<?= htmlspecialchars($student_data['Pre Marks'] ?? '', ENT_QUOTES, 'UTF-8') ?>"
-                                       class="sa-input" placeholder="e.g. 85%" required>
+                                       class="sa-input" placeholder="e.g. 85%">
                             </div>
 
                         </div>
@@ -313,7 +327,7 @@ $selectedFees = is_array($selected_exempted_fees ?? null) ? array_keys($selected
                                 $isOther = ($rel !== '' && !in_array($rel, $stdReligions, true));
                                 ?>
                                 <select name="religion" id="religion" class="sa-select"
-                                        onchange="toggleOtherReligion(this)" required>
+                                        onchange="toggleOtherReligion(this)">
                                     <option value="">Select Religion</option>
                                     <?php foreach ($stdReligions as $r): ?>
                                     <option value="<?= $r ?>" <?= ($rel === $r || ($isOther && $r === 'Other')) ? 'selected' : '' ?>><?= $r ?></option>
@@ -329,7 +343,7 @@ $selectedFees = is_array($selected_exempted_fees ?? null) ? array_keys($selected
                                 <label>Nationality <span class="req">*</span></label>
                                 <input type="text" name="nationality"
                                        value="<?= htmlspecialchars($student_data['Nationality'] ?? '', ENT_QUOTES, 'UTF-8') ?>"
-                                       class="sa-input" placeholder="e.g. Indian" required>
+                                       class="sa-input" placeholder="e.g. Indian">
                             </div>
 
                         </div>

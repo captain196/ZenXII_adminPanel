@@ -455,7 +455,7 @@ $can_manage = function_exists('has_permission') ? has_permission('Red Flags', 'm
     border-bottom: 1px solid var(--rf-primary);
     align-items: center; gap: 12px;
 }
-.rf-bulk-bar.show { display: flex; }
+.rf-bulk-bar.show { display: flex !important; }
 .rf-bulk-count { font-size: 13px; font-weight: 700; color: var(--rf-primary); }
 
 /* ── Student Drill-Down ─────────────────────────────────────── */

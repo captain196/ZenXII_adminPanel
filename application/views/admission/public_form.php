@@ -532,6 +532,17 @@ $monogram = strtoupper(mb_substr(trim((string)$displayName), 0, 1) ?: 'S');
                     <h2>Review &amp; submit</h2><p>Please confirm your details before submitting.</p></div>
                 <div class="review" id="pfReview" aria-live="polite"></div>
                 <div id="pfReviewAtt"></div>
+
+                <!-- Phase E — SHARED declarations partial, the same file the CRM
+                     walk-in form includes. DECLARATIONS ONLY: this controller is
+                     unauthenticated (Admission_public extends CI_Controller), so
+                     it can never create an entitlement and must never be able to.
+                     These answers ride on the application and pre-fill the staff
+                     capture component at admission time, where the one canonical
+                     Entitlement_service creates the real entitlement under
+                     maker-checker. -->
+                <?php $decl_prefix = 'decl_'; include APPPATH . 'views/_entitlement_declarations.php'; ?>
+
                 <label class="consent" for="consentCheck">
                     <input type="checkbox" name="consent" id="consentCheck" required aria-required="true">
                     <span>I confirm the information above is correct and consent to <strong><?= $esc($displayName) ?></strong> storing and processing this application data for admission purposes. I understand my contact details may be used to communicate about this application.</span>

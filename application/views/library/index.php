@@ -50,7 +50,7 @@ $can_manage = function_exists('has_permission') ? has_permission('Library','mana
 .lib-form-group input:focus,.lib-form-group select:focus{border-color:var(--gold);outline:none}
 .lib-form-row{display:grid;grid-template-columns:1fr 1fr;gap:14px}
 .lib-modal-bg{position:fixed;top:0;left:0;right:0;bottom:0;background:rgba(0,0,0,.55);z-index:9999;display:none;align-items:center;justify-content:center}
-.lib-modal-bg.show{display:flex}
+.lib-modal-bg.show{display:flex !important}
 .lib-modal{background:var(--bg2);border:1px solid var(--border);border-radius:var(--r);width:560px;max-width:95vw;max-height:85vh;overflow-y:auto;padding:24px}
 .lib-modal-title{font-family:var(--font-b);font-size:16px;font-weight:700;color:var(--t1);margin-bottom:18px;display:flex;align-items:center;justify-content:space-between}
 .lib-modal-close{cursor:pointer;color:var(--t3);font-size:1.2rem;background:none;border:none}
@@ -386,7 +386,7 @@ document.addEventListener('DOMContentLoaded', function(){
         if(r.status!=='success'||!r.students.length){ $('#issStudentResults').html('<div class="lib-search-item" style="color:var(--t3);cursor:default">No students found</div>').addClass('show'); return; }
         var html = '';
         r.students.forEach(function(s){
-          html += '<div class="lib-search-item" data-id="'+s.id+'" data-name="'+escH(s.name)+'">'+escH(s.name)+' <small style="opacity:.6">'+escH(s.id)+'</small> <small>'+escH(s.class)+' '+escH(s.section||'')+'</small></div>';
+          html += '<div class="lib-search-item" data-id="'+s.id+'" data-name="'+escH(s.name)+'">'+escH(s.name)+' <small style="opacity:.6">'+escH(s.id)+'</small>'+(s.srNo?' <small style="opacity:.75">SR '+escH(s.srNo)+'</small>':'')+' <small>'+escH(s.class)+' '+escH(s.section||'')+'</small></div>';
         });
         $('#issStudentResults').html(html).addClass('show');
       }).fail(function(xhr){ $('#issStudentResults').html('<div class="lib-search-item" style="color:var(--rose);cursor:default">Search failed: '+(xhr.responseJSON?xhr.responseJSON.message:xhr.statusText)+'</div>').addClass('show'); });

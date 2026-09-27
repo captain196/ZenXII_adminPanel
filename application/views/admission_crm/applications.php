@@ -348,6 +348,24 @@ html { font-size:16px !important; }
             </div>
             <div class="ac-modal-body">
                 <p id="secPickStudent" style="font-size:13px;color:var(--t2);margin-bottom:14px;"></p>
+
+                <!-- Phase 9.1 (2026-08-13) — SRNO is now MANDATORY, automatic, and
+                     server-allocated (school-scoped sequential counter,
+                     Sr_no_service::allocateNext()) — no operator input exists
+                     anymore; this is a preview-only notice, never trusted for
+                     allocation. APAAR remains a separate, optional, operator-
+                     entered identity attribute — distinct from both Student ID
+                     (assigned automatically on enroll) and SRNO. -->
+                <div class="form-group" style="margin-bottom:10px;">
+                    <label style="font-size:12px;font-weight:600;color:var(--t2);">SR Number</label>
+                    <p style="font-size:12px;color:var(--t3);margin:2px 0 0;"><i class="fa fa-magic"></i> Will be assigned automatically on admission — the school's next sequential register number.</p>
+                </div>
+                <div class="form-group" style="margin-bottom:14px;">
+                    <label for="enrollApaarId" style="font-size:12px;font-weight:600;color:var(--t2);">APAAR ID <span style="font-weight:400;">(optional — 12-digit government student ID; leave blank if not yet available)</span></label>
+                    <input type="text" class="form-control input-sm" id="enrollApaarId" placeholder="e.g. 1234 5678 9012" maxlength="14" inputmode="numeric" autocomplete="off">
+                    <p id="enrollApaarIdError" style="display:none;font-size:11px;color:#dc2626;margin:4px 0 0;">An APAAR ID is 12 digits. Check the number and try again, or leave it blank.</p>
+                </div>
+
                 <div id="secPickList" style="display:flex;flex-direction:column;gap:10px;"></div>
                 <p id="secPickEmpty" style="display:none;font-size:13px;color:#dc2626;margin-top:12px;">No sections exist yet for this class. Create one in Classes → Sections first.</p>
             </div>
@@ -866,6 +884,11 @@ function openSectionPicker(detail, suggested) {
     var listEl = document.getElementById('secPickList');
     var emptyEl = document.getElementById('secPickEmpty');
     document.getElementById('secPickStudent').textContent = 'Enrolling ' + _enrollCtx.student + ' into ' + _enrollCtx.cls;
+    // Phase 9 — reset per-enrollment identity fields; never carry a stale
+    // value from a previous enrollment into this one. (SRNO has no input
+    // to reset since Phase 9.1 — it is server-allocated, not entered here.)
+    document.getElementById('enrollApaarId').value = '';
+    document.getElementById('enrollApaarIdError').style.display = 'none';
 
     if (!detail || detail.length === 0) {
         listEl.innerHTML = '';
@@ -908,12 +931,29 @@ function closeSectionPicker() {
 }
 
 function confirmSectionPick(section) {
+    // Phase 9.1 — optional APAAR ID only, read at confirm time (not reset
+    // until openSectionPicker() runs again for the next enrollment). SRNO
+    // is no longer read from the client at all — it is server-allocated
+    // inside Sis::enroll_student() via Sr_no_service::allocateNext();
+    // sending one here would have zero effect even if a stale client did.
+    var apaarRaw = (document.getElementById('enrollApaarId').value || '').trim();
+    var apaarNorm = apaarRaw.replace(/[\s\-]/g, '');
+    if (apaarRaw !== '' && !/^[0-9]{12}$/.test(apaarNorm)) {
+        // Format-only client-side check, mirrored server-side by
+        // Apaar_service::normalize() — never trusted alone; the server
+        // re-validates and is authoritative. Blank remains valid; this
+        // only blocks a non-blank, malformed value from being submitted.
+        document.getElementById('enrollApaarIdError').style.display = 'block';
+        return;
+    }
+    document.getElementById('enrollApaarIdError').style.display = 'none';
+
     closeSectionPicker();
     setBusy(true, 'Enrolling ' + _enrollCtx.student + ' into ' + _enrollCtx.cls + ' / ' + section + '…');
     fetch(BASE + 'admission_crm/enroll_student', {
         method: 'POST',
         headers: { 'Content-Type': 'application/x-www-form-urlencoded', 'X-Requested-With': 'XMLHttpRequest' },
-        body: new URLSearchParams({ id: _enrollCtx.id, section: section }).toString()
+        body: new URLSearchParams({ id: _enrollCtx.id, section: section, apaar_id: apaarNorm }).toString()
     })
     .then(function(r) { return r.json(); })
     .then(function(res) {
@@ -926,6 +966,8 @@ function confirmSectionPick(section) {
             if (res.student_id && res.password) {
                 showEnrollmentCredentials({
                     studentId:   res.student_id,
+                    srNo:        res.sr_no || '',
+                    admissionNo: res.admission_no || '',
                     studentName: _enrollCtx.student,
                     password:    res.password,
                     cls:         _enrollCtx.cls,
@@ -933,6 +975,26 @@ function confirmSectionPick(section) {
                     authCreated: res.auth_created,
                     authError:   res.auth_error || ''
                 });
+                // Phase E — the application just became a real student, which
+                // is the first moment an entitlement can legitimately exist.
+                // Mount the SAME shared capture component the direct-admission
+                // screen uses and pre-fill it from what the family declared on
+                // the application, so the operator confirms rather than retypes.
+                if (window.ENTCAP) {
+                    ENTCAP.mount({ studentId: res.student_id, klass: _enrollCtx.cls, section: section });
+                    var decl = (_enrollCtx.app && _enrollCtx.app.entitlementDeclarations) || null;
+                    if (decl) {
+                        ENTCAP.prefill({
+                            sibling:    !!decl.sibling,
+                            rte:        !!decl.rte,
+                            staff_ward: !!decl.staffWard,
+                            transport:  !!decl.transport,
+                            hostel:     !!decl.hostel
+                        });
+                    }
+                    var cap = document.getElementById('entcapBlock');
+                    if (cap) cap.scrollIntoView({ behavior: 'smooth', block: 'center' });
+                }
             }
             // Non-fatal post-enroll issues (fees didn't assign / app-sync
             // didn't fire) — surface them so the operator can act.
@@ -976,6 +1038,21 @@ function showEnrollmentCredentials(c) {
       +         '<code style="font-family:var(--font-m, monospace);font-size:14px;color:#1f2937;flex:1;text-align:right;font-weight:600;" id="credUid">' + esc(c.studentId) + '</code>'
       +         '<button class="ac-btn ac-btn-ghost ac-btn-sm" onclick="copyCred(\'credUid\')" title="Copy User ID"><i class="fa fa-clipboard"></i></button>'
       +       '</div>'
+      +       // Phase 9.1 — SRNO beside Student ID, system-generated, not editable here.
+      +       (c.srNo
+                 ? '<div style="display:flex;justify-content:space-between;align-items:center;gap:10px;margin-bottom:8px;">'
+                 +   '<span style="font-size:12px;color:#6b7280;">SR Number</span>'
+                 +   '<code style="font-family:var(--font-m, monospace);font-size:14px;color:#1f2937;flex:1;text-align:right;font-weight:600;">' + esc(c.srNo) + '</code>'
+                 + '</div>'
+                 : '')
+      +       // Phase 10.1 — Admission Number (YYYY/CLASS/XXX), a DISTINCT
+      +       // admission-event identifier — not the SR Number, not the Student ID.
+      +       (c.admissionNo
+                 ? '<div style="display:flex;justify-content:space-between;align-items:center;gap:10px;margin-bottom:8px;">'
+                 +   '<span style="font-size:12px;color:#6b7280;">Admission Number</span>'
+                 +   '<code style="font-family:var(--font-m, monospace);font-size:14px;color:#1f2937;flex:1;text-align:right;font-weight:600;">' + esc(c.admissionNo) + '</code>'
+                 + '</div>'
+                 : '')
       +       '<div style="display:flex;justify-content:space-between;align-items:center;gap:10px;">'
       +         '<span style="font-size:12px;color:#6b7280;">Password</span>'
       +         '<code style="font-family:var(--font-m, monospace);font-size:14px;color:#1f2937;flex:1;text-align:right;font-weight:600;" id="credPwd">' + esc(c.password) + '</code>'
@@ -1079,3 +1156,9 @@ function showAlert(msg,type){var el=document.getElementById('pageAlert');el.clas
 // quotes and so was unsafe in attribute context (C6). Do NOT revert.
 function esc(s){return String(s==null?'':s).replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;').replace(/"/g,'&quot;').replace(/'/g,'&#39;');}
 </script>
+
+<!-- Phase E — SHARED entitlement capture component, the SAME file the
+     direct-admission screen includes. Rendered once per page; bound to a
+     student by ENTCAP.mount() only after an application is converted, since
+     an entitlement is student-scoped and no student exists before that. -->
+<?php $ec_source = "crm_walkin"; include APPPATH . "views/_entitlements_capture.php"; ?>

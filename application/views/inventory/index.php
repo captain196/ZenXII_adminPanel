@@ -39,7 +39,7 @@ $can_manage = function_exists('has_permission') ? has_permission('Inventory','ma
 .inv-form-group input,.inv-form-group select,.inv-form-group textarea{width:100%;padding:8px 10px;border:1px solid var(--border);border-radius:6px;background:var(--bg);color:var(--t1);font-size:13px;font-family:var(--font-b)}
 .inv-form-group input:focus,.inv-form-group select:focus{border-color:var(--gold);outline:none}
 .inv-form-row{display:grid;grid-template-columns:1fr 1fr;gap:14px}
-.inv-modal-bg{position:fixed;top:0;left:0;right:0;bottom:0;background:rgba(0,0,0,.55);z-index:9999;display:none;align-items:center;justify-content:center} .inv-modal-bg.show{display:flex}
+.inv-modal-bg{position:fixed;top:0;left:0;right:0;bottom:0;background:rgba(0,0,0,.55);z-index:9999;display:none;align-items:center;justify-content:center} .inv-modal-bg.show{display:flex !important}
 .inv-modal{background:var(--bg2);border:1px solid var(--border);border-radius:var(--r);width:520px;max-width:95vw;max-height:85vh;overflow-y:auto;padding:24px}
 .inv-modal-title{font-family:var(--font-b);font-size:16px;font-weight:700;color:var(--t1);margin-bottom:18px;display:flex;align-items:center;justify-content:space-between}
 .inv-modal-close{cursor:pointer;color:var(--t3);font-size:1.2rem;background:none;border:none}

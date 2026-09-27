@@ -124,6 +124,47 @@ $defaultPic = base_url('tools/image/default-school.jpeg');
 }
 .tp-chip--mono { font-family: var(--font-m); }
 .tp-chip i { color: var(--tp-gold); font-size: 11px; }
+.tp-chip--inactive { background: rgba(197,60,60,.12); border-color: rgba(197,60,60,.30); color: #c53c3c; }
+.tp-chip--inactive i { color: #c53c3c; }
+.tp-rehire-btn {
+    display: inline-flex; align-items: center; gap: 6px;
+    padding: 5px 14px; border-radius: 20px; border: none;
+    background: var(--tp-gold); color: #fff; font-size: 12px; font-weight: 700;
+    font-family: var(--font-b); cursor: pointer;
+}
+.tp-rehire-btn:hover { opacity: .88; }
+
+/* ══════════════════════════════════════════
+   REHIRE MODAL
+══════════════════════════════════════════ */
+.tp-modal-overlay {
+    display: none; position: fixed; inset: 0; background: rgba(20,14,10,.55);
+    z-index: 1000; align-items: center; justify-content: center; padding: 20px;
+}
+.tp-modal-overlay.tp-modal-open { display: flex; }
+.tp-modal {
+    background: var(--tp-card); border-radius: var(--tp-r); border: 1px solid var(--tp-border);
+    width: 100%; max-width: 480px; max-height: 90vh; overflow-y: auto;
+    box-shadow: 0 20px 60px rgba(0,0,0,.3);
+}
+.tp-modal-head {
+    display: flex; align-items: center; justify-content: space-between;
+    padding: 16px 20px; border-bottom: 1px solid var(--tp-border);
+}
+.tp-modal-head h4 { margin: 0; font-size: 15px; color: var(--tp-t1); font-family: var(--font-b); }
+.tp-modal-close { background: none; border: none; font-size: 18px; color: var(--tp-t3); cursor: pointer; }
+.tp-modal-body { padding: 18px 20px; display: flex; flex-direction: column; gap: 14px; }
+.tp-modal-field label { display: block; font-size: 11px; text-transform: uppercase; letter-spacing: .04em; color: var(--tp-t3); margin-bottom: 5px; }
+.tp-modal-field input[type="text"], .tp-modal-field input[type="date"], .tp-modal-field select, .tp-modal-field textarea {
+    width: 100%; padding: 8px 10px; border: 1px solid var(--tp-border); border-radius: 8px;
+    font-size: 13px; color: var(--tp-t1); background: #fff; font-family: var(--font-b);
+}
+.tp-modal-hint { font-size: 11px; color: var(--tp-t3); margin-top: 4px; }
+.tp-modal-foot { padding: 14px 20px; border-top: 1px solid var(--tp-border); display: flex; justify-content: flex-end; gap: 10px; }
+.tp-modal-btn { padding: 8px 18px; border-radius: 8px; border: none; font-size: 13px; font-weight: 700; cursor: pointer; font-family: var(--font-b); }
+.tp-modal-btn--cancel { background: var(--tp-dim); color: var(--tp-t2); }
+.tp-modal-btn--submit { background: var(--tp-gold); color: #fff; }
+.tp-modal-error { display: none; background: rgba(197,60,60,.1); color: #c53c3c; border-radius: 8px; padding: 8px 12px; font-size: 12px; }
 
 /* Stats strip */
 .tp-stats {
@@ -185,6 +226,43 @@ $defaultPic = base_url('tools/image/default-school.jpeg');
     color: #ffffff;
 }
 .tp-tab i { font-size: 12px; }
+
+/* ══════════════════════════════════════════
+   EMPLOYMENT HISTORY
+══════════════════════════════════════════ */
+.tp-hist-episode { margin-bottom: 22px; }
+.tp-hist-episode-head {
+    font-size: 13px; font-weight: 700; color: var(--tp-t1);
+    padding-bottom: 8px; border-bottom: 1px solid var(--tp-border); margin-bottom: 10px;
+}
+.tp-hist-episode-range { font-weight: 400; color: var(--tp-t2); font-size: 12px; }
+.tp-hist-episode-body { display: flex; flex-direction: column; gap: 8px; }
+.tp-hist-card {
+    border: 1px solid var(--tp-border); border-radius: var(--tp-r);
+    padding: 10px 14px; background: var(--tp-dim);
+}
+.tp-hist-card-head { display: flex; justify-content: space-between; align-items: baseline; gap: 10px; }
+.tp-hist-type { font-size: 13px; font-weight: 700; color: var(--tp-gold); }
+.tp-hist-date { font-size: 12px; color: var(--tp-t2); white-space: nowrap; }
+.tp-hist-change { font-size: 13px; color: var(--tp-t1); margin-top: 4px; }
+.tp-hist-meta { font-size: 11px; color: var(--tp-t3); margin-top: 4px; }
+.tp-hist-reason { font-size: 12px; color: var(--tp-t2); margin-top: 6px; font-style: italic; }
+.tp-hist-current {
+    display: grid; grid-template-columns: repeat(auto-fit, minmax(150px, 1fr));
+    gap: 14px; background: var(--tp-dim); border: 1px solid var(--tp-border);
+    border-radius: var(--tp-r); padding: 16px 18px; margin-bottom: 20px;
+}
+.tp-hist-current-item { display: flex; flex-direction: column; gap: 4px; }
+.tp-hist-current-lbl { font-size: 10px; letter-spacing: .04em; text-transform: uppercase; color: var(--tp-t3); }
+.tp-hist-current-val { font-size: 13px; font-weight: 600; color: var(--tp-t1); }
+.tp-hist-status-badge {
+    display: inline-block; padding: 2px 10px; border-radius: 20px;
+    font-size: 11px; font-weight: 700;
+}
+.tp-hist-status-badge--active { background: rgba(46, 160, 67, .15); color: #1f8a3b; }
+.tp-hist-status-badge--inactive { background: rgba(200, 60, 60, .15); color: #c53c3c; }
+.tp-hist-loading { color: var(--tp-t3); font-size: 13px; padding: 16px 0; }
+.tp-hist-loading i { margin-right: 6px; }
 
 /* ══════════════════════════════════════════
    PANELS
@@ -383,6 +461,12 @@ $defaultPic = base_url('tools/image/default-school.jpeg');
                     <?php if ($tid): ?>
                     <span class="tp-chip tp-chip--mono"><i class="fa fa-id-badge"></i> <?= $tid ?></span>
                     <?php endif; ?>
+                    <?php if (strtolower((string) ($t['status'] ?? $t['Status'] ?? 'active')) === 'inactive'): ?>
+                    <span class="tp-chip tp-chip--inactive"><i class="fa fa-ban"></i> Inactive / Separated</span>
+                    <button type="button" class="tp-rehire-btn" onclick="tpOpenRehireModal()">
+                        <i class="fa fa-undo"></i> Rehire Staff
+                    </button>
+                    <?php endif; ?>
                 </div>
 
                 <!-- Quick stats strip -->
@@ -431,6 +515,9 @@ $defaultPic = base_url('tools/image/default-school.jpeg');
         </button>
         <button class="tp-tab" data-target="tp-docs">
             <i class="fa fa-folder-open"></i> Documents
+        </button>
+        <button class="tp-tab" data-target="tp-history">
+            <i class="fa fa-history"></i> History
         </button>
     </div>
 
@@ -517,6 +604,15 @@ $defaultPic = base_url('tools/image/default-school.jpeg');
                     <span class="tp-lbl">School</span>
                     <span class="tp-val"><?= tp_val($t['School Name'] ?? '') ?></span>
                 </div> -->
+                <div class="tp-info-row">
+                    <span class="tp-lbl">Reporting Manager</span>
+                    <span class="tp-val">
+                        <?= isset($reportingManagerName) ? tp_val($reportingManagerName) : tp_val('') ?>
+                        <?php if (!empty($reportingManagerName) && (($reportingManagerStatus ?? '') === 'Inactive')): ?>
+                        <i class="fa fa-exclamation-triangle" style="color:#c53c3c;font-size:11px;margin-left:6px;" title="This Reporting Manager is currently Inactive. HR should review and reassign via Staff Edit."></i>
+                        <?php endif; ?>
+                    </span>
+                </div>
                 <div class="tp-info-row">
                     <span class="tp-lbl">Teacher ID</span>
                     <span class="tp-val tp-val--mono"><?= tp_val($t['User ID'] ?? '') ?></span>
@@ -690,7 +786,108 @@ $defaultPic = base_url('tools/image/default-school.jpeg');
             <?php endif; ?>
         </div>
 
+        <!-- ── Employment History ── -->
+        <div class="tp-panel" id="tp-history">
+            <div class="tp-panel-head"><i class="fa fa-history"></i> Employment History</div>
+
+            <!-- Current-state summary — rendered server-side from the SAME
+                 $t data every other tab already uses, so it's never empty
+                 even before the history fetch (or if it never returns). -->
+            <div class="tp-hist-current">
+                <div class="tp-hist-current-item">
+                    <span class="tp-hist-current-lbl">Position</span>
+                    <span class="tp-hist-current-val"><?= tp_val($t['Position'] ?? '') ?></span>
+                </div>
+                <div class="tp-hist-current-item">
+                    <span class="tp-hist-current-lbl">Department</span>
+                    <span class="tp-hist-current-val"><?= tp_val($t['Department'] ?? $t['department'] ?? '') ?></span>
+                </div>
+                <div class="tp-hist-current-item">
+                    <span class="tp-hist-current-lbl">Employment Type</span>
+                    <span class="tp-hist-current-val"><?= tp_val($t['Employment Type'] ?? '') ?></span>
+                </div>
+                <div class="tp-hist-current-item">
+                    <span class="tp-hist-current-lbl">Reporting Manager</span>
+                    <span class="tp-hist-current-val">
+                        <?= isset($reportingManagerName) ? tp_val($reportingManagerName) : tp_val('') ?>
+                        <?php if (!empty($reportingManagerName) && (($reportingManagerStatus ?? '') === 'Inactive')): ?>
+                        <i class="fa fa-exclamation-triangle" style="color:#c53c3c;font-size:11px;margin-left:6px;" title="This Reporting Manager is currently Inactive. HR should review and reassign via Staff Edit."></i>
+                        <?php endif; ?>
+                    </span>
+                </div>
+                <div class="tp-hist-current-item">
+                    <span class="tp-hist-current-lbl">Status</span>
+                    <span class="tp-hist-current-val">
+                        <span class="tp-hist-status-badge tp-hist-status-badge--<?= strtolower($t['status'] ?? $t['Status'] ?? 'active') === 'active' ? 'active' : 'inactive' ?>">
+                            <?= tp_val($t['status'] ?? $t['Status'] ?? '') ?>
+                        </span>
+                    </span>
+                </div>
+            </div>
+
+            <div id="tpHistoryLoading" class="tp-hist-loading"><i class="fa fa-circle-o-notch fa-spin"></i> Loading history…</div>
+            <div id="tpHistoryEmpty" class="tp-empty-docs" style="display:none;">
+                <i class="fa fa-history"></i>
+                <p id="tpHistoryEmptyMsg"></p>
+            </div>
+            <div id="tpHistoryEpisodes"></div>
+        </div>
+
     </div><!-- /.tp-panel-wrap -->
+
+    <!-- ══════════════════════════════════════════
+         REHIRE MODAL — only ever shown when status is Inactive
+         (the trigger button itself is server-gated the same way);
+         server-side validation in Staff::set_status() is the actual
+         authorization/eligibility boundary, this is UX only.
+    ══════════════════════════════════════════ -->
+    <div class="tp-modal-overlay" id="tpRehireOverlay">
+        <div class="tp-modal">
+            <div class="tp-modal-head">
+                <h4><i class="fa fa-undo"></i> Rehire Staff</h4>
+                <button type="button" class="tp-modal-close" onclick="tpCloseRehireModal()">&times;</button>
+            </div>
+            <div class="tp-modal-body">
+                <div class="tp-modal-error" id="tpRehireError"></div>
+                <p style="font-size:12px;color:var(--tp-t2);margin:0;">
+                    This starts a new employment episode for <strong><?= $name ?></strong>. Their previous
+                    employment history, including the separation record, remains permanently on file.
+                </p>
+                <div class="tp-modal-field">
+                    <label>Rehire Effective Date</label>
+                    <input type="date" id="tpRehireDate" value="<?= date('Y-m-d') ?>">
+                </div>
+                <div class="tp-modal-field">
+                    <label>Position <span style="color:var(--tp-t3);font-weight:400;">(leave as-is to keep unchanged)</span></label>
+                    <input type="text" id="tpRehirePosition" placeholder="<?= tp_val($t['Position'] ?? '') ?>">
+                </div>
+                <div class="tp-modal-field">
+                    <label>Department</label>
+                    <select id="tpRehireDepartment">
+                        <option value="">-- Keep unchanged --</option>
+                    </select>
+                </div>
+                <div class="tp-modal-field">
+                    <label>Employment Type</label>
+                    <input type="text" id="tpRehireEmpType" placeholder="<?= tp_val($t['Employment Type'] ?? '') ?>">
+                </div>
+                <div class="tp-modal-field">
+                    <label>Reporting Manager</label>
+                    <select id="tpRehireManager">
+                        <option value="">-- Keep unchanged --</option>
+                    </select>
+                </div>
+                <div class="tp-modal-field">
+                    <label>Reason / Notes</label>
+                    <textarea id="tpRehireReason" rows="2" placeholder="e.g. Returning after resignation"></textarea>
+                </div>
+            </div>
+            <div class="tp-modal-foot">
+                <button type="button" class="tp-modal-btn tp-modal-btn--cancel" onclick="tpCloseRehireModal()">Cancel</button>
+                <button type="button" class="tp-modal-btn tp-modal-btn--submit" id="tpRehireSubmitBtn" onclick="tpSubmitRehire()">Rehire</button>
+            </div>
+        </div>
+    </div>
 
 </div><!-- /.tp-wrap -->
 </div><!-- /.content-wrapper -->
@@ -711,6 +908,211 @@ $defaultPic = base_url('tools/image/default-school.jpeg');
             if (target) target.classList.add('active');
         });
     });
+})();
+
+/* ── Employment History (lazy-loaded on first tab activation) ── */
+(function () {
+    var staffId = <?= json_encode($t['User ID'] ?? '') ?>;
+    var loaded = false;
+    var historyTab = document.querySelector('.tp-tab[data-target="tp-history"]');
+    if (!historyTab || !staffId) return;
+
+    var EVENT_LABELS = {
+        'JOINED': 'Joined',
+        'POSITION_CHANGED': 'Position changed',
+        'DEPARTMENT_CHANGED': 'Department changed',
+        'EMPLOYMENT_TYPE_CHANGED': 'Employment Type changed',
+        'REPORTING_MANAGER_CHANGED': 'Reporting Manager changed',
+        'SEPARATED': 'Separated',
+        'REACTIVATED': 'Reactivated',
+        'REHIRED': 'Rehired'
+    };
+
+    function esc(s) {
+        var d = document.createElement('div');
+        d.textContent = (s === null || s === undefined) ? '' : String(s);
+        return d.innerHTML;
+    }
+    function fmtDate(s) {
+        if (!s) return '—';
+        return esc(s);
+    }
+
+    function renderEventCard(evt, names, separations) {
+        var label = EVENT_LABELS[evt.eventType] || evt.eventType;
+        var changeLine = '';
+        if (evt.eventType === 'JOINED') {
+            var m = evt.metadata || {};
+            changeLine = 'Position: ' + esc(m.position || '—') + ' · Department: ' + esc(m.department || '—') +
+                ' · Employment Type: ' + esc(m.employmentType || '—');
+        } else if (evt.fromValue || evt.toValue) {
+            changeLine = esc(evt.fromValue || '—') + ' &rarr; ' + esc(evt.toValue || '—');
+        }
+        var who = evt.changed_by ? (names[evt.changed_by] || evt.changed_by) : '—';
+        var reasonLine = '';
+        if (evt.eventType === 'SEPARATED' && evt.hasOwnProperty('reason')) {
+            reasonLine = evt.reason ? ('<div class="tp-hist-reason"><i class="fa fa-lock"></i> ' + esc(evt.reason) + '</div>') : '';
+        }
+        return '' +
+            '<div class="tp-hist-card">' +
+              '<div class="tp-hist-card-head">' +
+                '<span class="tp-hist-type">' + esc(label) + '</span>' +
+                '<span class="tp-hist-date">' + fmtDate(evt.effectiveFrom) + '</span>' +
+              '</div>' +
+              (changeLine ? '<div class="tp-hist-change">' + changeLine + '</div>' : '') +
+              '<div class="tp-hist-meta">By ' + esc(who) + '</div>' +
+              reasonLine +
+            '</div>';
+    }
+
+    function showEmpty(message) {
+        document.getElementById('tpHistoryEmpty').style.display = 'block';
+        document.getElementById('tpHistoryEmptyMsg').textContent = message;
+    }
+
+    function renderEpisodes(data) {
+        var episodesEl = document.getElementById('tpHistoryEpisodes');
+        episodesEl.innerHTML = '';
+
+        if (!data.hasHistory) {
+            showEmpty('No Employment History is available for this staff member yet — the current profile data above reflects their present state.');
+            return;
+        }
+
+        // Group events by episode using each event's effectiveFrom against episode [start,end] windows.
+        var episodes = data.episodes && data.episodes.length ? data.episodes : [{ start: null, end: null, startEvent: 'JOINED' }];
+        var html = '';
+        for (var i = episodes.length - 1; i >= 0; i--) {
+            var ep = episodes[i];
+            var rangeLabel = fmtDate(ep.start) + ' &rarr; ' + (ep.end ? fmtDate(ep.end) : 'Current');
+            var epEvents = data.events.filter(function (e) {
+                if (ep.start && e.effectiveFrom < ep.start) return false;
+                if (ep.end && e.effectiveFrom > ep.end) return false;
+                return true;
+            }).slice().reverse();
+            html += '<div class="tp-hist-episode">' +
+                        '<div class="tp-hist-episode-head"><i class="fa fa-briefcase"></i> Employment Episode ' + (i + 1) + ' &nbsp;<span class="tp-hist-episode-range">' + rangeLabel + '</span></div>' +
+                        '<div class="tp-hist-episode-body">' +
+                            epEvents.map(function (e) { return renderEventCard(e, data.changedByNames || {}, data.separations || []); }).join('') +
+                        '</div>' +
+                    '</div>';
+        }
+        episodesEl.innerHTML = html;
+    }
+
+    function load() {
+        if (loaded) return;
+        loaded = true;
+        fetch('<?= base_url('staff/get_employment_history/') ?>' + encodeURIComponent(staffId), { headers: { 'X-Requested-With': 'XMLHttpRequest' } })
+            .then(function (r) { return r.json(); })
+            .then(function (resp) {
+                document.getElementById('tpHistoryLoading').style.display = 'none';
+                if (resp.status !== 'success') {
+                    showEmpty(resp.message || 'Could not load employment history.');
+                    return;
+                }
+                renderEpisodes(resp);
+            })
+            .catch(function () {
+                document.getElementById('tpHistoryLoading').style.display = 'none';
+                showEmpty('Could not load employment history.');
+            });
+    }
+
+    historyTab.addEventListener('click', load);
+})();
+
+/* ── Rehire Workflow ── */
+(function () {
+    var staffId = <?= json_encode($t['User ID'] ?? '') ?>;
+    var ownStaffId = staffId;
+    var deptLoaded = false, mgrLoaded = false;
+
+    window.tpOpenRehireModal = function () {
+        document.getElementById('tpRehireOverlay').classList.add('tp-modal-open');
+        document.getElementById('tpRehireError').style.display = 'none';
+        if (!deptLoaded) {
+            deptLoaded = true;
+            fetch('<?= base_url("hr/get_departments") ?>')
+                .then(function (r) { return r.json(); })
+                .then(function (r) {
+                    if (r.status !== 'success' || !r.departments) return;
+                    var sel = document.getElementById('tpRehireDepartment');
+                    r.departments.forEach(function (d) {
+                        var opt = document.createElement('option');
+                        opt.value = d.name || d; opt.textContent = d.name || d;
+                        sel.appendChild(opt);
+                    });
+                }).catch(function () {});
+        }
+        if (!mgrLoaded) {
+            mgrLoaded = true;
+            fetch('<?= base_url("hr/get_staff_list") ?>', { headers: { 'X-Requested-With': 'XMLHttpRequest' } })
+                .then(function (r) { return r.json(); })
+                .then(function (resp) {
+                    var staff = resp.staff || (resp.data && resp.data.staff) || [];
+                    var sel = document.getElementById('tpRehireManager');
+                    staff.forEach(function (s) {
+                        if (s.id === ownStaffId) return; // no self-report
+                        var opt = document.createElement('option');
+                        opt.value = s.id;
+                        opt.textContent = s.name + (s.position ? ' — ' + s.position : '');
+                        sel.appendChild(opt);
+                    });
+                }).catch(function () {});
+        }
+    };
+
+    window.tpCloseRehireModal = function () {
+        document.getElementById('tpRehireOverlay').classList.remove('tp-modal-open');
+    };
+
+    window.tpSubmitRehire = function () {
+        var errEl = document.getElementById('tpRehireError');
+        errEl.style.display = 'none';
+        var btn = document.getElementById('tpRehireSubmitBtn');
+        btn.disabled = true;
+        var originalHtml = btn.innerHTML;
+        btn.innerHTML = '<i class="fa fa-spinner fa-spin"></i> Rehiring…';
+
+        var body = new URLSearchParams();
+        body.append('status', 'Active');
+        body.append('effective_date', document.getElementById('tpRehireDate').value || '');
+        body.append('reason', document.getElementById('tpRehireReason').value || '');
+        var pos = document.getElementById('tpRehirePosition').value.trim();
+        if (pos !== '') body.append('position', pos);
+        var dept = document.getElementById('tpRehireDepartment').value;
+        if (dept !== '') body.append('department', dept);
+        var emp = document.getElementById('tpRehireEmpType').value.trim();
+        if (emp !== '') body.append('employment_type', emp);
+        var mgr = document.getElementById('tpRehireManager').value;
+        if (mgr !== '') body.append('reporting_manager_id', mgr);
+        body.append('<?= $this->security->get_csrf_token_name() ?>', '<?= $this->security->get_csrf_hash() ?>');
+
+        fetch('<?= base_url("staff/set_status/") ?>' + encodeURIComponent(staffId), {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
+            body: body.toString(),
+            credentials: 'same-origin'
+        })
+        .then(function (r) { return r.json().catch(function () { return { status: 'error', message: 'Server returned non-JSON.' }; }); })
+        .then(function (res) {
+            btn.disabled = false;
+            btn.innerHTML = originalHtml;
+            if (!res || res.status !== 'success') {
+                errEl.textContent = (res && res.message) ? res.message : 'Rehire failed.';
+                errEl.style.display = 'block';
+                return;
+            }
+            window.location.reload();
+        })
+        .catch(function (err) {
+            btn.disabled = false;
+            btn.innerHTML = originalHtml;
+            errEl.textContent = 'Network error: ' + (err && err.message ? err.message : 'unknown');
+            errEl.style.display = 'block';
+        });
+    };
 })();
 
 /* ── Account number reveal/hide ── */

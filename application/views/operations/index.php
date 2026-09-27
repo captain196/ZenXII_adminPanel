@@ -2,6 +2,15 @@
 $can_edit   = function_exists('has_permission') ? has_permission('Operations','edit')   : true;
 $can_manage = function_exists('has_permission') ? has_permission('Operations','manage') : true;
 ?>
+<?php 
+// Per-card visibility: a card shows only if the viewer holds THAT child
+// module at view+. has_permission() is umbrella-aware, so a Library-only
+// role gets Library=true but the siblings false, while a bypass role
+// (School Super Admin) gets all. Without this the Operations hub shows
+// dead cards for modules the viewer cannot open.
+$cardCan = function (string $m) { return function_exists('has_permission') ? has_permission($m, 'view') : true; };
+ ?>
+
 <link rel="stylesheet" href="<?= base_url('assets/css/rbac_ui_kit.css') ?>">
 
 <style>
@@ -53,7 +62,8 @@ $can_manage = function_exists('has_permission') ? has_permission('Operations','m
 
   <div class="ops-grid" id="opsGrid">
     <!-- Library -->
-    <a class="ops-card" href="<?= base_url('library') ?>">
+    <?php if ($cardCan('Library')):  ?>
+<a class="ops-card" href="<?= base_url('library') ?>">
       <div class="ops-card-icon lib"><i class="fa fa-book"></i></div>
       <h3>Library</h3>
       <p>Book catalog, issue/return, fines, and reports</p>
@@ -63,9 +73,11 @@ $can_manage = function_exists('has_permission') ? has_permission('Operations','m
         <div class="ops-stat"><div class="ops-stat-val" id="sOverdue">-</div><div class="ops-stat-lbl">Overdue</div></div>
       </div>
     </a>
+<?php endif;  ?>
 
     <!-- Transport -->
-    <a class="ops-card" href="<?= base_url('transport') ?>">
+    <?php if ($cardCan('Transport')):  ?>
+<a class="ops-card" href="<?= base_url('transport') ?>">
       <div class="ops-card-icon trn"><i class="fa fa-bus"></i></div>
       <h3>Transport</h3>
       <p>Vehicles, routes, stops, and student assignments</p>
@@ -75,9 +87,11 @@ $can_manage = function_exists('has_permission') ? has_permission('Operations','m
         <div class="ops-stat"><div class="ops-stat-val" id="sTrnStudents">-</div><div class="ops-stat-lbl">Students</div></div>
       </div>
     </a>
+<?php endif;  ?>
 
     <!-- Hostel -->
-    <a class="ops-card" href="<?= base_url('hostel') ?>">
+    <?php if ($cardCan('Hostel')):  ?>
+<a class="ops-card" href="<?= base_url('hostel') ?>">
       <div class="ops-card-icon hst"><i class="fa fa-building"></i></div>
       <h3>Hostel</h3>
       <p>Buildings, rooms, bed allocation, and attendance</p>
@@ -87,9 +101,11 @@ $can_manage = function_exists('has_permission') ? has_permission('Operations','m
         <div class="ops-stat"><div class="ops-stat-val" id="sOccupants">-</div><div class="ops-stat-lbl">Occupants</div></div>
       </div>
     </a>
+<?php endif;  ?>
 
     <!-- Inventory -->
-    <a class="ops-card" href="<?= base_url('inventory') ?>">
+    <?php if ($cardCan('Inventory')):  ?>
+<a class="ops-card" href="<?= base_url('inventory') ?>">
       <div class="ops-card-icon inv"><i class="fa fa-cubes"></i></div>
       <h3>Inventory</h3>
       <p>Items, vendors, purchases, and stock tracking</p>
@@ -99,9 +115,15 @@ $can_manage = function_exists('has_permission') ? has_permission('Operations','m
         <div class="ops-stat"><div class="ops-stat-val" id="sVendors">-</div><div class="ops-stat-lbl">Vendors</div></div>
       </div>
     </a>
+<?php endif;  ?>
 
     <!-- Assets -->
-    <a class="ops-card" href="<?= base_url('assets') ?>">
+    <?php if ($cardCan('Assets')):  ?>
+<?php /* 2026-08-31 — 'assets/registry', not bare 'assets'. Same defect as the
+             sidebar entry: the real ./assets/ directory shadows the module route at the
+             web-server layer. This card is the other navigation path to the module, so
+             leaving it would have half-fixed the entry point. */ ?>
+    <a class="ops-card" href="<?= base_url('assets/registry') ?>">
       <div class="ops-card-icon ast"><i class="fa fa-laptop"></i></div>
       <h3>Asset Tracking</h3>
       <p>Registry, assignments, maintenance, and depreciation</p>
@@ -111,6 +133,7 @@ $can_manage = function_exists('has_permission') ? has_permission('Operations','m
         <div class="ops-stat"><div class="ops-stat-val" id="sMaintDue">-</div><div class="ops-stat-lbl">Maint. Due</div></div>
       </div>
     </a>
+<?php endif;  ?>
   </div>
 
 </div>

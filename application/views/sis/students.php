@@ -126,6 +126,7 @@
 .nsa-dot-green { background: var(--nsa-green); }
 .nsa-dot-red   { background: var(--nsa-red); }
 .nsa-dot-gray  { background: var(--nsa-muted); }
+.nsa-dot-blue  { background: #2563eb; }   /* Alumni — completed schooling */
 
 /* ── ID badge ── */
 .nsa-id-badge {
@@ -133,6 +134,21 @@
     border-radius: 20px; font-size: 12px; font-weight: 700; letter-spacing: .3px;
     border: 1px solid rgba(188,90,60,.2);
 }
+/* The school-facing register number carries the emphasis; the internal key
+   recedes to a quiet secondary line so the two are never mistaken for one
+   another at a glance. */
+.nsa-id-srno { background: #FDF3E7; color: #8A4B1F; border-color: rgba(138,75,31,.25); }
+.nsa-id-secondary {
+    background: #f3f4f6; color: #6b7280;
+    border-color: #e5e7eb; font-weight: 600; font-size: 11px; letter-spacing: .2px;
+}
+/* A dedicated SR No. column needs an explicit "not set" mark: an empty cell in
+   its own column reads as a rendering fault, where an em-dash reads as a value
+   the school has not assigned yet. Students admitted before SRNO enforcement
+   legitimately have none. */
+.nsa-id-none { color: var(--nsa-muted); font-size: 13px; }
+.nsa-th-srno, .nsa-th-stuid { white-space: nowrap; }
+.nsa-td-srno, .nsa-td-stuid { white-space: nowrap; }
 
 /* ── Name cell ── */
 .nsa-name-cell strong { font-size: 13.5px; color: var(--nsa-navy); }
@@ -149,6 +165,9 @@
 .sis-status.active   { background: rgba(22,163,74,.1);  color: #16a34a; }
 .sis-status.tc       { background: rgba(220,38,38,.1);  color: #dc2626; }
 .sis-status.inactive { background: #f3f4f6;              color: #6b7280; }
+/* Alumni — completed schooling. Deliberately a positive, distinct colour:
+   it is an achievement, not the muted grey of a withdrawal. */
+.sis-status.alumni   { background: rgba(37,99,235,.10); color: #2563eb; }
 
 /* ── Action buttons ── */
 .nsa-action-group { display: flex; gap: 6px; justify-content: center; align-items: center; flex-wrap: nowrap; }
@@ -284,8 +303,16 @@
         <div class="nsa-toolbar">
             <div class="nsa-search-wrap">
                 <i class="fa fa-search nsa-search-icon"></i>
+                <?php /* An HTML comment cannot live INSIDE a tag. The browser closed
+                         the <input> at the "<" of "<!--" and rendered the remainder —
+                         placeholder="..."> — as visible text beside the search box.
+                         Kept as a PHP comment, which never reaches the document.
+
+                         get_students() has always included srNo in its search haystack;
+                         the placeholder never said so, so a school that works by register
+                         number had no way to know its own identifier was searchable. */ ?>
                 <input type="text" id="searchQ" class="nsa-search-input"
-                       placeholder="Search by name, ID, class, phone…">
+                       placeholder="Search by name, SR No., ID, class, phone…">
                 <button class="nsa-search-clear" id="clearSearch" title="Clear" style="display:none;">
                     <i class="fa fa-times"></i>
                 </button>
@@ -307,6 +334,11 @@
                     <option value="Active" selected>Active</option>
                     <option value="Inactive">Inactive</option>
                     <option value="TC">TC</option>
+                    <!-- Without this there was no way to list a graduated
+                         cohort at all: Alumni fell into "All", mixed in with
+                         withdrawals. A school that has just completed a
+                         session needs exactly this list. -->
+                    <option value="Alumni">Alumni (completed)</option>
                     <option value="">All (excl. Deleted)</option>
                 </select>
                 <button class="nsa-btn nsa-btn-ghost nsa-btn-sm" id="resetFilters">
@@ -322,7 +354,14 @@
                     <tr>
                         <th class="nsa-th-sno">#</th>
                         <th class="nsa-th-avatar">Photo</th>
-                        <th>ID</th>
+                        <?php /* Two identifiers, two columns. SRNO is the school-facing
+                                 register number; the STU id is the internal key. They were
+                                 stacked in a single combined cell, which made them read as
+                                 one field and left the column unsortable and unscannable.
+                                 Separate columns also stop a school quoting STU0183 to a
+                                 parent who only knows their register number. */ ?>
+                        <th class="nsa-th-srno">SR No.</th>
+                        <th class="nsa-th-stuid">Student ID</th>
                         <th>Name</th>
                         <th>Class</th>
                         <th>Section</th>
@@ -442,6 +481,9 @@ function loadStudents(page, silent) {
         gender:  document.getElementById('genderFilter').value,
         status:  document.getElementById('statusFilter').value,
         page:    page,
+        // ADM-COMPLETE-1 — toggled by the incomplete-records chip, so the count is a
+        // worklist you can open rather than a number you can only look at.
+        incomplete: window.__nsaIncompleteOnly ? '1' : '',
     });
     params.append(csrfName, csrfToken);
 
@@ -454,14 +496,14 @@ function loadStudents(page, silent) {
     .then(r => r.json())
     .then(data => {
         if (data.status !== 'success') {
-            tbody.innerHTML = `<tr><td colspan="10" class="nsa-empty-row"><i class="fa fa-exclamation-circle"></i><p>${data.message || 'No results'}</p></td></tr>`;
+            tbody.innerHTML = `<tr><td colspan="11" class="nsa-empty-row"><i class="fa fa-exclamation-circle"></i><p>${data.message || 'No results'}</p></td></tr>`;
             document.getElementById('rowCountText').textContent = '';
             document.getElementById('paginationWrap').innerHTML = '';
             return;
         }
         const students = data.students;
         if (!students || students.length === 0) {
-            tbody.innerHTML = '<tr><td colspan="10" class="nsa-empty-row"><i class="fa fa-user-times"></i><p>No students found.</p></td></tr>';
+            tbody.innerHTML = '<tr><td colspan="11" class="nsa-empty-row"><i class="fa fa-user-times"></i><p>No students found.</p></td></tr>';
             document.getElementById('rowCountText').textContent = '0 students';
             document.getElementById('paginationWrap').innerHTML = '';
             return;
@@ -470,8 +512,19 @@ function loadStudents(page, silent) {
         const fallback = '<?= base_url('tools/image/default-school.jpeg') ?>';
         tbody.innerHTML = students.map((s, i) => {
             const photo = s.photo || fallback;
-            const statusCls = s.status === 'Active' ? 'active' : (s.status === 'TC' ? 'tc' : 'inactive');
-            const dotCls    = s.status === 'Active' ? 'nsa-dot-green' : (s.status === 'TC' ? 'nsa-dot-red' : 'nsa-dot-gray');
+            // Alumni is its own state, not a shade of Inactive. A student who
+            // completed schooling and a student who was withdrawn had been
+            // rendering identically — the same grey "inactive" chip — which is
+            // precisely the distinction that matters: conflating completion
+            // with leaving is what makes a school's records read as dropouts.
+            // UDISE+ separates "Passed Out" from "Left with TC" and "Dropout"
+            // for the same reason.
+            const statusCls = s.status === 'Active' ? 'active'
+                            : (s.status === 'TC' ? 'tc'
+                            : (s.status === 'Alumni' ? 'alumni' : 'inactive'));
+            const dotCls    = s.status === 'Active' ? 'nsa-dot-green'
+                            : (s.status === 'TC' ? 'nsa-dot-red'
+                            : (s.status === 'Alumni' ? 'nsa-dot-blue' : 'nsa-dot-gray'));
             return `<tr>
                 <td class="nsa-td-sno">${offset + i + 1}</td>
                 <td class="nsa-td-avatar">
@@ -481,8 +534,39 @@ function loadStudents(page, silent) {
                         <span class="nsa-avatar-dot ${dotCls}"></span>
                     </span>
                 </td>
-                <td><span class="nsa-id-badge">${esc(s.user_id)}</span></td>
-                <td class="nsa-name-cell"><strong>${esc(s.name)}</strong></td>
+                <!-- The backend has always sent sr_no on every row; this view
+                     dropped it and showed only the internal key. Both are
+                     rendered now, each labelled, because a school works by its
+                     register number while ZenX joins on the STU id — and an
+                     administrator reading a screen must never have to guess
+                     which of the two they are looking at.
+
+                     SRNO is shown only when the student HAS one. Most students
+                     predate SRNO enforcement and legitimately have none, so a
+                     placeholder would imply a missing value rather than a
+                     population the school has not numbered yet. -->
+                <td class="nsa-td-srno">
+                    ${s.sr_no
+                        ? `<span class="nsa-id-badge nsa-id-srno" title="School register number">${esc(s.sr_no)}</span>`
+                        : `<span class="nsa-id-none" title="No SR number assigned yet">—</span>`}
+                </td>
+                <td class="nsa-td-stuid">
+                    <span class="nsa-id-badge nsa-id-secondary" title="Internal Student ID">${esc(s.user_id)}</span>
+                </td>
+                <td class="nsa-name-cell"><strong>${esc(s.name)}</strong>${
+                    /* ADM-COMPLETE-1 — the gap marker sits on the NAME, not in a column
+                       of its own: it is a property of the record, and a dedicated column
+                       would be empty for most rows and widen the table for all of them.
+                       `title` carries the actual field list, so the operator learns what
+                       is missing without opening the profile. */
+                    (s.gap_count > 0)
+                        ? ` <span title="Incomplete — missing: ${esc((s.gaps || []).join(', '))}"
+                                  style="display:inline-block;margin-left:6px;padding:1px 7px;border-radius:99px;
+                                         background:#fffbeb;border:1px solid #d97706;color:#92400e;
+                                         font-size:10.5px;font-weight:700;vertical-align:1px;cursor:help;"
+                            >${s.gap_count} missing</span>`
+                        : ''
+                }</td>
                 <td>Class ${esc(s.class)}</td>
                 <td>${esc(s.section)}</td>
                 <td style="font-size:12.5px;color:var(--nsa-muted);white-space:nowrap;">${esc(s.dob)}</td>
@@ -495,6 +579,7 @@ function loadStudents(page, silent) {
                         <span class="nsa-menu-wrap">
                             <button type="button" class="nsa-action-btn nsa-menu-trigger" title="More actions" aria-haspopup="true" aria-expanded="false"><i class="fa fa-ellipsis-v"></i></button>
                             <div class="nsa-menu" role="menu" hidden>
+                                <a href="<?= base_url('student360/view/') ?>${encodeURIComponent(s.user_id)}" class="nsa-menu-item"><i class="fa fa-th-large"></i> Student 360</a>
                                 <a href="<?= base_url('sis/documents/') ?>${encodeURIComponent(s.user_id)}" class="nsa-menu-item"><i class="fa fa-folder-open-o"></i> Documents</a>
                                 ${CAN_RESET_PW ? `<button type="button" class="nsa-menu-item js-reset-pw-btn" data-user-id="${esc(s.user_id)}" data-user-name="${esc(s.name)}"><i class="fa fa-key"></i> Reset Password</button>` : ''}
                                 ${s.status === 'Active' ? `<button type="button" class="nsa-menu-item" onclick="changeStatus(event, '${esc(s.user_id)}','${esc(s.name)}','Inactive')"><i class="fa fa-pause"></i> Mark Inactive</button>` : ''}
@@ -512,8 +597,29 @@ function loadStudents(page, silent) {
         const total   = data.total;
         const perPage = data.per_page;
         const pages   = Math.ceil(total / perPage);
-        document.getElementById('rowCountText').textContent =
-            total + ' student' + (total === 1 ? '' : 's');
+        // ADM-COMPLETE-1 — the count sits beside the total and toggles the filter.
+        // Rendered as text + a button rather than an alert: it is standing work, not
+        // an incident, and an alert that never goes away stops being read.
+        var _inc = data.incomplete_total || 0;
+        var _rc  = document.getElementById('rowCountText');
+        _rc.textContent = total + ' student' + (total === 1 ? '' : 's');
+        if (_inc > 0 || window.__nsaIncompleteOnly) {
+            var _b = document.createElement('button');
+            _b.type = 'button';
+            _b.id   = 'nsaIncompleteChip';
+            _b.textContent = window.__nsaIncompleteOnly
+                ? ('Showing incomplete only — show all')
+                : (_inc + ' incomplete record' + (_inc === 1 ? '' : 's'));
+            _b.style.cssText = 'margin-left:10px;padding:3px 10px;border-radius:99px;'
+                + 'border:1px solid #d97706;background:' + (window.__nsaIncompleteOnly ? '#d97706' : '#fffbeb')
+                + ';color:' + (window.__nsaIncompleteOnly ? '#fff' : '#92400e')
+                + ';font-size:11.5px;font-weight:700;cursor:pointer;';
+            _b.addEventListener('click', function () {
+                window.__nsaIncompleteOnly = !window.__nsaIncompleteOnly;
+                loadStudents(1);
+            });
+            _rc.appendChild(_b);
+        }
         let paginHtml = '';
         if (pages > 1) {
             if (page > 1) paginHtml += `<button class="nsa-page-btn" onclick="loadStudents(${page-1})">&laquo; Prev</button>`;
@@ -523,7 +629,7 @@ function loadStudents(page, silent) {
         document.getElementById('paginationWrap').innerHTML = paginHtml;
     })
     .catch(() => {
-        tbody.innerHTML = '<tr><td colspan="10" class="nsa-empty-row"><i class="fa fa-exclamation-triangle"></i><p>Failed to load students.</p></td></tr>';
+        tbody.innerHTML = '<tr><td colspan="11" class="nsa-empty-row"><i class="fa fa-exclamation-triangle"></i><p>Failed to load students.</p></td></tr>';
     });
 }
 

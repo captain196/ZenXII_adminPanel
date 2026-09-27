@@ -49,6 +49,21 @@
     box-shadow:none;
 }
 .zx-ld-anim{width:min(640px,90vmin);height:min(640px,90vmin);}
+/* Fallback: when the animation cannot build — loading_anim.json 403'd by an
+   .htaccess/vhost rule, lottie.min.js blocked or not yet loaded — the anim
+   div stays :empty and the overlay used to be a bare grey film with a small
+   floating caption (UAT 2026-09-02, "Saving matrix…"). An empty anim now
+   collapses to a plain CSS spinner so the loader always looks like one.
+   When Lottie does mount it injects an <svg> child, :empty stops matching,
+   and this rule vanishes on its own. */
+.zx-ld-anim:empty{width:88px;height:88px;display:flex;align-items:center;justify-content:center;}
+.zx-ld-anim:empty::after{
+    content:'';width:56px;height:56px;border-radius:50%;
+    border:4px solid rgba(255,255,255,.22);border-top-color:#BC5A3C;
+    animation:zxldspin .8s linear infinite;
+}
+@keyframes zxldspin{to{transform:rotate(360deg)}}
+@media (prefers-reduced-motion:reduce){.zx-ld-anim:empty::after{animation-duration:1.6s;}}
 .zx-ld-msg{
     font-family:var(--font-b,'Inter',system-ui,sans-serif);
     font-size:13px;font-weight:500;letter-spacing:-.1px;
@@ -104,13 +119,34 @@ window.ZXLoader = (function () {
     }
 
     function initOverlay() {
-        if (overlayEl) return;
-        overlayEl = document.getElementById('zxLoaderOverlay');
-        msgEl     = document.getElementById('zxLoaderMsg');
+        if (!overlayEl) {
+            overlayEl = document.getElementById('zxLoaderOverlay');
+            msgEl     = document.getElementById('zxLoaderMsg');
+        }
+        // 2026-08-29 — the build retry is deliberately NOT behind the lookup above.
+        // `lottie.min.js` is deferred, so a show() fired from a page-load script
+        // (school_config calls loadConfig() at the bottom of its inline script) runs
+        // before window.lottie exists and build() returns null. The previous
+        // `if (overlayEl) return;` early-out then cached that failure: the animation
+        // was never built again for the life of the page, so school_config showed a
+        // bare dark overlay on load AND on every later save, while pages that only
+        // show() on a user action (sis/students, academic, admin_users) animated
+        // normally. Retrying while overlayAnim is null costs one getElementById.
         if (overlayEl && !overlayAnim) {
             overlayAnim = build(document.getElementById('zxLoaderAnim'));
         }
     }
+
+    // Deferred scripts have all executed by DOMContentLoaded, so this is the first
+    // moment window.lottie is guaranteed present. An overlay opened before then is
+    // still on screen with no animation — give it one now instead of leaving it bare
+    // until the next show().
+    document.addEventListener('DOMContentLoaded', function () {
+        if (overlayCount > 0 && !overlayAnim) {
+            initOverlay();
+            if (overlayAnim && overlayAnim.isPaused) overlayAnim.play();
+        }
+    });
 
     return {
         /** Show the global overlay. Ref-counted: pair every show() with a hide(). */

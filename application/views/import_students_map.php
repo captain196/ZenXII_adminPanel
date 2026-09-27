@@ -140,6 +140,24 @@
         </div>
         <div class="imp-note imp-hidden" id="editNote"><i class="fa fa-info-circle"></i> You edited some cells — click “Re-validate” to refresh statuses before importing.</div>
 
+        <!-- Phase 9.2 (2026-08-13) — import mode. REQUIRED, explicit, all-or-
+             nothing per file: the operator must choose before committing —
+             never inferred from whether SR Number happens to be blank. -->
+        <div style="background:var(--bg3,#f9fafb);border:2px solid var(--gold,#BC5A3C);border-radius:8px;padding:12px 14px;margin:12px 0;">
+            <div style="font-size:.85rem;font-weight:700;color:var(--t1,#111827);margin-bottom:9px;">
+                <i class="fa fa-hashtag" style="color:#BC5A3C;"></i> SR Number — Import Mode <span style="color:#dc2626;">*</span>
+            </div>
+            <label style="display:block;margin-bottom:8px;font-size:.86rem;cursor:pointer;">
+                <input type="radio" name="importMode" value="historical"> <strong>Historical / Existing Register Data</strong>
+                <div style="margin-left:22px;color:var(--t3,#6b7280);font-size:.8rem;">Preserve the school's existing SR Numbers from a physical register or previous system. <strong>SR Number is required for every row.</strong></div>
+            </label>
+            <label style="display:block;font-size:.86rem;cursor:pointer;">
+                <input type="radio" name="importMode" value="new"> <strong>New Admissions</strong>
+                <div style="margin-left:22px;color:var(--t3,#6b7280);font-size:.8rem;">Genuinely new students. <strong>SR Number will be assigned automatically</strong> — do not include one in the file (it will be ignored).</div>
+            </label>
+            <div id="importModeError" style="display:none;color:#dc2626;font-size:.8rem;margin-top:8px;"><i class="fa fa-exclamation-circle"></i> Select an import mode before validating or importing.</div>
+        </div>
+
         <div style="background:var(--bg3,#f9fafb);border:1px solid var(--border,#e5e7eb);border-radius:8px;padding:12px 14px;margin:12px 0;">
             <div style="font-size:.85rem;font-weight:600;color:var(--t1,#111827);margin-bottom:7px;">
                 <i class="fa fa-clone" style="color:#BC5A3C;"></i> If a student already exists (matched by phone number):
@@ -203,6 +221,22 @@
     function dupPolicy() {
         var r = document.querySelector('input[name="dupPolicy"]:checked');
         return r ? r.value : 'skip';
+    }
+
+    // Phase 9.2 — returns '' (unselected) rather than defaulting to either
+    // mode; callers must treat '' as "not yet chosen," never silently
+    // assume one — matches the server's own explicit-only enforcement in
+    // Sis::import_commit().
+    function importMode() {
+        var r = document.querySelector('input[name="importMode"]:checked');
+        return r ? r.value : '';
+    }
+    function requireImportMode() {
+        var m = importMode();
+        var errEl = document.getElementById('importModeError');
+        if (m === '') { if (errEl) errEl.style.display = 'block'; return false; }
+        if (errEl) errEl.style.display = 'none';
+        return true;
     }
 
     var schemaByKey = {};
@@ -370,7 +404,7 @@
     el('validateBtn').addEventListener('click', function () {
         if (!refreshReqChips()) { alert('Please map all required fields (Name, Class, Section) first.'); return; }
         var btn = this; setBtnLoading(btn, true, 'Validating…');
-        post('import_validate', { rows: buildCanonRows() }).then(function (resp) {
+        post('import_validate', { rows: buildCanonRows(), importMode: importMode() }).then(function (resp) {
             VALIDATED = resp.rows; dirty = false; DUPES = {}; el('dupMeta').textContent = '';
             el('prevCard').classList.remove('imp-hidden');
             el('editNote').classList.add('imp-hidden');
@@ -383,7 +417,7 @@
     el('revalidateBtn').addEventListener('click', function () {
         if (!VALIDATED) return;
         var btn = this; setBtnLoading(btn, true, 'Re-validating…');
-        post('import_validate', { rows: VALIDATED.map(function (r) { return r.data; }) }).then(function (resp) {
+        post('import_validate', { rows: VALIDATED.map(function (r) { return r.data; }), importMode: importMode() }).then(function (resp) {
             VALIDATED = resp.rows; dirty = false; DUPES = {}; el('dupMeta').textContent = '';
             el('editNote').classList.add('imp-hidden');
             renderSummary(resp.summary); renderPreview();
@@ -393,8 +427,9 @@
 
     el('dupCheckBtn').addEventListener('click', function () {
         if (!VALIDATED) { alert('Validate the preview first.'); return; }
+        if (!requireImportMode()) return;
         var btn = this; setBtnLoading(btn, true, 'Checking…');
-        post('import_dedupe_check', { rows: VALIDATED.map(function (r) { return r.data; }) }).then(function (resp) {
+        post('import_dedupe_check', { rows: VALIDATED.map(function (r) { return r.data; }), importMode: importMode() }).then(function (resp) {
             DUPES = {};
             (resp.rows || []).forEach(function (r) { if (r.duplicate) DUPES[r.index] = r; });
             el('dupMeta').textContent = resp.duplicates
@@ -417,8 +452,23 @@
 
     var BATCH_SIZE = 25; // rows per commit request — keeps each call well under proxy/PHP timeouts
 
+    // Phase 9.2 — switching mode after a validate pass invalidates the
+    // mode-specific SR Number checks (required-in-historical, ignored-in-
+    // new) baked into VALIDATED's per-row status; force a re-validate
+    // rather than let a stale status silently import under the new mode.
+    document.querySelectorAll('input[name="importMode"]').forEach(function (radio) {
+        radio.addEventListener('change', function () {
+            requireImportMode();
+            if (VALIDATED) {
+                dirty = true;
+                el('editNote').classList.remove('imp-hidden');
+            }
+        });
+    });
+
     el('commitBtn').addEventListener('click', function () {
         if (!VALIDATED) return;
+        if (!requireImportMode()) return;
         if (dirty && !confirm('You have unsaved edits that were not re-validated. Import anyway?')) return;
         var importable = VALIDATED.filter(function (r) { return r.status !== 'error'; }).length;
         if (!importable) { alert('No valid rows to import.'); return; }
@@ -440,6 +490,9 @@
         // can show real progress. Cross-batch duplicates are still caught
         // because earlier batches write the phone index before later ones run.
         var agg = { success: 0, updated: 0, duplicates: 0, error: 0, feesPending: 0 };
+        // Phase 11 (P11-G1) — accumulate the per-student identity rows across
+        // batches so the result screen can show what the system allocated.
+        var created = [];
         var batched = allRows.length > BATCH_SIZE;
         if (batched) { el('progWrap').classList.remove('imp-hidden'); }
 
@@ -454,6 +507,7 @@
             return post('import_commit', {
                 rows: batch,
                 dupPolicy: policy,
+                importMode: importMode(),
                 firstBatch: start === 0,                         // reset the credentials stash on the first batch
                 mapping: start === 0 ? mappingPairs : undefined  // learn once
             }).then(function (resp) {
@@ -462,6 +516,7 @@
                 agg.success += c.success || 0; agg.updated += c.updated || 0;
                 agg.duplicates += c.duplicates || 0; agg.error += c.error || 0;
                 agg.feesPending += c.feesPending || 0;
+                if (Array.isArray(resp.created)) created = created.concat(resp.created);
                 setProgress(Math.min(start + BATCH_SIZE, allRows.length));
                 if (start + BATCH_SIZE < allRows.length) return commitBatch(start + BATCH_SIZE);
             });
@@ -482,6 +537,34 @@
             if (agg.feesPending) {
                 html += '<p style="margin-top:8px;color:#92400e;font-size:.85rem;">'
                     + agg.feesPending + ' student(s) imported without a fee chart — set up <b>Fees → Chart</b> for their class/section and demands will be assigned.</p>';
+            }
+            // Phase 11 (P11-G1) — identity of every student the system created.
+            // SR Number and Admission Number are BOTH system-allocated and were
+            // previously invisible until the operator opened a student profile,
+            // so a bulk import gave no confirmation of what was assigned.
+            // No password is shown here (it lives only in the credentials PDF)
+            // and APAAR is never shown.
+            if (created.length > 0) {
+                html += '<div style="margin-top:16px;padding-top:14px;border-top:1px solid #e2e8f0;">'
+                    + '<div style="font-weight:600;color:#1e293b;margin-bottom:8px;font-size:.9rem;">'
+                    + 'Identity assigned to imported students</div>'
+                    + '<div style="max-height:320px;overflow:auto;border:1px solid #e2e8f0;border-radius:8px;">'
+                    + '<table style="width:100%;border-collapse:collapse;font-size:.82rem;">'
+                    + '<thead><tr style="background:#f8fafc;">'
+                    + '<th style="text-align:left;padding:7px 10px;border-bottom:1px solid #e2e8f0;">Student</th>'
+                    + '<th style="text-align:left;padding:7px 10px;border-bottom:1px solid #e2e8f0;">Student ID</th>'
+                    + '<th style="text-align:left;padding:7px 10px;border-bottom:1px solid #e2e8f0;">SR No.</th>'
+                    + '<th style="text-align:left;padding:7px 10px;border-bottom:1px solid #e2e8f0;">Admission No.</th>'
+                    + '</tr></thead><tbody>';
+                created.forEach(function (r) {
+                    html += '<tr>'
+                        + '<td style="padding:6px 10px;border-bottom:1px solid #f1f5f9;">' + esc(r.name || '') + '</td>'
+                        + '<td style="padding:6px 10px;border-bottom:1px solid #f1f5f9;font-family:monospace;">' + esc(r.userId || '') + '</td>'
+                        + '<td style="padding:6px 10px;border-bottom:1px solid #f1f5f9;font-family:monospace;">' + esc(r.srNo || '—') + '</td>'
+                        + '<td style="padding:6px 10px;border-bottom:1px solid #f1f5f9;font-family:monospace;">' + esc(r.admissionNo || '—') + '</td>'
+                        + '</tr>';
+                });
+                html += '</tbody></table></div></div>';
             }
             if (agg.success > 0) {
                 html += '<div style="margin-top:16px;padding-top:14px;border-top:1px solid #e2e8f0;">'

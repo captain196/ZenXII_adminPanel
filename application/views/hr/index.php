@@ -2,11 +2,12 @@
     $at = isset($active_tab) ? $active_tab : 'dashboard';
     $tab_map = [
         'dashboard'   => ['panel'=>'panelDash',      'icon'=>'fa-tachometer',        'label'=>'Dashboard'],
-        'departments' => ['panel'=>'panelDept',       'icon'=>'fa-building-o',        'label'=>'Departments'],
         'recruitment' => ['panel'=>'panelRecruit',    'icon'=>'fa-briefcase',         'label'=>'Recruitment'],
         'leaves'      => ['panel'=>'panelLeaves',     'icon'=>'fa-calendar-minus-o',  'label'=>'Leave Mgmt'],
         'payroll'     => ['panel'=>'panelPayroll',    'icon'=>'fa-money',             'label'=>'Payroll'],
         'appraisals'  => ['panel'=>'panelAppraisal',  'icon'=>'fa-star',              'label'=>'Appraisals'],
+        'training'    => ['panel'=>'panelTraining',   'icon'=>'fa-graduation-cap',    'label'=>'Training'],
+        'orgchart'    => ['panel'=>'panelOrgChart',   'icon'=>'fa-sitemap',           'label'=>'Org Chart'],
     ];
 ?>
 
@@ -17,7 +18,7 @@
   <!-- Header -->
   <div class="hr-header">
     <div>
-      <div class="hr-header-icon"><i class="fa fa-users"></i> HR &amp; Staff Management</div>
+      <div class="hr-header-icon"><i class="fa fa-users"></i> HR &amp; <?= htmlspecialchars($staff_term ?? 'Staff', ENT_QUOTES, 'UTF-8') ?> Management</div>
       <ol class="hr-breadcrumb">
         <li><a href="<?= base_url('admin') ?>">Dashboard</a></li>
         <li>HR Module</li>
@@ -77,7 +78,9 @@
         <a class="hr-btn hr-btn-primary" href="<?= base_url('ats') ?>"><i class="fa fa-th-list"></i> Applicant Pipeline</a>
         <button class="hr-btn hr-btn-primary" onclick="HR.openLeaveTypeModal()"><i class="fa fa-plus"></i> New Leave Type</button>
         <button class="hr-btn hr-btn-primary" onclick="HR.openGeneratePayroll()"><i class="fa fa-play"></i> Run Payroll</button>
+        <a class="hr-btn hr-btn-primary" href="<?= base_url('hr/payroll_health_page') ?>"><i class="fa fa-heartbeat"></i> Payroll Health</a>
         <button class="hr-btn hr-btn-primary" onclick="HR.openAppraisalModal()"><i class="fa fa-plus"></i> New Appraisal</button>
+        <button class="hr-btn hr-btn-primary" onclick="HR.openTrainingModal()"><i class="fa fa-graduation-cap"></i> New Training Record</button>
       </div>
     </div>
 
@@ -127,21 +130,23 @@
     </div>
   </div>
 
-  <!-- ================================================================
-       2. DEPARTMENTS
-  ================================================================= -->
-  <div class="hr-panel<?= $at === 'departments' ? ' active' : '' ?>" id="panelDept">
-    <div class="hr-card" style="text-align:center;padding:40px 24px;">
-      <div style="font-size:40px;color:var(--brand,#2563eb);margin-bottom:12px;"><i class="fa fa-sitemap"></i></div>
-      <div class="hr-card-title" style="justify-content:center;border:0;"><span>Departments have moved</span></div>
-      <p style="max-width:520px;margin:8px auto 18px;color:var(--t2,#64748b);line-height:1.55;">
-        Departments are now managed together with their staff roles in the new
-        <b>Departments &amp; Roles</b> module — one place to create departments, define roles,
-        and choose which roles belong to each department.
-      </p>
-      <a href="<?= base_url('org') ?>" class="hr-btn hr-btn-primary"><i class="fa fa-arrow-right"></i> Open Departments &amp; Roles</a>
-    </div>
-  </div>
+  <?php /* The "Departments" tab was REMOVED on 2026-08-23.
+
+     It had already been reduced to a placeholder reading "Departments have
+     moved", with a button to Staff & Roles — a tab whose only content was an
+     apology for itself. Its menu entry had been removed in the 2026-08-21
+     audit, which found it was a THIRD editor of schools.departments alongside
+     Staff_access Tab 1 and the collapsed Org door, and that its two extra
+     fields (head_staff_id, department status) were written but read by nothing.
+
+     `Hr::index()` no longer accepts the tab, and `/hr/departments` now
+     REDIRECTS to Staff & Roles so an old bookmark lands where departments
+     actually live rather than silently showing the dashboard.
+
+     `hr/get_departments` stays live — five views read it for their department
+     dropdowns. The save/delete writers had already moved to Staff_access before
+     this change (Org.php refers to them as the "former" writers), so only the
+     reader is still load-bearing. Only the dead UI is gone. */ ?>
 
   <!-- ================================================================
        3. RECRUITMENT
@@ -199,6 +204,8 @@
       <button class="hr-sub-tab active" data-sub="leaveTypes">Leave Types</button>
       <button class="hr-sub-tab" data-sub="leaveRequests">Leave Requests</button>
       <button class="hr-sub-tab" data-sub="leaveBalances">Leave Balances</button>
+      <button class="hr-sub-tab" data-sub="leaveCarryForward">Carry-Forward</button>
+      <button class="hr-sub-tab" data-sub="compOff">Comp-Off</button>
       <button class="hr-sub-tab" data-sub="leaveAudit">Audit Log</button>
     </div>
 
@@ -225,12 +232,34 @@
       <div class="hr-card">
         <div class="hr-card-title">
           <span><i class="fa fa-list"></i> Leave Types</span>
-          <button class="hr-btn hr-btn-primary hr-btn-sm" onclick="HR.openLeaveTypeModal()"><i class="fa fa-plus"></i> Add Type</button>
+          <span>
+            <label class="hr-accrual-toggle" style="font-size:12px;color:var(--t2,#667);margin-right:8px;cursor:pointer;user-select:none" title="OFF (default): the full annual leave is granted up front. ON: leave accrues month by month, and staff can only take what has accrued so far. Each leave type also has its own Accrual Mode; this is the school-wide master switch.">
+              <input type="checkbox" id="chkAccrualMode" onchange="HR.saveAccrualMode(this.checked)" style="vertical-align:middle"> Monthly accrual mode
+            </label>
+            <button class="hr-btn hr-btn-ghost hr-btn-sm" onclick="HR.runLeaveAccrual()" title="Credits this month's monthly-accrual leave types — safe to click more than once, already-credited months are skipped"><i class="fa fa-refresh"></i> Run Monthly Accrual</button>
+            <button class="hr-btn hr-btn-primary hr-btn-sm" onclick="HR.openLeaveTypeModal()"><i class="fa fa-plus"></i> Add Type</button>
+          </span>
+        </div>
+        <!-- Per-school leave POLICY — each switch is this school's own choice.
+             All default OFF; a new school behaves exactly as before until it
+             opts in here. These override the platform defaults for this tenant only. -->
+        <div class="hr-policy-bar" style="display:flex;flex-wrap:wrap;gap:14px 20px;padding:10px 14px;margin:0 0 10px;background:var(--s2,#f6f7f9);border-radius:8px;font-size:12px;color:var(--t2,#667)">
+          <span style="font-weight:600;color:var(--t1,#334)"><i class="fa fa-sliders"></i> Leave policy (this school):</span>
+          <label style="cursor:pointer;user-select:none" title="Resolve each leave type's entitlement against the policy version in force for the period, not just the always-current value.">
+            <input type="checkbox" id="lpEffectiveDating" onchange="HR.saveLeavePolicy('effective_dating', this.checked)" style="vertical-align:middle"> Effective-dated policy</label>
+          <label style="cursor:pointer;user-select:none" title="Pro-rate a mid-year joiner's / leaver's annual entitlement by their join/exit date.">
+            <input type="checkbox" id="lpProrata" onchange="HR.saveLeavePolicy('prorata', this.checked)" style="vertical-align:middle"> Join-date pro-rata</label>
+          <label style="cursor:pointer;user-select:none" title="Enforce a per-type waiting period before a newly joined employee can take that leave.">
+            <input type="checkbox" id="lpWaitingPeriod" onchange="HR.saveLeavePolicy('waiting_period', this.checked)" style="vertical-align:middle"> Waiting period</label>
+          <label style="cursor:pointer;user-select:none" title="Cap the balance an employee may hold; further accrual pauses until usage frees room.">
+            <input type="checkbox" id="lpMaxBalance" onchange="HR.saveLeavePolicy('max_balance', this.checked)" style="vertical-align:middle"> Max-balance ceiling</label>
+          <label style="cursor:pointer;user-select:none" title="Enable the leave-year closure workflow (preview + confirm carry-forward into next year).">
+            <input type="checkbox" id="lpYearClosure" onchange="HR.saveLeavePolicy('year_closure', this.checked)" style="vertical-align:middle"> Year-end closure</label>
         </div>
         <div class="hr-table-wrap">
           <table class="hr-table" id="tblLeaveTypes">
-            <thead><tr><th>#</th><th>Name</th><th>Code</th><th>Days/Year</th><th>Carry Forward</th><th>Max Carry</th><th>Actions</th></tr></thead>
-            <tbody><tr><td colspan="7" class="hr-empty"><i class="fa fa-spinner fa-spin"></i> Loading...</td></tr></tbody>
+            <thead><tr><th>#</th><th>Name</th><th>Code</th><th>Days/Year</th><th>Carry Forward</th><th>Max Carry</th><th>Policy</th><th>Actions</th></tr></thead>
+            <tbody><tr><td colspan="8" class="hr-empty"><i class="fa fa-spinner fa-spin"></i> Loading...</td></tr></tbody>
           </table>
         </div>
       </div>
@@ -284,7 +313,86 @@
       </div>
     </div>
 
+    <!-- Carry-Forward (Leave Policy Programme Phase 7) -->
+    <div class="hr-sub-panel" id="subLeaveCarryForward">
+      <div class="hr-card">
+        <div class="hr-card-title">
+          <span><i class="fa fa-arrow-circle-right"></i> Leave-Year Closure &amp; Carry-Forward</span>
+        </div>
+        <p style="color:var(--t3);font-size:13px;margin:0 0 12px;">
+          Preview shows exactly what will carry forward BEFORE anything is written — nothing is
+          changed until you Confirm. Confirming twice is safe: a year already closed reports back
+          without carrying anything a second time.
+        </p>
+        <div class="hr-toolbar">
+          <div class="hr-fg">
+            <label>Year to Close</label>
+            <input type="number" id="cfYear" min="2000" max="2100" style="width:110px;">
+          </div>
+          <div class="hr-fg" style="align-self:flex-end;">
+            <button class="hr-btn hr-btn-primary hr-btn-sm" onclick="HR.previewCarryForward()"><i class="fa fa-eye"></i> Preview</button>
+          </div>
+          <div class="hr-fg" style="align-self:flex-end;">
+            <button class="hr-btn hr-btn-sm" id="btnConfirmCarryForward" style="background:#b91c1c;color:#fff;display:none;" onclick="HR.confirmCarryForward()"><i class="fa fa-check-circle"></i> Confirm &amp; Carry Forward</button>
+          </div>
+        </div>
+        <div id="cfEmpty" class="hr-empty" style="padding:24px;text-align:center;">
+          <i class="fa fa-info-circle"></i> Enter a year and click Preview to see who has unused balance eligible to carry forward.
+        </div>
+        <div class="hr-table-wrap" id="cfTableWrap" style="display:none;">
+          <table class="hr-table" id="tblCarryForward">
+            <thead><tr><th>Staff</th><th>Leave Type</th><th>Unused</th><th>Max Carry</th><th>Eligible</th><th>Will Carry</th><th>Forfeited</th></tr></thead>
+            <tbody></tbody>
+          </table>
+        </div>
+      </div>
+    </div>
+
     <!-- Audit Log -->
+    <!-- Comp-Off (COMP-OFF-1) ───────────────────────────────────────────
+         Credits a day the staff member ALREADY worked as a rest day. The
+         endpoint requires that date to carry attendance's own 'W'
+         (extraWorked) mark, so this screen never makes that judgement — it
+         converts an established fact into a credit, and says so. -->
+    <div class="hr-sub-panel" id="subCompOff">
+      <div class="hr-card">
+        <div class="hr-card-title">
+          <span><i class="fa fa-clock-o"></i> Credit a Comp-Off</span>
+        </div>
+        <div class="hr-fg">
+          <label for="coStaffId">Employee ID</label>
+          <input id="coStaffId" placeholder="e.g. STA000123" autocomplete="off">
+        </div>
+        <div class="hr-fg">
+          <label for="coDate">Date worked</label>
+          <input id="coDate" type="date">
+          <small>The date must already be marked <b>W</b> (worked a rest day) in attendance.</small>
+        </div>
+        <button class="hr-btn hr-btn-primary" id="coCreditBtn" onclick="HR.creditCompOff()">
+          <i class="fa fa-plus-circle"></i> Credit Comp-Off
+        </button>
+        <button class="hr-btn" id="coLoadBtn" onclick="HR.loadCompOffLedger()">
+          <i class="fa fa-list"></i> Show ledger
+        </button>
+      </div>
+
+      <div class="hr-card">
+        <div class="hr-card-title">
+          <span><i class="fa fa-book"></i> Comp-Off ledger</span>
+          <span id="coBalance"></span>
+        </div>
+        <div class="hr-table-wrap">
+          <table class="hr-table" id="coTable">
+            <thead>
+              <tr><th>Earned for</th><th>Days</th><th>Status</th><th>Expires</th><th>Consumed</th></tr>
+            </thead>
+            <tbody>
+              <tr><td colspan="5" class="hr-empty">Enter an employee ID and choose <b>Show ledger</b>.</td></tr>
+            </tbody>
+          </table>
+        </div>
+      </div>
+    </div>
     <div class="hr-sub-panel" id="subLeaveAudit">
       <div class="hr-card">
         <div class="hr-card-title">
@@ -371,6 +479,50 @@
 
     <!-- Payroll Runs -->
     <div class="hr-sub-panel" id="subPayrollRuns">
+
+      <!-- Payroll periods (PAY-1). The lock endpoint existed with no caller, and
+           had no unlock at all: once closed, a period stayed closed forever while
+           _check_payroll_lock told the operator to "Unlock before making changes".
+           Closing a period blocks generation, regeneration and deletion for that
+           month — which is the whole point, and why re-opening asks for a reason. -->
+      <div class="hr-card">
+        <div class="hr-card-title">
+          <span><i class="fa fa-lock"></i> Payroll Periods</span>
+          <span style="font-size:12px;font-weight:500;color:var(--t3);">
+            Closing a month blocks payroll generation, regeneration and deletion for it
+          </span>
+        </div>
+        <div id="payrollCloseRow" style="display:none;gap:10px;align-items:flex-end;margin-bottom:14px;flex-wrap:wrap;">
+          <div class="hr-fg">
+            <label>Month</label>
+            <select id="lockMonthSel">
+              <option value="January">January</option><option value="February">February</option>
+              <option value="March">March</option><option value="April">April</option>
+              <option value="May">May</option><option value="June">June</option>
+              <option value="July">July</option><option value="August">August</option>
+              <option value="September">September</option><option value="October">October</option>
+              <option value="November">November</option><option value="December">December</option>
+            </select>
+          </div>
+          <div class="hr-fg">
+            <label>Year</label>
+            <input type="number" id="lockYearSel" min="2000" max="2100" style="width:110px;">
+          </div>
+          <button class="hr-btn hr-btn-sm" id="btnClosePayrollPeriod">
+            <i class="fa fa-lock"></i> Close period
+          </button>
+          <span style="font-size:12px;color:var(--t3);">
+            Only a month with a finalized monthly payroll run can be closed.
+          </span>
+        </div>
+
+        <div id="payrollLocksBody">
+          <div class="hr-empty" style="padding:22px;text-align:center;">
+            <i class="fa fa-spinner fa-spin"></i> Loading payroll periods...
+          </div>
+        </div>
+      </div>
+
       <div class="hr-card">
         <div class="hr-card-title">
           <span><i class="fa fa-play-circle"></i> Payroll Runs</span>
@@ -395,9 +547,13 @@
         <div id="payslipSelectMsg" class="hr-empty" style="padding:30px;text-align:center;">
           <i class="fa fa-info-circle"></i> Select a payroll run from the Payroll Runs tab to view payslips.
         </div>
+        <!-- W3.2.3 — loss-of-pay review. Rendered above the slip grid because
+             it must be seen BEFORE finalization, not found by drilling into
+             employees one at a time. Hidden entirely when the run has no LOP. -->
+        <div id="lopReviewPanel" style="display:none"></div>
         <div class="hr-table-wrap" id="payslipTableWrap" style="display:none;">
           <table class="hr-table" id="tblPayslips">
-            <thead><tr><th>#</th><th>Staff</th><th>Basic</th><th>Allowances</th><th>Gross</th><th>Deductions</th><th>Net</th><th>Days Worked</th><th>Absent</th><th>Paid Leave</th><th>LWP</th><th>Status</th><th></th></tr></thead>
+            <thead><tr><th>#</th><th>Staff</th><th>Basic</th><th>Allowances</th><th>Adjustments</th><th>Gross</th><th>Deductions</th><th>Net</th><th>Days Worked</th><th>Absent</th><th>Paid Leave</th><th>LWP</th><th>Status</th><th></th></tr></thead>
             <tbody></tbody>
           </table>
         </div>
@@ -442,6 +598,90 @@
     </div>
   </div>
 
+  <!-- ================================================================
+       7. TRAINING / DEVELOPMENT (Staff HR Advanced Capability Programme,
+          Phase 7, 2026-08-19) — a factual log entry per staff, not a
+          graded/reviewed workflow like Appraisals above (deliberately no
+          Draft/Submitted/Reviewed states). Certificates are attached via
+          the existing "HR Documents" upload on the staff's own Edit page,
+          not duplicated here.
+  ================================================================= -->
+  <div class="hr-panel<?= $at === 'training' ? ' active' : '' ?>" id="panelTraining">
+    <div class="hr-card">
+      <div class="hr-card-title">
+        <span><i class="fa fa-graduation-cap"></i> Training &amp; Development</span>
+        <button class="hr-btn hr-btn-primary hr-btn-sm" onclick="HR.openTrainingModal()"><i class="fa fa-plus"></i> New Record</button>
+      </div>
+      <div class="hr-toolbar">
+        <div class="hr-fg">
+          <label>Staff</label>
+          <select id="filterTrainingStaff" onchange="HR.loadTrainingRecords()"><option value="">All</option></select>
+        </div>
+        <div class="hr-fg">
+          <label>Category</label>
+          <select id="filterTrainingCategory" onchange="HR.loadTrainingRecords()">
+            <option value="">All</option>
+            <option value="Training">Training</option>
+            <option value="Certification">Certification</option>
+            <option value="Workshop">Workshop</option>
+            <option value="Course">Course</option>
+          </select>
+        </div>
+        <div class="hr-fg">
+          <label>Status</label>
+          <select id="filterTrainingStatus" onchange="HR.loadTrainingRecords()">
+            <option value="">All</option>
+            <option value="Planned">Planned</option>
+            <option value="In Progress">In Progress</option>
+            <option value="Completed">Completed</option>
+          </select>
+        </div>
+      </div>
+      <div class="hr-table-wrap">
+        <table class="hr-table" id="tblTraining">
+          <thead><tr><th>#</th><th>Staff Name</th><th>Department</th><th>Title</th><th>Category</th><th>Provider</th><th>Status</th><th>Completed</th><th>Expiry</th><th>Actions</th></tr></thead>
+          <tbody><tr><td colspan="10" class="hr-empty"><i class="fa fa-spinner fa-spin"></i> Loading...</td></tr></tbody>
+        </table>
+      </div>
+    </div>
+  </div>
+
+  <!-- ================================================================
+       8. ORG CHART / REPORTING HIERARCHY (Staff HR Advanced Capability
+          Programme, Phase 8, 2026-08-19) — STRICTLY READ-ONLY. Derived
+          every load from the same reportingManagerId field the existing
+          writers own; no cached tree, no second source of truth. Also a
+          diagnostic surface (modelled on Work_schedules' blocked-staff
+          panel): states that validateManagerAssignment() deliberately
+          tolerates at write time are reported here rather than silently
+          producing an incomplete-looking-complete chart.
+  ================================================================= -->
+  <div class="hr-panel<?= $at === 'orgchart' ? ' active' : '' ?>" id="panelOrgChart">
+    <div class="hr-card">
+      <div class="hr-card-title">
+        <span><i class="fa fa-sitemap"></i> Reporting Hierarchy</span>
+        <button class="hr-btn hr-btn-ghost hr-btn-sm" onclick="HR.loadOrgChart()"><i class="fa fa-refresh"></i> Refresh</button>
+      </div>
+      <div class="hr-toolbar">
+        <div class="hr-fg">
+          <label>Search</label>
+          <input type="text" id="orgSearch" placeholder="Name, position or department…" oninput="HR.renderOrgChart()">
+        </div>
+        <div class="hr-fg">
+          <label>Show</label>
+          <select id="orgShowInactive" onchange="HR.renderOrgChart()">
+            <option value="0">Active staff only</option>
+            <option value="1">Include inactive</option>
+          </select>
+        </div>
+      </div>
+      <div id="orgIssuesWrap"></div>
+      <div id="orgChartWrap" style="margin-top:6px;">
+        <p class="hr-empty"><i class="fa fa-spinner fa-spin"></i> Loading...</p>
+      </div>
+    </div>
+  </div>
+
 </div><!-- /.hr-wrap -->
 </section>
 </div><!-- /.content-wrapper -->
@@ -451,84 +691,88 @@
      MODALS
 ================================================================= -->
 
-<!-- Department Modal -->
-<div class="hr-modal-overlay" id="modalDept">
-  <div class="hr-modal">
-    <div class="hr-modal-title"><i class="fa fa-building-o"></i> <span id="modalDeptTitle">Add Department</span></div>
-    <input type="hidden" id="deptId">
-    <div class="hr-fg">
-      <label>Department Name <span class="req">*</span></label>
-      <input type="text" id="deptName" placeholder="e.g. Mathematics" maxlength="100">
-    </div>
-    <div class="hr-fg">
-      <label>Department Head</label>
-      <select id="deptHead"><option value="">-- Select Staff --</option></select>
-    </div>
-    <div class="hr-fg">
-      <label>Description</label>
-      <textarea id="deptDesc" rows="3" placeholder="Brief description..."></textarea>
-    </div>
-    <div class="hr-modal-actions">
-      <button class="hr-btn hr-btn-ghost" onclick="HR.closeModal('modalDept')">Cancel</button>
-      <button class="hr-btn hr-btn-primary" onclick="HR.saveDept()"><i class="fa fa-check"></i> Save</button>
-    </div>
-  </div>
-</div>
 
 <!-- Job Posting Modal -->
 <div class="hr-modal-overlay" id="modalJob">
-  <div class="hr-modal" style="max-width:620px;">
-    <div class="hr-modal-title"><i class="fa fa-briefcase"></i> <span id="modalJobTitle">New Job Posting</span></div>
-    <input type="hidden" id="jobId">
-    <div class="hr-modal-grid">
-      <div class="hr-fg" style="grid-column:1/-1;">
-        <label>Job Title <span class="req">*</span></label>
-        <input type="text" id="jobTitle" placeholder="e.g. Mathematics Teacher" maxlength="150">
+  <div class="hr-modal hr-modal-lg">
+    <div class="hr-modal-head">
+      <div>
+        <div class="hr-modal-title"><i class="fa fa-briefcase"></i> <span id="modalJobTitle">New Job Posting</span></div>
+        <div class="hr-modal-sub">Vacancies opened here feed the applicant pipeline and the hire-to-staff conversion.</div>
       </div>
-      <div class="hr-fg">
-        <label>Department <span class="req">*</span></label>
-        <select id="jobDept"><option value="">-- Select --</option></select>
+      <button type="button" class="hr-modal-x" onclick="HR.closeModal('modalJob')" aria-label="Close">&times;</button>
+    </div>
+
+    <div class="hr-modal-body">
+      <input type="hidden" id="jobId">
+
+      <div class="hr-form-section">
+        <div class="hr-form-legend">Role</div>
+        <div class="hr-modal-grid">
+          <div class="hr-fg" style="grid-column:1/-1;">
+            <label>Job Title <span class="req">*</span></label>
+            <input type="text" id="jobTitle" placeholder="e.g. PGT Mathematics" maxlength="150">
+          </div>
+          <div class="hr-fg">
+            <label>Department <span class="req">*</span></label>
+            <select id="jobDept"><option value="">-- Select --</option></select>
+          </div>
+          <div class="hr-fg">
+            <label>Positions <span class="req">*</span></label>
+            <input type="number" id="jobPositions" min="1" value="1">
+          </div>
+        </div>
+        <div class="hr-dept-snapshot" id="jobDeptSnapshot" style="display:none;"></div>
       </div>
-      <div class="hr-fg">
-        <label>Positions <span class="req">*</span></label>
-        <input type="number" id="jobPositions" min="1" value="1">
+
+      <div class="hr-form-section">
+        <div class="hr-form-legend">Requirements</div>
+        <div class="hr-modal-grid">
+          <div class="hr-fg" style="grid-column:1/-1;">
+            <label>Description</label>
+            <textarea id="jobDescription" rows="3" placeholder="Teach Mathematics to classes IX-XII as per the CBSE curriculum."></textarea>
+          </div>
+          <div class="hr-fg" style="grid-column:1/-1;">
+            <label>Qualifications</label>
+            <textarea id="jobQualifications" rows="2" placeholder="M.Sc. Mathematics with B.Ed."></textarea>
+          </div>
+          <div class="hr-fg" style="grid-column:1/-1;">
+            <label>Experience Required</label>
+            <input type="text" id="jobExperience" placeholder="e.g. 3+ years" maxlength="100">
+          </div>
+        </div>
       </div>
-      <div class="hr-fg" style="grid-column:1/-1;">
-        <label>Description</label>
-        <textarea id="jobDescription" rows="3" placeholder="Role description..."></textarea>
-      </div>
-      <div class="hr-fg" style="grid-column:1/-1;">
-        <label>Qualifications</label>
-        <textarea id="jobQualifications" rows="2" placeholder="Required qualifications..."></textarea>
-      </div>
-      <div class="hr-fg" style="grid-column:1/-1;">
-        <label>Experience Required</label>
-        <input type="text" id="jobExperience" placeholder="e.g. 3+ years" maxlength="100">
-      </div>
-      <div class="hr-fg">
-        <label>Salary Range Min</label>
-        <input type="number" id="jobSalaryMin" min="0" step="100" placeholder="0">
-      </div>
-      <div class="hr-fg">
-        <label>Salary Range Max</label>
-        <input type="number" id="jobSalaryMax" min="0" step="100" placeholder="0">
-      </div>
-      <div class="hr-fg">
-        <label>Deadline</label>
-        <input type="date" id="jobDeadline">
-      </div>
-      <div class="hr-fg">
-        <label>Status</label>
-        <select id="jobStatus">
-          <option value="Open">Open</option>
-          <option value="Closed">Closed</option>
-          <option value="On_Hold">On Hold</option>
-        </select>
+
+      <div class="hr-form-section">
+        <div class="hr-form-legend">Compensation &amp; timeline</div>
+        <div class="hr-modal-grid">
+          <div class="hr-fg">
+            <label>Salary Range Min</label>
+            <input type="number" id="jobSalaryMin" min="0" step="100" placeholder="0">
+          </div>
+          <div class="hr-fg">
+            <label>Salary Range Max</label>
+            <input type="number" id="jobSalaryMax" min="0" step="100" placeholder="0">
+          </div>
+          <div class="hr-fg">
+            <label>Deadline</label>
+            <input type="date" id="jobDeadline">
+          </div>
+          <div class="hr-fg">
+            <label>Status</label>
+            <select id="jobStatus">
+              <option value="Open">Open</option>
+              <option value="Closed">Closed</option>
+              <option value="On_Hold">On Hold</option>
+            </select>
+          </div>
+        </div>
       </div>
     </div>
+
     <div class="hr-modal-actions">
       <button class="hr-btn hr-btn-ghost" onclick="HR.closeModal('modalJob')">Cancel</button>
-      <button class="hr-btn hr-btn-primary" onclick="HR.saveJob()"><i class="fa fa-check"></i> Save</button>
+      <button class="hr-btn hr-btn-primary" onclick="HR.saveJob()"><i class="fa fa-check"></i> Save Job Posting</button>
     </div>
   </div>
 </div>
@@ -602,7 +846,7 @@
     </div>
     <div class="hr-modal-actions">
       <button class="hr-btn hr-btn-ghost" onclick="HR.closeModal('modalApplicant')">Cancel</button>
-      <button class="hr-btn hr-btn-primary" onclick="HR.saveApplicant()"><i class="fa fa-check"></i> Save</button>
+      <button class="hr-btn hr-btn-primary" id="btnSaveApplicant" onclick="HR.saveApplicant()"><i class="fa fa-check"></i> Save</button>
     </div>
   </div>
 </div>
@@ -646,6 +890,35 @@
       <div class="hr-fg" style="grid-column:1/-1;">
         <label>Description</label>
         <textarea id="ltDescription" rows="2" placeholder="Brief description..."></textarea>
+      </div>
+      <!-- Workforce Policy Programme — Leave Phases 2/3/5/6. All default to
+           current, non-behavior-changing values; each only takes effect once
+           its own flag (leave_policy_v2_flags.php) is turned on for this
+           school. Safe to fill in ahead of time. -->
+      <div class="hr-fg" style="grid-column:1/-1;border-top:1px dashed #ddd;padding-top:10px;margin-top:2px;">
+        <label style="font-weight:700;color:#888;font-size:11px;text-transform:uppercase;letter-spacing:.04em;">Policy Details (effective-dated)</label>
+      </div>
+      <div class="hr-fg">
+        <label>Effective From</label>
+        <input type="date" id="ltEffectiveFrom">
+        <small style="color:#999;">Blank = today. A change here creates a NEW dated version — past balances are never rewritten.</small>
+      </div>
+      <div class="hr-fg">
+        <label>Accrual Mode</label>
+        <select id="ltAccrualMode">
+          <option value="lump_sum">Lump Sum (full year upfront)</option>
+          <option value="monthly">Monthly (1/12th credited each month)</option>
+        </select>
+      </div>
+      <div class="hr-fg">
+        <label>Waiting Period (days)</label>
+        <input type="number" id="ltWaitingPeriod" min="0" value="0">
+        <small style="color:#999;">Days after joining before this type may be applied. 0 = no delay.</small>
+      </div>
+      <div class="hr-fg">
+        <label>Maximum Balance</label>
+        <input type="number" id="ltMaxBalance" min="0" placeholder="No ceiling">
+        <small style="color:#999;">Caps how much an employee may HOLD at once (distinct from Max Carry, above). Blank = no ceiling.</small>
       </div>
     </div>
     <div class="hr-modal-actions">
@@ -759,8 +1032,12 @@
 </div>
 
 <!-- Generate Payroll Modal -->
+<!-- W3.2.5/UAT: widened from 480px. The pre-flight result now carries a
+     per-employee blocker table (N-15), and a 13-row table inside a 480px box
+     was unreadable — the operator has to act on these rows, not squint at them.
+     Width is capped at 980px and falls back to 96vw on small screens. -->
 <div class="hr-modal-overlay" id="modalGenPayroll">
-  <div class="hr-modal" style="max-width:480px;">
+  <div class="hr-modal hr-modal-wide">
     <div class="hr-modal-title"><i class="fa fa-play-circle"></i> Generate Payroll</div>
     <div class="hr-modal-grid">
       <div class="hr-fg">
@@ -906,6 +1183,67 @@
   </div>
 </div>
 
+<!-- Training / Development Modal (Staff HR Advanced Capability Programme,
+     Phase 7) — no certificate upload here; attach via the staff's own
+     Edit page → HR Documents (Phase A's canonical Document Service). -->
+<div class="hr-modal-overlay" id="modalTraining">
+  <div class="hr-modal" style="max-width:600px;">
+    <div class="hr-modal-title"><i class="fa fa-graduation-cap"></i> <span id="modalTrainingTitle">New Training Record</span></div>
+    <input type="hidden" id="trainingId">
+    <div class="hr-modal-grid">
+      <div class="hr-fg" style="grid-column:1/-1;">
+        <label>Staff <span class="req">*</span></label>
+        <select id="trStaff"><option value="">-- Select Staff --</option></select>
+      </div>
+      <div class="hr-fg" style="grid-column:1/-1;">
+        <label>Title <span class="req">*</span></label>
+        <input type="text" id="trTitle" placeholder="e.g. First Aid Certification" maxlength="150">
+      </div>
+      <div class="hr-fg">
+        <label>Provider</label>
+        <input type="text" id="trProvider" placeholder="e.g. Red Cross" maxlength="120">
+      </div>
+      <div class="hr-fg">
+        <label>Category</label>
+        <select id="trCategory">
+          <option value="Training">Training</option>
+          <option value="Certification">Certification</option>
+          <option value="Workshop">Workshop</option>
+          <option value="Course">Course</option>
+        </select>
+      </div>
+      <div class="hr-fg">
+        <label>Status</label>
+        <select id="trStatus" onchange="HR.onTrStatusChange()">
+          <option value="Planned">Planned</option>
+          <option value="In Progress">In Progress</option>
+          <option value="Completed">Completed</option>
+        </select>
+      </div>
+      <div class="hr-fg">
+        <label>Hours</label>
+        <input type="number" id="trHours" min="0" placeholder="Optional">
+      </div>
+      <div class="hr-fg">
+        <label>Completed Date</label>
+        <input type="date" id="trCompletedDate">
+      </div>
+      <div class="hr-fg">
+        <label>Expiry Date <small style="opacity:.6">(certifications)</small></label>
+        <input type="date" id="trExpiryDate">
+      </div>
+      <div class="hr-fg" style="grid-column:1/-1;">
+        <label>Notes</label>
+        <textarea id="trNotes" rows="2" placeholder="Optional notes..."></textarea>
+      </div>
+    </div>
+    <div class="hr-modal-actions">
+      <button class="hr-btn hr-btn-ghost" onclick="HR.closeModal('modalTraining')">Cancel</button>
+      <button class="hr-btn hr-btn-primary" onclick="HR.saveTrainingRecord()"><i class="fa fa-check"></i> Save</button>
+    </div>
+  </div>
+</div>
+
 <!-- Toast Container -->
 <div id="hrToastContainer"></div>
 
@@ -934,6 +1272,17 @@
 .hr-tab{display:inline-flex;align-items:center;gap:6px;padding:10px 16px;font-size:13px;font-weight:600;color:var(--t2);text-decoration:none;border-bottom:2px solid transparent;margin-bottom:-2px;transition:all .2s var(--ease);font-family:var(--font-b);border-radius:6px 6px 0 0}
 .hr-tab:hover{color:var(--gold);background:var(--gold-dim)}
 .hr-tab.active{color:var(--gold);border-bottom-color:var(--gold);background:var(--gold-dim)}
+/* UX-P2-1 (same defect class as Compensation's tab bar): at narrow widths
+   this module has even more top-level tabs (Dashboard/Recruitment/Leave
+   Mgmt/Payroll/Appraisals/Training/Org Chart), and the last one on a wrapped
+   row rendered clipped ("App...") rather than cleanly wrapped. Below the
+   point where two tabs no longer fit, scroll the strip horizontally inside
+   its own container instead, so every label stays intact. Desktop keeps the
+   existing wrap layout untouched. */
+@media (max-width:560px){
+  .hr-tabs{flex-wrap:nowrap;overflow-x:auto;-webkit-overflow-scrolling:touch;margin-bottom:14px}
+  .hr-tab{flex:0 0 auto;white-space:nowrap}
+}
 .hr-tab i{font-size:14px}
 
 /* Panels */
@@ -998,6 +1347,31 @@
 .hr-empty{text-align:center;padding:28px 12px;color:var(--t3);font-size:13px}
 .hr-empty i{margin-right:6px}
 
+/* Org Chart (Phase 8) — indented tree, not an absolutely-positioned
+   graphic: it stays readable at any depth, reflows on narrow screens,
+   and needs no layout library. */
+.org-tree,.org-tree ul{list-style:none;margin:0;padding:0}
+.org-tree ul{margin-left:22px;border-left:1px solid var(--border);padding-left:14px}
+.org-node{display:flex;align-items:center;gap:9px;padding:7px 10px;margin:3px 0;border:1px solid var(--border);border-radius:8px;background:var(--bg2);transition:border-color .15s,background .15s}
+.org-node:hover{border-color:var(--gold)}
+.org-node.is-match{border-color:var(--gold);background:rgba(188,90,60,.06)}
+.org-node.is-inactive{opacity:.62}
+.org-toggle{flex:0 0 auto;width:18px;height:18px;line-height:16px;text-align:center;border:1px solid var(--border);border-radius:4px;background:var(--bg3);cursor:pointer;font-size:10px;color:var(--t2);padding:0}
+.org-toggle.leaf{visibility:hidden}
+.org-name{font-weight:700;font-size:13px;color:var(--t1);font-family:var(--font-b)}
+.org-meta{font-size:11.5px;color:var(--t3)}
+.org-count{margin-left:auto;font-size:11px;color:var(--t3);white-space:nowrap;font-variant-numeric:tabular-nums}
+.org-flag{font-size:10.5px;font-weight:700;padding:2px 7px;border-radius:20px;background:#fef3c7;color:#92400e;white-space:nowrap}
+.org-flag.sev{background:#fee2e2;color:#991b1b}
+.org-issues{border:1px solid #fdba74;background:#fff7ed;border-radius:8px;padding:11px 14px;margin-bottom:4px}
+.org-issues h4{margin:0 0 7px;font-size:12.5px;color:#9a3412;font-family:var(--font-b)}
+.org-issues ul{margin:0;padding-left:17px}
+.org-issues li{font-size:12px;color:#7c2d12;margin-bottom:3px;line-height:1.45}
+@media (prefers-color-scheme:dark){
+  .org-issues{background:rgba(154,52,18,.14);border-color:rgba(253,186,116,.4)}
+  .org-issues h4,.org-issues li{color:#fdba74}
+}
+
 /* Badges */
 .hr-badge{display:inline-block;padding:3px 10px;font-size:12px;font-weight:700;border-radius:20px;text-transform:capitalize;font-family:var(--font-b);letter-spacing:.3px}
 .hr-badge-pending{background:#fef3c7;color:#92400e}
@@ -1006,6 +1380,7 @@
 .hr-badge-cancelled{background:#e5e7eb;color:#4b5563}
 .hr-badge-closed{background:#e5e7eb;color:#4b5563}
 .hr-badge-draft{background:#dbeafe;color:#1e40af}
+.hr-badge-info{background:#e0f2fe;color:#075985}
 .hr-badge-finalized{background:#fef3c7;color:#92400e}
 .hr-badge-approved{background:#e0e7ff;color:#3730a3}
 .hr-badge-partially-paid{background:#fde68a;color:#78350f}
@@ -1056,13 +1431,42 @@
 
 /* Modal */
 .hr-modal-overlay{display:none;position:fixed;inset:0;background:rgba(0,0,0,.55);z-index:9999;align-items:center;justify-content:center;padding:20px}
-.hr-modal-overlay.open{display:flex;animation:hrFadeIn .2s}
+.hr-modal-overlay.open{display:flex;animation:hrFadeIn .18s cubic-bezier(.4,0,.2,1) backwards}
 .hr-modal{background:var(--bg2);border-radius:12px;padding:24px;max-width:580px;width:95%;max-height:85vh;overflow-y:auto;box-shadow:0 20px 60px rgba(0,0,0,.3)}
-.hr-modal-overlay.open .hr-modal{animation:hrSlideUp .25s var(--ease)}
+.hr-modal-overlay.open .hr-modal{animation:hrModalIn .22s cubic-bezier(.4,0,.2,1) backwards}
 .hr-modal-title{font-size:16px;font-weight:700;color:var(--t1);margin-bottom:18px;display:flex;align-items:center;gap:8px;font-family:var(--font-b)}
 .hr-modal-title i{color:var(--gold)}
 .hr-modal-actions{display:flex;justify-content:flex-end;gap:8px;margin-top:18px;padding-top:14px;border-top:1px solid var(--border)}
+/* Large form modal: fixed head + footer, only the body scrolls, so Cancel/Save
+   can never be pushed past the viewport edge (reported at 90% browser zoom). */
+.hr-modal-lg{max-width:880px;width:min(880px,96vw);padding:0;display:flex;flex-direction:column;max-height:88vh;overflow:hidden}
+.hr-modal-head{display:flex;align-items:flex-start;justify-content:space-between;gap:12px;padding:18px 24px;border-bottom:1px solid var(--border);flex:0 0 auto}
+.hr-modal-head .hr-modal-title{margin-bottom:0}
+.hr-modal-sub{font-size:12px;color:var(--t3);font-family:var(--font-b);margin-top:4px}
+.hr-modal-x{background:none;border:0;font-size:24px;line-height:1;color:var(--t3);cursor:pointer;padding:2px 8px;border-radius:6px;transition:all .2s var(--ease)}
+.hr-modal-x:hover{color:var(--t1);background:var(--gold-dim)}
+.hr-modal-body{padding:20px 24px;overflow-y:auto;flex:1 1 auto}
+.hr-modal-lg .hr-modal-actions{margin-top:0;padding:14px 24px;flex:0 0 auto;background:var(--bg2)}
+.hr-form-section{margin-bottom:22px}
+.hr-form-section:last-child{margin-bottom:0}
+.hr-form-legend{font:700 11px/1 var(--font-b);letter-spacing:.9px;text-transform:uppercase;color:var(--t3);margin-bottom:10px;display:flex;align-items:center;gap:7px}
+.hr-form-legend::after{content:'';flex:1;height:1px;background:var(--border)}
+/* Who already works in the chosen department. The roster is already in
+   deptCache (get_departments returns staff[] per department); it was simply
+   never surfaced where a recruiter decides how many positions to open. */
+.hr-dept-snapshot{margin-top:12px;padding:12px 14px;border:1px solid var(--border);border-radius:10px;background:var(--bg)}
+.hr-dept-snap-head{display:flex;align-items:center;gap:7px;font-size:12.5px;font-weight:700;color:var(--t1);margin-bottom:9px;font-family:var(--font-b)}
+.hr-dept-snap-head i{color:var(--gold)}
+.hr-dept-snap-list{display:flex;flex-wrap:wrap;gap:6px}
+.hr-dept-chip{display:inline-flex;align-items:center;gap:6px;padding:4px 10px;border-radius:999px;border:1px solid var(--border);background:var(--bg2);font-size:11.5px;color:var(--t1);font-family:var(--font-b)}
+.hr-dept-chip small{color:var(--t3);font-size:10.5px}
+.hr-dept-snap-empty{font-size:12px;color:var(--t3);font-family:var(--font-b)}
+@media(max-width:768px){.hr-modal-lg{max-height:92vh}.hr-modal-body{padding:16px}.hr-modal-head,.hr-modal-lg .hr-modal-actions{padding:14px 16px}}
 .hr-modal-grid{display:grid;grid-template-columns:1fr 1fr;gap:12px}
+/* Wide variant for modals that carry a review table rather than a short form.
+   Scoped to a modifier so the 580px default keeps applying everywhere else. */
+.hr-modal-wide{max-width:980px !important;width:96vw}
+@media (max-width:1024px){ .hr-modal-wide{max-width:96vw !important} }
 
 /* Salary Structure */
 .hr-fg-group{grid-column:1/-1;border:1px solid var(--border);border-radius:8px;padding:14px;margin-top:4px}
@@ -1210,7 +1614,7 @@
 
 /* Toast */
 #hrToastContainer{position:fixed;top:20px;right:20px;z-index:99999;display:flex;flex-direction:column;gap:8px}
-.hr-toast{padding:12px 18px;border-radius:8px;font-size:13px;font-weight:600;font-family:var(--font-b);color:#fff;animation:hrSlideIn .3s var(--ease);min-width:240px;box-shadow:0 8px 24px rgba(0,0,0,.2)}
+.hr-toast{padding:12px 18px;border-radius:8px;font-size:13px;font-weight:600;font-family:var(--font-b);color:#fff;animation:hrSlideIn .3s cubic-bezier(.4,0,.2,1) backwards;min-width:240px;box-shadow:0 8px 24px rgba(0,0,0,.2)}
 .hr-toast.success{background:#059669}
 .hr-toast.error{background:#dc2626}
 .hr-toast.info{background:#2563eb}
@@ -1218,6 +1622,12 @@
 /* Animations */
 @keyframes hrFadeIn{from{opacity:0}to{opacity:1}}
 @keyframes hrSlideUp{from{opacity:0;transform:translateY(20px)}to{opacity:1;transform:translateY(0)}}
+/* Modal card: NO opacity here. The overlay fades; animating opacity on both
+   multiplies the two curves and reads as a second flash. */
+@keyframes hrModalIn{from{transform:translateY(12px) scale(.985)}to{transform:none}}
+@media(prefers-reduced-motion:reduce){
+  .hr-modal-overlay.open,.hr-modal-overlay.open .hr-modal{animation:none}
+}
 @keyframes hrSlideIn{from{opacity:0;transform:translateX(60px)}to{opacity:1;transform:translateX(0)}}
 
 /* Responsive */
@@ -1243,6 +1653,7 @@
 <!-- ================================================================
      JAVASCRIPT
 ================================================================= -->
+<script src="<?= base_url('assets/js/zx_dialog.js') ?>?v=1"></script>
 <script>
 /* Save PHP config before jQuery loads */
 var _HR_CFG = {
@@ -1251,10 +1662,27 @@ var _HR_CFG = {
   CSRF_HASH: '<?= $this->security->get_csrf_hash() ?>',
   activeTab: '<?= $at ?>'
 };
+/* W3.2.2 — whether to OFFER the adjustment form. Convenience only: every
+   payroll_overrides/* endpoint enforces HR:manage itself, so a user who forces
+   this to true still cannot create an adjustment. */
+var HR_CAN_MANAGE = <?= (function_exists('has_permission') && has_permission('HR', 'manage')) ? 'true' : 'false' ?>;
+/* Adjustment types, fetched once per page from the server so the option list
+   can never drift from what Payroll_override_service actually accepts. */
+var HR_ADJ_TYPES = [];
 /* Defer until jQuery is available (loaded in footer) */
 document.addEventListener('DOMContentLoaded', function(){
 (function(){
   'use strict';
+
+  // UX-P2-1: on the narrow-width horizontal-scroll tab strip, the active
+  // module tab can load scrolled out of view with nothing on screen to say
+  // which module is open. inline:'end' brings it fully into view rather
+  // than stopping the instant any sliver is visible; block:'nearest' never
+  // scrolls the page itself.
+  var activeHrTab = document.querySelector('.hr-tab.active');
+  if (activeHrTab && activeHrTab.scrollIntoView) {
+    activeHrTab.scrollIntoView({ block: 'nearest', inline: 'end' });
+  }
 
   /* ── Config ─────────────────────────────────────────────── */
   var BASE       = _HR_CFG.BASE;
@@ -1268,6 +1696,7 @@ document.addEventListener('DOMContentLoaded', function(){
   var leaveTypeCache = {};
   var _jobsCache     = {};
   var _appraisalCache= {};
+  var _trainingCache = {};
   var _salaryCache   = {};
   var currentJobId   = null;
   var currentRunId   = null;
@@ -1372,6 +1801,43 @@ document.addEventListener('DOMContentLoaded', function(){
       $s.append('<option value="'+esc(k)+'" data-dept="'+esc(dept)+'"'+(k===selectedVal?' selected':'')+'>'+esc(label)+'</option>');
     });
   }
+  /* Show who already works in the selected department. get_departments()
+     already returns staff[] and staff_count per department (joined on the
+     normalised dept_key, so case/spacing variants sum correctly) — the job
+     modal simply never displayed it, leaving a recruiter to guess headcount. */
+  function renderJobDeptSnapshot(){
+    var name = $('#jobDept').val() || '';
+    var $box = $('#jobDeptSnapshot');
+    if (!name) { $box.hide().empty(); return; }
+
+    var dept = null;
+    $.each(deptCache, function(k, v){
+      if (v && v.name === name) { dept = v; return false; }
+    });
+
+    var staff = (dept && $.isArray(dept.staff)) ? dept.staff : [];
+    var count = (dept && dept.staff_count != null) ? dept.staff_count : staff.length;
+    var open  = (dept && $.isArray(dept.openings)) ? dept.openings.length : 0;
+
+    var h = '<div class="hr-dept-snap-head"><i class="fa fa-users"></i> '
+          + esc(name) + ' &middot; ' + count + (count === 1 ? ' member' : ' members')
+          + (open ? ' &middot; ' + open + (open === 1 ? ' open posting' : ' open postings') : '')
+          + '</div>';
+
+    if (!staff.length) {
+      h += '<div class="hr-dept-snap-empty">No staff are assigned to this department yet.</div>';
+    } else {
+      h += '<div class="hr-dept-snap-list">';
+      $.each(staff, function(i, m){
+        h += '<span class="hr-dept-chip">' + esc(m.name || m.id)
+           + (m.position ? ' <small>' + esc(m.position) + '</small>' : '')
+           + '</span>';
+      });
+      h += '</div>';
+    }
+    $box.html(h).show();
+  }
+
   function fillDeptSelect(selId, selectedVal){
     var $s = $(selId);
     var first = $s.find('option:first').prop('outerHTML');
@@ -1405,15 +1871,25 @@ document.addEventListener('DOMContentLoaded', function(){
     });
 
     // Sub-tab switching
-    $(document).on('click', '.hr-sub-tab', function(){
+    $(document).on('change', '#jobDept', renderJobDeptSnapshot);
+$(document).on('click', '.hr-sub-tab', function(){
       var sub = $(this).data('sub');
       var $parent = $(this).closest('.hr-panel');
       $parent.find('.hr-sub-tab').removeClass('active');
       $(this).addClass('active');
       $parent.find('.hr-sub-panel').removeClass('active');
       $parent.find('#sub' + sub.charAt(0).toUpperCase() + sub.slice(1)).addClass('active');
+      // PAY-1 — payroll period locks live on the Payroll Runs tab. Loaded on
+      // each visit rather than cached: a period closed in another session must
+      // not keep showing as open here.
+      if(sub==='payrollRuns' && typeof loadPayrollLocks === 'function') loadPayrollLocks();
       // Lazy-load audit log on first tab visit
       if(sub==='leaveAudit' && !_auditCache.length) loadLeaveAudit();
+      // Comp-Off needs an employee before it can show anything, so the tab
+      // opens on its prompt rather than firing a query with no staff id.
+      if(sub==='compOff' && ($('#coStaffId').val() || '').trim()) loadCompOffLedger();
+      // Default the closure year field to the current year on first visit
+      if(sub==='leaveCarryForward' && !$('#cfYear').val()) $('#cfYear').val(new Date().getFullYear());
     });
 
     // Star rating click
@@ -1455,17 +1931,19 @@ document.addEventListener('DOMContentLoaded', function(){
   function populateFilterDropdowns(){
     fillStaffSelect('#filterLeaveStaff');
     fillStaffSelect('#filterAppraisalStaff');
+    fillStaffSelect('#filterTrainingStaff');
     fillDeptSelect('#filterJobDept');
   }
 
   function loadTabData(){
     switch(activeTab){
       case 'dashboard':    loadDashboard(); break;
-      case 'departments':  loadDepartments(); break;
       case 'recruitment':  loadJobs(); break;
       case 'leaves':       loadLeaveTypes(); loadLeaveRequests(); loadLeaveBalances(); break;
       case 'payroll':      loadMyPayslips(); loadSalaryStructures(); loadPayrollRuns(); break;
       case 'appraisals':   loadAppraisals(); break;
+      case 'training':     loadTrainingRecords(); break;
+      case 'orgchart':     loadOrgChart(); break;
     }
   }
 
@@ -1548,227 +2026,15 @@ document.addEventListener('DOMContentLoaded', function(){
   }
 
   /* ================================================================
-     DEPARTMENTS
-  ================================================================ */
-  function loadDepartments(){
-    getJSON('hr/get_departments').then(function(r){
-      deptCache = toMap((r&&r.departments)?r.departments:(r&&r.data)?r.data:{});
-      var $tb=$('#tblDepts tbody');
-      var keys=Object.keys(deptCache);
-      if(!keys.length){ $tb.html('<tr><td colspan="8" class="hr-empty"><i class="fa fa-inbox"></i> No departments found. Add one to get started.</td></tr>'); return; }
-      var h='', i=0;
-      $.each(deptCache, function(k,d){
-        i++;
-        var cnt    = (d.staff_count || 0);
-        var openCt = (d.open_count  || (d.openings ? d.openings.length : 0));
-        var hasDetail = cnt > 0 || openCt > 0;
-        var rowId = 'deptDetail_' + esc(k);
-        // Auto-expand any dept with active openings so admin sees vacancies
-        // immediately without having to click into each row.
-        var startOpen = (openCt > 0);
-
-        // Chevron — only shown when there's something to expand
-        var chevron = hasDetail
-          ? '<i class="fa fa-chevron-' + (startOpen ? 'down' : 'right') + '" id="dchev_'+esc(k)+'" style="color:var(--t3);transition:transform .15s"></i>'
-          : '<i class="fa fa-circle" style="color:var(--border);font-size:6px;vertical-align:middle"></i>';
-
-        // Staff count chip
-        var staffChip = cnt > 0
-          ? '<span style="background:var(--gold-dim);color:var(--gold);padding:2px 8px;border-radius:10px;font-weight:700;font-size:12px">'+cnt+'</span>'
-          : '<span style="color:var(--t3)">0</span>';
-
-        // Open jobs chip (highlighted orange when > 0)
-        var openChip = openCt > 0
-          ? '<span style="background:#fef3c7;color:#d97706;padding:2px 8px;border-radius:10px;font-weight:700;font-size:12px;display:inline-flex;align-items:center;gap:4px"><i class="fa fa-briefcase" style="font-size:10px"></i>'+openCt+'</span>'
-          : '<span style="color:var(--t3)">—</span>';
-
-        // Whole-row clickable when expandable; pointer-events bypass for actions cell
-        var rowStyle = hasDetail ? 'cursor:pointer' : '';
-        var rowOnClick = hasDetail ? ' onclick="HR.toggleDept(\''+esc(k)+'\', event)"' : '';
-
-        // Created date — accept ISO ("2026-04-29...") or epoch seconds/ms.
-        // Falls back to a dash so an unset field doesn't break the column.
-        var createdRaw = d.created_at || d.createdAt || d.created || '';
-        var createdLabel = '—';
-        if (createdRaw) {
-          var dt = null;
-          if (typeof createdRaw === 'number') {
-            dt = new Date(createdRaw < 1e12 ? createdRaw * 1000 : createdRaw);
-          } else if (typeof createdRaw === 'string') {
-            dt = new Date(createdRaw);
-          }
-          if (dt && !isNaN(dt.getTime())) {
-            createdLabel = dt.toLocaleDateString('en-IN', { day: '2-digit', month: 'short', year: 'numeric' });
-          }
-        }
-
-        // Status badge — `archived: true` flips to "Archived"; otherwise
-        // honour an explicit `status` field; default to Active.
-        var isArchived = (d.archived === true) || (d.archived === 'true');
-        var statusLabel = isArchived ? 'Archived'
-          : ((d.status && String(d.status).trim()) ? String(d.status).trim() : 'Active');
-        var statusKey = statusLabel.toLowerCase();
-        var statusColors = {
-          active:   { bg: '#dcfce7', fg: '#166534' },
-          inactive: { bg: '#fee2e2', fg: '#991b1b' },
-          archived: { bg: '#e5e7eb', fg: '#374151' }
-        };
-        var sc = statusColors[statusKey] || statusColors.active;
-        var statusBadge = '<span style="background:'+sc.bg+';color:'+sc.fg+';padding:2px 10px;border-radius:10px;font-weight:600;font-size:11px;text-transform:uppercase;letter-spacing:0.3px">'+esc(statusLabel)+'</span>';
-
-        h += '<tr'+rowOnClick+' style="'+rowStyle+'">';
-        h += '<td style="text-align:center">'+chevron+'</td>';
-        h += '<td><strong>'+esc(d.name)+'</strong>' + (d.description ? '<div style="color:var(--t3);font-size:11px;margin-top:2px">'+esc(d.description)+'</div>' : '') + '</td>';
-        var headName = staffName(d.head_staff_id);
-        h += '<td>' + (headName
-              ? esc(headName)
-              : '<span style="color:var(--t3);font-style:italic">— not assigned —</span>') + '</td>';
-        h += '<td class="hr-num">'+staffChip+'</td>';
-        h += '<td class="hr-num">'+openChip+'</td>';
-        h += '<td style="color:var(--t2);font-size:12px;white-space:nowrap">'+createdLabel+'</td>';
-        h += '<td>'+statusBadge+'</td>';
-        h += '<td onclick="event.stopPropagation()">';
-        h +=   '<button class="hr-act-btn" onclick="HR.editDept(\''+esc(k)+'\')"><i class="fa fa-pencil"></i></button> ';
-        h +=   '<button class="hr-act-btn danger" onclick="HR.deleteDept(\''+esc(k)+'\')"><i class="fa fa-trash"></i></button>';
-        h += '</td></tr>';
-
-        if (hasDetail) {
-          h += '<tr id="'+rowId+'" style="display:'+(startOpen ? 'table-row' : 'none')+'"><td colspan="8" style="padding:12px 16px 16px 56px;background:var(--bg3);border-top:1px dashed var(--border)">';
-
-          // Active openings FIRST (more urgent than the staff list — admin
-          // usually opens this row to see vacancies, not the roster).
-          if (openCt > 0) {
-            h += '<div style="font:600 11px/1.3 var(--font-b);color:#d97706;margin-bottom:6px"><i class="fa fa-briefcase" style="margin-right:4px"></i> Active Openings ('+openCt+')</div>';
-            h += '<table style="width:100%;font-size:12px;border-collapse:collapse;margin-bottom:'+(cnt>0?'14px':'0')+'">';
-            h += '<thead><tr style="border-bottom:1px solid var(--border)"><th style="text-align:left;padding:4px 8px;font-size:10px;color:var(--t3)">Job</th><th style="text-align:left;padding:4px 8px;font-size:10px;color:var(--t3)">Filled / Total</th><th style="text-align:left;padding:4px 8px;font-size:10px;color:var(--t3)">Remaining</th><th style="text-align:left;padding:4px 8px;font-size:10px;color:var(--t3)">Status</th><th style="text-align:left;padding:4px 8px;font-size:10px;color:var(--t3)">Deadline</th></tr></thead><tbody>';
-            d.openings.forEach(function(j){
-              var progPct = j.total_positions > 0 ? Math.round((j.filled_positions / j.total_positions) * 100) : 0;
-              h += '<tr style="border-bottom:1px solid var(--border)">';
-              h += '<td style="padding:6px 8px"><a href="<?= base_url("ats") ?>" style="color:var(--gold);text-decoration:none;font-weight:600">'+esc(j.title)+'</a></td>';
-              h += '<td style="padding:6px 8px">'+j.filled_positions+' / '+j.total_positions+'<div style="height:4px;background:var(--border);border-radius:2px;margin-top:3px;width:80px"><div style="height:4px;background:var(--gold);border-radius:2px;width:'+progPct+'%"></div></div></td>';
-              h += '<td style="padding:6px 8px;font-weight:600;color:'+(j.remaining > 0 ? '#d97706' : '#BC5A3C')+'">'+j.remaining+'</td>';
-              h += '<td style="padding:6px 8px">'+badgeHtml(j.status)+'</td>';
-              h += '<td style="padding:6px 8px;color:var(--t3);font-size:11px">'+esc(j.deadline||'-')+'</td>';
-              h += '</tr>';
-            });
-            h += '</tbody></table>';
-          }
-
-          // Staff roster
-          if (cnt > 0 && d.staff && d.staff.length) {
-            h += '<div style="font:600 11px/1.3 var(--font-b);color:var(--t2);margin-bottom:6px"><i class="fa fa-users" style="margin-right:4px"></i> Staff ('+cnt+')</div>';
-            h += '<table style="width:100%;font-size:12px;border-collapse:collapse">';
-            h += '<thead><tr style="border-bottom:1px solid var(--border)"><th style="text-align:left;padding:4px 8px;font-size:10px;color:var(--t3)">ID</th><th style="text-align:left;padding:4px 8px;font-size:10px;color:var(--t3)">Name</th><th style="text-align:left;padding:4px 8px;font-size:10px;color:var(--t3)">Position</th><th style="text-align:left;padding:4px 8px;font-size:10px;color:var(--t3)">Phone</th></tr></thead><tbody>';
-            d.staff.forEach(function(s){
-              h += '<tr style="border-bottom:1px solid var(--border)"><td style="padding:6px 8px;font-family:var(--font-m);font-size:11px">'+esc(s.id)+'</td><td style="padding:6px 8px">'+esc(s.name)+'</td><td style="padding:6px 8px;color:var(--t2)">'+esc(s.position||'-')+'</td><td style="padding:6px 8px;color:var(--t3)">'+esc(s.phone||'-')+'</td></tr>';
-            });
-            h += '</tbody></table>';
-          }
-
-          h += '</td></tr>';
-        }
-      });
-      $tb.html(h);
-    });
-  }
-
-  // Toggle expand/collapse for a department row + rotate the chevron.
-  function toggleDept(k, evt) {
-    if (evt && evt.target && evt.target.closest('button, a')) return; // ignore clicks on action buttons / links
-    var $row = $('#deptDetail_' + k);
-    var $chev = $('#dchev_' + k);
-    if (!$row.length) return;
-    var open = $row.is(':visible');
-    $row.toggle(!open);
-    $chev.removeClass('fa-chevron-right fa-chevron-down').addClass(open ? 'fa-chevron-right' : 'fa-chevron-down');
-  }
-
-  function openDeptModal(id){
-    $('#deptId').val('');
-    $('#deptName').val('');
-    $('#deptDesc').val('');
-    fillStaffSelect('#deptHead');
-    $('#modalDeptTitle').text('Add Department');
-    if(id && deptCache[id]){
-      var d=deptCache[id];
-      $('#deptId').val(id);
-      $('#deptName').val(d.name);
-      $('#deptDesc').val(d.description);
-      fillStaffSelect('#deptHead', d.head_staff_id);
-      $('#modalDeptTitle').text('Edit Department');
-    }
-    openModal('modalDept');
-  }
-
-  function saveDept(){
-    var name=$('#deptName').val().trim();
-    if(!name){ toast('Department name is required','error'); return; }
-    var data={
-      id: $('#deptId').val(),
-      name: name,
-      head_staff_id: $('#deptHead').val(),
-      description: $('#deptDesc').val().trim()
-    };
-    post('hr/save_department', data).then(function(r){
-      if(r&&r.status){ toast(r.message||'Saved','success'); closeModal('modalDept'); loadDepartments(); }
-      else toast(r.message||'Failed','error');
-    });
-  }
-
-  function deleteDept(id){
-    if(!confirm('Delete this department? This cannot be undone.')) return;
-    post('hr/delete_department', {id:id}).then(function(r){
-      if(r&&r.status){ toast('Deleted','success'); loadDepartments(); }
-      else toast(r.message||'Failed','error');
-    });
-  }
-
-  function seedDepartments(){
-    var defaults = [
-      {name:'Academic',       description:'Teaching staff, curriculum planning, and academic coordination'},
-      {name:'Administration', description:'School administration, office management, and general operations'},
-      {name:'Finance',        description:'Fees collection, accounts, budgeting, and financial management'},
-      {name:'HR',             description:'Human resources, recruitment, payroll, and staff welfare'},
-      {name:'Operations',     description:'Facilities, maintenance, transport, and day-to-day operations'},
-      {name:'Library',        description:'Library management, cataloguing, and reading programs'},
-      {name:'Medical',        description:'Health services, infirmary, and student wellness'},
-      {name:'Admissions',     description:'Student admissions, enrollment, and registration'}
-    ];
-    // Filter out already-existing departments (case-insensitive)
-    var existingNames = [];
-    $.each(deptCache, function(k,v){ existingNames.push((v.name||'').toLowerCase()); });
-    var toAdd = defaults.filter(function(d){ return existingNames.indexOf(d.name.toLowerCase()) === -1; });
-
-    if(toAdd.length === 0){
-      toast('All suggested departments already exist.','info');
-      return;
-    }
-
-    if(!confirm('This will add ' + toAdd.length + ' department(s):\n\n' + toAdd.map(function(d){return '• ' + d.name;}).join('\n') + '\n\nAlready existing departments will be skipped. Proceed?')) return;
-
-    var btn = document.getElementById('seedDeptBtn');
-    if(btn){ btn.disabled=true; btn.innerHTML='<i class="fa fa-spinner fa-spin"></i> Seeding...'; }
-
-    var pending = toAdd.length, added = 0, failed = 0;
-    toAdd.forEach(function(d){
-      post('hr/save_department', {name:d.name, description:d.description, status:'Active'}).then(function(r){
-        if(r && r.status === 'success') added++; else failed++;
-        pending--;
-        if(pending === 0){
-          if(btn){ btn.disabled=false; btn.innerHTML='<i class="fa fa-magic"></i> Seed Suggestions'; }
-          toast(added + ' department(s) added' + (failed ? ', ' + failed + ' failed' : ''), added ? 'success' : 'error');
-          loadDepartments();
-          loadDeptCache();
-        }
-      });
-    });
-  }
-
-  /* ================================================================
      RECRUITMENT
   ================================================================ */
   function loadJobs(){
     var params = '?status='+($('#filterJobStatus').val()||'')+'&department='+($('#filterJobDept').val()||'');
+    // REC-D2: repaint the spinner the initial markup shows. Without this the
+    // table kept displaying the previous rows for the whole round-trip, so a
+    // posting that had just been saved looked like it had not been created.
+    $('#tblJobs tbody').html('<tr><td colspan="9" class="hr-empty">'
+      + '<i class="fa fa-spinner fa-spin"></i> Loading job postings\u2026</td></tr>');
     getJSON('hr/get_jobs'+params).then(function(r){
       var jobsRaw = (r&&r.jobs)?r.jobs:(r&&r.data)?r.data:{};
       // Re-key cache by canonical j.id so editJob/deleteJob lookups work
@@ -1851,6 +2117,7 @@ document.addEventListener('DOMContentLoaded', function(){
     $('#jobDeadline').val('');
     $('#jobStatus').val('Open');
     fillDeptSelect('#jobDept');
+    renderJobDeptSnapshot();
     $('#modalJobTitle').text('New Job Posting');
     openModal('modalJob');
   }
@@ -1862,6 +2129,7 @@ document.addEventListener('DOMContentLoaded', function(){
       $('#jobId').val(id);
       $('#jobTitle').val(j.title||'');
       fillDeptSelect('#jobDept', j.department);
+      renderJobDeptSnapshot();
       $('#jobDescription').val(j.description||'');
       $('#jobQualifications').val(j.qualifications||'');
       $('#jobExperience').val(j.experience_required||'');
@@ -1925,8 +2193,8 @@ document.addEventListener('DOMContentLoaded', function(){
     });
   }
 
-  function deleteJob(id){
-    if(!confirm('Delete this job posting and all its applicants?')) return;
+  async function deleteJob(id){
+    if(!await zxConfirm({ title: 'Delete this job posting and all its applicants?' })) return;
     post('hr/delete_job', {id:id}).then(function(r){
       if(r&&r.status==='success'){ toast('Deleted','success'); $('#applicantsContainer').hide(); }
       else toast((r&&r.message)||'Failed to delete','error');
@@ -1938,7 +2206,10 @@ document.addEventListener('DOMContentLoaded', function(){
     $('#applicantId').val('');
     $('#applicantJobId').val(currentJobId);
     $('#applicantName,#applicantEmail,#applicantPhone,#applicantNotes').val('');
-    $('#applicantStatus').val('applied');
+    // REC-D5: the options are title-case ("Applied"). Passing 'applied' matched
+    // no option, so jQuery set selectedIndex=-1: the control rendered BLANK and
+    // .val() returned null, posting an empty status.
+    $('#applicantStatus').val('Applied');
     $('#applicantInterview').val('');
     $('#applicantRating').val(0);
     $('#applicantRatingStars i').removeClass('fa-star').addClass('fa-star-o');
@@ -1969,11 +2240,11 @@ document.addEventListener('DOMContentLoaded', function(){
     openModal('modalApplicant');
   }
 
-  function quickApplicantStatus(id, newStatus){
+  async function quickApplicantStatus(id, newStatus){
     var label = newStatus==='Selected'?'Accept':newStatus==='Rejected'?'Reject':'Mark as Joined';
-    if(!confirm(label+' this applicant?')) return;
+    if(!await zxConfirm({ title: 'this applicant?' })) return;
     post('hr/update_applicant_status', {id:id, job_id:currentJobId, status:newStatus}).then(function(r){
-      if(r&&r.status){ toast(newStatus+' successfully','success'); loadApplicants(currentJobId,$('#applicantsJobTitle').text()); loadJobs(); }
+      if (r && r.status && r.status !== 'error'){ toast(newStatus+' successfully','success'); loadApplicants(currentJobId,$('#applicantsJobTitle').text()); loadJobs(); }
       else toast(r&&r.message||'Failed','error');
     });
   }
@@ -1981,21 +2252,34 @@ document.addEventListener('DOMContentLoaded', function(){
   function saveApplicant(){
     var name=$('#applicantName').val().trim();
     if(!name){ toast('Name is required','error'); return; }
+    // REC-D6: without this guard a second click POSTs again with a blank id
+    // and creates a DUPLICATE applicant.
+    if(window._saveApplicantInFlight) return;
+    window._saveApplicantInFlight = true;
+    var $btn=$('#btnSaveApplicant');
+    var orig=$btn.html();
+    $btn.prop('disabled',true).html('<i class="fa fa-spinner fa-spin"></i> Saving\u2026');
     post('hr/save_applicant', {
       id:$('#applicantId').val(), job_id:$('#applicantJobId').val(),
       name:name, email:$('#applicantEmail').val().trim(), phone:$('#applicantPhone').val().trim(),
       status:$('#applicantStatus').val(), interview_date:$('#applicantInterview').val(),
       interview_notes:$('#applicantNotes').val().trim(), rating:$('#applicantRating').val()
     }).then(function(r){
-      if(r&&r.status){ toast(r.message||'Saved','success'); closeModal('modalApplicant'); loadApplicants(currentJobId,$('#applicantsJobTitle').text()); loadJobs(); }
+      if (r && r.status && r.status !== 'error'){ toast(r.message||'Saved','success'); closeModal('modalApplicant'); loadApplicants(currentJobId,$('#applicantsJobTitle').text()); loadJobs(); }
       else toast(r.message||'Failed','error');
+    }).fail(function(){
+      // REC-D6: a dropped or 500 response used to surface nothing at all.
+      toast('Server error \u2014 the applicant was not saved','error');
+    }).always(function(){
+      window._saveApplicantInFlight = false;
+      $btn.prop('disabled',false).html(orig);
     });
   }
 
-  function deleteApplicant(id){
-    if(!confirm('Delete this applicant?')) return;
+  async function deleteApplicant(id){
+    if(!await zxConfirm({ title: 'Delete this applicant?' })) return;
     post('hr/delete_applicant', {id:id, job_id:currentJobId}).then(function(r){
-      if(r&&r.status){ toast('Deleted','success'); loadApplicants(currentJobId,$('#applicantsJobTitle').text()); }
+      if (r && r.status && r.status !== 'error'){ toast('Deleted','success'); loadApplicants(currentJobId,$('#applicantsJobTitle').text()); }
       else toast(r.message||'Failed','error');
     });
   }
@@ -2005,9 +2289,25 @@ document.addEventListener('DOMContentLoaded', function(){
   ================================================================ */
   var SEED_CODES = ['CL','SL','EL','MATERNITY','PATERNITY','LWP','COMP_OFF','ACADEMIC','DUTY'];
 
+  /* Workforce Policy Programme — compact Phase 3/5/6 summary for the Leave
+     Types table. Shows nothing extra for a type left at every default
+     (monthly=off, waiting=0, no ceiling) so the table stays uncluttered for
+     schools not using these capabilities yet. */
+  function leaveTypePolicyBadges(t){
+    var out = [];
+    if(t.accrual_mode==='monthly') out.push('<span class="hr-badge hr-badge-info" title="Accrues 1/12th monthly instead of a lump sum">Monthly Accrual</span>');
+    if(t.waiting_period_days && Number(t.waiting_period_days) > 0) out.push('<span class="hr-badge" style="background:#f3f4f6;color:#374151" title="Days after joining before this type may be applied">Wait '+esc(t.waiting_period_days)+'d</span>');
+    if(t.max_balance!==null && t.max_balance!==undefined && t.max_balance!=='') out.push('<span class="hr-badge" style="background:#f3f4f6;color:#374151" title="Maximum balance an employee may hold at once">Cap '+esc(t.max_balance)+'</span>');
+    return out.length ? out.join(' ') : '<span style="color:var(--t3)">—</span>';
+  }
+
   function loadLeaveTypes(){
     getJSON('hr/get_leave_types').then(function(r){
       leaveTypeCache = toMap((r&&r.leave_types)?r.leave_types:(r&&r.data)?r.data:{});
+      var _acc=document.getElementById('chkAccrualMode'); if(_acc){ _acc.checked = !!(r && r.accrualEnabled===true); }
+      var _lp = (r && r.leavePolicy) ? r.leavePolicy : {};
+      var _lpMap = {lpEffectiveDating:'effective_dating', lpProrata:'prorata', lpWaitingPeriod:'waiting_period', lpMaxBalance:'max_balance', lpYearClosure:'year_closure'};
+      Object.keys(_lpMap).forEach(function(id){ var el=document.getElementById(id); if(el){ el.checked = _lp[_lpMap[id]]===true; } });
       var $tb=$('#tblLeaveTypes tbody');
       var keys=Object.keys(leaveTypeCache);
       if(!keys.length){ $tb.html('<tr><td colspan="7" class="hr-empty"><i class="fa fa-inbox"></i> No leave types defined.</td></tr>'); }
@@ -2018,6 +2318,7 @@ document.addEventListener('DOMContentLoaded', function(){
           h+='<tr><td class="hr-num">'+i+'</td><td><strong>'+esc(t.name)+'</strong></td><td class="hr-num">'+esc(t.code)+'</td>';
           h+='<td class="hr-num">'+(t.days_per_year||0)+'</td><td>'+(t.carry_forward===true||t.carry_forward==='yes'||t.carry_forward==='true'?'<i class="fa fa-check" style="color:var(--gold)"></i>':'<i class="fa fa-times" style="color:var(--t3)"></i>')+'</td>';
           h+='<td class="hr-num">'+(t.max_carry||0)+'</td>';
+          h+='<td>'+leaveTypePolicyBadges(t)+'</td>';
           h+='<td><button class="hr-act-btn" onclick="HR.editLeaveType(\''+esc(k)+'\')"><i class="fa fa-pencil"></i></button> ';
           h+='<button class="hr-act-btn danger" onclick="HR.deleteLeaveType(\''+esc(k)+'\')"><i class="fa fa-trash"></i></button></td></tr>';
         });
@@ -2083,7 +2384,7 @@ document.addEventListener('DOMContentLoaded', function(){
       id:'', name:d.name, code:code, days_per_year:d.days,
       carry_forward:d.carry, max_carry:d.maxCarry, paid:d.paid, description:''
     }).then(function(r){
-      if(r && r.status){
+      if (r && r.status && r.status !== 'error'){
         toast(d.name+' added','success');
         loadLeaveTypes();
       } else {
@@ -2100,6 +2401,10 @@ document.addEventListener('DOMContentLoaded', function(){
     $('#ltCarry').val('no');
     $('#ltMaxCarry').val(0);
     $('#ltPaid').val('true');
+    $('#ltEffectiveFrom').val('');
+    $('#ltAccrualMode').val('lump_sum');
+    $('#ltWaitingPeriod').val(0);
+    $('#ltMaxBalance').val('');
     $('#modalLeaveTypeTitle').text('Add Leave Type');
     if(id && leaveTypeCache[id]){
       var t=leaveTypeCache[id];
@@ -2111,6 +2416,12 @@ document.addEventListener('DOMContentLoaded', function(){
       $('#ltMaxCarry').val(t.max_carry||0);
       $('#ltPaid').val(t.paid===true||t.paid==='true'?'true':'false');
       $('#ltDescription').val(t.description||'');
+      // Leave a blank Effective From on edit (defaults to today server-side)
+      // — showing the LAST version's date here would look like it's still
+      // in force, when saving always creates a NEW version going forward.
+      $('#ltAccrualMode').val(t.accrual_mode||'lump_sum');
+      $('#ltWaitingPeriod').val(t.waiting_period_days||0);
+      $('#ltMaxBalance').val(t.max_balance===null||t.max_balance===undefined?'':t.max_balance);
       $('#modalLeaveTypeTitle').text('Edit Leave Type');
     }
     openModal('modalLeaveType');
@@ -2122,18 +2433,125 @@ document.addEventListener('DOMContentLoaded', function(){
     post('hr/save_leave_type', {
       id:$('#leaveTypeId').val(), name:name, code:code,
       days_per_year:$('#ltDays').val(), carry_forward:$('#ltCarry').val(), max_carry:$('#ltMaxCarry').val(),
-      paid:$('#ltPaid').val(), description:$('#ltDescription').val().trim()
+      paid:$('#ltPaid').val(), description:$('#ltDescription').val().trim(),
+      effective_from:$('#ltEffectiveFrom').val(),
+      accrual_mode:$('#ltAccrualMode').val(),
+      waiting_period_days:$('#ltWaitingPeriod').val(),
+      max_balance:$('#ltMaxBalance').val()
     }).then(function(r){
-      if(r&&r.status){ toast(r.message||'Saved','success'); closeModal('modalLeaveType'); loadLeaveTypes(); }
+      if (r && r.status && r.status !== 'error'){
+        toast(r.message||'Saved','success');
+        if(r.warning) toast(r.warning,'error');
+        closeModal('modalLeaveType'); loadLeaveTypes();
+      }
       else toast(r.message||'Failed','error');
     });
   }
 
-  function deleteLeaveType(id){
-    if(!confirm('Delete this leave type?')) return;
+  async function deleteLeaveType(id){
+    if(!await zxConfirm({ title: 'Delete this leave type?' })) return;
     post('hr/delete_leave_type', {id:id}).then(function(r){
-      if(r&&r.status){ toast('Deleted','success'); loadLeaveTypes(); }
+      if (r && r.status && r.status !== 'error'){ toast('Deleted','success'); loadLeaveTypes(); }
       else toast(r.message||'Failed','error');
+    });
+  }
+
+  /* Workforce Policy Programme Phase 3 — safe to click repeatedly; already-
+     credited months are skipped server-side (Hr::_accrue_monthly_leave_one_type()
+     tracks lastAccrualMonth per staff/type). No-ops entirely while
+     LEAVE_ACCRUAL_ENABLED is off. */
+  function runLeaveAccrual(){
+    post('hr/run_leave_accrual', {}).then(function(r){
+      if(!r){ toast('Failed to run accrual','error'); return; }
+      if(r.ran===false){ toast(r.reason||'Monthly accrual is not enabled for this school.','error'); return; }
+      toast('Accrual run: '+(r.staffProcessed||0)+' staff, '+(r.creditsIssued||0)+' credit(s) issued.','success');
+    });
+  }
+
+  /* Per-school master accrual switch (schools.leavePolicy.accrualEnabled).
+     OFF (default) = full annual up front; ON = accrue month-by-month and cap
+     what staff can take at accrued-so-far. Reverts the checkbox on failure so
+     the control never lies about the saved state. */
+  function saveAccrualMode(enabled){
+    if(!HR_CAN_MANAGE){ toast('You do not have permission to change this.','error'); var c=document.getElementById('chkAccrualMode'); if(c) c.checked=!enabled; return; }
+    post('hr/save_leave_policy', {accrual_enabled: enabled ? 1 : 0}).then(function(r){
+      if(r && r.status==='success'){
+        toast(r.message || (enabled?'Monthly accrual ON':'Monthly accrual OFF'),'success',6000);
+        loadLeaveTypes(); loadLeaveBalances();
+      } else {
+        toast((r&&r.message)||'Could not save the accrual setting','error');
+        var c=document.getElementById('chkAccrualMode'); if(c) c.checked=!enabled;
+      }
+    });
+  }
+
+  /* Generic per-school leave-policy toggle (schools.leavePolicy.*). Each switch
+     is this school's own choice; defaults OFF. Reverts the checkbox on failure
+     so the control never lies about the saved state. */
+  function saveLeavePolicy(postKey, checked){
+    var idMap = {effective_dating:'lpEffectiveDating', prorata:'lpProrata', waiting_period:'lpWaitingPeriod', max_balance:'lpMaxBalance', year_closure:'lpYearClosure'};
+    var revert = function(){ var el=document.getElementById(idMap[postKey]); if(el) el.checked=!checked; };
+    if(!HR_CAN_MANAGE){ toast('You do not have permission to change this.','error'); revert(); return; }
+    var body = {}; body[postKey] = checked ? 1 : 0;
+    post('hr/save_leave_policy', body).then(function(r){
+      if(r && r.status==='success'){
+        toast(r.message || 'Leave policy saved','success',6000);
+        loadLeaveTypes(); loadLeaveBalances();
+      } else {
+        toast((r&&r.message)||'Could not save the leave policy','error');
+        revert();
+      }
+    });
+  }
+
+  /* Workforce Policy Programme Phase 7 — Carry-Forward. Preview persists a
+     snapshot server-side; Confirm replays exactly that snapshot (never
+     recomputes against possibly-drifted live balances), and is idempotent —
+     confirming an already-closed year reports back without carrying twice. */
+  var _cfLastPreviewedYear = null;
+
+  function previewCarryForward(){
+    var year = $('#cfYear').val();
+    if(!year){ toast('Enter a year first','error'); return; }
+    $('#btnConfirmCarryForward').hide();
+    post('hr/preview_leave_year_closure', {year:year}).then(function(r){
+      if(!r || !r.status){ toast((r&&r.message)||'Preview failed — is Leave-Year Closure enabled for this school?','error'); return; }
+      var rows = r.perStaff || [];
+      $('#cfEmpty').toggle(!rows.length);
+      $('#cfTableWrap').toggle(!!rows.length);
+      if(!rows.length){
+        $('#cfEmpty').html('<i class="fa fa-check-circle"></i> No unused, carry-forward-eligible balance found for '+esc(year)+'.');
+        return;
+      }
+      var h='';
+      rows.forEach(function(row){
+        var staffName = staffCache[row.staffId] ? (staffCache[row.staffId].Name||staffCache[row.staffId].name||row.staffId) : row.staffId;
+        var typeName = (leaveTypeCache[row.typeId]&&leaveTypeCache[row.typeId].name) || row.typeId;
+        h += '<tr><td>'+esc(staffName)+'</td><td>'+esc(typeName)+'</td>';
+        h += '<td class="hr-num">'+row.unused+'</td><td class="hr-num">'+row.maxCarry+'</td>';
+        h += '<td class="hr-num">'+row.eligibleCarry+'</td><td class="hr-num"><strong>'+row.actualCarry+'</strong></td>';
+        h += '<td class="hr-num" style="color:'+(row.forfeited>0?'#b91c1c':'inherit')+'">'+row.forfeited+'</td></tr>';
+      });
+      $('#tblCarryForward tbody').html(h);
+      _cfLastPreviewedYear = year;
+      $('#btnConfirmCarryForward').show();
+      toast('Preview ready — review before confirming.','success');
+    });
+  }
+
+  async function confirmCarryForward(){
+    var year = $('#cfYear').val();
+    if(!year || year !== _cfLastPreviewedYear){ toast('Preview this year again first — the year changed since the last preview.','error'); return; }
+    if (!await zxConfirm({
+      title: 'Close Leave Year ' + year + '?',
+      message: 'Balances shown will be carried forward. This cannot be undone.',
+      confirmText: 'Close year', danger: true
+    })) return;
+    post('hr/confirm_leave_year_closure', {year:year}).then(function(r){
+      if(!r || !r.status){ toast((r&&r.message)||'Confirm failed','error'); return; }
+      if(r.idempotent){ toast('This Leave Year was already closed — nothing carried twice.','success'); }
+      else { toast('Leave Year '+year+' closed. '+(r.staffApplied||0)+' staff balance(s) updated.','success'); }
+      $('#btnConfirmCarryForward').hide();
     });
   }
 
@@ -2170,8 +2588,13 @@ document.addEventListener('DOMContentLoaded', function(){
     if(!isPaid) return 'Unpaid Leave (LWP)';
 
     // Paid leave type — check if balance was exceeded (only trust lwp_days if type is actually unpaid)
-    var lwp  = parseInt(l.lwp_days||0);
-    var days = parseInt(l.days||0);
+    // Fraction safety (2026-08-19): these were parseInt, which floored a
+    // 0.5-day LOP to 0 — so a half-day loss of pay fell through both tests
+    // below and rendered as "Fully Paid". Leave days are legitimately
+    // fractional (half-day leave = 0.5). parseFloat matches the canonical
+    // pattern already used by the admin payslip split further down this file.
+    var lwp  = parseFloat(l.lwp_days||0);
+    var days = parseFloat(l.days||0);
     // If the stored type_paid was wrong (false when type is actually paid), ignore stored lwp_days
     var storedTypePaid = l.type_paid;
     if(storedTypePaid===false||storedTypePaid==='false'){
@@ -2206,7 +2629,8 @@ document.addEventListener('DOMContentLoaded', function(){
         var code  = l.type_code ? ' <small style="opacity:.6">('+esc(l.type_code)+')</small>' : '';
         // Days breakdown
         var daysCol = ''+(l.days||'-');
-        var pd = parseInt(l.paid_days||0), lw = parseInt(l.lwp_days||0);
+        // Fraction safety (2026-08-19): parseInt suppressed a 0.5P/0.5L split entirely.
+        var pd = parseFloat(l.paid_days||0), lw = parseFloat(l.lwp_days||0);
         if(pd>0 && lw>0) daysCol += ' <small style="color:var(--t3)">('+pd+'P+'+lw+'L)</small>';
 
         h+='<tr><td class="hr-num">'+i+'</td><td>'+esc(l.staff_name||staffName(l.staff_id))+'</td>';
@@ -2216,9 +2640,17 @@ document.addEventListener('DOMContentLoaded', function(){
         h+='<td>'+payLabelBadge(label)+'</td>';
         h+='<td>'+badgeHtml(l.status)+'</td>';
         h+='<td>';
-        if((l.status||'').toLowerCase()==='pending'){
+        var _st = (l.status||'').toLowerCase();
+        if(_st==='pending'){
           h+='<button class="hr-act-btn" onclick="event.stopPropagation();this.disabled=true;HR.approveLeave(\''+esc(k)+'\')" title="Approve"><i class="fa fa-check" style="pointer-events:none"></i></button> ';
           h+='<button class="hr-act-btn danger" onclick="event.stopPropagation();this.disabled=true;HR.rejectLeave(\''+esc(k)+'\')" title="Reject"><i class="fa fa-times" style="pointer-events:none"></i></button>';
+        }
+        // LEAVE-1 — cancelling restores the balance, which is why it is offered
+        // for an APPROVED leave too. The endpoint accepts exactly pending or
+        // approved and refuses anything else, so this mirrors the server rather
+        // than deciding for it.
+        if(_st==='pending'||_st==='approved'){
+          h+=' <button class="hr-act-btn" onclick="event.stopPropagation();HR.cancelLeave(\''+esc(k)+'\')" title="Cancel this leave and restore the balance"><i class="fa fa-ban" style="pointer-events:none"></i></button>';
         }
         // Info tooltip for calculation reason
         if(l.calculation_reason){
@@ -2256,7 +2688,7 @@ document.addEventListener('DOMContentLoaded', function(){
       half_day:$('#lrHalfDay').prop('checked')?'1':'0'
     }).then(function(r){
       $btn.prop('disabled',false).html(origHtml);
-      if(r&&r.status){
+      if (r && r.status && r.status !== 'error'){
         var msg = r.message||'Submitted';
         if(r.lwp_warning){ toast(msg,'warning'); } else { toast(msg,'success'); }
         closeModal('modalLeaveRequest'); loadLeaveRequests();
@@ -2282,6 +2714,34 @@ document.addEventListener('DOMContentLoaded', function(){
     $('#btnLeaveAction').removeClass('hr-btn-primary').addClass('hr-btn-danger').html('<i class="fa fa-times"></i> Reject');
     openModal('modalLeaveAction');
   }
+  /**
+   * Cancel a leave request and give the days back.
+   *
+   * Confirmed, and the confirmation says what actually happens — the balance
+   * moves, which is the part an approver needs to have understood before
+   * clicking. The server is idempotent and CAS-locked, so a double-click
+   * cannot restore twice; the guard here is for the operator, not for safety.
+   */
+  var _cancellingLeave = false;
+  async function cancelLeave(id){
+    if(_cancellingLeave) return;
+    if(!await zxConfirm({ title: 'Cancel this leave request?', message: 'The leave will be marked cancelled and the days will be added back to the employee\\\'s balance. This cannot be undone from here — a new request would have to be filed.' })) return;
+
+    _cancellingLeave = true;
+    post('hr/cancel_leave', {id:id}).then(function(r){
+      _cancellingLeave = false;
+      if(r && r.status === 'success'){
+        toast(r.message || 'Leave cancelled and balance restored','success');
+        loadLeaveRequests();
+        if(typeof initBalances === 'function') initBalances();
+      } else {
+        toast((r && r.message) || 'Could not cancel this leave','error');
+      }
+    }).fail(function(){
+      _cancellingLeave = false;
+      toast('Network error','error');
+    });
+  }
   function confirmLeaveAction(){
     var id=$('#leaveActionId').val(), action=$('#leaveActionType').val();
     var decision = action === 'approved' ? 'Approved' : 'Rejected';
@@ -2290,9 +2750,11 @@ document.addEventListener('DOMContentLoaded', function(){
     $btn.prop('disabled',true).html('<i class="fa fa-spinner fa-spin"></i> Processing...');
     post('hr/decide_leave', {id:id, decision:decision, remarks:$('#leaveActionRemarks').val().trim()}).then(function(r){
       $btn.prop('disabled',false).html(origHtml);
-      if(r&&r.status){
+      if (r && r.status && r.status !== 'error'){
         var msg = r.message||'Updated';
-        if(r.lwp_days && parseInt(r.lwp_days)>0){ toast(msg,'warning'); } else { toast(msg,'success'); }
+        // Fraction safety (2026-08-19): parseInt made a 0.5-day LOP show a green
+        // success toast, suppressing the loss-of-pay warning entirely.
+        if(r.lwp_days && parseFloat(r.lwp_days)>0){ toast(msg,'warning'); } else { toast(msg,'success'); }
         closeModal('modalLeaveAction');
         // Refresh BOTH panels — the request grid AND the balance grid.
         // Approving deducts BAL.used server-side via _fsSyncLeaveBalance,
@@ -2370,10 +2832,10 @@ document.addEventListener('DOMContentLoaded', function(){
     });
   }
 
-  function initBalances(){
-    if(!confirm('Initialize leave balances for all staff based on leave type definitions? Existing balances will not be overwritten.')) return;
+  async function initBalances(){
+    if(!await zxConfirm({ title: 'Initialize leave balances for all staff based on leave type definitions? Existing balances will not be overwritten.' })) return;
     post('hr/allocate_leave_balances').then(function(r){
-      if(r&&r.status){ toast(r.message||'Initialized','success'); loadLeaveBalances(); }
+      if (r && r.status && r.status !== 'error'){ toast(r.message||'Initialized','success'); loadLeaveBalances(); }
       else toast(r.message||'Failed','error');
     });
   }
@@ -2434,7 +2896,10 @@ document.addEventListener('DOMContentLoaded', function(){
         if(parseFloat(sl.tds))              h+='<div class="hr-slip-row"><span class="hr-slip-label">TDS (Income Tax)</span><span class="hr-slip-value">'+fmt(sl.tds)+'</span></div>';
         if(parseFloat(sl.other_deductions)) h+='<div class="hr-slip-row"><span class="hr-slip-label">Other Deductions</span><span class="hr-slip-value">'+fmt(sl.other_deductions)+'</span></div>';
         if(parseFloat(sl.lwp_deduction)>0){
-          h+='<div class="hr-slip-row"><span class="hr-slip-label">LWP Deduction ('+parseInt(sl.lwp_days||0)+' days)</span><span class="hr-slip-value amber">-'+fmt(sl.lwp_deduction)+'</span></div>';
+          // Fraction safety (2026-08-19): this printed "LWP Deduction (0 days)"
+          // beside a real rupee figure computed on 0.5 — the slip did not
+          // reconcile. Matches the admin-side payslip formatting further down.
+          h+='<div class="hr-slip-row"><span class="hr-slip-label">LWP Deduction ('+(parseFloat(sl.lwp_days||0).toFixed(1).replace(/\.0$/,''))+' days)</span><span class="hr-slip-value amber">-'+fmt(sl.lwp_deduction)+'</span></div>';
         }
         h+='<div class="hr-slip-row total"><span class="hr-slip-label">Total Deductions</span><span class="hr-slip-value red">'+fmt(sl.total_deductions)+'</span></div>';
         h+='</div>';
@@ -2462,7 +2927,10 @@ document.addEventListener('DOMContentLoaded', function(){
             h+='<div class="hr-slip-row"><span class="hr-slip-label">Working Days</span><span class="hr-slip-value">'+(sl.working_days||'-')+'</span></div>';
             h+='<div class="hr-slip-row"><span class="hr-slip-label">Days Worked</span><span class="hr-slip-value">'+(sl.days_worked||'-')+'</span></div>';
             h+='<div class="hr-slip-row"><span class="hr-slip-label">Days Absent</span><span class="hr-slip-value">'+(sl.days_absent||0)+'</span></div>';
-            if(parseInt(sl.lwp_days)>0) h+='<div class="hr-slip-row"><span class="hr-slip-label">LWP Days</span><span class="hr-slip-value amber">'+(sl.lwp_days||0)+'</span></div>';
+            // Fraction safety (2026-08-19): the parseInt gate hid the LWP row
+            // entirely for a sub-1-day LOP, while net pay was still reduced —
+            // the employee could not see why they were paid less.
+            if(parseFloat(sl.lwp_days)>0) h+='<div class="hr-slip-row"><span class="hr-slip-label">LWP Days</span><span class="hr-slip-value amber">'+(sl.lwp_days||0)+'</span></div>';
             h+='<div class="hr-slip-row"><span class="hr-slip-label">Daily Salary</span><span class="hr-slip-value">'+fmt(sl.daily_salary)+'</span></div>';
             if(sl.deduction_reason && sl.deduction_reason!=='No deduction') h+='<div class="hr-slip-row"><span class="hr-slip-label">Deduction Reason</span><span class="hr-slip-value" style="font-size:11px;max-width:180px;text-align:right">'+esc(sl.deduction_reason)+'</span></div>';
             h+='</div>';
@@ -2731,22 +3199,31 @@ document.addEventListener('DOMContentLoaded', function(){
       esi_employee:$('#salESIEmp').val(), esi_employer:$('#salESIEr').val(),
       professional_tax:$('#salPT').val(), tds:$('#salTDS').val()
     }).then(function(r){
-      if(r&&r.status){ toast(r.message||'Saved','success'); closeModal('modalSalary'); loadSalaryStructures(); }
+      if (r && r.status && r.status !== 'error'){ toast(r.message||'Saved','success'); closeModal('modalSalary'); loadSalaryStructures(); }
       else toast(r.message||'Failed','error');
     });
   }
 
-  function deleteSalary(id){
+  async function deleteSalary(id){
     var name=staffName(id);
-    if(!confirm('Delete salary structure for "'+name+'"?\n\nThis will be archived for audit purposes.\nIf this staff has active payroll, deletion will be blocked.')) return;
+    if (!await zxConfirm({
+      title: 'Delete salary structure for ' + name + '?',
+      message: 'It is archived for audit purposes. If this employee has active payroll, deletion is blocked.',
+      confirmText: 'Delete structure', danger: true
+    })) return;
     post('hr/delete_salary_structure', {id:id}).then(function(r){
       if(r&&r.status==='success'){ toast(r.message||'Deleted and archived','success'); loadSalaryStructures(); }
       else toast(r&&r.message||'Failed to delete','error');
     });
   }
 
-  function backfillStructures(){
-    if(!confirm('Auto-create salary structures for all staff who are missing one?\n\nThis uses registration salary data (Basic + Allowances) and applies default deduction rates.\n\nExisting structures will NOT be changed.')) return;
+  async function backfillStructures(){
+    if (!await zxConfirm({
+      title: 'Auto-create missing salary structures?',
+      message: 'Uses registration salary data (Basic + Allowances) and applies default deduction rates. '
+             + 'Existing structures are not changed.',
+      confirmText: 'Create missing'
+    })) return;
     var $btn=$('#btnBackfill');
     $btn.prop('disabled',true).html('<i class="fa fa-spinner fa-spin"></i> Creating...');
     post('hr/backfill_salary_structures', {}).then(function(r){
@@ -2761,8 +3238,8 @@ document.addEventListener('DOMContentLoaded', function(){
     });
   }
 
-  function approvePayroll(id){
-    if(!confirm('Approve this payroll run for payment?\n\nThis confirms the salary calculations are correct.')) return;
+  async function approvePayroll(id){
+    if(!await zxConfirm({ title: 'Approve this payroll run for payment?', message: 'This confirms the salary calculations are correct.' })) return;
     post('hr/approve_payroll', {run_id:id}).then(function(r){
       if(r&&r.status==='success'){ toast(r.message||'Approved','success'); loadPayrollRuns(); }
       else toast(r.message||'Failed','error');
@@ -2772,6 +3249,247 @@ document.addEventListener('DOMContentLoaded', function(){
   function exportPayroll(type, runId){
     window.open(BASE+'hr/export_payroll_report?type='+encodeURIComponent(type)+'&run_id='+encodeURIComponent(runId), '_blank');
   }
+
+  /* ── W3.2.4 — per-employee calculation trace ────────────────────────────
+     Renders the server's assembled chain verbatim. The browser formats; it
+     never computes. Every number arrives already priced by the payroll engine
+     and frozen on the payslip. */
+  $(document).on('click', '.trace-btn', function(e){
+    e.stopPropagation();
+    var $b=$(this), sid=$b.data('staff'), runId=$b.data('run');
+    var $out=$('.trace-out[data-staff="'+sid+'"]');
+
+    if($out.data('loaded')){ $out.toggle(); return; }
+
+    $b.prop('disabled',true).html('<i class="fa fa-spinner fa-spin"></i> Loading');
+    getJSON('hr/payslip_trace?run_id='+encodeURIComponent(runId)+'&staff_id='+encodeURIComponent(sid))
+      .then(function(r){
+        $b.prop('disabled',false).html('<i class="fa fa-list-ol"></i> Why is this net pay?');
+        if(!r || r.status!=='success'){
+          $out.html('<span style="color:#b91c1c;font:400 11px/1.5 var(--font-m)">'
+            +esc((r&&r.message)||'Could not load the trace.')+'</span>').show();
+          return;
+        }
+
+        var h='<div style="border:1px solid var(--border);border-radius:8px;overflow:hidden">';
+
+        /* Consistency first. A trace that does not reconcile with the payslip
+           must say so loudly rather than be read as fact. */
+        var c=r.consistency||{};
+        if(c.available===false){
+          h+='<div style="padding:8px 10px;background:rgba(217,119,6,.09);color:#b45309;font:400 11px/1.5 var(--font-m)">'
+            +'<i class="fa fa-exclamation-triangle"></i> '+esc(c.reason||'No trace recorded.')+'</div>';
+        } else if(c.consistent===false){
+          h+='<div style="padding:8px 10px;background:rgba(220,38,38,.09);color:#b91c1c;font:600 11px/1.5 var(--font-m)">'
+            +'<i class="fa fa-times-circle"></i> '+esc(c.reason||'Trace does not reconcile with the payslip.')+'</div>';
+        } else if(c.consistent===true){
+          h+='<div style="padding:8px 10px;background:rgba(10,125,51,.08);color:#0a7d33;font:400 11px/1.5 var(--font-m)">'
+            +'<i class="fa fa-check-circle"></i> Trace reconciles with the stored payslip to the paisa.</div>';
+        }
+
+        var steps=r.steps||[];
+        for(var i=0;i<steps.length;i++){
+          var st=steps[i];
+          h+='<div style="border-top:1px solid var(--border);padding:9px 11px">';
+          h+='<div style="font:600 11px/1.4 var(--font-b);color:var(--t1)">'+(i+1)+'. '+esc(st.title)
+            +(st.source?' <span style="font-weight:400;color:var(--t3)">· from '+esc(st.source)+'</span>':'')+'</div>';
+
+          if(st.unavailable || st.blocked){
+            h+='<div style="color:#b45309;font:400 11px/1.5 var(--font-m);margin-top:3px">'
+              +'<i class="fa fa-info-circle"></i> '+esc(st.unavailable||st.blocked)+'</div>';
+          }
+
+          var facts=st.facts||{};
+          var keys=Object.keys(facts);
+          if(keys.length){
+            h+='<table style="width:100%;border-collapse:collapse;font:400 11px/1.6 var(--font-m);margin-top:4px">';
+            for(var j=0;j<keys.length;j++){
+              var v=facts[keys[j]];
+              h+='<tr><td style="color:var(--t2);padding-right:10px">'+esc(keys[j])+'</td>'
+                +'<td style="text-align:right;color:var(--t1)">'
+                +(typeof v==='number' ? esc(String(v)) : esc(String(v)))+'</td></tr>';
+            }
+            h+='</table>';
+          }
+          if(st.note){
+            h+='<div style="color:var(--t3);font:400 10px/1.5 var(--font-m);margin-top:4px">'+esc(st.note)+'</div>';
+          }
+          h+='</div>';
+        }
+
+        if(r.statutory_snapshot_status){
+          h+='<div style="border-top:1px solid var(--border);padding:8px 11px;color:var(--t3);font:400 10px/1.5 var(--font-m)">'
+            +'<i class="fa fa-lock"></i> '+esc(r.statutory_snapshot_status)+'</div>';
+        }
+        h+='</div>';
+
+        $out.html(h).data('loaded',true).show();
+      })
+      .catch(function(){
+        $b.prop('disabled',false).html('<i class="fa fa-list-ol"></i> Why is this net pay?');
+        $out.html('<span style="color:#b91c1c;font:400 11px/1.5 var(--font-m)">Network error — trace not loaded.</span>').show();
+      });
+  });
+
+  /* ── W3.2.3 — loss-of-pay review ───────────────────────────────────────
+     Every figure comes from the server, which read it from the FROZEN slip
+     (the W3.2.1 attendance snapshot + leave_details). Nothing is recomputed
+     here and nothing is read from live attendance — a review that disagreed
+     with the payslip would be worse than no review. */
+  function loadLopReview(runId){
+    var $p = $('#lopReviewPanel');
+    if(!runId){ $p.hide().empty(); return; }
+
+    getJSON('hr/lop_review?run_id='+encodeURIComponent(runId)).then(function(r){
+      if(!r || r.status!=='success' || !r.affected_count){ $p.hide().empty(); return; }
+
+      // `run_status`, not `status`: the envelope's `status` is 'success'.
+      var isDraft = (r.run_status||'').toLowerCase()==='draft';
+      var conf = r.confirmation;
+      var h='';
+
+      h+='<div style="margin:0 0 14px;padding:14px;border-radius:8px;border:1px solid rgba(217,119,6,.28);background:rgba(217,119,6,.06)">';
+      h+='<div style="display:flex;justify-content:space-between;align-items:flex-start;gap:12px;flex-wrap:wrap">';
+      h+='<div><div style="font:600 13px/1.4 var(--font-b);color:#b45309"><i class="fa fa-user-clock"></i> Loss of pay — review before finalizing</div>';
+      h+='<div style="font:400 12px/1.6 var(--font-m);color:var(--t2);margin-top:4px">'
+        +'<strong>'+r.affected_count+'</strong> employee(s) · <strong>'+r.total_lwp_days+'</strong> LOP day(s) · '
+        +'total deduction <strong>'+fmt(r.total_deduction)+'</strong></div></div>';
+
+      if(conf){
+        h+='<div style="text-align:right;font:400 11px/1.5 var(--font-m);color:#0a7d33">'
+          +'<i class="fa fa-check-circle"></i> Confirmed by '+esc(conf.confirmed_by||'')+'<br>'
+          +'<span style="color:var(--t3)">'+esc(conf.confirmed_at||'')+'</span></div>';
+      } else if(isDraft && HR_CAN_MANAGE){
+        h+='<div><button id="btnConfirmLop" class="btn btn-warning btn-sm" data-run="'+esc(runId)+'">'
+          +'<i class="fa fa-check"></i> Review &amp; confirm</button></div>';
+      }
+      h+='</div>';
+
+      /* Per-employee: which days, full or half, from which leave request. */
+      h+='<div style="margin-top:10px;max-height:260px;overflow:auto;border:1px solid var(--border);border-radius:6px;background:var(--bg1)">';
+      h+='<table style="width:100%;border-collapse:collapse;font:400 11px/1.5 var(--font-m)">';
+      for(var i=0;i<r.affected.length;i++){
+        var e=r.affected[i];
+        h+='<tr style="border-bottom:1px solid var(--border)"><td style="padding:8px 10px">';
+        h+='<div><strong>'+esc(e.staff_name)+'</strong>'
+          +(e.department?' <span style="color:var(--t3)">· '+esc(e.department)+'</span>':'')
+          +' <span style="float:right;color:#b91c1c;font-weight:600">−'+fmt(e.lwp_deduction)+'</span></div>';
+
+        var dayBits=[];
+        if(e.lwp_full_days && e.lwp_full_days.length) dayBits.push('full: '+e.lwp_full_days.join(', '));
+        if(e.lwp_half_days && e.lwp_half_days.length) dayBits.push('half: '+e.lwp_half_days.join(', '));
+        if(dayBits.length){
+          h+='<div style="color:var(--t2)">'+e.lwp_days+' LOP day(s) — '+esc(dayBits.join(' · '))
+            +' <span style="color:var(--t3)">(at '+fmt(e.daily_salary)+'/day)</span></div>';
+        } else if(!e.day_detail_available){
+          /* Pre-W3.2.1 slip: say so rather than reconstruct a day list from
+             today's attendance, which would be invented history. */
+          h+='<div style="color:var(--t3)">'+e.lwp_days+' LOP day(s) — day-level detail not recorded for this run</div>';
+        }
+
+        for(var s=0;s<(e.sources||[]).length;s++){
+          var src=e.sources[s];
+          h+='<div style="color:var(--t3);padding-left:12px">↳ '+esc(src.type_name||src.type_code||'Leave')
+            +' '+esc(src.from)+'→'+esc(src.to)
+            +(src.half_day?' (half day)':'')
+            +(src.request_id?' <span style="opacity:.7">['+esc(src.request_id)+']</span>':'')+'</div>';
+        }
+        if(e.balance_exhausted){
+          h+='<div style="color:#b45309;padding-left:12px">⚠ A paid leave type produced LOP — the balance was exhausted when the leave was approved.</div>';
+        }
+        h+='</td></tr>';
+      }
+      h+='</table></div>';
+
+      /* Server-supplied guidance. Deliberately not written in the browser: the
+         correct fix for wrong LOP is in Attendance/Leave, never a payroll
+         adjustment that would leave the two disagreeing permanently. */
+      if(r.correction_guidance){
+        h+='<div style="margin-top:8px;font:400 11px/1.6 var(--font-m);color:var(--t2)">'
+          +'<i class="fa fa-info-circle"></i> '+esc(r.correction_guidance)+'</div>';
+      }
+      h+='</div>';
+
+      $p.html(h).show();
+    }).catch(function(){ $p.hide().empty(); });
+  }
+
+  $(document).on('click', '#btnConfirmLop', function(){
+    var $b=$(this), runId=$b.data('run');
+    var note = window.prompt('Optional note for the record (who approved these deductions, any context):', '');
+    if(note===null) return;   /* cancelled */
+    $b.prop('disabled',true).html('<i class="fa fa-spinner fa-spin"></i> Confirming');
+    post('hr/confirm_lop', {run_id:runId, note:note}).then(function(r){
+      $b.prop('disabled',false).html('<i class="fa fa-check"></i> Review &amp; confirm');
+      if(!r || r.status!=='success'){ toast((r&&r.message)||'Could not confirm','error'); return; }
+      toast(r.message||'Loss of pay confirmed','success');
+      loadLopReview(runId);
+    }).catch(function(){
+      $b.prop('disabled',false).html('<i class="fa fa-check"></i> Review &amp; confirm');
+      toast('Network error — not confirmed','error');
+    });
+  });
+
+  /* W3.2.2 — populate the adjustment-type dropdowns from the server list.
+     Called after slip rows render, since the selects live inside them. */
+  function _fillAdjTypes(){
+    if(!HR_CAN_MANAGE) return;
+    function paint(){
+      $('.adj-type').each(function(){
+        if($(this).children().length) return;
+        var opts='<option value="">Adjustment type…</option>';
+        for(var i=0;i<HR_ADJ_TYPES.length;i++){
+          var t=HR_ADJ_TYPES[i];
+          opts+='<option value="'+esc(t.code)+'">'+esc(t.label)+' ('+(t.kind==='earning'?'+':'−')+')</option>';
+        }
+        $(this).html(opts);
+      });
+    }
+    if(HR_ADJ_TYPES.length){ paint(); return; }
+    getJSON('payroll_overrides/types').then(function(r){
+      if(r && r.status==='success' && r.types){ HR_ADJ_TYPES=r.types; paint(); }
+    });
+  }
+
+  /* W3.2.2 — save an adjustment. Stores only; the operator then regenerates
+     the employee, which is what recalculates the payslip and posts the ledger
+     delta through the existing certified path. */
+  $(document).on('click', '.adj-save', function(e){
+    e.stopPropagation();   /* the row itself toggles the drill-down */
+    var $b=$(this), sid=$b.data('staff'), runId=$b.data('run');
+    var $msg=$('.adj-msg[data-staff="'+sid+'"]');
+    var type=$('.adj-type[data-staff="'+sid+'"]').val();
+    var amount=$('.adj-amount[data-staff="'+sid+'"]').val();
+    var reason=$('.adj-reason[data-staff="'+sid+'"]').val();
+
+    function fail(m){
+      $msg.html('<span style="color:#b91c1c;font:400 11px/1.5 var(--font-m)"><i class="fa fa-times-circle"></i> '+esc(m)+'</span>').show();
+    }
+    /* Mirrors the server rules so the operator gets an instant answer. The
+       server re-validates everything regardless — this is not the guard. */
+    if(!type)   return fail('Choose an adjustment type.');
+    if(!amount || parseFloat(amount)<=0) return fail('Amount must be greater than zero.');
+    if(!reason || reason.length<10)      return fail('A reason of at least 10 characters is required.');
+
+    $b.prop('disabled',true).html('<i class="fa fa-spinner fa-spin"></i> Saving');
+    post('payroll_overrides/create', {run_id:runId, staff_id:sid, type:type, amount:amount, reason:reason})
+      .then(function(r){
+        $b.prop('disabled',false).html('<i class="fa fa-check"></i> Save');
+        /* Phantom-success guard: fetch() does not reject on 403/500. */
+        if(!r || r.status!=='success'){ fail((r&&r.message)||'Could not save the adjustment.'); return; }
+        $msg.html('<span style="color:#0a7d33;font:400 11px/1.5 var(--font-m)"><i class="fa fa-check-circle"></i> '
+          +esc(r.message||'Saved.')+' Click <b>Regenerate</b> on this employee to apply it.</span>').show();
+        $('.adj-amount[data-staff="'+sid+'"]').val('');
+        $('.adj-reason[data-staff="'+sid+'"]').val('');
+      })
+      .catch(function(){
+        $b.prop('disabled',false).html('<i class="fa fa-check"></i> Save');
+        fail('Network error — the adjustment was not saved.');
+      });
+  });
+
+  /* Keep clicks inside the form from toggling the row open/closed. */
+  $(document).on('click', '.hr-adjust-form', function(e){ e.stopPropagation(); });
 
   function loadPayrollRuns(){
     getJSON('hr/get_payroll_runs').then(function(r){
@@ -2868,7 +3586,21 @@ document.addEventListener('DOMContentLoaded', function(){
   /* ── Build preflight success/warnings UI ── */
   function _renderPreflightOk(r){
     var h='<div style="margin:14px 0;padding:14px;border-radius:8px;background:rgba(188,90,60,.07);border:1px solid rgba(188,90,60,.18)">';
-    h+='<div style="font:600 13px/1.4 var(--font-b);color:#BC5A3C;margin-bottom:6px"><i class="fa fa-check-circle"></i> Pre-flight Check Passed</div>';
+    // UAT finding: the header read "Pre-flight Check Passed" in green even when
+    // the response carried blockers — six employees who cannot be paid, under a
+    // green tick. A "blocker" that reports success is a warning wearing the
+    // wrong word, and an operator who trusts the header will not read the list.
+    //
+    // The BEHAVIOUR is deliberately unchanged: missing bank details stop
+    // PAYMENT, not calculation, so generation is still allowed. Only the claim
+    // is corrected, so the header states what the payload actually says.
+    var _bc = parseInt(r.blocker_count || 0, 10);
+    if(_bc > 0){
+      h+='<div style="font:600 13px/1.4 var(--font-b);color:#b45309;margin-bottom:6px">'
+        +'<i class="fa fa-exclamation-triangle"></i> Pre-flight completed — '+_bc+' employee issue(s) need attention</div>';
+    } else {
+      h+='<div style="font:600 13px/1.4 var(--font-b);color:#BC5A3C;margin-bottom:6px"><i class="fa fa-check-circle"></i> Pre-flight Check Passed</div>';
+    }
     h+='<div style="font:400 12px/1.5 var(--font-m);color:var(--t2)">Staff covered: <strong>'+(r.staff_covered||0)+'</strong> / '+(r.staff_total||0)+'</div>';
     var w=r.warnings||[];
     if(w.length){
@@ -2878,6 +3610,39 @@ document.addEventListener('DOMContentLoaded', function(){
       for(var i=0;i<w.length;i++) h+='<li>'+esc(w[i])+'</li>';
       h+='</ul></div>';
     }
+
+    // W3.1 — the named, per-employee view of the same facts.
+    //
+    // The prose warnings above say "3 staff member(s) will be skipped", which
+    // tells an operator a number but not who to go fix. This table names the
+    // people and states the resolution for each, so the run can be corrected
+    // BEFORE it is generated rather than after.
+    var b=r.blockers||[];
+    if(b.length){
+      h+='<div style="margin-top:10px;padding-top:10px;border-top:1px dashed var(--border)">';
+      h+='<div style="font:600 11px/1.3 var(--font-b);color:var(--t1);margin-bottom:6px">';
+      h+='<i class="fa fa-users"></i> Affected employees ';
+      if(r.blocker_count) h+='<span style="color:#b91c1c">&middot; '+r.blocker_count+' blocked</span> ';
+      if(r.warning_count) h+='<span style="color:#d97706">&middot; '+r.warning_count+' warning</span>';
+      h+='</div>';
+      // Taller now the modal is wide: 13 rows in a 220px box meant scrolling
+      // through the very list the operator is meant to act on.
+      h+='<div style="max-height:46vh;overflow:auto;border:1px solid var(--border);border-radius:6px">';
+      h+='<table style="width:100%;border-collapse:collapse;font:400 11px/1.5 var(--font-m)">';
+      for(var j=0;j<b.length;j++){
+        var row=b[j], isBlock=(row.severity==='blocker');
+        var accent=isBlock?'#b91c1c':'#d97706';
+        h+='<tr style="border-bottom:1px solid var(--border)">';
+        h+='<td style="padding:7px 9px;border-left:3px solid '+accent+'">';
+        h+='<div style="font-weight:600;color:var(--t1)">'+esc(row.staff_name||row.staff_id||'')+
+           (row.department?' <span style="font-weight:400;color:var(--t3)">&middot; '+esc(row.department)+'</span>':'')+'</div>';
+        h+='<div style="color:'+accent+'">'+esc(row.reason||'')+'</div>';
+        if(row.resolution) h+='<div style="color:var(--t3)">&rarr; '+esc(row.resolution)+'</div>';
+        h+='</td></tr>';
+      }
+      h+='</table></div></div>';
+    }
+
     h+='</div>';
     return h;
   }
@@ -2974,9 +3739,9 @@ document.addEventListener('DOMContentLoaded', function(){
     });
   }
 
-  function finalizeRun(id){
+  async function finalizeRun(id){
     if(window._finalizeInFlight) return;
-    if(!confirm('Finalize this payroll run? Draft payslips will be locked.')) return;
+    if(!await zxConfirm({ title: 'Finalize this payroll run? Draft payslips will be locked.' })) return;
     window._finalizeInFlight = true;
     toast('Finalizing payroll… please wait','info');
     post('hr/finalize_payroll', {run_id:id}).then(function(r){
@@ -2992,6 +3757,171 @@ document.addEventListener('DOMContentLoaded', function(){
 
   /* ── Reason-prompt modal (shared by Unlock + Regenerate) ──
      opts: { title, subtitle, confirmLabel, confirmIcon, titleIcon, onConfirm } */
+  /* ── Payroll period locks (PAY-1) ──────────────────────────────────────
+     Read + close + re-open. The lock itself is enforced server-side by
+     _check_payroll_lock() on generate / regenerate / delete; this surface only
+     lets an administrator see and operate it. */
+  var payrollLocksBusy = false;
+
+  function loadPayrollLocks(){
+    var $b = $('#payrollLocksBody');
+    if (!$b.length) return;
+
+    post('hr/payroll_lock_status', {}).then(function(r){
+      if (!r || r.status !== 'success'){
+        $b.html('<div class="hr-empty" style="padding:22px;text-align:center;">'
+              + '<i class="fa fa-exclamation-triangle"></i> '
+              + esc((r && r.message) || 'Could not read payroll periods.') + '</div>');
+        return;
+      }
+      renderPayrollLocks(r.locks || [], r.canManage === true);
+    }).fail(function(){
+      $b.html('<div class="hr-empty" style="padding:22px;text-align:center;">'
+            + '<i class="fa fa-exclamation-triangle"></i> Could not read payroll periods.</div>');
+    });
+  }
+
+  function renderPayrollLocks(locks, canManage){
+    var $b = $('#payrollLocksBody');
+
+    // Only months that have ever been locked carry a record. A month with no
+    // record is simply open — saying "no periods have been closed" is clearer
+    // than listing twelve rows of "open".
+    var closed = locks.filter(function(l){ return l.locked; });
+
+    var html = '<div class="hr-table-wrap"><table class="hr-table"><thead><tr>'
+             + '<th>Period</th><th>State</th><th>Closed by</th><th>Last change</th><th></th>'
+             + '</tr></thead><tbody>';
+
+    if (!locks.length){
+      html += '<tr><td colspan="5" class="hr-empty">No payroll period has been closed yet. '
+            + 'Close a month from a finalized payroll run to freeze it.</td></tr>';
+    } else {
+      locks.forEach(function(l){
+        var when = l.locked ? (l.lockedAt || '') : (l.unlockedAt || l.lockedAt || '');
+        html += '<tr>'
+          + '<td><b>' + esc(l.month) + ' ' + esc(l.year) + '</b></td>'
+          + '<td>' + (l.locked
+              ? '<span class="hr-badge hr-badge-draft" style="background:rgba(220,38,38,.12);color:#dc2626;">'
+                + '<i class="fa fa-lock"></i> Closed</span>'
+              : '<span class="hr-badge hr-badge-draft" style="background:rgba(22,163,74,.12);color:#16a34a;">'
+                + '<i class="fa fa-unlock"></i> Open</span>')
+          + '</td>'
+          + '<td>' + esc(l.locked ? (l.lockedBy || '—') : (l.unlockedBy || '—')) + '</td>'
+          + '<td style="color:var(--t3);">' + esc(when ? when.substring(0, 10) : '—') + '</td>'
+          + '<td style="text-align:right;">'
+          + (canManage && l.locked
+              ? '<button class="hr-btn hr-btn-sm" data-reopen-month="' + esc(l.month)
+                + '" data-reopen-year="' + esc(l.year) + '">'
+                + '<i class="fa fa-unlock-alt"></i> Re-open</button>'
+              : '')
+          + '</td></tr>';
+
+        if (!l.locked && l.unlockReason){
+          html += '<tr><td colspan="5" style="font-size:12px;color:var(--t3);padding-top:0;">'
+                + '<i class="fa fa-info-circle"></i> Re-opened: ' + esc(l.unlockReason) + '</td></tr>';
+        }
+      });
+    }
+
+    html += '</tbody></table></div>';
+
+    // The close control is a manage action; the endpoints enforce it again.
+    $('#payrollCloseRow').toggle(canManage === true);
+    if (canManage && !$('#lockYearSel').val()) $('#lockYearSel').val(new Date().getFullYear());
+
+    if (!canManage){
+      html += '<div style="font-size:12px;color:var(--t3);margin-top:8px;">'
+            + '<i class="fa fa-lock"></i> View-only — closing or re-opening a period needs HR manage access.</div>';
+    }
+
+    $b.html(html);
+  }
+
+  /* Re-open a closed period. Uses the panel's own reason dialog — the same one
+     unlock_payroll() uses for a single run, with the same 10-character bar. */
+  function reopenPayrollMonth(month, year){
+    if (payrollLocksBusy) return;
+
+    promptReason({
+      title:        'Re-open Payroll Period',
+      titleIcon:    'fa-unlock-alt',
+      subtitle:
+        '<div class="hr-confirm-warning amber">'
+        + '<b><i class="fa fa-exclamation-triangle"></i> You are re-opening a closed payroll period.</b>'
+        + '<ul>'
+        +   '<li><b>' + esc(month) + ' ' + esc(year) + '</b> becomes generatable, regeneratable and deletable again.</li>'
+        +   '<li>Payslips, run statuses and the accounting books are <b>not</b> changed by this action.</li>'
+        +   '<li>Attendance for the month is governed separately — re-opening payroll does not re-open the attendance register.</li>'
+        +   '<li class="muted">Reason is audit-logged with your admin id and timestamp.</li>'
+        + '</ul>'
+        + '</div>',
+      confirmLabel: 'Yes, Re-open Period',
+      confirmIcon:  'fa-unlock-alt',
+      onConfirm: function(reason){
+        return new Promise(function(resolve, reject){
+          payrollLocksBusy = true;
+          post('hr/unlock_payroll_month', {month: month, year: year, reason: reason}).then(function(r){
+            payrollLocksBusy = false;
+            if (r && r.status === 'success'){
+              toast(r.message || 'Payroll period re-opened', 'success');
+              loadPayrollLocks();
+              if (typeof loadPayrollRuns === 'function') loadPayrollRuns();
+              resolve();
+            } else {
+              toast((r && r.message) || 'Failed to re-open the period', 'error');
+              reject(r);
+            }
+          }).fail(function(){
+            payrollLocksBusy = false;
+            toast('Network error', 'error');
+            reject();
+          });
+        });
+      }
+    });
+  }
+
+  /* Close a period. Confirmed rather than reason-gated: closing is the ordinary
+     month-end step and is reversible through the re-open above, which IS
+     reason-gated. Mirrors how the attendance month lock treats the two acts. */
+  async function closePayrollMonth(month, year){
+    if (payrollLocksBusy) return;
+    if (!await zxConfirm({
+      title: 'Close payroll for ' + month + ' ' + year + '?',
+      message: 'Payroll for this period can no longer be generated, regenerated or deleted '
+             + 'until it is re-opened. Do this once the month is settled and paid.',
+      confirmText: 'Close payroll', danger: true
+    })) return;
+
+    payrollLocksBusy = true;
+    post('hr/lock_payroll_month', {month: month, year: year}).then(function(r){
+      payrollLocksBusy = false;
+      if (r && r.status === 'success'){
+        toast(r.message || 'Payroll period closed', 'success');
+        loadPayrollLocks();
+        if (typeof loadPayrollRuns === 'function') loadPayrollRuns();
+      } else {
+        toast((r && r.message) || 'Failed to close the period', 'error');
+      }
+    }).fail(function(){
+      payrollLocksBusy = false;
+      toast('Network error', 'error');
+    });
+  }
+
+  $(document).on('click', '#btnClosePayrollPeriod', function(){
+    var m = $('#lockMonthSel').val();
+    var y = String($('#lockYearSel').val() || '').trim();
+    if (!/^\d{4}$/.test(y)) { toast('Enter a valid 4-digit year', 'error'); return; }
+    closePayrollMonth(m, y);
+  });
+  $(document).on('click', '[data-reopen-month]', function(){
+    reopenPayrollMonth($(this).data('reopen-month'), String($(this).data('reopen-year')));
+  });
+  $(document).on('click', '[data-close-month]', function(){
+    closePayrollMonth($(this).data('close-month'), String($(this).data('close-year')));
+  });
   function promptReason(opts){
     var titleIcon = opts.titleIcon || 'fa-comment';
     $('#reasonPromptTitle').html('<i class="fa '+titleIcon+'"></i> '+esc(opts.title||'Reason Required'));
@@ -3099,8 +4029,8 @@ document.addEventListener('DOMContentLoaded', function(){
     });
   }
 
-  function deletePayrollRun(id){
-    if(!confirm('Delete this draft payroll run and all its payslips? This cannot be undone.')) return;
+  async function deletePayrollRun(id){
+    if(!await zxConfirm({ title: 'Delete this draft payroll run and all its payslips? This cannot be undone.' })) return;
     post('hr/delete_payroll_run', {run_id:id}).then(function(r){
       if(r&&r.status==='success'){ toast(r.message||'Payroll run deleted','success'); loadPayrollRuns(); }
       else toast(r.message||'Failed to delete','error');
@@ -3211,7 +4141,7 @@ document.addEventListener('DOMContentLoaded', function(){
         $banner.hide();
       }
 
-      if(!keys.length){ $tb.html('<tr><td colspan="13" class="hr-empty"><i class="fa fa-inbox"></i> No payslips in this run.</td></tr>'); return; }
+      if(!keys.length){ $tb.html('<tr><td colspan="14" class="hr-empty"><i class="fa fa-inbox"></i> No payslips in this run.</td></tr>'); return; }
       var h='', i=0;
       $.each(slips, function(k,p){
         i++;
@@ -3220,6 +4150,18 @@ document.addEventListener('DOMContentLoaded', function(){
         h+='<tr class="hr-payslip-row" data-id="'+esc(k)+'" style="cursor:pointer">';
         h+='<td class="hr-num">'+i+'</td><td>'+esc(p.staff_name||staffName(p.staff_id||k))+'</td>';
         h+='<td class="hr-num">'+fmt(p.basic)+'</td><td class="hr-num">'+fmt(allowances)+'</td>';
+        // W3.2.2 — payroll-period adjustments. Read from the slip's own
+        // `_payroll_adjustments` block, which the engine wrote; the browser does
+        // no payroll arithmetic of its own.
+        var adjBlock = p._payroll_adjustments || null;
+        if(adjBlock){
+          var adjNet = (parseFloat(adjBlock.final_gross)||0) - (parseFloat(adjBlock.original_gross)||0);
+          var adjColor = adjNet >= 0 ? 'var(--gold)' : '#b91c1c';
+          h+='<td class="hr-num" title="'+esc(adjBlock.count+' adjustment(s) — open the row for the breakdown')+'">'
+            +'<strong style="color:'+adjColor+'">'+(adjNet>=0?'+':'−')+fmt(Math.abs(adjNet))+'</strong></td>';
+        } else {
+          h+='<td class="hr-num" style="color:var(--t3)">—</td>';
+        }
         h+='<td class="hr-num"><strong>'+fmt(p.gross)+'</strong></td><td class="hr-num">'+fmt(p.total_deductions)+'</td>';
         h+='<td class="hr-num"><strong style="color:var(--gold)">'+fmt(p.net_pay)+'</strong></td>';
         h+='<td class="hr-num">'+(p.days_worked||'-')+'</td><td class="hr-num">'+(p.days_absent||0)+'</td>';
@@ -3229,7 +4171,82 @@ document.addEventListener('DOMContentLoaded', function(){
         h+='<td><i class="fa fa-chevron-down" style="color:var(--t3)"></i></td></tr>';
         // Detail row — structured payslip breakdown
         h+='<tr class="hr-payslip-detail" id="detail_'+esc(k)+'">';
-        h+='<td colspan="13"><div class="hr-payslip-breakdown">';
+        h+='<td colspan="14"><div class="hr-payslip-breakdown">';
+
+        // ── W3.2.2 — ORIGINAL → ADJUSTMENT → FINAL ──
+        //
+        // Shown FIRST in the drill-down and never collapsed into a single
+        // revised figure: an operator who sees only "Gross ₹45,000" cannot tell
+        // an adjusted run from an unadjusted one, which destroys exactly the
+        // auditability the override model exists to provide.
+        //
+        // Every number here is read from the slip's `_payroll_adjustments`
+        // block, which the payroll engine wrote. The browser performs no
+        // payroll arithmetic.
+        if(adjBlock){
+          h+='<div class="hr-adjust-panel" style="margin-bottom:14px;padding:12px;border-radius:8px;border:1px solid rgba(188,90,60,.25);background:rgba(188,90,60,.05)">';
+          h+='<div style="font:600 12px/1.4 var(--font-b);color:#BC5A3C;margin-bottom:8px">'
+            +'<i class="fa fa-sliders"></i> Payroll-period adjustments ('+adjBlock.count+')</div>';
+          h+='<table style="width:100%;border-collapse:collapse;font:400 12px/1.6 var(--font-m)">';
+          h+='<tr><td style="color:var(--t2)">Original gross <span style="color:var(--t3)">(before adjustments)</span></td>'
+            +'<td class="hr-num" style="text-align:right">'+fmt(adjBlock.original_gross)+'</td></tr>';
+          var lines = adjBlock.lines||[];
+          for(var li=0; li<lines.length; li++){
+            var L = lines[li];
+            var isEarn = (L.kind==='earning');
+            h+='<tr><td style="padding-left:14px;color:var(--t1)">'
+              + (isEarn?'+ ':'− ') + esc(L.label||L.type||'Adjustment')
+              + (L.prorated?' <span style="color:var(--t3)">(prorated)</span>':'')
+              + '</td>'
+              + '<td class="hr-num" style="text-align:right;color:'+(isEarn?'var(--gold)':'#b91c1c')+'">'
+              + (isEarn?'+':'−')+fmt(L.amount)+'</td></tr>';
+          }
+          h+='<tr style="border-top:1px solid rgba(188,90,60,.25)">'
+            +'<td style="font-weight:600;padding-top:6px">Revised gross</td>'
+            +'<td class="hr-num" style="text-align:right;font-weight:600;padding-top:6px">'+fmt(adjBlock.final_gross)+'</td></tr>';
+          h+='<tr><td style="color:var(--t2)">Original net</td>'
+            +'<td class="hr-num" style="text-align:right">'+fmt(adjBlock.original_net)+'</td></tr>';
+          h+='<tr><td style="font-weight:600">Revised net</td>'
+            +'<td class="hr-num" style="text-align:right;font-weight:600;color:var(--gold)">'+fmt(adjBlock.final_net)+'</td></tr>';
+          h+='</table>';
+          h+='<div style="margin-top:8px;font:400 11px/1.5 var(--font-m);color:var(--t3)">'
+            +'Applied '+esc(adjBlock.applied_at||'')+(adjBlock.applied_by?' by '+esc(adjBlock.applied_by):'')
+            +'. Statutory deductions were recalculated by the payroll engine — an added earning also moves the ESI and TDS base.</div>';
+          h+='</div>';
+        }
+
+        // ── W3.2.4 — "why is this net pay?" ──
+        //
+        // Loaded on demand rather than with the grid: a full trace per employee
+        // would be dead weight on a 200-row run that nobody has drilled into.
+        h+='<div style="margin-bottom:14px">';
+        h+='<button class="btn btn-default btn-sm trace-btn" data-run="'+esc(runId)+'" data-staff="'+esc(p.staff_id||k)+'">'
+          +'<i class="fa fa-list-ol"></i> Why is this net pay?</button>';
+        h+='<div class="trace-out" data-staff="'+esc(p.staff_id||k)+'" style="margin-top:10px"></div>';
+        h+='</div>';
+
+        // ── W3.2.2 — create a payroll-period adjustment ──
+        //
+        // Only offered while the run is Draft and only to HR:manage. Both are
+        // conveniences: `Payroll_overrides::create()` re-checks the run status,
+        // the tenant, and the permission itself, because hiding a form is not
+        // authorization.
+        if(runStatus==='draft' && HR_CAN_MANAGE){
+          var sid = esc(p.staff_id||k);
+          h+='<div class="hr-adjust-form" style="margin-bottom:14px;padding:12px;border-radius:8px;border:1px dashed var(--border)">';
+          h+='<div style="font:600 12px/1.4 var(--font-b);color:var(--t1);margin-bottom:8px"><i class="fa fa-plus-circle"></i> Add payroll-period adjustment</div>';
+          h+='<div style="display:flex;flex-wrap:wrap;gap:8px;align-items:flex-start">';
+          h+='<select class="form-control adj-type" data-staff="'+sid+'" style="width:190px;font-size:12px"></select>';
+          h+='<input type="number" class="form-control adj-amount" data-staff="'+sid+'" placeholder="Amount ₹" min="0.01" step="0.01" style="width:130px;font-size:12px">';
+          h+='<input type="text" class="form-control adj-reason" data-staff="'+sid+'" placeholder="Reason (min 10 characters)" style="flex:1;min-width:220px;font-size:12px" maxlength="500">';
+          h+='<button class="btn btn-primary btn-sm adj-save" data-staff="'+sid+'" data-run="'+esc(runId)+'"><i class="fa fa-check"></i> Save</button>';
+          h+='</div>';
+          h+='<div style="margin-top:6px;font:400 11px/1.5 var(--font-m);color:var(--t3)">'
+            +'Saving records the adjustment. It reaches the payslip and the ledger only when you <b>Regenerate</b> this employee — '
+            +'the same certified recalculation the run already uses. Permanent salary is never changed.</div>';
+          h+='<div class="adj-msg" data-staff="'+sid+'" style="margin-top:6px;display:none"></div>';
+          h+='</div>';
+        }
 
         // ── UX-1: DAY CLASSIFICATION strip (top) ──
         // Computes summary chips so admin sees at-a-glance how the month
@@ -3394,6 +4411,8 @@ document.addEventListener('DOMContentLoaded', function(){
         h+='</div></td></tr>';
       });
       $tb.html(h);
+      _fillAdjTypes();   // W3.2.2 — selects exist only after the rows render
+      loadLopReview(runId);   // W3.2.3 — LOP review sits above this grid
 
       // Toggle detail rows
       $tb.find('.hr-payslip-row').on('click', function(){
@@ -3452,8 +4471,12 @@ document.addEventListener('DOMContentLoaded', function(){
       var actionBadge = auditActionBadge(e.action, e.decision);
       var details = '';
       if(e.total_days) details += esc(''+e.total_days)+' day(s)';
-      if(parseInt(e.paid_days)>0) details += ' <small style="color:var(--gold)">('+esc(e.paid_days)+' paid)</small>';
-      if(parseInt(e.lwp_days)>0) details += ' <small style="color:#991b1b">('+esc(e.lwp_days)+' LWP)</small>';
+      // Fraction safety (2026-08-19): parseInt floored a 0.5-day value to 0,
+      // so the gate failed and the badge was dropped — the leave AUDIT TRAIL
+      // visually read "no LOP" while payroll had deducted half a day. The
+      // printed value itself was already unrounded; only the gate was wrong.
+      if(parseFloat(e.paid_days)>0) details += ' <small style="color:var(--gold)">('+esc(e.paid_days)+' paid)</small>';
+      if(parseFloat(e.lwp_days)>0) details += ' <small style="color:#991b1b">('+esc(e.lwp_days)+' LWP)</small>';
       if(e.balance_before!==undefined) details += (details?' | ':'') + 'Bal: '+esc(''+e.balance_before);
       if(e.decision_reason) details += '<br><small style="opacity:.7">'+esc(e.decision_reason)+'</small>';
       if(e.remarks) details += '<br><small style="opacity:.6;font-style:italic">Remarks: '+esc(e.remarks)+'</small>';
@@ -3632,8 +4655,8 @@ document.addEventListener('DOMContentLoaded', function(){
     });
   }
 
-  function submitAppraisal(id){
-    if(!confirm('Submit this appraisal for review? It cannot be edited afterwards.')) return;
+  async function submitAppraisal(id){
+    if(!await zxConfirm({ title: 'Submit this appraisal for review? It cannot be edited afterwards.' })) return;
     post('hr/submit_appraisal', {id:id}).then(function(r){
       if(r&&r.status==='success'){ toast(r.message||'Submitted','success'); }
       else toast((r&&r.message)||'Failed to submit','error');
@@ -3642,8 +4665,15 @@ document.addEventListener('DOMContentLoaded', function(){
     }).always(function(){ loadAppraisals(); });
   }
 
-  function reviewAppraisal(id){
-    var comments = prompt('Optional reviewer comments:','');
+  async function reviewAppraisal(id){
+    // UI-D3: optional note, so the dialog does not force a value.
+    var comments = await zxPrompt({
+      title: 'Mark appraisal reviewed',
+      message: 'Reviewer comments (optional):',
+      placeholder: 'Optional',
+      confirmText: 'Mark reviewed',
+      required: false
+    });
     if(comments === null) return; // cancelled
     post('hr/review_appraisal', {id:id, comments:comments}).then(function(r){
       if(r&&r.status==='success'){ toast(r.message||'Reviewed','success'); }
@@ -3653,14 +4683,272 @@ document.addEventListener('DOMContentLoaded', function(){
     }).always(function(){ loadAppraisals(); });
   }
 
-  function deleteAppraisal(id){
-    if(!confirm('Delete this appraisal?')) return;
+  async function deleteAppraisal(id){
+    if(!await zxConfirm({ title: 'Delete this appraisal?' })) return;
     post('hr/delete_appraisal', {id:id}).then(function(r){
       if(r&&r.status==='success'){ toast('Deleted','success'); }
       else toast((r&&r.message)||'Failed to delete','error');
     }).fail(function(){
       toast('Server error — refreshing list','error');
     }).always(function(){ loadAppraisals(); });
+  }
+
+  /* ================================================================
+     TRAINING / DEVELOPMENT (Staff HR Advanced Capability Programme,
+     Phase 7) — a factual log entry, not a graded/reviewed workflow like
+     Appraisals above: no submit/review step, just save + delete.
+  ================================================================ */
+  function loadTrainingRecords(){
+    var params='?staff_id='+($('#filterTrainingStaff').val()||'')+'&category='+encodeURIComponent($('#filterTrainingCategory').val()||'')+'&status='+encodeURIComponent($('#filterTrainingStatus').val()||'');
+    getJSON('hr/get_training_records'+params).then(function(r){
+      var records=toMap((r&&r.training_records)?r.training_records:(r&&r.data)?r.data:{});
+      _trainingCache = records;
+      var $tb=$('#tblTraining tbody');
+      var keys=Object.keys(records);
+      if(!keys.length){ $tb.html('<tr><td colspan="10" class="hr-empty"><i class="fa fa-inbox"></i> No training records found.</td></tr>'); return; }
+      var h='', i=0;
+      $.each(records, function(k,t){
+        i++;
+        var rid = t.id || k;
+        h+='<tr><td class="hr-num">'+i+'</td>';
+        h+='<td>'+esc(t.staff_name||staffName(t.staff_id))+'</td>';
+        h+='<td>'+esc(t.department||'-')+'</td>';
+        h+='<td>'+esc(t.title)+'</td>';
+        h+='<td>'+badgeHtml(t.category||'Training')+'</td>';
+        h+='<td>'+esc(t.provider||'-')+'</td>';
+        h+='<td>'+badgeHtml(t.status||'Completed')+'</td>';
+        h+='<td>'+esc(t.completed_date||'-')+'</td>';
+        h+='<td>'+esc(t.expiry_date||'-')+'</td>';
+        h+='<td>';
+        h+='<button class="hr-act-btn" onclick="HR.editTrainingRecord(\''+esc(rid)+'\')"><i class="fa fa-pencil"></i></button> ';
+        h+='<button class="hr-act-btn danger" onclick="HR.deleteTrainingRecord(\''+esc(rid)+'\')"><i class="fa fa-trash"></i></button>';
+        h+='</td></tr>';
+      });
+      $tb.html(h);
+    });
+  }
+
+  function onTrStatusChange(){
+    // No forced value — save_training_record() itself requires
+    // completed_date only when status is Completed; this just nudges the
+    // date field into focus for the common case.
+    if($('#trStatus').val()==='Completed' && !$('#trCompletedDate').val()){
+      $('#trCompletedDate').val(new Date().toISOString().slice(0,10));
+    }
+  }
+
+  function openTrainingModal(){
+    $('#trainingId').val('');
+    fillStaffSelect('#trStaff');
+    $('#trTitle,#trProvider,#trHours,#trCompletedDate,#trExpiryDate,#trNotes').val('');
+    $('#trCategory').val('Training');
+    $('#trStatus').val('Completed');
+    $('#modalTrainingTitle').text('New Training Record');
+    openModal('modalTraining');
+  }
+
+  function editTrainingRecord(id){
+    if(!_trainingCache[id]){ toast('Training record not found in cache — refreshing','warning'); loadTrainingRecords(); return; }
+    var t=_trainingCache[id];
+    $('#trainingId').val(id);
+    fillStaffSelect('#trStaff', t.staff_id);
+    $('#trTitle').val(t.title||'');
+    $('#trProvider').val(t.provider||'');
+    $('#trCategory').val(t.category||'Training');
+    $('#trStatus').val(t.status||'Completed');
+    $('#trHours').val(t.hours||'');
+    $('#trCompletedDate').val(t.completed_date||'');
+    $('#trExpiryDate').val(t.expiry_date||'');
+    $('#trNotes').val(t.notes||'');
+    $('#modalTrainingTitle').text('Edit Training Record');
+    openModal('modalTraining');
+  }
+
+  function saveTrainingRecord(){
+    var staff=$('#trStaff').val(), title=$('#trTitle').val().trim();
+    if(!staff){ toast('Please select a staff member','error'); return; }
+    if(!title){ toast('Title is required','error'); return; }
+    if($('#trStatus').val()==='Completed' && !$('#trCompletedDate').val()){
+      toast('Completed date is required for a Completed record','error'); return;
+    }
+    if(window._saveTrainingInFlight) return;
+    window._saveTrainingInFlight = true;
+    var $btn = $('button.hr-btn-primary[onclick*="saveTrainingRecord"]');
+    var orig = $btn.html();
+    $btn.prop('disabled', true).html('<i class="fa fa-spinner fa-spin"></i> Saving…');
+    post('hr/save_training_record', {
+      id:$('#trainingId').val(), staff_id:staff, title:title,
+      provider:$('#trProvider').val().trim(), category:$('#trCategory').val(),
+      status:$('#trStatus').val(), hours:$('#trHours').val(),
+      completed_date:$('#trCompletedDate').val(), expiry_date:$('#trExpiryDate').val(),
+      notes:$('#trNotes').val().trim()
+    }).then(function(r){
+      if(r&&r.status==='success'){ toast(r.message||'Saved','success'); closeModal('modalTraining'); loadTrainingRecords(); }
+      else toast((r&&r.message)||'Failed to save','error');
+    }).fail(function(){
+      toast('Server error — refreshing list','error');
+      loadTrainingRecords();
+    }).always(function(){
+      window._saveTrainingInFlight = false;
+      $btn.prop('disabled', false).html(orig);
+    });
+  }
+
+  async function deleteTrainingRecord(id){
+    if(!await zxConfirm({ title: 'Delete this training record?' })) return;
+    post('hr/delete_training_record', {id:id}).then(function(r){
+      if(r&&r.status==='success'){ toast('Deleted','success'); }
+      else toast((r&&r.message)||'Failed to delete','error');
+    }).fail(function(){
+      toast('Server error — refreshing list','error');
+    }).always(function(){ loadTrainingRecords(); });
+  }
+
+  /* ================================================================
+     ORG CHART / REPORTING HIERARCHY (Staff HR Advanced Capability
+     Programme, Phase 8) — read-only. Renders downward from the roots
+     the server computed; never derives its own hierarchy rules, and
+     never writes.
+  ================================================================ */
+  var _orgData = null;
+  var _orgCollapsed = {};
+
+  function loadOrgChart(){
+    $('#orgChartWrap').html('<p class="hr-empty"><i class="fa fa-spinner fa-spin"></i> Loading...</p>');
+    $('#orgIssuesWrap').empty();
+    getJSON('hr/get_org_chart').then(function(r){
+      if(!r || r.status!=='success'){
+        $('#orgChartWrap').html('<p class="hr-empty"><i class="fa fa-exclamation-triangle"></i> '+esc((r&&r.message)||'Could not load the reporting hierarchy.')+'</p>');
+        return;
+      }
+      _orgData = r;
+      renderOrgChart();
+    }).fail(function(){
+      $('#orgChartWrap').html('<p class="hr-empty"><i class="fa fa-exclamation-triangle"></i> Server error loading the reporting hierarchy.</p>');
+    });
+  }
+
+  var ORG_ISSUE_LABEL = {
+    orphan_manager:   'Missing manager',
+    inactive_manager: 'Inactive manager',
+    cycle:            'Circular chain',
+    self_reference:   'Reports to self',
+    unreachable:      'Detached from hierarchy'
+  };
+
+  function renderOrgChart(){
+    if(!_orgData) return;
+    var nodes = _orgData.nodes || {};
+    var roots = _orgData.roots || [];
+    var issues = _orgData.issues || [];
+    var showInactive = $('#orgShowInactive').val()==='1';
+    var q = ($('#orgSearch').val()||'').trim().toLowerCase();
+
+    /* Issues panel — always rendered when non-empty, never hidden behind
+       a toggle: a silently-incomplete chart is the failure mode this
+       whole surface exists to prevent. */
+    var $iw = $('#orgIssuesWrap');
+    if(issues.length){
+      var ih = '<div class="org-issues"><h4><i class="fa fa-exclamation-triangle"></i> '+issues.length+' hierarchy issue'+(issues.length===1?'':'s')+' found</h4><ul>';
+      issues.forEach(function(is){
+        ih += '<li><strong>'+esc(ORG_ISSUE_LABEL[is.type]||is.type)+':</strong> '+esc(is.staffName||is.staffId)+' — '+esc(is.detail||'')+'</li>';
+      });
+      ih += '</ul></div>';
+      $iw.html(ih);
+    } else {
+      $iw.empty();
+    }
+
+    /* children index, built from the server's node map only */
+    var kids = {};
+    Object.keys(nodes).forEach(function(sid){
+      var m = nodes[sid].managerId;
+      if(m && m!==sid && nodes[m]) (kids[m] = kids[m]||[]).push(sid);
+    });
+    Object.keys(kids).forEach(function(k){
+      kids[k].sort(function(a,b){ return (nodes[a].name||'').localeCompare(nodes[b].name||''); });
+    });
+
+    var cyclicSet = {};
+    (_orgData.cyclic_ids||[]).forEach(function(id){ cyclicSet[id]=true; });
+
+    function isActive(n){ return (n.status||'Active').toLowerCase().trim()==='active'; }
+    function matches(n){
+      if(!q) return false;
+      return (n.name||'').toLowerCase().indexOf(q)>=0
+          || (n.position||'').toLowerCase().indexOf(q)>=0
+          || (n.department||'').toLowerCase().indexOf(q)>=0;
+    }
+    /* A node is kept if it matches, or if any descendant matches — so a
+       search never orphans a matching person by hiding their parent. */
+    function subtreeHasMatch(sid){
+      var n = nodes[sid]; if(!n) return false;
+      if(matches(n)) return true;
+      var cs = kids[sid]||[];
+      for(var i=0;i<cs.length;i++){ if(subtreeHasMatch(cs[i])) return true; }
+      return false;
+    }
+    function countDescendants(sid){
+      var cs = kids[sid]||[], total = 0;
+      for(var i=0;i<cs.length;i++){ total += 1 + countDescendants(cs[i]); }
+      return total;
+    }
+
+    function renderNode(sid, depth){
+      var n = nodes[sid]; if(!n) return '';
+      if(depth > 40) return '';   /* client-side belt-and-braces; server already bounds depth */
+      var active = isActive(n);
+      if(!showInactive && !active && !subtreeHasMatch(sid)) return '';
+      if(q && !subtreeHasMatch(sid)) return '';
+
+      var cs = (kids[sid]||[]).filter(function(c){
+        if(!showInactive && !isActive(nodes[c]) && !subtreeHasMatch(c)) return false;
+        if(q && !subtreeHasMatch(c)) return false;
+        return true;
+      });
+      var collapsed = !!_orgCollapsed[sid] && !q;
+      var total = countDescendants(sid);
+
+      var cls = 'org-node' + (matches(n)?' is-match':'') + (active?'':' is-inactive');
+      var h = '<li>';
+      h += '<div class="'+cls+'">';
+      h += '<button type="button" class="org-toggle'+(cs.length?'':' leaf')+'" onclick="HR.toggleOrgNode('+JSON.stringify(sid)+')">'
+         + (cs.length ? (collapsed?'<i class="fa fa-plus"></i>':'<i class="fa fa-minus"></i>') : '')
+         + '</button>';
+      h += '<div><div class="org-name">'+esc(n.name||sid)+'</div>';
+      var meta = [];
+      if(n.position) meta.push(esc(n.position));
+      if(n.department) meta.push(esc(n.department));
+      h += '<div class="org-meta">'+(meta.join(' · ')||'&nbsp;')+'</div></div>';
+      if(!active) h += '<span class="org-flag">Inactive</span>';
+      if(cyclicSet[sid]) h += '<span class="org-flag sev">In a circular chain</span>';
+      if(total) h += '<span class="org-count">'+total+' report'+(total===1?'':'s')+'</span>';
+      h += '</div>';
+
+      if(cs.length && !collapsed){
+        var inner = '';
+        for(var i=0;i<cs.length;i++) inner += renderNode(cs[i], depth+1);
+        if(inner) h += '<ul>'+inner+'</ul>';
+      }
+      h += '</li>';
+      return h;
+    }
+
+    var body = '';
+    for(var i=0;i<roots.length;i++) body += renderNode(roots[i], 0);
+
+    if(!body){
+      $('#orgChartWrap').html('<p class="hr-empty"><i class="fa fa-inbox"></i> '
+        + (q ? 'No one matches that search.' : 'No reporting hierarchy to show yet — set a Reporting Manager on a staff member to begin.')
+        + '</p>');
+      return;
+    }
+    $('#orgChartWrap').html('<ul class="org-tree">'+body+'</ul>');
+  }
+
+  function toggleOrgNode(sid){
+    _orgCollapsed[sid] = !_orgCollapsed[sid];
+    renderOrgChart();
   }
 
   /* ── Circular Viewer ──────────────────────────────────────── */
@@ -3686,8 +4974,10 @@ document.addEventListener('DOMContentLoaded', function(){
     var content = document.getElementById('circularPosterWrap').innerHTML;
     var w = window.open('', '_blank', 'width=700,height=900');
     w.document.write('<!DOCTYPE html><html><head><title>Job Circular</title>');
-    w.document.write('<link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/4.7.0/css/font-awesome.min.css">');
-    w.document.write('<style>body{margin:20px;font-family:"Segoe UI",system-ui,sans-serif;}@media print{body{margin:0;}}</style>');
+    // The circular carries its own scoped stylesheet; all this window owns is
+    // page geometry. A4 with a 14mm margin is the sheet a school prints on.
+    w.document.write('<style>@page{size:A4;margin:14mm;}'
+      + 'body{margin:0;font-family:"Segoe UI",system-ui,sans-serif;-webkit-print-color-adjust:exact;print-color-adjust:exact;}</style>');
     w.document.write('</head><body>');
     w.document.write(content);
     w.document.write('<script>setTimeout(function(){window.print();},500);<\/script>');
@@ -3695,13 +4985,13 @@ document.addEventListener('DOMContentLoaded', function(){
     w.document.close();
   }
 
-  function regenCircular(){
+  async function regenCircular(){
     if(!_circularJobId) return;
-    if(!confirm('Regenerate the circular for this job posting? The old circular will be replaced.')) return;
+    if(!await zxConfirm({ title: 'Regenerate the circular for this job posting? The old circular will be replaced.' })) return;
     var $btn = $('#btnRegenCirc').prop('disabled',true).html('<i class="fa fa-spinner fa-spin"></i> Regenerating...');
     post('hr/regenerate_circular', { job_id: _circularJobId }).then(function(r){
       $btn.prop('disabled',false).html('<i class="fa fa-refresh"></i> Regenerate');
-      if(r && r.status){
+      if (r && r.status && r.status !== 'error'){
         toast(r.message || 'Regenerated', 'success');
         loadJobs();
         // Refresh poster
@@ -3712,10 +5002,10 @@ document.addEventListener('DOMContentLoaded', function(){
     });
   }
 
-  function generateCircular(jobId){
-    if(!confirm('Generate a circular for this job posting?')) return;
+  async function generateCircular(jobId){
+    if(!await zxConfirm({ title: 'Generate a circular for this job posting?' })) return;
     post('hr/regenerate_circular', { job_id: jobId }).then(function(r){
-      if(r && r.status){
+      if (r && r.status && r.status !== 'error'){
         toast('Circular ' + (r.circular_id||'') + ' generated and published!', 'success', 5000);
         loadJobs();
       } else {
@@ -3725,14 +5015,79 @@ document.addEventListener('DOMContentLoaded', function(){
   }
 
   /* ── Public API ─────────────────────────────────────────── */
+  /* ── Comp-Off (COMP-OFF-1) ─────────────────────────────────────────────
+     Thin wrappers over hr/earn_comp_off and hr/get_comp_off_ledger. Every
+     refusal that matters (not marked W, future date, staff inactive) is a
+     sentence from the server, so it is shown as-is rather than re-worded. */
+  var _coBusy = false;
+
+  function coRenderLedger(d){
+    var $tb = $('#coTable tbody').empty();
+    var entries = (d && d.entries) || [];
+    $('#coBalance').text(d && d.available_balance !== undefined
+      ? (fmt(d.available_balance) + ' day(s) available') : '');
+
+    if(!entries.length){
+      $tb.append('<tr><td colspan="5" class="hr-empty">No Comp-Off credits for this employee.</td></tr>');
+      return;
+    }
+    entries.forEach(function(e){
+      $tb.append('<tr>'
+        + '<td>' + esc(e.earnedDate || '') + '</td>'
+        + '<td>' + esc(String(e.creditDays !== undefined ? e.creditDays : '')) + '</td>'
+        + '<td>' + esc(e.status || '') + '</td>'
+        + '<td>' + esc(e.expiresOn || '—') + '</td>'
+        + '<td>' + esc(e.consumedAt || '—') + '</td>'
+        + '</tr>');
+    });
+  }
+
+  function loadCompOffLedger(){
+    var staffId = ($('#coStaffId').val() || '').trim();
+    if(!staffId){ toast('Enter an employee ID first.','error'); return; }
+    if(_coBusy) return;
+    _coBusy = true;
+
+    var $b = $('#coLoadBtn'), old = $b.html();
+    $b.prop('disabled', true).html('<i class="fa fa-spinner fa-spin"></i>');
+    $('#coTable tbody').html('<tr><td colspan="5" class="hr-empty">Loading&hellip;</td></tr>');
+
+    getJSON('hr/get_comp_off_ledger?staff_id=' + encodeURIComponent(staffId))
+      .then(function(r){
+        coRenderLedger((r && r.data) ? r.data : r);
+      })
+      .catch(function(){
+        $('#coTable tbody').html('<tr><td colspan="5" class="hr-empty">Could not load the ledger.</td></tr>');
+      })
+      .always(function(){
+        _coBusy = false;
+        $b.prop('disabled', false).html(old);
+      });
+  }
+
+  function creditCompOff(){
+    var staffId = ($('#coStaffId').val() || '').trim();
+    var date    = ($('#coDate').val() || '').trim();
+    if(!staffId){ toast('Enter an employee ID first.','error'); return; }
+    if(!date){ toast('Choose the date that was worked.','error'); return; }
+    if(_coBusy) return;
+    _coBusy = true;
+
+    var $b = $('#coCreditBtn'), old = $b.html();
+    $b.prop('disabled', true).html('<i class="fa fa-spinner fa-spin"></i>');
+
+    post('hr/earn_comp_off', {staff_id: staffId, date: date})
+      .then(function(r){
+        toast((r && r.message) || 'Comp-Off credited.','success');
+        loadCompOffLedger();
+      })
+      .always(function(){
+        _coBusy = false;
+        $b.prop('disabled', false).html(old);
+      });
+  }
   window.HR = {
     closeModal:       closeModal,
-    openDeptModal:    openDeptModal,
-    editDept:         function(id){ openDeptModal(id); },
-    saveDept:         saveDept,
-    deleteDept:       deleteDept,
-    seedDepartments:  seedDepartments,
-    toggleDept:       toggleDept,
     openJobModal:     openJobModal,
     editJob:          editJob,
     saveJob:          saveJob,
@@ -3751,13 +5106,21 @@ document.addEventListener('DOMContentLoaded', function(){
     editLeaveType:    function(id){ openLeaveTypeModal(id); },
     saveLeaveType:    saveLeaveType,
     deleteLeaveType:  deleteLeaveType,
+    runLeaveAccrual:  runLeaveAccrual,
+    saveAccrualMode:  saveAccrualMode,
+    saveLeavePolicy:  saveLeavePolicy,
+    previewCarryForward: previewCarryForward,
+    confirmCarryForward: confirmCarryForward,
     seedLeaveTypes:   seedLeaveTypes,
     seedOnePill:      seedOnePill,
+    creditCompOff:    creditCompOff,
+    loadCompOffLedger: loadCompOffLedger,
     openLeaveRequestModal: openLeaveRequestModal,
     saveLeaveRequest: saveLeaveRequest,
     loadLeaveRequests: loadLeaveRequests,
     approveLeave:     approveLeave,
     rejectLeave:      rejectLeave,
+    cancelLeave:      cancelLeave,
     confirmLeaveAction: confirmLeaveAction,
     initBalances:     initBalances,
     loadLeaveAudit:   loadLeaveAudit,
@@ -3790,7 +5153,16 @@ document.addEventListener('DOMContentLoaded', function(){
     deleteAppraisal:  deleteAppraisal,
     calcAppraisal:    calcAppraisal,
     onApStaffChange:  onApStaffChange,
-    loadAppraisals:   loadAppraisals
+    loadAppraisals:   loadAppraisals,
+    openTrainingModal:   openTrainingModal,
+    editTrainingRecord:  editTrainingRecord,
+    saveTrainingRecord:  saveTrainingRecord,
+    deleteTrainingRecord: deleteTrainingRecord,
+    onTrStatusChange:    onTrStatusChange,
+    loadTrainingRecords: loadTrainingRecords,
+    loadOrgChart:        loadOrgChart,
+    renderOrgChart:      renderOrgChart,
+    toggleOrgNode:       toggleOrgNode
   };
 
   /* ── Boot ───────────────────────────────────────────────── */

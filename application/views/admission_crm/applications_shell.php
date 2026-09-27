@@ -59,7 +59,7 @@ html { font-size:16px !important; }
 @media (prefers-reduced-motion:reduce){ .ac-shell-spin .sp { animation:none; } }
 .ac-shell-error { position:absolute; inset:0; z-index:3; display:none; flex-direction:column; align-items:center; justify-content:center;
     gap:14px; padding:26px; text-align:center; background:var(--bg2); }
-.ac-shell-error.show { display:flex; }
+.ac-shell-error.show { display:flex !important; }
 .ac-shell-error .em { font-size:26px; }
 .ac-shell-error .msg { font-size:14px; color:var(--t2); max-width:44ch; }
 .ac-shell-retry { font-size:13.5px; font-weight:700; color:#fff; background:var(--gold); border:0; border-radius:9px; padding:9px 18px; cursor:pointer; min-height:40px; }

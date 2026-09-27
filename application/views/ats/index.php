@@ -339,7 +339,7 @@ $activeTab = $active_tab ?? 'pipeline';
 
 /* ── Modals ─────────────────────────────────────────────────────── */
 .ats-modal-bg{position:fixed;inset:0;background:rgba(0,0,0,.5);backdrop-filter:blur(2px);z-index:1050;display:none;align-items:center;justify-content:center;padding:20px}
-.ats-modal-bg.show{display:flex}
+.ats-modal-bg.show{display:flex !important}
 .ats-modal{background:var(--bg2);border:1px solid var(--border);border-radius:12px;width:560px;max-width:100%;max-height:calc(100vh - 40px);overflow-y:auto;box-shadow:0 16px 48px rgba(0,0,0,.3);animation:atsModalIn .2s ease}
 .ats-modal-sm{width:440px}
 .ats-modal-lg{width:680px}
@@ -437,6 +437,7 @@ $activeTab = $active_tab ?? 'pipeline';
 <!-- ══════════════════════════════════════════════════════════════════
      JAVASCRIPT
      ══════════════════════════════════════════════════════════════════ -->
+<script src="<?= base_url('assets/js/zx_dialog.js') ?>?v=1"></script>
 <script>
 document.addEventListener('DOMContentLoaded', function(){
 
@@ -750,8 +751,12 @@ window.ATS = {
     },
 
     /* ── Stage advance ── */
-    advanceStage: function(id, newStage){
-        if(!confirm('Move this candidate to '+newStage+'?')) return;
+    advanceStage: async function(id, newStage){
+        if (!await zxConfirm({
+            title: 'Move to ' + newStage + '?',
+            message: 'The candidate advances to the ' + newStage + ' stage.',
+            confirmText: 'Move candidate'
+        })) return;
         ajax('ats/move_stage', {type:'POST', data:{id:id, new_stage:newStage}}).done(function(r){
             if(r.status === 'success'){ toast(r.message||'Stage updated.', true); ATS.closeModal('atsDetailModal'); ATS.loadPipeline(); }
             else toast(r.message||'Stage transition failed.', false);
@@ -800,8 +805,8 @@ window.ATS = {
     },
 
     /* ── Convert to Staff ── */
-    convertToStaff: function(id){
-        if(!confirm('Convert this candidate to staff?\n\nYou will be redirected to the staff registration form with pre-filled data.')) return;
+    convertToStaff: async function(id){
+        if(!await zxConfirm({ title: 'Convert this candidate to staff?', message: 'You will be redirected to the staff registration form with pre-filled data.' })) return;
 
         ajax('ats/get_convert_data?id='+encodeURIComponent(id), {type:'GET'}).done(function(r){
             if(r.status !== 'success') return toast(r.message||'Error.', false);
@@ -814,8 +819,8 @@ window.ATS = {
     closeModal: function(id){ $('#'+id).removeClass('show'); },
 
     /* ── Delete ── */
-    deleteApplicant: function(id){
-        if(!confirm('Delete this applicant permanently? This cannot be undone.')) return;
+    deleteApplicant: async function(id){
+        if(!await zxConfirm({ title: 'Delete this applicant permanently? This cannot be undone.' })) return;
         ajax('ats/delete_applicant', {type:'POST', data:{id:id}}).done(function(r){
             if(r.status === 'success'){ toast('Applicant deleted.', true); ATS.closeModal('atsDetailModal'); ATS.loadPipeline(); }
             else toast(r.message||'Error.', false);

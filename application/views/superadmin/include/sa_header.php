@@ -858,6 +858,16 @@ function saOpenProfile(){ try { $('#saProfileModal').modal('show'); } catch(e) {
                 </a>
             </li>
 
+            <?php /* Platform maps default — the provider every school inherits
+                     unless it configures its own. Belongs in SYSTEM beside the
+                     other platform-wide operational tools, NOT in a school's
+                     settings: it is ZenX-owned, not tenant-owned. */ ?>
+            <li class="<?= ($this->router->fetch_class() === 'superadmin_maps') ? 'active' : '' ?>">
+                <a href="<?= base_url('superadmin/maps') ?>">
+                    <i class="fa fa-map-marker"></i><span>Maps Platform</span>
+                </a>
+            </li>
+
             <li class="<?= ($this->router->fetch_class() === 'superadmin_debug') ? 'active' : '' ?>"
                 style="<?= defined('GRADER_DEBUG') && GRADER_DEBUG ? 'border-left:2px solid var(--green);' : '' ?>">
                 <a href="<?= base_url('superadmin/debug') ?>">

@@ -1016,6 +1016,17 @@
             </div>
             <?php endif; ?>
 
+            <?php /* RESTORED 2026-08-30 (operator request).
+                     Removed on 2026-08-29 because its "View All" was the last entry
+                     point to the retired classes/manage_classes screen. The card
+                     itself was never the problem — the dead link was. It now points
+                     at Academic Setup → CLASSES.
+                     Labelled "Classes", not "Classes & Sections": this card counts
+                     CLASSES (s.classes), and the section count lives on a separate
+                     card. Academic Setup keeps Classes and Sections as distinct
+                     tabs, so the old label promised one thing and the old link
+                     delivered another. The #classes hash opens that tab directly
+                     (school_config reads it) instead of the default tab. */ ?>
             <?php if ($can('Academic') || $can('SIS')): ?>
             <div class="stat-card c-rose">
                 <div class="stat-card-head">
@@ -1023,10 +1034,10 @@
                     <span class="stat-trend flat" id="classCount"><i class="fa fa-minus"></i> --</span>
                 </div>
                 <div class="stat-value" id="valClasses">--</div>
-                <div class="stat-label">Classes & Sections</div>
+                <div class="stat-label">Classes</div>
                 <?php if ($can('Academic')): ?>
                 <div class="stat-footer">
-                    <a href="<?= base_url('classes/manage_classes') ?>">View All <i class="fa fa-arrow-right"></i></a>
+                    <a href="<?= base_url('school_config') ?>#classes">View All <i class="fa fa-arrow-right"></i></a>
                 </div>
                 <?php endif; ?>
             </div>
@@ -1757,8 +1768,16 @@
             var dues  = fmtINR(Number(d.totalDues || 0));
             var flags = (d.examBlocked ? ' <span class="def-flag def-flag-red" title="Exam blocked">EB</span>' : '') +
                         (d.unpaidCount ? ' <span class="def-flag def-flag-amber" title="Unpaid month count">' + d.unpaidCount + 'm</span>' : '');
+            // Opens Student 360 rather than jumping straight to the fee
+            // counter. The counter is one click further (Collect Payment sits
+            // in the 360 action rail with the dues already on screen), and the
+            // context you gain first is worth it on a defaulters list: whether
+            // the family has a pending concession request, whether transport is
+            // suspended, whether a result is being withheld. Demanding money
+            // from a family that has an unanswered request pending is the kind
+            // of mistake this screen exists to prevent.
             var href = d.studentId
-                ? base + 'fees/fees_counter?user_id=' + encodeURIComponent(d.studentId)
+                ? base + 'student360/view/' + encodeURIComponent(d.studentId)
                 : base + 'fees/defaulter_report';
             html += '<a class="def-item" href="' + href + '" style="text-decoration:none;">'
                 +   '<div class="def-rank">#' + rank + '</div>'
@@ -1790,16 +1809,27 @@
             return;
         }
         var html = '';
+        var absBase = '<?= base_url() ?>';
         list.forEach(function(s) {
             var initial = (s.name || '?').charAt(0).toUpperCase();
-            html += '<div class="absent-item">'
+            // Absent students become links to Student 360 — "why is this child
+            // absent again?" is answered by attendance history, discipline
+            // flags and fee status together, not by any one module. Rows
+            // without a resolvable id stay plain <div>s rather than becoming
+            // dead links.
+            var sid  = s.studentId || s.user_id || s.id || '';
+            var open = sid ? 'a' : 'div';
+            var attr = sid
+                ? ' href="' + absBase + 'student360/view/' + encodeURIComponent(sid) + '" style="text-decoration:none;color:inherit;"'
+                : '';
+            html += '<' + open + ' class="absent-item"' + attr + '>'
                 +   '<div class="absent-avatar">' + escHtml(initial) + '</div>'
                 +   '<div style="flex:1;min-width:0;">'
                 +     '<div class="absent-name">' + escHtml(s.name || '') + '</div>'
                 +     '<div class="absent-class">' + escHtml(s.class || '') + '</div>'
                 +   '</div>'
                 +   '<i class="fa fa-times-circle" style="color:var(--rose);"></i>'
-                + '</div>';
+                + '</' + open + '>';
         });
         if (total > list.length) {
             html += '<div style="text-align:center;padding:8px 0 0;font-size:11px;color:var(--muted);">'
@@ -1922,6 +1952,9 @@
 
     // Set the charts-fed KPI fields once they arrive (no counter restart).
     function backfillLazyStats(s) {
+        // Classes & Sections card — restored 2026-08-30. Both ids are
+        // null-guarded so this stays safe if the card is hidden by permissions
+        // ($can('Academic') || $can('SIS')).
         var classEl = document.getElementById('valClasses');
         if (classEl) classEl.textContent = s.classes;
         var ccEl = document.getElementById('classCount');

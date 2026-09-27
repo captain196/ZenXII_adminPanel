@@ -404,6 +404,8 @@
                 <th>Student Photo</th>
                 <th>Student Name</th>
                 <th>Student ID</th>
+                <th>SR No.</th>
+                <th>Admission No.</th>
                 <th>Last result</th>
                 <th>Phone No.</th>
                 <th>View</th>
@@ -427,6 +429,8 @@
             </td>
             <td>${esc(s.name)}</td>
             <td>${esc(s.id)}</td>
+            <td>${esc(s.sr_no || '—')}</td>
+            <td>${esc(s.admission_no || '—')}</td>
             <td>${esc(s.last_result)}</td>
             <td>${esc(s.phone)}</td>
             <td>
@@ -444,7 +448,7 @@
 
         <tfoot>
             <tr>
-                <td colspan="8">
+                <td colspan="10">
                     <div class="d-flex justify-content-end pt-3 w-100">
                         <button class="btn btn-danger btn-lg"
                                 id="transferStudentsBtn"
@@ -498,7 +502,7 @@
         if (query && visibleCount === 0) {
             $tbody.append(`
             <tr class="no-search-results">
-                <td colspan="8" class="text-center text-muted py-3">
+                <td colspan="10" class="text-center text-muted py-3">
                     No matching students found
                 </td>
             </tr>

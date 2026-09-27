@@ -40,7 +40,7 @@ $can_manage = function_exists('has_permission') ? has_permission('Assets','manag
 .ast-form-group input,.ast-form-group select,.ast-form-group textarea{width:100%;padding:8px 10px;border:1px solid var(--border);border-radius:6px;background:var(--bg);color:var(--t1);font-size:13px;font-family:var(--font-b)}
 .ast-form-group input:focus,.ast-form-group select:focus{border-color:var(--gold);outline:none}
 .ast-form-row{display:grid;grid-template-columns:1fr 1fr;gap:14px}
-.ast-modal-bg{position:fixed;top:0;left:0;right:0;bottom:0;background:rgba(0,0,0,.55);z-index:9999;display:none;align-items:center;justify-content:center} .ast-modal-bg.show{display:flex}
+.ast-modal-bg{position:fixed;top:0;left:0;right:0;bottom:0;background:rgba(0,0,0,.55);z-index:9999;display:none;align-items:center;justify-content:center} .ast-modal-bg.show{display:flex !important}
 .ast-modal{background:var(--bg2);border:1px solid var(--border);border-radius:var(--r);width:560px;max-width:95vw;max-height:85vh;overflow-y:auto;padding:24px}
 .ast-modal-title{font-family:var(--font-b);font-size:16px;font-weight:700;color:var(--t1);margin-bottom:18px;display:flex;align-items:center;justify-content:space-between}
 .ast-modal-close{cursor:pointer;color:var(--t3);font-size:1.2rem;background:none;border:none}

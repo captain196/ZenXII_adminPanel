@@ -83,6 +83,7 @@ html { font-size: 16px !important; }
                     <th>#</th>
                     <th>TC No</th>
                     <th>Student</th>
+                    <th>SR No.</th>
                     <th>Class</th>
                     <th>Issued Date</th>
                     <th>Destination</th>
@@ -104,6 +105,7 @@ html { font-size: 16px !important; }
                         </a>
                         <div style="font-size:.84rem;color:var(--t3);"><?= htmlspecialchars($tc['user_id'] ?? '') ?></div>
                     </td>
+                    <td><?php $tcSr = trim((string) ($tc['sr_no'] ?? '')); ?><?= $tcSr !== '' ? '<strong>' . htmlspecialchars($tcSr) . '</strong>' : '<span style="color:var(--t3);">&mdash;</span>' ?></td>
                     <td>Class <?= htmlspecialchars($tc['class'] ?? '') ?> / <?= htmlspecialchars($tc['section'] ?? '') ?></td>
                     <td><?= htmlspecialchars($tc['issued_date'] ?? '') ?></td>
                     <td><?= htmlspecialchars($tc['destination'] ?? '') ?></td>

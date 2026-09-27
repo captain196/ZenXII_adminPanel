@@ -58,6 +58,16 @@ if (!empty($student['Doc']) && is_array($student['Doc'])) {
                 </p>
                 <div class="sp-badges">
                     <span class="sp-badge sp-badge-gold"><?= htmlspecialchars($student['User Id'] ?? '') ?></span>
+                    <?php
+                    // Phase 9.1 (2026-08-13) — SRNO positioned directly beside Student
+                    // ID, per the mandatory-automatic-SRNO requirement: the operator
+                    // must see it as a system-generated companion identity, never as
+                    // an editable field. Graceful when absent (legacy/pre-Phase-9.1
+                    // students created before SRNO became mandatory).
+                    $spHeroSrNo = trim((string) ($student['srNo'] ?? ''));
+                    if ($spHeroSrNo !== ''): ?>
+                    <span class="sp-badge" title="SR Number"><i class="fa fa-hashtag"></i>&nbsp;SR <?= htmlspecialchars($spHeroSrNo) ?></span>
+                    <?php endif; ?>
                     <span class="sp-badge"><i
                             class="fa fa-calendar"></i>&nbsp;<?= htmlspecialchars($student['Admission Date'] ?? 'N/A') ?></span>
                     <span class="sp-badge"><i
@@ -158,6 +168,70 @@ if (!empty($student['Doc']) && is_array($student['Doc'])) {
                             <div class="sp-field-value"><?= htmlspecialchars($section ?? 'N/A') ?></div>
                         </div>
                     </div>
+
+                    <?php
+                    /* Phase 9 (2026-08-13) — SRNO / APAAR / re-admission display.
+                       These are three DISTINCT identifiers, never interchangeable:
+                       Student ID (the badge in the hero above) is the permanent
+                       internal identity; SRNO is the school's own register number;
+                       APAAR is a separate government identifier, PII-masked by
+                       default per SR_NUMBER_AND_APAAR_ID_DESIGN.md §4.1. Every
+                       value is optional — graceful "Not assigned" text, no PHP
+                       notices, no broken layout when a field is absent. */
+                    $spSrNo    = trim((string) ($student['srNo'] ?? ''));
+                    $spApaarId = trim((string) ($student['apaarId'] ?? ''));
+                    $spPrevId  = trim((string) ($student['previousStudentId'] ?? ''));
+                    $spApaarRevealRoles = ['Super Admin', 'School Super Admin', 'Admin', 'Principal'];
+                    $spCanRevealApaar = in_array($admin_role ?? '', $spApaarRevealRoles, true);
+                    ?>
+                    <div class="sp-grid" style="margin-bottom:18px;">
+                        <div>
+                            <div class="sp-field-label">SR Number</div>
+                            <div class="sp-field-value"><?= $spSrNo !== '' ? htmlspecialchars($spSrNo) : '<span style="color:var(--sp-muted);">Not assigned</span>' ?></div>
+                        </div>
+                        <?php
+                        // Phase 10.1 (2026-08-13) — Admission Number is a DISTINCT
+                        // identifier from SR Number (admission-event, frozen at
+                        // admission; format YYYY/CLASS/XXX) and from Student ID
+                        // (global) and Roll Number (class/section). Labelled
+                        // unambiguously so the four are never conflated.
+                        $spAdmNo = trim((string) ($student['Admission Number'] ?? $student['admissionNumber'] ?? ''));
+                        ?>
+                        <div>
+                            <div class="sp-field-label">Admission Number</div>
+                            <div class="sp-field-value"><?= $spAdmNo !== '' ? htmlspecialchars($spAdmNo) : '<span style="color:var(--sp-muted);">Not assigned</span>' ?></div>
+                        </div>
+                        <div>
+                            <div class="sp-field-label">Roll Number</div>
+                            <?php $spRollNo = trim((string) ($student['Roll No'] ?? $student['rollNo'] ?? '')); ?>
+                            <div class="sp-field-value"><?= $spRollNo !== '' ? htmlspecialchars($spRollNo) : '<span style="color:var(--sp-muted);">Not assigned</span>' ?></div>
+                        </div>
+                        <div>
+                            <div class="sp-field-label">APAAR ID</div>
+                            <?php if ($spApaarId === ''): ?>
+                            <div class="sp-field-value"><span style="color:var(--sp-muted);">Not assigned</span></div>
+                            <?php else:
+                                $spApaarMasked = 'XXXX XXXX ' . substr($spApaarId, -4); ?>
+                            <div class="sp-field-value">
+                                <span id="spApaarValue" data-student-id="<?= htmlspecialchars($student['User Id'] ?? '', ENT_QUOTES) ?>"><?= htmlspecialchars($spApaarMasked) ?></span>
+                                <?php if ($spCanRevealApaar): ?>
+                                <button type="button" class="sp-btn sp-btn-ghost sp-btn-xs" id="spApaarRevealBtn" style="margin-left:8px;padding:2px 10px;font-size:11px;">
+                                    <i class="fa fa-eye"></i> Reveal
+                                </button>
+                                <?php endif; ?>
+                            </div>
+                            <?php endif; ?>
+                        </div>
+                        <?php if ($spPrevId !== ''): ?>
+                        <div>
+                            <div class="sp-field-label">Re-admission</div>
+                            <div class="sp-field-value">Re-admitted &mdash; previously <?= htmlspecialchars($spPrevId) ?>
+                                <span style="color:var(--sp-muted);font-size:12px;"> (search this Student ID in SIS for the historical record)</span>
+                            </div>
+                        </div>
+                        <?php endif; ?>
+                    </div>
+
                     <div class="sp-field-label" style="margin-bottom:8px;">Subjects</div>
                     <div class="sp-chips">
                         <?php if (!empty($subjects)):
@@ -687,6 +761,48 @@ if (!empty($student['Doc']) && is_array($student['Doc'])) {
                 alert('Network error during repair: ' + (e && e.message ? e.message : 'unknown'));
                 repairBtn.disabled = false;
                 repairBtn.innerHTML = origHtml;
+            });
+        });
+    }
+
+    // Phase 9 (2026-08-13) — audited APAAR reveal. The button only exists
+    // in the DOM at all when PHP already gated it to an authorized role
+    // (server-side re-checks on every request regardless — client gate is
+    // UX-only). Reveal is one-shot per click: fetches the plaintext value,
+    // swaps the masked text, then disables the button so a second click
+    // can't spam the audit log for no reason.
+    var apaarRevealBtn = document.getElementById('spApaarRevealBtn');
+    if (apaarRevealBtn) {
+        apaarRevealBtn.addEventListener('click', function () {
+            var valEl = document.getElementById('spApaarValue');
+            var userId = valEl ? (valEl.getAttribute('data-student-id') || '') : '';
+            if (!userId) { alert('No student id found — refresh the page and retry.'); return; }
+            apaarRevealBtn.disabled = true;
+            var origHtml = apaarRevealBtn.innerHTML;
+            apaarRevealBtn.innerHTML = '<i class="fa fa-spinner fa-spin"></i>';
+            var payload = new URLSearchParams();
+            payload.append(csrfName, csrfToken);
+            payload.append('user_id', userId);
+            fetch('<?= base_url("sis/apaar_reveal") ?>', {
+                method:  'POST',
+                headers: { 'Content-Type': 'application/x-www-form-urlencoded', 'X-Requested-With': 'XMLHttpRequest' },
+                body:    payload
+            })
+            .then(function (r) { return r.json(); })
+            .then(function (data) {
+                if (data && data.status === 'success' && data.apaarId) {
+                    valEl.textContent = data.apaarId;
+                    apaarRevealBtn.remove();
+                } else {
+                    alert('Reveal failed: ' + ((data && data.message) ? data.message : 'unknown error'));
+                    apaarRevealBtn.disabled = false;
+                    apaarRevealBtn.innerHTML = origHtml;
+                }
+            })
+            .catch(function (e) {
+                alert('Network error during reveal: ' + (e && e.message ? e.message : 'unknown'));
+                apaarRevealBtn.disabled = false;
+                apaarRevealBtn.innerHTML = origHtml;
             });
         });
     }

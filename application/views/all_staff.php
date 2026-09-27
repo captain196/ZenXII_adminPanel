@@ -443,11 +443,40 @@
         var staffName    = btn.getAttribute('data-staff-name') || userId;
         var targetStatus = btn.getAttribute('data-target-status');
 
-        var promptMsg = (targetStatus === 'Inactive')
-            ? 'Deactivate ' + staffName + '?\n\nThey will be excluded from active staff lists, payroll batches, and assignment dropdowns.\n\n(Reason — optional, can be left empty)'
-            : 'Reactivate ' + staffName + '?\n\nThey will be added back to active staff lists.';
+        function repaint(newStatus) {
+            var row   = btn.closest('tr');
+            var badge = row && row.querySelector('.staff-status-badge');
+            if (badge) {
+                badge.textContent = newStatus;
+                badge.setAttribute('style', newStatus === 'Active' ? ACTIVE_BADGE_STYLE : INACTIVE_BADGE_STYLE);
+                badge.setAttribute('data-staff-status', newStatus);
+            }
+            if (newStatus === 'Active') {
+                btn.setAttribute('data-target-status', 'Inactive');
+                btn.innerHTML = '<i class="fa fa-ban"></i> Deactivate';
+            } else {
+                btn.setAttribute('data-target-status', 'Active');
+                btn.innerHTML = '<i class="fa fa-check-circle"></i> Reactivate';
+            }
+            btn.disabled = false;
+        }
 
-        var reason = window.prompt(promptMsg, '');
+        if (targetStatus === 'Inactive') {
+            // Deactivation collects separation_type/exit_date/last_working_date
+            // via the shared modal — see partials/staff_separation_modal.php.
+            // Reactivate has no separation-specific fields, so it keeps the
+            // original lightweight prompt flow below unchanged.
+            if (window.__staffSeparationModal) {
+                window.__staffSeparationModal.open(userId, staffName, function() {
+                    repaint('Inactive');
+                });
+            } else {
+                alert('Separation dialog unavailable — reload the page.');
+            }
+            return;
+        }
+
+        var reason = window.prompt('Reactivate ' + staffName + '?\n\nThey will be added back to active staff lists.', '');
         if (reason === null) return;
 
         btn.disabled = true;
@@ -473,22 +502,7 @@
                 btn.innerHTML = originalHtml;
                 return;
             }
-            // Repaint the row in place — no reload
-            var row   = btn.closest('tr');
-            var badge = row && row.querySelector('.staff-status-badge');
-            if (badge) {
-                badge.textContent = targetStatus;
-                badge.setAttribute('style', targetStatus === 'Active' ? ACTIVE_BADGE_STYLE : INACTIVE_BADGE_STYLE);
-                badge.setAttribute('data-staff-status', targetStatus);
-            }
-            if (targetStatus === 'Active') {
-                btn.setAttribute('data-target-status', 'Inactive');
-                btn.innerHTML = '<i class="fa fa-ban"></i> Deactivate';
-            } else {
-                btn.setAttribute('data-target-status', 'Active');
-                btn.innerHTML = '<i class="fa fa-check-circle"></i> Reactivate';
-            }
-            btn.disabled = false;
+            repaint(targetStatus);
         })
         .catch(function(err) {
             alert('Network error: ' + (err && err.message ? err.message : 'unknown'));
@@ -1184,4 +1198,11 @@ if (in_array($this->session->userdata('admin_role'),
         'reset_pw_label'    => 'Staff',
     ]);
 }
+
+// Staff Separation modal (shared partial) — collects separation_type/
+// exit_date/last_working_date, fields set_status() already accepts but
+// which the old window.prompt() flow never submitted.
+$this->load->view('partials/staff_separation_modal', [
+    'staff_sep_endpoint' => base_url('staff/set_status/'),
+]);
 ?>

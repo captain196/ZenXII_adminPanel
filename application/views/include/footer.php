@@ -74,6 +74,10 @@ $__hide_site_footer = in_array($__ctrl_ftr, ['attendance', 'staff_attendance'], 
 
 <!-- ═══════════════ SCRIPTS ═══════════════ -->
 <script src="<?= base_url() ?>tools/bower_components/jquery/dist/jquery.min.js"></script>
+<?php /* zx_busy: binds progress + double-submit guard + transport-failure
+   reporting to every mutating request, at the transport layer. Must load
+   AFTER jQuery and BEFORE the module scripts that issue POSTs. */ ?>
+<script src="<?= base_url() ?>assets/js/zx_busy.js?v=1"></script>
 <?php /* jquery-ui (253KB) removed for performance: audit found zero jQuery UI
    widget usage in admin views (no sortable/draggable/dialog/autocomplete/etc.),
    no ui-* theme classes, and the .datepicker() calls use bootstrap-datepicker.
@@ -156,11 +160,17 @@ $__hide_site_footer = in_array($__ctrl_ftr, ['attendance', 'staff_attendance'], 
 <?php endif; ?>
 
 <script>
-    /* ── Global 401/403 handler: redirect to login on session expiry ── */
+    /* ── Global 401/403 handler: redirect to login on session expiry ──
+       2026-08-10: also keeps csrfToken in sync with every response (same
+       fix as header.php's fetch patch — see that comment for the full
+       rationale) and reloads the page on a genuine CSRF-cookie-expired
+       hard-failure instead of leaving the user on an unhandled error. */
     $(document).ajaxComplete(function(event, xhr){
         if(xhr.status === 401 || xhr.status === 403){
-            try {
-                var r = JSON.parse(xhr.responseText);
+            var r = null;
+            try { r = JSON.parse(xhr.responseText); } catch(e){}
+            if (r) {
+                if (r.csrf_token && typeof csrfToken !== 'undefined') csrfToken = r.csrf_token;
                 if(r.status === 'error' && r.message && /session|expired|log\s*in|deactivat|subscription/i.test(r.message)){
                     // Show toast if available, else alert
                     if(typeof saToast === 'function'){
@@ -177,6 +187,18 @@ $__hide_site_footer = in_array($__ctrl_ftr, ['attendance', 'staff_attendance'], 
                     }
                     setTimeout(function(){ window.location.href = '<?= base_url("admin_login") ?>'; }, 1800);
                 }
+            } else if (xhr.status === 403 && !window.__csrfReloadPrompted) {
+                // Not our own JSON error shape — CI's raw framework CSRF-rejection
+                // page, the same "this tab's token outlived csrf_expire" case the
+                // fetch patch handles. Reload rather than leave the user stuck.
+                window.__csrfReloadPrompted = true;
+                alert('Your session security token expired. The page will now reload — please repeat your last action.');
+                location.reload();
+            }
+        } else if (xhr.status >= 200 && xhr.status < 300) {
+            try {
+                var ok = JSON.parse(xhr.responseText);
+                if (ok && ok.csrf_token && typeof csrfToken !== 'undefined') csrfToken = ok.csrf_token;
             } catch(e){}
         }
     });

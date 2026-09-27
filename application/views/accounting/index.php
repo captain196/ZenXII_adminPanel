@@ -1151,7 +1151,11 @@ a.ac-tab.active { color: var(--ac-primary); }
             r.entries.forEach(function(e){
                 var st = e.is_finalized ? '<span class="ac-badge ac-badge-finalized">Finalized</span>' : '<span class="ac-badge ac-badge-draft">Draft</span>';
                 html += '<tr>'
-                    + '<td>' + esc(e.date) + '</td>'
+                    // UAT fix (2026-08-09): the ISO date was wrapping at its
+                    // hyphens in this narrow column, stacking "2026-" / "08-09"
+                    // on two lines. nowrap keeps a date on one line — a date
+                    // that breaks mid-value reads as broken data in a ledger.
+                    + '<td style="white-space:nowrap">' + esc(e.date) + '</td>'
                     + '<td><code>' + esc(e.voucher_no) + '</code></td>'
                     + '<td>' + formatVoucherType(e.voucher_type, e.source, e.narration) + '</td>'
                     + '<td>' + esc(e.narration) + '</td>'
