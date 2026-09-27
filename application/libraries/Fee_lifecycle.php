@@ -1358,9 +1358,25 @@ class Fee_lifecycle
         string $oldSection,
         string $newClass,
         string $newSection,
-        string $parentDbKey = ''
+        string $parentDbKey = '',
+        bool $prorate = false
     ): array {
         $archived = 0; $preserved = 0;
+        // PRO-RATION (2026-09-20) — for a mid-year TRANSFER (not a year-boundary
+        // promotion). When $prorate is true, only the CURRENT academic month
+        // onward is re-priced to the new class; PAST months and any month already
+        // (partly) PAID at the old class are left as-is, so a mid-year class change
+        // never retroactively re-bills the whole year at the new rate nor double-
+        // bills a paid month. Demand periodKeys are real-calendar "YYYY-MM", so a
+        // YYYYMM integer compares correctly across the Jan–Mar academic-year wrap.
+        $nowInt = ((int) date('Y')) * 100 + ((int) date('n'));
+        $periodIntOf = function ($d) {
+            $pk = (string) ($d['periodKey'] ?? '');
+            if ($pk === '' || strpos($pk, '-') === false) return 0;
+            $parts = explode('-', $pk, 2);
+            return ((int) $parts[0]) * 100 + ((int) ($parts[1] ?? 0));
+        };
+        $paidPeriods = [];   // periodInt => true : months already (partly) paid at the OLD class
         try {
             // BUG-045 Phase 2 (2026-05-25): collect-then-batch pattern.
             // Pre-fix issued one Firestore PATCH per archived demand inside
@@ -1375,9 +1391,16 @@ class Fee_lifecycle
             // based; session was never load-bearing for correctness.
             foreach ($this->_demandsForAllSessions($studentId) as $did => $d) {
                 $st = (string) ($d['status'] ?? 'unpaid');
+                // Pro-ration: remember months already (partly) paid at the OLD class
+                // so the new-class regeneration below does not re-bill them.
+                if ($prorate && $st !== 'unpaid') { $pi = $periodIntOf($d); if ($pi > 0) { $paidPeriods[$pi] = true; } }
                 // Only archive UNPAID demands; paid/partial demands
                 // represent real payment history.
                 if ($st !== 'unpaid') { $preserved++; continue; }
+                // Pro-ration: keep PAST-month unpaid old-class demands at the OLD
+                // class (they belong to months already served); only current/future
+                // unpaid old-class demands are archived and replaced by the new class.
+                if ($prorate && $periodIntOf($d) > 0 && $periodIntOf($d) < $nowInt) { $preserved++; continue; }
 
                 // ── PROMO-SC-1 · A ONE-OFF CHARGE IS NOT CLASS-DERIVED ──────
                 //
@@ -1474,11 +1497,61 @@ class Fee_lifecycle
                     . "in session {$this->sessionYear}.");
             }
 
+            // PRO-RATION cleanup: the full-year regeneration above created a
+            // new-class demand for EVERY academic month, including PAST months and
+            // months already PAID at the old class. Archive those new-class demands
+            // so the student is not billed the new rate for a month they did not
+            // attend the new class, nor double-billed for a month already paid. The
+            // current + future UNPAID months keep their new-class demand — that is
+            // the actual re-pricing. Only unpaid, non-module new-class demands are
+            // touched; paid history is never archived. Any already-paid month whose
+            // old vs new rate differs is LOGGED for operator review (a top-up or
+            // refund is deliberately NOT auto-posted — that belongs in the Fees /
+            // Refunds workflow, not a silent money movement on a transfer).
+            $proratedPast = 0; $proratedPaid = 0;
+            if ($prorate) {
+                $proArchive = [];
+                foreach ($this->_demandsForAllSessions($studentId) as $did3 => $d3) {
+                    if ((string) ($d3['status'] ?? 'unpaid') !== 'unpaid') continue;
+                    if (trim((string) ($d3['moduleType'] ?? '')) !== '') continue; // never a one-off charge
+                    if ((string) ($d3['className'] ?? '') !== $newClass
+                        || (string) ($d3['section']   ?? '') !== $newSection) continue;
+                    $pi = $periodIntOf($d3);
+                    if ($pi <= 0) continue;
+                    $isPast     = ($pi < $nowInt);
+                    $isPaidMonth = isset($paidPeriods[$pi]);
+                    if ($isPast || $isPaidMonth) {
+                        $proArchive[] = ['op' => 'archive', 'demandId' => $did3, 'data' => [
+                            'status'       => 'archived',
+                            'archivedAt'   => $archivedAt,
+                            'archivedBy'   => $this->adminId,
+                            'archivedFrom' => 'prorate_transfer_' . ($isPaidMonth ? 'paid_month' : 'past_month'),
+                        ]];
+                        if ($isPast) { $proratedPast++; } else { $proratedPaid++; }
+                    }
+                }
+                if (!empty($proArchive)) {
+                    if (!$this->fsTxn->commitDemandBatch($proArchive)) {
+                        foreach ($proArchive as $e) { $this->fsTxn->updateDemand($e['demandId'], $e['data']); }
+                    }
+                    $archived += count($proArchive);
+                }
+                if ($proratedPaid > 0) {
+                    log_message('error', "PRORATE-DELTA student=[{$studentId}] transfer "
+                        . "[{$oldClass}/{$oldSection}]->[{$newClass}/{$newSection}]: {$proratedPaid} already-paid "
+                        . "month(s) kept at the OLD rate — if the new class fee differs, post the top-up or refund "
+                        . "of the difference via Fees/Refunds (NOT auto-adjusted, by design).");
+                }
+            }
+
             $this->_log('promotion_reassigned', $studentId, [
                 'old_class'   => $oldClass, 'old_section' => $oldSection,
                 'new_class'   => $newClass, 'new_section' => $newSection,
                 'archived'    => $archived, 'preserved'   => $preserved,
                 'regenerated' => $regenCount,
+                'prorate'     => $prorate,
+                'prorate_past_archived' => $proratedPast,
+                'prorate_paid_kept'     => $proratedPaid,
                 'regen_warning' => $regenCount === 0 ? 'NO_DESTINATION_STRUCTURE' : '',
             ]);
 
@@ -1777,11 +1850,69 @@ class Fee_lifecycle
                 $frozen++;
             }
             $this->_log('fees_frozen', $studentId, ['demands_frozen' => $frozen]);
+
+            // Lifecycle-critic fix: freezing means "do not collect", but the
+            // materialized feeDefaulters projection is NOT recomputed by the
+            // freeze — so a withdrawn/TC'd/deactivated student could remain
+            // flagged as a defaulter with a frozen ("do not collect") book.
+            // updateDefaulterStatus reads feeDemands canonically (frozen demands
+            // are not collectable) and rewrites the projection idempotently,
+            // deleting the feeDefaulters doc only when nothing is genuinely due.
+            // Same proven idiom as DEFAULTER-PROMO-1 above; best-effort, must
+            // never fail the freeze.
+            try {
+                $CI = function_exists('get_instance') ? get_instance() : null;
+                if ($CI !== null) {
+                    if (!isset($CI->feeDefaulter) || !is_object($CI->feeDefaulter)) {
+                        $CI->load->library('Fee_defaulter_check', null, 'feeDefaulter');
+                    }
+                    $CI->feeDefaulter->init($this->firebase, $this->schoolName, $this->sessionYear);
+                    $CI->feeDefaulter->updateDefaulterStatus($studentId);
+                }
+            } catch (\Throwable $_) {}
+
             return true;
         } catch (\Throwable $e) {
             log_message('error', "Fee_lifecycle::freezeFeesOnSoftDelete failed [{$studentId}]: " . $e->getMessage());
             return false;
         }
+    }
+
+    /**
+     * Refresh the denormalized class/section LABEL on the student's CURRENT-
+     * session demands after a same-class section move (or a placement re-stamp).
+     *
+     * This does NOT change amounts — it only keeps each demand's className/section
+     * in step with the student's placement so section-filtered fee reports don't
+     * misplace a transferred student's current dues. A CROSS-class move must
+     * REASSIGN fees (a different fee chart applies) via reassignFeesOnPromotion,
+     * not merely relabel — so callers MUST gate this on same-class. Archived rows
+     * are left untouched (historical). Best-effort per demand; never throws.
+     *
+     * @return int number of demands relabelled
+     */
+    public function updateDemandPlacement(string $studentId, string $className, string $section): int
+    {
+        if ($studentId === '' || $className === '' || $section === '') return 0;
+        $n = 0;
+        try {
+            foreach ($this->_demandsFor($studentId) as $did => $d) {
+                if (strtolower((string) ($d['status'] ?? '')) === 'archived') continue;
+                if ((string) ($d['className'] ?? '') === $className
+                    && (string) ($d['section'] ?? '') === $section) {
+                    continue; // already correct
+                }
+                $this->fsTxn->updateDemand($did, [
+                    'className' => $className,
+                    'section'   => $section,
+                    'updatedAt' => date('c'),
+                ]);
+                $n++;
+            }
+        } catch (\Throwable $e) {
+            log_message('error', "Fee_lifecycle::updateDemandPlacement failed [{$studentId}]: " . $e->getMessage());
+        }
+        return $n;
     }
 
     // ═════════════════════════════════════════════════════════════════

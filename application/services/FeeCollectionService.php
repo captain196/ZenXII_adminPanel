@@ -115,6 +115,105 @@ class FeeCollectionService
             }
         }
 
+        // ── CORE-1 · RECORD THE EFFECTIVE BANK LEDGER, DO NOT LEAVE IT BLANK ──
+        // An online payment has no operator at the till, so nobody selects a
+        // bank ledger and the code above leaves it ''. Accounting then resolves
+        // one of its own — "the first active bank ledger in the chart" — and the
+        // receipt is left claiming no destination while the journal debits a
+        // real bank account. Receipt F1 is the specimen: bankLedgerCode='' next
+        // to a journal debiting 1020 SBI Bank A/c.
+        //
+        // That gap breaks the invariant AccountingReconciler depends on ("the
+        // repair path must debit the SAME bank ledger the primary posting
+        // used"): with '' on the receipt, a repair re-derives the ledger from a
+        // chart that may have changed since, and can debit a DIFFERENT bank
+        // account than the entry it is repairing.
+        //
+        // Resolving here — through the single shared rule, not a second copy of
+        // it — makes the destination a recorded fact at collection time, and
+        // feeds the SAME code into the journal payload so the two provably
+        // agree. Best-effort: if the chart cannot be read, the previous
+        // behaviour stands rather than failing a payment over bookkeeping
+        // metadata.
+        // Operations_accounting is normally pulled in by CI's loader inside the
+        // deferred journal task, which has not run yet at this point. Require
+        // the file directly for the static rule rather than instantiating the
+        // library — resolveCashBankCode needs no state.
+        if (!class_exists('Operations_accounting', false)) {
+            $__opsAcctFile = APPPATH . 'libraries/Operations_accounting.php';
+            if (is_file($__opsAcctFile)) require_once $__opsAcctFile;
+        }
+        $__payModeLower = strtolower((string) $paymentMode);
+        $__settlementSource = '';
+        if ($bankLedgerCode === '' && class_exists('Operations_accounting', false)
+            && in_array($__payModeLower, Operations_accounting::NON_CASH_MODES, true)) {
+            try {
+                $coaMap = [];
+                $coaRows = $controller->firebase->firestoreQuery('chartOfAccounts', [['schoolId', '==', $schoolFs]]);
+                foreach ((array) $coaRows as $row) {
+                    $cd = $row['data'] ?? $row;
+                    if (!is_array($cd)) continue;
+                    $code = (string) ($cd['code'] ?? '');
+                    if ($code !== '') $coaMap[$code] = $cd;
+                }
+
+                if (!class_exists('Payment_settlement_route', false)) {
+                    $__routeFile = APPPATH . 'libraries/Payment_settlement_route.php';
+                    if (is_file($__routeFile)) require_once $__routeFile;
+                }
+
+                // The provider is OBSERVED from the caller, never assumed. When
+                // it is unknown the route lookup is simply skipped — a guessed
+                // provider would select some other school's settlement mapping,
+                // which is worse than no mapping at all.
+                $__provider = strtolower(trim((string) (
+                    $data['gateway'] ?? $data['provider'] ?? ''
+                )));
+                $__env = strtolower(trim((string) ($data['gateway_mode'] ?? 'live')));
+
+                $route = null;
+                if ($__provider !== '' && class_exists('Payment_settlement_route', false)) {
+                    $route = Payment_settlement_route::load(
+                        $controller->firebase, $schoolFs, $__provider, $__env
+                    );
+                }
+
+                if (class_exists('Payment_settlement_route', false)) {
+                    $decision = Payment_settlement_route::resolveDebit(
+                        $coaMap, $route, '', $__payModeLower, true
+                    );
+                    $resolvedCode = $decision['debit_account'];
+                    // A null decision means the chart has no postable bank at
+                    // all. Cash in Hand would be a lie for an online payment,
+                    // so the field stays empty and the gap stays visible.
+                    if ($resolvedCode !== null && $resolvedCode !== '1010' && isset($coaMap[$resolvedCode])) {
+                        $bankLedgerCode     = $resolvedCode;
+                        $bankLedgerName     = (string) ($coaMap[$resolvedCode]['name'] ?? '');
+                        $__settlementSource = (string) $decision['source'];
+                        // AMBIGUOUS means the school has more than one active
+                        // bank ledger and has configured none for this
+                        // provider, so the account debited is a guess that may
+                        // be the wrong one. DETERMINISTIC means there was only
+                        // one bank and no choice to get wrong. Both are logged;
+                        // only the first is a mis-attribution risk.
+                        if ($__settlementSource === Payment_settlement_route::SRC_AMBIGUOUS
+                            || $__settlementSource === Payment_settlement_route::SRC_DETERMINISTIC) {
+                            // Not an error — the payment is correct and
+                            // reproducible — but the school has not told ZenX
+                            // where gateway money lands, and someone should.
+                            log_message('error', 'SETTLEMENT_ROUTE_' . strtoupper($__settlementSource)
+                                . ' school=' . $schoolFs
+                                . ' provider=' . ($__provider !== '' ? $__provider : 'unknown')
+                                . ' debited=' . $resolvedCode
+                                . ' — configure paymentSettlementRoutes to make this explicit');
+                        }
+                    }
+                }
+            } catch (\Throwable $e) {
+                log_message('error', 'FCS effective bank-ledger resolution failed: ' . $e->getMessage());
+            }
+        }
+
         $userId         = (string) ($data['safe_user_id'] ?? '');
 
         $schoolFees     = isset($data['amount'])
@@ -257,6 +356,44 @@ class FeeCollectionService
             $autoClaimedSeq = $seq;
         }
         $receiptKey = 'F' . $receiptNo;
+
+        // ── ACCOUNTING NUMBER, SEPARATE FROM THE INTERNAL KEY ──────────────
+        // `$receiptKey` above is the IMMUTABLE identity: the feeReceipts doc
+        // id, the allocation doc id, JE_FEE_{key}, source_ref, the
+        // processedPayments marker. It is driven by a lifetime counter and
+        // must NEVER reset, because resetting it would make a new session's
+        // first receipt overwrite the previous session's F1 — a different
+        // student's payment, silently replaced.
+        //
+        // Indian practice wants the number a parent quotes to restart each
+        // year (Rule 46(b) CGST: a consecutive serial, ≤16 chars, unique for a
+        // financial year; a fresh series each year is the audit-preferred
+        // form). So the display number gets its OWN per-session counter and
+        // the key keeps its own. Two questions, two counters.
+        //
+        // Best-effort: a receipt is never refused because a display serial
+        // could not be allocated. Without one, the surfaces fall back to the
+        // key, which is what every admin screen already shows.
+        $receiptDisplayNo = '';
+        $receiptSeries    = '';
+        try {
+            if (!class_exists('Receipt_number', false)) {
+                $__rnFile = APPPATH . 'libraries/Receipt_number.php';
+                if (is_file($__rnFile)) require_once $__rnFile;
+            }
+            if (class_exists('Receipt_number', false)) {
+                $receiptSeries = Receipt_number::normaliseSession((string) $session);
+                $dispSeq = $controller->fsTxn->nextCounter(
+                    Receipt_number::sessionCounterKind((string) $session)
+                );
+                if ($dispSeq > 0) {
+                    $receiptDisplayNo = Receipt_number::displayNumber((string) $session, $dispSeq);
+                }
+            }
+        } catch (\Throwable $e) {
+            log_message('error', 'receipt display-number allocation failed: ' . $e->getMessage());
+        }
+
         $__mark('counter_claimed');
         // txn_id precedence: explicit $data['txn_id'] (Razorpay generates its
         // own 'RZP_YmdHis_hex6' upstream so we must preserve it byte-exact)
@@ -481,8 +618,82 @@ class FeeCollectionService
         // Firestore evaluates preconditions against batch-start state,
         // so exists:false would fail against the stale doc and lock us
         // out of retrying until the ghost aged out naturally.
-        if (!$__lockStale)  { $claimOps[1]['precondition'] = ['exists' => false]; }
-        if (!$__rcptStale)  { $claimOps[2]['precondition'] = ['exists' => false]; }
+        // ══ R3 · A STALE TAKEOVER MUST ALSO BE GUARDED ═══════════════════════
+        //
+        // 1. CLASSIFICATION — bug (money-path concurrency), narrow window.
+        // 2. ROOT CAUSE — the fresh case was made atomic with `exists:false`,
+        //    but the STALE case was left with NO precondition at all, i.e. a
+        //    blind overwrite. Two processes that both observe the same expired
+        //    lock therefore both "recover" it and both enter the critical
+        //    section — the very read-then-blind-write defect B-025 and REF-1
+        //    removed elsewhere, surviving in the recovery path.
+        //    Same for the receipt-index reservation, where the consequence is
+        //    worse: two writers can take the SAME receipt number.
+        // 3. BLAST RADIUS — subtractive. A guarded write can only turn a
+        //    previously-succeeding double takeover into a refusal; it cannot
+        //    block a caller that was alone. The 423 response and its message
+        //    are unchanged, so the client contract is identical.
+        // 4. BACKWARD COMPATIBILITY — none needed. The precondition is computed
+        //    from the document just read; no stored shape changes. A lock
+        //    written by the old code, by acquireLockStatus(), or by this batch
+        //    is byte-identical.
+        // 5. ROLLBACK — delete the two elseif branches. No data migration.
+        // 6. CROSS-MODULE — `feeLocks` has exactly two producers (this service
+        //    and Fee_firestore_txn) and `feeReceiptIndex` one; both verified by
+        //    search. Server-only via the rules catch-all, so no client and
+        //    neither app is affected.
+        // 7. VERIFICATION — unit tests against a versioned Firestore double
+        //    that enforces precondition semantics, plus emulator proof of the
+        //    underlying primitives (payment_claim_cas.test.js), plus a revert
+        //    test that must fail.
+        //
+        // WHY FAIL CLOSED IS SAFE HERE: this branch runs only when the document
+        // EXISTS, and both preload paths decode through decodeDocument(), which
+        // always surfaces `__updateTime` for an existing document. So a missing
+        // version means something is genuinely wrong — not a routine condition —
+        // and refusing costs a retry rather than exclusivity.
+        $__staleTakeoverBlocked = '';
+
+        if (!$__lockStale) {
+            $claimOps[1]['precondition'] = ['exists' => false];
+        } else {
+            $__lockVersion = (string) ($__existingLock['__updateTime'] ?? '');
+            if ($__lockVersion === '') {
+                $__staleTakeoverBlocked = 'lock';
+            } else {
+                $claimOps[1]['precondition'] = ['updateTime' => $__lockVersion];
+            }
+        }
+
+        if (!$__rcptStale) {
+            $claimOps[2]['precondition'] = ['exists' => false];
+        } elseif (is_array($__existingRcpt)) {
+            $__rcptVersion = (string) ($__existingRcpt['__updateTime'] ?? '');
+            if ($__rcptVersion === '') {
+                $__staleTakeoverBlocked = $__staleTakeoverBlocked ?: 'receiptIndex';
+            } else {
+                $claimOps[2]['precondition'] = ['updateTime' => $__rcptVersion];
+            }
+        }
+
+        if ($__staleTakeoverBlocked !== '') {
+            log_message('error',
+                'FeeCollectionService: refusing stale ' . $__staleTakeoverBlocked
+                . ' takeover for student [' . $userId . '] — the document carries no version, '
+                . 'so exclusivity cannot be guaranteed. Nothing applied.');
+
+            if (!$writeToOutput) {
+                return [
+                    'ok' => false, 'http_code' => 423,
+                    'message' => 'Previous payment is still processing. Please wait a moment and retry.',
+                ];
+            }
+            $controller->output->set_output(json_encode([
+                'status'  => 'error',
+                'message' => 'Previous payment is still processing. Please wait a moment and retry.',
+            ]));
+            return null;
+        }
 
         $__claimT0 = microtime(true);
         $__claimOk = (bool) $controller->firebase->firestoreCommitBatch($claimOps);
@@ -495,7 +706,7 @@ class FeeCollectionService
                 try { $controller->fsTxn->releaseCounterClaim('receipt_seq', $autoClaimedSeq); } catch (\Throwable $_) {}
             }
             $msg = 'Please retry — concurrent update detected on this payment.';
-            log_message('warning', "[FCS CLAIM BATCH FAILED] user={$userId} receipt={$receiptNo} parMs={$__parPreloadMs} claimMs={$__claimMs}");
+            log_message('error', "[FCS CLAIM BATCH FAILED] user={$userId} receipt={$receiptNo} parMs={$__parPreloadMs} claimMs={$__claimMs}");
             if (!$writeToOutput) {
                 return ['ok' => false, 'http_code' => 409, 'message' => $msg];
             }
@@ -535,7 +746,41 @@ class FeeCollectionService
         //      diverge from demands and either falsely block or falsely
         //      allow a payment.
         // demands now drives the guard — same semantics, no cache risk.
-        $demands = $controller->fsTxn->demandsForStudent($userId); // [docId => data]
+        //
+        // ── B-027 (2026-08-22): STRICT read, because this is a SAFETY decision ──
+        //
+        // `demandsForStudent()` ends in `catch { return []; }`. Its own docblock
+        // says the ten read-only callers "legitimately prefer degradation over an
+        // exception" — but this is not a read-only caller. This demand set drives
+        // BOTH the duplicate-month guard and the overpayment guard below.
+        //
+        // On a transient Firestore error the old reader returned [], so
+        // $totalUnpaidSelected computed to 0.00 and EVERY payment was refused with
+        //     "Amount Rs. X exceeds total due Rs. 0.00. Overpayment is not allowed."
+        // That is fail-CLOSED, which is right — but it runs AFTER the gateway has
+        // already captured the money, and it misdiagnoses a read blip as an
+        // overpayment. The parent is told they overpaid when they did not, and the
+        // payment sits unreconciled until someone runs retry_payment_processing.
+        //
+        // The strict variant throws instead, so the failure is reported as what it
+        // is and is explicitly retryable. $_abort releases the lock, the
+        // idempotency record, the receipt index and any counter claim, so nothing
+        // financial is written and a retry starts clean.
+        //
+        // This GRANTS NOTHING — both shapes refuse the payment. It changes a
+        // misleading refusal into an accurate, retryable one.
+        try {
+            $demands = $controller->fsTxn->demandsForStudentStrict($userId); // [docId => data]
+        } catch (\RuntimeException $e) {
+            log_message('error',
+                'FeeCollectionService: demand set unreadable for student [' . $userId . '] — '
+                . $e->getMessage() . ' — payment REFUSED, nothing applied');
+            return $_abort(
+                'We could not read your fee record just now. No money has been applied. '
+                . 'Please retry in a moment.',
+                503
+            );
+        }
 
         // Helper to extract the canonical month label from a demand
         // period (strips the trailing year/session token but PRESERVES
@@ -571,6 +816,99 @@ class FeeCollectionService
                         return $_abort("Month {$m} is already fully paid. Refresh and retry.", 409);
                     }
                 }
+            }
+        }
+
+        // ── Phase 15.5 (G-3): COMPUTED FINE IS CANONICAL ────────────────
+        //
+        // THE DEFECT THIS CLOSES: the fine was taken verbatim from cashier
+        // POST input (`fineAmount`) and never compared against the fine the
+        // system itself computed onto the demand
+        // (Fees::compute_fines_for_student writes `fine_amount`). A cashier
+        // holding only COUNTER_ROLES could therefore waive any computed
+        // penalty by submitting 0 — silently, with no reason, no approval and
+        // no audit record — while the financially equivalent act of granting
+        // a DISCOUNT is gated on MANAGE_ROLES (Fees::submit_discount) and
+        // capped server-side above. That asymmetry was a revenue-leakage path.
+        //
+        // RULE (mirrors the discount-authorization block above):
+        //   • Default — the SYSTEM-COMPUTED fine wins. Whatever the client
+        //     posted is ignored. This is what makes the computed fine
+        //     canonical end-to-end: receipt and accounting both consume
+        //     $fineAmount downstream, so fixing it here fixes both.
+        //   • Override — only when the client EXPLICITLY requests one, and
+        //     only with MANAGE-level authorization plus a reason. Anything
+        //     else is refused before a single receipt/allocation/journal
+        //     write occurs.
+        //   • When nothing was computed (canonical 0) the posted value is
+        //     honoured, preserving the existing manual/ad-hoc fine workflow
+        //     that schools rely on today.
+        //
+        // COST: zero additional Firestore reads — $demands is already loaded
+        // above for the duplicate-month guard.
+        $__canonicalFine = 0.0;
+        foreach ($demands as $__d) {
+            if (strtolower((string) ($__d['status'] ?? '')) === 'archived') continue;
+            if (!in_array($periodToLabel((string) ($__d['period'] ?? '')), $selectedMonths, true)) continue;
+            $__canonicalFine += (float) ($__d['fine_amount'] ?? $__d['fineAmount'] ?? 0);
+        }
+        $__canonicalFine = round($__canonicalFine, 2);
+
+        $__overrideAsked = (string) ($data['fine_override']
+            ?? $controller->input->post('fine_override') ?? '') === '1';
+        $__overrideReason = trim((string) ($data['fine_override_reason']
+            ?? $controller->input->post('fine_override_reason') ?? ''));
+        $__fineSubmitted  = $fineAmount;
+        $__fineOverridden = false;
+
+        if ($__overrideAsked) {
+            if (!function_exists('has_permission')) {
+                $controller->load->helper('rbac_helper');
+            }
+            $__mayOverride = function_exists('has_permission')
+                ? has_permission('Fees', 'manage')
+                : false;   // fail CLOSED when RBAC can't be evaluated
+            if (!$__mayOverride) {
+                log_message('error', "FCS fine-override REFUSED (unauthorized) student={$userId} "
+                    . "computed={$__canonicalFine} requested={$__fineSubmitted}");
+                return $_abort('Changing the calculated late fee requires Fees "manage" permission. '
+                    . 'Ask an authorized user to approve this waiver.', 403);
+            }
+            if ($__overrideReason === '') {
+                return $_abort('A reason is required to change the calculated late fee.', 422);
+            }
+            $__fineOverridden = true;
+            // authorized → the submitted amount stands ($fineAmount unchanged)
+        } elseif ($__canonicalFine > 0.005) {
+            // No override requested → the computed fine is authoritative.
+            $fineAmount = $__canonicalFine;
+        }
+
+        // Audit ANY divergence between what the system computed and what is
+        // actually being collected — approved or not — so a school can always
+        // answer "why did this family pay a different penalty than we
+        // calculated?". Never fails the payment (logger is fail-soft).
+        if (abs($__fineSubmitted - $fineAmount) > 0.005 || $__fineOverridden) {
+            try {
+                self::_auditLogger($controller, $schoolFs, $session)->record(
+                    'update', 'fine_override', "{$userId}_{$receiptKey}",
+                    ['fineAmount' => round($__canonicalFine, 2)],
+                    ['fineAmount' => round($fineAmount, 2)],
+                    self::_performedBy($data),
+                    [
+                        'source'          => (string) ($data['source'] ?? 'cashier'),
+                        'studentId'       => $userId,
+                        'receiptNo'       => $receiptKey,
+                        'computedFine'    => round($__canonicalFine, 2),
+                        'submittedFine'   => round($__fineSubmitted, 2),
+                        'appliedFine'     => round($fineAmount, 2),
+                        'authorized'      => $__fineOverridden,
+                        'reason'          => $__overrideReason,
+                        'selectedMonths'  => implode(',', $selectedMonths),
+                    ]
+                );
+            } catch (\Throwable $e) {
+                log_message('error', 'FCS fine-override audit failed: ' . $e->getMessage());
             }
         }
 
@@ -672,34 +1010,22 @@ class FeeCollectionService
             // the old check only matched a literal 'Yearly Fees' entry in
             // selectedMonths, which no parent flow ever sends, and every
             // Annual Fee row was silently dropped from the printed receipt.
-            $breakdown = [];
-            try {
-                // Phase 7A — reuse the feeStructure we parallel-fetched
-                // during idempotency preload. Fallback to a fresh read
-                // keeps the path working if the preload returned null.
-                $struct  = is_array($__feeStructure) ? $__feeStructure
-                         : $controller->fs->get('feeStructures', "{$schoolFs}_{$session}_{$class}_{$section}");
-                $heads   = is_array($struct['feeHeads'] ?? null) ? $struct['feeHeads'] : [];
-                $monthCount = count(array_filter($selectedMonths, fn($x) => $x !== 'Yearly Fees'));
-                $includeAnnual = in_array('Yearly Fees', $selectedMonths, true)
-                                 || in_array('April', $selectedMonths, true);
-                foreach ($heads as $h) {
-                    $nm  = (string) ($h['name']   ?? '');
-                    $amt = (float)  ($h['amount'] ?? 0);
-                    $frq = strtolower((string) ($h['frequency'] ?? 'monthly'));
-                    if ($nm === '' || $amt <= 0) continue;
-                    $isAnnual = in_array($frq, ['annual', 'yearly', 'one-time', 'onetime'], true);
-                    if ($isAnnual) {
-                        if ($includeAnnual) {
-                            $breakdown[] = ['head' => $nm, 'amount' => number_format($amt, 2, '.', ''), 'frequency' => 'annual'];
-                        }
-                    } elseif ($monthCount > 0) {
-                        $breakdown[] = ['head' => $nm, 'amount' => number_format($amt * $monthCount, 2, '.', ''), 'frequency' => 'monthly'];
-                    }
-                }
-            } catch (\Exception $e) {
-                log_message('error', "FeeCollectionService: batch breakdown build failed: " . $e->getMessage());
-            }
+        // The receipt breakdown is built from ALLOCATIONS (below) — never
+        // from the class fee chart.
+        //
+        // A chart-derived breakdown was the F1 defect: a 700 payment settling
+        // ID Card Replacement 350 + Tuition Fee 350 printed Tuition 600 /
+        // Library 50 / Transport 200 / Admission 1000 — line items summing to
+        // 1,850 above a 700 total, with the ad-hoc charge absent entirely,
+        // because ad-hoc charges exist in no structure by construction.
+        //
+        // It survived here as a FALLBACK: when the allocations produced no
+        // rows, the chart-derived value was kept and written to the receipt.
+        // That reintroduced chart-derived financial content on exactly the
+        // edge case nobody exercises. An empty breakdown is honest; a wrong
+        // one is not — and both the app and the PDF already render from the
+        // allocations when the stored breakdown is absent.
+        $breakdown = [];
 
             $date     = date('d-m-Y');
             $netTotal = round($schoolFees - $discountFees + $fineAmount, 2);
@@ -784,6 +1110,19 @@ class FeeCollectionService
 
             $allocatedAmountSumBatch = round((float) $schoolFees, 2);
 
+            // Same correction as the sequential path's step-3 patch: the
+            // breakdown computed further up came from the class fee STRUCTURE
+            // and therefore described the fee chart rather than this payment.
+            // The allocations are now known, so the receipt is rebuilt from
+            // what the money was actually applied to. Ad-hoc student charges
+            // exist in no structure and were silently dropped before this.
+            // UNCONDITIONAL. Guarding this with !empty() meant that an empty
+            // allocation set left the previous, chart-derived value standing —
+            // which is the one thing a receipt must never carry. An empty
+            // breakdown is honest; a chart-derived one is a false statement
+            // about what the payment settled.
+            $breakdown = self::_breakdownFromAllocations($allocationsForBatch);
+
             // Build batch payload.
             $batchOps = [];
 
@@ -813,6 +1152,10 @@ class FeeCollectionService
             // paymentId so the receipt carries the gateway identifiers).
             $batchReceiptData = [
                 'receiptNo'        => $receiptNo,
+                // The accounting number a parent quotes and an auditor asks for.
+                // Restarts each session; the immutable key above does not.
+                'receiptDisplayNo' => $receiptDisplayNo,
+                'receiptSeries'    => $receiptSeries,
                 'receiptKey'       => $receiptKey,
                 'schoolId'         => $schoolFs,
                 'session'          => $session,
@@ -821,6 +1164,17 @@ class FeeCollectionService
                 'className'        => $class,
                 'section'          => $section,
                 'fatherName'       => (string) ($student['fatherName'] ?? ''),
+                // Phase 13 (Workstream F) — see the note on the non-batch
+                // receipt below. Display-only; ZERO extra reads ($student is
+                // already loaded); `studentId` above remains the canonical key.
+                // Same alias tolerance SIS applies (Sis.php canonicalises srNo /
+            // srNumber / "SR Number"), and the same tolerance `rollNo` on the
+            // next line already has. Reading a single alias here meant a
+            // student admitted through a path that stores `srNumber` printed a
+            // blank SR on the receipt with nothing to indicate it was a lookup
+            // miss rather than a student without one.
+            'srNo'             => (string) ($student['srNo'] ?? $student['srNumber'] ?? $student['SR Number'] ?? ''),
+                'rollNo'           => (string) ($student['rollNo'] ?? $student['Roll No'] ?? ''),
                 'amount'           => $schoolFees,
                 'input_amount'     => $schoolFees,
                 'inputAmount'      => $schoolFees,
@@ -832,6 +1186,13 @@ class FeeCollectionService
                 'paymentMode'      => $paymentMode,
                 'bankLedgerCode'   => $bankLedgerCode,
                 'bankLedgerName'   => $bankLedgerName,
+            // HOW the ledger was chosen, recorded next to WHICH one. An
+            // auditor reading a receipt can tell a school's explicit mapping
+            // ('configured') from a system fallback ('deterministic_fallback')
+            // without re-deriving anything, and a report can list every school
+            // still relying on the fallback. Empty for cash and for receipts
+            // written before this existed.
+            'bankLedgerSource' => $__settlementSource,
                 'remarks'          => $reference,
                 'feeMonths'        => $effectiveMonths,
                 'allocatedMonths'  => $allocatedMonthsBatch,
@@ -852,6 +1213,64 @@ class FeeCollectionService
                 'merge'      => false,
                 'data'       => $batchReceiptData,
             ];
+
+            // ── H1-F1 · THE PAYMENT MARKER BELONGS IN THIS BATCH ──────────
+            // "One successful payment → one receipt" was NOT held by the
+            // feeIdempotency layer, and it is worth being exact about why:
+            //
+            //     idempKey = md5(userId | receiptNo | months | amount)
+            //
+            // and `receiptNo` comes from nextCounter('receipt_seq'). A retry
+            // allocates a NEW sequence number, so it computes a DIFFERENT hash
+            // and the idempotency slot cannot match. That layer only guards a
+            // duplicate submission of the SAME receipt number (a cashier
+            // double-click), never a re-run of the same gateway payment.
+            //
+            // What actually held the invariant were two writes the CONTROLLER
+            // performed AFTER this batch committed — feeOnlineOrders.status
+            // ='paid' and the processedPayments marker. So a crash between this
+            // commit and those writes left a durable receipt with NOTHING
+            // recording that the payment had been applied: the gateway's retry
+            // would find no marker and an unpaid order, re-enter the pipeline,
+            // draw a fresh receipt number, and mint a SECOND receipt with a
+            // second allocation set against the same money.
+            //
+            // Writing the marker HERE makes "a receipt exists" and "the payment
+            // is recorded as applied" the same atomic fact, which is what the
+            // invariant actually claims. The controller still writes it
+            // afterwards; that write is now a harmless idempotent repeat rather
+            // than the thing the invariant depends on.
+            //
+            // Conditional on a gateway payment id: cash/cheque collections have
+            // none, and an empty-keyed marker would be a single junk document
+            // capable of suppressing an unrelated payment.
+            // The gateway ids reach this service through extra_receipt_fields
+            // (camelCase), which is where both parent paths put them. The
+            // snake_case top-level names are accepted as a fallback so a caller
+            // that passes them directly still records a marker.
+            $__extraRcpt   = is_array($data['extra_receipt_fields'] ?? null) ? $data['extra_receipt_fields'] : [];
+            $__gwPaymentId = (string) ($__extraRcpt['paymentId'] ?? ($data['payment_id'] ?? ''));
+            $__gwOrderId   = (string) ($__extraRcpt['orderId']   ?? ($data['gateway_order_id'] ?? ''));
+            if ($__gwPaymentId !== '') {
+                $batchOps[] = [
+                    'op'         => 'set',
+                    'collection' => 'processedPayments',
+                    'docId'      => $__gwPaymentId,   // PAY-2: the payment IS the key
+                    'merge'      => true,
+                    'data'       => [
+                        'paymentId'   => $__gwPaymentId,
+                        'orderId'     => $__gwOrderId,
+                        'schoolId'    => $schoolFs,
+                        'session'     => $session,
+                        'studentId'   => $userId,
+                        'receiptNo'   => $receiptNo,
+                        'receiptKey'  => $receiptKey,
+                        'status'      => 'success',
+                        'completedAt' => $now,
+                        'updatedAt'   => $now,
+                    ],
+                ];
+            }
 
             // 3. Receipt index (merge, clears reservation flag).
             $batchOps[] = [
@@ -1127,7 +1546,7 @@ class FeeCollectionService
                     self::_auditReceiptWrite($controller, $schoolFs, $session, $data, $receiptKey, $batchReceiptData);
                     log_message('error', "FEE_ASYNC_JOB_QUEUED jobId={$jobId} receipt={$receiptKey} ops=" . count($asyncOps));
                 } else {
-                    log_message('warning', "[FCS ASYNC FALLBACK] receipt={$receiptKey} — sync commit failed, falling through to sequential writes");
+                    log_message('error', "[FCS ASYNC FALLBACK] receipt={$receiptKey} — sync commit failed, falling through to sequential writes");
                     $allocations     = [];
                     $allocatedMonths = [];
                     $paidMonthsFlags = [];
@@ -1167,7 +1586,7 @@ class FeeCollectionService
                     // ordered after commit but could diverge under partial
                     // failure).
                 } else {
-                    log_message('warning', "[FCS BATCH FALLBACK] receipt={$receiptKey} — commit failed, falling through to sequential writes");
+                    log_message('error', "[FCS BATCH FALLBACK] receipt={$receiptKey} — commit failed, falling through to sequential writes");
                     // Reset shared vars; sequential path will repopulate.
                     $allocations     = [];
                     $allocatedMonths = [];
@@ -1193,35 +1612,22 @@ class FeeCollectionService
             // payment must list them. Synonyms for "yearly" frequency are
             // also accepted (annual/yearly/one-time) — drift between
             // generators previously erased the Annual Fee row.
-            $breakdown = [];
-            try {
-                // Phase 7A — reuse the preloaded feeStructure; fallback to a
-                // fresh read if the preload returned null (resilient path).
-                $struct  = is_array($__feeStructure) ? $__feeStructure
-                         : $controller->fs->get('feeStructures', "{$schoolFs}_{$session}_{$class}_{$section}");
-                $heads   = is_array($struct['feeHeads'] ?? null) ? $struct['feeHeads'] : [];
-                $includeAnnual = in_array('Yearly Fees', $selectedMonths, true)
-                                 || in_array('April', $selectedMonths, true);
-                foreach ($heads as $h) {
-                    $nm  = (string) ($h['name']   ?? '');
-                    $amt = (float)  ($h['amount'] ?? 0);
-                    $frq = strtolower((string) ($h['frequency'] ?? 'monthly'));
-                    if ($nm === '' || $amt <= 0) continue;
-                    $isAnnual = in_array($frq, ['annual', 'yearly', 'one-time', 'onetime'], true);
-                    if ($isAnnual) {
-                        if ($includeAnnual) {
-                            $breakdown[] = ['head' => $nm, 'amount' => number_format($amt, 2, '.', ''), 'frequency' => 'annual'];
-                        }
-                    } else {
-                        $monthCount = count(array_filter($selectedMonths, fn($x) => $x !== 'Yearly Fees'));
-                        if ($monthCount > 0) {
-                            $breakdown[] = ['head' => $nm, 'amount' => number_format($amt * $monthCount, 2, '.', ''), 'frequency' => 'monthly'];
-                        }
-                    }
-                }
-            } catch (\Exception $e) {
-                log_message('error', "submit_fees: breakdown build failed: " . $e->getMessage());
-            }
+        // The receipt breakdown is built from ALLOCATIONS (below) — never
+        // from the class fee chart.
+        //
+        // A chart-derived breakdown was the F1 defect: a 700 payment settling
+        // ID Card Replacement 350 + Tuition Fee 350 printed Tuition 600 /
+        // Library 50 / Transport 200 / Admission 1000 — line items summing to
+        // 1,850 above a 700 total, with the ad-hoc charge absent entirely,
+        // because ad-hoc charges exist in no structure by construction.
+        //
+        // It survived here as a FALLBACK: when the allocations produced no
+        // rows, the chart-derived value was kept and written to the receipt.
+        // That reintroduced chart-derived financial content on exactly the
+        // edge case nobody exercises. An empty breakdown is honest; a wrong
+        // one is not — and both the app and the PDF already render from the
+        // allocations when the stored breakdown is absent.
+        $breakdown = [];
 
             $date     = date('d-m-Y');
             $netTotal = round($schoolFees - $discountFees + $fineAmount, 2);
@@ -1235,11 +1641,34 @@ class FeeCollectionService
         // allocated_amount always equals input_amount. No advance_credit.
         $receiptDoc = [
             'receiptNo'        => $receiptNo,
+            // The accounting number a parent quotes and an auditor asks for.
+            // Restarts each session; the immutable key above does not.
+            'receiptDisplayNo' => $receiptDisplayNo,
+            'receiptSeries'    => $receiptSeries,
             'studentId'        => $userId,
             'studentName'      => $studentName,
             'className'        => $class,
             'section'          => $section,
             'fatherName'       => (string) ($student['fatherName'] ?? ''),
+            // Phase 13 (Workstream F) — school-facing identifiers denormalised
+            // onto the receipt so the PRINTED receipt can lead with the SR
+            // Number the school actually operates on, without the print path
+            // needing to read the student document.
+            //
+            // ZERO additional Firestore reads: `$student` is already loaded and
+            // in scope here — the line above reads `fatherName` from it.
+            //
+            // These are DISPLAY fields. `studentId` above remains the canonical
+            // persisted key for this receipt and for every allocation,
+            // reconciliation and accounting linkage. Nothing keys on `srNo`.
+            // Same alias tolerance SIS applies (Sis.php canonicalises srNo /
+            // srNumber / "SR Number"), and the same tolerance `rollNo` on the
+            // next line already has. Reading a single alias here meant a
+            // student admitted through a path that stores `srNumber` printed a
+            // blank SR on the receipt with nothing to indicate it was a lookup
+            // miss rather than a student without one.
+            'srNo'             => (string) ($student['srNo'] ?? $student['srNumber'] ?? $student['SR Number'] ?? ''),
+            'rollNo'           => (string) ($student['rollNo'] ?? $student['Roll No'] ?? ''),
             'amount'           => $schoolFees,
             'input_amount'     => $schoolFees,
             'inputAmount'      => $schoolFees,    // dual-emit for Android
@@ -1251,6 +1680,13 @@ class FeeCollectionService
             'paymentMode'      => $paymentMode,
             'bankLedgerCode'   => $bankLedgerCode,
             'bankLedgerName'   => $bankLedgerName,
+            // HOW the ledger was chosen, recorded next to WHICH one. An
+            // auditor reading a receipt can tell a school's explicit mapping
+            // ('configured') from a system fallback ('deterministic_fallback')
+            // without re-deriving anything, and a report can list every school
+            // still relying on the fallback. Empty for cash and for receipts
+            // written before this existed.
+            'bankLedgerSource' => $__settlementSource,
             'remarks'          => $reference,
             'feeMonths'        => $selectedMonths,
             'feeBreakdown'     => $breakdown,
@@ -1376,6 +1812,22 @@ class FeeCollectionService
         }
         $allocatedAmountSum = round($allocatedAmountSum, 2);
 
+        //  feeBreakdown belongs to the SAME "truth, not selection" rule as
+        //  allocated_amount and feeMonths above — it was simply left behind.
+        //
+        //  It was built from the class fee STRUCTURE, so the receipt described
+        //  the fee chart instead of the transaction. Demonstrated on the first
+        //  live payment (receipt F1, 2026-08-26): ₹700 paid against ID Card
+        //  Replacement ₹350 + Tuition Fee ₹350, and the receipt listed
+        //  Tuition 600 / Library 50 / Transport 200 / Admission 1000 — items
+        //  summing to ₹1,850 under a ₹700 total, with the ID Card charge, an
+        //  ad-hoc student charge that exists in no structure, absent entirely.
+        //
+        //  Structure-derived rows cannot represent ad-hoc charges by
+        //  construction, so this is rebuilt from the allocations, which are
+        //  what the money was actually applied to.
+        $breakdownFromAllocations = self::_breakdownFromAllocations($allocations);
+
         $allocatedMonths = [];
         foreach ($allocations as $a) {
             // periodToMonth preserves "Yearly Fees" — never truncate.
@@ -1397,6 +1849,13 @@ class FeeCollectionService
             $patch['feeMonths']       = $allocatedMonths;
             $patch['allocatedMonths'] = $allocatedMonths;
         }
+        // Only overwrite when the allocations actually produced rows. If they
+        // did not, leaving the previous value is strictly better than blanking
+        // the breakdown on a receipt that has already been written.
+        // UNCONDITIONAL — same reasoning as the batch path. An empty result
+        // must BLANK the stored breakdown, not leave a chart-derived one in
+        // place on the receipt.
+        $patch['feeBreakdown'] = $breakdownFromAllocations;
         $controller->fsTxn->updateFeeReceipt($receiptKey, $patch);
 
         // ── 4. Month-fee flags on the student doc ──────────────────────
@@ -1543,7 +2002,7 @@ class FeeCollectionService
             if (!$controller->firebase->firestoreCommitBatch($cleanupOps)) {
                 // Batch failed — fall back to the two sequential writes so we
                 // never leave idempotency in 'processing' state.
-                log_message('warning', "[FCS CLEANUP FALLBACK] batch failed, committing idemp+pending sequentially receipt={$receiptKey}");
+                log_message('error', "[FCS CLEANUP FALLBACK] batch failed, committing idemp+pending sequentially receipt={$receiptKey}");
                 $controller->fsTxn->setIdempotencySuccess($idempHash, $receiptNo);
                 $controller->fsTxn->clearPending($receiptKey);
             }
@@ -1847,6 +2306,53 @@ class FeeCollectionService
     //  logger never fails the caller (Fee_audit_logger::record
     //  returns false on error instead of throwing).
     // ─────────────────────────────────────────────────────────────────
+
+    /**
+     * Per-fee-head breakdown of what a receipt ACTUALLY paid.
+     *
+     * Built from the allocations — the demands the money was applied to —
+     * rather than from the class fee structure. The structure describes what
+     * a student is billed over a year; a receipt describes one payment. They
+     * are different questions, and answering the second with the first
+     * produced a receipt whose line items contradicted its own total.
+     *
+     * Ad-hoc charges (ID card replacement, transport add-ons, anything from
+     * Student_charge_service) appear in NO structure, so a structure-derived
+     * breakdown cannot represent them at all — it silently omits exactly the
+     * charges a parent is most likely to query.
+     *
+     * Heads are summed, because one receipt can settle several demands under
+     * the same head across different periods. `amount` is a 2dp string to
+     * match the shape every existing consumer already parses; no `frequency`
+     * key is emitted, since frequency is a property of a fee chart and has no
+     * meaning for a single settled allocation.
+     *
+     * @param array $allocations rows of ['fee_head' => string, 'allocated' => float]
+     * @return array<int, array{head: string, amount: string}>
+     */
+    private static function _breakdownFromAllocations(array $allocations): array
+    {
+        $byHead = [];
+        foreach ($allocations as $a) {
+            if (!is_array($a)) continue;
+            $head = trim((string) ($a['fee_head'] ?? $a['feeHead'] ?? ''));
+            $amt  = (float) ($a['allocated'] ?? 0);
+            // A zero-value row carries no information on a receipt, and a
+            // headless one cannot be rendered — both are skipped rather than
+            // shown as an empty line.
+            if ($head === '' || $amt <= 0) continue;
+            $byHead[$head] = ($byHead[$head] ?? 0.0) + $amt;
+        }
+
+        $out = [];
+        foreach ($byHead as $head => $amt) {
+            $out[] = [
+                'head'   => $head,
+                'amount' => number_format(round($amt, 2), 2, '.', ''),
+            ];
+        }
+        return $out;
+    }
 
     private static function _auditLogger($controller, string $schoolFs, string $session)
     {

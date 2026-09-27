@@ -10,7 +10,11 @@ $receiptNo     = $receipt_no      ?? '';
 $receiptDate   = $receipt_date    ?? '';
 $studentName   = $student_name    ?? '';
 $fatherName    = $father_name     ?? '';
+// Canonical Student ID. Still received (and still the key on the stored
+// receipt document) but deliberately NOT printed — see the identity block.
 $uid           = $user_id         ?? '';
+$srNo          = (string) ($sr_no   ?? '');   // Phase 13 — school-facing
+$rollNo        = (string) ($roll_no ?? '');   // Phase 13
 $classDisp     = $class_display   ?? '';
 $sectionDisp   = $section_display ?? '';
 
@@ -423,10 +427,40 @@ body {
                 <span class="lbl">Student</span>
                 <span class="val"><?= htmlspecialchars($studentName) ?></span>
             </div>
+            <?php
+            // ── Phase 13 (Workstream F) — receipt identity block ─────────────
+            //
+            // TWO defects were corrected here:
+            //
+            // 1. MISLABELLING. This row was labelled "Admission" but printed
+            //    `$uid`, the canonical Student ID (STU0012) — NOT the Admission
+            //    Number (2026/7K4P92). Every receipt printed to date has shown a
+            //    Student ID under an "Admission" heading. Those are three
+            //    different identifiers and must never be conflated.
+            //
+            // 2. The school's own SR Number was absent, even though schools
+            //    operate on it.
+            //
+            // The printed receipt now leads with school-facing identifiers.
+            // The Student ID is deliberately NOT printed: it is an internal
+            // technical key with no meaning to a parent, and the receipt is a
+            // school-facing document.
+            //
+            // CRITICALLY, this is a PRESENTATION change only. `$uid` is still
+            // passed to this view, and `feeReceipts.studentId` remains the
+            // canonical persisted key for the receipt, its allocations, the
+            // reconciliation path and the accounting linkage. Nothing keys on
+            // SR Number.
+            //
+            // Rendered only when present, so a school that has not adopted SR
+            // Numbers sees the receipt exactly as before, minus the mislabel.
+            ?>
+            <?php if ($srNo !== ''): ?>
             <div class="info-row">
-                <span class="lbl">Admission</span>
-                <span class="val"><?= htmlspecialchars($uid) ?></span>
+                <span class="lbl">SR No.</span>
+                <span class="val"><?= htmlspecialchars($srNo) ?></span>
             </div>
+            <?php endif; ?>
             <div class="info-row">
                 <span class="lbl">Father</span>
                 <span class="val"><?= htmlspecialchars($fatherName ?: '—') ?></span>
@@ -435,6 +469,12 @@ body {
                 <span class="lbl">Class / Sec</span>
                 <span class="val"><?= htmlspecialchars($classDisp) ?> / <?= htmlspecialchars($sectionDisp) ?></span>
             </div>
+            <?php if ($rollNo !== ''): ?>
+            <div class="info-row">
+                <span class="lbl">Roll No.</span>
+                <span class="val"><?= htmlspecialchars($rollNo) ?></span>
+            </div>
+            <?php endif; ?>
         </div>
 
         <!-- Months covered line -->

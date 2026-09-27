@@ -122,6 +122,20 @@
                     <div class="fm-policy-sub">Library issues blocked for defaulters</div>
                 </div>
             </label>
+            <label class="fm-policy-toggle">
+                <input type="checkbox" id="polAllSessions" onchange="FDR.policyChanged()">
+                <div>
+                    <div class="fm-policy-title"><i class="fa fa-calendar-check-o"></i> TC needs all-years clearance</div>
+                    <div class="fm-policy-sub">A leaving student must settle EVERY year's dues (not just this session) before a TC</div>
+                </div>
+            </label>
+            <label class="fm-policy-toggle">
+                <input type="checkbox" id="polReprice" onchange="FDR.policyChanged()">
+                <div>
+                    <div class="fm-policy-title"><i class="fa fa-exchange"></i> Re-price fees on class transfer</div>
+                    <div class="fm-policy-sub">Moving a student to another CLASS re-bills at the new class chart (unpaid old-class demands archived; paid history kept)</div>
+                </div>
+            </label>
         </div>
         <div class="fm-policy-footer">
             <div class="fm-policy-inputs">
@@ -166,8 +180,19 @@
                     <option value="60">61–90 days</option>
                     <option value="90">90+ days</option>
                 </select>
-                <button type="button" class="fm-btn fm-btn-whatsapp" id="btnBulkReminder" onclick="FDR.sendBulkReminder()">
-                    <i class="fa fa-whatsapp"></i> WhatsApp (<span id="selCount">0</span>)
+                <!-- Phase 15.8 — WhatsApp is RECORD-ONLY.
+                     This button wrote a feeReminderLog row with
+                     status='queued' and reported "queued for delivery", but
+                     no messaging worker exists in this system to pick those
+                     rows up — so no WhatsApp message was ever sent while the
+                     office believed the parent had been contacted. Actual
+                     delivery needs an external provider (a commercial
+                     decision), so the action is kept for record-keeping but
+                     is now labelled truthfully. Push, beside it, really does
+                     reach the parent app. -->
+                <button type="button" class="fm-btn fm-btn-whatsapp" id="btnBulkReminder" onclick="FDR.sendBulkReminder()"
+                        title="Records the reminder only — no WhatsApp provider is configured, so nothing is delivered. Use Push to actually notify parents.">
+                    <i class="fa fa-whatsapp"></i> WhatsApp — record only (<span id="selCount">0</span>)
                 </button>
                 <button type="button" class="fm-btn fm-btn-push" id="btnBulkPush" onclick="FDR.sendBulkPush()" title="Push notification to the parent app (instant, free)">
                     <i class="fa fa-bell"></i> Push (<span id="selCountPush">0</span>)
@@ -387,7 +412,13 @@ document.addEventListener('DOMContentLoaded', function(){
         ids.forEach(function(id){ fd.append('student_ids[]', id); });
         fetch(BASE + 'fee_management/send_reminder', {method:'POST', body:fd, headers:{'X-Requested-With':'XMLHttpRequest'}})
             .then(hjson).then(function(res){
-                alert((res && res.message) || ('Reminder queued for ' + ids.length + ' students.'));
+                // Phase 15.8 — the server now reports honestly whether the
+                // channel actually delivered. The old fallback claimed
+                // "Reminder queued for N students", which read as success even
+                // though nothing was sent. Never invent a delivery claim here.
+                alert((res && res.message)
+                      || ('Reminder RECORDED for ' + ids.length + ' student(s) — not delivered. '
+                          + 'No WhatsApp provider is configured. Use Push to notify parents in the app.'));
                 $('.fm-row-chk').prop('checked', false);
                 $('#chkAll').prop('checked', false);
                 updateSelCount();
@@ -463,6 +494,8 @@ document.addEventListener('DOMContentLoaded', function(){
             $('#polHall').prop('checked',    !!p.block_hall_ticket);
             $('#polLib').prop('checked',     !!p.block_library);
             $('#polOverride').prop('checked',!!p.admin_override_allowed);
+            $('#polAllSessions').prop('checked', !!p.all_sessions_clearance);
+            $('#polReprice').prop('checked',     !!p.reprice_on_class_transfer);
             $('#polThreshold').val(p.threshold_amount || 0);
             $('#btnSavePolicy').prop('disabled', true);
         });
@@ -479,6 +512,8 @@ document.addEventListener('DOMContentLoaded', function(){
         fd.append('block_library',          $('#polLib').is(':checked')      ? '1' : '0');
         fd.append('threshold_amount',       parseFloat($('#polThreshold').val() || 0));
         fd.append('admin_override_allowed', $('#polOverride').is(':checked') ? '1' : '0');
+        fd.append('all_sessions_clearance',    $('#polAllSessions').is(':checked') ? '1' : '0');
+        fd.append('reprice_on_class_transfer', $('#polReprice').is(':checked')     ? '1' : '0');
         var $btn = $('#btnSavePolicy');
         var original = $btn.html();
         $btn.prop('disabled', true).html('<i class="fa fa-spinner fa-spin"></i> Saving…');

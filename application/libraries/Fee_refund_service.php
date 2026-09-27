@@ -135,10 +135,43 @@ class Fee_refund_service
         // concurrent payments on the same student — before this, a
         // refund could race with a parent-app Razorpay verify on the
         // same student and read stale demand balances mid-write.
-        $lockToken = $this->fsTxn->acquireLock($studentId, 120);
-        if ($lockToken === '') {
-            $this->fsTxn->deleteIdempotency($idempHash);
-            return ['ok' => false, 'error' => 'Another fee operation for this student is in progress. Please wait and retry.'];
+        // ── REF-1 · CONFLICT AND UNKNOWN ARE NOT THE SAME OUTCOME ───────────
+        // acquireLock() returns '' for a live lock, for a thrown exception AND
+        // for an uninitialised helper. This caller then deleted its idempotency
+        // guard on all three — and that guard is the only thing preventing a
+        // SECOND DISBURSEMENT of the same refund.
+        //
+        //   CONFLICT → the lock write definitely did NOT land. Nothing of ours
+        //              is in flight, so releasing the guard is correct and lets
+        //              the admin retry cleanly.
+        //   UNKNOWN  → the write MAY have landed. We do not know whether we
+        //              hold the lock, so the guard MUST survive: deleting it
+        //              would let a retry disburse a refund that is already
+        //              being processed by a request we lost track of.
+        //
+        // The lock is now acquired atomically (create-or-CAS), so CONFLICT
+        // genuinely means "someone else owns a live lease" rather than "we lost
+        // a read-then-write race".
+        $lockRes   = $this->fsTxn->acquireLockStatus($studentId, 120);
+        $lockToken = (string) $lockRes['token'];
+
+        if ($lockRes['status'] !== Fee_firestore_txn::LOCK_OWNER) {
+            if ($lockRes['status'] === Fee_firestore_txn::LOCK_CONFLICT) {
+                $this->fsTxn->deleteIdempotency($idempHash);
+                return ['ok' => false, 'error' => 'Another fee operation for this student is in progress. Please wait and retry.'];
+            }
+
+            // UNKNOWN — keep the guard. It expires on its own; a stuck slot is
+            // recoverable, a duplicate disbursement is not.
+            log_message('error',
+                "Fee_refund_service: lock outcome UNKNOWN for student [{$studentId}] refund ["
+                . $refId . '] — refusing and RETAINING the idempotency guard');
+            return ['ok' => false, 'error' => 'We could not confirm the state of this refund. Nothing has been disbursed. Please retry in a moment.'];
+        }
+
+        if (!empty($lockRes['recovered'])) {
+            log_message('info',
+                "Fee_refund_service: recovered an expired student lock for [{$studentId}] refund [{$refId}]");
         }
 
         try {

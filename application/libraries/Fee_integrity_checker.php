@@ -82,6 +82,10 @@ class Fee_integrity_checker
             $this->checkConcessionOverflow(),
             $this->checkNegativeBalances(),
             $this->checkTemporalConsistency(),
+            // DB-011 (Phase 19P) — the summary cache vs the demands it
+            // summarises. Registered here so it runs with every integrity
+            // sweep; a check that exists but is never called is no check.
+            $this->checkSummaryDivergence(),
         ];
 
         $passed = 0;
@@ -697,6 +701,141 @@ class Fee_integrity_checker
             }
 
             $status = empty($violations) ? 'pass' : 'fail';
+            return $this->_result($checkId, $name, $status, count($violations), $violations);
+        } catch (\Exception $e) {
+            log_message('error', "Fee_integrity_checker::{$checkId} failed: " . $e->getMessage());
+            return $this->_result($checkId, $name, 'fail', -1, ['error' => $e->getMessage()]);
+        }
+    }
+
+    // ── DB-011: Summary vs Demands Divergence ───────────────────────
+
+    /**
+     * DB-011 — does the stored `studentFeeSummary` still agree with the
+     * `feeDemands` it summarises?
+     *
+     * ═══════════════════════════════════════════════════════════════════
+     *  WHY THIS CHECK EXISTS (Target #1 — existing old fee demands)
+     * ═══════════════════════════════════════════════════════════════════
+     *  `studentFeeSummary` is a DERIVED CACHE, rewritten only when a fee
+     *  event touches that student. Nothing re-derives it when the derivation
+     *  RULE changes — so a summary written under an older rule stays wrong
+     *  indefinitely, silently, and there was no check that could see it.
+     *
+     *  That is not hypothetical. FEES-FROZEN-2 (Phase 19B) corrected the
+     *  aggregation to include `fineAmount`; every summary written before that
+     *  fix understates a student carrying a fine, and — worse — a student who
+     *  paid the charge but not the penalty aggregates to a ZERO balance,
+     *  reads as 'paid', and drops off the defaulters list entirely. The demand
+     *  is correct; the cache is not.
+     *
+     *  Ten existing checks compare demands, payments and receipts to each
+     *  other. NONE compared the summary to the demands. This closes that gap.
+     *
+     * ═══════════════════════════════════════════════════════════════════
+     *  READ-ONLY, AND ONE CALCULATION
+     * ═══════════════════════════════════════════════════════════════════
+     *  Writes nothing. It re-derives via `Fee_summary_writer::aggregateDemands()`
+     *  — the SAME method the writer itself uses — rather than reimplementing
+     *  the arithmetic here. A second copy would drift from the writer exactly
+     *  as the writer drifted from this class over the fine field.
+     *
+     *  The repair is the existing `Fees::backfill_fee_summaries()`, which
+     *  rebuilds from demands using that same canonical writer. This check is
+     *  its dry run: it names precisely which students would change and by how
+     *  much, so the operator decides on evidence rather than rebuilding blind.
+     *
+     *  A divergence is NOT a financial error. The demands are authoritative
+     *  and untouched; only the cache is stale. Nothing here alters paidAmount,
+     *  receipts, journals or history.
+     */
+    public function checkSummaryDivergence(): array
+    {
+        $checkId = 'DB-011';
+        $name    = 'Summary vs Demands Divergence';
+
+        try {
+            $CI = &get_instance();
+            $CI->load->library('Fee_summary_writer', null, '_fsWriterForCheck');
+            $CI->_fsWriterForCheck->init($this->firebase, $this->schoolName, $this->sessionYear);
+
+            // Demands for the whole school/session, grouped per student. One
+            // query, then pure in-memory work — no per-student read.
+            $rows = (array) $this->firebase->firestoreQuery('feeDemands', [
+                ['schoolId', '==', $this->schoolName],
+                ['session',  '==', $this->sessionYear],
+            ]);
+
+            $byStudent = [];
+            foreach ($rows as $r) {
+                $d = $r['data'] ?? $r;
+                if (!is_array($d)) continue;
+                $sid = (string) ($d['studentId'] ?? $d['student_id'] ?? '');
+                if ($sid === '') continue;
+                $byStudent[$sid][] = $d;
+            }
+
+            $summaries = (array) $this->firebase->firestoreQuery('studentFeeSummary', [
+                ['schoolId', '==', $this->schoolName],
+                ['session',  '==', $this->sessionYear],
+            ]);
+            $stored = [];
+            foreach ($summaries as $r) {
+                $d = $r['data'] ?? $r;
+                if (!is_array($d)) continue;
+                $sid = (string) ($d['studentId'] ?? '');
+                if ($sid !== '') $stored[$sid] = $d;
+            }
+
+            $violations = [];
+            foreach ($byStudent as $sid => $demands) {
+                $expected = $CI->_fsWriterForCheck->aggregateDemands($demands);
+
+                if (!isset($stored[$sid])) {
+                    // No summary at all. Reported separately from a WRONG one:
+                    // a student who has simply never had a summary written is a
+                    // different situation from one whose cache is stale.
+                    $violations[] = [
+                        'studentId'        => $sid,
+                        'issue'            => 'missing_summary',
+                        'storedBalance'    => null,
+                        'expectedBalance'  => $expected['totalBalance'],
+                        'delta'            => $expected['totalBalance'],
+                        'storedStatus'     => null,
+                        'expectedStatus'   => $expected['status'],
+                        'demandCount'      => count($demands),
+                        'risk'             => $expected['totalBalance'] > 0.005 ? 'HIGH' : 'LOW',
+                    ];
+                    continue;
+                }
+
+                $s        = $stored[$sid];
+                $sBal     = round((float) ($s['totalBalance'] ?? 0), 2);
+                $eBal     = round((float) $expected['totalBalance'], 2);
+                $sStatus  = (string) ($s['status'] ?? '');
+                $eStatus  = (string) $expected['status'];
+
+                $balDiff    = abs($sBal - $eBal) > 0.005;
+                $statusDiff = ($sStatus !== '' && $sStatus !== $eStatus);
+                if (!$balDiff && !$statusDiff) continue;
+
+                $violations[] = [
+                    'studentId'       => $sid,
+                    'issue'           => $balDiff ? 'balance_mismatch' : 'status_mismatch',
+                    'storedBalance'   => $sBal,
+                    'expectedBalance' => $eBal,
+                    'delta'           => round($eBal - $sBal, 2),
+                    'storedStatus'    => $sStatus,
+                    'expectedStatus'  => $eStatus,
+                    'demandCount'     => count($demands),
+                    // A cache that UNDERSTATES what is owed is the dangerous
+                    // direction: the family is under-billed on every surface
+                    // and may be missing from the defaulters list entirely.
+                    'risk'            => ($eBal > $sBal + 0.005) ? 'HIGH' : 'MEDIUM',
+                ];
+            }
+
+            $status = $violations === [] ? 'pass' : 'fail';
             return $this->_result($checkId, $name, $status, count($violations), $violations);
         } catch (\Exception $e) {
             log_message('error', "Fee_integrity_checker::{$checkId} failed: " . $e->getMessage());

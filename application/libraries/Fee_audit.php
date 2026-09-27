@@ -27,6 +27,14 @@ class Fee_audit
         'amount_mismatch',
         'transaction_incomplete',
         'demand_reversal_failed',
+        // GW-SEC3 — a change to the tenant's payment credentials redirects
+        // where every future parent payment lands. It is rare, high-impact and
+        // externally consequential, which is exactly the profile that should
+        // raise an alert rather than sit quietly in an audit trail nobody
+        // reads until money is already missing. Legitimate first-time setup
+        // will alert too; for an operation this consequential that is the
+        // correct trade.
+        'gateway_config_changed',
     ];
 
     public function init($firebase, string $basePath, string $adminId, string $adminName, string $schoolName): self

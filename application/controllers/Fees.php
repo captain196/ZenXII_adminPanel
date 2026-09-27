@@ -2008,6 +2008,14 @@ class Fees extends MY_Controller
         // Session A: query feeReceipts collection directly. studentName + class
         // are denormalised into each receipt doc at write time, so we don't
         // need a separate profile read.
+        //
+        // DELIBERATELY NOT session-scoped: this is a student's FULL payment
+        // HISTORY across every year they attended, so a session predicate would
+        // wrongly hide prior-session receipts. This is safe ONLY because the
+        // receipt doc id `feeReceipts/{schoolId}_F{n}` is globally unique per
+        // school (see FeeCollectionService receipt_seq — school-lifetime, never
+        // per-session). INVARIANT: if receipt numbering is ever made per-session,
+        // this query MUST add a session filter or it will cross-contaminate.
         try {
             $rows = $this->firebase->firestoreQuery(
                 'feeReceipts',
@@ -2362,6 +2370,8 @@ class Fees extends MY_Controller
             // pre-accident version returned this, and the SR No is the value
             // the operator actually typed.
             'sr_no'        => (string) ($student['srNo'] ?? $student['srNumber'] ?? ''),
+            // Admission number for the counter's identity confirmation (read-only).
+            'admission_no' => (string) ($student['admissionNumber'] ?? $student['Admission Number'] ?? ''),
             'roll_no'      => (string) ($student['rollNo'] ?? $student['roll_no'] ?? ''),
             'resolved_via' => $resolvedVia,
         ]);
@@ -2844,16 +2854,26 @@ class Fees extends MY_Controller
         // Browse modal can show a roster on open, not a blank table.
         $term = trim((string) $this->input->post('search_name'));
         $results = $this->_searchByName($term);
-        $this->_json_out(is_array($results) ? $results : ['data' => $results]);
+        // Always return the rows under a `data` ARRAY key. Returning the bare
+        // list let _json_out() append its `csrf_token` to a numeric-keyed array,
+        // which json_encode then emits as an OBJECT ({"0":…,"csrf_token":…}) — so
+        // the client's `data.length`/`data.forEach` failed and every search
+        // showed "No students found" even when rows existed. array_values keeps
+        // it a clean JSON array alongside the csrf token.
+        $this->_json_out(['data' => array_values((array) $results)]);
     }
 
     private function _searchByName($entry)
     {
-        // Pure Firestore: query students collection for this school.
-        $schoolFs = $this->fs->schoolId();
-        $rows = $this->firebase->firestoreQuery('students', [
-            ['schoolId', '==', $schoolFs],
-        ]);
+        // Browse-fix (2026-09-20): use the tenant-scoped Firestore_service client
+        // (schoolWhere) — the SAME query path every working students list in the
+        // app uses (Sis roster, promotion, defaulters). The previous raw
+        // $this->firebase->firestoreQuery('students', …) went through a DIFFERENT
+        // Firestore client ($this->firestoreDb) that returned zero rows for this
+        // tenant (dual-client drift), so Browse showed "No students found" while
+        // Find — which reads a student by doc id — worked. schoolWhere auto-adds
+        // the schoolId==tenant condition and returns {id,data} rows.
+        $rows = $this->fs->schoolWhere('students', []);
         $entry   = trim((string) $entry);
         $term    = $entry === '' ? '' : preg_replace('/\s+/', ' ', $entry);
         $results = [];
@@ -2887,24 +2907,45 @@ class Fees extends MY_Controller
             // it school-wide at a fee counter implies a uniqueness that does
             // not exist, and the operator could collect money against the
             // wrong child with the same roll number in another class.
-            $haystack = $name . ' ' . $sid . ' ' . $srNo . ' ' . $father . ' ' . $class . ' ' . $section;
-            $match = ($term === '');   // empty term ⇒ everyone matches
+            // MATCHING (2026-09-20 fix): an SR No or Student ID must match
+            // EXACTLY — not as a substring. Searching SR No "4" used to return
+            // every student whose id/name/srNo merely CONTAINED "4" (STU0004,
+            // STU0040, a "2024" anywhere, …). Only a NAME search stays fuzzy:
+            //   • exact SR No (case-insensitive)      → that one student
+            //   • exact Student ID (case-insensitive) → that one student
+            //   • pure-digit term ⇒ SR No / ID only, never name fuzz
+            //   • otherwise ⇒ token substring on the human fields (name/father/
+            //     class/section) so "rahul" or "8 B" still work.
+            $match = ($term === '');   // empty term ⇒ everyone (guarded client-side)
             if (!$match) {
-                // Match if ANY whitespace-separated token of the search
-                // term appears in the haystack — much more forgiving
-                // than a single substring match. "8 B" finds Class 8th
-                // Section B; "rahul ji" matches either word.
-                foreach (explode(' ', $term) as $tok) {
-                    if ($tok !== '' && stripos($haystack, $tok) !== false) { $match = true; break; }
+                $exact = ($srNo !== '' && strcasecmp($srNo, $term) === 0)
+                      || ($sid  !== '' && strcasecmp($sid,  $term) === 0);
+                if ($exact) {
+                    $match = true;
+                } elseif (!ctype_digit($term)) {
+                    // Name-style fuzzy search over the human fields. SR No is
+                    // included (a "name + sr" mix still works); ROLL NUMBER is
+                    // deliberately EXCLUDED — it is class+section-scoped and repeats
+                    // school-wide, so matching it implies a uniqueness that does not
+                    // exist and money could be taken against the wrong child.
+                    $haystack = strtolower($name . ' ' . $father . ' ' . $srNo . ' ' . $class . ' ' . $section);
+                    foreach (explode(' ', strtolower($term)) as $tok) {
+                        if ($tok !== '' && strpos($haystack, $tok) !== false) { $match = true; break; }
+                    }
                 }
+                // A pure-digit term that matched no SR No / Student ID ⇒ no match.
             }
             if ($match) {
                 $results[] = [
-                    'user_id'     => $sid,
-                    'name'        => $name,
-                    'father_name' => $father,
-                    'class'       => $class,
-                    'section'     => $section,
+                    'user_id'      => $sid,
+                    'name'         => $name,
+                    'father_name'  => $father,
+                    'class'        => $class,
+                    'section'      => $section,
+                    // Include the SR No (the table has an SR NO column) and the
+                    // admission number so the browse row is complete.
+                    'sr_no'        => $srNo,
+                    'admission_no' => (string) ($s['admissionNumber'] ?? $s['Admission Number'] ?? ''),
                 ];
             }
             if (count($results) >= 200) break;   // safety cap
@@ -3219,8 +3260,14 @@ class Fees extends MY_Controller
             $schoolFs = $this->fs->schoolId();
             $idempRows = $this->fs->schoolWhere('feeIdempotency', []);
             foreach ((array) $idempRows as $row) {
-                $did = $d['id']   ?? '';
+                // Fix (ordering + source): read $d FIRST, then take the doc id from
+                // the row envelope. Previously $did read $d['id'] before $d was
+                // assigned (use-before-assignment) AND from the data body, not the
+                // doc key — so the feeIdempotency delete below could target the
+                // wrong/blank id. schoolWhere() returns {id, data}; $row['id'] is
+                // the canonical doc id firestoreDelete() needs.
                 $d   = $row['data'] ?? [];
+                $did = $row['id']   ?? '';
                 if ($did === '' || !is_array($d)) continue;
                 $duid = (string) ($d['userId']    ?? '');
                 $drn  = (string) ($d['receiptNo'] ?? '');

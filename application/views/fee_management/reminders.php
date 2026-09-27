@@ -38,7 +38,14 @@
                     <form id="reminderSettingsForm" autocomplete="off" onsubmit="saveSettings(event)">
 
                         <div class="fm-form-grid fm-form-grid--2">
-                            <!-- Auto Remind -->
+                            <!-- Auto Remind — RE-ENABLED in Phase 15.7.
+                                 Disabled in 15.5 because the setting had no
+                                 server-side consumer (a school could switch it
+                                 on and no reminder was ever sent). It now has
+                                 one: Fee_reminder_service, driven nightly by
+                                 `fees_late_fee_cron reminders`, which enqueues
+                                 FEE_DUE through the shared push path. The
+                                 control is honest again. -->
                             <div class="fm-form-col fm-form-col--full">
                                 <label class="fm-toggle-row">
                                     <input type="checkbox" name="auto_remind" id="auto_remind" value="1"
@@ -46,6 +53,28 @@
                                     <span class="fm-toggle-slider"></span>
                                     <span class="fm-toggle-label">Enable Auto Reminders</span>
                                 </label>
+                                <span class="fm-hint">
+                                    Sends fee reminders to parents automatically. Requires the nightly
+                                    fee job to be scheduled on the server.
+                                </span>
+                            </div>
+
+                            <!-- Phase 15.7 — reminder stages -->
+                            <div class="fm-form-col">
+                                <label class="fm-label">Remind On Due Date</label>
+                                <label class="fm-toggle-row">
+                                    <input type="checkbox" name="remind_on_due" id="remind_on_due" value="1"
+                                        <?= (!isset($settings['remind_on_due']) || !empty($settings['remind_on_due'])) ? 'checked' : '' ?>>
+                                    <span class="fm-toggle-slider"></span>
+                                    <span class="fm-toggle-label">Send a reminder on the due date</span>
+                                </label>
+                            </div>
+                            <div class="fm-form-col">
+                                <label class="fm-label">Days After Due (overdue reminders)</label>
+                                <input type="text" name="days_after_due" id="days_after_due" class="fm-input"
+                                    placeholder="e.g. 3, 7, 15"
+                                    value="<?= htmlspecialchars(implode(', ', (array) ($settings['days_after_due'] ?? []))) ?>">
+                                <span class="fm-hint">Comma-separated. One reminder per stage — a parent is never reminded twice for the same stage.</span>
                             </div>
 
                             <!-- Due Day -->
@@ -55,6 +84,24 @@
                                     min="1" max="28" placeholder="e.g. 10"
                                     value="<?= htmlspecialchars((string) ($settings['due_day_of_month'] ?? $settings['due_day'] ?? '10')) ?>">
                                 <span class="fm-hint">Max 28 — avoids Feb month-end edge case.</span>
+                            </div>
+
+                            <!-- Overdue Grace — the AUTHORITATIVE policy.
+                                 Deliberately sits beside Due Day rather than
+                                 with the late-fee fields: it governs what
+                                 parents are TOLD, and applies whether or not
+                                 late fees are switched on. -->
+                            <div class="fm-form-col">
+                                <label class="fm-label">Overdue Grace (days)</label>
+                                <input type="number" name="overdue_grace_days" id="overdue_grace_days" class="fm-input"
+                                    min="0" max="365" placeholder="0"
+                                    value="<?= htmlspecialchars((string) ($settings['overdue_grace_days'] ?? '0')) ?>">
+                                <span class="fm-hint">
+                                    Days after the due date before a fee is shown as overdue to parents.
+                                    <strong>0</strong> = overdue the day after it was due.
+                                    This is separate from the late-fee grace below, which decides when a
+                                    <em>fine</em> starts.
+                                </span>
                             </div>
 
                             <!-- Days Before Due -->
@@ -109,6 +156,25 @@
                                         <input type="number" name="late_fee_value" id="late_fee_value" class="fm-input"
                                             min="0" step="0.01" placeholder="e.g. 5"
                                             value="<?= isset($settings['late_fee_value']) ? htmlspecialchars($settings['late_fee_value']) : '' ?>">
+                                    </div>
+
+                                    <!-- Phase 15.6 — grace period + cap.
+                                         Per-school by design: school fee rules
+                                         in India are set by STATE law, so
+                                         there is no single correct value. -->
+                                    <div class="fm-form-col">
+                                        <label class="fm-label">Grace Period (days)</label>
+                                        <input type="number" name="late_fee_grace_days" id="late_fee_grace_days"
+                                            class="fm-input" min="0" max="365" step="1" placeholder="e.g. 7"
+                                            value="<?= htmlspecialchars((string) ($settings['late_fee_grace_days'] ?? 0)) ?>">
+                                        <span class="fm-hint">Days after the due date before any late fee applies. 0 = charge from the next day.</span>
+                                    </div>
+                                    <div class="fm-form-col">
+                                        <label class="fm-label">Maximum Late Fee</label>
+                                        <input type="number" name="late_fee_max_cap" id="late_fee_max_cap"
+                                            class="fm-input" min="0" step="0.01" placeholder="e.g. 500"
+                                            value="<?= htmlspecialchars((string) ($settings['late_fee_max_cap'] ?? 0)) ?>">
+                                        <span class="fm-hint">Ceiling per fee demand. 0 = no maximum.</span>
                                     </div>
                                 </div>
                             </div>
@@ -314,6 +380,10 @@ document.addEventListener('DOMContentLoaded', function() {
         fd.append(CSRF_NAME, CSRF_HASH);
         if (!document.getElementById('auto_remind').checked) fd.set('auto_remind', '0');
         if (!document.getElementById('late_fee_enabled').checked) fd.set('late_fee_enabled', '0');
+        // Phase 15.7 — unchecked checkboxes are omitted by FormData, so an
+        // explicit '0' is required or turning the stage OFF would silently
+        // keep the previous value.
+        if (!document.getElementById('remind_on_due').checked) fd.set('remind_on_due', '0');
 
         fetch(BASE + 'fee_management/save_reminder_settings', { method: 'POST', body: fd })
             .then(function(r) {

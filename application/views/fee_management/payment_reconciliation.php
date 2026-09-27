@@ -309,6 +309,25 @@ function itemCard(it,actions){
   h+='<div class="pr-row"><span class="pr-lbl">Source</span><span class="pr-val">'+esc(it.source||'-')+'</span></div>';
   h+='<div class="pr-row"><span class="pr-lbl">Created</span><span class="pr-val">'+esc(fmtIST(it.created_at))+'</span></div>';
   if(it.failure_reason) h+='<div class="pr-row"><span class="pr-lbl">Error</span><span class="pr-val" style="color:#dc2626;max-width:70%;text-align:right;word-break:break-word">'+esc(it.failure_reason)+'</span></div>';
+  /*
+   * PAY-OPS-6 — WILL RETRY HELP, OR NOT?
+   *
+   * Every `fees_failed` row means the same alarming thing: the gateway
+   * captured money ZenX has not applied. The remedy is opposite though —
+   * a transient failure usually clears on Retry, while a business refusal
+   * (pay-older-first, already-fully-paid) fails identically until the
+   * underlying cause is dealt with. Shown as one red row, an operator
+   * retries a business refusal repeatedly and concludes the system is
+   * broken while the payment stays unreconciled.
+   *
+   * Orders written before this field existed carry no class; those render
+   * nothing rather than guessing a value.
+   */
+  if(it.failure_class==='business'){
+    h+='<div class="pr-row"><span class="pr-lbl">Needs action</span><span class="pr-val" style="color:#dc2626;font-weight:700;max-width:70%;text-align:right">Retry will not help &mdash; resolve the reason above first (e.g. clear the earlier month), then Retry</span></div>';
+  } else if(it.failure_class==='transient'){
+    h+='<div class="pr-row"><span class="pr-lbl">Needs action</span><span class="pr-val" style="color:#d97706;font-weight:700">Temporary failure &mdash; Retry is likely to succeed</span></div>';
+  }
   if(it.issue) h+='<div class="pr-row"><span class="pr-lbl">Issue</span><span class="pr-val" style="color:#d97706">'+esc(it.issue)+'</span></div>';
   if(it.hit_count) h+='<div class="pr-row"><span class="pr-lbl">Processing Attempts</span><span class="pr-val" style="color:#7c3aed;font-weight:700">'+it.hit_count+'</span></div>';
   h+='</div></div>';

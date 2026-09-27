@@ -9,7 +9,7 @@ $accounts          = $accounts          ?? [];
 <div class="content-wrapper">
     <div class="fc-wrap">
 
-        <!-- ══ TOP BAR ══ -->
+        <!-- ?? TOP BAR ?? -->
         <div class="fc-topbar">
             <div>
                 <h1 class="fc-page-title"><i class="fa fa-rupee"></i> Fee Counter</h1>
@@ -25,7 +25,7 @@ $accounts          = $accounts          ?? [];
             </div>
         </div>
 
-        <!-- ══ STAT STRIP ══ -->
+        <!-- ?? STAT STRIP ?? -->
         <div class="fc-stat-strip">
             <div class="fc-stat fc-stat-blue">
                 <div class="fc-stat-icon"><i class="fa fa-calendar-check-o"></i></div>
@@ -60,7 +60,7 @@ $accounts          = $accounts          ?? [];
         <!-- Alert placeholder -->
         <div id="fcAlertBox" style="display:none;"></div>
 
-        <!-- ══ MAIN LAYOUT ══ -->
+        <!-- ?? MAIN LAYOUT ?? -->
         <div class="fc-layout">
 
             <!-- ── LEFT ── -->
@@ -89,11 +89,15 @@ $accounts          = $accounts          ?? [];
                         </div>
 
                         <div class="fc-mb">
-                            <label class="fc-label">Student ID <span class="fc-req">*</span></label>
+                            <!-- Phase 11.3: one box accepts BOTH identifiers. No mode
+                                 selector is offered because "STU0012" and "12" are
+                                 structurally distinguishable, so the server can always
+                                 tell which was meant. -->
+                            <label class="fc-label">SR No. <span class="fc-req">*</span></label>
                             <div class="fc-student-row">
                                 <div class="fc-id-wrap">
                                     <input type="text" id="user_id" class="fc-input"
-                                        placeholder="Type ID &amp; press Enter or click Find…" autocomplete="off"
+                                        placeholder="Type SR No. &amp; press Enter…" autocomplete="off"
                                         spellcheck="false">
                                     <span class="fc-id-spinner" id="idSpinner" style="display:none;">
                                         <i class="fa fa-spinner fa-spin"></i>
@@ -103,8 +107,7 @@ $accounts          = $accounts          ?? [];
                                         onclick="if(typeof lookupStudentById==='function') lookupStudentById();">
                                     <i class="fa fa-search"></i> Find
                                 </button>
-                                <button type="button" class="fc-btn fc-btn-ghost" id="openSearchBtn"
-                                        onclick="if(typeof openModal==='function'){openModal('searchModal');if(typeof doSearch==='function')doSearch();}">
+                                <button type="button" class="fc-btn fc-btn-ghost" id="openSearchBtn">
                                     <i class="fa fa-list-ul"></i> Browse
                                 </button>
                             </div>
@@ -126,7 +129,7 @@ $accounts          = $accounts          ?? [];
                             </div>
                         </div>
 
-                        <div class="fc-grid-2">
+                        <div class="fc-grid-2 fc-mb">
                             <div class="fc-field">
                                 <label class="fc-label">Class</label>
                                 <input type="text" id="fcClass" class="fc-input" placeholder="Auto-filled" readonly>
@@ -134,6 +137,17 @@ $accounts          = $accounts          ?? [];
                             <div class="fc-field">
                                 <label class="fc-label">Section</label>
                                 <input type="text" id="fcSection" class="fc-input" placeholder="Auto-filled" readonly>
+                            </div>
+                        </div>
+
+                        <div class="fc-grid-2">
+                            <div class="fc-field">
+                                <label class="fc-label">SR No.</label>
+                                <input type="text" id="fcSrNo" class="fc-input" placeholder="Auto-filled" readonly>
+                            </div>
+                            <div class="fc-field">
+                                <label class="fc-label">Admission No.</label>
+                                <input type="text" id="fcAdmNo" class="fc-input" placeholder="Auto-filled" readonly>
                             </div>
                         </div>
                         </div><!-- /studentDetailsSection -->
@@ -263,7 +277,7 @@ $accounts          = $accounts          ?? [];
                 </div>
 
                 <!-- STEP 4 -->
-                <!-- ══ STEP 4: Submit Payment (redesigned) ══ -->
+                <!-- ?? STEP 4: Submit Payment (redesigned) ?? -->
                 <div class="fc-card pay-card" id="paymentCard" style="display:none;">
                     <div class="pay-head">
                         <div class="pay-head-left">
@@ -435,7 +449,7 @@ $accounts          = $accounts          ?? [];
 </div><!-- /.content-wrapper -->
 
 
-<!-- ══ MODAL: Search ══ -->
+<!-- ?? MODAL: Search ?? -->
 <div class="fc-overlay" id="searchModal">
     <div class="fc-modal">
         <div class="fc-modal-head">
@@ -445,9 +459,8 @@ $accounts          = $accounts          ?? [];
         <div class="fc-modal-body">
             <div class="fc-search-box">
                 <input type="text" class="fc-input" id="searchInput"
-                    placeholder="Type name / ID / father / class — or leave blank to see all" autocomplete="off">
-                <button type="button" class="fc-btn fc-btn-primary" id="doSearchBtn"
-                        onclick="if(typeof doSearch==='function') doSearch();">
+                    placeholder="Type name / Student ID / SR No / father / class — or leave blank to see all" autocomplete="off">
+                <button type="button" class="fc-btn fc-btn-primary" id="doSearchBtn">
                     <i class="fa fa-search"></i> Search
                 </button>
             </div>
@@ -457,6 +470,7 @@ $accounts          = $accounts          ?? [];
                         <tr>
                             <th>#</th>
                             <th>User ID</th>
+                            <th>SR No.</th>
                             <th>Name</th>
                             <th>Father Name</th>
                             <th>Class</th>
@@ -466,7 +480,7 @@ $accounts          = $accounts          ?? [];
                     </thead>
                     <tbody id="searchResults">
                         <tr>
-                            <td colspan="7" class="fc-empty-cell">
+                            <td colspan="8" class="fc-empty-cell">
                                 <i class="fa fa-spinner fa-spin"></i> Loading roster…
                             </td>
                         </tr>
@@ -477,7 +491,7 @@ $accounts          = $accounts          ?? [];
     </div>
 </div>
 
-<!-- ══ MODAL: Expand ══ -->
+<!-- ?? MODAL: Expand ?? -->
 <div class="fc-overlay" id="expandModal">
     <div class="fc-modal fc-modal-wide">
         <div class="fc-modal-head">
@@ -490,7 +504,7 @@ $accounts          = $accounts          ?? [];
     </div>
 </div>
 
-<!-- ══ MODAL: History (redesigned — scoped via #historyModal) ══ -->
+<!-- ?? MODAL: History (redesigned — scoped via #historyModal) ?? -->
 <div class="fc-overlay" id="historyModal" data-no-outside-close="1">
     <div class="fc-modal fc-modal-wide hist-modal">
         <div class="hist-head">
@@ -562,7 +576,7 @@ $accounts          = $accounts          ?? [];
     </div>
 </div>
 
-<!-- ══ MODAL: Grant / Edit Discount (inline) ══ -->
+<!-- ?? MODAL: Grant / Edit Discount (inline) ?? -->
 <div class="fc-overlay" id="grantDiscountModal">
     <div class="fc-modal grant-modal">
         <div class="grant-head">
@@ -620,65 +634,8 @@ $accounts          = $accounts          ?? [];
     </div>
 </div>
 
-<!-- ══ MODAL: Grant / Edit Discount (inline) ══ -->
-<div class="fc-overlay" id="grantDiscountModal">
-    <div class="fc-modal grant-modal">
-        <div class="grant-head">
-            <div class="grant-head-left">
-                <span class="grant-head-icon"><i class="fa fa-gift"></i></span>
-                <div>
-                    <h4>Grant Discount</h4>
-                    <p class="grant-head-sub" id="grantHeadSub">For the selected student</p>
-                </div>
-            </div>
-            <button class="hist-close" onclick="closeModal('grantDiscountModal')" aria-label="Close">
-                <i class="fa fa-times"></i>
-            </button>
-        </div>
-        <div class="grant-body">
-            <div class="grant-field">
-                <label class="grant-label" for="grantAmount">
-                    Amount (₹) <span class="fc-req">*</span>
-                </label>
-                <input type="number" id="grantAmount" class="grant-input"
-                       placeholder="0.00" step="0.01" min="0">
-                <div class="grant-hint">Set to 0 to clear any existing discount.</div>
-            </div>
-            <div class="grant-field">
-                <label class="grant-label" for="grantValidUntil">
-                    Valid Until <span class="grant-opt">(optional)</span>
-                </label>
-                <input type="date" id="grantValidUntil" class="grant-input"
-                       min="<?= date('Y-m-d') ?>">
-                <div class="grant-hint">Leave blank for no expiry. Auto-clears past this date.</div>
-            </div>
-            <div class="grant-field">
-                <label class="grant-label" for="grantReason">
-                    Reason <span class="grant-opt">(optional)</span>
-                </label>
-                <input type="text" id="grantReason" class="grant-input"
-                       placeholder="e.g. Sibling waiver, principal's discretion" maxlength="120">
-            </div>
-            <div class="grant-warn">
-                <i class="fa fa-info-circle"></i>
-                For repeatable rules (e.g. "Sibling 10% Off"), use
-                <a href="<?= site_url('fee_management/discounts') ?>" target="_blank">Discount Policies</a>.
-                For named scholarships, use
-                <a href="<?= site_url('fee_management/scholarships') ?>" target="_blank">Scholarships</a>.
-            </div>
-        </div>
-        <div class="grant-foot">
-            <button type="button" class="pay-btn pay-btn-ghost" onclick="closeModal('grantDiscountModal')">
-                Cancel
-            </button>
-            <button type="button" id="grantSubmitBtn" class="pay-btn pay-btn-submit" onclick="submitGrantDiscount()">
-                <i class="fa fa-check"></i> Save Discount
-            </button>
-        </div>
-    </div>
-</div>
 
-<!-- ══ MODAL: Confirm Payment ══ -->
+<!-- ?? MODAL: Confirm Payment ?? -->
 <div class="fc-overlay" id="confirmModal">
     <div class="fc-modal" style="max-width:480px;">
         <div class="fc-modal-head" style="background:linear-gradient(135deg,var(--fc-teal),#9E4830);">
@@ -693,7 +650,7 @@ $accounts          = $accounts          ?? [];
     </div>
 </div>
 
-<!-- ══ MODAL: Payment Success ══ -->
+<!-- ?? MODAL: Payment Success ?? -->
 <div class="fc-overlay" id="successModal">
     <div class="fc-modal" style="max-width:440px;">
         <div class="fc-modal-body" style="text-align:center;padding:30px 24px;">
@@ -711,36 +668,6 @@ $accounts          = $accounts          ?? [];
     </div>
 </div>
 
-<!-- ══ FLOATING QUICK-PAY BAR ══
-     Shows at bottom of viewport when Step 4 (Submit Payment) enters
-     view AND a student is loaded. Lets the cashier act on the net due
-     without scrolling back up to the sticky summary card. -->
-<div id="quickPayBar" class="quick-pay-bar" style="display:none;">
-    <div class="qpb-info">
-        <div class="qpb-row">
-            <span class="qpb-label">Student</span>
-            <strong id="qpbStudent">—</strong>
-        </div>
-        <div class="qpb-row">
-            <span class="qpb-label">Net Due</span>
-            <strong id="qpbDue" class="qpb-due">₹ 0.00</strong>
-        </div>
-        <div class="qpb-row">
-            <span class="qpb-label">Submitting</span>
-            <strong id="qpbSubmitting" class="qpb-submit-amt">₹ 0.00</strong>
-        </div>
-    </div>
-    <button type="button" id="qpbSubmitBtn" class="qpb-btn"
-            onclick="if(typeof submitFees==='function') submitFees();">
-        <i class="fa fa-paper-plane"></i> Submit Fees
-    </button>
-</div>
-
-<!-- Floating Quick-Pay Bar removed per user request. The inline
-     "Submit Fees" button inside Step 4 (pay-actions block) is now
-     the sole submit control. CSS class rules (.qpb-*, .quick-pay-bar)
-     are left in place — they're now dead-style but removing them is
-     out of scope. -->
 
 <div id="fcToastWrap" class="fc-toast-wrap"></div>
 
@@ -1479,7 +1406,18 @@ $accounts          = $accounts          ?? [];
                 }
                 selectStudent(data);
                 fb.className = 'fc-id-feedback fc-id-feedback-success';
-                fb.textContent = '✓ Student found: ' + data.name;
+                // Phase 11.3 — when the operator typed an SR Number, SAY SO and
+                // show the canonical Student ID it resolved to. Silent resolution
+                // is how a payment lands on the wrong student; the operator must
+                // be able to see which register the match came from.
+                if (data.resolved_via === 'srNo') {
+                    fb.textContent = '✓ SR No. ' + uid + ' → ' + (data.user_id || '') +
+                        ' · ' + data.name +
+                        (data.roll_no ? ' · Roll ' + data.roll_no : '');
+                } else {
+                    fb.textContent = '✓ Student found: ' + data.name +
+                        (data.sr_no ? ' · SR No. ' + data.sr_no : '');
+                }
                 fb.style.display = 'block';
             })
             .catch(function(e) {
@@ -1507,13 +1445,24 @@ $accounts          = $accounts          ?? [];
         FC.className = s.class || ''; // e.g. "Class 8th"
         FC.sectionName = s.section || ''; // e.g. "Section B"
 
-        document.getElementById('user_id').value = FC.userId;
+        // Show the SR No in the search box (the canonical Student ID stays in
+        // FC.userId and is what the payment is actually written against). Falls
+        // back to the Student ID only when the student has no SR No on record.
+        document.getElementById('user_id').value = (s.sr_no || s.srNo || FC.userId);
         document.getElementById('sname').value = FC.studentName;
         document.getElementById('fname').value = FC.fatherName;
 
         // Display combined class + section in the Class field
         document.getElementById('fcClass').value = FC.className;
         document.getElementById('fcSection').value = FC.sectionName;
+
+        // Identity numbers — SR No + Admission No, shown read-only so the cashier
+        // can confirm the right student before taking money. Accepts either the
+        // snake_case (lookup_student) or camelCase (search_student) shapes.
+        FC.srNo = s.sr_no || s.srNo || '';
+        FC.admissionNo = s.admission_no || s.admissionNumber || s.admissionNo || '';
+        var _srEl  = document.getElementById('fcSrNo');  if (_srEl)  _srEl.value  = FC.srNo || '—';
+        var _admEl = document.getElementById('fcAdmNo'); if (_admEl) _admEl.value = FC.admissionNo || '—';
 
         // Progressive disclosure: reveal the student-detail block AND the
         // "Select Months" card now that a student has been found (both hidden
@@ -1687,22 +1636,31 @@ $accounts          = $accounts          ?? [];
 
     /* ── Modal Search ── */
     function doSearch() {
-        // Empty term is now valid — server returns the full active
-        // roster (capped at 200) so the cashier can browse without
-        // typing. Useful as a "show all" affordance.
         var q = document.getElementById('searchInput').value.trim();
 
         var tbody = document.getElementById('searchResults');
+        // An explicit term is REQUIRED — the operator must enter an SR No or
+        // Student ID and search, rather than the modal dumping the whole roster.
+        if (q === '') {
+            tbody.innerHTML =
+                '<tr><td colspan="8" class="fc-empty-cell">Enter an SR No. above and press Search.</td></tr>';
+            return;
+        }
+
         tbody.innerHTML =
-            '<tr><td colspan="7" class="fc-empty-cell"><i class="fa fa-spinner fa-spin"></i> Searching…</td></tr>';
+            '<tr><td colspan="8" class="fc-empty-cell"><i class="fa fa-spinner fa-spin"></i> Searching…</td></tr>';
 
         postForm(SITE_URL + '/fees/search_student', {
                 search_name: q
             })
-            .then(function(data) {
+            .then(function(resp) {
                 tbody.innerHTML = '';
-                if (!data || !data.length) {
-                    tbody.innerHTML = '<tr><td colspan="7" class="fc-empty-cell">No students found.</td></tr>';
+                // search_student returns { data: [...], csrf_token }. Accept the
+                // wrapped shape (and stay tolerant of a bare array, just in case).
+                var data = (resp && Array.isArray(resp.data)) ? resp.data
+                         : (Array.isArray(resp) ? resp : []);
+                if (!data.length) {
+                    tbody.innerHTML = '<tr><td colspan="8" class="fc-empty-cell">No students found.</td></tr>';
                     return;
                 }
                 data.forEach(function(s, i) {
@@ -1710,6 +1668,7 @@ $accounts          = $accounts          ?? [];
                     tr.innerHTML =
                         '<td>' + (i + 1) + '</td>' +
                         '<td><span class="fc-id-pill">' + (s.user_id || '—') + '</span></td>' +
+                        '<td>' + (s.sr_no || '—') + '</td>' +   /* Phase 11.3 — 0 extra reads */
                         '<td><strong>' + (s.name || '—') + '</strong></td>' +
                         '<td>' + (s.father_name || '—') + '</td>' +
                         '<td>'+(s.class||'—')+'</td>' +
@@ -1727,11 +1686,15 @@ $accounts          = $accounts          ?? [];
                         closeModal('searchModal');
                         document.getElementById('searchInput').value = '';
                         document.getElementById('searchResults').innerHTML =
-                            '<tr><td colspan="7" class="fc-empty-cell"><i class="fa fa-spinner fa-spin"></i> Loading roster…</td></tr>';
+                            '<tr><td colspan="8" class="fc-empty-cell"><i class="fa fa-spinner fa-spin"></i> Loading roster…</td></tr>';
                         document.getElementById('idFeedback').style.display = 'none';
 
-                        // Set the ID and trigger a full lookup for normalized class/section
-                        document.getElementById('user_id').value = s.user_id || '';
+                        // Put the SR No into the box (not the Student ID) and run
+                        // a full lookup for normalized class/section. lookup_student
+                        // resolves an SR No to the canonical id, so this avoids the
+                        // Student-ID "flash" before it settled to the SR No. Falls
+                        // back to the Student ID only if this student has no SR No.
+                        document.getElementById('user_id').value = (s.sr_no || s.user_id || '');
                         lookupStudentById();
                         showToast('Looking up student: ' + s.name, 'info');
                     });
@@ -1740,7 +1703,7 @@ $accounts          = $accounts          ?? [];
             })
             .catch(function() {
                 tbody.innerHTML =
-                    '<tr><td colspan="7" class="fc-empty-cell" style="color:var(--fc-red);">Search failed.</td></tr>';
+                    '<tr><td colspan="8" class="fc-empty-cell" style="color:var(--fc-red);">Search failed.</td></tr>';
             });
     }
 
@@ -1828,9 +1791,17 @@ $accounts          = $accounts          ?? [];
         btn.disabled = true;
         btn.innerHTML = '<i class="fa fa-spinner fa-spin"></i> Submitting…';
 
+        // Lock the floating quick-pay button too: it is a SECOND entry point to
+        // submitFees() and was not disabled here, so an in-flight collection
+        // could be re-triggered from the sticky bar (a double-submit window).
+        // The server is idempotent by receipt number, but the UI must not offer
+        // the second click at all. Re-enabled in resetBtn() on every exit path.
+        var qpbBtn = document.getElementById('qpbSubmitBtn');
+        if (qpbBtn) qpbBtn.disabled = true;
+
         /* Build FormData manually so we can append indexed monthTotals */
         var fd = new FormData();
-        fd.append(CSRF_NAME, CSRF_HASH); /* ← layer 1: CI built-in filter */
+        fd.append(CSRF_NAME, CSRF_HASH); /* ? layer 1: CI built-in filter */
         fd.append('receiptNo', RECEIPT_NO);
         fd.append('paymentMode', paymentMode);
         // CORE-1: for a Bank ledger selection, send its Accounting `code` so the
@@ -1865,6 +1836,7 @@ $accounts          = $accounts          ?? [];
         var resetBtn = function() {
             btn.disabled = false;
             btn.innerHTML = '<i class="fa fa-paper-plane"></i> Submit Fees';
+            if (qpbBtn) qpbBtn.disabled = false;
         };
 
         fetch(SITE_URL + '/fees/submit_fees', {
@@ -1872,7 +1844,7 @@ $accounts          = $accounts          ?? [];
                 body: fd,
                 headers: {
                     'X-CSRF-Token': CSRF_HASH,
-                    /* ← layer 2: MY_Controller */
+                    /* ? layer 2: MY_Controller */
                     'X-Requested-With': 'XMLHttpRequest'
                 }
             })
@@ -2448,32 +2420,22 @@ $accounts          = $accounts          ?? [];
         });
         document.getElementById('openSearchBtn').addEventListener('click', function() {
             openModal('searchModal');
-            // Auto-load the full roster on open so the table is never
-            // blank — cashier can scroll/filter without typing first.
-            if (typeof doSearch === 'function') doSearch();
+            // Do NOT auto-load the roster. The operator must type an SR No or
+            // Student ID and press Search (or Enter). Show a prompt until then.
+            var sIn = document.getElementById('searchInput');
+            if (sIn) sIn.value = '';
+            var sb = document.getElementById('searchResults');
+            if (sb) sb.innerHTML =
+                '<tr><td colspan="8" class="fc-empty-cell">Enter an SR No. above and press Search.</td></tr>';
+            if (sIn) sIn.focus();
         });
         document.getElementById('doSearchBtn').addEventListener('click', doSearch);
         document.getElementById('searchInput').addEventListener('keydown', function(e) {
             if (e.key === 'Enter') doSearch();
         });
-        // Debounced live filter as user types — re-runs the server
-        // search 300ms after the last keystroke. Empty input is now a
-        // valid query (returns the full roster), so backspacing all
-        // the way doesn't lock the table.
-        var __searchT = null;
-        document.getElementById('searchInput').addEventListener('input', function() {
-            clearTimeout(__searchT);
-            __searchT = setTimeout(doSearch, 300);
-        });
-        // Debounced live filter as user types — re-runs the server
-        // search 300ms after the last keystroke. Empty input is now a
-        // valid query (returns the full roster), so backspacing all
-        // the way doesn't lock the table.
-        var __searchT = null;
-        document.getElementById('searchInput').addEventListener('input', function() {
-            clearTimeout(__searchT);
-            __searchT = setTimeout(doSearch, 300);
-        });
+        // (No search-as-you-type: the operator searches explicitly via the
+        // Search button or Enter, so a single SR No / Student ID returns just
+        // that student rather than a live-filtered roster.)
 
         document.getElementById('fetchDetailsBtn').addEventListener('click', fetchFeeDetails);
         document.getElementById('selectAllBtn').addEventListener('click', function() {
@@ -2546,7 +2508,7 @@ $accounts          = $accounts          ?? [];
     });
 </script>
 
-<!-- ══ STYLES ══ -->
+<!-- ?? STYLES ?? -->
 <style>
     @import url('https://fonts.googleapis.com/css2?family=DM+Sans:wght@400;500;600;700&family=Playfair+Display:wght@600;700&display=swap');
 
@@ -4118,11 +4080,11 @@ $accounts          = $accounts          ?? [];
         border-bottom-style: solid;
     }
 
-    /* ══════════════════════════════════════════════════════════════════
+    /* ??????????????????????????????????????????????????????????????????
        FLOATING QUICK-PAY BAR — appears when scrolled near Step 4.
        Mirrors the Net Due + Submitting amount from the right summary
        so the cashier doesn't have to scroll back up to act.
-       ══════════════════════════════════════════════════════════════════ */
+       ?????????????????????????????????????????????????????????????????? */
     .quick-pay-bar {
         position: fixed;
         bottom: 18px;
@@ -4280,11 +4242,11 @@ $accounts          = $accounts          ?? [];
         border-bottom-style: solid;
     }
 
-    /* ══════════════════════════════════════════════════════════════════
+    /* ??????????????????????????????????????????????????????????????????
        FLOATING QUICK-PAY BAR — appears when scrolled near Step 4.
        Mirrors the Net Due + Submitting amount from the right summary
        so the cashier doesn't have to scroll back up to act.
-       ══════════════════════════════════════════════════════════════════ */
+       ?????????????????????????????????????????????????????????????????? */
     .quick-pay-bar {
         position: fixed;
         bottom: 18px;
@@ -4389,11 +4351,11 @@ $accounts          = $accounts          ?? [];
         .qpb-btn { padding: 9px 14px; font-size: 12.5px; }
     }
 
-    /* ══════════════════════════════════════════════════════════════════
+    /* ??????????????????????????????????????????????????????????????????
        SUBMIT PAYMENT (Step 4) — REDESIGNED
        Scoped under .pay-card so it overrides ONLY Step 4. Other .fc-card
        sections (Breakdown, Tiles) keep their existing look.
-       ══════════════════════════════════════════════════════════════════ */
+       ?????????????????????????????????????????????????????????????????? */
     .pay-card {
         border: 1px solid #e2e8f0;
         background: #fff;
@@ -4749,11 +4711,11 @@ $accounts          = $accounts          ?? [];
         box-shadow: none;
     }
 
-    /* ══════════════════════════════════════════════════════════════════
+    /* ??????????????????????????????????????????????????????????????????
        SUBMIT PAYMENT (Step 4) — REDESIGNED
        Scoped under .pay-card so it overrides ONLY Step 4. Other .fc-card
        sections (Breakdown, Tiles) keep their existing look.
-       ══════════════════════════════════════════════════════════════════ */
+       ?????????????????????????????????????????????????????????????????? */
     .pay-card {
         border: 1px solid #e2e8f0;
         background: #fff;
@@ -5108,12 +5070,12 @@ $accounts          = $accounts          ?? [];
         box-shadow: none;
     }
 
-    /* ══════════════════════════════════════════════════════════════════
+    /* ??????????????????????????????????????????????????????????????????
        PAYMENT HISTORY MODAL — REDESIGNED
        Scoped under .hist-modal so it overrides ONLY this modal's defaults.
        Palette: dark navy header, soft teal accents, semantic full/partial
        pills, channel-coloured payment-mode pills.
-       ══════════════════════════════════════════════════════════════════ */
+       ?????????????????????????????????????????????????????????????????? */
 
     .hist-modal {
         max-width: 1080px;

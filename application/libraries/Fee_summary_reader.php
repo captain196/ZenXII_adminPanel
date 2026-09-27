@@ -101,7 +101,15 @@ final class Fee_summary_reader
             foreach ($byStudent as $sid => $demands) {
                 $sDem = 0.0; $sCol = 0.0;
                 foreach ($demands as $d) {
-                    $sDem += (float) ($d['netAmount']  ?? $d['net_amount']  ?? 0);
+                    // FEES-FROZEN-2 (Phase 19B) — the late fee lives in its own
+                    // field and is never folded into netAmount, so aggregating
+                    // net alone understated the class balance and counted a
+                    // student who still owed a penalty as fully 'paid'. Matches
+                    // Fee_integrity_checker (net + fine) and Fees::collection
+                    // analytics, which were already fine-aware.
+                    $fine = (float) ($d['fine_amount'] ?? $d['fineAmount'] ?? 0);
+                    if ($fine < 0) $fine = 0.0;
+                    $sDem += (float) ($d['netAmount']  ?? $d['net_amount']  ?? 0) + $fine;
                     $sCol += (float) ($d['paidAmount'] ?? $d['paid_amount'] ?? 0);
                     $u = (string) ($d['updatedAt'] ?? '');
                     if ($u > $lastAt) $lastAt = $u;
@@ -148,7 +156,10 @@ final class Fee_summary_reader
             foreach ((array) $rows as $r) {
                 $d = $r['data'] ?? $r;
                 if (!is_array($d)) continue;
-                $net  = (float) ($d['netAmount']  ?? $d['net_amount']  ?? 0);
+                // FEES-FROZEN-2 (Phase 19B) — fine-aware; see _recomputeClass().
+                $fine = (float) ($d['fine_amount'] ?? $d['fineAmount'] ?? 0);
+                if ($fine < 0) $fine = 0.0;
+                $net  = (float) ($d['netAmount']  ?? $d['net_amount']  ?? 0) + $fine;
                 $paid = (float) ($d['paidAmount'] ?? $d['paid_amount'] ?? 0);
                 $dem += $net; $col += $paid;
                 $m = $this->_extractMonth($d);

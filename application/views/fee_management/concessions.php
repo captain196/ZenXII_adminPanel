@@ -103,7 +103,11 @@
                 <select name="service_type" required style="width:100%;padding:6px;border:1px solid var(--border);border-radius:6px;background:var(--bg3);color:var(--t1);">
                     <option value="transport">Transport</option>
                     <option value="hostel">Hostel</option>
-                    <option value="meals">Meals</option>
+                    <!-- MEALS-1: 'meals' removed. ZenX raises no meal charge (no module,
+                         controller, collection or head), so a meals concession could never
+                         be applied — Entitlement_service now refuses the scope outright.
+                         Fee_head_resolver::ASSIGNABLE is the authority; restore this option
+                         only when meals appears there. -->
                 </select>
             </label>
             <label>Plan ref (route id / room / plan id) <input name="plan_ref" type="text" style="width:100%;padding:6px;border:1px solid var(--border);border-radius:6px;background:var(--bg3);color:var(--t1);"></label>

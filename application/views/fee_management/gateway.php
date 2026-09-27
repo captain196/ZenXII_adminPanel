@@ -21,24 +21,43 @@
             </div>
             <div class="fm-card-body">
                 <div class="fm-gw-providers" id="fmProviders">
-                    <div class="fm-gw-provider" data-provider="razorpay" onclick="selectProvider('razorpay')">
-                        <div class="fm-gw-provider-icon"><i class="fa fa-credit-card"></i></div>
-                        <div class="fm-gw-provider-name">Razorpay</div>
-                        <div class="fm-gw-provider-desc">India's leading payment gateway for online payments</div>
-                        <div class="fm-gw-check"><i class="fa fa-check"></i></div>
-                    </div>
-                    <div class="fm-gw-provider" data-provider="stripe" onclick="selectProvider('stripe')">
-                        <div class="fm-gw-provider-icon"><i class="fa fa-cc-stripe"></i></div>
-                        <div class="fm-gw-provider-name">Stripe</div>
-                        <div class="fm-gw-provider-desc">Global payments platform for internet businesses</div>
-                        <div class="fm-gw-check"><i class="fa fa-check"></i></div>
-                    </div>
-                    <div class="fm-gw-provider" data-provider="paytm" onclick="selectProvider('paytm')">
-                        <div class="fm-gw-provider-icon"><i class="fa fa-mobile"></i></div>
-                        <div class="fm-gw-provider-name">Paytm</div>
-                        <div class="fm-gw-provider-desc">Trusted payment solution with UPI &amp; wallet support</div>
-                        <div class="fm-gw-check"><i class="fa fa-check"></i></div>
-                    </div>
+                    <?php
+                    /*
+                     * PA-UI-1, fixed at the cause (2026-08-24).
+                     *
+                     * These tiles were hardcoded HTML, which is how Stripe and
+                     * Paytm stayed on this page for years after the server
+                     * stopped accepting them. Deleting those two tiles fixed
+                     * the symptom; rendering from the catalogue fixes the
+                     * cause. The SAME source now decides what appears here,
+                     * what save_gateway_config() accepts, and which adapter
+                     * may run — so they cannot drift apart again.
+                     *
+                     * A provider that is merely IMPLEMENTED (adapter exists,
+                     * contract tests pass) never reaches this loop. Only
+                     * ENABLED providers are offered.
+                     */
+                    $__providers = isset($available_providers) && is_array($available_providers)
+                        ? $available_providers : [];
+
+                    if (empty($__providers)): ?>
+                        <div class="fm-gw-empty">
+                            No payment provider is available for configuration.
+                            Please contact ZenX support.
+                        </div>
+                    <?php else:
+                        foreach ($__providers as $__pid => $__p): ?>
+                        <div class="fm-gw-provider"
+                             data-provider="<?= html_escape($__pid) ?>"
+                             data-checkout-type="<?= html_escape($__p['checkout_type'] ?? '') ?>"
+                             onclick="selectProvider('<?= html_escape($__pid) ?>')">
+                            <div class="fm-gw-provider-icon"><i class="fa fa-credit-card"></i></div>
+                            <div class="fm-gw-provider-name"><?= html_escape($__p['display_name'] ?? $__pid) ?></div>
+                            <div class="fm-gw-provider-desc"><?= html_escape($__p['description'] ?? '') ?></div>
+                            <div class="fm-gw-check"><i class="fa fa-check"></i></div>
+                        </div>
+                    <?php endforeach;
+                    endif; ?>
                 </div>
             </div>
         </div>
@@ -83,7 +102,12 @@
                         <div class="fm-form-group fm-full">
                             <label class="fm-label">API Secret <span class="fm-req">*</span></label>
                             <div class="fm-secret-wrap">
-                                <input type="password" class="fm-input" name="api_secret" id="fmApiSecret" required placeholder="Enter API secret" value="<?= !empty($config['api_secret']) ? htmlspecialchars($config['api_secret']) : '' ?>">
+                                <?php /* GW-SEC1: bind to the *_masked field ONLY. The controller
+                                         already replaces the raw secret, but binding to
+                                         $config['api_secret'] here would leak it again the moment
+                                         that masking regressed. A masked value posted back is
+                                         preserved by save_gateway_config()'s ^\*+ check. */ ?>
+                                <input type="password" class="fm-input" name="api_secret" id="fmApiSecret" required placeholder="Enter API secret" value="<?= !empty($config['api_secret_masked']) ? htmlspecialchars($config['api_secret_masked']) : '' ?>">
                                 <button type="button" class="fm-secret-toggle" onclick="toggleSecret()" title="Show/Hide"><i class="fa fa-eye" id="fmEyeIcon"></i></button>
                             </div>
                         </div>
@@ -91,7 +115,12 @@
                         <!-- Webhook Secret -->
                         <div class="fm-form-group fm-full">
                             <label class="fm-label">Webhook Secret <span class="fm-opt">(optional)</span></label>
-                            <input type="text" class="fm-input" name="webhook_secret" id="fmWebhookSecret" placeholder="Enter webhook secret" value="<?= !empty($config['webhook_secret']) ? htmlspecialchars($config['webhook_secret']) : '' ?>">
+                            <?php /* GW-SEC1: masked field only, and type="password" like its
+                                     sibling. This is the HMAC key payment_webhook verifies
+                                     against — whoever holds it can forge a validly-signed
+                                     webhook and clear fees that were never paid, so it was the
+                                     more dangerous of the two to render in clear text. */ ?>
+                            <input type="password" class="fm-input" name="webhook_secret" id="fmWebhookSecret" placeholder="Enter webhook secret" value="<?= !empty($config['webhook_secret_masked']) ? htmlspecialchars($config['webhook_secret_masked']) : '' ?>">
                         </div>
 
                         <!-- Active toggle -->
@@ -169,24 +198,98 @@
                     <div class="fm-info-row">
                         <label class="fm-label">Webhook URL</label>
                         <div class="fm-copy-wrap">
-                            <input type="text" class="fm-input fm-input-ro" readonly value="<?= base_url('fee_management/webhook') ?>" id="fmWebhookUrl">
+                            <?php
+                            /*
+                             * W-1 (2026-08-25). This read
+                             * base_url('fee_management/webhook') — a path with
+                             * NO route and NO controller method. It is the
+                             * field an operator copies into the provider
+                             * dashboard, so it registered a 404, and because
+                             * the callback path is authoritative for
+                             * settlement nothing visibly broke.
+                             *
+                             * Now sourced from Fee_management::WEBHOOK_PATH,
+                             * the single definition, which
+                             * GatewayWebhookUrlCorrespondenceTest proves maps
+                             * to a route and a method that exist.
+                             */
+                            $__webhookPath = isset($webhook_path) && $webhook_path !== ''
+                                ? $webhook_path
+                                : 'fee_management/payment_webhook';
+
+                            /*
+                             * PAY-OPS-4 (2026-08-28). This rendered
+                             * base_url($__webhookPath) — the CURRENT REQUEST
+                             * host. An operator configuring the gateway from
+                             * localhost or an ngrok tunnel copied THAT into
+                             * the provider dashboard, where it stays for
+                             * months. A tunnel URL works until the tunnel
+                             * dies; then every webhook 404s, payments capture
+                             * with no receipt, and nothing reports it.
+                             *
+                             * $webhook_url is public_base_url(WEBHOOK_PATH) —
+                             * the canonical production origin, regardless of
+                             * where the admin is browsing from. base_url()
+                             * remains the fallback only if the controller did
+                             * not supply it.
+                             */
+                            $__webhookUrl = isset($webhook_url) && $webhook_url !== ''
+                                ? $webhook_url
+                                : base_url($__webhookPath);
+                            ?>
+                            <input type="text" class="fm-input fm-input-ro" readonly value="<?= html_escape($__webhookUrl) ?>" id="fmWebhookUrl">
                             <button type="button" class="fm-copy-btn" onclick="copyToClipboard(document.getElementById('fmWebhookUrl').value)" title="Copy">
                                 <i class="fa fa-clipboard"></i>
                             </button>
                         </div>
                     </div>
-                    <div class="fm-info-row">
-                        <label class="fm-label">Callback URL</label>
-                        <div class="fm-copy-wrap">
-                            <input type="text" class="fm-input fm-input-ro" readonly value="<?= base_url('fee_management/payment_callback') ?>" id="fmCallbackUrl">
-                            <button type="button" class="fm-copy-btn" onclick="copyToClipboard(document.getElementById('fmCallbackUrl').value)" title="Copy">
-                                <i class="fa fa-clipboard"></i>
-                            </button>
-                        </div>
-                    </div>
+                    <?php
+                    /*
+                     * W-7 (2026-08-25) — CALLBACK URL FIELD REMOVED.
+                     *
+                     * This rendered base_url('fee_management/payment_callback'),
+                     * a path with NO route and NO controller method — a second
+                     * dead URL beside a Copy button, in the same card as W-1.
+                     *
+                     * It was NOT re-pointed at another endpoint, because the
+                     * correct answer is that this integration has no server
+                     * callback URL at all:
+                     *
+                     *   • ZenX never sends `callback_url` when creating the
+                     *     Razorpay order (Payment_gateway_razorpay::create_order
+                     *     posts amount/currency/receipt/payment_capture/notes).
+                     *   • The Parent App never sets Checkout's `redirect`
+                     *     option, so the SDK stays in in-process mode.
+                     *   • MainActivity implements PaymentResultListener, so the
+                     *     result returns to the app via onPaymentSuccess —
+                     *     never over HTTP to a server URL.
+                     *   • The app then POSTs to parent_verify_payment, which is
+                     *     where authoritative verification happens.
+                     *
+                     * Razorpay's own docs place `callback_url` with WebView and
+                     * redirect flows. It becomes relevant only if a provider
+                     * requiring `webview` or `hosted_redirect` is certified —
+                     * neither engine is implemented today (CheckoutEngine.SUPPORTED
+                     * contains native_sdk alone). Restore this field then, and
+                     * only then, pointing it at a route that actually exists.
+                     *
+                     * parent_verify_payment was deliberately NOT shown here: it
+                     * is called BY THE APP with a Firebase ID token, not by the
+                     * provider. Presenting it as a "callback URL" for an
+                     * operator to register would be a different wrong answer.
+                     */
+                    ?>
                     <div class="fm-info-note">
-                        <i class="fa fa-exclamation-triangle"></i>
-                        Configure these URLs in your payment provider's dashboard. Ensure the provider's SDK library is included in your project for client-side integration.
+                        <i class="fa fa-info-circle"></i>
+                        Register the <strong>Webhook URL</strong> above in your payment
+                        provider's dashboard and enable the <code>payment.captured</code>
+                        event. Paste the provider's <strong>webhook signing secret</strong>
+                        into the Webhook Secret field — it is a separate value from the
+                        API Key Secret.
+                        <br><br>
+                        No callback URL is required: the parent app receives the payment
+                        result from the provider's SDK and submits it to ZenX for
+                        server-side verification.
                     </div>
                 </div>
             </div>
@@ -315,8 +418,53 @@ document.addEventListener('DOMContentLoaded', function() {
         }
     };
 
+    // GW-TEST-1 — this was a stub that said 'not implemented yet'. Honest, but
+    // it left the one question an operator actually has unanswerable: are the
+    // keys I saved correct? A wrong secret fails at ORDER CREATION and reaches
+    // a parent as a generic payment failure — indistinguishable from a bank
+    // decline, with a completely different remedy.
     window.testConnection = function() {
-        showToast('Connection test not implemented yet', 'info');
+        var btn = document.querySelector('.fm-status-action .fm-btn');
+        var original = btn ? btn.innerHTML : '';
+        if (btn) {
+            btn.disabled = true;
+            btn.innerHTML = '<i class="fa fa-spinner fa-spin"></i> Testing...';
+        }
+
+        var fd = new FormData();
+        fd.set(csrfName, csrfHash);
+
+        var xhr = new XMLHttpRequest();
+        xhr.open('POST', BASE + 'fee_management/test_gateway_connection');
+        xhr.onload = function() {
+            if (btn) { btn.disabled = false; btn.innerHTML = original; }
+            var res = null;
+            try { res = JSON.parse(xhr.responseText); } catch (ex) {}
+            if (res && res.csrf_hash) {
+                csrfHash = res.csrf_hash;
+                var ci = document.getElementById('fmCsrfToken');
+                if (ci) ci.value = res.csrf_hash;
+            }
+            // Same fail-closed rule the save path uses: XHR delivers 403/500
+            // to onload exactly like a 2xx, so the status is checked as well
+            // as the body flag. A credential test that reports success on a
+            // denied request is worse than no test at all.
+            if (xhr.status < 200 || xhr.status >= 300 || !res || (res.status !== 'success' && !res.success)) {
+                showToast((res && res.message) || 'Could not test the connection', 'error');
+                return;
+            }
+            showToast(res.message || 'Credentials accepted', 'success');
+            // Warnings are not failures — the keys work — but they say why a
+            // payment may still not be verifiable end to end.
+            (res.warnings || []).forEach(function (w, i) {
+                setTimeout(function () { showToast(w, 'info'); }, 400 * (i + 1));
+            });
+        };
+        xhr.onerror = function() {
+            if (btn) { btn.disabled = false; btn.innerHTML = original; }
+            showToast('Could not reach the server to run the test', 'error');
+        };
+        xhr.send(fd);
     };
 
     window.showToast = function(msg, type) {

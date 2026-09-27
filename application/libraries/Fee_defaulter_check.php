@@ -36,6 +36,9 @@ class Fee_defaulter_check
     private $schoolName;
     private $sessionYear;
 
+    /** @var bool TC-clearance all-sessions mode; set per call by calculateClearanceStatus(). */
+    private $_clearanceAllSessions = false;
+
     /** @var Fee_firestore_sync|null Firestore sync library (injected post-init) */
     private $fsSync;
 
@@ -490,8 +493,17 @@ class Fee_defaulter_check
      * @param  string $parentDbKey  The admin/staff ID performing the check
      * @return array  Full clearance record (also written to Firebase)
      */
-    public function calculateClearanceStatus(string $studentId, string $parentDbKey = ''): array
+    /**
+     * @param bool $allSessions  TC-CLEARANCE SCOPE (dynamic, per-school): when TRUE
+     *   the money checks (fees/hostel/transport) span ALL sessions, so a student
+     *   LEAVING the school must settle every year's dues — the common "No Dues"
+     *   norm for a Transfer Certificate in Indian school ERPs. Default FALSE keeps
+     *   the per-session view used by withdrawal and the defaulter report. The TC
+     *   path passes the school's `tcClearanceAllSessions` policy flag.
+     */
+    public function calculateClearanceStatus(string $studentId, string $parentDbKey = '', bool $allSessions = false): array
     {
+        $this->_clearanceAllSessions = $allSessions;
         $clearance = [
             'fees_clear'               => true,
             'fees_dues'                => 0.0,
@@ -583,11 +595,13 @@ class Fee_defaulter_check
     private function _checkFeesClearance(string $studentId, array &$clearance): void
     {
         try {
-            $rows = $this->firebase->firestoreQuery('feeDemands', [
+            $conds = [
                 ['schoolId',  '==', $this->schoolName],
-                ['session',   '==', $this->sessionYear],
                 ['studentId', '==', $studentId],
-            ]);
+            ];
+            // Session filter unless TC all-sessions clearance is in effect.
+            if (!$this->_clearanceAllSessions) $conds[] = ['session', '==', $this->sessionYear];
+            $rows = $this->firebase->firestoreQuery('feeDemands', $conds);
             $totalDues = 0.0;
             foreach ((array) $rows as $row) {
                 $d = is_array($row['data'] ?? null) ? $row['data'] : $row;
@@ -667,11 +681,18 @@ class Fee_defaulter_check
             // (category=Hostel) via the Student_Fee_Items migration.
             // Reading all demands and filtering by category is a small
             // N, so we do it in-memory.
-            $records = $this->firebase->firestoreQuery('feeDemands', [
+            $conds = [
                 ['schoolId',  '==', $this->schoolName],
                 ['studentId', '==', $studentId],
                 ['category',  '==', 'Hostel'],
-            ]);
+            ];
+            // Consistency fix: scope to the CURRENT session, matching the tuition
+            // clearance check — UNLESS TC all-sessions clearance is in effect (a
+            // leaving student settles every year's hostel dues). Without the
+            // session filter a prior-year balance would otherwise bleed into a
+            // per-session clearance/defaulter total.
+            if (!$this->_clearanceAllSessions) $conds[] = ['session', '==', $this->sessionYear];
+            $records = $this->firebase->firestoreQuery('feeDemands', $conds);
             $hostelDues = 0.0;
             foreach ((array) $records as $row) {
                 $d = $row['data'] ?? $row;
@@ -702,11 +723,15 @@ class Fee_defaulter_check
         try {
             // Phase 5 — transport-fee items live in Firestore feeDemands
             // with category=Transport (same shape as hostel).
-            $records = $this->firebase->firestoreQuery('feeDemands', [
+            $conds = [
                 ['schoolId',  '==', $this->schoolName],
                 ['studentId', '==', $studentId],
                 ['category',  '==', 'Transport'],
-            ]);
+            ];
+            // Consistency fix (see hostel above): current session only, unless TC
+            // all-sessions clearance is in effect.
+            if (!$this->_clearanceAllSessions) $conds[] = ['session', '==', $this->sessionYear];
+            $records = $this->firebase->firestoreQuery('feeDemands', $conds);
             $transportDues = 0.0;
             foreach ((array) $records as $row) {
                 $d = $row['data'] ?? $row;

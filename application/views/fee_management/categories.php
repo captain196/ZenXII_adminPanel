@@ -2,6 +2,12 @@
 
 <style>
 /* ── Fee Heads — matches existing module design system ── */
+.fh-ready{display:flex;gap:10px;align-items:flex-start;padding:12px 14px;border-radius:10px;margin:0 0 14px;font-size:13px;line-height:1.45}
+.fh-ready.ok{background:#ecfdf5;border:1px solid #a7f3d0;color:#065f46}
+.fh-ready.warn{background:#fff7ed;border:1px solid #fed7aa;color:#9a3412}
+.fh-ready i{margin-top:2px}
+.fh-ready-msg{font-weight:600}
+.fh-ready-list{margin-top:4px;opacity:.9}
 .fh-wrap{padding:24px 22px 52px;min-height:100vh}
 
 /* Header */
@@ -135,6 +141,19 @@
         </div>
     </div>
 
+    <!--
+      BILLING READINESS. Generation is all-or-nothing: one unregistered head in
+      the fee structure aborts a student's entire billing, and the operator would
+      otherwise only find out from a failed admission. This states it up front.
+    -->
+    <div id="fhReadiness" class="fh-ready" style="display:none">
+        <i id="fhReadyIcon" class="fa"></i>
+        <div>
+            <div id="fhReadyMsg" class="fh-ready-msg"></div>
+            <div id="fhReadyList" class="fh-ready-list"></div>
+        </div>
+    </div>
+
     <!-- Stats -->
     <div class="fh-stats">
         <div class="fh-stat">
@@ -177,6 +196,22 @@
                     <select id="fType">
                         <option value="Monthly">Monthly</option>
                         <option value="Yearly">Yearly</option>
+                    </select>
+                </div>
+                <!--
+                  Charge kind decides whether a school-wide concession applies to
+                  this head. Deliberately NOT defaulted and NOT inferred from the
+                  name: picking wrong silently discounts, or fails to discount,
+                  real money. Academic is the common case, but the operator chooses.
+                -->
+                <div class="fh-fg fg-type">
+                    <label>Charge Kind</label>
+                    <select id="fCategory" required>
+                        <option value="">Choose…</option>
+                        <option value="academic">Academic — concessions apply</option>
+                        <option value="transport">Transport — concessions do not apply</option>
+                        <option value="hostel">Hostel — concessions do not apply</option>
+                        <option value="administrative">Administrative — concessions do not apply</option>
                     </select>
                 </div>
                 <div>
@@ -252,6 +287,7 @@ var delItem = null;
 load();
 
 function load() {
+    loadReadiness();
     rpc('GET', 'fee_management/fetch_fee_titles').then(function(r) {
         heads = (r.status === 'success' && r.titles) ? r.titles : [];
         render();
@@ -297,6 +333,20 @@ function render() {
 }
 
 /* Add */
+function loadReadiness() {
+    rpc('GET', 'fee_management/fee_head_readiness').then(function(r) {
+        if (!r || r.status !== 'success') return;   // never block the page on this
+        var box  = document.getElementById('fhReadiness');
+        var icon = document.getElementById('fhReadyIcon');
+        box.style.display = 'flex';
+        box.className = 'fh-ready ' + (r.ready ? 'ok' : 'warn');
+        icon.className = 'fa ' + (r.ready ? 'fa-check-circle' : 'fa-exclamation-triangle');
+        document.getElementById('fhReadyMsg').textContent = r.message || '';
+        document.getElementById('fhReadyList').textContent =
+            (r.missing && r.missing.length) ? 'Not registered: ' + r.missing.join(', ') : '';
+    }).catch(function() { /* readiness is advisory; never break the screen */ });
+}
+
 document.getElementById('addForm').addEventListener('submit', function(e) {
     e.preventDefault();
     var inp = document.getElementById('fName');
@@ -307,7 +357,9 @@ document.getElementById('addForm').addEventListener('submit', function(e) {
     btn.disabled = true;
     btn.innerHTML = '<i class="fa fa-spinner fa-spin"></i>';
 
-    rpc('POST', 'fee_management/save_fee_title', { fee_title: name, fee_type: document.getElementById('fType').value })
+    var cat = document.getElementById('fCategory').value;
+    if (!cat) { toast('Choose the charge kind — it decides whether concessions apply.', 1); return; }
+    rpc('POST', 'fee_management/save_fee_title', { fee_title: name, fee_type: document.getElementById('fType').value, fee_category: cat })
     .then(function(r) {
         btn.disabled = false;
         btn.innerHTML = '<i class="fa fa-plus"></i> Add';
@@ -315,6 +367,7 @@ document.getElementById('addForm').addEventListener('submit', function(e) {
         inp.value = '';
         inp.focus();
         toast('"' + name + '" added');
+        loadReadiness();
         load();
     })
     .catch(function() {

@@ -853,12 +853,21 @@ class Entitlement_service
      */
     private function _fingerprintId(string $studentId, array $in): string
     {
+        $kind = (string) ($in['kind'] ?? '');
         $parts = [
             $this->schoolId,
             $studentId,
-            (string) ($in['kind'] ?? ''),
-            (string) ($in['serviceType'] ?? ''),
-            (string) ($in['concessionType'] ?? ''),
+            $kind,
+            // ENTCAP-UX-1 (2026-09-19) — hash the fields AS STORED, not as posted.
+            // propose() discards serviceType on a concession and concessionType on a
+            // service (see the $doc shaping), but this fingerprint hashed the raw
+            // input, so the id depended on a value the document does not carry. Two
+            // identical concessions differing only in a leftover serviceType the
+            // client happened to post got two different ids - and duplicate
+            // suppression is create-if-not-exists on this id alone, so the second
+            // one was written as a second active discount.
+            $kind === 'service'    ? (string) ($in['serviceType'] ?? '')    : '',
+            $kind === 'concession' ? (string) ($in['concessionType'] ?? '') : '',
             trim((string) ($in['scope'] ?? '')),
             (string) ($in['valueType'] ?? ''),
             // Normalised so "20", "20.0" and 20 are one entitlement, not three.

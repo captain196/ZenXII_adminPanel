@@ -145,6 +145,7 @@
             <a href="<?= base_url('fee_management/discounts') ?>" class="fd-qlink"><i class="fa fa-percent"></i><span>Discounts</span></a>
             <a href="<?= base_url('fee_management/scholarships') ?>" class="fd-qlink"><i class="fa fa-trophy"></i><span>Scholarships</span></a>
             <a href="<?= base_url('fee_management/refunds') ?>" class="fd-qlink"><i class="fa fa-undo"></i><span>Refunds</span></a>
+            <a href="<?= base_url('fee_management/student_charges') ?>" class="fd-qlink"><i class="fa fa-file-text-o"></i><span>Student Charges</span></a>
         </div>
 
         <!-- 5. FOLLOW-UP -->

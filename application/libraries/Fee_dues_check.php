@@ -51,6 +51,15 @@ class Fee_dues_check
         'block_library'          => false,
         'threshold_amount'       => 0.0,
         'admin_override_allowed' => true,
+        // Lifecycle decisions D & C — now DEFAULT ON (owner decision 2026-09-20).
+        // A school can still turn either OFF on the Fees policy screen; absent
+        // (a tenant with no saved policy) now means ON:
+        //   all_sessions_clearance    (D) — a TC requires ALL-years dues settled,
+        //                                   not just the current session.
+        //   reprice_on_class_transfer (C) — a cross-class transfer re-prices fees
+        //                                   at the new class chart (pro-rated).
+        'all_sessions_clearance'    => true,
+        'reprice_on_class_transfer' => true,
     ];
 
     /** Actions a caller can ask about. Extend here if you add more. */
@@ -86,7 +95,7 @@ class Fee_dues_check
                 ));
                 // Coerce bools/numbers defensively — Firestore may give us
                 // strings ("true"/"0") from legacy writers.
-                foreach (['block_result','block_tc','block_hall_ticket','block_library','admin_override_allowed'] as $k) {
+                foreach (['block_result','block_tc','block_hall_ticket','block_library','admin_override_allowed','all_sessions_clearance','reprice_on_class_transfer'] as $k) {
                     $this->policyCache[$k] = $this->toBool($this->policyCache[$k]);
                 }
                 $this->policyCache['threshold_amount'] = (float) $this->policyCache['threshold_amount'];

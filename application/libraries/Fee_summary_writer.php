@@ -239,6 +239,23 @@ final class Fee_summary_writer
     //  INTERNAL
     // ════════════════════════════════════════════════════════════════════
 
+    /**
+     * PUBLIC ACCESS to the canonical aggregation (Phase 19P).
+     *
+     * Exposed so `Fee_integrity_checker` can compare a STORED
+     * `studentFeeSummary` against what the demands actually say, WITHOUT
+     * reimplementing the arithmetic. There must be exactly one definition of
+     * "what a student's fee summary is", and this is it — a second copy in the
+     * checker would drift from this one exactly as the pre-FEES-FROZEN-2
+     * writer drifted from Fee_integrity_checker over the fine field.
+     *
+     * Pure: no I/O, no writes, no state.
+     */
+    public function aggregateDemands(array $demands): array
+    {
+        return $this->_aggregateStudentDemands($demands);
+    }
+
     private function _aggregateStudentDemands(array $demands): array
     {
         $totalDemanded = 0.0;
@@ -255,12 +272,30 @@ final class Fee_summary_writer
             if ($month === '') continue;
             $net  = (float) ($d['netAmount']  ?? $d['net_amount']  ?? 0);
             $paid = (float) ($d['paidAmount'] ?? $d['paid_amount'] ?? 0);
-            $totalDemanded  += $net;
+
+            // ── FEES-FROZEN-2 — FINE-AWARE AGGREGATION (Phase 19B) ──────
+            // `netAmount` is the post-discount charge and NEVER includes the
+            // late fee: every writer (Fee_late_fee_service::applyTo,
+            // Fee_lifecycle::proRateFees/createModuleFee, Fee_refund_service)
+            // keeps the penalty in a separate `fine_amount` field and derives
+            //     balance = max(0, net + fine - paid)
+            // Aggregating `net - paid` therefore understated every summary
+            // carrying a fine, and — worse — a student who had paid the charge
+            // in full but still owed the penalty aggregated to a ZERO balance,
+            // was classified 'paid', and dropped out of the defaulters list
+            // (Fees::get_defaulter_data skips rows at `balance <= 0.005`).
+            // Adding it here cannot double-count: the fine lives only in this
+            // field, never folded into netAmount.
+            $fine = (float) ($d['fine_amount'] ?? $d['fineAmount'] ?? 0);
+            if ($fine < 0) $fine = 0.0;
+            $due  = $net + $fine;
+
+            $totalDemanded  += $due;
             $totalCollected += $paid;
             if (!isset($monthsSeen[$month])) {
                 $monthsSeen[$month] = ['demanded' => 0.0, 'paid' => 0.0];
             }
-            $monthsSeen[$month]['demanded'] += $net;
+            $monthsSeen[$month]['demanded'] += $due;
             $monthsSeen[$month]['paid']     += $paid;
         }
 

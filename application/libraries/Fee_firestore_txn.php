@@ -150,7 +150,7 @@ class Fee_firestore_txn
                 }
                 $v = $CI->feeShardedCounter->nextCounter($kind);
                 if ($v > 0) return $v;
-                log_message('warning', "Fee_firestore_txn::nextCounter({$kind}) sharded returned 0; falling back to legacy");
+                log_message('error', "Fee_firestore_txn::nextCounter({$kind}) sharded returned 0; falling back to legacy");
             } catch (\Throwable $e) {
                 log_message('error', "Fee_firestore_txn::nextCounter({$kind}) sharded threw; falling back to legacy: " . $e->getMessage());
             }
@@ -390,29 +390,187 @@ class Fee_firestore_txn
      * Try to acquire an exclusive payment lock for a student. Returns the
      * lock token on success, or empty string on conflict.
      */
-    public function acquireLock(string $userId, int $ttlSeconds = 120): string
+    /** acquireLockStatus() outcomes. */
+    const LOCK_OWNER    = 'OWNER';      // we hold it — proceed
+    const LOCK_CONFLICT = 'CONFLICT';   // someone else holds a live lease — refuse, retryable
+    const LOCK_UNKNOWN  = 'UNKNOWN';    // outcome undetermined — refuse, assume NOTHING
+
+    /**
+     * ── REF-1 · ATOMIC PER-STUDENT LOCK WITH A LEASE ──────────────────────
+     *
+     * `feeLocks/{school}_{userId}` has TWO producers, and until now only one of
+     * them was correct:
+     *
+     *   FeeCollectionService  claim batch with `precondition: exists:false`
+     *                         — already atomic for the fresh case.
+     *   acquireLock()         read → judge age → BLIND SET
+     *                         — two callers that read before either writes
+     *                           BOTH acquire, and the blind set also clobbers
+     *                           a lock the collection service holds correctly.
+     *
+     * Both write an IDENTICAL field set (schoolId·userId·token·acquiredAt·
+     * ttlSeconds), verified rather than assumed, so one predicate can judge a
+     * lock written by either.
+     *
+     * ── WHY A STATUS AND NOT A STRING ─────────────────────────────────────
+     * acquireLock() returns '' for THREE different things — a live lock, a
+     * thrown exception, and an uninitialised helper. Those demand OPPOSITE
+     * recoveries:
+     *
+     *   CONFLICT → the write definitely did NOT land. Safe to retry, safe to
+     *              report to the user as "in progress".
+     *   UNKNOWN  → the write MAY have landed. The caller must not retry
+     *              blindly and — for a refund — must NOT delete its
+     *              idempotency guard, because doing so could permit a second
+     *              disbursement.
+     *
+     * Collapsing them is the defect. `acquireLock()` below keeps its exact
+     * signature and contract so the existing caller is untouched.
+     *
+     * @return array{status:string, token:string, recovered:bool}
+     */
+    public function acquireLockStatus(string $userId, int $ttlSeconds = 120): array
     {
-        if (!$this->ready || $userId === '') return '';
+        if (!$this->ready || $userId === '') {
+            return $this->_lockOut(self::LOCK_UNKNOWN, '', false);
+        }
+
         $docId = "{$this->schoolId}_{$userId}";
+        $token = bin2hex(random_bytes(8));
+        $now   = time();
+
+        $payload = [
+            'schoolId'   => $this->schoolId,
+            'userId'     => $userId,
+            'token'      => $token,
+            'acquiredAt' => date('c', $now),
+            'ttlSeconds' => $ttlSeconds,
+        ];
+
+        try {
+            $res = $this->firebase->firestoreCreateStatus(self::COL_LOCKS, $docId, $payload);
+        } catch (\Throwable $e) {
+            log_message('error', "Fee_firestore_txn::acquireLockStatus({$userId}) create threw: " . $e->getMessage());
+            return $this->_lockOut(self::LOCK_UNKNOWN, '', false);
+        }
+
+        $status = (string) ($res['status'] ?? 'FAILURE');
+
+        // Exclusive create — decided server-side, so no read-then-write window.
+        if ($status === 'SUCCESS') {
+            return $this->_lockOut(self::LOCK_OWNER, $token, false);
+        }
+
+        // NOT a collision: the write may or may not have landed. Treating this
+        // as "someone else has it" would let a caller retry into a lock it
+        // actually owns; treating it as ours would run two writers at once.
+        if ($status !== 'COLLISION') {
+            log_message('error',
+                "Fee_firestore_txn::acquireLockStatus({$userId}) UNKNOWN — "
+                . (string) ($res['message'] ?? ''));
+            return $this->_lockOut(self::LOCK_UNKNOWN, '', false);
+        }
+
+        // ── A lock exists. Is its lease still alive? ──
         try {
             $existing = $this->firebase->firestoreGet(self::COL_LOCKS, $docId);
-            if (is_array($existing) && !empty($existing['token'])) {
-                $age = time() - strtotime((string) ($existing['acquiredAt'] ?? '2000-01-01'));
-                if ($age < $ttlSeconds) return ''; // still held
-            }
-            $token = bin2hex(random_bytes(8));
-            $ok = $this->firebase->firestoreSet(self::COL_LOCKS, $docId, [
-                'schoolId'   => $this->schoolId,
-                'userId'     => $userId,
-                'token'      => $token,
-                'acquiredAt' => date('c'),
-                'ttlSeconds' => $ttlSeconds,
-            ]);
-            return $ok ? $token : '';
-        } catch (\Exception $e) {
-            log_message('error', "Fee_firestore_txn::acquireLock({$userId}): " . $e->getMessage());
-            return '';
+        } catch (\Throwable $e) {
+            return $this->_lockOut(self::LOCK_UNKNOWN, '', false);
         }
+        if (!is_array($existing)) {
+            // It existed a moment ago and cannot be read now. Undetermined.
+            return $this->_lockOut(self::LOCK_UNKNOWN, '', false);
+        }
+
+        if (!$this->_lockExpired($existing, $now, $ttlSeconds)) {
+            return $this->_lockOut(self::LOCK_CONFLICT, '', false);
+        }
+
+        // ── Expired: recover by COMPARE-AND-SWAP, never a second blind set ──
+        // The precondition carries the version from the read that judged the
+        // lease dead, so two processes that both see it expired cannot both
+        // take it. Without a version we cannot guarantee that, and an
+        // unguarded merge would clobber a concurrent recoverer — the very
+        // defect being fixed — so we fail closed instead.
+        $updateTime = (string) ($existing['__updateTime'] ?? '');
+        if ($updateTime === '' || !method_exists($this->firebase, 'firestoreCommitBatchStatus')) {
+            log_message('error',
+                "Fee_firestore_txn::acquireLockStatus({$userId}) — cannot CAS a stale lock "
+                . '(no version or no CAS primitive); refusing rather than writing unguarded');
+            return $this->_lockOut(self::LOCK_UNKNOWN, '', false);
+        }
+
+        $cas = $this->firebase->firestoreCommitBatchStatus([[
+            'op'           => 'update',
+            'collection'   => self::COL_LOCKS,
+            'docId'        => $docId,
+            'merge'        => true,
+            'data'         => $payload + ['takenOverFrom' => (string) ($existing['token'] ?? '')],
+            'precondition' => ['updateTime' => $updateTime],
+        ]]);
+
+        $casStatus = (string) ($cas['status'] ?? 'FAILURE');
+
+        if ($casStatus === 'SUCCESS') {
+            log_message('info',
+                "Fee_firestore_txn: recovered expired lock on student [{$userId}] from token ["
+                . (string) ($existing['token'] ?? '') . ']');
+            return $this->_lockOut(self::LOCK_OWNER, $token, true);
+        }
+
+        // The document moved between our read and our write — another process
+        // recovered it first. Exactly one recoverer can win.
+        if ($casStatus === 'PRECONDITION_CONFLICT') {
+            return $this->_lockOut(self::LOCK_CONFLICT, '', false);
+        }
+
+        return $this->_lockOut(self::LOCK_UNKNOWN, '', false);
+    }
+
+    /**
+     * A lock is expired once its lease has elapsed.
+     *
+     * The lease is taken from the DOCUMENT's own `ttlSeconds` when present, not
+     * the caller's — a lock the collection service took for 120 s must be
+     * honoured on its own terms, or a caller passing a shorter ttl could
+     * declare a live lock dead and displace it.
+     *
+     * A missing or unparseable `acquiredAt` counts as EXPIRED, which is exactly
+     * what the previous implementation did (it compared against '2000-01-01').
+     * Keeping that direction matters: a malformed lock must never be immortal,
+     * and exclusivity is still enforced by the CAS on the takeover.
+     */
+    private function _lockExpired(array $lock, int $now, int $callerTtl): bool
+    {
+        if (empty($lock['token'])) return true;
+
+        $ttl = (int) ($lock['ttlSeconds'] ?? 0);
+        if ($ttl <= 0) $ttl = $callerTtl;
+
+        $acquiredAt = (string) ($lock['acquiredAt'] ?? '');
+        if ($acquiredAt === '') return true;
+
+        $ts = strtotime($acquiredAt);
+        if ($ts === false) return true;
+
+        return ($now - $ts) >= $ttl;
+    }
+
+    private function _lockOut(string $status, string $token, bool $recovered): array
+    {
+        return ['status' => $status, 'token' => $token, 'recovered' => $recovered];
+    }
+
+    /**
+     * Back-compat wrapper — unchanged signature and contract (token on success,
+     * '' otherwise). Callers that need to tell CONFLICT from UNKNOWN must use
+     * acquireLockStatus(); this one deliberately still collapses them, because
+     * changing what '' means would silently alter every existing caller's
+     * recovery behaviour.
+     */
+    public function acquireLock(string $userId, int $ttlSeconds = 120): string
+    {
+        return $this->acquireLockStatus($userId, $ttlSeconds)['token'];
     }
 
     public function releaseLock(string $userId, string $token): bool
@@ -521,7 +679,31 @@ class Fee_firestore_txn
         if (!$this->ready || $paymentId === '') return null;
         try {
             $doc = $this->firebase->firestoreGet(self::COL_PROCESSED_PAYMENTS, $paymentId);
-            if (is_array($doc) && ($doc['status'] ?? '') === 'success') return $doc;
+            if (is_array($doc) && ($doc['status'] ?? '') === 'success') {
+                // ── PAY-1 — processedPayments is a GLOBAL keyspace ──────────
+                // The doc id is the bare gateway payment id with no school
+                // prefix, unlike the legacy feeIdempotency fallback below
+                // ("{schoolId}_pay_{paymentId}"), which IS scoped. Without this
+                // check a marker belonging to another tenant would answer this
+                // tenant's payment as "already processed" — the parent would be
+                // told it was paid while nothing was applied here.
+                //
+                // Not currently reachable: gateway payment ids carry far too
+                // much entropy to collide (the mock adapter uses random_bytes(8),
+                // and Razorpay ids are globally unique). This is defence in
+                // depth, and it restores the scoping the migration to a global
+                // keyspace dropped. A marker with NO schoolId is accepted, so
+                // pre-migration rows are unaffected.
+                $owner = (string) ($doc['schoolId'] ?? '');
+                if ($owner !== '' && $owner !== $this->schoolId) {
+                    log_message('error',
+                        'Fee_firestore_txn::getProcessedPayment(' . $paymentId . ') — marker '
+                        . 'belongs to tenant [' . $owner . '] but this context is ['
+                        . $this->schoolId . ']; refusing to treat it as processed');
+                    return null;
+                }
+                return $doc;
+            }
         } catch (\Exception $_) {}
         // Legacy fallback — entries written pre-migration live in
         // feeIdempotency under "{schoolId}_pay_{paymentId}". Delete-safe:
@@ -538,11 +720,39 @@ class Fee_firestore_txn
      * tied to the receipt that came out the other side. Called from
      * the controller after _record_parent_payment_receipt() succeeds.
      */
+    /**
+     * ── PAY-2 · WHY THE KEY IS THE PAYMENT ID AND NOTHING ELSE ────────────
+     *
+     * An idempotency key must be EXACTLY the identity of the thing that may
+     * happen only once. Here that is the gateway payment.
+     *
+     * A gateway payment id is globally unique and belongs to exactly ONE order
+     * (Razorpay mints it per captured payment, not per account sequence). So
+     * `paymentId` alone already identifies the operation completely.
+     *
+     * Keying by `{school}_{orderId}_{paymentId}` would be WORSE, not safer, and
+     * this is the trap worth naming: it would create TWO keys for ONE payment
+     * whenever the order id supplied on a retry differed, so the same payment
+     * could be applied twice — under two different keys, each looking pristine.
+     * A more specific key is not a stronger guarantee; it is a weaker one, when
+     * the extra component is not part of the identity.
+     *
+     * So: `orderId` is recorded as a VERIFIED FIELD, never as part of the key.
+     * A marker claiming payment P belonged to order X, presented while
+     * processing payment P for order Y, is an anomaly — one payment cannot
+     * belong to two orders — and the caller must refuse rather than treat it as
+     * either "already processed" or "fresh".
+     *
+     * `schoolId` is likewise a field, not a key component, for the same reason:
+     * the gateway identity is already global, so scoping the key by tenant
+     * would let the same payment be applied once per tenant.
+     */
     public function markPaymentProcessed(
         string $paymentId,
         string $receiptNo,
         string $receiptKey,
-        string $studentId
+        string $studentId,
+        string $orderId = ''
     ): bool {
         if (!$this->ready || $paymentId === '') return false;
         try {
@@ -551,6 +761,7 @@ class Fee_firestore_txn
                 $paymentId,
                 [
                     'paymentId'   => $paymentId,
+                    'orderId'     => $orderId,   // PAY-2: verified, never keyed
                     'schoolId'    => $this->schoolId,
                     'session'     => $this->session,
                     'studentId'   => $studentId,
@@ -732,6 +943,62 @@ class Fee_firestore_txn
     }
 
     /**
+     * B-011 (2026-08-19) — FAIL-CLOSED variant of demandsForStudent().
+     *
+     * THE DEFECT THIS CLOSES. `demandsForStudent()` ends in
+     * `catch (\Exception $_) { return []; }`. For a READER that is a benign
+     * degradation. For the DEMAND-GENERATION DUPLICATE GUARD it is a
+     * double-billing mechanism, because the guard reads "no existing demands"
+     * and concludes there is nothing to deduplicate against.
+     *
+     * That would be survivable if demand ids were deterministic — a re-write
+     * would simply land on the same document. They are not: the monthly
+     * generator mints `bin2hex(random_bytes(10))`
+     * (`newDemandId()`), so every regenerated charge takes a BRAND NEW document
+     * id and cannot collide with the one it duplicates. Structural protection
+     * is therefore absent, and the application-level guard is the only thing
+     * standing between a transient Firestore error and a family being charged
+     * twice.
+     *
+     * Measured consequence of exactly this shape: STU0032 carried 26 duplicate
+     * pairs — ₹11,800 of phantom debt — across two id schemes.
+     *
+     * This variant THROWS instead of returning an empty set, so the caller can
+     * refuse to generate rather than generate blind. Reading is cheap; billing
+     * a family twice is not.
+     *
+     * `demandsForStudent()` is deliberately left unchanged — its ten read-only
+     * callers legitimately prefer degradation over an exception.
+     *
+     * @throws \RuntimeException when the demand set cannot be read
+     */
+    public function demandsForStudentStrict(string $userId): array
+    {
+        if (!$this->ready) {
+            throw new \RuntimeException('Fee_firestore_txn not ready — demand set unreadable');
+        }
+        if ($userId === '') {
+            throw new \RuntimeException('demandsForStudentStrict: empty studentId');
+        }
+        try {
+            $rows = $this->fs->schoolWhere(self::COL_DEMANDS, [
+                ['session',   '==', $this->session],
+                ['studentId', '==', $userId],
+            ]);
+        } catch (\Throwable $e) {
+            throw new \RuntimeException(
+                'demand read failed for student [' . $userId . ']: ' . $e->getMessage(), 0, $e);
+        }
+        $out = [];
+        foreach ((array) $rows as $r) {
+            $d  = $r['data'] ?? [];
+            $id = $r['id']   ?? '';
+            if ($id !== '' && is_array($d)) $out[$id] = self::normalizeDemandDoc($d);
+        }
+        return $out;
+    }
+
+    /**
      * BUG-076 (2026-05-27): session-independent demand fetch for a student.
      *
      * demandsForStudent() filters by $this->session, which is pinned to the
@@ -790,14 +1057,70 @@ class Fee_firestore_txn
                 'studentId'      => ['student_id', 'studentId'],
                 'studentName'    => ['student_name', 'studentName'],
                 'className'      => ['class', 'className'],
+                // ── DEC-012 (2026-08-18) ────────────────────────────────────
+                // This map is a STRICT WHITELIST with no passthrough, so any
+                // key missing from it is silently discarded. `proRateFees()`
+                // has always passed `prorated` and `prorateFactor`; both were
+                // dropped here and never reached Firestore, which is why the
+                // estate contains ZERO demands carrying a proration marker.
+                // The audit trail for a money-changing operation was being
+                // thrown away at the write boundary.
+                'prorated'       => ['prorated'],
+                'prorateFactor'  => ['prorateFactor'],
+                // The LIST (pre-proration) charge. Written once and never
+                // rewritten, so proration always recomputes from the original
+                // instead of compounding on a re-run — and so the original
+                // charge remains recoverable. This is the first, narrowest
+                // instance of the DEC-001 charge anchor.
+                'listGrossAmount'    => ['listGrossAmount'],
+                'listDiscountAmount' => ['listDiscountAmount'],
+                // ── PROV-1 (2026-08-23) · THE "WHO AND WHEN" OF A CLOSURE ────
+                // Same class of loss as DEC-012 above, and found the same way.
+                // Every status change below is already whitelisted and lands
+                // on the document — but the provenance fields written ALONGSIDE
+                // it were dropped here, so a demand records THAT it was frozen,
+                // archived or reversed and never by whom or when:
+                //
+                //   freezeFeesOnSoftDelete()  status:'frozen'   + frozenAt/By
+                //   the merge archive loop    status:'archived' + archivedAt/By
+                //   reverseAdmissionFees()    status:'reversed' + reversedAt/By
+                //   Fee_late_fee_service      fine_amount       + fine_computed_at
+                //
+                // The freeze case is the one that bites: it is live from three
+                // call sites (Sis::withdraw_student, Sis::delete_student,
+                // Hostel.php) and stops collection on a student's whole fee
+                // book, with nothing anywhere recording who did it.
+                //
+                // The inconsistency is what makes this unambiguous rather than
+                // a judgement call. `commitDemandBatch()` passes an archive op's
+                // data VERBATIM, so the promotion archive path persists
+                // archivedAt while the single-doc merge archive path — the same
+                // logical operation — silently loses it. The whitelist was
+                // therefore never a boundary either: any caller can route the
+                // same field through the batch API and have it stick.
+                'frozenAt'       => ['frozenAt'],
+                'frozenBy'       => ['frozenBy'],
+                // FRZ-4 — the reverse transition needs the same provenance.
+                'unfrozenAt'     => ['unfrozenAt'],
+                'unfrozenBy'     => ['unfrozenBy'],
+                'archivedAt'     => ['archivedAt'],
+                'archivedBy'     => ['archivedBy'],
+                'archiveReason'  => ['archiveReason'],
+                'reversedAt'     => ['reversedAt'],
+                'reversedBy'     => ['reversedBy'],
+                'fineComputedAt' => ['fine_computed_at', 'fineComputedAt'],
+
             ];
             foreach ($map as $camel => $sources) {
                 foreach ($sources as $k) {
                     if (array_key_exists($k, $data)) {
                         $val = $data[$k];
-                        if (in_array($camel, ['paidAmount','balance','netAmount','discountAmount','fineAmount','grossAmount'], true)) {
+                        if (in_array($camel, ['paidAmount','balance','netAmount','discountAmount',
+                                              'fineAmount','grossAmount','prorateFactor',
+                                              'listGrossAmount','listDiscountAmount'], true)) {
                             $val = (float) $val;
                         }
+                        if ($camel === 'prorated') $val = (bool) $val;
                         $patch[$camel] = $val;
                         break;
                     }
@@ -820,6 +1143,38 @@ class Fee_firestore_txn
      * preserved because we never overwrite them during generation — only
      * the structural fields (amounts, dates, metadata) get refreshed.
      */
+    /**
+     * P5 · THE MONEY-COHERENCE RULE —  netAmount == grossAmount − discountAmount
+     *
+     * Returns null when the demand is coherent, or the offending figures when it
+     * is not. Pure: no logging, no I/O, no mutation — so it can be asserted
+     * directly and reused by a verifier, a report or a migration check.
+     *
+     * A zero/absent gross is NOT judged: module and legacy shapes legitimately
+     * omit it, and there is nothing to be coherent about.
+     *
+     * `fineAmount` is deliberately excluded — a fine is added to the BALANCE,
+     * not netted into the charge (`balance = netAmount + fine − paidAmount`).
+     *
+     * Tolerance is half a paisa, matching every other money comparison here.
+     *
+     * @return array{gross:float,discount:float,net:float,expectedNet:float,delta:float}|null
+     */
+    public static function moneyIncoherence(array $doc): ?array
+    {
+        $gross    = (float) ($doc['grossAmount']    ?? 0);
+        $discount = (float) ($doc['discountAmount'] ?? 0);
+        $net      = (float) ($doc['netAmount']      ?? 0);
+        if ($gross <= 0) return null;
+
+        $expected = $gross - $discount;
+        $delta    = $expected - $net;
+        if (abs($delta) <= 0.005) return null;
+
+        return ['gross' => $gross, 'discount' => $discount, 'net' => $net,
+                'expectedNet' => $expected, 'delta' => $delta];
+    }
+
     public function writeDemand(string $demandId, array $data): bool
     {
         if (!$this->ready || $demandId === '') return false;
@@ -883,7 +1238,16 @@ class Fee_firestore_txn
         // Absent fields are preserved by merge=true from the prior write.
         $doc = [
             'schoolId'       => $this->schoolId,
-            'session'        => $this->session,
+            // ── ROLL-2 · AN EXPLICIT TARGET SESSION ─────────────────────
+            // This was unconditionally $this->session, so a demand could only
+            // ever be written into the session the txn instance was inited
+            // with. Session ROLLOVER needs to write into the session it is
+            // rolling INTO, which is not the one the admin is operating in.
+            //
+            // Optional and defaulted, exactly like the other caller-supplied
+            // fields here: no existing caller passes 'session' (verified by
+            // search), so every current write is byte-identical.
+            'session'        => (string) $pick($data, ['session'], $this->session),
             'demandId'       => $demandId,
             'studentId'      => (string) $pick($data, ['studentId', 'student_id']),
             'studentName'    => (string) $pick($data, ['studentName', 'student_name']),
@@ -938,6 +1302,114 @@ class Fee_firestore_txn
         if (array_key_exists('concessionApplied', $data)) {
             $doc['concessionApplied'] = (float) $pick($data, ['concessionApplied'], 0);
         }
+
+        // ── PROMO-SC-1 · WHICH MODULE RAISED THIS CHARGE ────────────────────
+        //
+        // Present only on demands written by `createModuleFee()`, and its
+        // PRESENCE is the meaningful part: this charge was not priced from a
+        // class fee chart, so a class or section change must not archive it.
+        //
+        // Deliberately separate from `category`, which the M5 registry stamp
+        // overrides with the registry's authoritative value — so `category`
+        // cannot answer "was this class-derived?" once the registry is on.
+        //
+        // Conditional, like concessionApplied and chargeInstance: a chart
+        // caller supplies nothing and writes a byte-identical document.
+        if (array_key_exists('moduleType', $data)) {
+            $moduleType = trim((string) $pick($data, ['moduleType'], ''));
+            if ($moduleType !== '') $doc['moduleType'] = $moduleType;
+        }
+
+        // ── PRORATE-1 · THE LIST ANCHOR MUST TRACK THE LIST CHARGE ──────────
+        //
+        // `listGrossAmount` / `listDiscountAmount` are what proRateFees() scales
+        // by the remaining-months factor. They were written ONLY by proRateFees()
+        // and never by a generator, and this whitelist silently discarded them —
+        // so a generator that RE-PRICED a demand could not refresh the figure its
+        // own price would later be prorated from.
+        //
+        // Conditional, exactly like concessionApplied and chargeInstance above: a
+        // caller that supplies nothing gets NO field, so every existing caller
+        // still writes a byte-identical document.
+        foreach (['listGrossAmount', 'listDiscountAmount'] as $__anchor) {
+            if (array_key_exists($__anchor, $data)) {
+                $doc[$__anchor] = (float) $pick($data, [$__anchor], 0);
+            }
+        }
+        // ── CHARGE INSTANCE (Fee Head Registry phase, 2026-08-17) ───────────
+        //
+        // WHICH OCCURRENCE of a fee head this demand is — distinct from the
+        // head itself ("what type of charge") and from the demand id ("which
+        // exact demand"). Currently supplied only by the ID-card replacement
+        // path as 'V{cardVersion}', where cardVersion is the atomically
+        // claimed, strictly monotonic, never-reused version minted by
+        // Id_card_service::issue().
+        //
+        // WHY IT IS STORED, not merely encoded in the demand id: recalculation
+        // and regeneration must rebuild the identical demand id from CANONICAL
+        // STORED DATA. Without this field the only surviving copy of the
+        // instance would be inside the id string (or, before this change, the
+        // DISPLAY NAME "ID Card Replacement (Card v2)") — and re-deriving
+        // identity by parsing a display string is the exact anti-pattern this
+        // whole phase exists to remove.
+        //
+        // CONDITIONAL, exactly like the payment-state fields above: a caller
+        // that supplies nothing gets NO field and therefore a byte-identical
+        // document. No synthetic value is ever invented — an empty instance is
+        // meaningless and would only create a second way to express "none".
+        //
+        // ⚠ This whitelist is the reason the field exists at all: writeDemand()
+        // does NOT merge caller data, it rebuilds $doc from named keys, so any
+        // payload key absent from here is SILENTLY DISCARDED — no error, no
+        // log. Adding a demand field anywhere else without touching this list
+        // does nothing at all.
+        if (array_key_exists('chargeInstance', $data)) {
+            $instance = trim((string) $pick($data, ['chargeInstance'], ''));
+            if ($instance !== '') $doc['chargeInstance'] = $instance;
+        }
+        // ── CLASSIFICATION PROVENANCE (Fee Head Registry prerequisite) ──────
+        //
+        // WHICH AUTHORITY decided this demand's `category`. Set to 'registry'
+        // by the (not yet wired) Fee Head Registry path; absent on every
+        // demand written before that path exists.
+        //
+        // WHY IT IS NEEDED: classification is a THREE-state problem, not two.
+        // Live data holds 1,190 demands with category='' AND 52 pre-registry
+        // demands carrying out-of-contract values — capitalised 'Academic' /
+        // 'Transport', plus 'General', which is in no vocabulary at all. So
+        // "non-empty" does NOT mean "authoritative", and emptiness alone
+        // cannot identify the legacy era. Without this marker a later reader
+        // would have to GUESS which values it may trust — and the one thing
+        // that must never happen is a legacy demand silently becoming
+        // 'academic' and thereby scholarship-eligible.
+        //
+        // CONDITIONAL, exactly like chargeInstance and the payment-state
+        // fields: a caller that supplies nothing gets NO field, so every
+        // existing caller keeps writing a byte-identical document. Historical
+        // demands are never backfilled — absence IS the legacy signal.
+        if (array_key_exists('categorySource', $data)) {
+            $catSrc = trim((string) $pick($data, ['categorySource'], ''));
+            if ($catSrc !== '') $doc['categorySource'] = $catSrc;
+        }
+        // ── FEE HEAD REGISTRY IDENTITY (M5) ────────────────────────────────
+        //
+        // The school-scoped identity of the head this demand was raised
+        // against — stable across rename, repricing and session rollover,
+        // unlike `feeHeadId` (a per-chart-row value) and `canonicalFeeHeadId`
+        // (frozen legacy provenance, three distinct values per head in live
+        // data).
+        //
+        // ⚠ CLASSIFICATION IDENTITY ONLY — this must NEVER become demand-id
+        // material. `Fee_lifecycle::_demandId()` deliberately excludes it:
+        // feeding it into the id would re-identify future Transport/Hostel
+        // demands against unchanged historical ones and duplicate live charges.
+        //
+        // Conditional, like the fields above: absent or empty ⇒ no field, so
+        // every flag-off write stays byte-identical.
+        if (array_key_exists('feeHeadRef', $data)) {
+            $headRef = trim((string) $pick($data, ['feeHeadRef'], ''));
+            if ($headRef !== '') $doc['feeHeadRef'] = $headRef;
+        }
         // Fees V7: canonical head identity. Caller-provided wins; otherwise resolve
         // from the school-level feeHeads registry by the demand's feeHead NAME
         // (owner-by-name). Original feeHeadId above remains the demand's
@@ -949,6 +1421,58 @@ class Fee_firestore_txn
         }
         if ($canonical !== '') {
             $doc['canonicalFeeHeadId'] = $canonical;
+        }
+
+        // ══ P5 · MONEY-COHERENCE INVARIANT — DETECTION ONLY ═════════════════
+        //
+        //     netAmount == grossAmount − discountAmount
+        //
+        // Every demand write in the system funnels through this method (the
+        // single-write path and the batch path both build their doc here), so
+        // this is the one place that can see EVERY demand the system will ever
+        // store. That makes it the natural home for the invariant P5 will
+        // eventually enforce.
+        //
+        // WHY THIS EXISTS. Two separate defects were found by hand that this
+        // check would have caught automatically the moment they wrote a demand:
+        //   • DEC-012 — proRateFees() re-derives netAmount from gross and leaves
+        //     discountAmount stale, so a prorated discounted demand stores
+        //     gross 2400 / discount 240 / net 1200.
+        //   • DEC-013 — legacy recalculation rebuilds an entitlement-priced
+        //     demand at gross, dropping the discount entirely.
+        // Both were silent. Neither had a detector. This is that detector.
+        //
+        // MEASURED BEFORE SHIPPING (2026-08-18, all tenants): 1,258 real demands,
+        // **ZERO violations**. The only 98 violating documents are synthetic
+        // `DEM_TEST_LOAD_*` load-test residue carrying no schoolId, no session
+        // and no payments. So this line cannot be noisy today — anything it
+        // reports is a genuine regression, which is exactly what makes it worth
+        // having.
+        //
+        // DELIBERATELY LOG-ONLY. Refusing the write would change billing
+        // behaviour, and a detector must never be the thing that breaks
+        // billing. P5 promotes this to a hard refusal once the pipeline is
+        // canonical and every writer is known to satisfy it.
+        //
+        // fineAmount is NOT part of the identity: a fine is added to the
+        // BALANCE, not netted into the charge (see the fine-aware balance rule
+        // `balance = netAmount + fine − paidAmount`).
+        // The rule itself is a named, pure predicate (below) so it can be tested
+        // directly and so P5 can promote it from a log to a refusal in ONE place.
+        $incoherence = self::moneyIncoherence($doc);
+        if ($incoherence !== null) {
+            log_message('error', sprintf(
+                'ACC_DEMAND_MONEY_INCOHERENT demand=[%s] student=[%s] school=[%s] head=[%s] '
+                . 'period=[%s] gross=%.2f discount=%.2f net=%.2f expectedNet=%.2f delta=%.2f '
+                . '— gross-discount != net. See DEC-012/DEC-013.',
+                $demandId,
+                (string) ($doc['studentId'] ?? '?'),
+                (string) ($doc['schoolId'] ?? '?'),
+                (string) ($doc['feeHead'] ?? '?'),
+                (string) ($doc['periodKey'] ?? '?'),
+                $incoherence['gross'], $incoherence['discount'], $incoherence['net'],
+                $incoherence['expectedNet'], $incoherence['delta']
+            ));
         }
 
         return $doc;
@@ -1122,18 +1646,19 @@ class Fee_firestore_txn
      */
     public function readFeeStructureWithIds(string $className, string $section): array
     {
-        if (!$this->ready) return ['chart' => [], 'headIds' => []];
+        if (!$this->ready) return ['chart' => [], 'headIds' => [], 'headRefs' => []];
         try {
             $docId = "{$this->schoolId}_{$this->session}_{$className}_{$section}";
             $doc = $this->firebase->firestoreGet(self::COL_FEE_STRUCT, $docId);
-            if (!is_array($doc) || empty($doc['feeHeads'])) return ['chart' => [], 'headIds' => []];
+            if (!is_array($doc) || empty($doc['feeHeads'])) return ['chart' => [], 'headIds' => [], 'headRefs' => []];
 
             $months = ['April','May','June','July','August','September',
                        'October','November','December','January','February','March'];
             $chart = [];
             foreach ($months as $m) $chart[$m] = [];
             $chart['Yearly Fees'] = [];
-            $headIds = [];
+            $headIds  = [];
+            $headRefs = [];
 
             foreach ((array) $doc['feeHeads'] as $h) {
                 if (!is_array($h)) continue;
@@ -1148,9 +1673,15 @@ class Fee_firestore_txn
                 }
                 $fid = trim((string) ($h['feeHeadId'] ?? ''));
                 if ($fid !== '') $headIds[$name] = $fid;
+                // M5: carry the school-scoped registry identity through the
+                // expansion. Without this the chart collapses to name=>amount
+                // and the generator loses the only authoritative binding it
+                // has. Additive — existing callers read chart/headIds only.
+                $ref = trim((string) ($h['feeHeadRef'] ?? ''));
+                if ($ref !== '') $headRefs[$name] = $ref;
             }
-            return ['chart' => $chart, 'headIds' => $headIds];
-        } catch (\Exception $_) { return ['chart' => [], 'headIds' => []]; }
+            return ['chart' => $chart, 'headIds' => $headIds, 'headRefs' => $headRefs];
+        } catch (\Exception $_) { return ['chart' => [], 'headIds' => [], 'headRefs' => []]; }
     }
 
     /**
