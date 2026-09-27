@@ -415,6 +415,44 @@ Mapped onto **today's** role arrays (`Sis.php:31-34`), not Model D.
 
 Note the deliberate narrowing: `VIEW_ROLES` today includes Teacher and Class Teacher (`Sis.php:34`), so a teacher can already open the applications grid. The design keeps that (changing it is a separate RBAC decision) but grants **no new** teacher capability beyond scoring their own assigned slot.
 
+## 4.8 Student identity model — STU id · SR number · APAAR ID
+
+> **Full specification: [`SR_NUMBER_AND_APAAR_ID_DESIGN.md`](SR_NUMBER_AND_APAAR_ID_DESIGN.md)** — that document is authoritative for this section and supersedes the "GR number" treatment in the first draft. It carries the config, claim design, form placement, schema, indexes, rules, backfill, cross-module impact, edge cases and test plan.
+>
+> **Restored 2026-08-07.** The long-form §4.8 written into this file on 2026-08-06 was uncommitted and was lost when the tree moved to `integration/phase2`; it is not recoverable from git. This summary replaces it — the standalone document is complete.
+
+### 4.8.1 Three identifiers, three different jobs
+
+| | **STU id** | **SR number** | **APAAR ID** |
+|---|---|---|---|
+| Example | `STU00418` | `0147` — **digits only** | `123456789012` |
+| Owner | ZenXII (system) | **The school** | Government of India |
+| Scope | Unique per tenant | **Unique per school; every school runs its own series** | Nationally unique, one per child for life |
+| Purpose | Primary key. Doc ids, Firebase Auth, claims, app payloads, every foreign key | **The identifier the school operates on** — roll calls, fee registers, TCs, staff conversation | Statutory / reporting identity; record portability |
+| Assigned | Automatically at enrolment | At enrolment — **auto, manual or hybrid, per school config** | Never by us; the parent supplies a number issued elsewhere |
+| Mutable | **Never** | Immutable once set; Principal-only correction, audited | Editable (parents often obtain it after admission) |
+| Changes on this design | **None whatsoever** | New | New |
+
+**The load-bearing rule: `STU…` is untouched.** No doc id, no Firebase Auth uid, no custom claim, no `User Id` field, no Kotlin payload, no foreign key changes. SR number and APAAR ID are **additive display and lookup identifiers layered on top**. The existing identity decision (global STU/STA counter is load-bearing; migration deferred to SaaS scale) stands unchanged and is not reopened.
+
+### 4.8.2 The SR number is digits only
+
+**DECIDED 2026-08-06 (operator).** No prefix, no session segment, no letters, slashes or spaces — validated `^[0-9]{1,9}$`. Prefix and session-in-number are **removed** from the design, not made optional. Per-school config is `mode` (auto/manual/hybrid, default hybrid), `width` (display padding only, default 4), `startFrom`, `resetPerSession` (default false — a lifetime number).
+
+Padding is presentation: `147` ≡ `0147` ≡ `00147` are the same register entry, colliding on save and matching each other on search, because `srNoNorm` strips leading zeros. Uniqueness is an atomic create-if-not-exists claim on `srNoIndex/{schoolId}_{srNoNorm}` — never a read-then-write.
+
+### 4.8.3 The admission-form change — two different SR fields, do not conflate
+
+At application time the school's own register number does not exist, so **the public form cannot ask for it**. It gains two other fields: `previous_sr_no` (the applicant's *former* school's number, free text — that format belongs to them) under Previous schooling, and `apaar_id` (optional, 12 digits) under Student details. The admin application form takes the same two. The school's own `sr_no` appears **only in the enrolment panel**, and both stay editable on the student profile forever.
+
+### 4.8.4 APAAR ID
+
+The government's 12-digit NEP-2020 student ID. **We store it; we never generate, verify or transmit it.** Optional at every stage, unique within the school only, masked by default with an audited reveal for Admin/Principal, and **never sent to the Teacher App**. The public-form consent copy must be amended to name APAAR before the field goes live.
+
+### 4.8.5 What this changes elsewhere
+
+`students` gains `srNo`, `srNoNorm`, `srNoSeq`, `srNoSource`, `apaarId`, plus a dual-emit of `Admission Number` = `srNo` that repairs `Certificates.php:383`/`:459` with **zero change to that file**. `crmApplications` gains `previous_sr_no` and `apaar_id`. Two new server-only claim collections (`srNoIndex`, `apaarIndex`), one new index (`students × schoolId, srNoNorm`), no index on `apaarId`. Backfill is **import-first** — auto-assigning by admission date is explicitly wrong. Parent App shows SR plainly and APAAR masked; Teacher App shows SR only.
+
 ---
 
 ## Phase 5 — Data & platform design

@@ -1,0 +1,692 @@
+# Phase 11.2 — SRNO as a Second Operational Student Identifier
+# Cross-Module Audit, Security, Latency & Implementation Plan
+
+**Date:** 2026-08-14 · **Branch:** `integration/phase2` · **Type: READ-ONLY AUDIT — zero code changed.**
+
+Nothing was modified, staged, committed, pushed or deployed. No rules or indexes touched. No test
+account created. No production data written. Per §24, this stops at the plan and waits for
+authorization.
+
+---
+
+## 1. Executive Summary
+
+**The requirement is achievable with a small, low-risk change, and most of it is free.**
+
+Three findings determine the whole shape of this phase:
+
+**(a) The canonical resolver already exists and is already tenant-safe.**
+`Sr_no_service::resolve()` (`Sr_no_service.php:360`) is a **single document-id fetch** —
+`$this->fs->get('srNoIndex', $this->fs->docId($norm))` — returning `currentStudentId`. The doc id is
+`{schoolId}_{srNoNorm}`, and that `schoolId` comes from `Firestore_service`, which is initialised
+once in `MY_Controller` from the authenticated session and custom claims. **A client cannot
+influence it.** Cross-tenant resolution is structurally impossible, not merely checked. **No new
+index, no new service, no new ownership logic is needed — §10 is satisfied by reuse.**
+
+**(b) Student ID and SRNO are structurally disjoint, so there is no ambiguity to resolve.**
+Student ID is `STU` + 4 zero-padded digits (`Id_generator.php:30/60` — `generate('STU') → "STU0042"`).
+SRNO is `^[0-9]{1,9}$` (`Sr_no_service.php:105`) — digits only. **No input string can ever be both.**
+Disambiguation is deterministic: digits-only → SRNO path; anything else → Student ID path. This
+removes the single biggest design risk of a dual-lookup feature (guessing wrong about what the
+operator typed) and means **one input box can serve both, with no radio button and no mode toggle.**
+
+**(c) Every student *search* in the Admin Panel is an in-memory filter over an already-loaded
+student index. Adding SRNO to those searches costs ZERO additional Firestore reads.**
+Verified in five independent implementations (§14). The documents are already downloaded and already
+contain `srNo`; the field is simply not in the match haystack. Only *direct entry* needs the
+resolver, and that costs **+1 read, and only when the operator types digits**.
+
+**Scope recommendation:** SRNO belongs in the two Fees entry points, the SIS student search, and
+three module search boxes — **six places, not everywhere**. Classification for all 24 audited
+surfaces is in §14, with A/B/C/D/E reasons.
+
+**Two blocking dependencies found, both pre-existing and outside this phase:**
+- **`Certificates::get_students()` is RTDB-backed** (`Schools/{school}/{session}/…` paths). SRNO
+  cannot be added there without either touching RTDB (forbidden) or migrating first. §12.
+- **SIB-B1 re-verified as STILL LIVE** at `Sis.php:4600-4632`, unchanged. §23.
+
+**Verdict: PLAN READY — AWAITING AUTHORIZATION.** No rules or index change is required (§21).
+
+---
+
+## 2. Exact Interpretation of the Requirement
+
+What I am proposing to build, stated precisely so a wrong reading is visible before any code:
+
+```
+Operator types into ONE box:
+   "STU0012"              or       "12"
+        |                              |
+   not digits-only                digits-only
+        |                              |
+        |                    Sr_no_service::resolve("12")
+        |                    scoped to authenticated schoolId
+        |                              |
+        |                       currentStudentId = "STU0012"
+        |                              |
+        +--------------+---------------+
+                       |
+             studentId = "STU0012"     <-- canonical, from here on
+                       |
+        existing Fees / module logic, COMPLETELY UNCHANGED
+```
+
+**What this is NOT** (§2 of the brief, restated as an explicit non-goal I will not violate):
+
+- SRNO is **never** written into a Fees, Attendance, Results, Transport, Communication or Documents
+  record as the student reference. Those keep `studentId`.
+- SRNO is **not** a foreign key, not a join key, not an alternate primary key.
+- SRNO does **not** replace, weaken or bypass Student ID lookup. Every existing Student ID workflow
+  continues to work byte-identically — the SRNO branch only engages on input that could never have
+  been a valid Student ID in the first place.
+- SRNO is **not** authentication (§11). No login path is touched.
+
+**The resolve step is a lookup, not an identity change.** After resolution the system holds a
+Student ID and has no memory of how it got there.
+
+## 3. Current Student ID Architecture (verified, unchanged by this phase)
+
+| Property | Value | Source |
+|---|---|---|
+| Format | `STU` + 4 zero-padded digits (`STU0042`) | `Id_generator.php:30`, `PAD['STU'] => 4` at `:60` |
+| Scope | **Global** across the whole ZenX project | `Id_generator` counter is not school-scoped |
+| Generated by | `Id_generator::generate('STU')`, atomic claim | `:99-134` |
+| Operator-entered | Never | no input path anywhere |
+| Role | **Canonical technical identity + sole foreign key on every lifecycle collection** | verified Phase 11 §8 |
+| Document id | `students/{schoolId}_{studentId}` | `Firestore_service::docId()` `:178-181` |
+
+Confirmed again this pass: no module queries on anything but `studentId`. **Nothing in §3, §9 or §25
+of the brief requires any change here, and none is proposed.**
+
+## 4. Current SRNO Architecture (verified, unchanged by this phase)
+
+| Property | Value | Source |
+|---|---|---|
+| Format | `^[0-9]{1,9}$` — digits only | `Sr_no_service.php:105` |
+| Normalisation | trim, strip leading zeros for the key; display keeps trimmed digits — so `147` and `0147` collide on claim and **match on search** | `:116-118` |
+| Scope | **School** — `srNoIndex/{schoolId}_{srNoNorm}` | `:50` |
+| Allocation | `allocateNext()` — sequential from 1 per school | Phase 9.1 |
+| Preserved on | promotion, class change, section change, **re-admission** (via `relink()`) | §19, §18 |
+| Storage | `students.srNo` / `.srNoNorm` + the `srNoIndex` document | `:15-17` |
+| Rules posture | `allow read, write: if false` — server-only | `firestore.rules:1069` |
+
+The class docblock already states the invariant this phase must not break, in its own words:
+*"It never becomes a foreign key source for Fees/Attendance/Results/Transport/Hostel/etc. — those
+remain keyed exclusively to Student ID"* (`:89-90`). **The plan below honours that literally: SRNO is
+read to find a student and then discarded.**
+
+## 5. SRNO Resolver Analysis — REUSE, BUILD NOTHING
+
+```php
+public function resolve(string $srNoRaw): array          // Sr_no_service.php:360
+{
+    $n = self::normalize($srNoRaw);
+    if ($n === null) return ['ok' => false, 'reason' => 'invalid_format'];
+    if ($this->fs === null) return ['ok' => false, 'reason' => 'not_initialized'];
+
+    $doc = $this->fs->get(self::COL, $this->fs->docId($n['norm']));   // 1 doc-id read
+    if (!is_array($doc) || empty($doc['currentStudentId'])) {
+        return ['ok' => false, 'reason' => 'not_found'];
+    }
+    return ['ok' => true, 'currentStudentId' => (string) $doc['currentStudentId'], …];
+}
+```
+
+| Question | Answer |
+|---|---|
+| Can it be reused as-is? | **Yes, unmodified.** |
+| Cost | **1 Firestore read.** Deterministic doc-id fetch — not a query, so **no composite index**. |
+| Tenant-safe? | **Yes, by construction.** `fs->docId()` prefixes the `Firestore_service` schoolId, set from authenticated claims in `MY_Controller`. Not client-supplied. |
+| Returns historical owners? | **No** — `currentStudentId` only, by explicit design (`:353-356`). This is exactly the §12 re-admission requirement. |
+| Already used for lookup? | Yes — `Sis.php:4708`, `Sis.php:5565`, `Readmission.php:281`. All server-side, all pre-flight checks. |
+| Existing callers to change | **None.** |
+
+**Observation (LOW, not a defect):** `Sr_no_service::init()` is called with `$school_id` at
+`Sis.php:4574` and `Readmission.php:62`, but with `$this->parent_db_key` at `Sis.php:5532`. For
+`resolve()` this is **immaterial** — the constructor's `$schoolId` is used only for the `schoolId`
+field written by `claim()`/`relink()` and for log lines, never for the resolve doc id. Reported for
+completeness; **no change proposed in this phase**, since touching it would alter write paths.
+
+### Proposed shape — one shared helper, not six copies
+
+The brief (§10) requires one canonical resolver and forbids per-controller implementations. Since
+`Sr_no_service::resolve()` *is* that resolver, what is missing is a single thin **input-shape
+adapter** that every operational entry point calls:
+
+```php
+// ONE implementation, in MY_Controller (or a tiny Student_locator library).
+// Returns the canonical Student ID, or '' when not found.
+// Does NOT load the student document — the caller already does that.
+protected function _resolveStudentRef(string $input): array
+{
+    $raw = trim($input);
+    if ($raw === '') return ['ok' => false, 'reason' => 'empty'];
+
+    // Student IDs carry the STU prefix; SRNO is digits-only. The two token
+    // shapes are disjoint, so this branch can never mis-route an input.
+    if (!preg_match('/^[0-9]{1,9}$/', $raw)) {
+        return ['ok' => true, 'studentId' => $raw, 'via' => 'studentId'];   // 0 reads
+    }
+    $this->load->library('Sr_no_service', null, 'srnoSvc');
+    $res = $this->srnoSvc->init($this->firebase, $this->fs, $this->school_id,
+                                (string) ($this->admin_id ?? 'system'))->resolve($raw);
+    if (empty($res['ok'])) return ['ok' => false, 'reason' => 'srno_not_found', 'via' => 'srNo'];
+    return ['ok' => true, 'studentId' => (string) $res['currentStudentId'], 'via' => 'srNo'];
+}
+```
+
+**Critical property:** the Student ID branch performs **zero** Firestore reads and returns the input
+unchanged, so every existing Student ID workflow is bit-for-bit identical to today. The SRNO branch
+is additive and only reachable by input that was previously guaranteed to fail.
+
+## 6. Fees Dual-Lookup Audit (the primary example, §6)
+
+### 6.1 Surface inventory
+
+| # | Surface | Entry point | Current student identification | Classification |
+|---|---|---|---|---|
+| F1 | **Fee counter — direct ID box** | `Fees::lookup_student()` `:2340` | `user_id` POST → `fs->get('students', "{schoolId}_{userId}")` | **B — add SRNO** |
+| F2 | **Fee counter — Browse modal** | `Fees::search_student()` `:2821` → `_searchByName()` `:2833` | name/ID/father/class/section substring | **B — add SRNO (free)** |
+| F3 | Fetch months | `Fees::fetch_months()` `:2370` | `user_id` — receives an already-resolved ID from F1/F2 | **A — Student ID only** |
+| F4 | Submit fees | `Fees::submit_fees()` `:2897` | `user_id` from established session state | **A — must stay Student ID** |
+| F5 | Student demands | `Fees::get_student_demands()` `:6697` | `user_id`, downstream of selection | **A** |
+| F6 | Student allocations | `Fees::get_student_allocations()` `:830` | `user_id`, downstream | **A** |
+| F7 | Fee concessions / exemptions | `Fee_concessions.php:182/204/291/374` | `student_id` POST + `_student_belongs_to_school()` guard + `['studentId','==',…]` | **A** — but see 6.4 |
+| F8 | Defaulter list | `feeDefaulters` collection | rows keyed `studentId` | **C — display SRNO** |
+| F9 | Fee receipt | `feeReceipts` | `studentId` | **C — display SRNO** |
+| F10 | Fee history / reports | `studentId` | **C — display SRNO** |
+| F11 | Transaction search | `Fees::search_transaction()` `:7040` | receipt/transaction number | **A** |
+| F12 | Parent fee workflow | Parent app, authenticated child identity | **D — no lookup**, §16 |
+
+### 6.2 F1 — `lookup_student()` · the single most valuable change
+
+**Current behaviour.** The counter has one input, labelled *"Student ID"*
+(`fees_counter.php:92-97`), posting to `lookup_student`, which does exactly one read and returns
+`user_id / name / father_name / class / section`. Typing `12` today returns
+`Student '12' not found` — the operator must go and look the Student ID up by hand.
+
+**Why SRNO belongs here.** This is the literal scenario in §1 and §5 of the brief: a student at the
+fee counter says "my SR Number is 12". The school issued that number, prints it in its own register,
+and the parent knows it. Forcing the operator to translate it into `STU0012` is the friction this
+phase exists to remove. It is also the highest-frequency student-identification event in the whole
+product.
+
+**How Student ID stays canonical.** The endpoint resolves SRNO → Student ID **before** loading the
+student, then continues on the existing line unchanged. The JSON response still returns
+`user_id` = the Student ID, which is what the whole downstream counter flow (`FC.userId`,
+`fetch_months`, `submit_fees`) already consumes. **No downstream file changes.**
+
+| Metric | Student ID input | SRNO input |
+|---|---|---|
+| Reads | **1** (unchanged) | **2** (`srNoIndex` + `students`) |
+| Writes / Queries / Round trips added | 0 / 0 / 0 | 0 / 0 / **+1** |
+| N+1 risk | none | none — both are single doc-id fetches |
+| Index required | none | **none** (doc-id fetch) |
+| Rules change | none | none — server-side, Admin SDK |
+| Latency | unchanged | **+1 sequential read (~1 Firestore RTT), only on the SRNO path** |
+
+**This is the only place in the entire plan that adds a Firestore read**, and it adds it only when
+the operator types something that would otherwise have failed outright.
+
+**Recommended response addition:** return `srNo` and `resolvedVia` so the UI can confirm *"Found via
+SR No. 12 → STU0012"*. Zero extra cost — `srNo` is already on the student document just loaded.
+
+### 6.3 F2 — `_searchByName()` · free, and it fixes a real gap
+
+**Current behaviour** (`Fees.php:2833-2882`): queries **every student in the school**, then filters
+in PHP against a haystack of `name + studentId + fatherName + className + section`. **`srNo` is not
+in the haystack**, so an operator who types `12` into Browse gets class-8 and section matches but
+never the student whose SR Number is 12.
+
+**Why SRNO belongs here.** Browse is the operator's fallback when direct entry fails; excluding the
+identifier the school actually uses makes the fallback useless for exactly the case it is needed.
+
+**Cost: ZERO.** The documents are already fully downloaded and already contain `srNo`. This is a
+one-line change to a string concatenation, plus returning `sr_no` in the result row so the modal can
+show it. **No new read, no new query, no new round trip.**
+
+⚠ **Pre-existing latency defect, reported not fixed (§26):** `_searchByName()` performs an
+**uncached full-collection scan on every search**, unlike `Sis::search_student()` (90 s cache) and
+`Transport_service::searchStudents()` (300 s cache). On a 2,000-student school that is 2,000 document
+reads per keystroke-batch. **This phase must not make it worse and does not — but it should not be
+mistaken for acceptable.** Recorded as **P11.2-N1**.
+
+### 6.4 F7 — concessions: leave the key, consider the picker
+
+`Fee_concessions.php` is exemplary and must not be altered: `student_id` POST →
+`safe_path_segment()` → `_student_belongs_to_school()` ownership guard (`:126-149`) → queries keyed
+`['studentId','==',…]`. **Classification A for the endpoint.** If the *UI* that feeds it uses the
+shared student picker, it inherits SRNO search for free with no controller change.
+
+## 7–13. Other Module Audits
+
+### 7. Attendance — **A / C**
+Keyed by `studentId` throughout (`Attendance.php` — 3 `['studentId','==',…]` predicates). Students are
+selected by **class/section roster**, not by typing an identifier, so there is no lookup box to
+extend. Marking attendance by typing an SR Number would be slower than the roster, not faster.
+**Recommendation: no lookup change. SRNO may be displayed on the roster row (C) — free, the doc is
+loaded — but this is cosmetic and NOT proposed as MUST.**
+
+### 8. Examination — **A**
+Exams are configured per class/section/subject; students enter through rosters. No student-identifier
+entry point exists. **No change.**
+
+### 9. Results — **A / C**
+Result rows key on `studentId`; `ResultDoc` already carries `rollNo` for display. Result entry is
+roster-driven. **No lookup change.** SRNO on a printed report card is a separate document-design
+question and was already answered "leave as-is" in Phase 11 §11.
+
+### 10. Transport — **B (free)**
+`Transport::search_students()` `:1006` → `Transport_service::searchStudents()` `:3496`, which filters a
+**300 s cached in-memory index** on `name` and `id` only. Assigning a student to a route is a genuine
+office workflow where the school knows its own SR Number. **Cost: zero reads** — `srNo` is added to
+the cached index at build time (the build already reads the full document) and to the match. Old
+cache entries simply lack the key and expire within 5 minutes.
+
+### 11. Communication — **A**
+Recipients are chosen by class/section/role audience, not by individual identifier entry. Adding SRNO
+would not serve a real workflow. **No change.**
+
+### 12. Documents / Certificates / TC — **A, with a BLOCKER on Certificates**
+- Documents: keyed `studentId` via `Document_service` link/unlink. Roster/profile-driven. **No change.**
+- TC / Certificates *generation*: `Certificates.php:384/460` reads `Admission Number` as a **display**
+  field with a Student ID fallback — correct and unchanged.
+- ⚠ **`Certificates::get_students()` `:304-356` is RTDB-backed** —
+  `$this->firebase->get("Schools/{$school}/{$session}/{$classKey}/{$secNode}/Students/List")` and
+  `shallow_get()` are RTDB paths, returning only `uid => name`. **SRNO cannot be added here without
+  either reading RTDB (forbidden by the ZERO-RTDB hard line) or migrating this endpoint to Firestore
+  first.** Classification **E-blocked**. Recorded as **P11.2-N2**; see §23 and §31.
+
+### 13. Student 360 — **C**
+`Student360::view/{studentId}` `:181-214` is a canonical-Student-ID route, reached from the SIS search
+(§14). Since that search will accept SRNO, Student 360 becomes SRNO-reachable **with no change to
+Student360.php at all**. SRNO is already displayed in its Profile panel (`workspace.php:876`).
+**No change proposed.**
+
+## 14. Admin Panel Search / Dropdown / Autocomplete Audit
+
+The decisive structural finding: **five independent student-search implementations exist, and every
+one of them is an in-memory filter over an already-loaded (usually cached) school-scoped index.**
+
+| # | Implementation | Backing | Cached? | Currently matches | SRNO cost | Class |
+|---|---|---|---|---|---|---|
+| S1 | `Fees::_searchByName()` `:2833` | Firestore full scan | **No** | name, studentId, father, class, section | **0 reads** | **B** |
+| S2 | `Sis::search_student()` `:3307` | Firestore `schoolList` | **90 s** | name, uid, class, phone | **0 reads** | **B** |
+| S3 | `Transport_service::searchStudents()` `:3496` | Firestore `schoolWhere` | **300 s** | name, id | **0 reads** | **B** |
+| S4 | `Operations_accounting::search_students()` `:118` (used by **Library**, Hostel) | Firestore `firestoreQuery` | **300 s** | name, id | **0 reads** | **B (SHOULD)** |
+| S5 | `Gate_pass_service::searchStudents()` `:110` (Campus Access) | Firestore `schoolWhere` | **300 s** | **name only** | **0 reads** | **C** |
+| S6 | `Certificates::get_students()` `:304` | **RTDB** | no | class/section listing only | **blocked** | **E-blocked** |
+| S7 | `Sis::get_student()` `:3476` | doc read | — | `user_id` direct | **+1 read on SRNO** | **B** |
+| S8 | `Classes::fetch_section_students()` `:318` | Firestore query | no | roster listing | display only | **C — done in 11.1** |
+| S9 | `Homework::get_students_for_class()`, `Red_flags::get_students_for_class()` | roster | — | class/section | — | **A** |
+| S10 | Bulk import | file rows | — | phone / name+DOB | — | **A** (see §23) |
+
+**S2 is the highest-leverage free win.** `Sis::search_student()` is the panel's main student search and
+feeds Student 360, the profile and most admin navigation. Its cached snapshot keeps `$rawDocs[$uid]`
+— the **full document** — in memory (`:3417`), and the haystack is built at `:3419-3422`. Adding
+`srNo` is a one-line haystack change plus one field in the response row. **Zero reads.**
+
+**S5 (Campus Access) matches on name only** — it does not even match Student ID today. That is a
+pre-existing usability gap, not an SRNO problem; classified **C** (display SRNO in the result row)
+rather than **B**, to avoid quietly widening a security-adjacent gate-pass surface in this phase.
+
+## 15. Parent App Audit — **D, no change**
+
+Per §16 of the brief. The Parent App is authenticated **as the student** (UID == studentId), so there
+is nothing to look up: the child's identity is the session. Phase 11 already added Student ID, SRNO,
+Admission Number, Class, Section and Roll to the profile at **zero** additional reads.
+
+**No SRNO search should be introduced.** A parent has exactly one (or a few) children and reaches
+them through the existing sibling switcher; an SRNO box would add a Firestore read to serve no
+workflow. **No genuine parent-facing SRNO lookup workflow was found.**
+
+## 16. Teacher App Audit — **D for search, C already done**
+
+Per §17. The Teacher App's student list is **already scoped to the teacher's assigned class/section**
+— a bounded roster, typically 20-60 students, already fully downloaded and already searchable by
+name and (as of Phase 11) by roll number.
+
+**No SRNO search is warranted, and I recommend against it.** A teacher who can already see the whole
+roster gains nothing from typing a register number, and the app's search is a local in-memory filter
+with no server round trip — adding SRNO would mean either binding SRNO into the *search index* (free,
+but useless) or a Firestore lookup (a new read for no workflow). **If a teacher genuinely needs SRNO,
+they read it off the detail panel, which Phase 11 already added.**
+
+The one arguable case — a teacher fielding a parent phone call who is given an SR Number — is served
+by the existing detail panel display plus the roster's name search. **Not proposed.**
+
+## 17. Admission Audit — **A**
+
+Admission *creates* the SRNO; it does not look it up. `allocateNext()` (new) and `claim()`
+(historical import) are the only paths. Adding an SRNO lookup to admission would invite exactly the
+mistake §22 forbids — operators trying to "assign" a number. **No change.**
+
+The one existing lookup is correct and stays: `Sis.php:4708` uses `resolve()` as a **pre-flight
+duplicate check** before burning a Student ID during historical import.
+
+## 18. Re-admission Audit — **PASS, and it is the reason the design is safe**
+
+`Sr_no_service::resolve()` returns **only** `currentStudentId`, never historical owners — by explicit
+design (`:353-356`), with `historicalStudentIds` and `history[]` reserved for Student Trail.
+
+Traced against the §12 scenario:
+
+| Step | `srNoIndex/{schoolA}_12` state | `resolve("12")` returns |
+|---|---|---|
+| First admission | `currentStudentId: STU0001`, `history: [claimed]` | `STU0001` |
+| Withdrawal (soft) | unchanged | `STU0001` |
+| **Re-admission** — `Readmission::confirm()` → `relink()` | `currentStudentId: STU0047`, `historicalStudentIds: [STU0001]` | **`STU0047`** ✔ |
+
+**The old Student ID can never be returned as the current operational student.** This is a structural
+property of the existing index, not something the dual-lookup feature needs to enforce. **Explicit
+test required — §28 T7.**
+
+Hard-delete note: Phase 11 added `currentOwnerDeleted` to `srNoIndex`. `resolve()` **ignores** it and
+would still return a Student ID whose document no longer exists. The caller's `fs->get('students',…)`
+then returns null and the operator sees "not found" — correct behaviour, no crash. Worth an explicit
+test (**T8**) and, optionally, a clearer message.
+
+## 19. Promotion Audit — **PASS**
+
+Re-verified this pass by scanning `execute_promotion()`: **zero** occurrences of `srNo`,
+`admissionNumber`, `Admission Number`, `apaarId`, `previousStudentId`, `rollNo` or `Roll No`. The
+`srNoIndex` document is never touched by promotion, so `resolve("12")` returns the same Student ID
+before and after. Class/Section/Roll change; the lookup does not care. **No change needed. Test T6.**
+
+## 20. Multi-Tenant Isolation
+
+| Requirement (§15) | Status | Why |
+|---|---|---|
+| School A + SRNO 12 → STU0012 | **PASS by construction** | doc id `{schoolA}_12` |
+| School B + SRNO 12 → STU0456 | **PASS by construction** | doc id `{schoolB}_12` |
+| School A + SRNO 12 **never** returns STU0456 | **PASS** | different doc id; a miss returns `not_found`, never a fallback |
+| No client-controlled schoolId | **PASS** | `Firestore_service` schoolId set in `MY_Controller` from session + claims; `docId()` `:178-181` is the only path |
+| No global SRNO query | **PASS** | `resolve()` is a doc-id **fetch**, not a query — a global SRNO query is not merely avoided, it is not expressible through this API |
+| No cross-tenant leakage | **PASS** | see above; also `Fee_concessions::_student_belongs_to_school()` shows the ownership-guard pattern already in use |
+
+**Defence in depth to preserve:** after resolving SRNO → Student ID, the caller loads
+`students/{schoolId}_{studentId}`. Even a hypothetically corrupt index entry pointing at a foreign
+Student ID would produce a **miss**, not a leak, because the student read is itself tenant-prefixed.
+**This property must be preserved in implementation — never load a student by bare document id.**
+
+## 21. Security / Rules
+
+| Item | Finding |
+|---|---|
+| `firestore.rules` change | **NONE REQUIRED.** `srNoIndex` is `allow read, write: if false` (`:1069`); all resolution is server-side via the Admin SDK, which bypasses rules. No client ever reads the index. |
+| `firestore.indexes.json` change | **NONE REQUIRED.** Doc-id fetch, not a query. |
+| Pull/reconcile process | **Not triggered** — since no rules/index edit is proposed, §19's stop-and-pull requirement does not activate. If implementation ever needs one, it stops first. |
+| Endpoint authorization | Unchanged. `lookup_student` keeps `_require_role(VIEW_ROLES, 'lookup_student', 'Fees', 'view')`; `search_student` keeps its Fees/view gate; `Sis::search_student` keeps SIS/view. **No gate is widened.** |
+| New enumeration surface? | **Marginal and bounded.** An operator who can already search every student in the school by name gains the ability to probe SRNO 1..N. Since the same user can already list the entire roster through Browse, this discloses nothing new. **It does not extend to another tenant.** |
+| Rate limiting | Not currently applied to `lookup_student`; unchanged by this phase. Noted, not proposed. |
+| APAAR | **Untouched.** Not a lookup key, not in any search haystack, not in any proposed response. §24. |
+| Login | **Untouched.** No auth path reads SRNO. §11 satisfied trivially — nothing to change. |
+
+## 22. Roll Number Compatibility
+
+Roll Number is **not** part of this phase's lookup design and must not become one. It is
+School + Session + Class + Section scoped and **not unique school-wide**, so "find student by roll
+12" is inherently ambiguous — it could match one student per section across the whole school.
+
+**Explicitly excluded from all proposed search haystacks.** Adding it would silently create the
+global-uniqueness assumption §14 of the brief forbids.
+
+Phase 11 already made Roll Number display safe end-to-end (alphanumeric `A12`, `B-07`, blank → `—`)
+in the Teacher app and the ID card. **No further Roll Number work is proposed or needed here.**
+
+Note the collision risk in terminology, which the implementation must not conflate: the dead mock
+`views/studentlist.php` uses "Sr No" to mean a **row counter**, and `section_students.php` uses
+"S.No" for the same. Neither is SRNO.
+
+## 23. Sibling Dependency (§20)
+
+**SIB-B1 RE-VERIFIED AGAINST CURRENT SOURCE — STILL LIVE, UNCHANGED (2026-08-14).**
+
+`Sis.php:4600-4632`, read this pass:
+
+```php
+$phone10 = preg_replace('/\D+/', '', (string) ($rowData['Phone Number'] ?? ''));
+if ($dupPolicy !== 'create') {
+    if ($phone10 !== '' && strlen($phone10) === 10) {
+        if (isset($seenPhones[$phone10])) {
+            $existingId = $seenPhones[$phone10]; $dupReason = 'duplicate phone within file';
+        } else {
+            $dbId = $this->_existingStudentIdByPhone($phone10);
+            if ($dbId) { $existingId = $dbId; $dupReason = 'existing student (phone match)'; }
+        }
+    }
+    if ($existingId) {
+        if ($dupPolicy === 'update') { $this->_updateExistingStudent($existingId, $rowData); … }
+        else { $duplicates[] = …; }
+        continue;                                 // <-- second sibling never created
+    }
+}
+```
+
+Two siblings sharing a parent phone: under `skip` the second child is **silently discarded**; under
+`update` the second child's data **overwrites the first child's record**. **Confirmed HIGH / data
+loss, live today.**
+
+**Per §20 this is NOT fixed here, NOT silently patched, and does NOT influence the SRNO design.**
+It is recorded as a separate workstream item requiring its own authorization (it is Q2 of the
+sibling report's §27, still unanswered).
+
+**One-directional interaction worth stating:** a school importing siblings *with* SR Numbers in
+historical mode hits the SRNO claim **after** this dedup block (`:4812`), so the discarded sibling
+never reaches SRNO allocation. **SIB-B1 therefore silently reduces SRNO coverage** — a second reason
+to fix it, but still not this phase's job.
+
+## 24. APAAR Boundary (§21)
+
+- **Not a lookup key.** Not proposed in any search haystack or resolve path.
+- **Not in operational search.** No proposed response field includes it.
+- Masking + audited-reveal policy (`Sis::apaar_reveal()`) **unchanged**.
+- `Apaar_service::resolve()` exists but is used only for import pre-flight duplicate detection
+  (`Sis.php:5577`) — **server-side, never operator-facing. Not extended.**
+- The Student 360 plaintext-APAAR finding (**P11-N1**, Phase 11 §17) remains **open and separate**,
+  explicitly not addressed here.
+
+## 25. Latency / Firestore Cost Analysis
+
+| Proposed change | Reads | Writes | Queries | Round trips | N+1 | Duplicate student read | Index | Rules |
+|---|---|---|---|---|---|---|---|---|
+| **F1** `Fees::lookup_student()` — Student ID input | **0** added | 0 | 0 | **0** | none | no | none | none |
+| **F1** — SRNO input | **+1** | 0 | 0 | **+1** | none | **no** — resolve returns an ID, student loaded once | none | none |
+| **F2** `Fees::_searchByName()` haystack | **0** | 0 | 0 | 0 | none | no | none | none |
+| **S2** `Sis::search_student()` haystack | **0** | 0 | 0 | 0 | none | no | none | none |
+| **S3** Transport search index + haystack | **0** | 0 | 0 | 0 | none | no | none | none |
+| **S4** Library/Hostel search haystack | **0** | 0 | 0 | 0 | none | no | none | none |
+| **S7** `Sis::get_student()` — SRNO input | **+1** | 0 | 0 | +1 | none | no | none | none |
+
+**Total across the whole phase: +1 read on exactly two endpoints, only on the SRNO branch.**
+Everything else is free.
+
+**The anti-pattern the brief warns about in §18 is explicitly avoided:**
+
+```
+BAD  (not proposed):  load student → read srNoIndex → read student again
+GOOD (proposed):      resolve srNoIndex → studentId → load student ONCE
+GOOD (proposed):      already-loaded student list → display/match srNo directly, 0 reads
+```
+
+**Caching:** the SRNO branch deliberately adds **no** new cache. The index document is tiny and read
+at most once per operator lookup; a cache would introduce staleness on re-admission relink for no
+measurable gain.
+
+**Pre-existing latency debt found, reported not fixed (P11.2-N1):** `Fees::_searchByName()` is the
+only uncached full-collection student scan of the five implementations. It should adopt the
+`Sis::search_student()` 90 s snapshot pattern. **Separate work; not this phase.**
+
+## 26. UI/UX Recommendations
+
+**One box, not two.** Because the token shapes are disjoint (§1b), a mode selector would be pure
+friction. Recommended changes, minimal:
+
+1. **Relabel** `fees_counter.php:92` from `Student ID *` to **`Student ID or SR No. *`**, and the
+   placeholder to *"Type Student ID or SR No. & press Enter…"*.
+2. **Confirm the resolution path** in the result panel: when `resolvedVia == 'srNo'`, show
+   *"SR No. 12 → STU0012"*. Operators must see which identifier matched — silent resolution is how
+   the wrong student gets charged.
+3. **Show SR No. in Browse results** as its own column, next to the existing Student ID pill.
+4. **Distinct not-found messages.** `SR No. 12 not found in this school` reads very differently from
+   `Student '12' not found` and tells the operator which register to check.
+5. **Do not autocomplete across the boundary** — no "did you mean STU0012?" suggestion from a failed
+   SRNO. Guessing at student identity in a payment flow is unacceptable.
+
+**Explicitly NOT recommended:** a global "search by SRNO" in the top navigation, SRNO in the Parent
+or Teacher app search, and any SRNO entry field on an admission form.
+
+## 27. Backend / Service Recommendations
+
+1. **Reuse `Sr_no_service::resolve()` unmodified.** Do not create a second index, a second resolver,
+   or per-controller SRNO logic (§10).
+2. **Add exactly one shared adapter** — `_resolveStudentRef()` in `MY_Controller` (§5). Every
+   operational entry point calls it; nothing re-implements the shape test.
+3. **Never load a student by bare document id.** Always `students/{schoolId}_{studentId}` so tenant
+   prefixing remains the second line of defence (§20).
+4. **Resolve before load, never after.** One student read, always.
+5. **Return `resolvedVia`** from every endpoint that accepts both, so the UI can be honest.
+6. **Do not write SRNO into any module record.** No Fees, Attendance, Results, Transport,
+   Communication or Documents document gains an SRNO field.
+7. **Do not cache resolution** (§25).
+8. **Log SRNO-path lookups at `info`** for a soak period — but note `log_message('warning', …)` is
+   silently dropped in this codebase (75 known sites); use `info` or `error`.
+
+## 28. Tests Required
+
+| # | Test | Type |
+|---|---|---|
+| T1 | `lookup_student("STU0012")` → STU0012, **1 read**, response identical to today | regression |
+| T2 | `lookup_student("12")` → STU0012 via SRNO, `resolvedVia='srNo'` | unit + integration |
+| T3 | `lookup_student("0012")` → STU0012 (leading-zero normalisation) | unit |
+| T4 | `lookup_student("99999")` (unknown SRNO) → clean not-found, **no** fallback to a Student ID | unit |
+| T5 | `lookup_student("")` / `"abc"` / `"STU9999"` → existing behaviour unchanged | regression |
+| **T6** | Promotion: SRNO 12 resolves to the same Student ID before and after | integration |
+| **T7** | **Re-admission: after relink, SRNO 12 → STU0047, NOT STU0001** | integration |
+| **T8** | Hard-deleted owner: `currentOwnerDeleted` entry → resolves to an ID whose student read misses → clean not-found, no crash | unit |
+| **T9** | **Multi-tenant: School A + 12 → STU0012; School B + 12 → STU0456; A never returns B's** | **security, mandatory** |
+| **T10** | No client-supplied schoolId can influence resolution | **security, mandatory** |
+| T11 | Browse search on `12` returns the SRNO-12 student, **0 added reads** | integration |
+| T12 | `Sis::search_student` on `12` matches SRNO without breaking name/phone/class matching | regression |
+| T13 | Roll Number is NOT matched by any search (no global-roll assumption introduced) | regression |
+| T14 | APAAR is absent from every search haystack and response | security |
+| T15 | Read-count assertion on the Student ID path — must remain exactly 1 | performance |
+
+T7, T9 and T10 are release-blocking.
+
+## 29. Files to Modify (if authorized)
+
+| File | Change | Cost |
+|---|---|---|
+| `application/core/MY_Controller.php` | **+1 method** `_resolveStudentRef()` | — |
+| `application/controllers/Fees.php` | `lookup_student()` resolve step; `_searchByName()` haystack + `sr_no` in row | +1 read (SRNO only) / 0 |
+| `application/views/fees_counter.php` | label, placeholder, resolved-via confirmation, Browse column | 0 |
+| `application/controllers/Sis.php` | `search_student()` haystack + `sr_no` in row; `get_student()` resolve step | 0 / +1 |
+| `application/libraries/Transport_service.php` | `srNo` in the cached index + haystack | 0 |
+| `application/libraries/Operations_accounting.php` | `srNo` in the cached index + haystack (Library/Hostel) | 0 |
+| `tests/Unit/SrNoDualLookupTest.php` | **NEW** — T1-T15 | — |
+
+**Seven files. One new method. No new collection, service, index or rule.**
+
+## 30. Files Explicitly NOT to Modify
+
+- `Sr_no_service.php` — the resolver is correct; reuse without touching.
+- `Apaar_service.php`, `Admission_no_service.php`, `Id_generator.php` — out of scope.
+- `Readmission.php` — relink semantics are correct and load-bearing for T7.
+- `firestore.rules`, `firestore.indexes.json` — **no change required** (§21).
+- Every module's data layer — Fees demands/receipts/allocations, Attendance, Results, Transport,
+  Communication, Documents, Certificates, TC. **`studentId` stays the key everywhere.**
+- `Certificates::get_students()` — RTDB-blocked (§12); do not touch without a migration decision.
+- `Sis.php:4600-4632` — SIB-B1. **Do not fix in this phase** (§23).
+- `student360/workspace.php` — the open APAAR finding is separate (§24).
+- Parent App and Teacher App — **no change proposed at all** (§15, §16).
+- Any authentication or login path (§11).
+
+## 31. Risks
+
+| # | Risk | Severity | Mitigation |
+|---|---|---|---|
+| R1 | An operator mistakes an SRNO for a Student ID and charges the wrong student | **HIGH** | Token shapes are disjoint, so mis-routing is impossible; plus the mandatory "resolved via" confirmation (§26.2) and the existing name/class confirmation before payment |
+| R2 | A school's SRNO series overlaps a numeric pattern the operator expects to be something else | LOW | Digits-only inputs have no other meaning in this box today — they fail outright |
+| R3 | Adding SRNO to searches slows them down | **NONE** | Zero reads added; it is a string concatenation in an existing loop |
+| R4 | Cached index shape change (Transport, Library) breaks on old cache entries | LOW | Missing key reads as `''`; entries expire in 300 s |
+| R5 | Re-admission returns the old Student ID | **HIGH if wrong** | Structurally prevented (§18); blocking test T7 |
+| R6 | Cross-tenant resolution | **CRITICAL if wrong** | Structurally prevented (§20); blocking tests T9/T10 |
+| R7 | Scope creep into "SRNO everywhere" | MEDIUM | §14 classification is explicit; only 6 surfaces are MUST/SHOULD |
+| R8 | SIB-B1 interacts with SRNO coverage | MEDIUM | Documented (§23), not fixed here, no design coupling |
+| R9 | `_searchByName()` full scan degrades further as schools grow | MEDIUM | Pre-existing (P11.2-N1); unchanged by this phase; recommended as separate work |
+
+## 32. Implementation Phases (proposed, NOT started)
+
+- **Phase A — Foundation.** `_resolveStudentRef()` + unit tests T1-T5, T9, T10. No UI, no behaviour
+  change. Independently verifiable and independently revertible.
+- **Phase B — Fees direct entry (the requirement's core).** `lookup_student()` + counter UI. Tests
+  T1-T8, T15.
+- **Phase C — Free search wins.** `_searchByName()`, `Sis::search_student()` haystacks + response
+  fields. Tests T11-T14.
+- **Phase D — Secondary modules (SHOULD).** Transport, Library/Hostel cached indexes.
+- **Phase E — Deferred.** Certificates (RTDB-blocked), Campus Access (C only), any Attendance/Results
+  display-only SRNO.
+
+Phases A-C deliver the entire stated requirement. D is convenience. E is blocked or optional.
+
+## 33. Release Gates
+
+1. All 15 tests pass; **T7, T9, T10 are blocking**.
+2. Student ID path read-count **provably unchanged** (T15).
+3. `php -l` clean on every changed file.
+4. PHPUnit at or below the documented pre-existing baseline (currently 10 failures).
+5. No rules or index change — **verified by `git status` on `firebase-rules/`**.
+6. No new RTDB reference anywhere.
+7. No SRNO written to any module record — verified by grep.
+8. Cross-module verification re-run: still **0** non-Student-ID query keys.
+9. Operator UAT at the fee counter: both paths reach the same student; the resolved-via confirmation
+   is visible.
+10. Nothing committed or pushed without explicit per-change authorization.
+
+---
+
+## Decision Matrix
+
+### MUST IMPLEMENT
+- **M1** `_resolveStudentRef()` shared adapter (`MY_Controller`).
+- **M2** `Fees::lookup_student()` dual lookup — **the literal requirement**. +1 read on the SRNO path.
+- **M3** `Fees::_searchByName()` SRNO in haystack + result. 0 reads.
+- **M4** Fee counter UI: label, placeholder, resolved-via confirmation, Browse column.
+- **M5** Tests T1-T15.
+
+### SHOULD IMPLEMENT
+- **S1** `Sis::search_student()` SRNO in haystack — the panel's main student search. 0 reads.
+- **S2** `Sis::get_student()` dual lookup — consistency with Fees. +1 read on the SRNO path.
+- **S3** `Transport_service::searchStudents()` — genuine office workflow. 0 reads.
+- **S4** `Operations_accounting::search_students()` (Library, Hostel). 0 reads.
+
+### FUTURE
+- **F1** Certificates student list — **blocked on an RTDB→Firestore migration decision** (P11.2-N2).
+- **F2** `Fees::_searchByName()` caching (P11.2-N1) — pre-existing latency debt.
+- **F3** Campus Access search: add Student ID *and* SRNO matching (today it matches name only).
+- **F4** Display-only SRNO on attendance/results rosters.
+
+### DO NOT TOUCH
+- Student ID generation, SRNO generation/allocation, Admission Number, Roll Number semantics.
+- Re-admission relink, promotion, login/authentication.
+- Any module's `studentId` foreign key.
+- SIB-B1 (§23), Student 360 APAAR (§24), `Operations_accounting` RTDB ledger paths.
+- Parent App, Teacher App.
+- `firestore.rules`, `firestore.indexes.json`.
+
+---
+
+## Out-of-Scope Findings (§26 zero-surprise reporting)
+
+| ID | Severity | Finding |
+|---|---|---|
+| **P11.2-N1** | MEDIUM | `Fees::_searchByName()` is an **uncached full-collection student scan on every search** — the only one of five implementations without a cache. Scales linearly with school size. Pre-existing; not worsened; not fixed. |
+| **P11.2-N2** | MEDIUM | `Certificates::get_students()` reads **RTDB** (`Schools/{school}/{session}/…`), violating the ZERO-RTDB line and blocking SRNO there. Pre-existing; not touched. |
+| **P11.2-N3** | LOW | `Sr_no_service::init()` is called with `$school_id` in two places and `$this->parent_db_key` in another. Immaterial to `resolve()` (which uses `fs->docId()`), but the inconsistency could matter to a future `claim()` caller. Not changed. |
+| **SIB-B1** | **HIGH** | Bulk-import sibling data loss — **re-verified live** (§23). Separate workstream. |
+| **P11-N1** | MEDIUM | Student 360 renders APAAR unmasked and unaudited at `SIS/view` (Phase 11 §17). Still open. |
+
+---
+
+**AUDIT COMPLETE. NO CODE WAS MODIFIED. AWAITING AUTHORIZATION PER §24.**

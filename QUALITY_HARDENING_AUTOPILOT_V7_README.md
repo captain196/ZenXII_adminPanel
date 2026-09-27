@@ -65,7 +65,7 @@ Then run a fresh PLAN to scope in the remaining modules (Fees, etc.).
 
 1. **Verify file layout:**
    ```
-   c:\xampp\htdocs\Grader\school\
+   c:\xampp\htdocs\ZenX\school\
    ├── QUALITY_HARDENING_AUTOPILOT_V7_LOGIC.md
    ├── QUALITY_HARDENING_AUTOPILOT_V7_INSTANCE.yaml
    ├── QUALITY_HARDENING_AUTOPILOT_V7_README.md

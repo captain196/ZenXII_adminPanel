@@ -5,6 +5,65 @@ Seeded 2026-05-21 (cycle 1). 16 findings merged from cycles 1-5 (2026-05-21).
 
 ---
 
+## 🔴 OPEN — Driver capability flag has no admin UI (found 2026-08-11)
+
+**Severity:** HIGH · functional dead end · Transport / HR boundary
+**Status:** OPEN. Worked around for ONE named staff member; the defect itself is unfixed.
+
+### What happens
+
+The entire driver flow — assigning a driver to a vehicle, creating a trip for them, the
+Teacher/Driver app's Transport module — is gated on `flags.can_drive_transport` on the **staff
+document**, `Transport_service::_validateDriverReadiness()`
+(`application/libraries/Transport_service.php:8038`):
+
+```php
+$canDrive = !empty($staff['flags']['can_drive_transport']);
+if (!$canDrive) throw new \InvalidArgumentException(
+    "Staff {$staffId} does not have transport-driving enabled (flags.can_drive_transport).");
+```
+
+The driver app surfaces this as *"Transport module is available only to staff who have
+transport-driving enabled in HR"* (`DriverHomeScreen.kt:92`), and the admin Drivers tab says
+*"No drivers — enable a staff's flags.can_drive_transport in HR"*
+(`application/views/transport/index.php:1347`).
+
+**No such control exists in HR, or anywhere else.** Verified every writer:
+
+| Candidate | Why it doesn't work |
+|---|---|
+| Org role modal `CAP_FLAGS` (`application/views/org/index.php:359`) | lists `can_manage_transport`, `can_manage_library`, `can_handle_fees`… — `can_drive_transport` is **absent** |
+| `Org.php:175-190` | writes `schools.staffRoles[roleId].flags` — a **role** flag; the gate reads the **staff doc's** flags. Different location |
+| `Transport_service::updateDriverMeta()` | deliberately merges only `driver_meta.*`; refuses to touch `flags` (HR owns them) |
+| grep `can_drive_transport` across `application/` | only test probes ever write it |
+
+So a school cannot enable a driver at all. Both instruction messages point at a control that
+does not exist.
+
+### Likely root cause
+
+`ROLE_DRIVER` (`application/controllers/Staff.php:96`) carries `'flags' => ['can_manage_transport']`
+— almost certainly a typo for `can_drive_transport`. (That flag is inert for authorization: the
+`DOMAIN_BY_FLAG` heuristic in `Rbac_levels_backfill.php` loops `foreach ($perms as $m)` and
+`ROLE_DRIVER` holds `'permissions' => []`, so no level is ever produced. Misleading label, not a
+privilege leak.)
+
+### Proper fix (NOT done — HR/Staff is under the module-release hold)
+
+Add a **staff-level** "Can drive transport" capability with a save path, so schools enable their
+own drivers. Needs cross-module impact analysis first: the flag is read by trip creation, driver
+assignment, the driver listing, and the Teacher app.
+
+### Workaround applied 2026-08-11
+
+`flags.can_drive_transport = true` written to **`STA0001` (Vipul TIwari, ROLE_DRIVER, IIT Kanpur
+`SCH_D94FE8F7AD`) only**, to unblock F13.1/F13.2 manual UAT. One field; prior flags preserved;
+reversible. Performed via `Transport_uat_accounts::enable_driving` — a temporary stopgap that
+requires an explicit staffId, refuses anyone without `ROLE_DRIVER`, and is dry-run unless
+`--commit`. **Delete that controller once the real UI lands.**
+
+---
+
 ## ✅ B2.3.4-A Dashboard Analytics — MODULE COMPLETION (2026-06-03)
 
 **Status:** SHIPPED · 7 spokes + module-completion polish on origin/ankit/my-feature.
@@ -1939,6 +1998,221 @@ BUG-052 | P1-HIGH | data-integrity / cross-session synchronization | fixed-unver
 
 ---
 
+## v7 — campus_access module onboarding, DISCOVERY cycle 1 (2026-08-10)
+
+Module onboarded standalone (sequence_position 10, out-of-band per "new module appears" maintenance
+protocol) — positions 1-9 and all current_active_carries (BUG-052 T5/T6/T7, BUG-043/044/045, BUG-050,
+staff_hardening HOLD, etc.) untouched. PATH-EXISTENCE pre-check clean (9/9 surfaces), both surfaces
+promoted verified: true. First DISCOVERY pass across D1/D2/D3/D4/D5/D7/D9/D11 (D6 accessibility and
+D10 N/A — single-platform module, not in applicable_dimensions). Module already carries a 39-section
+manual adversarial audit + correction pass (2 HIGH closed) + 90 probe assertions (Campus_access_probe_core.php)
++ 13 verifier gates (Campus_access_verifier.php) — this cycle targeted regression/gaps in code written
+*after* that audit (this session's camera/modal/loading-state/listToday work) plus the 8 dimensions'
+usual defect classes. **HALT_REQUIRED for fix authorization — all 6 filed at triaged, no fixes applied.**
+
+**FIX cycle 1 (2026-08-10, same session): operator authorized closure of all 6 findings.** All 6 now
+FIXED — VERIFIED (BUG-053 P0, BUG-054/055 P1, BUG-056/057/058 P2) — see each entry above for
+root_cause/fix/test/verification/regression detail. Zero open P0/P1/P2 findings remain from this
+DISCOVERY cycle. `Campus_access_concurrency_probe.php` added as a 3rd permanent verification file
+(concurrency proof for BUG-053, genuine multi-process race — see BUG-053's `concurrency_test` note).
+Full regression: 90/90 probe + 13/13 verifier gates + PHPUnit Unit suite (569 tests, 10 pre-existing
+unrelated failures matching/exceeding the documented baseline — none touch any Campus Access file)
++ dedicated tenant-isolation re-check on the one rewritten code path not already covered by [6]/[15].
+Everything remains UNCOMMITTED / UNPUSHED / UNDEPLOYED (including the BUG-054 index fix, which cannot
+take live effect without `firebase deploy --only firestore:indexes` — explicitly out of scope).
+
+BUG-053 | P0-CRITICAL | concurrency | FIXED — VERIFIED
+  - discovered: 2026-08-10 by campus_access DISCOVERY cycle 1
+  - surface: admin-web — `application/libraries/Gate_pass_service.php`, method `recordApproval()` (was lines 360-444, write at line 442)
+  - reproduction: two concurrent `recordApproval()` calls (e.g. teacher approves, parent approves) both read the request doc via `_requireRequest()` before either write lands, each mutates its own in-PHP copy of the whole `approvals` map, then `updateEntity()` replaces the entire nested `approvals` field with its own stale snapshot — no CAS/optimistic-lock on the read-modify-write.
+  - observed: the second write's stale snapshot silently overwrites the first approver's decision. Worse: if a teacher **denies** (status → `denied`) concurrently with a parent-approval call that read the request before the denial landed, the parent's write recomputes `overall` from its stale "teacher: pending" view and persists `status: pending_approval` — silently undoing the denial. Subsequent follow-up approval calls are no longer blocked by the `status !== STATUS_PENDING` guard, so a denied request can be walked back to approved and released.
+  - expected: approvals map updates should be a targeted field-level merge (e.g. `approvals.teacher`, `approvals.parent` as separate dot-path field writes) or use CAS/transaction semantics so concurrent decisions can't clobber each other, and a `denied` status should be a terminal state no later write can revert.
+  - source_of_expectation: this module's entire design premise (per F-01 correction pass this session) is that gate-pass exits are "never auto-approved, always a human decision" with dual teacher+parent approval as the core safety mechanism — a race that can silently revert an explicit denial directly undermines that guarantee.
+  - impact: core dual-approval integrity. Confirmed NOT covered by the probe suite — probe assertions [9]/[10] exercise teacher-then-parent and teacher-deny sequentially (awaited, not concurrent), so this race has no regression coverage today. `Visitor_service`'s single-field status transitions (approvePass/denyPass/checkoutPass) do not share this shape and are not affected.
+  - operator_authorization: explicit `Apply` (2026-08-10) on the FIX_PLAN below, after reviewing the mechanism and accepted behavior nuance.
+  - fix_plan: reuse `Firestore_service::casUpdateEntity()` — the same optimistic-concurrency (currentDocument.updateTime) CAS primitive BUG-028 used for stream-mutation endpoints, NOT a new framework. Identity/permission/consent-field validation (doesn't depend on concurrently-mutable state — teacherStaffId is fixed at request creation) stays as a synchronous initial read + throws as before. The "still pending" check + approvals-map mutation + overall-status recompute moves inside the CAS mutator, which re-reads and re-decides from FRESH state on every retry attempt. `casUpdateEntity()`'s contract catches exceptions thrown inside the mutator (converts to a generic error, losing message specificity) — so validation that must surface a specific message stays outside the mutator; only the "no longer pending" abort (clean `return null` → `reason:'aborted'`) happens inside it, mapped back to the same `InvalidArgumentException` message as before.
+  - accepted_behavior_nuance: if a request is BOTH non-pending AND given an invalid role name, error message precedence changes slightly (role-slot validation now fires before the pending-status check, reversed from before) — doesn't affect real usage since the UI only ever sends known valid role names.
+  - fix_commit: NONE (uncommitted per standing "no commit without explicit permission" rule)
+  - applied_diff_summary: `application/libraries/Gate_pass_service.php` `recordApproval()` rewritten — ~40 lines changed in one method, one file. No schema change.
+  - verification: 2026-08-10, static + regression + genuine concurrency proof:
+      T1 ✓ `php -l` clean on Gate_pass_service.php
+      T2 ✓ 90/90 Campus_access_probe_core assertions pass, including [9]/[10]/[18] (the exact dual-approval / delegate / parent-consent scenarios this method serves)
+      T3 ✓ 13/13 Campus_access_verifier gates pass (CH-CAM-1..13)
+      T4 ✓ **concurrency proof** — see `concurrency_test` below. Upgraded from fixed-unverified-α: the race itself, not just the mechanism's precedent, is now directly demonstrated.
+  - concurrency_test: PHP has no threads and this stack has no pcntl on Windows, so "true" concurrency here means two genuinely separate OS processes — the same unit of concurrency real simultaneous HTTP requests get from two Apache/PHP-FPM workers. Built `application/controllers/Campus_access_concurrency_probe.php` (KEPT as a permanent 3rd verification file alongside probe_core/verifier — this is real, reusable regression coverage for a P0 concurrency guarantee, matching the module's own pattern of encoding closed defect classes into its regression suite). Coordinator seeds one fresh gate-pass request per iteration, then launches two `worker` child processes via non-blocking `proc_open()` — BOTH `proc_open()` calls happen before either pipe is read, so both are genuinely running concurrently (reading a pipe to completion first would serialize what's supposed to be parallel). Scenario: the SAME request's teacher slot is DENIED by one process while the parent slot is APPROVED by the other, fired concurrently — the exact failure mode BUG-053 documented (a parent-approval write racing a teacher-denial write must never silently revert the denial). Final state read via a THIRD fresh process (`verify` method) — necessary because `Firestore_rest_client`'s per-instance read memo (`getDocument()`'s "PERF: request-scoped read memo", invalidated only by writes through that SAME instance) would otherwise return the coordinator's own stale pre-worker snapshot from `createEarlyLeaveRequest()`'s return read.
+      - Debugged one harness-only false negative en route: an earlier version rebuilt the child processes' environment from `$_ENV` (often empty under XAMPP's default `variables_order`) + just `SCHOOL_ID`/`SESSION_YEAR`, which silently dropped whatever this Firestore client needs to resolve the right project/credentials — auth still succeeded (shared cross-process token cache) but every read came back empty. Fixed by passing `null` as `proc_open()`'s env parameter (full parent-environment inheritance) — not a defect in the module, a defect in the test's own env-passthrough.
+      - **Result: 15/15 iterations PASS** (2026-08-10, `SCHOOL_ID=SCH_D94FE8F7AD SESSION_YEAR=2026-27 php index.php campus_access_concurrency_probe run 15`). Both valid post-fix interleavings occurred repeatedly and naturally: 9× the parent's approval was cleanly ABORTED ("This request is no longer pending approval.") because the teacher's denial had already landed by the time the parent's CAS mutator ran; 6× the parent's approval landed first but was then correctly superseded by the teacher's denial via a clean CAS retry (final state: parent recorded as historical fact, but `status=denied`). In EVERY iteration, `final.status === 'denied'` and `final.approvals.teacher.status === 'denied'` — the original bug's outcome (denial silently lost, final landing on `pending_approval`) occurred ZERO times across 15 runs.
+  - tenant_isolation_check: separate ephemeral diagnostic (`Diag_tenant_check.php`, deleted after use) confirmed `recordApproval()`'s rewritten CAS code path is still tenant-safe: School B calling `recordApproval()` with School A's raw request id cleanly 404s ("Gate pass request {id} not found" — `docId()`'s `{schoolId}_{entityId}` prefixing means a cross-tenant id resolves to a different, nonexistent doc, not another school's real one), and School A's request was confirmed completely untouched afterward.
+  - rollback_strategy: Tier-1 full revert — `git checkout HEAD -- application/libraries/Gate_pass_service.php` — single command, uncommitted tree, single-file single-method change, no data migration; risk-free.
+
+BUG-054 | P1-HIGH | service-contract / observability | FIXED — VERIFIED
+  - discovered: 2026-08-10 by campus_access DISCOVERY cycle 1
+  - surface: admin-web — `firebase-rules/firestore.indexes.json` (campusAccessRequests composite indexes) vs. `application/libraries/Gate_pass_service.php` (`listPending()`/`listToday()`)
+  - root_cause: this session's earlier fix (documented inline in Gate_pass_service.php) switched `listPending()`/`listToday()` from ordering/filtering on `createdAt` (never written on this collection) to `updatedAt` (auto-stamped by `Firestore_service::setEntity()`) — but `firestore.indexes.json`'s two campusAccessRequests composite indexes (`schoolId==, status==, createdAt ASC` and `schoolId==, createdAt DESC`) were never updated to match, so every call hit `FAILED_PRECONDITION` and silently fell back to a full unindexed scan + error-log spam.
+  - fix (original, INCOMPLETE — see correction below): renamed the `fieldPath` in both existing index declarations from `createdAt` to `updatedAt`. At the time, reasoned (incorrectly) that a composite index can serve its trailing sort field in either direction via reverse-scan for ANY filter type, so the corrected `(schoolId ASC, status ASC, updatedAt ASC)` index would also serve `listToday()`'s open-backlog query (`status IN [...], updatedAt DESC`) with no third index needed. Also audited every OTHER Campus Access query for the same dead-field class of mistake: `muster()`'s `timestamp` (campusAccessEvents), `listWatchlist()`'s `addedAt`, and `visitPasses`' `requestedAt`/`checkInAt` are all confirmed genuinely written on their collections — this class of bug was isolated to the 2 `campusAccessRequests` entries.
+  - **correction (2026-08-10, same day, post-deploy): the reverse-scan assumption was WRONG for the `IN` + opposite-direction case.** After the operator deployed and both renamed indexes showed `[READY]` in `firebase firestore:indexes`, the `FAILED_PRECONDITION` fallback was STILL firing — one persistent hit per `listToday()` call. Isolated each of the 3 distinct query shapes individually against live Firestore: `status==` + `updatedAt ASC` (listPending's shape) → 0 fallback hits; no-filter + `updatedAt DESC` (listToday's unfiltered shape) → 0 fallback hits; **`status IN [pending_approval,approved]` + `updatedAt DESC` (listToday's open-backlog shape) → 1 fallback hit, confirmed the ASCENDING 3-field index does NOT get reused for it.** Added a genuinely new, empirically-justified third index — `(schoolId ASC, status ASC, updatedAt DESC)` — for that exact shape. Not speculative: derived directly from isolated per-query proof, not guessed in advance.
+  - test: wrote an ephemeral CLI diagnostic (`Diag_bug054.php`, deleted after use) that called `listPending()`/`listToday()` against real Firestore for the test tenant BEFORE the index fix — confirmed empirically: 3 `FAILED_PRECONDITION` log lines ("composite index MISSING for orderBy 'updatedAt'... ADD THE INDEX"), calls taking 4158ms/8318ms (real unindexed full-collection scans). Post-deploy, wrote a second ephemeral diagnostic (`Diag_bug054_isolate.php`, deleted after use) that called each of the 3 distinct query shapes directly against `Firestore_service::where()` to isolate which one(s) were still failing — see correction above.
+  - verification: JSON re-validated (`json_decode() !== null`) after each edit. **2026-08-10, operator ran `firebase deploy --only firestore:indexes --project graderadmin` from the terminal** (outside this fix window's original UNDEPLOYED scope, operator-initiated) — TWICE: once for the 2 renamed indexes, once more for the newly-added 3rd index. Both times, operator correctly declined the CLI's prompt to delete 14 unrelated live indexes (auditLogs/crmApplications/leaveApplications/galleryMedia/payments/auditArchive) that exist in production but aren't declared in the local `firestore.indexes.json` — pre-existing file/production drift, untouched both times, not this cycle's concern. Polled the live index state for ~10 minutes post-first-deploy (two 5-minute windows); both renamed indexes reached `[READY]` but the fallback persisted at exactly 1 hit/call throughout — the signal that led to the isolation test and the correction above. **Post-second-deploy: the new 3rd index reached `[READY]` after ~2 minutes (4×30s poll attempts) — the isolated `status IN [...] / updatedAt DESC` query dropped from 1 fallback hit to 0.** Final full end-to-end confirmation (`listPending()` + `listToday()` unfiltered + `listToday()` status-filtered, the 3 real call shapes the controller actually makes): **0 fallback hits total, response times 943ms/1855ms/1788ms** (down from the original 4158ms/8318ms unindexed scans). Re-ran the full regression suite one final time: 90/90 probe assertions, 13/13 verifier gates — clean. **BUG-054 is now genuinely, fully resolved end-to-end — not just locally-corrected-but-undeployed.**
+  - files_changed: `firebase-rules/firestore.indexes.json` (2 fieldPath renames + 1 new index + comments)
+  - regression: none — index-only change, no query code touched this cycle (query code was already fixed to `updatedAt` earlier this session); 90/90 probe + 13/13 verifier confirmed clean after the full deploy.
+  - open_question (not a separate finding, compounds this one): neither Gate_pass_service.php nor Visitor_service.php call `sessionWhere()` anywhere — all queries are `schoolWhere()` only, school-wide across all academic sessions. Unclear whether gate-pass/visitor events are intentionally session-agnostic (plausible for watchlist bans) or an oversight; not confident enough to file as its own bug, but it means the dataset behind this index grows without bound across sessions. Not addressed this cycle (out of the 6-bug scope).
+
+BUG-055 | P1-HIGH | UX / phantom-success | FIXED — VERIFIED
+  - discovered: 2026-08-10 by campus_access DISCOVERY cycle 1
+  - surface: admin-web — `application/views/campus_access/index.php` (`get()` JS helper), consumed by `visRefreshDesk`, `visRefreshGatePasses`, `visRefreshMuster`, `visRefreshLog`, `visRefreshWatchlist`, plus 3 live-typeahead helpers (`watchlist_check` preview, staff/student search)
+  - root_cause: `get(url, params)` resolved on ANY response (`fetch(...).then(r => r.json())`, no `r.ok`/`{status:'error'}` check) — unlike `postForm()`, which already checked both. A 403 (session expired), 500, or `json_error()` response was silently rendered by every caller as an empty, successful result.
+  - fix: `get()` now applies the EXACT same check `postForm()` already used — same contract (`json_success()`/`json_error()` in MY_Controller.php, confirmed by reading both), same rejected-promise shape, no second response architecture invented. Traced all 8 `get()` call sites first: the 5 core list views (`visRefreshDesk`/`GatePasses`/`Muster`/`Log`/`Watchlist`) ALL already end in `.catch(fail)` — they now surface real errors automatically with zero additional changes. The 3 live-typeahead helpers (watchlist preview, staff/student search) intentionally keep their existing soft-degrade `.catch()` (hide the suggestion dropdown) — correct UX for a live-as-you-type hint, not a phantom-success claim, left alone on purpose.
+  - test: `node --check` on the extracted inline `<script>` block (PHP echo tags replaced with placeholder literals first) — clean. Full probe suite re-run post-fix — 90/90, no regression on any of the 8 consuming call sites.
+  - verification: manual code trace confirms the contract match (`json_success()` HTTP 200 + `status:'success'`; `json_error()` non-200 + `status:'error'` + `message`) — a genuinely empty-but-valid list (`json_success(['items'=>[]])`) is correctly NOT treated as an error.
+  - files_changed: `application/views/campus_access/index.php` (`get()` function only)
+  - regression: none — probe suite 90/90 post-fix; no server-side controller code touched by this bug's fix.
+
+BUG-056 | P2-MEDIUM | security / data-classification | FIXED — VERIFIED
+  - discovered: 2026-08-10 by campus_access DISCOVERY cycle 1
+  - surface: admin-web — `application/controllers/Campus_access.php` (`watchlist_check`, gated `view`) vs. `Visitor_service.php` (`matchWatchlist()` returned the matched entry's `reason` field verbatim to any `view`-grade caller) vs. `firebase-rules/firestore.rules` (visitorWatchlist reads staff-only, reasons documented as never parent/student-visible)
+  - root_cause: `watchlist_list`/`watchlist_add`/`watchlist_deactivate` are all gated `manage`, but `watchlist_check` (the live front-desk preview during check-in) was gated only `view` while still returning the same sensitive `reason` text — a permission-grade mismatch for the same data class.
+  - fix: kept `watchlist_check` at `view` grade (it's the front-desk safety-warning path — requiring `manage` would break that workflow for any front-desk operator without `manage`), but now strips `reason` from the response unless `has_permission('Campus Access', 'manage')` is true — severity/matched status still surface (so a view-grade operator can still deny/escalate), only the specific safeguarding text is gated to manage. Frontend (`ciWatchFlag` in index.php) updated to show "ask a manage-level staff member for details" when `reason` is absent, instead of literal `undefined`.
+  - test: traced the controller change (`is_array($match) && !has_permission(...)` → `unset($match['reason'])`) against the existing `has_permission()` usage pattern already established in this same controller (`can_manage`/`can_edit` at lines 67-68) — same real RBAC check, not a bypass.
+  - verification: `php -l` clean; probe suite 90/90 (no assertion exercises `watchlist_check` directly, but no other assertion regressed); `Campus_access_verifier` CH-CAM-3 (RBAC precision) count moved from 28 to 29 `has_permission('Campus Access', ...)` checks, confirming the new check registered correctly with no bare-`Operations` fallback introduced.
+  - files_changed: `application/controllers/Campus_access.php` (`watchlist_check()`), `application/views/campus_access/index.php` (watchlist-preview rendering)
+  - regression: none — 90/90 probe, 13/13 verifier gates post-fix.
+
+BUG-057 | P2-MEDIUM | real-life-conditions | FIXED — VERIFIED
+  - discovered: 2026-08-10 by campus_access DISCOVERY cycle 1
+  - surface: admin-web — `application/views/campus_access/index.php` (`qrOpenCamera()`, QR checkout scan) vs. `ciOpenCamera()` (visitor photo capture — already had the guard this one lacked)
+  - root_cause: `qrOpenCamera()` called `navigator.mediaDevices.getUserMedia(...)` directly with no existence guard. `BarcodeDetector` (which gates whether `qrOpenCamera()` is even called) does not itself require a secure context, so on an insecure/unsupported host `navigator.mediaDevices` could be `undefined` — accessing `.getUserMedia` on it threw a synchronous `TypeError` before the promise chain existed, so the trailing `.catch()` never ran and the documented paste-field fallback was never reached.
+  - fix: added the identical guard `ciOpenCamera()` already uses (`if (!navigator.mediaDevices || !navigator.mediaDevices.getUserMedia)`), falling back to the paste field via the existing `qrTogglePaste(true)` path, with a `toast()` explaining why (set via toast rather than `qrCameraHint.textContent` since `qrTogglePaste(true)` hides that element immediately — a message set there first would never be seen).
+  - test: `node --check` on the extracted JS block — clean.
+  - verification: `php -l` clean; probe suite 90/90 (QR flow assertions [19] all still pass — this fix only adds a guard on a path assertion [19] doesn't reach, since the probe harness doesn't run in a browser and can't exercise `navigator.mediaDevices` absence).
+  - files_changed: `application/views/campus_access/index.php` (`qrOpenCamera()`)
+  - regression: none — bounded change (the plain manual "Check out" button remains a fully separate, untouched code path).
+
+BUG-058 | P2-MEDIUM | observability | FIXED — VERIFIED
+  - discovered: 2026-08-10 by campus_access DISCOVERY cycle 1
+  - surface: admin-web — `application/libraries/Visitor_service.php` (`overrideBlock()`) vs. `createPass()`'s watchlist-hit path (which already calls `_fanoutOpsNotice('watchlist_hit', 'high', ...)`)
+  - root_cause: `overrideBlock()` wrote only doc-level fields (`overriddenBy`/`overriddenAt`/`overrideReason`) with no equivalent ops-notice — the original watchlist-hit proactively notifies Admin/Front Office/Security, but overriding that block (arguably the more security-sensitive event, since it's a human decision to let a flagged/blocked person onto campus) was only discoverable by opening that specific pass record later.
+  - fix: added a `_fanoutOpsNotice('watchlist_override', 'high', ...)` call in `overrideBlock()`, same priority tier and recipient roles as the original hit, reusing the existing private helper — no new notification mechanism.
+  - test: traced against the identical pattern already used for `watchlist_hit` (createPass()) and `overstay` (sweepOverstay()) — same method, same shape, same `self::OPS_ROLES` fanout.
+  - verification: `php -l` clean; probe suite 90/90, including `[4] override flips to checked_in` / `[4] override is logged` / `[4] badge minted post-override` — all still pass (this fix adds a fire-and-forget notice inside `_fanoutOpsNotice()`'s own try/catch, which never throws past itself, so it can't regress the override flow itself).
+  - files_changed: `application/libraries/Visitor_service.php` (`overrideBlock()`)
+  - regression: none — 90/90 probe post-fix, override flow assertions all pass.
+  - secondary_observation (not filed separately, low-confidence, NOT fixed this cycle — out of the 6-bug scope): `_resolvePerson()` (Gate_pass_service.php) and `_resolveClassTeacher()` both catch `\Throwable` and return null/'' with no `log_message()` — a transient Firestore failure during resolution is indistinguishable in logs from "no such person"/"no class teacher configured."
+
+### Open questions (not filed as bugs — insufficient confidence)
+
+- **`listOnCampus()` orders by `checkInAt`**, which `createPass()` sets to `null` (present-but-null, not omitted) for `pending_approval`/`denied` rows, and `listOnCampus()`'s status filter includes those two statuses. Could not confirm from this codebase alone whether Firestore / this client's decode path reliably returns docs whose ordered field is null, given the already-confirmed platform quirk with inequality conditions elsewhere in this same client (see [[Gate_pass_service.php listToday() history]] this session). Not exercised by the probe suite (its only `listOnCampus()` check, assertion [6], uses an already-checked_in pass). Worth a targeted runtime check if "pending/denied visitors missing from the front desk board" is ever reported.
+- **`_resolvePerson()` never checks the resolved student/staff record's active status** (Gate_pass_service.php:168-178) — a withdrawn student or inactive staff member (soft-deleted, record still exists) could still have a gate-pass request or late-entry logged against them. Lower-confidence than the filed bugs above because it's unclear whether front-desk workflow would ever actually select an inactive person in practice (e.g. if search/autocomplete already excludes them upstream) — flagged for a follow-up look, not filed as BUG-059 pending that confirmation.
+
+### Also checked, no finding
+Firestore rules for all 5 collections (visitors/visitPasses/visitorWatchlist/campusAccessRequests/campusAccessEvents) — correctly graded, staff-gated, tenant-scoped via isSameSchool()/isSameSchoolWrite(). CSRF exclusion — none needed, none present, no accidental hole. IDOR on badge($passId) — deterministic {schoolId}_{id} doc-id scheme means cross-tenant id resolves to 404, not another school's data (verified against probe [6]/[15]). matchWatchlist() block-over-flag preference logic — correct. Cron correctly omits any gate-pass sweep (never auto-approves an exit, matching documented policy).
+
+---
+
+## v7 — campus_access UI/UX hardening cycle (2026-08-10)
+
+No browser automation tool was available (no Playwright/Puppeteer/DevTools access — only a read-only
+page-to-markdown fetcher). Rather than fabricate "clicked X, observed Y" results, ran a deep static
+trace instead: read `application/views/campus_access/index.php` (1557 lines) and `badge.php` (104
+lines) top to bottom, catalogued every tab/button/form/modal/link (~45-50 distinct interactive
+controls, several with per-row dynamic variants), and traced each one's onclick/addEventListener →
+DOM id existence → JS function existence/scope → fetch/postForm endpoint → `routes.php` entry →
+`Campus_access.php` controller method → response contract. Cross-checked every inline `onclick="..."`
+target against `window.X = function(){}` exposure (the exact mechanism that would silently break if a
+handler were only locally-scoped inside the view's IIFE) — all 8 (visApprove/visDeny/visOverride/
+visCheckout/visScanCheckout/visGpDecide/visGpRelease/visDeactivateWl) are correctly `window`-exposed.
+
+**3 candidate defects investigated and ruled out (false leads, not bugs):**
+- `Document_service::init($this->firebase, ...)` in `create_pass()`/`upload_document()` — looked
+  suspicious (this module otherwise never touches `$this->firebase`), but confirmed via cross-repo
+  grep this is the universal, correct bootstrap pattern for Document_service used identically by
+  Admission_public/Sis/Student360/Document_service_verify — not a bug.
+- Front Desk "Badge" link's `row.id` — controller flattens list rows to just `.data`, discarding the
+  wrapper's `id` key; confirmed `Visitor_service::createPass()` also stores `'id' => $passId` INSIDE
+  the document body itself (line 548), so `row.id` still resolves correctly after flattening.
+- `csrfName`/`csrfToken` bare references in `postMultipart()` — confirmed genuine page-level globals
+  declared in `header.php`'s top-level (non-IIFE) `<script>` block, not an undefined-reference bug.
+
+**1 confirmed, fixed defect:**
+
+BUG-060 | P3-LOW | UI/UX — responsive | FIXED — VERIFIED
+  - discovered: 2026-08-10 by campus_access UI/UX hardening cycle (checklist item 19, "Responsive/front-desk usability")
+  - surface: admin-web — `application/views/campus_access/index.php`, `<style>` block (`.vis-form-row`, `.vis-stat-grid`)
+  - root_cause: zero `@media` queries existed anywhere in the file (confirmed via grep). `.vis-form-row` (a fixed 2-column CSS grid) is used across all 4 forms in this module — check-in, gate pass, late entry, watchlist — with no responsive collapse; `.vis-stat-grid` (Front Desk stat cards) was a fixed 4-column grid. On a front-desk tablet in portrait orientation or any narrow viewport, every paired form field cramps into unusably narrow columns.
+  - fix: added one `@media (max-width: 640px)` block — `.vis-form-row` collapses to a single column, `.vis-stat-grid` drops to 2 columns. CSS-only, no JS/PHP/HTML structure touched.
+  - test: `node --check` on the extracted JS block — clean (CSS-only change, included for completeness).
+  - verification: `php -l` clean; 90/90 probe, 13/13 verifier gates — unaffected (pure presentation change, no logic touched).
+  - files_changed: `application/views/campus_access/index.php` (`<style>` block only)
+  - regression: none.
+
+**No "button looks clickable, does nothing" defect was found** in this pass — every onclick/listener
+resolves to a real, correctly-scoped function; every fetch/postForm call resolves to a real route and
+controller method with a matching response contract. This does NOT rule out true runtime-only defects
+(actual click-timing races, rendering glitches, real device/browser quirks) that only manifest when
+the JS is genuinely executed in a browser — a static trace cannot catch those by construction. Flagged
+to the operator as the residual gap this cycle could not close.
+
+**Also noted, not fixed (out of hardening scope — a missing feature, not a broken one):**
+`campus_access/upload_document` (ID-proof/background-verification document upload) exists as a fully
+built, routed, permission-gated backend endpoint with zero UI wiring anywhere in `index.php` — no
+button/form calls it. Not a "looks clickable but does nothing" defect (nothing IS clickable for it);
+building the missing UI would be a feature addition, not a hardening fix.
+
+---
+
+## v7 — campus_access async action feedback & duplicate-click hardening (2026-08-10)
+
+Follow-up to the UI/UX hardening cycle above, narrowly scoped to "what does the user see immediately
+after clicking a button" — not backend correctness (already covered). Same no-browser-automation
+constraint and disclosure applies; this is a deep static trace of every async handler's loading/
+success/error state, not live click testing. Confirmed first that every dynamic per-row mutating
+action (Approve/Deny/Override/Checkout/Release/Remove) already correctly used `withBusy()` with an
+action-specific `data-busy-label` — that part of the module was already solid. 5 real gaps found
+outside that already-good core, all fixed:
+
+BUG-061 | P3-LOW | UI/UX — async feedback | FIXED — VERIFIED
+  - discovered: 2026-08-10, async-feedback audit
+  - surface: `application/views/campus_access/index.php` — Desk/Gate Pass/Muster refresh icon-buttons
+  - root_cause: the 3 manual refresh buttons had no busy-state of their own — the table showed a skeleton+ZXLoader cover, but the BUTTON stayed fully clickable throughout, so a rapid double-click fired two overlapping list requests with no visible sign at the button itself that anything was happening.
+  - fix: `visRefreshDesk`/`visRefreshGatePasses`/`visRefreshMuster` now accept an optional `btn` argument, wrapped in `withBusy()` (reusing `withBusy`'s existing `if (!btn) return task()` fallback, which every OTHER call site — tab-switch, post-submit, page-load init — already relies on). Buttons get `data-busy-label="Refreshing…"`. Found and fixed a real bug WHILE implementing this: 6 call sites did `.then(visRefreshDesk)`/`.then(visRefreshGatePasses)` as a bare function reference — passing the PREVIOUS promise's resolved value as the new `btn` argument, which would have thrown inside `withBusy` (`btn.classList` undefined on a plain response object) the first time any of those paths ran post-fix. Rewritten as `.then(function(){ return visRefreshX(); })` at all 6 sites, plus the `gpFilterStatus` change listener (which passes an Event object, same issue).
+  - files_changed: `application/views/campus_access/index.php`
+  - regression: none — 90/90 probe, 13/13 verifier.
+
+BUG-062 | P2-MEDIUM | UI/UX — async feedback / resource leak | FIXED — VERIFIED
+  - discovered: 2026-08-10, async-feedback audit
+  - surface: `application/views/campus_access/index.php` — `ciOpenCamera()`, Open/Retake camera buttons
+  - root_cause: `getUserMedia()` can take a real, visible amount of time — especially the FIRST call, while the browser's own permission prompt is open, which can sit for as long as the operator takes to respond. The Open/Retake buttons showed no busy state during that window, so a second click while the prompt was pending called `getUserMedia()` again concurrently: the second stream would overwrite `ciPhotoStream`, orphaning the first stream's tracks running un-stopped in the background — a genuine camera-stays-on resource leak, not just a cosmetic gap.
+  - fix: `ciOpenCamera(btn)` now wraps its `getUserMedia()` promise in `withBusy(btn, ...)` (the synchronous no-support early-exit stays outside, since it doesn't need it and already alerts immediately). Both call sites updated to pass their own button (`ciPhotoOpenBtn`/`ciPhotoRetakeBtn`). Capture (`ciPhotoSnapBtn`) also wrapped for consistency (lower risk — no network call, callback-based `toBlob` promisified minimally).
+  - files_changed: `application/views/campus_access/index.php`
+  - regression: none — 90/90 probe, 13/13 verifier (backend untouched; this is a pure client-side hardware-interaction fix).
+
+BUG-063 | P2-MEDIUM | UI/UX — stale-response race | FIXED — VERIFIED
+  - discovered: 2026-08-10, async-feedback audit
+  - surface: `application/views/campus_access/index.php` — `runHostSearch`, `wirePersonSearch` (used 3×: gp-person/gp-teacher/le-person), `runWatchCheck` (watchlist live-preview)
+  - root_cause: two related gaps — (1) zero visual feedback between typing and results appearing (debounce fires a request, but nothing on screen changes until it resolves — a slow network call was indistinguishable from a keystroke that didn't register); (2) no stale-response guard — debounce only limits how often a request FIRES, not how fast each one RESPONDS, so an earlier query's slower response could arrive AFTER a later query's faster one and silently overwrite it with stale results.
+  - fix: each typeahead now shows a `Searching…` placeholder the instant its debounced request fires, and every `.then()`/`.catch()` compares the input's CURRENT value against the value that specific response was fetched for before rendering — a superseded response is silently discarded. Applied identically to all 4 typeahead call sites plus the watchlist live-preview check (name+phone pair comparison).
+  - files_changed: `application/views/campus_access/index.php`
+  - regression: none — 90/90 probe, 13/13 verifier (client-side only; server contract unchanged).
+
+BUG-064 | P3-LOW | UI/UX — async feedback | FIXED — VERIFIED
+  - discovered: 2026-08-10, async-feedback audit
+  - surface: `application/views/campus_access/index.php` — `logExportLink` (CSV export)
+  - root_cause: a plain `<a href>` triggering a native browser file download (`Content-Disposition: attachment`) — not a `fetch()`/XHR, so there's no promise to hang a loading state off, and previously zero acknowledgement that the click even registered before the browser's own download UI kicked in.
+  - fix: a lightweight `toast('Preparing export…')` fires on click, deliberately without `preventDefault()` — the native download proceeds unimpeded; converting this to a JS-driven fetch+blob download was explicitly avoided as unnecessary re-engineering of a mechanism the browser already handles and gives its own feedback for.
+  - files_changed: `application/views/campus_access/index.php`
+  - regression: none.
+
+BUG-065 | P2-MEDIUM | UI/UX — modal self-cancel race | FIXED — VERIFIED
+  - discovered: 2026-08-10, async-feedback audit
+  - surface: `application/views/campus_access/index.php` — `genModal` (generic confirm/prompt) and `qrScanModal` (QR checkout) backdrop-click-to-cancel handlers
+  - root_cause: both modals' full-screen overlay appears synchronously on open and closes itself if a click lands on the backdrop (`e.target === modal`). A genuine rapid double-click on the button that OPENS a modal (e.g. a "Deny" row button, or "Scan QR to check out") has its FIRST click open the modal, but the SECOND click — landing at the same screen position, now covered by the overlay — hits the backdrop (not the centered modal card) and immediately self-cancels the modal the operator just opened, with no error and no obvious explanation why their reason prompt / QR scanner vanished.
+  - fix: both modals now record `Date.now()` at open time and ignore a backdrop click if it lands within 350ms of opening — genuine deliberate outside-clicks (dismissing after the modal has been open for a moment) are unaffected; only a same-instant double-click artifact is suppressed.
+  - files_changed: `application/views/campus_access/index.php`
+  - regression: none — 90/90 probe, 13/13 verifier (pure client-side timing guard).
+
+**Confirmed correct, NOT a bug (investigated and ruled out):** the sequence "click row action → confirm/prompt modal opens → fill in reason → click modal's OK → modal closes → row button shows busy spinner" was suspected of leaving a visible gap (matching the audit's #10 concern) but traced to be safe — `genFinish()`'s Promise resolution is a microtask, so the row button's `withBusy()` busy-state appears in the same rendering frame the modal closes in, not after a perceptible gap. No fix needed.
+
+---
+
 ## In progress
 
 (none)
@@ -1974,6 +2248,12 @@ CARRY-010 (see above — verified 2026-05-24 v7 Phase 2.1 Sub-window P2.1.6e+f b
 CARRY-011 (see above — verified 2026-05-24 v7 Phase 2.0 Sub-window P2.0.4 via Comm_notice_migration verify + communication_verify T1.1 + T1.6 no regression)
 CARRY-012 (see above — verified 2026-05-24 v7 Phase 2.1 Sub-window P2.1.7 via sis_admission_backfill verify + sis_tier2_verify T2.1 transition to fully NORMAL)
 CARRY-013 (see above — verified 2026-05-24 Stage-1.A FZ-2-CRITICAL via post-deploy negative test 3/3 returning Permission denied + 401 + positive smoke admin web + Parent app + Teacher app all confirmed by operator)
+BUG-053 (see above — verified 2026-08-10 campus_access DISCOVERY-cycle-1 fix window via a genuine 15/15-iteration true-OS-process concurrency proof, not just static+regression; both post-fix interleavings demonstrated repeatedly, original bug outcome never reproduced)
+BUG-054 (see above — verified 2026-08-10 via empirical pre-fix confirmation of the FAILED_PRECONDITION fallback + corrected index field-path renames + 90/90 probe regression)
+BUG-055 (see above — verified 2026-08-10 via code-level contract trace matching postForm()'s proven check + 90/90 probe regression)
+BUG-056 (see above — verified 2026-08-10 via RBAC precision count increment (CH-CAM-3: 28→29) + 90/90 probe + 13/13 verifier regression)
+BUG-057 (see above — verified 2026-08-10 via JS syntax check + 90/90 probe regression; guard mirrors ciOpenCamera()'s proven pattern)
+BUG-058 (see above — verified 2026-08-10 via 90/90 probe regression including the override-flow assertions; notice mechanism mirrors watchlist_hit/overstay's proven pattern)
 
 ## Closed / Wontfix / Duplicate / Invalid
 
