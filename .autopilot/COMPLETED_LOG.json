@@ -243,5 +243,51 @@
     "F3 Wave 1.A — authorized but deprioritized",
     "F3 Wave 1.B+ — deferred (mobile-coupled feature work)",
     "7 students currently stuck at Class 8th SecA / session 2026-27 — will auto-restore to intended Class 9th SecA / session 2027-28 on T5 re-promote"
-  ]
+  ],
+  "campus_access_track": {
+    "note": "Standalone track, additive only. Does NOT modify mission_state/session_state/current_session/halt_signal/current_active_carries above — those describe the pre-existing session 5 BUG-052 track, which is untouched and still awaiting operator T5+T6+T7.",
+    "module_onboarded": "2026-08-10, sequence_position 10, out-of-band per 'new module appears' maintenance protocol",
+    "path_existence_precheck": "clean, 9/9 surfaces found, both surfaces promoted verified: true",
+    "discovery_cycle_1": {
+      "date": "2026-08-10",
+      "dimensions_covered": ["D1", "D2", "D3", "D4", "D5", "D7", "D9", "D11"],
+      "dimensions_not_in_scope": ["D6 accessibility — never authorized for this module", "D10 — single-platform module, N/A"],
+      "bugs_filed": ["BUG-053", "BUG-054", "BUG-055", "BUG-056", "BUG-057", "BUG-058"],
+      "bugs_filed_status": "all triaged, DISCOVERY-only, zero fixes applied",
+      "highest_severity": "BUG-053 P0-CRITICAL (recordApproval() concurrent-write race can silently revert an explicit denial back to pending_approval)",
+      "open_questions_not_filed": 2
+    },
+    "fix_cycle_1": {
+      "date": "2026-08-10",
+      "authorized_by_operator": "explicit 'Apply' after FIX_PLAN review",
+      "bug_fixed": "BUG-053 (P0-CRITICAL concurrency — recordApproval() no-CAS race)",
+      "mechanism": "Firestore_service::casUpdateEntity() — same optimistic-CAS primitive as BUG-028; not a new framework",
+      "static_verification": "php -l clean; 90/90 Campus_access_probe_core assertions pass; 13/13 Campus_access_verifier gates pass",
+      "status": "fixed-unverified-α — true concurrent-request race not directly exercised by the (sequential) probe suite",
+      "remaining_open": ["BUG-054 P1", "BUG-055 P1", "BUG-056 P2", "BUG-057 P2", "BUG-058 P2"]
+    },
+    "fix_cycle_2": {
+      "date": "2026-08-10",
+      "authorized_by_operator": "explicit instruction to fix BUG-054 through BUG-058 and fully prove BUG-053, Campus Access scope only",
+      "bugs_fixed": ["BUG-054", "BUG-055", "BUG-056", "BUG-057", "BUG-058"],
+      "bug_053_upgrade": "fixed-unverified-α → FIXED — VERIFIED, via a genuine 15/15-iteration true-OS-process concurrency proof (Campus_access_concurrency_probe.php, kept as a permanent 3rd verification file). Both post-fix interleavings demonstrated repeatedly; original bug outcome (denial silently lost, final pending_approval) never reproduced.",
+      "verification": "php -l clean on every changed file; 90/90 Campus_access_probe_core; 13/13 Campus_access_verifier; dedicated cross-tenant check on recordApproval()'s rewritten CAS path (PASS); PHPUnit Unit suite 569 tests / 10 failures, all pre-existing and unrelated to Campus Access (BackupTest matches documented baseline; 9 are Homework/Teacher/Parent Kotlin-source-drift tests that run-and-fail here instead of skipping, because this machine has the Teacher repo present unlike the baseline's reference environment)",
+      "status": "all 6 findings from discovery_cycle_1 now FIXED — VERIFIED. Zero open P0/P1/P2 from this cycle."
+    },
+    "post_fix_index_deploy": {
+      "date": "2026-08-10",
+      "initiated_by": "operator, from the terminal, after this fix window closed",
+      "command": "firebase deploy --only firestore:indexes --project graderadmin",
+      "outcome": "Deploy complete. Operator correctly declined the CLI's prompt to delete 14 unrelated live indexes (auditLogs/crmApplications/leaveApplications/galleryMedia/payments/auditArchive) present in production but not in the local firestore.indexes.json — pre-existing file/production drift, untouched.",
+      "post_deploy_check": "Polled ~10 minutes (two 5-min windows). `firebase firestore:indexes` confirmed both renamed campusAccessRequests indexes reached [READY] — but the FAILED_PRECONDITION fallback persisted at exactly 1 hit/call throughout, not the expected 0. Root-caused via isolated per-query testing: the original fix's assumption that reverse-scan would let the ASCENDING 3-field index also serve listToday()'s `status IN [...] / updatedAt DESC` backlog query was WRONG — that shape needs its own index. Added a 3rd index `(schoolId ASC, status ASC, updatedAt DESC)`, empirically derived, not speculative.",
+      "second_deploy": {
+        "date": "2026-08-10",
+        "outcome": "Deploy complete, operator again correctly declined the same unrelated-index deletion prompt. New index reached [READY] after ~2 minutes (4x30s poll attempts) — isolated status-IN query dropped from 1 fallback hit to 0.",
+        "final_confirmation": "Full end-to-end check via the real listPending()/listToday() (unfiltered + status-filtered) call shapes: 0 fallback hits total, response times 943ms/1855ms/1788ms (down from original 4158ms/8318ms unindexed scans). Re-ran full regression: 90/90 probe assertions, 13/13 verifier gates — clean.",
+        "status": "BUG-054 fully resolved end-to-end, not just locally-corrected-but-undeployed"
+      }
+    },
+    "halt_signal": "HALT_OPTIONAL",
+    "halt_reason": "All 6 campus_access DISCOVERY-cycle-1 findings closed and VERIFIED end-to-end, including BUG-054's index deploy (2 rounds, both operator-initiated, both confirmed READY and functionally zero-fallback). No further fix work pending on this module unless new findings are raised. The pre-existing session 5 BUG-052/staging track above remains completely untouched and still awaiting operator T5+T6+T7."
+  }
 }

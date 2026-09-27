@@ -1,0 +1,16 @@
+# The site-root .htaccess denies *.json globally to protect config files
+# (composer.json, firebase/google-services, etc.). This directory holds only
+# PUBLIC design assets — the shared ZenXii Lottie loading animation
+# (loading_anim.json) that zenxii_loader.php fetches over HTTP. Under Apache
+# the global deny 403'd that fetch, so every page showed a bare grey overlay
+# with no animation (php -S never showed it because it ignores .htaccess).
+# Re-allow .json here — scoped to this directory only.
+<FilesMatch "\.json$">
+    <IfModule mod_authz_core.c>
+        Require all granted
+    </IfModule>
+    <IfModule !mod_authz_core.c>
+        Order allow,deny
+        Allow from all
+    </IfModule>
+</FilesMatch>

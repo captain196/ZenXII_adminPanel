@@ -1,0 +1,762 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>ZenXii · Staff Settings</title>
+<!--
+  ZenXii — Staff Settings prototype (standalone export).
+  Extracted from the Claude artifact and unwrapped from the claude.ai frame
+  runtime so it opens directly in a browser with no network access.
+  Client-side only: state persists to localStorage. Not connected to ZenX.
+-->
+</head>
+<body>
+<style>
+:root{
+  --brand:#BC5A3C; --brand2:#9E4830; --brand3:#DD8464;
+  --brand-dim:rgba(188,90,60,.10); --brand-ring:rgba(188,90,60,.28);
+  --good:#16a34a; --good-bg:rgba(22,163,74,.12);
+  --warn:#d97706; --warn-bg:rgba(217,119,6,.13);
+  --bad:#dc2626;  --bad-bg:rgba(220,38,38,.11);
+  --bg:#F7F2ED; --bg2:#EFE6DC; --card:#ffffff; --card2:#FAF5F0;
+  --line:rgba(120,70,45,.14); --line2:rgba(120,70,45,.22);
+  --ink:#22160F; --ink2:#4A3A30; --muted:#9C8574; --muted2:#B9A493;
+  --sh:0 1px 2px rgba(80,45,20,.05),0 8px 24px -14px rgba(80,45,20,.30);
+  --sh-lg:0 24px 60px -28px rgba(80,45,20,.5);
+  --sans:ui-sans-serif,system-ui,-apple-system,"Segoe UI",Roboto,"Helvetica Neue",Arial,sans-serif;
+  --mono:ui-monospace,"JetBrains Mono","SF Mono",Menlo,Consolas,monospace;
+  --r:14px; --r-sm:9px; --ease:.2s cubic-bezier(.4,0,.2,1);
+}
+@media (prefers-color-scheme:dark){
+  :root{
+    --bg:#17100C; --bg2:#1F1712; --card:#211812; --card2:#291E16;
+    --line:rgba(255,225,205,.09); --line2:rgba(255,225,205,.15);
+    --ink:#F4E9E2; --ink2:#DFCFC2; --muted:#A2907F; --muted2:#7C6B5D;
+    --brand-dim:rgba(212,120,92,.14); --brand-ring:rgba(212,120,92,.32);
+    --good-bg:rgba(22,163,74,.18); --warn-bg:rgba(217,119,6,.18); --bad-bg:rgba(220,38,38,.18);
+    --sh:0 1px 2px rgba(0,0,0,.4),0 10px 30px -16px rgba(0,0,0,.7);
+    --sh-lg:0 30px 70px -30px rgba(0,0,0,.8);
+  }
+}
+:root[data-theme="light"]{
+  --bg:#F7F2ED; --bg2:#EFE6DC; --card:#ffffff; --card2:#FAF5F0;
+  --line:rgba(120,70,45,.14); --line2:rgba(120,70,45,.22);
+  --ink:#22160F; --ink2:#4A3A30; --muted:#9C8574; --muted2:#B9A493;
+  --brand-dim:rgba(188,90,60,.10); --brand-ring:rgba(188,90,60,.28);
+  --good-bg:rgba(22,163,74,.12); --warn-bg:rgba(217,119,6,.13); --bad-bg:rgba(220,38,38,.11);
+  --sh:0 1px 2px rgba(80,45,20,.05),0 8px 24px -14px rgba(80,45,20,.30);
+}
+:root[data-theme="dark"]{
+  --bg:#17100C; --bg2:#1F1712; --card:#211812; --card2:#291E16;
+  --line:rgba(255,225,205,.09); --line2:rgba(255,225,205,.15);
+  --ink:#F4E9E2; --ink2:#DFCFC2; --muted:#A2907F; --muted2:#7C6B5D;
+  --brand-dim:rgba(212,120,92,.14); --brand-ring:rgba(212,120,92,.32);
+  --good-bg:rgba(22,163,74,.18); --warn-bg:rgba(217,119,6,.18); --bad-bg:rgba(220,38,38,.18);
+  --sh:0 1px 2px rgba(0,0,0,.4),0 10px 30px -16px rgba(0,0,0,.7);
+  --sh-lg:0 30px 70px -30px rgba(0,0,0,.8);
+}
+
+*{box-sizing:border-box}
+body{margin:0;background:var(--bg);color:var(--ink);font-family:var(--sans);
+  font-size:14px;line-height:1.5;-webkit-font-smoothing:antialiased;transition:background var(--ease),color var(--ease)}
+@media (prefers-reduced-motion:reduce){*{transition:none!important;animation:none!important}}
+a{color:var(--brand);text-decoration:none}
+h1,h2,h3{margin:0;text-wrap:balance;letter-spacing:-.01em}
+.mono{font-family:var(--mono);font-variant-numeric:tabular-nums}
+
+/* ── App shell ─────────────────────────────── */
+.app{max-width:1180px;margin:0 auto;padding:0 20px 80px}
+.top{position:sticky;top:0;z-index:30;background:color-mix(in srgb,var(--bg) 86%,transparent);
+  backdrop-filter:blur(10px);border-bottom:1px solid var(--line);margin:0 -20px 22px;padding:14px 20px}
+.top-in{max-width:1140px;margin:0 auto;display:flex;align-items:center;gap:14px}
+.logo{width:38px;height:38px;border-radius:11px;flex:0 0 auto;display:grid;place-items:center;color:#fff;font-weight:800;
+  background:linear-gradient(140deg,var(--brand3),var(--brand) 55%,var(--brand2));box-shadow:0 6px 16px -6px var(--brand-ring)}
+.ttl b{font-size:15px;font-weight:800;letter-spacing:.2px}
+.ttl small{display:block;color:var(--muted);font-size:11.5px;margin-top:1px}
+.spacer{flex:1}
+.btn{border:1px solid var(--line2);background:var(--card);color:var(--ink);font:inherit;font-weight:600;font-size:13px;
+  padding:9px 15px;border-radius:10px;cursor:pointer;transition:var(--ease);display:inline-flex;gap:7px;align-items:center}
+.btn:hover{border-color:var(--brand3);color:var(--brand)}
+.btn.primary{background:linear-gradient(135deg,var(--brand3),var(--brand) 60%,var(--brand2));color:#fff;border:none;
+  box-shadow:0 8px 18px -8px var(--brand-ring)}
+.btn.primary:hover{filter:brightness(1.05);color:#fff}
+.icon-btn{width:38px;height:38px;padding:0;justify-content:center;border-radius:11px}
+.dot-sun,.dot-moon{font-size:15px;line-height:1}
+:root[data-theme="dark"] .dot-sun,html:not([data-theme="light"]) .dot-sun{display:none}
+:root[data-theme="light"] .dot-sun{display:inline}
+:root[data-theme="light"] .dot-moon{display:none}
+@media (prefers-color-scheme:dark){:root:not([data-theme="light"]) .dot-sun{display:none}:root:not([data-theme="light"]) .dot-moon{display:inline}}
+@media (prefers-color-scheme:light){:root:not([data-theme="dark"]) .dot-moon{display:none}:root:not([data-theme="dark"]) .dot-sun{display:inline}}
+
+.grid{display:grid;grid-template-columns:230px 1fr;gap:26px;align-items:start}
+@media(max-width:860px){.grid{grid-template-columns:1fr}}
+
+/* ── Rail ─────────────────────────────── */
+.rail{position:sticky;top:86px;display:flex;flex-direction:column;gap:3px}
+@media(max-width:860px){.rail{position:static;flex-direction:row;overflow-x:auto;padding-bottom:6px;gap:6px}}
+.nav{display:flex;align-items:center;gap:11px;padding:10px 12px;border-radius:11px;cursor:pointer;color:var(--ink2);
+  font-weight:600;font-size:13.5px;border:1px solid transparent;transition:var(--ease);white-space:nowrap}
+.nav:hover{background:var(--card2)}
+.nav.on{background:var(--card);border-color:var(--line2);color:var(--brand);box-shadow:var(--sh)}
+.nav .ni{width:26px;height:26px;flex:0 0 auto;border-radius:8px;display:grid;place-items:center;background:var(--brand-dim);font-size:13px}
+.nav.on .ni{background:var(--brand);color:#fff}
+.nav .nc{margin-left:auto;font-size:10.5px;font-weight:700;padding:1px 7px;border-radius:20px}
+.nc.g{background:var(--good-bg);color:var(--good)} .nc.a{background:var(--warn-bg);color:var(--warn)} .nc.r{background:var(--bad-bg);color:var(--bad)}
+
+/* ── Panes ─────────────────────────────── */
+.pane{display:none;animation:fade .25s ease}
+.pane.on{display:block}
+@keyframes fade{from{opacity:0;transform:translateY(6px)}to{opacity:1;transform:none}}
+.pane-hd{margin-bottom:16px}
+.pane-hd h2{font-size:21px;font-weight:800}
+.pane-hd p{margin:5px 0 0;color:var(--muted);font-size:13.5px;max-width:64ch}
+
+.card{background:var(--card);border:1px solid var(--line);border-radius:var(--r);box-shadow:var(--sh);margin-bottom:16px;overflow:hidden}
+.card-hd{display:flex;align-items:center;gap:10px;padding:15px 18px;border-bottom:1px solid var(--line);background:var(--card2)}
+.card-hd h3{font-size:14.5px;font-weight:700;display:flex;align-items:center;gap:9px}
+.card-hd .hi{color:var(--brand)}
+.card-bd{padding:6px 18px 16px}
+
+/* setting row */
+.row{display:flex;gap:16px;align-items:flex-start;padding:14px 0;border-bottom:1px dashed var(--line)}
+.row:last-child{border-bottom:none}
+.row .lab{flex:1;min-width:0}
+.row .lab .name{font-weight:600;font-size:13.5px;display:flex;align-items:center;gap:8px;flex-wrap:wrap}
+.row .lab .desc{color:var(--muted);font-size:12.5px;margin-top:3px;line-height:1.45}
+.row .ctl{flex:0 0 auto;display:flex;align-items:center;gap:8px;padding-top:1px}
+.india{color:var(--brand);font-size:11.5px;margin-top:5px;display:inline-flex;gap:5px;align-items:flex-start}
+.india::before{content:"🇮🇳";font-size:11px}
+
+.tag{font-size:10px;font-weight:800;letter-spacing:.4px;text-transform:uppercase;padding:2px 7px;border-radius:6px;line-height:1.4}
+.tag.must{background:var(--brand-dim);color:var(--brand)}
+.tag.nice{background:var(--bg2);color:var(--muted)}
+
+/* controls */
+.sw{position:relative;width:44px;height:25px;flex:0 0 auto;cursor:pointer}
+.sw input{position:absolute;opacity:0;width:100%;height:100%;margin:0;cursor:pointer}
+.sw i{position:absolute;inset:0;background:var(--line2);border-radius:20px;transition:var(--ease)}
+.sw i::after{content:"";position:absolute;top:3px;left:3px;width:19px;height:19px;background:#fff;border-radius:50%;transition:var(--ease);box-shadow:0 1px 3px rgba(0,0,0,.3)}
+.sw input:checked+i{background:var(--brand)}
+.sw input:checked+i::after{transform:translateX(19px)}
+.sw input:focus-visible+i{outline:2px solid var(--brand);outline-offset:2px}
+input[type=text],input[type=number],select,textarea{font:inherit;font-size:13px;color:var(--ink);background:var(--card2);
+  border:1px solid var(--line2);border-radius:9px;padding:8px 11px;transition:var(--ease);width:100%}
+input:focus,select:focus,textarea:focus{outline:none;border-color:var(--brand);background:var(--card);box-shadow:0 0 0 3px var(--brand-dim)}
+.ctl input,.ctl select{width:auto}
+.ctl input[type=number]{width:92px;text-align:right;font-family:var(--mono)}
+.ctl .suffix{color:var(--muted);font-size:12px}
+.seg{display:inline-flex;background:var(--bg2);border-radius:9px;padding:3px;gap:2px}
+.seg button{border:none;background:none;font:inherit;font-size:12px;font-weight:600;color:var(--ink2);padding:5px 11px;border-radius:7px;cursor:pointer;transition:var(--ease)}
+.seg button.on{background:var(--card);color:var(--brand);box-shadow:var(--sh)}
+
+/* chips / day picker */
+.chips{display:flex;flex-wrap:wrap;gap:7px;margin-top:2px}
+.chip{border:1px solid var(--line2);background:var(--card2);color:var(--ink2);font-weight:600;font-size:12.5px;
+  padding:6px 12px;border-radius:20px;cursor:pointer;transition:var(--ease);user-select:none}
+.chip:hover{border-color:var(--brand3)}
+.chip.on{background:var(--brand);color:#fff;border-color:var(--brand)}
+
+/* editable list */
+.list{display:flex;flex-direction:column;gap:8px;margin-top:4px}
+.li{display:flex;gap:9px;align-items:center;background:var(--card2);border:1px solid var(--line);border-radius:10px;padding:8px 10px}
+.li .grip{color:var(--muted2);cursor:grab;font-size:13px}
+.li input{background:var(--card)}
+.li .rm{width:28px;height:28px;flex:0 0 auto;border:none;background:var(--bad-bg);color:var(--bad);border-radius:8px;cursor:pointer;font-size:13px;transition:var(--ease)}
+.li .rm:hover{background:var(--bad);color:#fff}
+.li .badge{font-size:10px;font-weight:700;padding:2px 8px;border-radius:6px;background:var(--brand-dim);color:var(--brand);white-space:nowrap}
+.addbtn{align-self:flex-start;margin-top:9px;border:1px dashed var(--line2);background:none;color:var(--brand);font-weight:600;font-size:12.5px;
+  padding:8px 13px;border-radius:9px;cursor:pointer;transition:var(--ease);display:inline-flex;gap:6px;align-items:center}
+.addbtn:hover{background:var(--brand-dim);border-color:var(--brand3)}
+
+/* overview */
+.tiles{display:grid;grid-template-columns:repeat(auto-fit,minmax(150px,1fr));gap:12px;margin-bottom:18px}
+.tile{background:var(--card);border:1px solid var(--line);border-radius:var(--r);padding:15px 16px;box-shadow:var(--sh)}
+.tile .k{font-size:11px;font-weight:700;text-transform:uppercase;letter-spacing:.5px;color:var(--muted)}
+.tile .v{font-size:30px;font-weight:800;margin-top:4px;line-height:1;font-variant-numeric:tabular-nums}
+.tile .s{font-size:12px;color:var(--muted);margin-top:3px}
+.tile.g .v{color:var(--good)} .tile.a .v{color:var(--warn)} .tile.r .v{color:var(--bad)}
+.bar{height:9px;border-radius:20px;background:var(--bg2);overflow:hidden;display:flex}
+.bar i{height:100%} .bar .bg{background:var(--good)} .bar .ba{background:var(--warn)} .bar .br{background:var(--bad)}
+.gap-list{display:grid;grid-template-columns:1fr 1fr;gap:10px;margin-top:6px}
+@media(max-width:640px){.gap-list{grid-template-columns:1fr}}
+.gap{display:flex;align-items:center;gap:10px;padding:11px 13px;border:1px solid var(--line);border-radius:11px;background:var(--card);font-size:13px;font-weight:600}
+.gap .st{width:9px;height:9px;border-radius:50%;flex:0 0 auto}
+.gap.g .st{background:var(--good)} .gap.a .st{background:var(--warn)} .gap.r .st{background:var(--bad)}
+.gap .m{margin-left:auto;font-size:11px;font-weight:700;color:var(--muted);text-transform:uppercase;letter-spacing:.4px}
+
+/* payroll calc */
+.calc{display:grid;grid-template-columns:1fr 1fr;gap:14px}
+@media(max-width:640px){.calc{grid-template-columns:1fr}}
+.calc-out{background:var(--card2);border:1px solid var(--line);border-radius:12px;padding:14px 16px}
+.calc-out .r2{display:flex;justify-content:space-between;padding:6px 0;font-size:13px;border-bottom:1px dashed var(--line)}
+.calc-out .r2:last-child{border:none}
+.calc-out .r2 b{font-family:var(--mono);font-variant-numeric:tabular-nums}
+.calc-out .net{margin-top:8px;padding-top:10px;border-top:2px solid var(--line2);font-size:15px;font-weight:800}
+.calc-out .net b{color:var(--brand);font-size:18px}
+.mini{font-size:11px;color:var(--muted);margin-bottom:3px;font-weight:600;text-transform:uppercase;letter-spacing:.4px}
+
+/* data matrix / tables */
+.tbl-wrap{overflow-x:auto;border:1px solid var(--line);border-radius:12px;background:var(--card)}
+.tbl{width:100%;border-collapse:collapse;font-size:12.5px;min-width:680px}
+.tbl th,.tbl td{padding:9px 11px;text-align:right;white-space:nowrap;border-bottom:1px solid var(--line)}
+.tbl thead th{background:var(--card2);font-size:10px;font-weight:800;text-transform:uppercase;letter-spacing:.4px;color:var(--muted);position:sticky;top:0}
+.tbl th.lft,.tbl td.lft{text-align:left}
+.tbl tbody tr:hover{background:var(--card2)}
+.tbl td .cell,.tbl td .cellname{border:1px solid transparent;background:transparent;border-radius:7px;padding:6px 8px;transition:var(--ease);color:var(--ink)}
+.tbl td .cell{text-align:right;font-family:var(--mono);font-variant-numeric:tabular-nums;width:92px}
+.tbl td .cellname{width:150px;font-weight:600}
+.tbl td .cell:hover,.tbl td .cellname:hover{border-color:var(--line2)}
+.tbl td .cell:focus,.tbl td .cellname:focus{border-color:var(--brand);background:var(--card);box-shadow:0 0 0 3px var(--brand-dim)}
+.calc-cell{font-family:var(--mono);font-variant-numeric:tabular-nums;color:var(--ink2);font-weight:600}
+.calc-cell.ded{color:var(--bad)} .calc-cell.net{color:var(--brand);font-weight:800} .calc-cell.ctc{color:var(--ink);font-weight:800}
+.tbl tfoot td{background:var(--card2);font-weight:800;border-top:2px solid var(--line2);border-bottom:none}
+.tbl .rm{width:26px;height:26px;border:none;background:var(--bad-bg);color:var(--bad);border-radius:7px;cursor:pointer;font-size:12px;transition:var(--ease)}
+.tbl .rm:hover{background:var(--bad);color:#fff}
+.badge.ded-b{background:var(--bad-bg);color:var(--bad)}
+.yn{display:inline-block;width:18px;height:18px;border-radius:5px;line-height:18px;text-align:center;font-size:10px;font-weight:800}
+.yn.y{background:var(--good-bg);color:var(--good)} .yn.n{background:var(--bg2);color:var(--muted2)}
+.card-hd .hint{margin-left:auto;font-size:11.5px;color:var(--muted);font-weight:500}
+/* payroll sub-tabs */
+.subtabs{display:flex;gap:6px;flex-wrap:wrap;margin-bottom:16px;border-bottom:1px solid var(--line);padding-bottom:12px}
+.subtab{border:1px solid var(--line2);background:var(--card);color:var(--ink2);font:inherit;font-weight:600;font-size:12.5px;padding:8px 14px;border-radius:9px;cursor:pointer;transition:var(--ease)}
+.subtab:hover{border-color:var(--brand3);color:var(--brand)}
+.subtab.on{background:var(--brand);color:#fff;border-color:var(--brand)}
+.subpane{display:none} .subpane.on{display:block;animation:fade .2s ease}
+.warn-chip{font-size:9.5px;font-weight:800;padding:1px 6px;border-radius:5px;background:var(--warn-bg);color:var(--warn);white-space:nowrap}
+.sum-tiles{display:grid;grid-template-columns:repeat(auto-fit,minmax(120px,1fr));gap:10px;margin-bottom:14px}
+.sum-tile{background:var(--card2);border:1px solid var(--line);border-radius:11px;padding:12px 13px}
+.sum-tile .k{font-size:10px;font-weight:700;text-transform:uppercase;letter-spacing:.4px;color:var(--muted)}
+.sum-tile .v{font-size:18px;font-weight:800;margin-top:3px;font-family:var(--mono);font-variant-numeric:tabular-nums}
+.tbl td select{font-size:12px;padding:5px 8px}
+
+.note{background:var(--brand-dim);border:1px solid var(--brand-ring);color:var(--ink2);border-radius:11px;padding:11px 14px;font-size:12.5px;line-height:1.55;display:flex;gap:10px}
+.note b{color:var(--brand)}
+
+/* toast */
+.toast{position:fixed;bottom:22px;right:22px;z-index:60;background:var(--ink);color:var(--bg);padding:12px 18px;border-radius:12px;
+  font-weight:600;font-size:13px;box-shadow:var(--sh-lg);transform:translateY(140%);transition:transform .35s cubic-bezier(.2,1.3,.4,1);display:flex;gap:9px;align-items:center}
+.toast.show{transform:none}
+.toast .ok{color:#4ade80}
+.foot{color:var(--muted);font-size:11.5px;text-align:center;margin-top:20px}
+</style>
+
+<div class="top">
+  <div class="top-in">
+    <div class="logo">Z</div>
+    <div class="ttl"><b>Staff Settings</b><small>School-as-employer · workforce configuration</small></div>
+    <div class="spacer"></div>
+    <button class="btn icon-btn" id="theme" title="Toggle theme" aria-label="Toggle light / dark theme"><span class="dot-sun">☀️</span><span class="dot-moon">🌙</span></button>
+    <button class="btn" id="reset">Reset</button>
+    <button class="btn primary" id="save">Save changes</button>
+  </div>
+</div>
+
+<div class="app">
+  <div class="grid">
+    <nav class="rail" id="rail" aria-label="Settings sections"></nav>
+    <main id="main"></main>
+  </div>
+  <div class="foot">Prototype · client-side only · settings persist to your browser (localStorage). Not connected to a school yet.</div>
+</div>
+
+<div class="toast" id="toast"><span class="ok">✓</span><span id="toast-msg">Saved</span></div>
+
+<script>
+/* ─────────────────────────────────────────────────────────
+   Staff Settings prototype — everything is wired client-side.
+   Sections carry a readiness status: g=have, a=partial, r=gap.
+   ───────────────────────────────────────────────────────── */
+const SECTIONS = [
+  {id:"overview",  icon:"◎", label:"Overview"},
+  {id:"employment",icon:"🧑‍💼", label:"Employment & Org", st:"a"},
+  {id:"attendance",icon:"🕒", label:"Attendance Policy", st:"g"},
+  {id:"leave",     icon:"🌴", label:"Leave Policy", st:"g"},
+  {id:"payroll",   icon:"💰", label:"Payroll & Pay", st:"a"},
+  {id:"statutory", icon:"⚖️", label:"Statutory (India)", st:"r"},
+  {id:"lifecycle", icon:"🔄", label:"Employee Lifecycle", st:"r"},
+  {id:"access",    icon:"🔐", label:"Approvals & Access", st:"g"},
+];
+
+/* helpers ------------------------------------------------- */
+const el = (t,c,h)=>{const e=document.createElement(t);if(c)e.className=c;if(h!=null)e.innerHTML=h;return e;};
+function row(name, tag, desc, ctlHTML, india){
+  return `<div class="row"><div class="lab"><div class="name">${name}${tag?` <span class="tag ${tag}">${tag}</span>`:""}</div>
+    ${desc?`<div class="desc">${desc}</div>`:""}${india?`<div class="india">${india}</div>`:""}</div>
+    <div class="ctl">${ctlHTML}</div></div>`;
+}
+const sw=(id,on)=>`<label class="sw"><input type="checkbox" id="${id}" ${on?"checked":""}><i></i></label>`;
+const num=(id,v,suf,w)=>`<input type="number" id="${id}" value="${v}">${suf?`<span class="suffix">${suf}</span>`:""}`;
+const sel=(id,opts,v)=>`<select id="${id}">${opts.map(o=>`<option ${o===v?"selected":""}>${o}</option>`).join("")}</select>`;
+const seg=(id,opts,v)=>`<div class="seg" id="${id}" data-seg>${opts.map(o=>`<button type="button" class="${o===v?"on":""}" data-v="${o}">${o}</button>`).join("")}</div>`;
+
+/* editable list ------------------------------------------- */
+function listCard(id, items, ph, addLabel){
+  return `<div class="list" id="${id}" data-ph="${ph}"></div><button class="addbtn" data-add="${id}">＋ ${addLabel}</button>`;
+}
+const LISTS={};
+function renderList(id, items){
+  LISTS[id]=items.slice();
+  const box=document.getElementById(id); if(!box)return;
+  const ph=box.dataset.ph||"Name";
+  box.innerHTML=LISTS[id].map((it,i)=>`<div class="li">
+    <span class="grip">⋮⋮</span>
+    <input type="text" value="${(it.name||it).toString().replace(/"/g,'&quot;')}" data-list="${id}" data-i="${i}" placeholder="${ph}">
+    ${it.badge?`<span class="badge">${it.badge}</span>`:""}
+    <button class="rm" data-rm="${id}" data-i="${i}" title="Remove" aria-label="Remove">✕</button></div>`).join("");
+}
+
+/* ── section builders ─────────────────────────────────── */
+function buildOverview(){
+  const have=SECTIONS.filter(s=>s.st==="g").length, part=SECTIONS.filter(s=>s.st==="a").length, gap=SECTIONS.filter(s=>s.st==="r").length;
+  const tot=have+part+gap;
+  const rows=[
+    ["g","Attendance policy — shifts, weekly-offs, holidays, GPS","Have"],
+    ["g","Leave policy — types, accrual, approvals","Have"],
+    ["g","Departments & Roles (RBAC), audit log, multi-campus","Have"],
+    ["a","Employment types & grades as first-class config","Partial"],
+    ["a","Payroll — salary structure, LOP, payslips","Partial"],
+    ["r","Statutory — PF · ESI · PT · TDS · Gratuity","Gap"],
+    ["r","Lifecycle — KYC, confirmation, exit & F&F","Gap"],
+  ];
+  return `<div class="pane-hd"><h2>Readiness overview</h2><p>What a school needs to run staff as employees — and where ZenXii stands today. Build order: consolidate what exists, then close Payroll → Compliance → Lifecycle.</p></div>
+  <div class="tiles">
+    <div class="tile g"><div class="k">Have</div><div class="v">${have}</div><div class="s">ship as-is, re-home here</div></div>
+    <div class="tile a"><div class="k">Partial</div><div class="v">${part}</div><div class="s">exists, needs finishing</div></div>
+    <div class="tile r"><div class="k">Gap</div><div class="v">${gap}</div><div class="s">highest-value to build</div></div>
+    <div class="tile"><div class="k">Readiness</div><div class="v" id="readipct">—</div><div class="s">weighted coverage</div></div>
+  </div>
+  <div class="card"><div class="card-hd"><h3><span class="hi">▤</span> Coverage</h3></div><div class="card-bd">
+    <div class="bar" style="margin:8px 0 4px"><i class="bg" style="width:${have/tot*100}%"></i><i class="ba" style="width:${part/tot*100}%"></i><i class="br" style="width:${gap/tot*100}%"></i></div>
+    <div style="display:flex;gap:16px;font-size:12px;color:var(--muted);margin-top:8px">
+      <span><b style="color:var(--good)">●</b> Have</span><span><b style="color:var(--warn)">●</b> Partial</span><span><b style="color:var(--bad)">●</b> Gap</span></div>
+  </div></div>
+  <div class="card"><div class="card-hd"><h3><span class="hi">◪</span> Gap analysis</h3></div><div class="card-bd">
+    <div class="gap-list">${rows.map(r=>`<div class="gap ${r[0]}"><span class="st"></span>${r[1]}<span class="m">${r[2]}</span></div>`).join("")}</div>
+  </div></div>`;
+}
+
+function buildEmployment(){
+  let h=`<div class="pane-hd"><h2>Employment &amp; org setup</h2><p>The vocabulary the rest of the system hangs off — who a staff member is, what type, and where they sit.</p></div>`;
+  h+=`<div class="card"><div class="card-hd"><h3><span class="hi">🏷️</span> Designations &amp; grades</h3></div><div class="card-bd">
+    ${row("Designations","must","Job titles used across staff records, payroll and reports.",listCard("desig","..","Designation","Add designation"))}</div></div>`;
+  h+=`<div class="card"><div class="card-hd"><h3><span class="hi">📋</span> Employment types</h3></div><div class="card-bd">
+    ${row("Types of employment","must","Drives statutory eligibility (PF/ESI/gratuity), leave and payroll rules.",listCard("emptype","..","Type","Add type"),"Type decides PF / ESI / gratuity applicability — not just a label.")}</div></div>`;
+  h+=`<div class="card"><div class="card-hd"><h3><span class="hi">🆔</span> Identity &amp; hierarchy</h3></div><div class="card-bd">
+    ${row("Staff ID format","must","Prefix + running number for new staff.",`<input type="text" id="idfmt" value="STA" style="width:70px"><span class="suffix">+ 0001</span>`)}
+    ${row("Reporting hierarchy","nice","Each staff reports to a manager — powers approvals &amp; org chart.",sw("hier",true))}
+    ${row("Probation period","nice","New joiners stay on probation before confirmation.",num("prob","6","months"))}
+    ${row("Auto-confirmation reminder","nice","Notify HR when probation is ending.",sw("probrem",true))}</div></div>`;
+  return h;
+}
+
+function buildAttendance(){
+  let h=`<div class="pane-hd"><h2>Attendance policy</h2><p>Mostly live already (GPS module). Re-homed here so every staff rule lives in one place.</p></div>`;
+  h+=`<div class="card"><div class="card-hd"><h3><span class="hi">📅</span> Working days &amp; week</h3></div><div class="card-bd">
+    <div class="row"><div class="lab"><div class="name">Weekly-offs <span class="tag must">must</span></div><div class="desc">Rest days — never marked Absent; show as Weekly-off (O).</div>
+      <div class="chips" id="woffs" data-multi>${["Mon","Tue","Wed","Thu","Fri","Sat","Sun"].map(d=>`<span class="chip ${d==="Sun"?"on":""}" data-v="${d}">${d}</span>`).join("")}</div></div></div>
+    ${row("Auto-absent unmarked days","must","Past unmarked working days close as Absent; offs → weekly-off / holiday.",sw("autoabs",true),`Holidays come from the <b>Academic Calendar</b> — add them there to show as Holiday (H).`)}
+    ${row("Allow work on offs &amp; holidays","nice","Punches on rest days recorded as extra work (W) for extra pay.",sw("workoff",true))}</div></div>`;
+  h+=`<div class="card"><div class="card-hd"><h3><span class="hi">🕘</span> Shift &amp; timing</h3></div><div class="card-bd">
+    ${row("Shift start / end","must","On-time vs late is measured from shift start + grace.",`<input type="text" id="ss" value="08:30" style="width:74px"><span class="suffix">–</span><input type="text" id="se" value="15:30" style="width:74px">`)}
+    ${row("Grace period","must","Minutes after start still counted on-time.",num("grace","10","min"))}
+    ${row("Full / half day hours","nice","Hours worked that classify a full or half day.",`<input type="number" id="fh" value="8" style="width:56px"><span class="suffix">/</span><input type="number" id="hh" value="4" style="width:56px"><span class="suffix">hrs</span>`)}
+    ${row("Capture method","must","How staff mark attendance.",seg("capm",["GPS","Biometric","Manual"],"GPS"))}
+    ${row("Overtime → payroll","nice","Extra hours flow to payroll at a multiplier.",num("otx","1.5","×"))}
+    ${row("Attendance month-lock","must","Lock a month so marks can't change after payroll runs.",sw("attlock",true))}</div></div>`;
+  return h;
+}
+
+function buildLeave(){
+  let h=`<div class="pane-hd"><h2>Leave policy</h2><p>Live already — types, accrual and approvals. Tune the rules here.</p></div>`;
+  h+=`<div class="card"><div class="card-hd"><h3><span class="hi">🗂️</span> Leave types</h3></div><div class="card-bd">
+    ${row("Configured leave types","must","Each with quota, paid/unpaid and eligibility.",listCard("ltypes","..","Leave type","Add leave type"))}</div></div>`;
+  h+=`<div class="card"><div class="card-hd"><h3><span class="hi">⚙️</span> Rules</h3></div><div class="card-bd">
+    ${row("Leave year","must","Cycle leave balances reset on.",seg("lyear",["Apr–Mar","Jan–Dec","Academic"],"Apr–Mar"))}
+    ${row("Accrual","must","How the balance builds up.",seg("accr",["Monthly","Yearly","On-join"],"Monthly"))}
+    ${row("Carry-forward","nice","Unused leave rolls into next year (capped).",num("cf","15","days"))}
+    ${row("Encashment","nice","Convert unused leave to pay at year-end / exit.",sw("enc",true))}
+    ${row("Sandwich rule","nice","Count holidays/offs between two leaves as leave.",sw("sand",false))}
+    ${row("Comp-off validity","nice","Days to use a comp-off before it lapses.",num("compv","30","days"))}
+    ${row("Maternity benefit","must","Paid maternity leave.",num("mat","26","weeks"),"Maternity Benefit Act — 26 weeks for eligible staff.")}</div></div>`;
+  return h;
+}
+
+function buildPayroll(){
+  const subs=[["structure","▦ Structure"],["components","🧩 Components"],["grades","🪜 Pay grades"],["revisions","🕰️ Revisions"],["register","📊 Register &amp; payout"]];
+  let h=`<div class="pane-hd"><h2>Payroll &amp; compensation</h2><p>Production-shaped: a component library with <b>formulas</b>, pay-grade <b>bands</b>, a designation <b>salary matrix</b> that derives from the formulas, revision <b>history</b>, and a monthly <b>register</b> you can export.</p></div>`;
+  h+=`<div class="subtabs" id="paysub">${subs.map((s,i)=>`<button class="subtab${i===0?" on":""}" data-sub="${s[0]}">${s[1]}</button>`).join("")}</div>`;
+
+  h+=`<div class="subpane on" data-subpane="structure">
+    <div class="card"><div class="card-hd"><h3><span class="hi">▦</span> Salary structure — by designation</h3><span class="hint">edit Monthly Gross · components derive from formulas</span></div><div class="card-bd">
+      <div class="tbl-wrap"><table class="tbl" id="salGrid"></table></div>
+      <button class="addbtn" data-addrow>＋ Add designation</button>
+      <div class="note" style="margin-top:12px"><span>💡</span><span>Enter <b>Monthly Gross</b> per designation; Basic / HRA / … come from the formulas in the <b>Components</b> tab. <b>PF</b> = 12% of Basic (₹15k cap), <b>PT</b> = state slab, <b>CTC</b> = Gross + employer PF. A <span class="warn-chip">⚠ band</span> flag means the salary sits outside its pay grade.</span></div></div></div></div>`;
+
+  h+=`<div class="subpane" data-subpane="components">
+    <div class="card"><div class="card-hd"><h3><span class="hi">🧩</span> Salary components &amp; formulas</h3><span class="hint">defined once · applied to everyone</span></div><div class="card-bd">
+      <div class="tbl-wrap"><table class="tbl" id="compTbl"></table></div>
+      <button class="addbtn" data-addcomp>＋ Add component</button>
+      <div class="note" style="margin-top:12px"><span>ℹ️</span><span>Change a formula and the whole matrix reflows. <b>Basic</b> must stay first so components set as “% of Basic” resolve. <b>Balancing</b> fills whatever is left of Gross.</span></div></div></div></div>`;
+
+  h+=`<div class="subpane" data-subpane="grades">
+    <div class="card"><div class="card-hd"><h3><span class="hi">🪜</span> Pay grades &amp; bands</h3><span class="hint">min–max salary per grade</span></div><div class="card-bd">
+      <div class="tbl-wrap"><table class="tbl" id="gradeTbl"></table></div>
+      <button class="addbtn" data-addgrade>＋ Add grade</button></div></div></div>`;
+
+  h+=`<div class="subpane" data-subpane="revisions">
+    <div class="card"><div class="card-hd"><h3><span class="hi">🕰️</span> Salary revision history</h3><span class="hint">who changed what, and when</span></div><div class="card-bd">
+      <div class="tbl-wrap"><table class="tbl" id="revTbl"></table></div>
+      <button class="addbtn" data-addrev>＋ Record a revision</button></div></div></div>`;
+
+  h+=`<div class="subpane" data-subpane="register">
+    <div class="card"><div class="card-hd"><h3><span class="hi">📊</span> Monthly payroll register</h3><button class="btn" data-export style="margin-left:auto;font-size:12px;padding:7px 12px">⬇ Export CSV</button></div><div class="card-bd">
+      <div class="sum-tiles" id="payTiles"></div>
+      <div class="tbl-wrap"><table class="tbl" id="regTbl"></table></div></div></div>
+    <div class="card"><div class="card-hd"><h3><span class="hi">📆</span> Pay cycle</h3></div><div class="card-bd">
+      ${row("Pay day","must","Day of month salaries are paid.",num("payday","1","of mo"))}
+      ${row("Attendance cut-off","must","Day the attendance month closes for payroll.",num("cutoff","25","th"))}
+      ${row("Loss-of-pay source","must","Which attendance status reduces pay.",seg("lopsrc",["Absent only","Absent + unpaid leave"],"Absent + unpaid leave"))}
+      ${row("Payslip delivery","nice","Share payslips with staff automatically.",seg("psd",["App","Email","Both"],"App"))}</div></div>
+    <div class="card"><div class="card-hd"><h3><span class="hi">➕</span> Variable pay</h3></div><div class="card-bd">
+      ${row("Reimbursements","nice","Claims (travel, phone) paid with salary.",sw("reimb",false))}
+      ${row("Loans &amp; advances","nice","Advances recovered in instalments.",sw("loans",false))}
+      ${row("Increment cycle","nice","When appraisals &amp; hikes run.",seg("inccycle",["April","Jan","Anniversary"],"April"))}
+      ${row("Arrears","nice","Pay back-dated salary revisions.",sw("arrears",true))}</div></div></div>`;
+  return h;
+}
+
+function buildStatutory(){
+  let h=`<div class="pane-hd"><h2>Statutory compliance <span class="tag" style="background:var(--bad-bg);color:var(--bad)">India · gap</span></h2><p>The piece that makes it a real employer system. Toggle what applies to this school.</p></div>`;
+  h+=`<div class="card"><div class="card-hd"><h3><span class="hi">🏦</span> EPF / ESI</h3></div><div class="card-bd">
+    ${row("Provident Fund (EPF)","must","12% employer + employee on Basic.",sw("epf",true),"Wage ceiling ₹15,000; UAN per employee.")}
+    ${row("PF wage ceiling cap","nice","Cap PF contribution at the ₹15k wage.",sw("epfcap",true))}
+    ${row("ESI","must","Health insurance for lower-wage staff.",sw("esi",true),"Applies when gross ≤ ₹21,000/month.")}</div></div>`;
+  h+=`<div class="card"><div class="card-hd"><h3><span class="hi">🧮</span> Taxes</h3></div><div class="card-bd">
+    <div class="row"><div class="lab"><div class="name">Professional Tax <span class="tag must">must</span></div><div class="desc">State-wise monthly slab deducted from salary.</div>
+      <div class="india">PT is <b>per state</b> — set the state and slabs.</div>
+      ${row("","","","")===""?"":""}
+      <div class="list" id="ptslabs" data-ph="Up to ₹ → ₹ tax" style="margin-top:10px"></div><button class="addbtn" data-add="ptslabs">＋ Add slab</button></div>
+      <div class="ctl">${sel("ptstate",["Maharashtra","Karnataka","West Bengal","Gujarat","Tamil Nadu","Telangana","None"],"Maharashtra")}</div></div>
+    ${row("TDS / income tax","must","Deduct tax at source per employee declarations.",sw("tds",true),"Old vs New regime; investment declarations.")}
+    ${row("Labour Welfare Fund (LWF)","nice","Small periodic state levy.",sw("lwf",false))}</div></div>`;
+  h+=`<div class="card"><div class="card-hd"><h3><span class="hi">📜</span> End-of-service</h3></div><div class="card-bd">
+    ${row("Gratuity","must","Paid after 5 years of service.",sw("grat",true),"Payment of Gratuity Act — 15 days' wage per completed year.")}
+    ${row("Bonus","nice","Statutory annual bonus.",sw("bonus",false),"Payment of Bonus Act — eligibility &amp; ceiling apply.")}
+    ${row("Shops &amp; Establishments","nice","Registration &amp; working-hour norms.",sw("shops",false))}</div></div>`;
+  return h;
+}
+
+function buildLifecycle(){
+  let h=`<div class="pane-hd"><h2>Employee lifecycle <span class="tag" style="background:var(--bad-bg);color:var(--bad)">gap</span></h2><p>From onboarding to exit — the paperwork and gates around a staff member's tenure.</p></div>`;
+  h+=`<div class="card"><div class="card-hd"><h3><span class="hi">📥</span> Onboarding &amp; KYC</h3></div><div class="card-bd">
+    ${row("Required documents","must","Collected &amp; verified before a staff member goes live.",listCard("kyc","..","Document","Add document"),"PAN + bank are payroll prerequisites; Aadhaar for PF/ESI.")}
+    ${row("Onboarding checklist","nice","Standard steps for every new joiner.",sw("onbchk",true))}</div></div>`;
+  h+=`<div class="card"><div class="card-hd"><h3><span class="hi">🚪</span> Exit</h3></div><div class="card-bd">
+    ${row("Notice period","must","Default notice on resignation.",num("notice","30","days"))}
+    ${row("Full &amp; final settlement","must","Auto-compute dues on exit.",sw("fnf",true),"F&amp;F pulls leave encashment + gratuity + pending dues.")}
+    ${row("Exit checklist &amp; clearance","nice","Asset return, handover, access revoke.",sw("exitchk",true))}
+    ${row("Retain records after exit","nice","Statutory record retention.",num("retain","7","yrs"))}</div></div>`;
+  return h;
+}
+
+function buildAccess(){
+  let h=`<div class="pane-hd"><h2>Approvals &amp; access</h2><p>Who can change these settings, how requests get approved, and what gets logged. Mostly reuses RBAC you already have.</p></div>`;
+  h+=`<div class="card"><div class="card-hd"><h3><span class="hi">✅</span> Approval workflow</h3></div><div class="card-bd">
+    ${row("Leave / regularization approver","must","Who signs off staff requests.",seg("appr",["Reporting mgr","HR","Principal"],"Reporting mgr"))}
+    ${row("Escalation after","nice","Auto-escalate a pending request.",num("esc","48","hrs"))}
+    ${row("Notify on request","nice","Push / email when action is needed.",sw("notif",true))}</div></div>`;
+  h+=`<div class="card"><div class="card-hd"><h3><span class="hi">🔐</span> Who can edit settings</h3></div><div class="card-bd">
+    ${row("Payroll &amp; compensation","must","Restricted — sensitive pay data.",sel("perm1",["Principal + HR only","HR only","Admins"],"Principal + HR only"))}
+    ${row("Statutory &amp; compliance","must","Restricted — legal exposure.",sel("perm2",["Principal + HR only","HR only","Admins"],"Principal + HR only"))}
+    ${row("Attendance &amp; leave rules","nice","Operational settings.",sel("perm3",["HR + Admin","Admins","HR only"],"HR + Admin"))}
+    ${row("Audit log of changes","must","Every settings change recorded with who &amp; when.",sw("audit",true))}
+    ${row("Apply per campus","nice","Let each campus override some rules.",sw("percampus",false))}</div></div>`;
+  return h;
+}
+
+const BUILDERS={overview:buildOverview,employment:buildEmployment,attendance:buildAttendance,leave:buildLeave,payroll:buildPayroll,statutory:buildStatutory,lifecycle:buildLifecycle,access:buildAccess};
+
+/* seed data for lists ------------------------------------- */
+const SEED={
+  desig:[{name:"Principal"},{name:"Vice Principal"},{name:"TGT Teacher"},{name:"PGT Teacher"},{name:"PRT Teacher"},{name:"Lab Assistant"},{name:"Accountant"},{name:"Office Clerk"},{name:"Librarian"},{name:"Support Staff"}],
+  emptype:[{name:"Permanent",badge:"PF+ESI"},{name:"Probation",badge:"6 mo"},{name:"Contract",badge:"fixed-term"},{name:"Part-time"},{name:"Visiting faculty",badge:"hourly"}],
+  ltypes:[{name:"Casual Leave (CL)",badge:"12/yr"},{name:"Sick Leave (SL)",badge:"12/yr"},{name:"Earned Leave (EL)",badge:"accrues"},{name:"Comp-off",badge:"earned"},{name:"Maternity",badge:"26 wk"},{name:"Loss of Pay (LOP)",badge:"unpaid"}],
+  ptslabs:[{name:"≤ ₹7,500 → ₹0"},{name:"₹7,501–₹10,000 → ₹175"},{name:"> ₹10,000 → ₹200 (₹300 Feb)"}],
+  kyc:[{name:"PAN card",badge:"payroll"},{name:"Aadhaar",badge:"PF/ESI"},{name:"Bank passbook / cancelled cheque",badge:"payroll"},{name:"Educational certificates"},{name:"Experience letters"},{name:"Passport photo"}],
+};
+
+/* ── render + wire ─────────────────────────────────────── */
+const rail=document.getElementById("rail"), main=document.getElementById("main");
+SECTIONS.forEach((s,i)=>{
+  const n=el("div","nav"+(i===0?" on":""));
+  n.innerHTML=`<span class="ni">${s.icon}</span><span>${s.label}</span>${s.st?`<span class="nc ${s.st}">${s.st==="g"?"Have":s.st==="a"?"Partial":"Gap"}</span>`:""}`;
+  n.dataset.id=s.id; rail.appendChild(n);
+  const p=el("section","pane"+(i===0?" on":"")); p.id="pane-"+s.id; p.innerHTML=BUILDERS[s.id](); main.appendChild(p);
+});
+// hydrate lists
+Object.keys(SEED).forEach(id=>renderList(id,SEED[id]));
+updateReadiness();  // payroll tables are rendered after their data is defined (see initPayroll below)
+
+// nav switching
+rail.addEventListener("click",e=>{const n=e.target.closest(".nav");if(!n)return;
+  document.querySelectorAll(".nav").forEach(x=>x.classList.toggle("on",x===n));
+  document.querySelectorAll(".pane").forEach(x=>x.classList.toggle("on",x.id==="pane-"+n.dataset.id));
+  window.scrollTo({top:0,behavior:"smooth"});
+});
+
+// delegated interactions
+main.addEventListener("click",e=>{
+  const chip=e.target.closest(".chip"); if(chip){chip.classList.toggle("on");return;}
+  const seg=e.target.closest("[data-seg] button"); if(seg){seg.parentElement.querySelectorAll("button").forEach(b=>b.classList.toggle("on",b===seg));return;}
+  const add=e.target.closest("[data-add]"); if(add){const id=add.dataset.add;LISTS[id].push({name:""});renderList(id,LISTS[id]);const inps=document.querySelectorAll(`[data-list="${id}"]`);inps[inps.length-1]?.focus();return;}
+  const rm=e.target.closest("[data-rm]"); if(rm){const id=rm.dataset.rm;LISTS[id].splice(+rm.dataset.i,1);renderList(id,LISTS[id]);return;}
+  // payroll sub-tabs
+  const st=e.target.closest("[data-sub]"); if(st){const id=st.dataset.sub;st.parentElement.querySelectorAll("[data-sub]").forEach(b=>b.classList.toggle("on",b===st));
+    document.querySelectorAll("[data-subpane]").forEach(p=>p.classList.toggle("on",p.dataset.subpane===id));if(id==="register")renderRegister();if(id==="grades")renderGrades();return;}
+  // matrix rows
+  if(e.target.closest("[data-addrow]")){GRID.push({desig:"New designation",grade:"— Ungraded",gross:0});renderGrid();renderGrades();renderRegister();document.querySelector(`[data-row="${GRID.length-1}"][data-k="desig"]`)?.focus();return;}
+  const rr=e.target.closest("[data-rmrow]"); if(rr){GRID.splice(+rr.dataset.rmrow,1);renderGrid();renderGrades();renderRegister();return;}
+  // components
+  if(e.target.closest("[data-addcomp]")){COMPONENTS.push({name:"New allowance",type:"Earning",basis:"Flat",value:0,taxable:1,pf:0,lop:1});renderComponents();renderGrid();renderRegister();return;}
+  const rc=e.target.closest("[data-rmcomp]"); if(rc){COMPONENTS.splice(+rc.dataset.rmcomp,1);renderComponents();renderGrid();renderRegister();return;}
+  const ynb=e.target.closest("[data-ynck]"); if(ynb){const i=+ynb.dataset.comp,k=ynb.dataset.ynck;if(COMPONENTS[i]){COMPONENTS[i][k]=COMPONENTS[i][k]?0:1;renderComponents();}return;}
+  // grades
+  if(e.target.closest("[data-addgrade]")){GRADES.push({name:"New grade",min:0,max:0});renderGrades();return;}
+  const rg=e.target.closest("[data-rmgrade]"); if(rg){GRADES.splice(+rg.dataset.rmgrade,1);renderGrades();renderGrid();return;}
+  // revisions
+  if(e.target.closest("[data-addrev]")){const g=GRID[0]||{desig:"—",gross:0};const d=new Date().toISOString().slice(0,10);REV.unshift({date:d,desig:g.desig,from:g.gross,to:Math.round(g.gross*1.05),reason:"Increment",who:"HR"});renderRevisions();return;}
+  const rv=e.target.closest("[data-rmrev]"); if(rv){REV.splice(+rv.dataset.rmrev,1);renderRevisions();return;}
+  // export
+  if(e.target.closest("[data-export]")){exportCSV();return;}
+});
+main.addEventListener("input",e=>{
+  const li=e.target.closest("[data-list]"); if(li){const id=li.dataset.list;if(LISTS[id][+li.dataset.i])LISTS[id][+li.dataset.i]={name:li.value,badge:LISTS[id][+li.dataset.i].badge};return;}
+  if(e.target.matches("[data-row][data-k]")){gridCellInput(e.target);return;}
+  if(e.target.matches("[data-comp][data-ck]")){const i=+e.target.dataset.comp,k=e.target.dataset.ck;if(!COMPONENTS[i])return;COMPONENTS[i][k]= k==="value"?(+e.target.value||0):e.target.value;renderGrid();renderRegister();return;}
+  if(e.target.matches("[data-grade][data-gk]")){const i=+e.target.dataset.grade,k=e.target.dataset.gk;if(!GRADES[i])return;GRADES[i][k]= k==="name"?e.target.value:(+e.target.value||0);renderGrid();return;}
+});
+main.addEventListener("change",e=>{
+  if(e.target.matches("[data-row][data-gk2]")){const i=+e.target.dataset.row;if(GRID[i]){GRID[i].grade=e.target.value;renderGrid();renderGrades();renderRegister();}return;}
+  if(e.target.matches("[data-comp][data-ck='basis']")){const i=+e.target.dataset.comp;if(COMPONENTS[i]){COMPONENTS[i].basis=e.target.value;renderComponents();renderGrid();renderRegister();}return;}
+});
+
+/* payroll — component library + salary-structure matrix ---- */
+function money(n){return "₹"+Math.round(n).toLocaleString("en-IN");}
+const esc=s=>(s==null?"":String(s)).replace(/&/g,"&amp;").replace(/"/g,"&quot;").replace(/</g,"&lt;");
+const yn=v=>v?'<span class="yn y">✓</span>':'<span class="yn n">–</span>';
+
+const BASES=["% of Gross","% of Basic","Flat","Balancing"];
+let COMPONENTS=[
+  {name:"Basic",type:"Earning",basis:"% of Gross",value:50,taxable:1,pf:1,lop:1},
+  {name:"HRA",type:"Earning",basis:"% of Basic",value:40,taxable:1,pf:0,lop:1},
+  {name:"Dearness Allowance",type:"Earning",basis:"% of Basic",value:0,taxable:1,pf:1,lop:1},
+  {name:"Conveyance",type:"Earning",basis:"Flat",value:1600,taxable:1,pf:0,lop:1},
+  {name:"Special Allowance",type:"Earning",basis:"Balancing",value:0,taxable:1,pf:0,lop:1},
+  {name:"Provident Fund",type:"Deduction",calc:"12% of Basic",taxable:0,pf:0,lop:0},
+  {name:"Professional Tax",type:"Deduction",calc:"State slab",taxable:0,pf:0,lop:0},
+];
+const earnComps=()=>COMPONENTS.filter(c=>c.type!=="Deduction");
+const ynT=(i,k,v)=>`<button class="yn ${v?"y":"n"}" data-ynck="${k}" data-comp="${i}" style="cursor:pointer;border:none" title="Toggle">${v?"✓":"–"}</button>`;
+function renderComponents(){
+  const t=document.getElementById("compTbl"); if(!t)return;
+  const opt=(v)=>BASES.map(o=>`<option ${o===v?"selected":""}>${o}</option>`).join("");
+  const head=`<thead><tr><th class="lft">Component</th><th class="lft">Type</th><th class="lft">Calculation</th><th>Value</th><th>Taxable</th><th>PF</th><th>LOP</th><th></th></tr></thead>`;
+  const body=COMPONENTS.map((c,i)=>{const ded=c.type==="Deduction";return `<tr>
+    <td class="lft"><input class="cellname" data-comp="${i}" data-ck="name" value="${esc(c.name)}"></td>
+    <td class="lft"><span class="badge ${ded?"ded-b":""}">${c.type}</span></td>
+    <td class="lft">${ded?`<span style="color:var(--muted)">${esc(c.calc)}</span>`:`<select data-comp="${i}" data-ck="basis" style="width:130px">${opt(c.basis)}</select>`}</td>
+    <td>${ded||c.basis==="Balancing"?'<span style="color:var(--muted2)">—</span>':`<input class="cell" type="number" data-comp="${i}" data-ck="value" value="${+c.value||0}" style="width:64px">`}${!ded&&/%/.test(c.basis||"")?'<span class="suffix">%</span>':""}</td>
+    <td>${ded?yn(c.taxable):ynT(i,"taxable",c.taxable)}</td><td>${ded?yn(c.pf):ynT(i,"pf",c.pf)}</td><td>${ded?yn(c.lop):ynT(i,"lop",c.lop)}</td>
+    <td><button class="rm" data-rmcomp="${i}" title="Remove" aria-label="Remove">✕</button></td></tr>`;}).join("");
+  t.innerHTML=head+"<tbody>"+body+"</tbody>";
+}
+
+/* pay grades ---------------------------------------------- */
+let GRADES=[
+  {name:"G5 · Leadership",min:40000,max:75000},
+  {name:"G4 · Senior",min:28000,max:48000},
+  {name:"G3 · Teacher",min:16000,max:34000},
+  {name:"G2 · Junior",min:12000,max:24000},
+  {name:"G1 · Support",min:9000,max:17000},
+];
+function renderGrades(){
+  const t=document.getElementById("gradeTbl"); if(!t)return;
+  const head=`<thead><tr><th class="lft">Grade</th><th>Min / month</th><th>Max / month</th><th>Staff in band</th><th></th></tr></thead>`;
+  const body=GRADES.map((g,i)=>{const n=GRID.filter(r=>r.grade===g.name).length;return `<tr>
+    <td class="lft"><input class="cellname" data-grade="${i}" data-gk="name" value="${esc(g.name)}"></td>
+    <td><input class="cell" type="number" data-grade="${i}" data-gk="min" value="${+g.min||0}"></td>
+    <td><input class="cell" type="number" data-grade="${i}" data-gk="max" value="${+g.max||0}"></td>
+    <td class="calc-cell">${n}</td>
+    <td><button class="rm" data-rmgrade="${i}" title="Remove" aria-label="Remove">✕</button></td></tr>`;}).join("");
+  t.innerHTML=head+"<tbody>"+body+"</tbody>";
+}
+
+/* salary structure matrix (derives from formulas) --------- */
+let GRID=[
+  {desig:"Principal",grade:"G5 · Leadership",gross:60000},
+  {desig:"Vice Principal",grade:"G4 · Senior",gross:48000},
+  {desig:"PGT Teacher",grade:"G3 · Teacher",gross:38000},
+  {desig:"TGT Teacher",grade:"G3 · Teacher",gross:31000},
+  {desig:"PRT Teacher",grade:"G2 · Junior",gross:26000},
+  {desig:"Accountant",grade:"G3 · Teacher",gross:27000},
+  {desig:"Librarian",grade:"G2 · Junior",gross:22000},
+  {desig:"Support Staff",grade:"G1 · Support",gross:15000},
+];
+const ptSlab=g=> g<=7500?0 : g<=10000?175 : 200;
+function computeComponents(gross){
+  const out={}; let basic=0, sum=0, balName=null;
+  earnComps().forEach(c=>{
+    let amt=0;
+    if(c.basis==="% of Gross") amt=gross*(+c.value||0)/100;
+    else if(c.basis==="% of Basic") amt=basic*(+c.value||0)/100;
+    else if(c.basis==="Flat") amt=+c.value||0;
+    else if(c.basis==="Balancing"){ balName=c.name; return; }
+    out[c.name]=amt;
+    if(/^basic/i.test(c.name)) basic=amt;
+    sum+=amt;
+  });
+  if(balName) out[balName]=Math.max(0,gross-sum);
+  return {out,basic};
+}
+function computeRow(r){
+  const gross=+r.gross||0; const {out,basic}=computeComponents(gross);
+  const pf=Math.min(basic,15000)*0.12, pt=ptSlab(gross);
+  return {out,basic,gross,pf,pt,net:gross-pf-pt,ctc:gross+pf};
+}
+function bandFlag(r){
+  const g=GRADES.find(x=>x.name===r.grade); if(!g)return "";
+  const gr=+r.gross||0;
+  return (gr<+g.min||gr>+g.max) ? `<span class="warn-chip" title="Outside ${esc(g.name)} band">⚠ band</span>` : "";
+}
+function gradeSelect(i,val){
+  const opts=GRADES.map(g=>`<option ${g.name===val?"selected":""}>${esc(g.name)}</option>`).join("");
+  return `<select data-row="${i}" data-gk2 style="width:130px">${opts}<option ${!GRADES.some(g=>g.name===val)?"selected":""}>— Ungraded</option></select>`;
+}
+function renderGrid(){
+  const t=document.getElementById("salGrid"); if(!t)return;
+  const ecs=earnComps();
+  const head=`<thead><tr><th class="lft">Designation</th><th class="lft">Grade</th><th>Gross ✏️</th>${ecs.map(c=>`<th>${esc(c.name)}</th>`).join("")}<th>− PF</th><th>− PT</th><th>Net</th><th>CTC</th><th></th></tr></thead>`;
+  const body=GRID.map((r,i)=>{const c=computeRow(r);return `<tr>
+    <td class="lft"><input class="cellname" data-row="${i}" data-k="desig" value="${esc(r.desig)}"></td>
+    <td class="lft">${gradeSelect(i,r.grade)} ${bandFlag(r)}</td>
+    <td><input class="cell" type="number" data-row="${i}" data-k="gross" value="${+r.gross||0}"></td>
+    ${ecs.map(cp=>`<td class="calc-cell">${money(c.out[cp.name]||0)}</td>`).join("")}
+    <td class="calc-cell ded">${money(c.pf)}</td><td class="calc-cell ded">${money(c.pt)}</td>
+    <td class="calc-cell net">${money(c.net)}</td><td class="calc-cell ctc">${money(c.ctc)}</td>
+    <td><button class="rm" data-rmrow="${i}" title="Remove" aria-label="Remove">✕</button></td></tr>`;}).join("");
+  t.innerHTML=head+"<tbody>"+body+"</tbody>"+gridFoot(ecs.length);
+}
+function gridFoot(nEarn){
+  const tot=GRID.reduce((a,r)=>{const c=computeRow(r);a.g+=c.gross;a.n+=c.net;a.c+=c.ctc;return a;},{g:0,n:0,c:0});
+  return `<tfoot><tr><td class="lft">All staff · monthly (${GRID.length})</td><td></td><td class="calc-cell">${money(tot.g)}</td><td colspan="${nEarn}"></td><td colspan="2"></td><td class="calc-cell net">${money(tot.n)}</td><td class="calc-cell ctc">${money(tot.c)}</td><td></td></tr></tfoot>`;
+}
+function gridCellInput(inp){
+  const i=+inp.dataset.row, k=inp.dataset.k;
+  if(!GRID[i])return;
+  GRID[i][k]= k==="gross" ? (+inp.value||0) : inp.value;
+  if(k==="desig"){ renderRegister(); renderGrades(); return; }
+  const tr=inp.closest("tr"), c=computeRow(GRID[i]), ecs=earnComps(), cc=tr.querySelectorAll(".calc-cell");
+  ecs.forEach((cp,j)=>cc[j].textContent=money(c.out[cp.name]||0));
+  cc[ecs.length].textContent=money(c.pf); cc[ecs.length+1].textContent=money(c.pt);
+  cc[ecs.length+2].textContent=money(c.net); cc[ecs.length+3].textContent=money(c.ctc);
+  const gc=tr.children[1], ex=gc.querySelector(".warn-chip"); if(ex)ex.remove();
+  const bf=bandFlag(GRID[i]); if(bf)gc.insertAdjacentHTML("beforeend"," "+bf);
+  const old=document.getElementById("salGrid").querySelector("tfoot"); if(old)old.outerHTML=gridFoot(ecs.length);
+  renderRegister(); renderGrades();
+}
+
+/* salary revision history --------------------------------- */
+let REV=[
+  {date:"2026-04-01",desig:"PGT Teacher",from:36000,to:38000,reason:"Annual increment",who:"Principal"},
+  {date:"2026-04-01",desig:"TGT Teacher",from:29000,to:31000,reason:"Annual increment",who:"Principal"},
+  {date:"2025-11-15",desig:"Accountant",from:24000,to:27000,reason:"Promotion",who:"HR"},
+];
+function renderRevisions(){
+  const t=document.getElementById("revTbl"); if(!t)return;
+  const head=`<thead><tr><th class="lft">Effective</th><th class="lft">Designation</th><th>From</th><th>To</th><th>Change</th><th class="lft">Reason</th><th class="lft">By</th><th></th></tr></thead>`;
+  const body=REV.map((r,i)=>{const pct=r.from?Math.round((r.to-r.from)/r.from*1000)/10:0;return `<tr>
+    <td class="lft mono">${esc(r.date)}</td><td class="lft">${esc(r.desig)}</td>
+    <td class="calc-cell">${money(r.from)}</td><td class="calc-cell">${money(r.to)}</td>
+    <td class="calc-cell ${pct>=0?"net":"ded"}">${pct>=0?"+":""}${pct}%</td>
+    <td class="lft" style="color:var(--muted)">${esc(r.reason)}</td><td class="lft" style="color:var(--muted)">${esc(r.who)}</td>
+    <td><button class="rm" data-rmrev="${i}" title="Remove" aria-label="Remove">✕</button></td></tr>`;}).join("");
+  t.innerHTML=head+"<tbody>"+body+"</tbody>";
+}
+
+/* monthly register + export ------------------------------- */
+function renderRegister(){
+  const t=document.getElementById("regTbl"), tiles=document.getElementById("payTiles"); if(!t)return;
+  let tg=0,tn=0,tc=0,tpf=0,tpt=0;
+  const rows=GRID.map(r=>{const c=computeRow(r);tg+=c.gross;tn+=c.net;tc+=c.ctc;tpf+=c.pf;tpt+=c.pt;return {r,c};});
+  const head=`<thead><tr><th class="lft">Designation</th><th>Gross</th><th>PF</th><th>PT</th><th>Net</th><th>CTC</th></tr></thead>`;
+  const body=rows.map(({r,c})=>`<tr><td class="lft">${esc(r.desig)}</td><td class="calc-cell">${money(c.gross)}</td><td class="calc-cell ded">${money(c.pf)}</td><td class="calc-cell ded">${money(c.pt)}</td><td class="calc-cell net">${money(c.net)}</td><td class="calc-cell ctc">${money(c.ctc)}</td></tr>`).join("");
+  const foot=`<tfoot><tr><td class="lft">Total (${GRID.length})</td><td class="calc-cell">${money(tg)}</td><td class="calc-cell ded">${money(tpf)}</td><td class="calc-cell ded">${money(tpt)}</td><td class="calc-cell net">${money(tn)}</td><td class="calc-cell ctc">${money(tc)}</td></tr></tfoot>`;
+  t.innerHTML=head+"<tbody>"+body+"</tbody>"+foot;
+  if(tiles)tiles.innerHTML=[["Headcount",GRID.length],["Monthly gross",money(tg)],["Net payout",money(tn)],["Total CTC",money(tc)],["PF payable (E+E)",money(tpf*2)],["PT payable",money(tpt)]]
+    .map(x=>`<div class="sum-tile"><div class="k">${x[0]}</div><div class="v">${x[1]}</div></div>`).join("");
+}
+const csv=s=>`"${String(s==null?"":s).replace(/"/g,'""')}"`;
+function exportCSV(){
+  const ecs=earnComps();
+  const lines=[["Designation","Grade","Gross",...ecs.map(c=>c.name),"PF","PT","Net","CTC"].join(",")];
+  GRID.forEach(r=>{const c=computeRow(r);lines.push([csv(r.desig),csv(r.grade||""),Math.round(c.gross),...ecs.map(cp=>Math.round(c.out[cp.name]||0)),Math.round(c.pf),Math.round(c.pt),Math.round(c.net),Math.round(c.ctc)].join(","));});
+  const blob=new Blob([lines.join("\n")],{type:"text/csv;charset=utf-8"});
+  const a=document.createElement("a"); a.href=URL.createObjectURL(blob); a.download="payroll_register.csv"; a.click(); URL.revokeObjectURL(a.href);
+  toast("Register exported");
+}
+
+/* readiness ----------------------------------------------- */
+function updateReadiness(){
+  const w={g:1,a:.5,r:0}; const secs=SECTIONS.filter(s=>s.st);
+  const pct=Math.round(secs.reduce((a,s)=>a+w[s.st],0)/secs.length*100);
+  const t=document.getElementById("readipct"); if(t)t.textContent=pct+"%";
+}
+
+/* theme --------------------------------------------------- */
+const root=document.documentElement;
+document.getElementById("theme").addEventListener("click",()=>{
+  const cur=root.getAttribute("data-theme")|| (matchMedia("(prefers-color-scheme:dark)").matches?"dark":"light");
+  root.setAttribute("data-theme",cur==="dark"?"light":"dark");
+});
+
+/* save / reset -------------------------------------------- */
+function toast(msg){const t=document.getElementById("toast");document.getElementById("toast-msg").textContent=msg;t.classList.add("show");clearTimeout(t._t);t._t=setTimeout(()=>t.classList.remove("show"),2200);}
+function snapshot(){
+  const o={toggles:{},inputs:{},segs:{},chips:{},lists:LISTS,grid:GRID,components:COMPONENTS,grades:GRADES,rev:REV};
+  document.querySelectorAll("input[type=checkbox]").forEach(c=>o.toggles[c.id]=c.checked);
+  document.querySelectorAll("input[type=text],input[type=number],select").forEach(c=>{if(c.id)o.inputs[c.id]=c.value;});
+  document.querySelectorAll("[data-seg]").forEach(s=>o.segs[s.id]=s.querySelector(".on")?.dataset.v);
+  document.querySelectorAll("[data-multi]").forEach(m=>o.chips[m.id]=[...m.querySelectorAll(".chip.on")].map(c=>c.dataset.v));
+  return o;
+}
+document.getElementById("save").addEventListener("click",()=>{
+  try{localStorage.setItem("zenxii_staff_settings",JSON.stringify(snapshot()));}catch(e){}
+  toast("Settings saved");
+});
+document.getElementById("reset").addEventListener("click",()=>{ if(confirm("Reset all Staff Settings to defaults?")){localStorage.removeItem("zenxii_staff_settings");location.reload();} });
+
+/* initial payroll render — runs AFTER all payroll data + functions above are
+   defined (they use `let` bindings, which are not hoisted). */
+renderComponents(); renderGrid(); renderGrades(); renderRevisions(); renderRegister();
+
+/* restore persisted -------------------------------------- */
+(function restore(){
+  let o; try{o=JSON.parse(localStorage.getItem("zenxii_staff_settings"));}catch(e){}
+  if(!o)return;
+  if(o.lists)Object.keys(o.lists).forEach(id=>{if(LISTS[id]!==undefined)renderList(id,o.lists[id]);});
+  if(Array.isArray(o.components)){COMPONENTS=o.components;renderComponents();}
+  if(Array.isArray(o.grades)){GRADES=o.grades;renderGrades();}
+  if(Array.isArray(o.grid)){GRID=o.grid;renderGrid();}
+  if(Array.isArray(o.rev)){REV=o.rev;renderRevisions();}
+  renderRegister();
+  Object.entries(o.toggles||{}).forEach(([id,v])=>{const e=document.getElementById(id);if(e)e.checked=v;});
+  Object.entries(o.inputs||{}).forEach(([id,v])=>{const e=document.getElementById(id);if(e)e.value=v;});
+  Object.entries(o.segs||{}).forEach(([id,v])=>{const s=document.getElementById(id);if(s)s.querySelectorAll("button").forEach(b=>b.classList.toggle("on",b.dataset.v===v));});
+  Object.entries(o.chips||{}).forEach(([id,arr])=>{const m=document.getElementById(id);if(m)m.querySelectorAll(".chip").forEach(c=>c.classList.toggle("on",arr.includes(c.dataset.v)));});
+})();
+</script>
+
+
+</body>
+</html>

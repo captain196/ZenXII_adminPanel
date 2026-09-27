@@ -2,7 +2,7 @@ schema_version: "v7.0"
 mission_name: "School ERP — 3-system quality hardening (v7.0)"
 mission_state: planned
 approved_at: "2026-05-21 (session 1, cycle 2 — auto-mode approval)"
-total_modules: 9
+total_modules: 10
 total_modules_out_of_mission: 6
 total_platforms: 4
 total_shared_services: 6
@@ -16,6 +16,13 @@ sequencing_rationale: |
   5. Cross-platform schema drift next — attendance (D10 hotspot).
   6. P2 polish modules — communication, hr_payroll.
   7. P3 tail — academic_planner single-platform mission close-out.
+  8. campus_access (sequence_position 10) — onboarded 2026-08-10, out-of-band. Built and
+     adversarially audited after this campaign's positions 1-9 were already sequenced; standalone
+     addition per the "new module appears" maintenance protocol. Deliberately orthogonal to the
+     rest of the sequence — positions 1-9 remain exactly as they were (fees/accounting/hr_payroll
+     still runtime_validation_gated, staff_hardening patches 6-15 still HOLD, BUG-052 and other
+     current_active_carries in COMPLETED_LOG.json untouched). Operator explicitly scoped this
+     onboarding to campus_access only; the pre-existing backlog was surfaced but deferred.
 
 modules:
   - module_id: school_config
@@ -205,6 +212,23 @@ risk_callouts:
     mitigation: "First FIX cycle touching a v1 bug rewrites row to v7 format; preserves legacy_v1_form."
 
 estimated_total_sessions: "partial — 9 unfilled: [all modules]; conservative envelope 9-27 total sessions"
+
+  - module_id: campus_access
+    sequence_position: 10
+    priority: P2
+    platforms: [admin-web, firebase-rules]
+    shared_services_consumed: [my_controller_auth, entity_firestore_sync]
+    applicable_dimensions: [D1, D2, D3, D4, D5, D7, D9, D11]
+    estimated_sessions: null
+    blocking_dependencies: []
+    completion_criteria: {max_open_P2: 2, max_open_P3: unlimited}
+    why_now: |
+      Onboarded post-build, standalone. Path-existence pre-check clean (9/9 surfaces found,
+      2026-08-10) — both surfaces promoted verified: true. Already through a 39-section manual
+      adversarial audit + correction pass (2 HIGH closed) + 90 probe assertions + 13 verifier
+      gates — first DISCOVERY pass expected LOW yield on the obvious defect classes already
+      hunted; real value is regression-catching, D11 service-contract angle, and (not yet
+      authorized) D6 accessibility.
 
 out_of_mission_modules:
   - {module_id: transport, reason: "Subsystem removed 2026-04-17."}
