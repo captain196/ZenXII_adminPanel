@@ -24,6 +24,32 @@ if (defined('FCPATH') && file_exists(FCPATH . '.env')) {
     unset($_envLines, $_envLine, $_envKey, $_envVal);
 }
 
+// ─────────────────────────────────────────────────────────────────────────────
+//  TIMEZONE — pinned, because the financial DATE depends on it
+// ─────────────────────────────────────────────────────────────────────────────
+// ZenX pinned no timezone and inherited whatever the host had. Receipts,
+// journal entries, demand due-dates and processed-payment markers are all
+// stamped with date('c') / date('d-m-Y'), so the host's timezone decided the
+// ACCOUNTING DATE of a payment.
+//
+// Demonstrated: the first live payment was stamped 2026-08-26T06:18:07+02:00
+// on a dev box running Europe/Berlin. The instant was right, the offset was
+// not — and on a UTC host (production) it is worse than cosmetic:
+//
+//     a payment at 00:30 IST on 27 Aug is recorded as 26 Aug
+//
+// which files it in the wrong accounting day, and across a month boundary in
+// the wrong accounting MONTH. Every Indian school this serves closes its books
+// on IST dates.
+//
+// Overridable via APP_TIMEZONE for anyone running outside India, but it now
+// always resolves to an EXPLICIT zone rather than an accident of the host.
+$_appTz = getenv('APP_TIMEZONE') ?: 'Asia/Kolkata';
+if (in_array($_appTz, timezone_identifiers_list(), true)) {
+    date_default_timezone_set($_appTz);
+}
+unset($_appTz);
+
 $_is_https = (
     (isset($_SERVER['HTTPS']) && $_SERVER['HTTPS'] === 'on')
     || (isset($_SERVER['HTTP_X_FORWARDED_PROTO']) && $_SERVER['HTTP_X_FORWARDED_PROTO'] === 'https')
@@ -117,11 +143,61 @@ $config['cache_query_string'] = FALSE;
 //  Generate with: php -r "echo bin2hex(random_bytes(32));"
 // ─────────────────────────────────────────────────────────────────────────────
 // .env already loaded at top of file (R5-SEC-3 FIX)
+// ── SEC-CFG-1 · THE ENVIRONMENT SIGNAL CANNOT BE TRUSTED HERE ───────────────
+// This guard fired only when ENVIRONMENT === 'production'. index.php resolves
+// that as `$_SERVER['CI_ENV'] ?? 'development'`, so it depends on
+// `SetEnv CI_ENV production` living in the production Apache config — a file
+// deliberately not in git. If it is ever absent, ENVIRONMENT silently becomes
+// 'development', this check does not fire, and the fallback below becomes the
+// live CI encryption key: a value published in this repository, protecting
+// sessions and encrypted cookies.
+//
+// Inverted to require an EXPLICIT non-production environment, so an unset or
+// unexpected value denies. That is a real improvement but NOT a complete fix:
+// if CI_ENV is missing the value reads 'development' and still passes. The
+// code cannot reliably detect production when the only signal is the very
+// variable that is missing.
+//
+// So the fallback is additionally made LOUD. A silent weak key is the dangerous
+// condition; an observable one can be caught in a log sweep. error_log() rather
+// than log_message() because CI's logger is not yet available at config time.
+//
+// The real fix is operational — guaranteeing CI_ENV is set on the host — and is
+// recorded as SEC-CFG-1. It is a PLATFORM security issue, not a Billing V2 one,
+// and is deliberately not being closed inside a fees workstream.
 $_encKey = getenv('ENCRYPTION_KEY');
-if (empty($_encKey) && ENVIRONMENT === 'production') {
-    show_error('ENCRYPTION_KEY environment variable is required in production.', 500);
+if (empty($_encKey) && !in_array(ENVIRONMENT, ['development', 'testing'], true)) {
+    show_error('ENCRYPTION_KEY environment variable is required outside development.', 500);
+}
+if (empty($_encKey)) {
+    error_log('[SEC-CFG-1] ENCRYPTION_KEY is not set — falling back to the PUBLISHED '
+        . 'development key. ENVIRONMENT=' . (defined('ENVIRONMENT') ? ENVIRONMENT : 'undefined')
+        . '. If this appears on a live host, sessions and encrypted cookies are protected '
+        . 'by a key that is in the repository.');
 }
 $config['encryption_key'] = $_encKey ?: 'CHANGE_ME_IN_ENV';
+
+/* ── IDC-SECRET-1 (2026-09-19) — ID-card QR signing secret ─────────────────
+ *
+ * Id_card_service mints every QR through qr_token_encode_v2(), which HMACs with
+ * _qr_secret(). That helper reads THIS key first and falls back to
+ * `encryption_key` — so while this is empty, every printed ID card in every
+ * school is signed with the session/cookie key.
+ *
+ * The coupling matters at exactly one moment: ROTATION. Rotating ENCRYPTION_KEY
+ * is a routine security action, and doing it today silently invalidates every
+ * ID card already in a student's hand. Nothing errors — the QRs simply stop
+ * validating, and the cause is two config layers away from the symptom.
+ *
+ * Setting this gives card credentials their own rotation story, independent of
+ * session security. LEFT EMPTY DELIBERATELY: filling it in re-signs every card
+ * minted afterwards, so previously issued cards would need reissuing. That is an
+ * owner decision and a migration, not a config tweak — do it BEFORE cards are
+ * printed at scale, or plan the reissue.
+ *
+ * Generate with: php -r "echo bin2hex(random_bytes(32));"
+ */
+$config['qr_token_secret'] = (string) (getenv('QR_TOKEN_SECRET') ?: '');
 // Fallback is for local development only. Generate a production key with:
 // php -r "echo bin2hex(random_bytes(32));"
 
@@ -210,6 +286,22 @@ $config['csrf_exclude_uris'] = [
     'superadmin/backups(.*)',
     'superadmin/debug(.*)',
     'superadmin/migration(.*)',
+    // Rollout flags (T3, 2026-08-18). Same reason as every entry above: the SA
+    // panel runs its OWN CSRF layer (MY_Superadmin_Controller::_verify_csrf)
+    // against a token in the authenticated SA session, and CI3's cookie-based
+    // check collides with it because the SA and school-admin panels share a
+    // cookie domain. Without this line the endpoints return a blank 403 with
+    // no log and no console error.
+    'superadmin/rollout(.*)',
+    // Maps Platform (2026-08-16). Every superadmin section is excluded here for
+    // a specific reason, not for convenience: the SA panel runs its OWN CSRF
+    // layer (MY_Superadmin_Controller::_verify_csrf) which validates the POST
+    // field `csrf_token` against the SESSION token published in sa_header's
+    // meta tag. CI's global CSRF wants the same field name with its own cookie
+    // value, so leaving both active makes the two layers fight and every SA
+    // POST fails. Excluding CI's layer does NOT remove CSRF protection — the SA
+    // layer still enforces it, with a 64-char session token and hash_equals.
+    'superadmin/maps(.*)',
     'superadmin/admins(.*)',
     'superadmin/school_admins(.*)',
     'superadmin/bootstrap(.*)',
@@ -227,7 +319,22 @@ $config['csrf_exclude_uris'] = [
     'admission/payment_webhook(.*)',
     // Mobile API endpoints (Firebase ID-token authenticated, not CSRF-protected)
     'auth/(.*)',
+    // Phase F (2026-08-08) — parent-facing entitlement requests from the Parent
+    // app. Firebase Bearer-token authenticated (Entitlement_requests::_auth),
+    // so there is no admin session and no CSRF field to send; without this
+    // exclusion CI3 rejects the POST with a blank 403 — no log, no console
+    // error. Authorization is NOT weakened: the token is verified and
+    // per-student ownership re-checked server-side on every call.
+    'entitlement_request/(.*)',
     'staff_attendance/(.*)',
+    // F13.1 M3 / D-8 (2026-08-08) — canonical driver trip lifecycle. The
+    // Teacher app authenticates with a Firebase Bearer token and holds no CI
+    // session, so it cannot carry a CSRF token; without this exclusion CI's
+    // global CSRF returns a blank 403 with no log and no console error.
+    // Authorization is NOT weakened: Api_auth verifies the token and every
+    // endpoint re-checks that the caller owns the trip (driver_staff_id ==
+    // token uid) before touching the lifecycle.
+    'transport_driver_api/(.*)',
     // Teacher app attendance POSTs (Bearer-token authenticated via _bearer_auth_bridge)
     'attendance/save',
     'attendance/correction/submit',

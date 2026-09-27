@@ -60,3 +60,15 @@ application/logs/*.log
 
 # PHPUnit run cache (local test artifact)
 .phpunit.result.cache
+
+# Operator/system backups — contain student + financial records. NEVER commit.
+# Backup_service writes per-school archives under application/backups/.
+application/backups/
+
+# Gateway/credential snapshots must never be tracked. phase3f_gateway_backup.json
+# was committed with a real (historical) Razorpay api_key + api_secret; removing
+# the file untracks it but does NOT purge it from git history — that is a
+# separate, explicitly authorised operator action.
+snapshots/*gateway*.json
+snapshots/*credential*.json
+snapshots/*secret*.json

@@ -60,6 +60,75 @@ $config['document_service'] = [
             'maxBytes' => 5242880,
             'image'    => false,
         ],
+        // Visitor Management MVP (2026-08-09) — front-desk ID-proof capture.
+        // Photo-of-document only; the module never stores a full ID number
+        // as text (masked last-4 lives on the visitors record instead).
+        'visitor_id_proof' => [
+            'label'    => 'Visitor ID Proof', 'category' => 'predefined',
+            'ext'      => ['jpg', 'jpeg', 'png', 'pdf'],
+            'mime'     => ['image/jpeg', 'image/png', 'application/pdf'],
+            'maxBytes' => 5242880,
+            'image'    => false,
+        ],
+        'visitor_photo' => [
+            // Webcam capture at check-in — mirrors the student 'photo' type
+            // (image=true triggers the same downscale/re-encode pipeline).
+            'label'    => 'Visitor Photo', 'category' => 'predefined',
+            'ext'      => ['jpg', 'jpeg', 'png', 'webp'],
+            'mime'     => ['image/jpeg', 'image/png', 'image/webp'],
+            'maxBytes' => 2097152,
+            'image'    => true,
+        ],
+        'visitor_verification' => [
+            // Recurring vendor/contractor background-verification doc
+            // (e.g. police clearance certificate) — carries its own expiry
+            // on the visitors record, checked before a recurring pass reissues.
+            'label'    => 'Background Verification Document', 'category' => 'predefined',
+            'ext'      => ['jpg', 'jpeg', 'png', 'pdf'],
+            'mime'     => ['image/jpeg', 'image/png', 'application/pdf'],
+            'maxBytes' => 5242880,
+            'image'    => false,
+        ],
+        // Staff HR Advanced Capability Programme, Phase A (2026-08-18) —
+        // reuses the canonical Document Service exactly as it was designed
+        // to be reused (see Document_service.php's own docblock: "Student/
+        // HR/Hostel/... can adopt it later WITHOUT redesign"). No new
+        // collection, no new library — additive config only.
+        'appointment_letter' => [
+            'label'    => 'Appointment Letter', 'category' => 'predefined',
+            'ext'      => ['jpg', 'jpeg', 'png', 'pdf'],
+            'mime'     => ['image/jpeg', 'image/png', 'application/pdf'],
+            'maxBytes' => 5242880,
+            'image'    => false,
+        ],
+        'staff_id_proof' => [
+            'label'    => 'Identity Proof', 'category' => 'predefined',
+            'ext'      => ['jpg', 'jpeg', 'png', 'pdf'],
+            'mime'     => ['image/jpeg', 'image/png', 'application/pdf'],
+            'maxBytes' => 5242880,
+            'image'    => false,
+        ],
+        'qualification_certificate' => [
+            'label'    => 'Qualification Certificate', 'category' => 'predefined',
+            'ext'      => ['jpg', 'jpeg', 'png', 'pdf'],
+            'mime'     => ['image/jpeg', 'image/png', 'application/pdf'],
+            'maxBytes' => 5242880,
+            'image'    => false,
+        ],
+        'experience_certificate' => [
+            'label'    => 'Previous Experience Certificate', 'category' => 'predefined',
+            'ext'      => ['jpg', 'jpeg', 'png', 'pdf'],
+            'mime'     => ['image/jpeg', 'image/png', 'application/pdf'],
+            'maxBytes' => 5242880,
+            'image'    => false,
+        ],
+        'employment_contract' => [
+            'label'    => 'Employment Contract', 'category' => 'predefined',
+            'ext'      => ['jpg', 'jpeg', 'png', 'pdf'],
+            'mime'     => ['image/jpeg', 'image/png', 'application/pdf'],
+            'maxBytes' => 5242880,
+            'image'    => false,
+        ],
         'additional' => [
             'label'    => 'Document', 'category' => 'additional',
             'ext'      => ['jpg', 'jpeg', 'png', 'pdf', 'doc', 'docx', 'xls', 'xlsx'],

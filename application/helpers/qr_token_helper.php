@@ -14,15 +14,31 @@ defined('BASEPATH') or exit('No direct script access allowed');
  *
  * TOKEN FORMAT
  * ------------
- *   New (signed)  : URL-safe base64 of `"{schoolId}|{studentId}|{sig}"`
- *                    where sig = first 16 hex chars of
- *                                HMAC-SHA256(_qr_secret(), "{schoolId}|{studentId}")
- *   Legacy (2-part): URL-safe base64 of `"{schoolId}|{studentId}"`
+ *   V2 (versioned) : URL-safe base64 of `"{schoolId}|{studentId}|v{N}|{sig}"`
+ *                    sig = HMAC-SHA256(secret, "{schoolId}|{studentId}|v{N}")
+ *   V1 (signed)    : URL-safe base64 of `"{schoolId}|{studentId}|{sig}"`
+ *                    sig = HMAC-SHA256(secret, "{schoolId}|{studentId}")
+ *   Legacy (2-part): URL-safe base64 of `"{schoolId}|{studentId}"`   — UNSIGNED
  *
- * The decoder accepts BOTH forms during the migration window. Legacy
- * 2-part tokens are flagged with `legacy => true` in the decoded array
- * so call sites can log usage. Signed tokens with a wrong / missing /
- * truncated signature are rejected as invalid.
+ * All three are accepted during the migration window (Phase 19E). The decoder
+ * reports which it saw via `tokenVersion` ('v2'|'v1'|'legacy'), and legacy
+ * tokens additionally carry `legacy => true` so existing call sites — which
+ * all branch on that flag — keep working unchanged. Signed tokens with a
+ * wrong / missing / truncated signature are rejected outright, never demoted
+ * to legacy acceptance.
+ *
+ * Why a version at all (Phase 19E)
+ * --------------------------------
+ * V1 signs only (schoolId, studentId) — both permanent — so a V1 credential is
+ * effectively immortal: reprinting a lost student's card yields the identical
+ * token, and there is no way to invalidate the lost one short of rotating the
+ * secret and killing every card in every school. Binding a card version makes
+ * a single card retirable. The version is signed, not merely carried, so it
+ * cannot be edited by the holder.
+ *
+ * ⚠ THE VERSION IS NOT YET ENFORCED. Decoding returns `cardVersion`; nothing
+ * compares it to the student's active card. See qr_token_decode()'s contract
+ * note — enforcement is Phase 19G, after every student has been reissued.
  *
  * Why HMAC at all
  * ---------------
@@ -96,20 +112,75 @@ if (!function_exists('qr_token_encode')) {
     }
 }
 
+if (!function_exists('_qr_signature_v2')) {
+    /**
+     * V2 signature — binds the CARD VERSION as well as the identity.
+     *
+     * This is the whole point of V2 (Phase 19E). V1 signs only
+     * "{schoolId}|{studentId}", both of which are immutable for the life of
+     * the student, which is why a V1 credential can never be revoked or
+     * superseded: reprinting a card produces byte-identical bits. Including
+     * the version in the SIGNED MATERIAL (not merely in the payload) means a
+     * card can be retired by advancing the student's active version — the old
+     * token's signature is still valid for the old version and simply stops
+     * matching the active one.
+     *
+     * Version is stamped as `v{N}` so a 4-part payload can never be confused
+     * with a 3-part V1 one, and so the segment is self-describing on sight.
+     */
+    function _qr_signature_v2(string $schoolId, string $studentId, int $cardVersion): string
+    {
+        return substr(
+            hash_hmac('sha256', $schoolId . '|' . $studentId . '|v' . $cardVersion, _qr_secret()),
+            0, 16
+        );
+    }
+}
+
+if (!function_exists('qr_token_encode_v2')) {
+    /**
+     * Mint a VERSIONED (V2) token — `"{schoolId}|{studentId}|v{N}|{sig}"`.
+     *
+     * ADDITIVE. Nothing calls this on the live ID-card render path yet: Phase
+     * 19E builds the foundation only, and switching the printed card over is
+     * Phase 19G's controlled migration step. Minting a V2 token today and
+     * scanning it works everywhere a V1 token works, because every consumer
+     * branches on `legacy` (false for both V1 and V2) and NOTHING yet compares
+     * `cardVersion` against the student's active card. That non-enforcement is
+     * deliberate — see qr_token_decode()'s contract note.
+     */
+    function qr_token_encode_v2(string $schoolId, string $studentId, int $cardVersion): string
+    {
+        if ($cardVersion < 1) $cardVersion = 1;
+        $sig     = _qr_signature_v2($schoolId, $studentId, $cardVersion);
+        $payload = $schoolId . '|' . $studentId . '|v' . $cardVersion . '|' . $sig;
+        return rtrim(strtr(base64_encode($payload), '+/', '-_'), '=');
+    }
+}
+
 if (!function_exists('qr_token_decode')) {
     /**
      * Decode and verify a token.
      *
-     * @return array{schoolId:string,studentId:string,legacy:bool}|null
+     * @return array{schoolId:string,studentId:string,legacy:bool,tokenVersion:string,cardVersion:?int}|null
      *
      * Return shape:
-     *   - Signed token, signature OK : ['schoolId'=>..., 'studentId'=>..., 'legacy'=>false]
-     *   - Legacy 2-part token        : ['schoolId'=>..., 'studentId'=>..., 'legacy'=>true]
-     *   - Anything else              : null
+     *   - V2, signature OK : [..., 'legacy'=>false, 'tokenVersion'=>'v2',     'cardVersion'=>N]
+     *   - V1, signature OK : [..., 'legacy'=>false, 'tokenVersion'=>'v1',     'cardVersion'=>null]
+     *   - Legacy 2-part    : [..., 'legacy'=>true,  'tokenVersion'=>'legacy', 'cardVersion'=>null]
+     *   - Anything else    : null
      *
-     * Callers that care about migration progress should check `legacy`
-     * and log a warning when it's true so we know when to flip the
-     * acceptance flag off.
+     * `cardVersion` is null for V1/legacy because those tokens name no card at
+     * all — do NOT default it to 1, which would make an unmanaged card look
+     * like version 1 of a managed one.
+     *
+     * `legacy` is preserved exactly as before so the three existing consumers
+     * (Attendance::scan_qr, Transport_qr_attendance_service, Visitor_service)
+     * keep working with no change: V2 reads as non-legacy, so it is accepted
+     * everywhere V1 is, including by Transport's fail-closed check.
+     *
+     * Callers that care about migration progress should check `legacy` and log
+     * at 'error' (the only level CI3 actually writes here — see SEC-ID-3).
      */
     function qr_token_decode(string $token): ?array
     {
@@ -122,10 +193,11 @@ if (!function_exists('qr_token_decode')) {
         $payload = base64_decode($padded, true);
         if ($payload === false || $payload === '') return null;
 
-        // 3-part signed — preferred. 2-part legacy — accepted with flag.
+        // 4-part versioned (V2) — preferred. 3-part signed (V1) — accepted.
+        // 2-part legacy — accepted with flag during the migration window.
         $parts = explode('|', $payload);
         $count = count($parts);
-        if ($count !== 2 && $count !== 3) return null;
+        if ($count < 2 || $count > 4) return null;
 
         $schoolId  = $parts[0];
         $studentId = $parts[1];
@@ -134,6 +206,41 @@ if (!function_exists('qr_token_decode')) {
         if (!preg_match('/^[A-Za-z0-9_\-]{1,64}$/', $schoolId))  return null;
         if (!preg_match('/^[A-Za-z0-9_\-]{1,64}$/', $studentId)) return null;
 
+        if ($count === 4) {
+            // ── CREDENTIAL V2 (Phase 19E) ────────────────────────────────
+            // "{schoolId}|{studentId}|v{N}|{sig}" — the version is part of
+            // the SIGNED material, so editing it invalidates the signature
+            // rather than silently promoting/demoting a card.
+            //
+            // ⚠ CONTRACT NOTE — READ BEFORE ADDING ENFORCEMENT.
+            // This function verifies that the token is AUTHENTIC and reports
+            // which card version it names. It deliberately does NOT check
+            // that version against the student's currently-active card,
+            // because that requires a Firestore read and this helper is pure.
+            // Comparing `cardVersion` to the active version is what actually
+            // revokes a superseded card, and it is Phase 19G's controlled
+            // step (see Id_card_service::isCurrentVersion()). Enabling it
+            // before every student has been reissued would invalidate cards
+            // school-wide — the exact outcome the migration plan forbids.
+            $ver = $parts[2];
+            if (!preg_match('/^v([0-9]{1,4})$/', $ver, $vm)) return null;
+            $cardVersion = (int) $vm[1];
+            if ($cardVersion < 1) return null;
+
+            $sig = $parts[3];
+            if (!preg_match('/^[a-f0-9]{16}$/', $sig)) return null;
+            $expected = _qr_signature_v2($schoolId, $studentId, $cardVersion);
+            if (!hash_equals($expected, $sig)) return null;
+
+            return [
+                'schoolId'     => $schoolId,
+                'studentId'    => $studentId,
+                'legacy'       => false,
+                'tokenVersion' => 'v2',
+                'cardVersion'  => $cardVersion,
+            ];
+        }
+
         if ($count === 3) {
             $sig = $parts[2];
             // Constant-time compare — `hash_equals` blocks timing
@@ -141,11 +248,25 @@ if (!function_exists('qr_token_decode')) {
             if (!preg_match('/^[a-f0-9]{16}$/', $sig)) return null;
             $expected = _qr_signature($schoolId, $studentId);
             if (!hash_equals($expected, $sig)) return null;
-            return ['schoolId' => $schoolId, 'studentId' => $studentId, 'legacy' => false];
+            // `cardVersion => null` (not 1): a V1 token names NO card. Callers
+            // must not mistake it for "version 1 of a managed card".
+            return [
+                'schoolId'     => $schoolId,
+                'studentId'    => $studentId,
+                'legacy'       => false,
+                'tokenVersion' => 'v1',
+                'cardVersion'  => null,
+            ];
         }
 
         // 2-part legacy — accepted during the migration window.
-        return ['schoolId' => $schoolId, 'studentId' => $studentId, 'legacy' => true];
+        return [
+            'schoolId'     => $schoolId,
+            'studentId'    => $studentId,
+            'legacy'       => true,
+            'tokenVersion' => 'legacy',
+            'cardVersion'  => null,
+        ];
     }
 }
 

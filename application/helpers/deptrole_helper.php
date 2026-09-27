@@ -136,7 +136,7 @@ if (!function_exists('ensure_unified_roles')) {
                 $changed = true;
                 continue;
             }
-            foreach (['permissions', 'tier', 'sort_order', 'description'] as $f) {
+            foreach (['permissions', 'tier', 'sort_order', 'description', 'surface'] as $f) {
                 if (!isset($staffRoles[$rid][$f]) && isset($def[$f])) {
                     $staffRoles[$rid][$f] = $def[$f];
                     $changed = true;

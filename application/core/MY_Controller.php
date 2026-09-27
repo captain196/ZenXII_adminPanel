@@ -278,10 +278,20 @@ class MY_Controller extends CI_Controller
 
         $this->load->library('firebase');
         $this->load->library('firestore_service', null, 'fs');
+        $this->load->library('tenant_capability_service', null, 'capability');
+        // T2 — tenant-scoped ROLLOUT resolver. A third, separate gate:
+        //   has_permission()  → can THIS USER?
+        //   has_capability()  → has THIS TENANT bought it?
+        //   rollout->isEnabled() → is it ROLLED OUT here yet?
+        // Loading costs nothing: the service reads no document until a flag is
+        // actually asked for, and every caller passes its own global default,
+        // so with no tenant grant on file behaviour is unchanged.
+        $this->load->library('rollout_flag_service', null, 'rollout');
         $this->load->library('session');
         $this->load->library('request_context');
         $this->load->helper('url');
         $this->load->helper('rbac');
+        $this->load->helper('capability');
         $this->load->helper('audit');
 
         // [FIX-5] + [A-02] Full security + no-cache headers
@@ -310,6 +320,21 @@ class MY_Controller extends CI_Controller
             $this->fs->init($this->school_id, $this->session_year, $this->school_code);
         }
 
+        // Initialize tenant capability resolver — answers "does THIS TENANT
+        // have capability X", independent of RBAC's "can THIS USER do X".
+        // Backed by the existing tenantPublic/{schoolId}.activeModules mirror
+        // (same source B2_registry_service::get_features() reads for sidebar
+        // visibility) — this is the first server-side ENFORCED consumer of it.
+        // Only needs school_id, not session_year, so it stays usable in any
+        // context (e.g. no active academic session).
+        if ($this->school_id) {
+            $this->capability->init($this->firebase, $this->school_id);
+            // T2 — bind the rollout resolver to the same tenant. Shared by the
+            // library-side gates (Fee_lifecycle, Fee_generation_service) so the
+            // whole request costs at most ONE schoolControl read, memoised.
+            $this->rollout->init($this->firebase, $this->school_id);
+        }
+
         // Initialize Roster_helper — Firestore-only class roster reads
         // (replaces every legacy `Schools/{...}/Students/List` RTDB read).
         // Adopts the Firestore_service we just initialised, so the helper
@@ -319,7 +344,10 @@ class MY_Controller extends CI_Controller
             $this->roster->init($this->fs);
         }
 
-        // Initialize Dual-write service (RTDB + Firestore)
+        // Student write service (Firestore + Auth only — RTDB fully retired
+        // 2026-08-07; class renamed from Dual_write 2026-08-13, alias `dw`
+        // kept unchanged so every existing $this->dw->... call site across
+        // the codebase needed no further change).
         $this->load->library('student_write_service', null, 'dw');
         if ($this->school_id && $this->session_year) {
             $this->dw->init(
@@ -672,6 +700,7 @@ class MY_Controller extends CI_Controller
                 $fresh        = resolve_role_access($this->firebase, $this->school_name, [$roleLabel]);
                 $freshModules = $fresh['modules'];
                 $freshLevels  = $fresh['levels'];
+                $freshScope   = $fresh['scope'] ?? 'school'; // SEC-SCOPE-1: bypass = school-wide
             } else {
                 // ── Unified RBAC: resolve EFFECTIVE access from the AUTHORITATIVE
                 // staff doc — the UNION of the member's staff_roles[] (+ their claim
@@ -684,6 +713,7 @@ class MY_Controller extends CI_Controller
                 // (the same doc the override path already fetched — no extra read).
                 $freshModules = [];
                 $freshLevels  = [];
+                $freshScope   = 'section'; // SEC-SCOPE-1: least privilege until resolved
                 try {
                     $staffDoc = $this->fs->getEntity('staff', $this->admin_id);
                     if (!is_array($staffDoc)) { $staffDoc = []; }
@@ -693,6 +723,7 @@ class MY_Controller extends CI_Controller
                     $eff          = resolve_effective_access($this->firebase, $this->school_name, $staffDoc);
                     $freshModules = $eff['modules'];
                     $freshLevels  = $eff['levels'];
+                    $freshScope   = $eff['scope'] ?? 'section';
                 } catch (\Throwable $e) {
                     log_message('error', 'MY_Controller RBAC resolve failed: ' . $e->getMessage());
                 }
@@ -714,6 +745,7 @@ class MY_Controller extends CI_Controller
                         . 'backfilled for this tenant; granting full access. Run Admin_role_backfill.');
                     $freshModules = RBAC_MODULES;
                     $freshLevels  = array_fill_keys(RBAC_MODULES, 'manage');
+                    $freshScope   = 'school'; // SEC-SCOPE-1: the self-healed Admin is school-wide
                 }
             }
 
@@ -724,6 +756,9 @@ class MY_Controller extends CI_Controller
                 $rbac_permissions = $freshModules;
                 $this->session->set_userdata('rbac_permissions', $rbac_permissions);
                 $this->session->set_userdata('rbac_levels', $freshLevels);
+                // SEC-SCOPE-1: persist the authoritative class/section access scope
+                // alongside levels so _teacher_can_access reads it with no extra I/O.
+                $this->session->set_userdata('rbac_scope', $freshScope ?? 'section');
             }
             $this->session->set_userdata('rbac_ts', $rbacNow);
         }
@@ -786,13 +821,35 @@ class MY_Controller extends CI_Controller
             . "script-src 'self' 'unsafe-inline' https://cdnjs.cloudflare.com https://cdn.jsdelivr.net https://cdn.datatables.net; "
             . "style-src 'self' 'unsafe-inline' https://fonts.googleapis.com https://cdnjs.cloudflare.com https://cdn.jsdelivr.net https://cdn.datatables.net https://api.fontshare.com; "
             . "font-src 'self' https://fonts.gstatic.com https://cdnjs.cloudflare.com https://cdn.fontshare.com; "
-            . "img-src 'self' data: blob: https://*.googleapis.com https://firebasestorage.googleapis.com https://storage.googleapis.com; "
+            // F13.2 (2026-08-08) — map tile origins for the Transport live fleet
+            // map. Tiles are <img> requests, so without these the map renders a
+            // working UI over a blank grid.
+            //
+            // NARROWEST CORRECT SET, derived from the code rather than assumed:
+            // assets/js/maps/map_renderer.js builds exactly two tile URLs —
+            // api.maptiler.com (MapTiler, and the MapLibre style-URL derivation)
+            // and api.tomtom.com (TomTom). Deliberately NOT added:
+            //   • *.tile.openstreetmap.org — no renderer builds an OSM URL, and
+            //     the public OSM service is barred for production use anyway;
+            //   • any wildcard subdomain — both providers serve tiles from these
+            //     exact hosts;
+            //   • the JS CDNs — markers are SVG circleMarkers, not Leaflet's
+            //     default PNG icon, precisely so img-src need not admit a CDN.
+            //
+            // A CSP cannot be widened by emitting a second header — multiple
+            // policies INTERSECT — so this single directive is the only place
+            // the change can live. Nothing was added to script-src, style-src,
+            // default-src or any other directive.
+            . "img-src 'self' data: blob: https://*.googleapis.com https://firebasestorage.googleapis.com https://storage.googleapis.com https://api.maptiler.com https://api.tomtom.com; "
             // media-src MUST be explicit: without it <video>/<audio> fall back to
             // default-src 'self', which blocks every Firebase Storage video with
             // "Refused to load media from ...". Gallery/Stories videos live on
             // firebasestorage.googleapis.com, so they render a blank tile otherwise.
             . "media-src 'self' data: blob: https://*.googleapis.com https://firebasestorage.googleapis.com https://storage.googleapis.com; "
-            . "connect-src 'self' https://*.firebaseio.com https://*.firebasedatabase.app https://*.googleapis.com https://firebasestorage.googleapis.com https://storage.googleapis.com https://cdnjs.cloudflare.com https://cdn.jsdelivr.net; "
+            // F13.2 — same two map origins on connect-src. Raster tiles are
+            // <img> and covered by img-src above; this covers a style/metadata
+            // JSON fetch, which a vector-capable renderer performs over XHR.
+            . "connect-src 'self' https://*.firebaseio.com https://*.firebasedatabase.app https://*.googleapis.com https://firebasestorage.googleapis.com https://storage.googleapis.com https://cdnjs.cloudflare.com https://cdn.jsdelivr.net https://api.maptiler.com https://api.tomtom.com; "
             . ($embed ? "frame-ancestors 'self'; " : "frame-ancestors 'none'; ")
             . "base-uri 'self'; "
             . "form-action 'self';";
@@ -928,6 +985,544 @@ class MY_Controller extends CI_Controller
     private function _is_safe_segment(string $value): bool
     {
         return $value !== '' && (bool) preg_match("/^[A-Za-z0-9 ',_\-]+$/u", $value);
+    }
+
+    // =========================================================================
+    //  PHASE 11.3 — DUAL STUDENT REFERENCE RESOLUTION (Student ID OR SRNO)
+    // =========================================================================
+
+    /**
+     * Resolve an operator-supplied student reference to the CANONICAL Student ID.
+     *
+     * Schools operate on their own register number ("my SR Number is 12"), not on
+     * ZenX's technical id ("STU0012"). This is the ONE place that translates the
+     * former into the latter. Every operational entry point that accepts a typed
+     * student reference calls this; nothing re-implements the shape test, the
+     * school scoping, the normalisation or the error handling.
+     *
+     *   "STU0012"  -> STU0012   (0 Firestore reads — returned unchanged)
+     *   "12"       -> STU0012   (1 Firestore read  — srNoIndex doc-id fetch)
+     *   "0012"     -> STU0012   (leading zeros normalised by Sr_no_service)
+     *
+     * ── WHY THE BRANCH IS SAFE ──────────────────────────────────────────────
+     * Student IDs are `STU` + 4 zero-padded digits (Id_generator::PAD['STU']).
+     * SRNO is digits-only (`Sr_no_service::FORMAT_RE` = /^[0-9]{1,9}$/). The two
+     * token shapes are DISJOINT — no string can be a valid instance of both — so
+     * this cannot mis-route an input, and no operator-facing mode switch is
+     * needed. A digits-only string could never have resolved as a Student ID
+     * before this change, so the SRNO branch is purely additive: every existing
+     * Student ID workflow is byte-identical to before.
+     *
+     * ── TENANT SAFETY ───────────────────────────────────────────────────────
+     * Resolution is `srNoIndex/{schoolId}_{srNoNorm}`, a deterministic doc-id
+     * fetch, where schoolId comes from Firestore_service — initialised once from
+     * the authenticated session + custom claims and NEVER client-supplied. A
+     * global `srNo == N` query is not merely avoided; it is not expressible
+     * through this path. School A can never resolve School B's SRNO: it reads a
+     * different document id and gets a clean miss, never a fallback.
+     *
+     * ── RE-ADMISSION ────────────────────────────────────────────────────────
+     * Sr_no_service::resolve() returns `currentStudentId` ONLY — never a
+     * historical owner. After a re-admission relink, SRNO 12 resolves to the NEW
+     * Student ID (STU0047), never the old one (STU0001). That is a property of
+     * the index, not of this method.
+     *
+     * NOTE: this returns an ID; it deliberately does NOT load the student
+     * document. The caller loads it exactly once, keyed `{schoolId}_{studentId}`,
+     * so tenant prefixing stays the second line of defence and no student is ever
+     * read twice.
+     *
+     * @return array{ok:bool,studentId?:string,via?:string,reason?:string}
+     *         `via` is 'studentId' or 'srNo' — surface it so the UI can show the
+     *         operator WHICH identifier matched. Silent resolution is how the
+     *         wrong student gets charged.
+     */
+    protected function _resolveStudentRef(string $input): array
+    {
+        $raw = trim($input);
+        if ($raw === '') {
+            return ['ok' => false, 'reason' => 'empty'];
+        }
+
+        // Not digits-only => it is (or is meant to be) a Student ID. Pass it
+        // straight through untouched: zero reads, zero behaviour change.
+        if (!preg_match('/^[0-9]{1,9}$/', $raw)) {
+            return ['ok' => true, 'studentId' => $raw, 'via' => 'studentId'];
+        }
+
+        try {
+            $this->load->library('Sr_no_service', null, 'srnoSvc');
+            $res = $this->srnoSvc
+                ->init($this->firebase, $this->fs, $this->school_id, (string) ($this->admin_id ?? 'system'))
+                ->resolve($raw);
+        } catch (\Throwable $e) {
+            log_message('error', 'SRNO_RESOLVE threw for [' . $raw . ']: ' . $e->getMessage());
+            return ['ok' => false, 'reason' => 'srno_error', 'via' => 'srNo'];
+        }
+
+        if (empty($res['ok']) || empty($res['currentStudentId'])) {
+            return ['ok' => false, 'reason' => 'srno_not_found', 'via' => 'srNo'];
+        }
+
+        return [
+            'ok'        => true,
+            'studentId' => (string) $res['currentStudentId'],
+            'via'       => 'srNo',
+            'srNo'      => (string) ($res['srNo'] ?? $raw),
+        ];
+    }
+
+    // =========================================================================
+    //  PHASE 14.1 — ROLL NUMBER UNIQUENESS (roster correctness)
+    // =========================================================================
+
+    /**
+     * Find an ACTIVE student who already holds this Roll Number in the same
+     * roster scope. Returns their summary, or null when the roll is free.
+     *
+     * ── WHY THIS EXISTS ─────────────────────────────────────────────────────
+     * A class register must be unambiguous. Two active students in
+     * Class 5 / Section A both carrying Roll 18 is an operational defect even
+     * though every module keys on Student ID and nothing technically breaks.
+     * The earlier audit answered "does anything break?" instead of "is the
+     * roster correct?" — this closes that gap.
+     *
+     * ── SCOPE — deliberately exactly these five ─────────────────────────────
+     *   School + Academic Session + Class + Section + Roll Number
+     *
+     * So ALL of these remain valid simultaneously:
+     *   5-A/18 and 5-B/18      (different section)
+     *   5-A/18 and 6-A/18      (different class)
+     *   2026-27 and 2027-28    (different session)
+     *   School A and School B  (different tenant)
+     * Roll Number therefore never becomes a school-wide or global identity,
+     * and never becomes a document key.
+     *
+     * ── WHY A CACHED SCAN, NOT A QUERY ──────────────────────────────────────
+     * A direct query would need five equality filters
+     * (schoolId + className + section + session + rollNo). Whether Firestore
+     * would serve that without a new composite index cannot be proven in this
+     * environment, and the project rule is not to add indexes blindly.
+     *
+     * Instead this reuses `students_raw` — the snapshot the SIS dashboard, ID
+     * cards, enrolled-id lookups and the fee search already share. It is
+     * deleted by `Firestore_service::_bustDashboard()` on ANY students write,
+     * so it can never authorise a roll against stale data.
+     *
+     * Cost: cache hit → 0 reads. Cache miss → 1 collection read, which most
+     * admin pages have already paid. NO new index, NO N+1 (one filter pass in
+     * PHP, never a read per candidate).
+     *
+     * ── SAFETY WITH PRE-EXISTING DATA ───────────────────────────────────────
+     * Forward-looking only. It reports a conflict; it never renumbers, moves
+     * or rewrites anybody. Schools that already contain duplicate rolls keep
+     * them until an operator resolves them deliberately.
+     *
+     * @param string $exceptStudentId the student being edited — excluded so
+     *                                re-saving a profile without changing the
+     *                                roll is always allowed (self-update).
+     * @return array{studentId:string,name:string,rollNo:string}|null
+     */
+    protected function _rollNoConflict(
+        string $rollNo,
+        string $classKey,
+        string $sectionKey,
+        string $session,
+        string $exceptStudentId = ''
+    ): ?array {
+        $roll = trim($rollNo);
+        // A blank roll is not a claim on anything — many schools assign later.
+        if ($roll === '' || $classKey === '' || $sectionKey === '') return null;
+
+        $rollCmp    = mb_strtolower($roll);
+        $classCmp   = mb_strtolower(trim($classKey));
+        $sectionCmp = mb_strtolower(trim($sectionKey));
+        $sessionCmp = mb_strtolower(trim($session));
+        $exceptCmp  = trim($exceptStudentId);
+
+        foreach ($this->_cachedStudentDocsForRollCheck() as $row) {
+            $d = is_array($row) ? ($row['data'] ?? $row) : null;
+            if (!is_array($d)) continue;
+
+            $sid = (string) ($d['studentId'] ?? $d['userId'] ?? $d['User Id'] ?? '');
+            if ($sid === '' || ($exceptCmp !== '' && $sid === $exceptCmp)) continue;
+
+            // Only ACTIVE students hold a roster position. A withdrawn/TC
+            // student must never block a live roll number.
+            $status = trim((string) ($d['status'] ?? $d['Status'] ?? 'Active'));
+            if ($status !== '' && strcasecmp($status, 'Active') !== 0) continue;
+
+            $rowRoll = mb_strtolower(trim((string) ($d['rollNo'] ?? $d['Roll No'] ?? '')));
+            if ($rowRoll === '' || $rowRoll !== $rollCmp) continue;
+
+            if (mb_strtolower(trim((string) ($d['className'] ?? $d['Class'] ?? ''))) !== $classCmp) continue;
+            if (mb_strtolower(trim((string) ($d['section'] ?? $d['Section'] ?? ''))) !== $sectionCmp) continue;
+
+            // Session: compare only when BOTH sides carry one. Pre-convergence
+            // documents without a session must not be silently treated as
+            // belonging to every session, nor excluded from every one — the
+            // safer reading for a roster conflict is "same class+section counts".
+            $rowSession = mb_strtolower(trim((string) ($d['session'] ?? '')));
+            if ($sessionCmp !== '' && $rowSession !== '' && $rowSession !== $sessionCmp) continue;
+
+            return [
+                'studentId' => $sid,
+                'name'      => (string) ($d['name'] ?? $d['Name'] ?? ''),
+                'rollNo'    => (string) ($d['rollNo'] ?? $d['Roll No'] ?? ''),
+            ];
+        }
+        return null;
+    }
+
+    /**
+     * Phase 15 — THE canonical Class/Section capacity check.
+     *
+     * ── THE RULE, stated once ───────────────────────────────────────────────
+     * "An active student may be placed into a Class + Section only if the
+     *  resulting active strength does not exceed that Section's configured
+     *  capacity."
+     *
+     * Every student-creation / placement path calls THIS. There is deliberately
+     * no second implementation — `Sis::get_class_sections()` remains a UI
+     * SUGGESTION helper (it computes headroom for the picker) and is NOT an
+     * enforcement point. Suggestion is convenience; this is authority.
+     *
+     * ── SEMANTICS, matched deliberately to _rollNoConflict() ────────────────
+     * Same shared write-invalidated `students_raw` snapshot, same Active-only
+     * filter, same both-sides-non-blank session comparison. The two validators
+     * therefore can never disagree about who currently occupies a section —
+     * which matters because admission runs both back-to-back.
+     *
+     *   - ACTIVE students consume a seat. Withdrawn / TC / Inactive do NOT,
+     *     so a re-admitted student never double-counts against their own old
+     *     record, and a withdrawal genuinely frees a seat.
+     *   - Session-scoped: 2025 Class 5-A does not consume 2026 Class 5-A.
+     *   - Capacity default 40 when a section document omits maxStrength —
+     *     the SAME default `get_class_sections()` already applies, so the
+     *     picker and the enforcement agree.
+     *   - maxStrength <= 0 is treated as UNLIMITED (not "zero seats"),
+     *     matching the existing promotion/transfer guards which only enforce
+     *     `if ($maxStrength > 0)`. Changing that would retroactively lock
+     *     every section that has never had a capacity configured.
+     *
+     * ── COST ────────────────────────────────────────────────────────────────
+     * Cache hit → 0 reads (shares the snapshot with the roll check and the
+     * SIS/fee searches). Cache miss → 1 collection read + 1 section read.
+     * Per-request memo on the snapshot means validating a 500-row import is
+     * ONE snapshot read total, not one per row — no N+1.
+     *
+     * ── CONCURRENCY — stated honestly ───────────────────────────────────────
+     * This is read-then-write / detection-grade, exactly like the existing
+     * promotion and transfer guards it deliberately mirrors. Two operators
+     * admitting into the final remaining seat within the same instant can
+     * both pass. That is a KNOWN, DOCUMENTED limitation, not a claim of
+     * atomicity — a distributed seat-reservation system is explicitly out of
+     * scope for this phase.
+     *
+     * @param int $incoming how many students are about to be placed (1 for a
+     *                      single admission; N for an import group).
+     * @return array{capacity:int,current:int,incoming:int,projected:int,over:int}|null
+     *         null when the placement fits. Non-null describes the overflow.
+     */
+    /**
+     * Phase 16.2 — ACTIVE occupancy of one section. The single definition of
+     * "who consumes a seat".
+     *
+     * Extracted from _sectionCapacityExceeded() so the import PREVIEW can
+     * report a section's current strength without a second, drifting copy of
+     * the counting rule. Occupancy semantics are unchanged and deliberate:
+     *   • Active students only — a withdrawn/TC student frees their seat.
+     *   • Class, section and session must all match.
+     *   • A row whose `session` is blank is counted (legacy docs), matching
+     *     the pre-existing behaviour.
+     *   • `$exceptStudentId` lets an edit exclude the student being saved.
+     *
+     * Reads the shared per-request memoised snapshot, so calling it repeatedly
+     * across a 5,000-row import costs ONE Firestore read in total.
+     */
+    /**
+ * SEAT-RACE-1 retry support: occupancy read WITHOUT the per-request memo.
+ *
+ * `_sectionActiveCount()` reads through `_cachedStudentDocsForRollCheck()`,
+ * which memoises in a `static` for the life of the request and also consults
+ * a file cache. That is right for a single decision and wrong for a retry:
+ * a placement that lost a CAS race must re-decide against the roster as it
+ * is NOW, and the memo would hand back the roster that already lost.
+ *
+ * Deliberately reuses `_filterSectionRoster()` rather than re-implementing
+ * the roster predicate — two copies of "which students occupy this section"
+ * would eventually disagree, and the disagreement would be a seat.
+ */
+    protected function _sectionActiveCountFresh(
+        string $classKey,
+        string $sectionKey,
+        string $session,
+        string $exceptStudentId = ''
+    ): int {
+        try {
+            $docs = $this->fs->schoolWhere('students');
+        } catch (\Throwable $e) {
+            log_message('error', 'ACC_SEAT_FRESH_ROSTER_FAILED: ' . $e->getMessage());
+            return PHP_INT_MAX; // unreadable roster => treat as full (fail closed)
+        }
+        if (!is_array($docs)) return PHP_INT_MAX;
+        return count($this->_filterSectionRoster(
+            $docs, $classKey, $sectionKey, $session, $exceptStudentId
+        ));
+    }
+
+    protected function _sectionActiveCount(
+        string $classKey,
+        string $sectionKey,
+        string $session,
+        string $exceptStudentId = ''
+    ): int {
+        return count($this->_filterSectionRoster(
+            $this->_cachedStudentDocsForRollCheck(),
+            $classKey, $sectionKey, $session, $exceptStudentId
+        ));
+    }
+
+    /**
+     * Phase 16.6 (SEC-11) — the single definition of "which student documents
+     * belong to this section, this session, right now".
+     *
+     * Extracted from _sectionActiveCount() because several screens needed the
+     * DOCUMENTS, not just a count, and were each re-deriving the rule with a
+     * raw `schoolWhere('students', [...])`. Those queries were school-scoped
+     * but NOT session-scoped, so they counted students from other sessions —
+     * the same SEC-8 defect fixed on the placement paths in Phase 16.5, still
+     * live on the read/display paths.
+     *
+     * ⚠ WHY THIS FILTERS IN PHP RATHER THAN ADDING `where session ==`:
+     * legacy student documents predate the `session` field and carry a blank
+     * value. A Firestore equality predicate cannot express "matches OR is
+     * blank", so a hard predicate would silently DROP those students —
+     * under-counting a section and, worse, letting a full section look empty.
+     * Filtering in memory keeps the blank-tolerant rule and costs nothing
+     * extra: the caller has already fetched the documents.
+     *
+     * @param array $docs raw Firestore rows (`['data' => …]` or bare maps)
+     * @return array the matching rows, unmodified
+     */
+    protected function _filterSectionRoster(
+        array $docs,
+        string $classKey,
+        string $sectionKey,
+        string $session,
+        string $exceptStudentId = ''
+    ): array {
+        if ($classKey === '' || $sectionKey === '') return [];
+
+        $classCmp   = mb_strtolower(trim($classKey));
+        $sectionCmp = mb_strtolower(trim($sectionKey));
+        $sessionCmp = mb_strtolower(trim($session));
+        $exceptCmp  = trim($exceptStudentId);
+
+        $out = [];
+        foreach ($docs as $row) {
+            $d = is_array($row) ? ($row['data'] ?? $row) : null;
+            if (!is_array($d)) continue;
+
+            $sid = (string) ($d['studentId'] ?? $d['userId'] ?? $d['User Id'] ?? '');
+            if ($sid === '' || ($exceptCmp !== '' && $sid === $exceptCmp)) continue;
+
+            $status = trim((string) ($d['status'] ?? $d['Status'] ?? 'Active'));
+            if ($status !== '' && strcasecmp($status, 'Active') !== 0) continue;
+
+            if (mb_strtolower(trim((string) ($d['className'] ?? $d['Class'] ?? ''))) !== $classCmp) continue;
+            if (mb_strtolower(trim((string) ($d['section'] ?? $d['Section'] ?? ''))) !== $sectionCmp) continue;
+
+            // Blank session = legacy document → kept, never excluded.
+            $rowSession = mb_strtolower(trim((string) ($d['session'] ?? '')));
+            if ($sessionCmp !== '' && $rowSession !== '' && $rowSession !== $sessionCmp) continue;
+
+            $out[] = $row;
+        }
+        return $out;
+    }
+
+    /**
+ * ── SEAT-RACE-1 · THE VERSION THE CAPACITY DECISION WAS MADE AGAINST ──
+ *
+ * `Section_seat_guard::commitPlacement()` used to take its CAS precondition
+ * from its OWN read, taken microseconds before the commit. That proves only
+ * "the section did not change while I was committing" — true, and useless.
+ * The interval that actually matters runs from the moment occupancy was
+ * counted to the moment the placement lands, roughly a second later and many
+ * operations apart. Five simultaneous admissions into a maxStrength=2 section
+ * therefore each read a fresh, valid version and ALL FIVE committed:
+ * persisted occupancy 5, zero CAS conflicts logged.
+ *
+ * This returns the section document version observed at DECISION time, so
+ * the caller can carry it into the placement commit. Every successful
+ * placement bumps the section (the guard writes its marker there), so a
+ * competing admission holding an older version is refused rather than
+ * silently consuming a seat that is already gone.
+ *
+ * Read UNCACHED and BEFORE counting occupancy: a version captured after the
+ * count would not cover the count itself.
+ *
+ * @return string the section __updateTime, or '' if it cannot be established
+ *                (callers must treat '' as "do not place" — fail closed).
+ */
+    protected function _sectionDecisionVersion(
+        string $classKey,
+        string $sectionKey,
+        string $session = ''
+    ): string {
+        try {
+            $doc = $this->fs->get(
+                'sections',
+                $this->fs->sectionDocId($classKey, $sectionKey, $session !== '' ? $session : null)
+            );
+        } catch (\Throwable $e) {
+            log_message('error', 'ACC_SEAT_VERSION_READ_FAILED ' . $classKey . '/' . $sectionKey
+                . ': ' . $e->getMessage());
+            return '';
+        }
+        return is_array($doc) ? trim((string) ($doc['__updateTime'] ?? '')) : '';
+    }
+
+    protected function _sectionCapacityExceeded(
+        string $classKey,
+        string $sectionKey,
+        string $session,
+        int $incoming = 1,
+        string $exceptStudentId = '',
+        bool $fresh = false
+    ): ?array {
+        if ($classKey === '' || $sectionKey === '' || $incoming < 1) return null;
+
+        $capacity = $this->_sectionCapacity($classKey, $sectionKey, $session);
+        // <= 0 means "no capacity configured" => unlimited, mirroring the
+        // existing promotion/transfer guards. Never means "zero seats".
+        if ($capacity <= 0) return null;
+
+        // SEAT-RACE-1 (second window): the memoised roster is backed by a FILE
+        // cache shared across processes, so a concurrent admission can decide
+        // capacity against a roster that predates another request's placement.
+        // The CAS then passes honestly — that request's section version really
+        // is current — and the seat is consumed twice. Observed: a fee-enabled
+        // tenant (slower path, wider window) admitted 3 into maxStrength=2
+        // while two faster tenants held at 2.
+        //
+        // A decision that authorises a WRITE therefore reads through no cache.
+        // Callers that merely validate (bulk import previewing many rows) keep
+        // the cached path by leaving $fresh false.
+        $current   = $fresh
+            ? $this->_sectionActiveCountFresh($classKey, $sectionKey, $session, $exceptStudentId)
+            : $this->_sectionActiveCount($classKey, $sectionKey, $session, $exceptStudentId);
+        $projected = $current + $incoming;
+        if ($projected <= $capacity) return null;
+
+        return [
+            'capacity'  => $capacity,
+            'current'   => $current,
+            'incoming'  => $incoming,
+            'projected' => $projected,
+            'over'      => $projected - $capacity,
+        ];
+    }
+
+    /**
+     * Configured capacity for one section. Default 40 when unset — the SAME
+     * default `Sis::get_class_sections()` applies, so picker and enforcement
+     * never disagree. Memoised per request: an import validating many rows
+     * across a handful of sections reads each section document once.
+     */
+    protected function _sectionCapacity(string $classKey, string $sectionKey, string $session = ''): int
+    {
+        static $memo = [];
+        // Session is part of the key because sectionDocId() embeds it —
+        // `{schoolId}_{session}_{class}_{section}`. Omitting it from the memo
+        // would let a 2025 lookup serve a 2026 capacity.
+        $key = mb_strtolower("{$session}|{$classKey}|{$sectionKey}");
+        if (array_key_exists($key, $memo)) return $memo[$key];
+
+        $capacity = 40;
+        try {
+            $doc = $this->fs->get(
+                'sections',
+                $this->fs->sectionDocId($classKey, $sectionKey, $session !== '' ? $session : null)
+            );
+            if (is_array($doc)) {
+                $raw = (int) ($doc['maxStrength'] ?? $doc['max_strength'] ?? 0);
+                if ($raw > 0) $capacity = $raw;
+            }
+        } catch (\Throwable $e) {
+            log_message('error', "section capacity read failed for {$classKey}/{$sectionKey}: " . $e->getMessage());
+        }
+        return $memo[$key] = $capacity;
+    }
+
+    /**
+     * Operator-facing capacity message. One voice across admission, CRM,
+     * import and any future caller. Deliberately concrete (numbers, not
+     * "validation failed") so a school administrator can act on it.
+     */
+    protected function _sectionCapacityMessage(array $over, string $classKey, string $sectionKey): string
+    {
+        $cls = trim(preg_replace('/^Class\s+/i', '', $classKey));
+        $sec = trim(preg_replace('/^Section\s+/i', '', $sectionKey));
+
+        if ($over['incoming'] <= 1) {
+            return "Class {$cls} Section {$sec} is full. Capacity: {$over['capacity']}, "
+                 . "Current students: {$over['current']}. Please select another available section.";
+        }
+        return "Class {$cls} Section {$sec} would exceed capacity by {$over['over']} student(s). "
+             . "Capacity: {$over['capacity']}, Existing: {$over['current']}, Incoming: {$over['incoming']}.";
+    }
+
+    /**
+     * Shared, write-invalidated student snapshot for the roll check.
+     * Same key `Sis::_cached_student_docs()` uses, so a warm cache from the
+     * student list / ID card / fee search serves this for free.
+     */
+    /**
+     * Phase 17 — widened from `private` to `protected`.
+     *
+     * The rollover promotion pre-flight (School_config::rollover_session)
+     * needs the SAME warm snapshot the capacity and roll guards use, so that
+     * validating a whole promotion batch costs ONE read rather than one per
+     * student. Every other member of this capacity/roll family
+     * (_sectionActiveCount, _filterSectionRoster, _sectionCapacityExceeded)
+     * is already protected; this was the odd one out.
+     *
+     * Still not public: it is an internal snapshot, not an API.
+     */
+    protected function _cachedStudentDocsForRollCheck(): array
+    {
+        static $memo = null;                 // per-request memo: one read max
+        if (is_array($memo)) return $memo;
+
+        try {
+            $this->load->driver('cache', ['adapter' => 'file']);
+            $key  = $this->fs->listCacheKey('students_raw');
+            $docs = $this->cache->get($key);
+            if (!is_array($docs)) {
+                $docs = $this->fs->schoolWhere('students');
+                if (!is_array($docs)) $docs = [];
+                $this->cache->save($key, $docs, 90);
+            }
+        } catch (\Throwable $e) {
+            log_message('error', 'roll-uniqueness snapshot failed: ' . $e->getMessage());
+            $docs = [];
+        }
+        return $memo = $docs;
+    }
+
+    /**
+     * Operator-facing conflict message. Kept in one place so admission, edit,
+     * import and promotion all speak with one voice.
+     */
+    protected function _rollNoConflictMessage(array $conflict, string $classKey, string $sectionKey): string
+    {
+        $cls  = trim(preg_replace('/^Class\s+/i', '', $classKey));
+        $sec  = trim(preg_replace('/^Section\s+/i', '', $sectionKey));
+        $who  = $conflict['name'] !== '' ? $conflict['name'] : $conflict['studentId'];
+        return "Roll Number {$conflict['rollNo']} is already assigned to another active student "
+             . "({$who}) in Class {$cls}-{$sec}. Choose a different Roll Number.";
     }
 
     // =========================================================================
@@ -1487,8 +2082,22 @@ class MY_Controller extends CI_Controller
      *
      * @param string|null $entryDate  Defaults to today (YYYY-MM-DD).
      * @param string|null $session    Defaults to $this->session_year.
+     *
+     * VISIBILITY (2026-08-09): public, not protected. `FeeCollectionService`
+     * — an extracted service, NOT a controller subclass — calls this on the
+     * controller instance it is handed (FeeCollectionService.php:41). While
+     * this was `protected` that call raised "Call to protected method ... from
+     * scope FeeCollectionService" and every counter-path `fees/submit_fees`
+     * returned HTTP 500. It went unnoticed because the caller guards with
+     * `method_exists()`, which reports TRUE for protected methods — it tests
+     * existence, not accessibility — so the guard passed and the call threw.
+     * The parent-app verify path passes writeToOutput=false and skips the
+     * call entirely, which is why only the counter broke.
+     *
+     * Widening visibility is safe: nothing depended on it being protected,
+     * and the period-lock check is a guard callers are meant to invoke.
      */
-    protected function _abort_if_period_locked(?string $entryDate = null, ?string $session = null): void
+    public function _abort_if_period_locked(?string $entryDate = null, ?string $session = null): void
     {
         $entryDate = $entryDate ?: date('Y-m-d');
         $r = $this->_is_period_locked($entryDate, $session);
@@ -1605,9 +2214,62 @@ class MY_Controller extends CI_Controller
      * Check if the current teacher is assigned to the given class/section (and optionally subject).
      * Non-Teacher roles always return true (they have full access).
      */
+    /**
+     * SEC-SCOPE-1 — the AUTHORITATIVE class/section access scope for the current
+     * user: 'school' (may operate across all sections) or 'section' (only its
+     * assigned class/sections). Resolved from the RBAC role catalogue by role
+     * IDENTITY (never display name), normally computed at the throttled RBAC
+     * refresh and cached in the session. On the rare miss (a session predating
+     * this change, or a transient) it is resolved on the spot and cached.
+     * Fails to 'section' (least privilege) — never silently school-wide.
+     */
+    protected function _effective_access_scope(): string
+    {
+        $s = (string) $this->session->userdata('rbac_scope');
+        if ($s === 'school' || $s === 'section') return $s;
+
+        // Miss → resolve authoritatively (mirrors the login-time computation).
+        $roleLabel = (string) ($this->admin_role ?? '');
+        if (in_array($roleLabel, RBAC_BYPASS_ROLES, true)) {
+            $this->session->set_userdata('rbac_scope', 'school');
+            return 'school';
+        }
+        $scope = 'section';
+        try {
+            $staffDoc = $this->fs->getEntity('staff', $this->admin_id);
+            if (!is_array($staffDoc)) $staffDoc = [];
+            $staffDoc['role'] = $roleLabel;
+            $eff = resolve_effective_access($this->firebase, $this->school_name, $staffDoc);
+            $scope = ($eff['scope'] ?? 'section') === 'school' ? 'school' : 'section';
+        } catch (\Throwable $e) {
+            log_message('error', '_effective_access_scope resolve failed (fail-closed to section): ' . $e->getMessage());
+            $scope = 'section';
+        }
+        $this->session->set_userdata('rbac_scope', $scope);
+        return $scope;
+    }
+
     protected function _teacher_can_access(string $classKey, string $sectionKey, string $subject = ''): bool
     {
-        if (($this->admin_role ?? '') !== 'Teacher') return true;
+        // ACAD-D1: this check must bind EVERY classroom-scoped role, not only the
+        // one whose label is literally 'Teacher'. `admin_role` is the role LABEL
+        // (Admin_login::$displayRole), and ROLE_CLASS_TEACHER ships as 'Class
+        // Teacher', holds the Attendance module, and IS enumerated in
+        // Attendance::MARK_ROLES — so under the old equality it reached
+        // attendance/save and skipped this gate entirely, gaining school-wide
+        // attendance authority. Student attendance is `allow write: if false` in
+        // firestore.rules, so this PHP gate is the ENTIRE boundary.
+        //
+        // SEC-SCOPE-1: the boundary is the AUTHORITATIVE access scope resolved
+        // from the RBAC role catalogue by role identity — NOT the display name.
+        // A school-wide role (leadership system role, or any role explicitly
+        // granted accessScope='school') operates across all sections. A
+        // section-scoped role (teacher roles, or any custom role by least-
+        // privilege default) is confined to its subjectAssignments. This closes
+        // the gap where a custom role that merely held the Attendance module
+        // gained school-wide section access purely because its name was not
+        // literally 'Teacher'/'Class Teacher'.
+        if ($this->_effective_access_scope() === 'school') return true;
 
         $assignments = $this->_get_teacher_assignments();
         // Normalize so class/section format drift never causes a false rejection:
@@ -1642,38 +2304,119 @@ class MY_Controller extends CI_Controller
     /**
      * Enumerate all class-sections for the current session.
      *
-     * Uses shallow_get to read session root keys, filters for "Class " nodes,
-     * then reads each class's children for "Section " nodes.
+     * Reads the Firestore `sections` collection (written by Classes.php),
+     * session-scoped, deduped and ordered. Firestore-only — no RTDB, and no
+     * RTDB fallback. Memoised per request.
      *
      * @return array  List of ['class_key'=>'Class 9th', 'section'=>'A',
      *                         'label'=>'Class 9th / Section A',
      *                         'class_section'=>"Class 9th 'A'"]
+     *                `section` is the BARE letter — consumers re-prefix it
+     *                themselves (see the implementation note below).
      */
     protected function _get_session_classes(): array
     {
-        $school  = $this->school_name;
-        $session = $this->session_year;
+        // ── Phase 16.3 (LIFE-1) — FIRESTORE CLASS/SECTION ENUMERATION ────
+        //
+        // THE DEFECT THIS CLOSES: this method used to walk the RETIRED RTDB
+        // tree `Schools/{school}/{session}/Class X/Section Y` via shallow_get.
+        // For Firestore-onboarded schools that tree is empty, so it returned
+        // an EMPTY ARRAY WITH NO ERROR — every class/section dropdown fed by
+        // it rendered blank and nothing reported a fault. Red_flags hit this
+        // in production (2026-07-03) and worked around it locally; Academic,
+        // Certificates, LMS and Health_check were left on the broken path.
+        //
+        // Canonical source is now the Firestore `sections` collection, written
+        // by Classes.php. No RTDB, and deliberately NO RTDB FALLBACK — a
+        // fallback would re-introduce the runtime dependency this removes and
+        // would mask the failure it is meant to surface.
+        //
+        // ── RETURN CONTRACT (unchanged — verified against every consumer) ──
+        //   class_key      'Class 5th'          (prefixed)
+        //   section        'A'                  (BARE LETTER — not 'Section A')
+        //   label          'Class 5th / Section A'
+        //   class_section  "Class 5th 'A'"
+        //
+        // The BARE section is load-bearing, not cosmetic. Verified at three
+        // independent consumers that re-prefix it themselves:
+        //   • Timetable_service.php:690  `'Section ' . $section`
+        //   • Health_check.php:309       `'Section ' . $first['section']`
+        //   • Red_flags normalises to bare for the same reason.
+        // Firestore stores the PREFIXED form ('Section A' — Classes.php forces
+        // it), so the prefix is stripped here. Returning the prefixed value
+        // would silently produce 'Section Section A' downstream.
+        //
+        // COST: one `sections` read per request, memoised below.
+        static $memo = null;
+        if (is_array($memo)) return $memo;
+
+        $session = (string) $this->session_year;
         $classes = [];
+        $seen    = [];
 
-        $keys = $this->firebase->shallow_get("Schools/{$school}/{$session}");
-        if (!is_array($keys)) return $classes;
-
-        foreach ($keys as $key) {
-            if (strpos($key, 'Class ') !== 0) continue;
-            $sectionKeys = $this->firebase->shallow_get("Schools/{$school}/{$session}/{$key}");
-            if (!is_array($sectionKeys)) continue;
-            foreach ($sectionKeys as $sk) {
-                if (strpos($sk, 'Section ') !== 0) continue;
-                $secLetter = str_replace('Section ', '', $sk);
-                $classes[] = [
-                    'class_key'     => $key,
-                    'section'       => $secLetter,
-                    'label'         => $key . ' / Section ' . $secLetter,
-                    'class_section' => $key . " '" . $secLetter . "'",
-                ];
-            }
+        try {
+            if (!isset($this->fs) || !$this->school_id) return $memo = [];
+            $docs = (array) $this->fs->schoolWhere('sections', []);
+        } catch (\Throwable $e) {
+            // Do NOT convert an infrastructure failure into "this school has
+            // no classes" — that is precisely how the original defect hid.
+            // Log loudly so an empty dropdown is diagnosable; the array return
+            // type is fixed by the callers' contract, so the log is the signal.
+            log_message('error', 'MY_Controller::_get_session_classes — sections read FAILED (dropdowns will be empty): ' . $e->getMessage());
+            return [];   // deliberately NOT memoised: a transient failure must not be cached for the request
         }
-        return $classes;
+
+        foreach ($docs as $doc) {
+            $d = is_array($doc) ? ($doc['data'] ?? $doc) : null;
+            if (!is_array($d)) continue;
+
+            $className = trim((string) ($d['className'] ?? ''));
+            $sectionIn = trim((string) ($d['section'] ?? ''));
+            if ($className === '' || $sectionIn === '') continue;
+
+            // Session scoping: honour it when the document carries a session,
+            // but KEEP rows whose session is blank. Legacy section documents
+            // predate the session field, and excluding them would recreate the
+            // empty-dropdown defect for exactly the older schools this fix is
+            // meant to rescue.
+            $rowSession = trim((string) ($d['session'] ?? ''));
+            if ($session !== '' && $rowSession !== '' && strcasecmp($rowSession, $session) !== 0) continue;
+
+            $classKey = Firestore_service::classKey($className);
+            // `\b\s*` not `\s+`: a value stored as bare "Section" (or
+            // "Section " which trims to "Section") would otherwise fail to
+            // match and be emitted AS the section letter, producing
+            // "Section Section" downstream. The word boundary also protects
+            // a legitimate "SectionA"-style label from being mangled.
+            $secLetter = trim(preg_replace('/^Section\b\s*/i', '', $sectionIn));
+            if ($classKey === '' || $secLetter === '') continue;
+
+            // Dedupe: the same class+section can appear across sessions, and
+            // blank-session legacy rows can duplicate a current-session row.
+            $dedupeKey = mb_strtolower($classKey . '|' . $secLetter);
+            if (isset($seen[$dedupeKey])) continue;
+            $seen[$dedupeKey] = true;
+
+            $classes[] = [
+                'class_key'     => $classKey,
+                'section'       => $secLetter,
+                'label'         => $classKey . ' / Section ' . $secLetter,
+                'class_section' => $classKey . " '" . $secLetter . "'",
+            ];
+        }
+
+        // Stable human ordering: numeric class ascending, then section. The
+        // RTDB implementation returned whatever key order the tree gave, so
+        // this is a strict improvement and no consumer depended on the old
+        // (arbitrary) order.
+        usort($classes, static function ($a, $b) {
+            $an = (int) preg_replace('/\D/', '', $a['class_key']);
+            $bn = (int) preg_replace('/\D/', '', $b['class_key']);
+            if ($an !== $bn) return $an <=> $bn;
+            return strcmp($a['section'], $b['section']);
+        });
+
+        return $memo = $classes;
     }
 
     /**
@@ -1744,20 +2487,21 @@ class MY_Controller extends CI_Controller
     protected function emit_push(string $mark, string $dedupeKey, array $fields): bool
     {
         if (!isset($this->fs) || !$this->school_id) return false;
-        try {
-            $reqId = $this->fs->docId($dedupeKey);
-            $payload = array_merge([
-                'schoolId'  => $this->school_id,
-                'mark'      => $mark,
-                'status'    => 'pending',
-                'markedBy'  => isset($this->admin_name) ? $this->admin_name : '',
-                'createdAt' => date('c'),
-            ], $fields);
-            return (bool) $this->fs->set('pushRequests', $reqId, $payload, false);
-        } catch (\Throwable $e) {
-            log_message('error', "emit_push({$mark}) failed: " . $e->getMessage());
-            return false;
-        }
+
+        // Phase 15.7 — the enqueue body now lives in Push_enqueue_service so
+        // that CLI jobs (the fee crons) can enqueue through the SAME code
+        // rather than growing a second sender. Behaviour, signature, payload
+        // shape and the deterministic dedupe doc-id are all unchanged; this
+        // method keeps its guards and remains the way web controllers emit.
+        $this->load->library('Push_enqueue_service', null, 'pushEnqueue');
+        return $this->pushEnqueue->enqueue(
+            $this->fs,
+            (string) $this->school_id,
+            $mark,
+            $dedupeKey,
+            $fields,
+            isset($this->admin_name) ? (string) $this->admin_name : ''
+        );
     }
 
     private function _auto_process_push_requests(): void
@@ -1959,272 +2703,5 @@ class MY_Controller extends CI_Controller
             }
         } catch (\Exception $e) { /* fall through to IST default */ }
         return $this->_school_tz_cache = new \DateTimeZone($tzName);
-    }
-
-    protected function _sectionCapacityExceeded(
-        string $classKey,
-        string $sectionKey,
-        string $session,
-        int $incoming = 1,
-        string $exceptStudentId = '',
-        bool $fresh = false
-    ): ?array {
-        if ($classKey === '' || $sectionKey === '' || $incoming < 1) return null;
-
-        $capacity = $this->_sectionCapacity($classKey, $sectionKey, $session);
-        // <= 0 means "no capacity configured" => unlimited, mirroring the
-        // existing promotion/transfer guards. Never means "zero seats".
-        if ($capacity <= 0) return null;
-
-        // SEAT-RACE-1 (second window): the memoised roster is backed by a FILE
-        // cache shared across processes, so a concurrent admission can decide
-        // capacity against a roster that predates another request's placement.
-        // The CAS then passes honestly — that request's section version really
-        // is current — and the seat is consumed twice. Observed: a fee-enabled
-        // tenant (slower path, wider window) admitted 3 into maxStrength=2
-        // while two faster tenants held at 2.
-        //
-        // A decision that authorises a WRITE therefore reads through no cache.
-        // Callers that merely validate (bulk import previewing many rows) keep
-        // the cached path by leaving $fresh false.
-        $current   = $fresh
-            ? $this->_sectionActiveCountFresh($classKey, $sectionKey, $session, $exceptStudentId)
-            : $this->_sectionActiveCount($classKey, $sectionKey, $session, $exceptStudentId);
-        $projected = $current + $incoming;
-        if ($projected <= $capacity) return null;
-
-        return [
-            'capacity'  => $capacity,
-            'current'   => $current,
-            'incoming'  => $incoming,
-            'projected' => $projected,
-            'over'      => $projected - $capacity,
-        ];
-    }
-
-    /**
- * ── SEAT-RACE-1 · THE VERSION THE CAPACITY DECISION WAS MADE AGAINST ──
- *
- * `Section_seat_guard::commitPlacement()` used to take its CAS precondition
- * from its OWN read, taken microseconds before the commit. That proves only
- * "the section did not change while I was committing" — true, and useless.
- * The interval that actually matters runs from the moment occupancy was
- * counted to the moment the placement lands, roughly a second later and many
- * operations apart. Five simultaneous admissions into a maxStrength=2 section
- * therefore each read a fresh, valid version and ALL FIVE committed:
- * persisted occupancy 5, zero CAS conflicts logged.
- *
- * This returns the section document version observed at DECISION time, so
- * the caller can carry it into the placement commit. Every successful
- * placement bumps the section (the guard writes its marker there), so a
- * competing admission holding an older version is refused rather than
- * silently consuming a seat that is already gone.
- *
- * Read UNCACHED and BEFORE counting occupancy: a version captured after the
- * count would not cover the count itself.
- *
- * @return string the section __updateTime, or '' if it cannot be established
- *                (callers must treat '' as "do not place" — fail closed).
- */
-    protected function _sectionDecisionVersion(
-        string $classKey,
-        string $sectionKey,
-        string $session = ''
-    ): string {
-        try {
-            $doc = $this->fs->get(
-                'sections',
-                $this->fs->sectionDocId($classKey, $sectionKey, $session !== '' ? $session : null)
-            );
-        } catch (\Throwable $e) {
-            log_message('error', 'ACC_SEAT_VERSION_READ_FAILED ' . $classKey . '/' . $sectionKey
-                . ': ' . $e->getMessage());
-            return '';
-        }
-        return is_array($doc) ? trim((string) ($doc['__updateTime'] ?? '')) : '';
-    }
-
-    /**
- * SEAT-RACE-1 retry support: occupancy read WITHOUT the per-request memo.
- *
- * `_sectionActiveCount()` reads through `_cachedStudentDocsForRollCheck()`,
- * which memoises in a `static` for the life of the request and also consults
- * a file cache. That is right for a single decision and wrong for a retry:
- * a placement that lost a CAS race must re-decide against the roster as it
- * is NOW, and the memo would hand back the roster that already lost.
- *
- * Deliberately reuses `_filterSectionRoster()` rather than re-implementing
- * the roster predicate — two copies of "which students occupy this section"
- * would eventually disagree, and the disagreement would be a seat.
- */
-    protected function _sectionActiveCountFresh(
-        string $classKey,
-        string $sectionKey,
-        string $session,
-        string $exceptStudentId = ''
-    ): int {
-        try {
-            $docs = $this->fs->schoolWhere('students');
-        } catch (\Throwable $e) {
-            log_message('error', 'ACC_SEAT_FRESH_ROSTER_FAILED: ' . $e->getMessage());
-            return PHP_INT_MAX; // unreadable roster => treat as full (fail closed)
-        }
-        if (!is_array($docs)) return PHP_INT_MAX;
-        return count($this->_filterSectionRoster(
-            $docs, $classKey, $sectionKey, $session, $exceptStudentId
-        ));
-    }
-
-    /**
-     * Operator-facing capacity message. One voice across admission, CRM,
-     * import and any future caller. Deliberately concrete (numbers, not
-     * "validation failed") so a school administrator can act on it.
-     */
-    protected function _sectionCapacityMessage(array $over, string $classKey, string $sectionKey): string
-    {
-        $cls = trim(preg_replace('/^Class\s+/i', '', $classKey));
-        $sec = trim(preg_replace('/^Section\s+/i', '', $sectionKey));
-
-        if ($over['incoming'] <= 1) {
-            return "Class {$cls} Section {$sec} is full. Capacity: {$over['capacity']}, "
-                 . "Current students: {$over['current']}. Please select another available section.";
-        }
-        return "Class {$cls} Section {$sec} would exceed capacity by {$over['over']} student(s). "
-             . "Capacity: {$over['capacity']}, Existing: {$over['current']}, Incoming: {$over['incoming']}.";
-    }
-
-    /**
-     * Configured capacity for one section. Default 40 when unset — the SAME
-     * default `Sis::get_class_sections()` applies, so picker and enforcement
-     * never disagree. Memoised per request: an import validating many rows
-     * across a handful of sections reads each section document once.
-     */
-    protected function _sectionCapacity(string $classKey, string $sectionKey, string $session = ''): int
-    {
-        static $memo = [];
-        // Session is part of the key because sectionDocId() embeds it —
-        // `{schoolId}_{session}_{class}_{section}`. Omitting it from the memo
-        // would let a 2025 lookup serve a 2026 capacity.
-        $key = mb_strtolower("{$session}|{$classKey}|{$sectionKey}");
-        if (array_key_exists($key, $memo)) return $memo[$key];
-
-        $capacity = 40;
-        try {
-            $doc = $this->fs->get(
-                'sections',
-                $this->fs->sectionDocId($classKey, $sectionKey, $session !== '' ? $session : null)
-            );
-            if (is_array($doc)) {
-                $raw = (int) ($doc['maxStrength'] ?? $doc['max_strength'] ?? 0);
-                if ($raw > 0) $capacity = $raw;
-            }
-        } catch (\Throwable $e) {
-            log_message('error', "section capacity read failed for {$classKey}/{$sectionKey}: " . $e->getMessage());
-        }
-        return $memo[$key] = $capacity;
-    }
-
-    protected function _sectionActiveCount(
-        string $classKey,
-        string $sectionKey,
-        string $session,
-        string $exceptStudentId = ''
-    ): int {
-        return count($this->_filterSectionRoster(
-            $this->_cachedStudentDocsForRollCheck(),
-            $classKey, $sectionKey, $session, $exceptStudentId
-        ));
-    }
-
-    /**
-     * Phase 16.6 (SEC-11) — the single definition of "which student documents
-     * belong to this section, this session, right now".
-     *
-     * Extracted from _sectionActiveCount() because several screens needed the
-     * DOCUMENTS, not just a count, and were each re-deriving the rule with a
-     * raw `schoolWhere('students', [...])`. Those queries were school-scoped
-     * but NOT session-scoped, so they counted students from other sessions —
-     * the same SEC-8 defect fixed on the placement paths in Phase 16.5, still
-     * live on the read/display paths.
-     *
-     * ⚠ WHY THIS FILTERS IN PHP RATHER THAN ADDING `where session ==`:
-     * legacy student documents predate the `session` field and carry a blank
-     * value. A Firestore equality predicate cannot express "matches OR is
-     * blank", so a hard predicate would silently DROP those students —
-     * under-counting a section and, worse, letting a full section look empty.
-     * Filtering in memory keeps the blank-tolerant rule and costs nothing
-     * extra: the caller has already fetched the documents.
-     *
-     * @param array $docs raw Firestore rows (`['data' => …]` or bare maps)
-     * @return array the matching rows, unmodified
-     */
-    protected function _filterSectionRoster(
-        array $docs,
-        string $classKey,
-        string $sectionKey,
-        string $session,
-        string $exceptStudentId = ''
-    ): array {
-        if ($classKey === '' || $sectionKey === '') return [];
-
-        $classCmp   = mb_strtolower(trim($classKey));
-        $sectionCmp = mb_strtolower(trim($sectionKey));
-        $sessionCmp = mb_strtolower(trim($session));
-        $exceptCmp  = trim($exceptStudentId);
-
-        $out = [];
-        foreach ($docs as $row) {
-            $d = is_array($row) ? ($row['data'] ?? $row) : null;
-            if (!is_array($d)) continue;
-
-            $sid = (string) ($d['studentId'] ?? $d['userId'] ?? $d['User Id'] ?? '');
-            if ($sid === '' || ($exceptCmp !== '' && $sid === $exceptCmp)) continue;
-
-            $status = trim((string) ($d['status'] ?? $d['Status'] ?? 'Active'));
-            if ($status !== '' && strcasecmp($status, 'Active') !== 0) continue;
-
-            if (mb_strtolower(trim((string) ($d['className'] ?? $d['Class'] ?? ''))) !== $classCmp) continue;
-            if (mb_strtolower(trim((string) ($d['section'] ?? $d['Section'] ?? ''))) !== $sectionCmp) continue;
-
-            // Blank session = legacy document → kept, never excluded.
-            $rowSession = mb_strtolower(trim((string) ($d['session'] ?? '')));
-            if ($sessionCmp !== '' && $rowSession !== '' && $rowSession !== $sessionCmp) continue;
-
-            $out[] = $row;
-        }
-        return $out;
-    }
-
-    /**
-     * Phase 17 — widened from `private` to `protected`.
-     *
-     * The rollover promotion pre-flight (School_config::rollover_session)
-     * needs the SAME warm snapshot the capacity and roll guards use, so that
-     * validating a whole promotion batch costs ONE read rather than one per
-     * student. Every other member of this capacity/roll family
-     * (_sectionActiveCount, _filterSectionRoster, _sectionCapacityExceeded)
-     * is already protected; this was the odd one out.
-     *
-     * Still not public: it is an internal snapshot, not an API.
-     */
-    protected function _cachedStudentDocsForRollCheck(): array
-    {
-        static $memo = null;                 // per-request memo: one read max
-        if (is_array($memo)) return $memo;
-
-        try {
-            $this->load->driver('cache', ['adapter' => 'file']);
-            $key  = $this->fs->listCacheKey('students_raw');
-            $docs = $this->cache->get($key);
-            if (!is_array($docs)) {
-                $docs = $this->fs->schoolWhere('students');
-                if (!is_array($docs)) $docs = [];
-                $this->cache->save($key, $docs, 90);
-            }
-        } catch (\Throwable $e) {
-            log_message('error', 'roll-uniqueness snapshot failed: ' . $e->getMessage());
-            $docs = [];
-        }
-        return $memo = $docs;
     }
 }

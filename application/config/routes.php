@@ -198,6 +198,11 @@ $route['superadmin/schools/check_availability']         = 'Superadmin_schools/ch
 $route['superadmin/schools/toggle_status']              = 'Superadmin_schools/toggle_status';
 $route['superadmin/schools/update_profile']             = 'Superadmin_schools/update_profile';
 $route['superadmin/schools/assign_plan']                = 'Superadmin_schools/assign_plan';
+// W1.1 — per-tenant module entitlement (grant/revoke/clear) + refresh.
+// Tenant-scoped: writes only the named school's schoolControl.overrides, so
+// other tenants sharing the same base plan are unaffected.
+$route['superadmin/schools/set_module_override']        = 'Superadmin_schools/set_module_override';
+$route['superadmin/schools/recompute_entitlements']     = 'Superadmin_schools/recompute_entitlements';
 $route['superadmin/schools/refresh_school_stats']       = 'Superadmin_schools/refresh_school_stats';
 $route['superadmin/schools/upload_logo']               = 'Superadmin_schools/upload_logo';
 $route['superadmin/schools/reset_ssa_password']         = 'Superadmin_schools/reset_ssa_password';
@@ -207,6 +212,15 @@ $route['superadmin/bootstrap']                          = 'Superadmin_bootstrap/
 $route['superadmin/bootstrap/status']                   = 'Superadmin_bootstrap/status';
 
 // Migration
+// Platform maps default (2026-08-16) — ZenX-owned, inherited by every school
+// that has not configured an override. Superadmin-only by construction.
+$route['superadmin/maps']                               = 'Superadmin_maps/index';
+$route['superadmin/maps/save_capability']               = 'Superadmin_maps/save_capability';
+$route['superadmin/maps/test_capability']               = 'Superadmin_maps/test_capability';
+$route['superadmin/maps/activate_capability']           = 'Superadmin_maps/activate_capability';
+$route['superadmin/maps/deactivate_capability']         = 'Superadmin_maps/deactivate_capability';
+$route['superadmin/maps/save_meta']                     = 'Superadmin_maps/save_meta';
+
 $route['superadmin/migration']                          = 'Superadmin_migration/index';
 $route['superadmin/migration/analyze']                  = 'Superadmin_migration/analyze';
 $route['superadmin/migration/get_report']               = 'Superadmin_migration/get_report';
@@ -250,6 +264,12 @@ $route['superadmin/plans/seed_defaults']                = 'Superadmin_plans/seed
 $route['superadmin/plans/subscriptions']                = 'Superadmin_plans/subscriptions';
 $route['superadmin/plans/fetch_subscriptions']          = 'Superadmin_plans/fetch_subscriptions';
 $route['superadmin/plans/expire_check']                 = 'Superadmin_plans/expire_check';
+
+// Rollout flags (T3, 2026-08-18) — TECHNICAL rollout, deliberately separate
+// from Plans, which govern what a school has BOUGHT. See Superadmin_rollout.
+$route['superadmin/rollout/for_school']                 = 'Superadmin_rollout/for_school';
+$route['superadmin/rollout/set']                        = 'Superadmin_rollout/set';
+$route['superadmin/rollout/revoke']                     = 'Superadmin_rollout/revoke';
 $route['superadmin/plans/payments']                     = 'Superadmin_plans/payments';
 $route['superadmin/plans/fetch_payments']               = 'Superadmin_plans/fetch_payments';
 $route['superadmin/plans/get_school_plan']               = 'Superadmin_plans/get_school_plan';
@@ -326,16 +346,36 @@ $route['superadmin/school_admins/update_recovery']      = 'Superadmin_school_adm
 
 // ─── School Configuration
 $route['school_config']                                 = 'School_config/index';
+
+// ── School Financial Policies & Benefits (2026-08-31) ──────────────────────
+// Explicit rather than relying on CI3's default controller mapping, so the
+// screen's reachability is a stated fact rather than a side effect — a
+// financial configuration page that silently 404s would leave every school
+// on the safe defaults without anyone knowing why.
+// No csrf_exclude entry: this is an authenticated admin screen and its JS
+// sends the token, which is the stricter of the two options.
+$route['financial_policies']                            = 'Financial_policies/index';
+$route['financial_policies/get_policies']               = 'Financial_policies/get_policies';
+$route['financial_policies/save_policy']                = 'Financial_policies/save_policy';
+$route['financial_policies/evaluate_student']           = 'Financial_policies/evaluate_student';
 $route['school_config/get_config']                      = 'School_config/get_config';
 $route['school_config/save_profile']                    = 'School_config/save_profile';
+$route['school_config/get_notification_settings'] = 'School_config/get_notification_settings';
+$route['school_config/get_onboarding_tasks'] = 'School_config/get_onboarding_tasks';
+$route['school_config/save_onboarding_tasks'] = 'School_config/save_onboarding_tasks';
+$route['school_config/save_notification_setting'] = 'School_config/save_notification_setting';
 $route['school_config/save_forget_password_details']    = 'School_config/save_forget_password_details';
 $route['school_config/upload_logo']                     = 'School_config/upload_logo';
 $route['school_config/save_board']                      = 'School_config/save_board';
 $route['school_config/save_classes']                    = 'School_config/save_classes';
+// ADM-AGE-1 — routed explicitly like every sibling endpoint in this block;
+// relying on default routing here would make it the odd one out.
+$route['school_config/save_age_policy']                 = 'School_config/save_age_policy';
 $route['school_config/get_sections']                    = 'School_config/get_sections';
 $route['school_config/save_section']                    = 'School_config/save_section';
 $route['school_config/delete_section']                  = 'School_config/delete_section';
 $route['school_config/get_all_sections']                = 'School_config/get_all_sections';
+$route['school_config/save_section_capacity']            = 'School_config/save_section_capacity';
 $route['school_config/bulk_save_sections']              = 'School_config/bulk_save_sections';
 $route['school_config/get_subjects']                    = 'School_config/get_subjects';
 $route['school_config/get_all_subjects']                = 'School_config/get_all_subjects';
@@ -375,8 +415,46 @@ $route['school_config/remove_reportcard_asset']         = 'School_config/remove_
 $route['school_config/admission_payment']               = 'School_config/admission_payment_config';
 $route['school_config/save_admission_payment_config']   = 'School_config/save_admission_payment_config';
 $route['school_config/health_check']                    = 'School_config/health_check';
+$route['school_config/save_terminology']                = 'School_config/save_terminology';
+
+// ─── ZenX HRMS Phase 1 — Locations (campus/office/store) ────────────────
+// Separate from `org/*` (Org.php = Departments & Roles, an unrelated
+// existing feature) and from `school_config/maps_location` (Maps_config.php
+// = Google Maps API key config) — see Workforce_locations.php's own
+// docblock for why this is a standalone controller.
+$route['workforce_locations/get_data']                  = 'Workforce_locations/get_data';
+$route['workforce_locations/save']                      = 'Workforce_locations/save';
+$route['workforce_locations/delete']                    = 'Workforce_locations/delete';
 
 // ─── Academic Management
+// ── Canonical Master Timetable lifecycle (version architecture) ──────
+// The legacy Academic timetable routes above remain until switchover; these
+// reach the canonical versions that are the source of truth.
+$route['timetable']                            = 'Timetable_lifecycle/index';
+$route['timetable/versions']                   = 'Timetable_lifecycle/versions';
+$route['timetable/verdict']                    = 'Timetable_lifecycle/verdict';
+$route['timetable/projection_preview']         = 'Timetable_lifecycle/projection_preview';
+// Read-only: is the legacy mirror showing what the resolver says is in force?
+$route['timetable/visibility']                 = 'Timetable_lifecycle/visibility';
+$route['timetable/apply_projection']           = 'Timetable_lifecycle/apply_projection';
+$route['timetable/create_change_version']      = 'Timetable_lifecycle/create_change_version';
+$route['timetable/generate_candidate']         = 'Timetable_lifecycle/generate_candidate';
+$route['timetable/days']                       = 'Timetable_lifecycle/days';
+$route['timetable/editor_options']             = 'Timetable_lifecycle/editor_options';
+$route['timetable/save_period']                = 'Timetable_lifecycle/save_period';
+$route['timetable/save_day']                   = 'Timetable_lifecycle/save_day';
+$route['timetable/validate_candidate']         = 'Timetable_lifecycle/validate_candidate';
+$route['timetable/capacity']                   = 'Timetable_lifecycle/capacity';
+$route['timetable/abandon']                    = 'Timetable_lifecycle/abandon';
+$route['timetable/reclaim']                    = 'Timetable_lifecycle/reclaim';
+$route['timetable/rename']                     = 'Timetable_lifecycle/rename';
+$route['timetable/create_blank']               = 'Timetable_lifecycle/create_blank';
+$route['timetable/generate_candidates']        = 'Timetable_lifecycle/generate_candidates';
+$route['timetable/pdf']                        = 'Timetable_lifecycle/pdf';
+$route['timetable/discard']                    = 'Timetable_lifecycle/discard';
+$route['timetable/publish']                    = 'Timetable_lifecycle/publish';
+$route['timetable/supersede']                  = 'Timetable_lifecycle/supersede';
+
 $route['academic']                              = 'Academic/index';
 $route['academic/get_classes_subjects']          = 'Academic/get_classes_subjects';
 $route['academic/get_all_teachers']              = 'Academic/get_all_teachers';
@@ -388,6 +466,7 @@ $route['academic/get_lesson_plan']               = 'Academic/get_lesson_plan';
 $route['academic/get_daily_plan']                = 'Academic/get_daily_plan';
 $route['academic/save_lesson_plan']              = 'Academic/save_lesson_plan';
 $route['academic/get_monthly_plan']              = 'Academic/get_monthly_plan';
+$route['academic/lesson_plan_history']         = 'Academic/lesson_plan_history';
 $route['academic/analytics_syllabus_progress']   = 'Academic/analytics_syllabus_progress';
 $route['academic/analytics_daily_monitoring']    = 'Academic/analytics_daily_monitoring';
 $route['academic/analytics_delays']              = 'Academic/analytics_delays';
@@ -395,9 +474,19 @@ $route['academic/analytics_subject_progress']    = 'Academic/analytics_subject_p
 $route['academic/parent_daily_lessons']          = 'Academic/parent_daily_lessons';
 $route['academic/parent_subject_progress']       = 'Academic/parent_subject_progress';
 $route['academic/get_calendar_events']           = 'Academic/get_calendar_events';
+// Phase D1/D2 — Academic Calendar copy/roll-forward + bulk import (own controller).
+$route['academic/calendar_ops']                  = 'Academic_calendar_ops/index';
+$route['academic/calendar_copy_preview']         = 'Academic_calendar_ops/copy_preview';
+$route['academic/calendar_copy_commit']          = 'Academic_calendar_ops/copy_commit';
+$route['academic/calendar_import_preview']       = 'Academic_calendar_ops/import_preview';
+$route['academic/calendar_import_commit']        = 'Academic_calendar_ops/import_commit';
 $route['academic/save_event']                    = 'Academic/save_event';
 $route['academic/delete_event']                  = 'Academic/delete_event';
 $route['academic/get_master_timetable']          = 'Academic/get_master_timetable';
+// Reads the CANONICAL published version for a date instead of the legacy
+// `timetables` projection. Admin-panel read only — the apps stay on the
+// projection, so neither switchover gate is touched.
+$route['academic/get_canonical_timetable']       = 'Academic/get_canonical_timetable';
 $route['academic/save_period']                   = 'Academic/save_period';
 $route['academic/detect_conflicts']              = 'Academic/detect_conflicts';
 $route['academic/get_substitutes']               = 'Academic/get_substitutes';
@@ -421,6 +510,15 @@ $route['academic/auto_generate_timetable']       = 'Academic/auto_generate_timet
 $route['academic/suggest_substitutes']           = 'Academic/suggest_substitutes';
 $route['academic/get_absent_teachers']           = 'Academic/get_absent_teachers';
 $route['academic/get_absent_teacher_schedule']   = 'Academic/get_absent_teacher_schedule';
+// Cover policy, the cover log, one cover's history, and the decision to keep
+// a cover the timetable moved under. Routed explicitly like every other
+// endpoint in this file: CI's default routing would reach them anyway, but a
+// surface that is only reachable by accident is one nobody can rely on.
+$route['academic/get_cover_policy']              = 'Academic/get_cover_policy';
+$route['academic/save_cover_policy']             = 'Academic/save_cover_policy';
+$route['academic/cover_log']                     = 'Academic/cover_log';
+$route['academic/cover_history']                 = 'Academic/cover_history';
+$route['academic/keep_cover']                    = 'Academic/keep_cover';
 
 // ─── Result Management
 $route['result']                                          = 'result/index';
@@ -466,6 +564,34 @@ $route['sis']                                   = 'Sis/index';
 $route['sis/students']                          = 'Sis/students';
 $route['sis/admission']                         = 'Sis/admission';
 $route['sis/save_admission']                    = 'Sis/save_admission';
+$route['sis/resolve_admission_fee']             = 'Sis/resolve_admission_fee';   // G10 — class-specific admission-fee lookup for the admission screen
+
+// ── Student Entitlements Phase E (2026-08-08) ────────────────────────────
+// ONE shared capture + approval surface, mounted by all three admission
+// pathways (public form, CRM walk-in, direct Admission screen). Pathway-
+// agnostic by design — adding a fourth surface (Student 360) needs no route
+// change. Graded RBAC only: capture = Fees:edit, approve/reject = Fees:manage.
+$route['entitlements/propose']                  = 'Entitlements/propose';
+$route['entitlements/for_student']              = 'Entitlements/for_student';
+$route['entitlements/preview']                  = 'Entitlements/preview';
+$route['entitlements/queue']                    = 'Entitlements/queue';
+$route['entitlements/approve']                  = 'Entitlements/approve';
+$route['entitlements/reject']                   = 'Entitlements/reject';
+$route['entitlements/discontinue']              = 'Entitlements/discontinue';
+
+// ── Phase F (2026-08-08) — parent-facing mid-year request flow ───────────
+// Firebase Bearer-token authenticated (Parent app has no admin session),
+// mirroring Auth_api. A request is NOT a grant: it lands in the same
+// pending_approval queue as staff proposals and is approved by the same
+// Entitlement_service::approve(). Parents can never approve, set a value, or
+// request for another family's child. MUST be CSRF-excluded — token-auth API
+// calls carry no session cookie or CSRF field.
+$route['entitlement_request/submit']            = 'Entitlement_requests/submit';
+$route['entitlement_request/mine']              = 'Entitlement_requests/mine';
+// SRNO_RE_ADMISSION_ARCHITECTURE_AUDIT.md — Strategy A. Principal-gated;
+// standard session auth + CSRF, no exclusion needed (not a webhook/token path).
+$route['readmission/confirm']                   = 'Readmission/confirm';
+$route['readmission/resolve']                   = 'Readmission/resolve';
 $route['sis/profile/(:any)']                    = 'Sis/profile/$1';
 $route['sis/update_profile']                    = 'Sis/update_profile';
 // Same-origin QR proxy — used by the ID card view's <img> tags so the
@@ -494,6 +620,24 @@ $route['sis/delete_student_document']           = 'Sis/delete_student_document';
 $route['sis/student_document_audit']            = 'Sis/student_document_audit';
 $route['sis/history/(:any)']                    = 'Sis/history/$1';
 $route['sis/id_card']                           = 'Sis/id_card';
+// Phase 19F — ID card operational lifecycle. Explicit routes per this file's
+// convention. NOT added to csrf_exclude_uris: these are sis/* POSTs and must
+// keep CI's global CSRF, which the panel JS satisfies via the header meta
+// tags (same pattern as sis/promote and sis/documents).
+$route['sis/id_card_register']                  = 'Sis/id_card_register';
+$route['sis/id_card_issue']                     = 'Sis/id_card_issue';
+$route['sis/id_card_revoke']                    = 'Sis/id_card_revoke';
+$route['sis/id_card_history']                   = 'Sis/id_card_history';
+// Phase 19N — per-school replacement charges (ID-CFG-1). Gated on Fees:manage,
+// not SIS:manage: setting what a family is charged is a money decision.
+// Phase 19P (Target #1) — historical summary reconciliation. The repair
+// already existed as Fees::backfill_fee_summaries() but had NO route, so an
+// operator could not invoke the very tool FEES-FROZEN-2 requires. Its dry run
+// is Fee_integrity_checker DB-011, surfaced by fee_management/integrity_report.
+$route['fees/backfill_fee_summaries']           = 'Fees/backfill_fee_summaries';
+
+$route['sis/id_card_fee_settings']              = 'Sis/id_card_fee_settings';
+$route['sis/id_card_fee_settings_save']         = 'Sis/id_card_fee_settings_save';
 $route['sis/search_student']                    = 'Sis/search_student';
 $route['sis/get_student']                       = 'Sis/get_student';
 $route['sis/get_classes']                       = 'Sis/get_classes';
@@ -539,6 +683,7 @@ $route['sis/approve_application']               = 'Sis/approve_application';
 $route['sis/reject_application']                = 'Sis/reject_application';
 $route['sis/enroll_student']                    = 'Sis/enroll_student';
 $route['sis/get_class_sections']                = 'Sis/get_class_sections';
+$route['sis/pincode_lookup']                    = 'Sis/pincode_lookup';
 $route['sis/waitlist']                          = 'Sis/waitlist';
 $route['sis/fetch_waitlist']                    = 'Sis/fetch_waitlist';
 $route['sis/add_to_waitlist']                   = 'Sis/add_to_waitlist';
@@ -605,6 +750,10 @@ $route['admission_crm/delete_document']         = 'Sis/delete_admission_document
 // repair_student_auth() controller method.
 $route['admission_crm/repair_auth']             = 'Sis/repair_student_auth';
 $route['sis/repair_auth']                       = 'Sis/repair_student_auth';
+// Phase 9 (2026-08-13) — audited APAAR reveal, see Sis::apaar_reveal().
+$route['sis/apaar_reveal']                      = 'Sis/apaar_reveal';
+// Phase 9 (2026-08-13) — SRNO re-admission confirm screen, see Sis::readmission_ui().
+$route['sis/readmission_ui']                    = 'Sis/readmission_ui';
 $route['admission_crm/waitlist']                = 'Sis/waitlist';
 $route['admission_crm/fetch_waitlist']          = 'Sis/fetch_waitlist';
 $route['admission_crm/add_to_waitlist']         = 'Sis/add_to_waitlist';
@@ -676,6 +825,19 @@ $route['attendance/api_punch']               = 'Attendance/api_punch';
 $route['attendance/fetch_analytics']         = 'Attendance/fetch_analytics';
 $route['attendance/fetch_monthly_trend']     = 'Attendance/fetch_monthly_trend';
 $route['attendance/fetch_individual_report'] = 'Attendance/fetch_individual_report';
+// Phase B1 — Attendance Completion Dashboard (pure derived read; own controller).
+$route['attendance/completion']              = 'Attendance_completion/index';
+$route['attendance/completion_data']         = 'Attendance_completion/data';
+// Phase B2 — Configurable Attendance Eligibility / Shortage engine (own controller).
+$route['attendance/eligibility']             = 'Attendance_eligibility/index';
+$route['attendance/eligibility_policy']      = 'Attendance_eligibility/get_policy';
+$route['attendance/eligibility_save']        = 'Attendance_eligibility/save_policy';
+$route['attendance/eligibility_report']      = 'Attendance_eligibility/report';
+// Phase C2 — Substitute / Coverage attendance grants (own controller).
+$route['attendance/coverage']                = 'Attendance_coverage/index';
+$route['attendance/coverage_list']           = 'Attendance_coverage/list_grants';
+$route['attendance/coverage_grant']          = 'Attendance_coverage/grant';
+$route['attendance/coverage_revoke']         = 'Attendance_coverage/revoke';
 $route['attendance/fetch_punch_log']         = 'Attendance/fetch_punch_log';
 $route['attendance/api_get_classes']         = 'Attendance/api_get_classes';
 $route['attendance/api_get_students']        = 'Attendance/api_get_students';
@@ -693,6 +855,7 @@ $route['attendance/approval_badge_counts']   = 'Attendance/approval_badge_counts
 $route['attendance/fetch_audit_logs']        = 'Attendance/fetch_audit_logs';
 $route['attendance/cleanup']                 = 'Attendance/cleanup';
 $route['attendance/autofill_staff_today']   = 'Attendance/autofill_staff_today';
+$route['attendance/staff_lock_status']           = 'Attendance/staff_lock_status';
 $route['attendance/lock_staff_attendance']       = 'Attendance/lock_staff_attendance';
 $route['attendance/unlock_staff_attendance']     = 'Attendance/unlock_staff_attendance';
 $route['attendance/student_leaves']               = 'Attendance/student_leaves';
@@ -832,13 +995,22 @@ $route['hr/departments']                                   = 'Hr/index';
 $route['hr/recruitment']                                   = 'Hr/index';
 $route['hr/leaves']                                        = 'Hr/index';
 $route['hr/payroll']                                       = 'Hr/index';
+// Payroll Health (observability). The page and its data endpoint both existed
+// with no route and no link — reachable only by typing the URL. Declared here
+// so the screen is addressable the same way every other HR screen is.
+$route['hr/payroll_health_page']                            = 'Hr/payroll_health_page';
+$route['hr/payroll_health']                                 = 'Hr/payroll_health';
+// Comp-Off earn + ledger. Both endpoints existed with no route and no
+// caller, so the COMP_OFF leave type could be consumed but never earned.
+$route['hr/earn_comp_off']                                  = 'Hr/earn_comp_off';
+$route['hr/get_comp_off_ledger']                            = 'Hr/get_comp_off_ledger';
 $route['hr/appraisals']                                    = 'Hr/index';
+$route['hr/training']                                      = 'Hr/index';
+$route['hr/orgchart']                                      = 'Hr/index';
 // Dashboard
 $route['hr/get_dashboard']                                 = 'Hr/get_dashboard';
 // Departments
 $route['hr/get_departments']                               = 'Hr/get_departments';
-$route['hr/save_department']                               = 'Hr/save_department';
-$route['hr/delete_department']                             = 'Hr/delete_department';
 // Departments & Roles (org structure setup)
 $route['org']                                              = 'Org/index';
 $route['org/get_data']                                     = 'Org/get_data';
@@ -874,6 +1046,7 @@ $route['ats/get_jobs']                                     = 'Ats/get_jobs';
 // Leave Management
 $route['hr/get_leave_types']                               = 'Hr/get_leave_types';
 $route['hr/save_leave_type']                               = 'Hr/save_leave_type';
+$route['hr/save_leave_policy']                              = 'Hr/save_leave_policy';
 $route['hr/delete_leave_type']                             = 'Hr/delete_leave_type';
 $route['hr/seed_leave_types']                              = 'Hr/seed_leave_types';
 $route['hr/get_leave_audit_log']                           = 'Hr/get_leave_audit_log';
@@ -884,6 +1057,108 @@ $route['hr/apply_leave']                                   = 'Hr/apply_leave';
 $route['hr/decide_leave']                                  = 'Hr/decide_leave';
 $route['hr/cancel_leave']                                  = 'Hr/cancel_leave';
 // Salary & Payroll
+// ── HRMS W2.1 — salary component master (catalogue only; nothing in the
+//    payroll path reads it yet). Lives on its own controller rather than Hr.php.
+$route['compensation/get_components']                      = 'Compensation/get_components';
+$route['compensation/get_component']                       = 'Compensation/get_component';
+$route['compensation/save_component']                      = 'Compensation/save_component';
+$route['compensation/set_component_active']                = 'Compensation/set_component_active';
+$route['compensation/seed_system_components']              = 'Compensation/seed_system_components';
+$route['compensation/get_statutory_config']                 = 'Compensation/get_statutory_config';
+$route['compensation/save_statutory_config']                = 'Compensation/save_statutory_config';
+$route['compensation/get_salary_assignments']               = 'Compensation/get_salary_assignments';
+$route['compensation/save_salary_assignment']               = 'Compensation/save_salary_assignment';
+$route['compensation/get_payroll_readiness']                = 'Compensation/get_payroll_readiness';
+$route['compensation/get_grades']                           = 'Compensation/get_grades';
+$route['compensation/save_grade']                           = 'Compensation/save_grade';
+$route['compensation/set_grade_active']                     = 'Compensation/set_grade_active';
+$route['compensation/get_templates']                        = 'Compensation/get_templates';
+$route['compensation/save_template']                        = 'Compensation/save_template';
+$route['compensation/set_template_active']                  = 'Compensation/set_template_active';
+$route['compensation/preview_assignment']                   = 'Compensation/preview_assignment';
+// CA-6 — employee statutory profile (PF membership / ESI coverage).
+// Deliberately NOT added to csrf_exclude_uris: every other compensation
+// POST already works with the CSRF token, so excluding this one would
+// weaken the panel for no reason.
+$route['compensation/get_staff_statutory_profile']           = 'Compensation/get_staff_statutory_profile';
+$route['compensation/save_staff_statutory_profile']          = 'Compensation/save_staff_statutory_profile';
+// Feature 1 — statutory wage classification per salary component.
+$route['compensation/get_component_classifications']          = 'Compensation/get_component_classifications';
+$route['compensation/save_component_classification']          = 'Compensation/save_component_classification';
+// Features 3-5 — Full & Final policy (notice recovery, approval, clearance).
+$route['compensation/get_fnf_policy']                         = 'Compensation/get_fnf_policy';
+$route['compensation/save_fnf_policy']                        = 'Compensation/save_fnf_policy';
+// Feature 6 — read-only F&F projection (current vs proposed).
+$route['compensation/preview_fnf']                            = 'Compensation/preview_fnf';
+// F&F settlement lifecycle (FNF-2). One endpoint drives the state machine.
+$route['compensation/fnf_settlements']                       = 'Compensation/fnf_settlements';
+$route['compensation/fnf_initiate']                          = 'Compensation/fnf_initiate';
+$route['compensation/fnf_compute']                           = 'Compensation/fnf_compute';
+$route['compensation/fnf_transition']                        = 'Compensation/fnf_transition';
+$route['compensation/download_settlement']                   = 'Compensation/download_settlement';
+
+// ── HRMS W3.2.2 — payroll-period overrides. Storage + withdrawal only:
+//    APPLYING an override is hr/regenerate_staff_payroll, the existing
+//    certified recalculation that already posts the accounting delta. No
+//    second payroll or accounting path is routed here.
+// ── HRMS W3.2.3 — loss-of-pay review + sign-off. Reports what the existing
+//    single LOP resolver decided; recomputes nothing.
+// ── CALENDAR PROGRAMME — student academic week administration.
+//    Writes attendanceSettings.studentCalendar.versions[], the canonical
+//    STUDENT teaching-day authority read by Student_calendar_reader.
+//    Separate from working_week/* and work_schedules/* above: those answer
+//    'is this EMPLOYEE expected to work'; this answers 'is the SCHOOL
+//    operating for students'. The two must be able to disagree.
+$route['student_calendar']                                  = 'Student_calendar/index';
+$route['student_calendar/get_policy']                       = 'Student_calendar/get_policy';
+$route['student_calendar/preview']                          = 'Student_calendar/preview';
+$route['student_calendar/save_version']                     = 'Student_calendar/save_version';
+
+// ── N-30 — working-week policy administration. Writes the canonical
+//    `attendancePolicy.workingWeek` that Working_calendar_service reads.
+//    Payroll is BLOCKED until a tenant configures one; this is where they do.
+$route['working_week/get_policy']                           = 'Working_week/get_policy';
+$route['working_week/preview']                              = 'Working_week/preview';
+$route['working_week/save_version']                         = 'Working_week/save_version';
+
+// PHASE 1 — work schedules + assignments admin surface. Supersedes working_week/*,
+// which is retired in Phase 4 (N-36) once this surface has replaced it.
+$route['work_schedules']                                    = 'Work_schedules/index';
+$route['work_schedules/get_data']                           = 'Work_schedules/get_data';
+$route['work_schedules/preview']                            = 'Work_schedules/preview';
+$route['work_schedules/save_schedule']                      = 'Work_schedules/save_schedule';
+$route['work_schedules/delete_schedule']                    = 'Work_schedules/delete_schedule';
+$route['work_schedules/save_assignment']                    = 'Work_schedules/save_assignment';
+$route['work_schedules/delete_assignment']                  = 'Work_schedules/delete_assignment';
+
+// ── HRMS W3.2.4 — per-employee calculation trace. Assembled from ONE frozen
+//    payslip document; recomputes nothing and queries no live configuration.
+$route['hr/payslip_trace']                                  = 'Hr/payslip_trace';
+
+$route['hr/lop_review']                                     = 'Hr/lop_review';
+$route['hr/confirm_lop']                                    = 'Hr/confirm_lop';
+
+$route['payroll_overrides/list_for_run']                    = 'Payroll_overrides/list_for_run';
+$route['payroll_overrides/types']                           = 'Payroll_overrides/types';
+$route['payroll_overrides/create']                          = 'Payroll_overrides/create';
+$route['payroll_overrides/void_override']                   = 'Payroll_overrides/void_override';
+
+// HRMS W2.5 2014 compensation administration page. All tabs route to index();
+// the active tab comes from the URI segment (same pattern as hr/*).
+$route['compensation']                                      = 'Compensation/index';
+$route['compensation/components']                           = 'Compensation/index';
+$route['compensation/grades']                               = 'Compensation/index';
+$route['compensation/statutory']                            = 'Compensation/index';
+$route['compensation/readiness']                            = 'Compensation/index';
+$route['compensation/templates']                            = 'Compensation/index';
+$route['compensation/assignments']                          = 'Compensation/index';
+// Staff Lifecycle 2026-08-23: these two were added to the controller's $allowed
+// list and to the tab bar but NOT here, so /compensation/fnf 404'd — CI tried to
+// call Compensation::fnf(). Every tab needs its own route because this file
+// declares them explicitly; there is no compensation/(:any) catch-all.
+$route['compensation/classification']                       = 'Compensation/index';
+$route['compensation/fnf']                                  = 'Compensation/index';
+
 $route['hr/get_salary_structures']                         = 'Hr/get_salary_structures';
 $route['hr/save_salary_structure']                         = 'Hr/save_salary_structure';
 $route['hr/delete_salary_structure']                        = 'Hr/delete_salary_structure';
@@ -900,6 +1175,8 @@ $route['hr/get_payslip']                                   = 'Hr/get_payslip';
 $route['hr/my_payslips']                                   = 'Hr/my_payslips';
 $route['hr/backfill_salary_structures']                    = 'Hr/backfill_salary_structures';
 $route['hr/lock_payroll_month']                            = 'Hr/lock_payroll_month';
+$route['hr/unlock_payroll_month']          = 'Hr/unlock_payroll_month';
+$route['hr/payroll_lock_status']           = 'Hr/payroll_lock_status';
 $route['hr/approve_payroll']                               = 'Hr/approve_payroll';
 $route['hr/download_payslip']                              = 'Hr/download_payslip';
 $route['hr/export_payroll_report']                         = 'Hr/export_payroll_report';
@@ -910,6 +1187,11 @@ $route['hr/save_appraisal']                                = 'Hr/save_appraisal'
 $route['hr/submit_appraisal']                              = 'Hr/submit_appraisal';
 $route['hr/review_appraisal']                              = 'Hr/review_appraisal';
 $route['hr/delete_appraisal']                              = 'Hr/delete_appraisal';
+// Training / Development
+$route['hr/get_org_chart']                                 = 'Hr/get_org_chart';
+$route['hr/get_training_records']                          = 'Hr/get_training_records';
+$route['hr/save_training_record']                          = 'Hr/save_training_record';
+$route['hr/delete_training_record']                        = 'Hr/delete_training_record';
 // Utility
 $route['hr/get_staff_list']                                = 'Hr/get_staff_list';
 $route['hr/get_report']                                    = 'Hr/get_report';
@@ -926,11 +1208,28 @@ $route['fee_management/scholarships']                    = 'Fee_management/schol
 $route['fee_management/refunds']                         = 'Fee_management/refunds';
 $route['fee_management/reminders']                       = 'Fee_management/reminders';
 $route['fee_management/gateway']                         = 'Fee_management/gateway';
+$route['fee_management/test_gateway_connection']         = 'Fee_management/test_gateway_connection';
 $route['fee_management/online_payments']                 = 'Fee_management/online_payments';
 // Fee Titles AJAX
 $route['fee_management/fetch_fee_titles']                = 'Fee_management/fetch_fee_titles';
 $route['fee_management/save_fee_title']                  = 'Fee_management/save_fee_title';
 $route['fee_management/delete_fee_title']                = 'Fee_management/delete_fee_title';
+// Student Charges AJAX — a one-off charge against ONE student (lost book,
+// property damage, trip contribution). Routes through Student_charge_service →
+// Fee_lifecycle::createModuleFee(), i.e. the SAME canonical generator transport,
+// hostel and ID-card replacement use. No second billing pipeline.
+//
+// Deliberately NOT added to csrf_exclude_uris: these are admin POSTs carrying a
+// session, exactly like save_category below. Only the session-less endpoints
+// (payment_webhook, parent_*) are excluded, and widening that list to a
+// money-raising admin action would remove a real protection.
+// UI REACHABILITY — the three endpoints below shipped with routes and no
+// screen. This is the page that reaches them.
+$route['fee_management/student_charges']                  = 'Fee_management/student_charges';
+$route['fee_management/raise_student_charge']            = 'Fee_management/raise_student_charge';
+$route['fee_management/waive_student_charge']            = 'Fee_management/waive_student_charge';
+$route['fee_management/list_student_charges']            = 'Fee_management/list_student_charges';
+
 // Categories AJAX
 $route['fee_management/fetch_categories']                = 'Fee_management/fetch_categories';
 $route['fee_management/save_category']                   = 'Fee_management/save_category';
@@ -1036,6 +1335,7 @@ $route['transport/sos']                     = 'Transport/index';   // F6
 $route['transport/trips']                   = 'Transport/index';   // F7
 $route['transport/events']                  = 'Transport/index';   // F8
 $route['transport/expiry']                  = 'Transport/index';   // F1
+$route['transport/requests']                = 'Transport/index';   // F-3 worklist
 $route['transport/get_vehicles']            = 'Transport/get_vehicles';
 $route['transport/save_vehicle']            = 'Transport/save_vehicle';
 $route['transport/delete_vehicle']          = 'Transport/delete_vehicle';
@@ -1050,6 +1350,51 @@ $route['transport/save_assignment']         = 'Transport/save_assignment';
 $route['transport/delete_assignment']       = 'Transport/delete_assignment';
 $route['transport/search_students']         = 'Transport/search_students';
 $route['transport/get_student_assignment']  = 'Transport/get_student_assignment';
+
+// ── F12.1 M4 (2026-08-07) — CBSE Transport Safety Compliance ─────────────
+// Tab slug + the eight endpoints of the frozen spec §4.2. Every endpoint is
+// gated in the controller by the canonical graded RBAC form
+// _require_role(..., 'Transport', 'view'|'edit'|'manage') — no new RBAC
+// module, no role-name-only checks.
+$route['transport/compliance']                       = 'Transport/index';           // tab
+$route['transport_compliance/dashboard']             = 'Transport_compliance/dashboard';
+$route['transport_compliance/vehicle/(:any)']        = 'Transport_compliance/vehicle/$1';
+$route['transport_compliance/attest']                = 'Transport_compliance/attest';
+$route['transport_compliance/evaluate/(:any)']       = 'Transport_compliance/evaluate/$1';
+$route['transport_compliance/waive']                 = 'Transport_compliance/waive';
+$route['transport_compliance/rebuild']               = 'Transport_compliance/rebuild';
+$route['transport_compliance/seed_pack']             = 'Transport_compliance/seed_pack';
+$route['transport_compliance/rules']                 = 'Transport_compliance/rules';
+
+// Campus Access & Visitor Management (MVP, 2026-08-09; renamed from
+// Visitor.php/'visitor/*' the same day — "Campus Access" is now the umbrella
+// module identity, Visitor Management is a sub-domain within it)
+$route['campus_access']                          = 'Campus_access/index';
+$route['campus_access/badge/(:any)']             = 'Campus_access/badge/$1';
+$route['campus_access/search_visitors']          = 'Campus_access/search_visitors';
+$route['campus_access/search_staff']             = 'Campus_access/search_staff';
+$route['campus_access/search_students']          = 'Campus_access/search_students';
+$route['campus_access/watchlist_check']          = 'Campus_access/watchlist_check';
+$route['campus_access/create_pass']              = 'Campus_access/create_pass';
+$route['campus_access/approve_pass/(:any)']      = 'Campus_access/approve_pass/$1';
+$route['campus_access/deny_pass/(:any)']         = 'Campus_access/deny_pass/$1';
+$route['campus_access/override_block/(:any)']    = 'Campus_access/override_block/$1';
+$route['campus_access/checkout_pass/(:any)']     = 'Campus_access/checkout_pass/$1';
+$route['campus_access/scan_qr_lookup']           = 'Campus_access/scan_qr_lookup';
+$route['campus_access/list_on_campus']           = 'Campus_access/list_on_campus';
+$route['campus_access/list_log']                 = 'Campus_access/list_log';
+$route['campus_access/export_log_csv']           = 'Campus_access/export_log_csv';
+$route['campus_access/watchlist_list']           = 'Campus_access/watchlist_list';
+$route['campus_access/watchlist_add']            = 'Campus_access/watchlist_add';
+$route['campus_access/watchlist_deactivate/(:any)'] = 'Campus_access/watchlist_deactivate/$1';
+$route['campus_access/upload_document']          = 'Campus_access/upload_document';
+// Gate Pass (student/staff early-leave & late-entry) + Muster — new 2026-08-09
+$route['campus_access/create_gate_pass']         = 'Campus_access/create_gate_pass';
+$route['campus_access/log_late_entry']           = 'Campus_access/log_late_entry';
+$route['campus_access/record_approval/(:any)/(:any)'] = 'Campus_access/record_approval/$1/$2';
+$route['campus_access/release_gate_pass/(:any)'] = 'Campus_access/release_gate_pass/$1';
+$route['campus_access/list_gate_passes']         = 'Campus_access/list_gate_passes';
+$route['campus_access/muster']                   = 'Campus_access/muster';
 
 // Hostel
 $route['hostel']                            = 'Hostel/index';
@@ -1411,3 +1756,15 @@ $route['staff_access/delete_department']             = 'Staff_access/delete_depa
 $route['staff_access/reorder_departments']           = 'Staff_access/reorder_departments';
 $route['staff_access/move_role']                     = 'Staff_access/move_role';
 
+
+// ── Student 360 — unified student workspace ───────────────────────────────
+// Read-only orchestration surface. All three routes are GET; every mutation
+// the workspace offers is executed by the owning module's own route, so no
+// csrf_exclude_uris entry is needed or wanted here.
+$route['student360/view/(:any)']                     = 'Student360/view/$1';
+$route['student360/context/(:any)']                  = 'Student360/context/$1';
+$route['student360/timeline/(:any)']                 = 'Student360/timeline/$1';
+// Lazy panels. Each carries its OWN module capability (Attendance / Hostel /
+// SIS / Certificates) — SIS:view opens the workspace, it does not unlock every
+// module's data through it.
+$route['student360/panel/(:any)/(:any)']             = 'Student360/panel/$1/$2';

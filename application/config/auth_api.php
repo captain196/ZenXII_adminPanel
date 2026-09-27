@@ -17,9 +17,31 @@ $config['auth_api_base_url']        = getenv('AUTH_API_URL') ?: 'http://localhos
 
 // SECURITY: Internal key MUST come from environment variable in production.
 // Fallback for local dev only — remove if running in production.
+// ── SEC-CFG-1 · SAME FAIL-OPEN SHAPE, HIGHER STAKES ─────────────────────────
+// The fallback below is not a placeholder — it is a REAL shared secret,
+// published in this repository, used to authenticate this panel to the Node
+// auth backend. The guard fired only when ENVIRONMENT === 'production', which
+// index.php derives from `$_SERVER['CI_ENV'] ?? 'development'`. If CI_ENV is
+// absent on the host, ENVIRONMENT reads 'development', the check does not fire,
+// and the panel authenticates with a key anyone can read.
+//
+// Inverted to require an EXPLICIT non-production environment. As with the
+// encryption key, that is an improvement rather than a cure: a missing CI_ENV
+// still resolves to 'development'. The fallback is therefore also made LOUD, so
+// the condition is discoverable in logs instead of silent.
+//
+// Recorded as SEC-CFG-1 — a PLATFORM security issue whose real fix is
+// operational (guarantee CI_ENV, then retire the committed fallbacks entirely).
+// Not closed inside a Billing V2 workstream.
 $_internalKey = getenv('AUTH_INTERNAL_SECRET');
-if (empty($_internalKey) && ENVIRONMENT === 'production') {
-    show_error('AUTH_INTERNAL_SECRET environment variable is required in production.', 500);
+if (empty($_internalKey) && !in_array(ENVIRONMENT, ['development', 'testing'], true)) {
+    show_error('AUTH_INTERNAL_SECRET environment variable is required outside development.', 500);
+}
+if (empty($_internalKey)) {
+    error_log('[SEC-CFG-1] AUTH_INTERNAL_SECRET is not set — falling back to the PUBLISHED '
+        . 'development secret. ENVIRONMENT=' . (defined('ENVIRONMENT') ? ENVIRONMENT : 'undefined')
+        . '. If this appears on a live host, the internal auth channel is protected by a '
+        . 'secret that is in the repository.');
 }
 $config['auth_api_internal_key']    = $_internalKey ?: '8b9bb3bd40f1757454022b5bed876753b1183e30317674d1c4380a8c9284e9cf';
 // PERF: A 120s ceiling on the login path let a slow/unreachable backend hang the

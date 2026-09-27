@@ -87,10 +87,11 @@ define('RBAC_MODULE_META', [
     'HR'               => ['Workforce',        'web'],
     'Operations'       => ['Operations',       'web'],
     'Library'          => ['Operations',       'both'],
-    'Transport'        => ['Operations',       'web'],
+    'Transport'        => ['Operations',       'both'],
     'Hostel'           => ['Operations',       'web'],
     'Inventory'        => ['Operations',       'web'],
     'Assets'           => ['Operations',       'web'],
+    'Campus Access'    => ['Operations',       'web'],
     'Reports'          => ['System',           'web'],
     'Configuration'    => ['System',           'web'],
     'Admin Users'      => ['System',           'web'],
@@ -107,6 +108,68 @@ if (!function_exists('rbac_module_surface')) {
     }
 }
 
+if (!function_exists('rbac_role_surface')) {
+    /**
+     * ROLE-level login surface from a `schools.staffRoles` entry: 'app' | 'web' |
+     * 'both'. Unlike rbac_module_surface (display guidance), this one is ENFORCED
+     * at Admin_login. Anything unrecognised or absent falls back to 'both' so an
+     * un-backfilled or hand-edited role can never accidentally lock its holders
+     * out of the panel — this gate only ever denies on an EXPLICIT 'app' tag.
+     */
+    function rbac_role_surface($roleEntry): string
+    {
+        $s = is_array($roleEntry) ? strtolower(trim((string) ($roleEntry['surface'] ?? ''))) : '';
+        return in_array($s, ['app', 'web', 'both'], true) ? $s : 'both';
+    }
+}
+
+if (!function_exists('rbac_roles_allow_web')) {
+    /**
+     * May a staff member holding $roleRefs sign in to the WEB admin panel?
+     *
+     * Union semantics, mirroring resolve_role_access(): TRUE if ANY held role has
+     * a surface other than 'app'. A pure app-surface holder (Driver / Security /
+     * Peon, each of whom also carries the app-tagged auto-assigned baseline role)
+     * is refused the panel and directed to the staff app.
+     *
+     * Fails OPEN — an empty role set, an unresolvable role, or an empty catalogue
+     * all return TRUE. A login gate that failed closed on a Firestore read blip
+     * would lock the whole school out of the panel; the blast radius of the safe
+     * direction is one app-only account briefly seeing a panel with no modules.
+     *
+     * @param array $staffRoles school catalogue (schools.staffRoles)
+     * @param array $roleRefs   role ROLE_* ids and/or labels held by the member
+     */
+    function rbac_roles_allow_web(array $staffRoles, array $roleRefs): bool
+    {
+        if (empty($staffRoles) || empty($roleRefs)) {
+            return true;
+        }
+        $sawKnownRole = false;
+        foreach ($roleRefs as $ref) {
+            $ref = (string) $ref;
+            if ($ref === '') continue;
+            if (in_array($ref, RBAC_BYPASS_ROLES, true)) {
+                return true; // Super / School Super Admin are never app-gated
+            }
+            $entry = null;
+            if (is_array($staffRoles[$ref] ?? null)) {
+                $entry = $staffRoles[$ref];                       // by ROLE_* id
+            } else {
+                foreach ($staffRoles as $r) {                     // by label
+                    if (is_array($r) && (string) ($r['label'] ?? '') === $ref) { $entry = $r; break; }
+                }
+            }
+            if ($entry === null) continue;                        // unknown ref — ignore
+            $sawKnownRole = true;
+            if (rbac_role_surface($entry) !== 'app') {
+                return true;
+            }
+        }
+        return !$sawKnownRole;
+    }
+}
+
 /**
  * Parent → child permission tree. A child is accessible when the role has the
  * child module directly OR holds the parent "umbrella" (which grants all its
@@ -115,7 +178,7 @@ if (!function_exists('rbac_module_surface')) {
  * when the role holds the parent itself or ANY of its children.
  */
 define('RBAC_MODULE_CHILDREN', [
-    'Operations' => ['Library', 'Transport', 'Hostel', 'Inventory', 'Assets'],
+    'Operations' => ['Library', 'Transport', 'Hostel', 'Inventory', 'Assets', 'Campus Access'],
 ]);
 
 /**
@@ -129,6 +192,50 @@ define('RBAC_MODULE_CHILDREN', [
  * run for every tenant (else a bare ROLE_ADMIN would under-grant a demoted admin).
  */
 define('RBAC_BYPASS_ROLES', ['Super Admin', 'School Super Admin']);
+
+/**
+ * SEC-SCOPE-1 — class/section AUTHORIZATION SCOPE for a role.
+ *
+ * ZenX RBAC answers "which modules, at what level"; it never encoded whether a
+ * role's authority is SCHOOL-WIDE (all sections) or SECTION-SCOPED (only its
+ * assigned class/sections). That distinction was previously (wrongly) inferred
+ * from the role DISPLAY NAME in MY_Controller::_teacher_can_access — so a custom
+ * role that merely held the Attendance module gained school-wide section access.
+ *
+ * Scope is now a first-class, authoritative property resolved HERE (the single
+ * RBAC source of truth), by IMMUTABLE role identity — never the display label:
+ *   1. an explicit `accessScope` on the role entry ('school' | 'section') wins;
+ *   2. else the canonical scope of a SYSTEM role, keyed by its ROLE_* id;
+ *   3. else DEFAULT 'section' — least privilege (a custom/ambiguous role can
+ *      never silently become school-wide; it is restricted to its assignments,
+ *      and if it has none it can mark nothing until explicitly granted scope).
+ * Bypass (Super/School Super Admin) is always school-wide.
+ *
+ * Leadership system roles are school-wide by identity; teacher roles are
+ * section-scoped. Every other system role defaults to 'section' too — harmless,
+ * because they do not hold student section modules; if one legitimately needs
+ * school-wide section access, an admin sets accessScope='school' explicitly.
+ */
+define('RBAC_SCHOOLWIDE_ROLE_IDS', [
+    'ROLE_ADMIN', 'ROLE_PRINCIPAL', 'ROLE_VICE_PRINCIPAL', 'ROLE_ACADEMIC_COORDINATOR',
+]);
+define('RBAC_SECTION_ROLE_IDS', ['ROLE_TEACHER', 'ROLE_CLASS_TEACHER']);
+
+if (!function_exists('rbac_role_scope')) {
+    /**
+     * Resolve one role's access scope. $rid = the ROLE_* catalogue id (immutable);
+     * $entry = that role's catalogue map (may carry an explicit accessScope).
+     * @return 'school'|'section'
+     */
+    function rbac_role_scope(?array $entry, string $rid): string
+    {
+        $ex = strtolower(trim((string) ($entry['accessScope'] ?? '')));
+        if ($ex === 'school' || $ex === 'section') return $ex;         // explicit wins
+        if (in_array($rid, RBAC_SCHOOLWIDE_ROLE_IDS, true)) return 'school';
+        // ROLE_TEACHER / ROLE_CLASS_TEACHER and everything else → section (least privilege)
+        return 'section';
+    }
+}
 
 /**
  * Graded access levels (monotonic: manage ⊇ edit ⊇ view). A role grants a level
@@ -385,19 +492,20 @@ function resolve_role_access($firebase, string $school_id, $roles): array
     $roleList = array_values(array_filter(array_map(function ($r) { return (string) $r; }, $roleList),
         function ($r) { return $r !== ''; }));
 
-    // Any bypass role in the set ⇒ full access (all modules at 'manage').
+    // Any bypass role in the set ⇒ full access (all modules at 'manage'), school-wide.
     foreach ($roleList as $r) {
         if (in_array($r, RBAC_BYPASS_ROLES, true)) {
-            return ['modules' => RBAC_MODULES, 'levels' => array_fill_keys(RBAC_MODULES, 'manage')];
+            return ['modules' => RBAC_MODULES, 'levels' => array_fill_keys(RBAC_MODULES, 'manage'), 'scope' => 'school'];
         }
     }
 
     if (empty($school_id) || empty($roleList)) {
-        return ['modules' => [], 'levels' => []];
+        return ['modules' => [], 'levels' => [], 'scope' => 'section'];
     }
 
     $modules = []; // module => true (presence set, order-preserving via keys)
     $levels  = []; // module => max level string
+    $scope   = 'section'; // SEC-SCOPE-1: least privilege until a held role proves school-wide
 
     try {
         $CI =& get_instance();
@@ -418,6 +526,8 @@ function resolve_role_access($firebase, string $school_id, $roles): array
                 if (!is_array($r)) continue;
                 if ((string) ($r['label'] ?? '') === $role || (string) $rid === $role) {
                     $matched = true;
+                    // SEC-SCOPE-1: broadest scope wins across the role union.
+                    if (rbac_role_scope($r, (string) $rid) === 'school') $scope = 'school';
                     $perms  = is_array($r['permissions'] ?? null)
                               ? array_values(array_intersect($r['permissions'], RBAC_MODULES)) : [];
                     $rlvls  = is_array($r['permissionLevels'] ?? null) ? $r['permissionLevels'] : [];
@@ -449,10 +559,10 @@ function resolve_role_access($firebase, string $school_id, $roles): array
         }
     } catch (Exception $e) {
         log_message('error', 'RBAC resolve_role_access failed: ' . $e->getMessage());
-        return ['modules' => [], 'levels' => []];
+        return ['modules' => [], 'levels' => [], 'scope' => 'section'];
     }
 
-    return ['modules' => array_keys($modules), 'levels' => $levels];
+    return ['modules' => array_keys($modules), 'levels' => $levels, 'scope' => $scope];
 }
 
 /**
@@ -519,7 +629,11 @@ function resolve_effective_access($firebase, string $school_id, array $staff): a
     $access = resolve_role_access($firebase, $school_id, $roles);
     $extra  = is_array($staff['extra'] ?? null) ? $staff['extra'] : [];
     $deny   = is_array($staff['deny']  ?? null) ? $staff['deny']  : [];
-    return apply_access_overrides($access, $extra, $deny);
+    $result = apply_access_overrides($access, $extra, $deny);
+    // SEC-SCOPE-1: scope is a ROLE-level property; per-person module extra/deny
+    // never widen section→school. Carry the role-union scope through unchanged.
+    $result['scope'] = $access['scope'] ?? 'section';
+    return $result;
 }
 
 if (!function_exists('rbac_role_edit_error')) {

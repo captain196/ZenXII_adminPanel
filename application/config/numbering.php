@@ -358,6 +358,75 @@ $config['numbering'] = [
             ],
         ],
 
+        // F12.1 M5 (2026-08-07) — CBSE compliance waiver reference number.
+        // A waiver is the audited escape hatch from a mandatory safety
+        // requirement, so it carries a human-quotable id for inspection
+        // records. Seeded from vehicleCompliance because the waiver lives on
+        // the compliance row itself rather than in a collection of its own.
+        'trn_compliance_waiver' => [
+            'prefix'       => 'TCW',
+            'padWidth'     => 6,
+            'gaplessClass' => 'INTERNAL',
+            'periodScope'  => 'none',
+            'seedSource'   => [
+                'collection' => 'vehicleCompliance',
+                'pattern'    => '/^TCW(\d+)$/',
+            ],
+        ],
+
+        // ─── Visitor Management (MVP build, 2026-08-09) ─────────────────────
+
+        'vms_visitor' => [
+            // Master directory entry — repeat visitors, vendors, contractors.
+            // Monotonic per tenant; no daily rotation needed.
+            'prefix'       => 'VIS',
+            'padWidth'     => 6,
+            'gaplessClass' => 'INTERNAL',
+            'periodScope'  => 'none',
+            'seedSource'   => [
+                'collection' => 'visitors',
+                'pattern'    => '/^VIS(\d+)$/',
+            ],
+        ],
+
+        'vms_pass' => [
+            // One id per visit (visitPasses doc). Kept separate from
+            // vms_visitor so the sequence reflects visit volume, not
+            // directory size.
+            'prefix'       => 'VPS',
+            'padWidth'     => 6,
+            'gaplessClass' => 'INTERNAL',
+            'periodScope'  => 'none',
+            'seedSource'   => [
+                'collection' => 'visitPasses',
+                'pattern'    => '/^VPS(\d+)$/',
+            ],
+        ],
+
+        'vms_watchlist' => [
+            'prefix'       => 'WLE',
+            'padWidth'     => 6,
+            'gaplessClass' => 'INTERNAL',
+            'periodScope'  => 'none',
+            'seedSource'   => [
+                'collection' => 'visitorWatchlist',
+                'pattern'    => '/^WLE(\d+)$/',
+            ],
+        ],
+
+        // ─── Campus Access — Gate Pass (early-leave/late-entry), 2026-08-09 ──
+
+        'cam_gatepass' => [
+            'prefix'       => 'CGP',
+            'padWidth'     => 6,
+            'gaplessClass' => 'INTERNAL',
+            'periodScope'  => 'none',
+            'seedSource'   => [
+                'collection' => 'campusAccessRequests',
+                'pattern'    => '/^CGP(\d+)$/',
+            ],
+        ],
+
     ],
 
     // ═════════════════════════════════════════════════════════════════════════
@@ -415,5 +484,11 @@ $config['numbering'] = [
         // Feature F8 (Transport Events) cutover 2026-07-07:
         'trn_event'                => 'enabled',
         'trn_event_assign'         => 'enabled',
+        'trn_compliance_waiver'    => 'enabled',
+        // Visitor Management MVP (2026-08-09):
+        'vms_visitor'              => 'enabled',
+        'vms_pass'                 => 'enabled',
+        'vms_watchlist'            => 'enabled',
+        'cam_gatepass'             => 'enabled',
     ],
 ];

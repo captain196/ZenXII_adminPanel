@@ -13,6 +13,18 @@
     # RewriteCond %{HTTP:X-Forwarded-Proto} =http
     # RewriteRule ^(.*)$ https://%{HTTP_HOST}%{REQUEST_URI} [L,R=301]
 
+    # ── Assets MODULE vs ./assets/ STATIC DIRECTORY ───────────────────
+    # The Assets module routes at /assets, and this repo also serves a real
+    # ./assets/ directory (CSS, JS, images). Apache resolves the bare path as
+    # that directory, mod_dir 301s to /assets/, and Options -Indexes then
+    # returns 403 — so the module was unreachable by URL. Confirmed live:
+    # /assets -> 301 -> 403, while every named tab returned 200.
+    #
+    # This rule fires BEFORE mod_dir sees the request. It matches ONLY the bare
+    # path; assets/css/..., assets/js/... and every other real static file still
+    # resolve normally because they do not match ^assets/?$.
+    RewriteRule ^assets/?$ index.php/assets [L]
+
     # Redirect Trailing Slashes...
     RewriteCond %{REQUEST_FILENAME} !-d
     RewriteRule ^(.+)/$ /$1 [L,R=301]

@@ -34,12 +34,37 @@
     </coverage>
 
     <php>
+        <!-- The suite exhausts PHP's 512M default part-way through and dies with a
+             fatal, and PHPUnit never prints its "Tests: ... Failures: ..." summary.
+             Any CI step or reader looking at the tail sees no summary at all, and
+             anything grepping for "Failures:" finds nothing — a crashed run reads
+             as a clean one. Pinning the limit here makes a full run the default
+             rather than something you have to remember to pass on the command line.
+             Measured 2026-09-13: 512M dies in TimetableLegacyAuthorityTest; 1G
+             completes the whole suite. -->
+        <ini name="memory_limit" value="1G"/>
+
+        <!-- XAMPP's php.ini caps CLI execution at 300s, which the full suite now
+             exceeds — same failure shape as the memory cap: a fatal, and no summary
+             line. A test run is not a web request and must not inherit a web
+             timeout. -->
+        <ini name="max_execution_time" value="0"/>
+
         <!-- Override Firebase with the test double -->
         <env name="GRADER_TEST_MODE"  value="1"/>
         <env name="GRADER_BASE_URL"   value="http://localhost/Grader/school/"/>
         <!-- Set to a real Firebase project only for integration tests -->
         <env name="FIREBASE_TEST_DB"  value=""/>
     </php>
+
+    <!-- Re-asserts the run limits before every test. Production code sets its own
+         process limits (Timetable_service set_time_limit(300), Backup_cron 256M,
+         Fees 600s) which are correct in a web request but process-global and
+         permanent in a test run — one test exercising them starves every test
+         after it. See tests/Support/RunLimitsExtension.php. -->
+    <extensions>
+        <extension class="Tests\Support\RunLimitsExtension"/>
+    </extensions>
 
     <logging>
         <junit outputFile="tests/results/junit.xml"/>
