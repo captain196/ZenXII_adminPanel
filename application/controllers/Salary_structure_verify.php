@@ -120,7 +120,14 @@ class Salary_structure_verify extends CI_Controller
             // attribution but don't participate in payroll computation.
             $isAdminExempt = in_array(strtolower($role), self::ADMIN_EXEMPT_ROLES, true);
 
-            $struct = $data['salaryStructure'] ?? null;
+            // Staff Lifecycle audit finding: salaryStructure now lives in
+            // staffPrivate (same PII_KEYS boundary as salaryDetails/bankDetails),
+            // not on the public staff doc — read the private mirror. Its doc id
+            // is the same {schoolId}_{staffId} string as the staff row's own id
+            // (Staff::_split_staff_private() writes it via setEntity() using the
+            // same staffId the staff doc was created/updated with).
+            $privDoc = $docId !== '' ? $this->firestore_service->get('staffPrivate', $docId) : null;
+            $struct  = is_array($privDoc) ? ($privDoc['salaryStructure'] ?? null) : null;
             if (!is_array($struct)) {
                 if ($isAdminExempt) {
                     $admin_exempt[] = $tag;

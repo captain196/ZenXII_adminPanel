@@ -114,6 +114,12 @@
 </div>
 
 <script>
+/* jQuery is loaded by include/footer, which the controller renders AFTER this
+ * view. A parser-inserted inline script therefore runs BEFORE jQuery exists,
+ * and every $(...) below threw "$ is not defined". Waiting for
+ * DOMContentLoaded fires after the footer's blocking <script> has run, which
+ * is the same guard hr/index.php uses for exactly this reason. */
+document.addEventListener('DOMContentLoaded', function () {
 (function () {
   var HEALTH_URL = '<?= base_url('hr/payroll_health') ?>';
 
@@ -216,4 +222,5 @@
     $('#phRefresh').on('click', load);
   });
 })();
+}); /* end DOMContentLoaded */
 </script>
