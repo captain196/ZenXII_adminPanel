@@ -1,0 +1,22 @@
+{
+  "name": "zenxii-aegis",
+  "version": "1.0.0",
+  "description": "ZenXii Aegis — continuous integrity, change-impact & regression-defense framework",
+  "type": "commonjs",
+  "main": "cli.js",
+  "bin": {
+    "aegis": "./cli.js"
+  },
+  "scripts": {
+    "test": "node test/run.js",
+    "doctor": "node cli.js doctor",
+    "impact": "node cli.js impact",
+    "verify": "node cli.js verify",
+    "gate": "node cli.js gate"
+  },
+  "engines": {
+    "node": ">=18"
+  },
+  "license": "UNLICENSED",
+  "private": true
+}

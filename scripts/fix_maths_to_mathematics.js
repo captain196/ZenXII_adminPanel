@@ -15,7 +15,15 @@
  *   node scripts/fix_maths_to_mathematics.js --mode=delete     # preview delete
  *   node scripts/fix_maths_to_mathematics.js --mode=delete --apply
  */
+/*
+ * Documents carrying `projectedFromVersion` are refused (added 2026-09-12):
+ * they are owned by a published timetable version, so renaming a subject here
+ * would change what teachers see with no version recording it — and the next
+ * projection would overwrite the rename anyway. Rename the subject in the
+ * canonical data and publish instead.
+ */
 const path = require('path');
+const guard = require(path.resolve(__dirname, 'lib', 'projection_guard.js'));
 let admin;
 try { admin = require(path.resolve(__dirname, '..', 'functions', 'node_modules', 'firebase-admin')); }
 catch (e) { admin = require('firebase-admin'); }
@@ -83,7 +91,10 @@ const isMaths = (s) => typeof s === 'string' && s.trim().toLowerCase() === FROM.
   // ── 2. timetables ──
   const ttSnap = await fs.collection('timetables')
     .where('schoolId', '==', SCHOOL).where('session', '==', SESSION).get();
-  for (const d of ttSnap.docs) {
+  const { allowed: ttEditable, refused: ttProjected } = guard.partition(ttSnap.docs);
+  guard.report(ttProjected, 'renamed');
+
+  for (const d of ttEditable) {
     const data = d.data();
     const periods = Array.isArray(data.periods) ? data.periods : [];
     let touched = false;

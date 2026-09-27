@@ -1,0 +1,49 @@
+#!/usr/bin/env bash
+# ─────────────────────────────────────────────────────────────────────────────
+# ZenXii Aegis — pre-push hook (Tier 0, no CI required)
+#
+# Runs the change-impact engine on the outgoing diff and prints a risk report.
+# Philosophy (matches the user's working-system hooks): WARN, don't block.
+# Set AEGIS_STRICT=1 to hard-stop when a blocking contract is at risk.
+# ─────────────────────────────────────────────────────────────────────────────
+set -euo pipefail
+
+REPO="$(git rev-parse --show-toplevel)"
+
+# Aegis normally sits inside the repo being pushed (the admin panel). When it
+# does not — pushing one of the app repos, or the legacy-forks repo — fall back
+# to the usual checkout locations. The old hardcoded absolute path was wrong on
+# every machine but one, and broke outright when Aegis moved.
+AEGIS_DIR="${AEGIS_HOME:-$REPO/aegis}"
+if [ ! -f "$AEGIS_DIR/cli.js" ]; then
+  for cand in "$HOME/Desktop/Zennxii_adminPanel/aegis" "$HOME/dev/Zennxii_adminPanel/aegis" \
+              "$HOME/projects/Zennxii_adminPanel/aegis" "$HOME/Zennxii_adminPanel/aegis" \
+              "$HOME/AndroidStudioProjects/aegis" "$HOME/dev/aegis" "$HOME/aegis"; do
+    [ -f "$cand/cli.js" ] && { AEGIS_DIR="$cand"; break; }
+  done
+fi
+
+if [ ! -f "$AEGIS_DIR/cli.js" ]; then
+  echo "aegis: cli not found; skipping impact check" >&2
+  exit 0
+fi
+
+echo ""
+echo "🛡  Aegis pre-push check — everything below ships on this push:"
+# Per-module breakdown FIRST — surfaces any forgotten/half-done module riding along.
+node "$AEGIS_DIR/cli.js" pending --repo "$REPO" || true
+echo ""
+node "$AEGIS_DIR/cli.js" impact --repo "$REPO" || true
+
+# In strict mode, block if the gate finds a blocking contract at risk.
+if [ "${AEGIS_STRICT:-0}" = "1" ]; then
+  if ! node "$AEGIS_DIR/cli.js" gate --repo "$REPO" >/dev/null 2>&1; then
+    echo ""
+    echo "⛔ AEGIS_STRICT: blocking contract at risk — push aborted. Run: node $AEGIS_DIR/cli.js gate --repo \"$REPO\""
+    exit 1
+  fi
+fi
+
+echo ""
+echo "🛡  Aegis: advisory only (warn-not-block). Run 'aegis gate' before deploy."
+exit 0

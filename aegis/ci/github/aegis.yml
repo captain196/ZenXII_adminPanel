@@ -1,0 +1,100 @@
+# ZenXii Aegis — CI gate (Layer §04, hooks 3–4)
+# ─────────────────────────────────────────────────────────────────────────────
+# Drop into a repo's .github/workflows/ once that repo is on GitHub.
+# Runs the impact engine + contract checks on every PR, posts the report as a
+# PR comment, and BLOCKS merge only when a blocking contract fails.
+#
+# Works whether or not aegis/ lives in the repo:
+#   • if aegis/ is present in the checkout  → uses it in place
+#   • if not (e.g. the admin-panel repo)    → clones it from AEGIS_REPO_URL
+#
+# Setup:
+#   1. Put this file at .github/workflows/aegis.yml in the target repo.
+#   2. If aegis is NOT vendored in that repo, set repo variable AEGIS_REPO_URL
+#      to the aegis git URL (Settings → Secrets and variables → Actions → Variables).
+#   3. Point aegis.config.json paths at the CI checkout (or override via env — see
+#      the "Adapt config for CI" step). Branch-protect `main` requiring the
+#      "aegis / gate" check.
+# ─────────────────────────────────────────────────────────────────────────────
+name: aegis
+on:
+  pull_request:
+    branches: [main, "release/**"]
+
+jobs:
+  gate:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0   # need history for base...HEAD diff
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 20
+
+      - name: Locate or fetch Aegis
+        id: locate
+        run: |
+          if [ -f aegis/cli.js ]; then
+            echo "dir=aegis" >> "$GITHUB_OUTPUT"
+          else
+            git clone --depth 1 "${AEGIS_REPO_URL}" .aegis
+            echo "dir=.aegis" >> "$GITHUB_OUTPUT"
+          fi
+        env:
+          AEGIS_REPO_URL: ${{ vars.AEGIS_REPO_URL }}
+
+      - name: Adapt config for CI checkout
+        # In CI the surface roots differ from a dev laptop. Point the repo-under-test's
+        # surface at $GITHUB_WORKSPACE so classify/diff resolve. Other surfaces are
+        # absent in a single-repo CI run — that's fine, their checks just skip.
+        run: |
+          node -e '
+            const fs=require("fs"), p=process.env.DIR+"/aegis.config.json";
+            const c=JSON.parse(fs.readFileSync(p,"utf8"));
+            const ws=process.env.GITHUB_WORKSPACE;
+            // best-effort: repoint every surface whose gitRepo matches this repo
+            for (const s of Object.values(c.surfaces)) s.gitRepo=ws;
+            // if the rules/ledger live in this repo, repoint them
+            for (const rel of ["firebase-rules/firestore.rules","BUG_LEDGER.md","firebase-rules/firestore.indexes.json"]) {
+              const cand=ws+"/"+rel;
+              if (fs.existsSync(cand)) {
+                if (rel.endsWith("rules")) c.firestoreRules=cand;
+                else if (rel.endsWith("indexes.json")) c.firestoreIndexes=cand;
+                else if (rel.endsWith("BUG_LEDGER.md")) c.bugLedger=cand;
+              }
+              if (fs.existsSync(ws+"/aegis")) { for (const s of Object.values(c.surfaces)) if (fs.existsSync(s.root)) {} }
+            }
+            fs.writeFileSync(p, JSON.stringify(c,null,2));
+          '
+        env:
+          DIR: ${{ steps.locate.outputs.dir }}
+
+      - name: Aegis self-test
+        run: node ${{ steps.locate.outputs.dir }}/test/run.js
+
+      - name: Aegis impact report
+        run: |
+          node ${{ steps.locate.outputs.dir }}/cli.js impact \
+            --repo "$GITHUB_WORKSPACE" --base "origin/${{ github.base_ref }}" --out impact.md
+          echo "---- IMPACT ----"; cat impact.md
+
+      - name: Post impact report as PR comment
+        if: github.event_name == 'pull_request'
+        uses: actions/github-script@v7
+        with:
+          script: |
+            const fs = require('fs');
+            const body = fs.readFileSync('impact.md', 'utf8').slice(0, 60000);
+            const { data: comments } = await github.rest.issues.listComments(
+              { owner: context.repo.owner, repo: context.repo.repo, issue_number: context.issue.number });
+            const mine = comments.find(c => c.body.startsWith('# 🛡️ Aegis Impact Report'));
+            const params = { owner: context.repo.owner, repo: context.repo.repo, body };
+            if (mine) await github.rest.issues.updateComment({ ...params, comment_id: mine.id });
+            else await github.rest.issues.createComment({ ...params, issue_number: context.issue.number });
+
+      - name: Aegis gate (blocks only on BLOCKING contracts)
+        run: |
+          node ${{ steps.locate.outputs.dir }}/cli.js gate \
+            --repo "$GITHUB_WORKSPACE" --base "origin/${{ github.base_ref }}"

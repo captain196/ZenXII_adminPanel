@@ -14,6 +14,11 @@
  *   timetable        — timetable_projection_cron  (daily, before the school day)
  *                      PLATFORM-WIDE: omit --schoolId and every eligible tenant
  *                      is processed. This is the production shape.
+ *   leave_accrual    — leave_accrual_cron run_all  (daily; credits only new months)
+ *                      PLATFORM-WIDE always: every tenant that opted into monthly
+ *                      accrual (schools.leavePolicy.accrualEnabled). Idempotent
+ *                      (lastAccrualMonth), so a daily run is safe and a missed
+ *                      day self-heals on the next. No --schoolId needed.
  *
  * Usage:
  *   php scripts/run_scheduled.php --job=reconcile --schoolId=SCH_… --session=YYYY-YY
@@ -67,7 +72,7 @@ foreach (array_slice($argv, 1) as $a) {
     $opts[$eq === false ? $a : substr($a, 0, $eq)] = $eq === false ? true : substr($a, $eq + 1);
 }
 $job = (string) ($opts['job'] ?? '');
-if ($job === '') { fwrite(STDERR, "Usage: --job={reconcile|integrity|timetable} …\n"); exit(2); }
+if ($job === '') { fwrite(STDERR, "Usage: --job={reconcile|integrity|timetable|leave_accrual} …\n"); exit(2); }
 
 $root = realpath(__DIR__ . '/..');
 $credPath = $root . '/application/config/graderadmin-firebase-adminsdk-a1sml-2b5f1862a7.json';
@@ -170,6 +175,25 @@ switch ($job) {
         }
         $childCmd = ['php', escapeshellarg("{$root}/index.php"),
                      'timetable_projection_cron', $ttAction];
+        break;
+
+    case 'leave_accrual':
+        // PLATFORM monthly leave accrual for every opted-in tenant
+        // (schools.leavePolicy.accrualEnabled). Idempotent (lastAccrualMonth):
+        // safe to run daily; credits only new months. Never per-school here —
+        // one entry processes the whole fleet, and a school onboarded tomorrow
+        // is picked up by the next run with no configuration.
+        if (!@chdir($root)) {
+            fwrite(STDERR, "could not enter project root: {$root}\n");
+            exit(2);
+        }
+        // Optional targeted month for backfill/recovery; the controller
+        // reads THROUGH_MONTH from the environment (child inherits ours).
+        if (!empty($opts['through-month'])) {
+            putenv('THROUGH_MONTH=' . (string) $opts['through-month']);
+        }
+        $childCmd = ['php', escapeshellarg("{$root}/index.php"),
+                     'leave_accrual_cron', 'run_all'];
         break;
 
     default:
