@@ -105,12 +105,35 @@ const MARK_REGISTRY = {
   },
   LEAVE_DECIDED:       { audience: AUDIENCE.USERS, idField: 'studentId', type: 'leave_update', fTitle: 'Leave Update', fBody: '', dataKeys: ['leaveId', 'startDate', 'endDate'] },
   STAFF_LEAVE_DECIDED: { audience: AUDIENCE.USERS, idField: 'staffId',   type: 'leave_update', fTitle: 'Leave Update', fBody: '', dataKeys: ['leaveId', 'startDate', 'endDate'] },
+  // Visitor Management MVP (2026-08-09) — host-staff arrival notice. Read-only
+  // Phase 1: no in-app approve/deny action yet (that's Phase 2), so this is
+  // notify-only — the actual approve/deny/override happens on the admin
+  // console. Fired by Visitor_service::_notifyHostCheckedIn.
+  VISITOR_CHECKED_IN: { audience: AUDIENCE.USERS, idField: 'staffId', type: 'visitor_checkin', fTitle: 'Visitor Arrived', fBody: '', dataKeys: ['passId'] },
+  // Campus Access — Gate Pass (2026-08-09) — class-teacher push for a
+  // student early-leave request. Notify-only: approval itself still
+  // happens on the admin console (no in-app approve action in Phase 1,
+  // same posture as VISITOR_CHECKED_IN above). Fired by
+  // Gate_pass_service::createEarlyLeaveRequest.
+  CAMPUS_ACCESS_APPROVAL_NEEDED: { audience: AUDIENCE.USERS, idField: 'staffId', type: 'campus_access_approval_needed', fTitle: 'Early-Leave Approval Needed', fBody: '', dataKeys: ['requestId'] },
   ATTENDANCE_MARKED:   { audience: AUDIENCE.USERS, idField: 'studentId', type: 'student_absent', fTitle: 'Attendance', fBody: '', dataKeys: ['day', 'month', 'class', 'section', 'mark'] },
   SUBSTITUTE_ASSIGNED: { audience: AUDIENCE.USERS, idField: 'recipientStaffIds', type: 'substitute_assigned', fTitle: 'Substitute Assigned', fBody: 'You have been assigned as a substitute teacher', dataKeys: ['date', 'periods', 'class', 'section'] },
+  // The other half of SUBSTITUTE_ASSIGNED. A teacher told they are covering
+  // 9-A period 3 was never told when that cover was cancelled, deleted, or
+  // reassigned by an edit — so the last thing they heard remained true to
+  // them, and they turned up to a lesson that was no longer theirs.
+  SUBSTITUTE_CANCELLED: { audience: AUDIENCE.USERS, idField: 'recipientStaffIds', type: 'substitute_cancelled', fTitle: 'Substitute Cover Cancelled', fBody: 'A substitute cover assigned to you has been cancelled', dataKeys: ['date', 'periods', 'class', 'section'] },
   RESULT_PUBLISHED:    { audience: AUDIENCE.USERS, idField: 'studentId', type: 'exam_result', fTitle: 'Result Published', fBody: 'Your result has been published', dataKeys: ['examId', 'resultId'] },
   FEE_PAID:            { audience: AUDIENCE.USERS, idField: 'studentId', type: 'fee_payment_confirmed', fTitle: 'Payment Received', fBody: 'Your fee payment has been received', dataKeys: ['amount', 'receiptId'] },
   FEE_DUE:             { audience: AUDIENCE.USERS, idField: 'studentId', type: 'fee_reminder', fTitle: 'Fee Reminder', fBody: 'You have a pending fee payment', dataKeys: ['amount', 'dueDate'] },
   BIRTHDAY:            { audience: AUDIENCE.USERS, idField: 'studentId', type: 'birthday_wish', fTitle: 'Happy Birthday!', fBody: 'Wishing you a wonderful day!', dataKeys: [] },
+  // Attendance regularization decided (2026-08-23). The requester is told the
+  // outcome of their own missed-punch request. Two events only — approved and
+  // rejected — matching the documented industry pattern (Pocket HRMS ships
+  // exactly "Regularization Accepted" / "Regularization Rejected" to the
+  // employee). No reminder/nag event: nothing in the surveyed vendor docs
+  // establishes one for this workflow, and inventing a cadence is policy.
+  STAFF_REG_DECIDED:   { audience: AUDIENCE.USERS, idField: 'staffId',   type: 'regularization_update', fTitle: 'Attendance Request', fBody: '', dataKeys: ['requestId', 'date', 'decision', 'appliedMark'] },
   SALARY_PROCESSED:    { audience: AUDIENCE.USERS, idField: 'staffId',   type: 'salary_processed', fTitle: 'Salary Processed', fBody: 'Your salary has been processed', dataKeys: ['amount', 'month'] },
 };
 
@@ -538,12 +561,31 @@ exports.onPtmCreated = onDocumentCreated(
   }
 );
 
-// ─── Fee Demand Generation Worker (Phase 10) ───────────────────────
-// processFeeGenerationJob — triggered on new fee_generation_jobs/{jobId}
-// document. Handles bulk demand creation with batched writes +
-// bounded concurrency. See ./fee_generation_worker.js.
-const feeWorker = require("./fee_generation_worker");
-exports.processFeeGenerationJob = feeWorker.processFeeGenerationJob;
+// ─── Fee Demand Generation Worker — RETIRED (G12, 2026-08-08) ──────
+// processFeeGenerationJob used to trigger on every fee_generation_jobs/{jobId}
+// create. PHP (Fees.php::_processGenerationJob) writes that same job doc
+// AND, synchronously in the same request, generates the demands itself —
+// a fully-featured, resumable, batched generator (Fee_batch_writer,
+// soft-deadline resume, failed-batch persistence) that already writes every
+// job-status field this trigger did (status/totalStudents/processedStudents/
+// successCount/failureCount/demandsCreated/completedAt). The trigger fired
+// on the SAME doc-create and raced it: different (deterministic) demand
+// doc-ID scheme than the PHP path, and zero discount/concession application
+// — a race the CF won could silently create a duplicate, undiscounted
+// feeDemands doc next to the correct PHP-generated one.
+// Root-caused in STUDENT_ENTITLEMENTS_ARCHITECTURE_BASELINE.md §0A.5;
+// resolved there as "retire, not rebuild" — no scale justification for the
+// async path was found anywhere in Phase 0 review; the synchronous PHP
+// worker already handles bulk generation (5,000+ students, multi-request
+// resume) in-request. fee_generation_jobs keeps being written by PHP as a
+// job-status log (read by Fees.php's own progress UI and by
+// ops_sweep_worker.js's stuck-job sweep, both status/age-based and
+// PHP-engine-agnostic — neither depends on this trigger existing).
+// fee_generation_worker.js is left on disk, unwired, for reference — see
+// its own header. Do not re-add this export without re-solving the race
+// this comment describes.
+// const feeWorker = require("./fee_generation_worker");
+// exports.processFeeGenerationJob = feeWorker.processFeeGenerationJob;
 
 // ─── Phase 3A — Operational sweep (detect-only) ─────────────────────
 // feeOpsSweep — scheduled every 10 min. Detects stuck refunds, stuck

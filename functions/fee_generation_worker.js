@@ -1,6 +1,19 @@
 /**
  * Fee Generation Worker — Cloud Function (Node.js, Gen-2).
  *
+ * RETIRED (G12, 2026-08-08) — no longer exported/wired from index.js. See
+ * the retirement note at functions/index.js around `processFeeGenerationJob`
+ * for the full rationale: this trigger raced Fees.php's own synchronous,
+ * fully-featured generator (`_processGenerationJob`) on every
+ * fee_generation_jobs/{jobId} create, using a different demand doc-ID
+ * scheme and applying zero discounts — a race this trigger winning could
+ * silently create a duplicate, undiscounted feeDemands doc. Left on disk,
+ * unwired, for reference only. Do not re-require/re-export this file
+ * without first re-solving that race.
+ *
+ * Original docblock follows, describing the trigger as it operated before
+ * retirement:
+ *
  * Triggered on `fee_generation_jobs/{jobId}` document creation. The PHP
  * admin panel writes a job spec; this worker processes it asynchronously
  * with batched Firestore writes + bounded concurrency.
