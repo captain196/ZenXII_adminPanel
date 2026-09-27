@@ -40,6 +40,24 @@ class Hr extends MY_Controller
 
     // ── Leave tuning constants (LOW — extracted magic numbers) ──────────
     /** Reject approving a leave whose start date is older than this window. */
+    /**
+     * Payroll run kinds (2026-08-22).
+     *
+     * `monthly` is the default everywhere and describes every run written
+     * before this distinction existed — consumers read
+     * `$run['runType'] ?? self::RUN_TYPE_MONTHLY`, so no backfill is needed.
+     *
+     * The difference is a uniqueness rule, not a calculation one: exactly ONE
+     * monthly run may exist per school/month/year (a second would pay the
+     * roster twice), whereas an off-cycle run — Full & Final, arrears, a bonus
+     * payout — is a distinct event that may legitimately sit alongside it.
+     * Both use the SAME `_compute_payslip()` engine; nothing about the money
+     * arithmetic branches on this field.
+     */
+    private const RUN_TYPE_MONTHLY  = 'monthly';
+    private const RUN_TYPE_OFFCYCLE = 'offcycle';
+    private const RUN_TYPES = [self::RUN_TYPE_MONTHLY, self::RUN_TYPE_OFFCYCLE];
+
     private const LEAVE_STALE_WINDOW_DAYS = 60;
     /** Max audit rows returned by get_leave_audit_log. */
     private const LEAVE_AUDIT_LIMIT       = 200;
@@ -56,6 +74,10 @@ class Hr extends MY_Controller
     public function __construct()
     {
         parent::__construct();
+        // W1.3: recruitment vocabulary bridge + shared atomic HR id minting,
+        // both also used by Ats.php so the two modules cannot drift.
+        $this->load->helper('recruitment');
+        $this->load->helper('hr_id');
         require_permission('HR');
     }
 
@@ -72,15 +94,12 @@ class Hr extends MY_Controller
     // retired — departments now live on Firestore schools/{id}.departments,
     // written only via Hr::save_department. The old _dept() helper was removed.
 
-    private function _jobs($id = '')
-    {
-        return $this->_hr() . '/Recruitment/Jobs' . ($id ? "/{$id}" : '');
-    }
-
-    private function _applicants($id = '')
-    {
-        return $this->_hr() . '/Recruitment/Applicants' . ($id ? "/{$id}" : '');
-    }
+    // NOTE (W1.3): the legacy RTDB Recruitment paths
+    // (Schools/{name}/HR/Recruitment/{Jobs,Applicants}) are retired — jobs and
+    // applicants live in Firestore `hrJobs` / `hrApplicants`, now written by
+    // BOTH this controller and Ats.php. The _jobs() and _applicants() helpers
+    // had already lost every call site here and were removed; keeping dead RTDB
+    // path builders around is how a "temporary" fallback gets reintroduced.
 
     private function _leave_types($id = '')
     {
@@ -452,17 +471,132 @@ class Hr extends MY_Controller
      * @param array|null $staffMeta   staff profile for gender applicability
      * @return array derived balances map (same keys as the stored shape)
      */
-    private function _deriveLiveBalances(array $stored, array $activeTypes, ?array $staffMeta = null): array
+    /**
+     * Leave Policy Programme Phase 4 (2026-08-18) — pro-rate an annual
+     * entitlement for a staff member whose employment window doesn't cover
+     * the full Leave Year. Thin wrapper: normalizes the raw staff-profile
+     * date strings (which arrive in whatever format the profile stored
+     * them, hence _normalize_date()) then delegates the actual math to
+     * Leave_year_service::prorateEntitlement() — the SAME function
+     * Staff::new_staff() calls at balance-seed time, so display (here) and
+     * the actual balance gate (Staff.php) can never compute two different
+     * answers to "how much leave did this person earn this year".
+     *
+     * @return array{days: float, prorated: bool, windowDays: int, totalDays: int}
+     */
+    private function _prorate_entitlement(float $fullDaysPerYear, ?string $joinDate, ?string $exitDate, string $year): array
     {
+        require_once APPPATH . 'libraries/Leave_year_service.php';
+        $jd = ($joinDate !== null) ? $this->_normalize_date($joinDate, 'prorate.joinDate') : null;
+        $xd = ($exitDate !== null) ? $this->_normalize_date($exitDate, 'prorate.exitDate') : null;
+        return \Leave_year_service::prorateEntitlement($fullDaysPerYear, $jd, $xd, $year);
+    }
+
+    /**
+     * Per-SCHOOL leave-accrual switch (2026-09-19). Reads
+     * `schools.leavePolicy.accrualEnabled` — the school's own choice of monthly
+     * accrual vs annual up-front allocation, set from the Leave settings screen.
+     *
+     * DEFAULT FALSE, and fail-closed on any read error: a school that never
+     * opted in (every existing tenant, and every brand-new school) behaves
+     * EXACTLY as before — full annual granted up front. This replaces the
+     * platform-wide `LEAVE_ACCRUAL_ENABLED` flag as the authority for whether
+     * accrual runs, so the decision is the school's, not a fleet-wide toggle.
+     * Accepts the shapes a config value actually arrives in.
+     */
+    private $_accrualSvcInstance = null;
+    private function _accrualSvc(): Leave_accrual_service
+    {
+        if ($this->_accrualSvcInstance === null) {
+            $this->load->library('leave_accrual_service', null, 'leave_accrual_service');
+            $this->_accrualSvcInstance = $this->leave_accrual_service->init(
+                $this->firebase, $this->fs, (string) ($this->school_id ?? ''), (string) ($this->session_year ?? ''));
+        }
+        return $this->_accrualSvcInstance;
+    }
+
+    private function _school_accrual_enabled(): bool
+    {
+        // Delegates to Leave_accrual_service (single accrual authority, 2026-09-20).
+        return $this->_accrualSvc()->schoolAccrualEnabled();
+    }
+
+    /**
+     * Whether a specific leave type accrues monthly for THIS school as of $asOf.
+     * True only when the school opted into accrual AND the type's effective
+     * version carries `accrual_mode === 'monthly'` — the SAME version source the
+     * accrual engine (_accrue_monthly_leave_one_type) keys off, so what an
+     * employee may take can never disagree with what actually gets credited.
+     * A lump_sum type, or a school that never opted in, returns false → the
+     * annual-up-front path is untouched.
+     */
+    private function _type_accrues(array $lt, string $asOf): bool
+    {
+        if (!$this->_school_accrual_enabled()) return false;
+        require_once APPPATH . 'libraries/Leave_policy_service.php';
+        $ver = \Leave_policy_service::effectiveVersion($lt, $asOf);
+        return $ver !== null && ((string) ($ver['accrual_mode'] ?? 'lump_sum') === 'monthly');
+    }
+
+    private function _deriveLiveBalances(array $stored, array $activeTypes, ?array $staffMeta = null, ?string $asOfDate = null): array
+    {
+        // Phase 2 (2026-08-18) — when effective-dating is live, `allocated`
+        // resolves from the version effective on $asOfDate instead of the
+        // always-current flat fields, so a balance stays explainable
+        // against the policy that was actually true for it. OFF (default):
+        // behavior is byte-identical to before this phase — $allocated
+        // always comes from the live flat `days_per_year`.
+        $effectiveDatingOn = $this->_leave_flag('LEAVE_EFFECTIVE_DATING_ENABLED');
+        if ($effectiveDatingOn) {
+            require_once APPPATH . 'libraries/Leave_policy_service.php';
+        }
+        $resolveDate = $asOfDate ?? date('Y-m-d');
+
         $out = [];
         foreach ($activeTypes as $tid => $lt) {
             if (!is_array($lt)) continue;
             if (!$this->_leaveTypeAppliesToStaff($lt, $staffMeta)) continue;
 
+            // Kept as (int) unless Phase 4 pro-rata actually fires below —
+            // the JSON shape of `allocated` (int vs float) must stay
+            // byte-identical to pre-Phase-4 for every school that hasn't
+            // turned LEAVE_PRORATA_ENABLED on, since mobile app JSON
+            // deserializers may be typed against the historical int shape.
             $allocated = (int) ($lt['days_per_year'] ?? 0);
+            if ($effectiveDatingOn) {
+                $ver = \Leave_policy_service::effectiveVersion($lt, $resolveDate);
+                if ($ver !== null) $allocated = (int) ($ver['days_per_year'] ?? 0);
+                // $ver === null (e.g. no versions[] yet on a pre-Phase-2 type,
+                // or none effective by $resolveDate) → keep the live flat
+                // value, same fail-open-to-current-behavior discipline used
+                // throughout this whole programme.
+            }
+
+            // Phase 4 (2026-08-18) — pro-rate a mid-year join/separation.
+            // Applied AFTER effective-dating resolves the full-year figure,
+            // so the two phases compose correctly (prorate whichever
+            // days_per_year is actually in force). OFF (default): $allocated
+            // is untouched — every staff member gets the full annual figure
+            // regardless of join/exit date, exactly as before this phase.
+            if ($this->_leave_flag('LEAVE_PRORATA_ENABLED') && is_array($staffMeta)) {
+                $joinDate = $staffMeta['joinDate'] ?? $staffMeta['dateOfJoining']
+                    ?? $staffMeta['Date Of Joining'] ?? $staffMeta['Joining Date'] ?? null;
+                $exitDate = $staffMeta['exitDate'] ?? $staffMeta['Resignation Date']
+                    ?? $staffMeta['leaveDate'] ?? null;
+                $pr = $this->_prorate_entitlement($allocated, $joinDate, $exitDate, substr($resolveDate, 0, 4));
+                $allocated = $pr['days'];
+            }
+
             $s         = is_array($stored[$tid] ?? null) ? $stored[$tid] : [];
             $used      = (float) ($s['used'] ?? 0);
             $carried   = (float) ($s['carried'] ?? 0);
+            // Monthly accrual (per-school opt-in, 2026-09-19): the available
+            // entitlement is only what has ACCRUED so far, not the full annual.
+            // Cap `allocated` at accruedToDate so the shown balance matches what
+            // apply_leave permits. Default (no accrual) leaves `allocated` as-is.
+            if ($this->_type_accrues($lt, $resolveDate)) {
+                $allocated = min($allocated, (float) ($s['accruedToDate'] ?? 0));
+            }
             $balance   = $allocated + $carried - $used;
             if ($balance < 0) $balance = 0;
 
@@ -485,6 +619,358 @@ class Hr extends MY_Controller
             ];
         }
         return $out;
+    }
+
+    /**
+     * Per-month leave-accrual installment (days), distributing EXACTLY
+     * $daysPerYear across an accrual window $monthsInWindow months long in
+     * 0.5-day-granular steps, with the final month trueing up to the exact annual.
+     *
+     * Fixes a divergence defect (2026-09-19): the previous fixed per-month
+     * `round(($daysPerYear / 12) * 2) / 2` summed to 12× that and did NOT equal
+     * the school's configured annual — 20 days/yr accrued only 18 (a 2-day
+     * LOSS), 15/yr accrued 18 (a 3-day GIFT). Here the cumulative target after
+     * month k is `round($daysPerYear * k / window * 2) / 2` (0.5 granular), and
+     * at the final month exactly $daysPerYear; the installment is the delta, so
+     * any full window telescopes to the annual to the day.
+     *
+     * Pure + static (no Firestore, no $this) — executed directly by
+     * LeaveAccrualDivergenceTest via the PayrollEngine reflection harness.
+     * LATENT: LEAVE_ACCRUAL_ENABLED is off in every tenant, so this corrects a
+     * dormant engine and moves no existing balance. This is step 1 of making
+     * accrual a per-school choice; consuming accrued-to-date in apply_leave and
+     * the per-school toggle are held for owner sign-off (they change entitlements).
+     */
+    private static function _accrual_installment(float $daysPerYear, int $ordinal, int $monthsInWindow): float
+    {
+        // Delegates to Leave_accrual_service (single accrual authority, 2026-09-20).
+        return \Leave_accrual_service::installment($daysPerYear, $ordinal, $monthsInWindow);
+    }
+
+    /**
+     * Leave Policy Programme Phase 3 (2026-08-18) — monthly accrual for one
+     * staff member, one leave type. Idempotent: tracks the last calendar
+     * month already credited (`lastAccrualMonth`, stored ON the balance
+     * entry) and only credits months strictly after it, so running this
+     * twice for the same month is a no-op, and a missed month is simply
+     * caught up on the next run (no separate receipts collection needed —
+     * the marker IS the receipt).
+     *
+     * Does nothing (returns 'skipped') unless BOTH LEAVE_ACCRUAL_ENABLED is
+     * on AND this specific type's effective version has
+     * `accrual_mode==='monthly'` — every existing type, and every type
+     * with no version at all, stays lump_sum (i.e. untouched) by
+     * construction. Applies the Phase 6 max_balance ceiling only when
+     * LEAVE_MAX_BALANCE_ENABLED is also on (Phase 6 not yet live by
+     * default — see leave_policy_v2_flags.php).
+     *
+     * @return array{action:string, credited:float, months:array<string>}
+     *   action: 'skipped_flag_off' | 'skipped_not_monthly' | 'skipped_no_version'
+     *         | 'skipped_up_to_date' | 'credited' | 'skipped_write_failed'
+     */
+    private function _accrue_monthly_leave_one_type(
+        string $staffId, string $year, string $typeId, array $type, string $throughMonth
+    ): array {
+        // Delegates to Leave_accrual_service (single accrual authority, 2026-09-20).
+        return $this->_accrualSvc()->accrueOneType($staffId, $year, $typeId, $type, $throughMonth);
+    }
+
+    /** 'YYYY-MM' → the next calendar month in the same format. */
+    private function _next_month(string $yyyyMm): string
+    {
+        $ts = mktime(0, 0, 0, (int) substr($yyyyMm, 5, 2) + 1, 1, (int) substr($yyyyMm, 0, 4));
+        return date('Y-m', $ts);
+    }
+
+    /**
+     * Run monthly accrual for every accrual-mode-eligible type, for every
+     * active staff member, through the given month (defaults to the
+     * current server month). Safe to call repeatedly — idempotent per
+     * staff/type/month (see _accrue_monthly_leave_one_type()). Designed to
+     * be hit by an external scheduler (this codebase has no in-process PHP
+     * cron — see cron_auto_lock()/Transport_activity_cron.php's own
+     * externally-triggered convention) or by an HR-initiated manual run;
+     * either way, running it twice for the same month changes nothing the
+     * second time.
+     */
+    public function run_leave_accrual()
+    {
+        $this->_require_role(self::HR_ROLES, 'run_leave_accrual', 'HR', 'manage');
+
+        if (!$this->_school_accrual_enabled()) {
+            return $this->json_success([
+                'ran' => false, 'reason' => 'Monthly accrual is off for this school. Enable it in Leave settings (Accrual mode) first.',
+            ]);
+        }
+
+        $throughMonth = trim((string) $this->input->post('through_month'));
+        if (!preg_match('/^\d{4}-\d{2}$/', $throughMonth)) $throughMonth = date('Y-m');
+
+        $this->json_success(array_merge(['ran' => true], $this->_accrue_for_school($throughMonth)));
+    }
+
+    /**
+     * Credit monthly accrual for EVERY active staff member × every
+     * accrual_mode='monthly' leave type of the CURRENT school context, through
+     * $throughMonth (YYYY-MM). Pure orchestration over the idempotent per-type
+     * engine — running it again for the same month credits nothing
+     * (lastAccrualMonth). The caller establishes the school context (web:
+     * session; cron: per tenant via fs->init) and has already confirmed the
+     * school opted in. Returns stats only; never echoes and never gates on RBAC
+     * (its two callers do). Single authority for "accrue one school's month".
+     */
+    private function _accrue_for_school(string $throughMonth): array
+    {
+        // Delegates to Leave_accrual_service (single accrual authority, 2026-09-20).
+        return $this->_accrualSvc()->accrueSchool($throughMonth);
+    }
+
+    /**
+     * Leave Policy Programme Phase 7 (2026-08-18) — count PENDING leave
+     * requests whose from_date falls in $year. Used to BLOCK Leave-Year
+     * closure while any exist ("unresolved boundary-crossing Leave
+     * requests being silently ignored" is an explicit stop condition) —
+     * an approved-after-closure request could still need to consume
+     * balance from a year that's already been closed and carried forward.
+     * Fails CLOSED (returns 1, never 0) on a read error — an unknown
+     * pending-count must never let closure silently proceed.
+     */
+    private function _count_pending_leave_requests_for_year(string $year): int
+    {
+        try {
+            $docs = $this->fs->schoolWhere('leaveApplications', [
+                ['type', '==', 'request'],
+                ['status', '==', 'pending'],
+            ]);
+            $count = 0;
+            foreach ((is_array($docs) ? $docs : []) as $d) {
+                $rd = is_array($d['data'] ?? null) ? $d['data'] : $d;
+                if (!is_array($rd)) continue;
+                $from = (string) ($rd['from_date'] ?? $rd['fromDate'] ?? '');
+                if (substr($from, 0, 4) === $year) $count++;
+            }
+            return $count;
+        } catch (\Exception $e) {
+            log_message('error', 'Hr::_count_pending_leave_requests_for_year failed: ' . $e->getMessage());
+            return 1; // fail CLOSED
+        }
+    }
+
+    /**
+     * POST/GET — Leave Policy Programme Phase 7, step 1: PREVIEW a
+     * Leave-Year closure. Read-only against balances (computes, never
+     * mutates a balance), but DOES persist the preview itself — confirm()
+     * replays exactly this snapshot rather than recomputing, so what HR
+     * reviewed is what actually gets carried (no TOCTOU between preview
+     * and confirm if balances change in between).
+     */
+    public function preview_leave_year_closure()
+    {
+        $this->_require_role(self::HR_ROLES, 'preview_leave_year_closure', 'HR', 'view');
+
+        if (!$this->_leave_flag('LEAVE_YEAR_CLOSURE_ENABLED')) {
+            $this->json_error('Leave-Year closure is not enabled for this school.');
+        }
+
+        $year = trim((string) ($this->input->get('year') ?? $this->input->post('year') ?? date('Y')));
+        if (!preg_match('/^\d{4}$/', $year)) {
+            $this->json_error('Invalid year format.');
+        }
+        $nextYear = (string) ((int) $year + 1);
+
+        $pendingCount = $this->_count_pending_leave_requests_for_year($year);
+        if ($pendingCount > 0) {
+            $this->json_error("Cannot preview closure — {$pendingCount} pending leave request(s) still open for {$year}. Resolve them first.");
+        }
+
+        require_once APPPATH . 'libraries/Leave_policy_service.php';
+        $activeTypes = $this->_activeLeaveTypes();
+        $allBalances = $this->_fsGetLeaveBalance('', $year);
+        $allBalances = is_array($allBalances) ? $allBalances : [];
+
+        $perStaff = [];
+        foreach ($allBalances as $staffId => $balances) {
+            if (!is_array($balances)) continue;
+            foreach ($balances as $typeId => $bd) {
+                if (!is_array($bd)) continue;
+                $unused = max(0.0, (float) ($bd['balance'] ?? 0));
+                if ($unused <= 0) continue;
+
+                $type = $activeTypes[$typeId] ?? null;
+                $carryForward = false;
+                $maxCarry = 0.0;
+                if (is_array($type)) {
+                    $ver = $this->_leave_flag('LEAVE_EFFECTIVE_DATING_ENABLED')
+                        ? \Leave_policy_service::effectiveVersion($type, "{$year}-12-31") : null;
+                    $carryForward = (bool) ($ver['carry_forward'] ?? $type['carry_forward'] ?? false);
+                    $maxCarry     = (float) ($ver['max_carry'] ?? $type['max_carry'] ?? 0);
+                }
+
+                $eligibleCarry = $carryForward ? min($unused, $maxCarry) : 0.0;
+                $actualCarry   = $eligibleCarry; // no partial-approval concept — HR excludes rows client-side before confirm if needed
+                $forfeited     = max(0.0, $unused - $actualCarry);
+
+                $perStaff[] = [
+                    'staffId'       => (string) $staffId,
+                    'typeId'        => (string) $typeId,
+                    'unused'        => $unused,
+                    'maxCarry'      => $maxCarry,
+                    'eligibleCarry' => $eligibleCarry,
+                    'actualCarry'   => $actualCarry,
+                    'forfeited'     => $forfeited,
+                ];
+            }
+        }
+
+        $docId = $this->fs->docId("{$this->school_id}_{$year}");
+        try {
+            $this->fs->set('leaveYearClosures', $docId, [
+                'schoolId'    => $this->school_id,
+                'year'        => $year,
+                'nextYear'    => $nextYear,
+                'status'      => 'previewed',
+                'previewedAt' => date('c'),
+                'previewedBy' => (string) ($this->admin_id ?? ''),
+                'perStaff'    => $perStaff,
+            ], true);
+        } catch (\Exception $e) {
+            log_message('error', 'Hr::preview_leave_year_closure write failed: ' . $e->getMessage());
+            $this->json_error('Could not save the closure preview. Please try again.');
+        }
+
+        $this->json_success([
+            'year'      => $year,
+            'nextYear'  => $nextYear,
+            'perStaff'  => $perStaff,
+            'staffRows' => count($perStaff),
+        ]);
+    }
+
+    /**
+     * POST — Leave Policy Programme Phase 7, step 2: CONFIRM a previously
+     * previewed Leave-Year closure. Idempotent via CAS: the closure doc's
+     * status is atomically flipped previewed→closing via a
+     * `currentDocument.updateTime` precondition BEFORE any balance is
+     * touched, exactly mirroring decide_leave()'s pending→processing lock.
+     * A second concurrent confirm click loses the CAS race and is refused
+     * outright — it is structurally impossible for two callers to both
+     * apply the carry, not merely unlikely.
+     */
+    public function confirm_leave_year_closure()
+    {
+        $this->_require_role(self::HR_ROLES, 'confirm_leave_year_closure', 'HR', 'manage');
+
+        if (!$this->_leave_flag('LEAVE_YEAR_CLOSURE_ENABLED')) {
+            $this->json_error('Leave-Year closure is not enabled for this school.');
+        }
+
+        $year = trim((string) $this->input->post('year'));
+        if (!preg_match('/^\d{4}$/', $year)) {
+            $this->json_error('Invalid year format.');
+        }
+        $nextYear = (string) ((int) $year + 1);
+        $docId = $this->fs->docId("{$this->school_id}_{$year}");
+
+        $closure = $this->fs->get('leaveYearClosures', $docId);
+        if (!is_array($closure) || empty($closure)) {
+            $this->json_error('No preview found for this year. Run the preview first.');
+        }
+        $status = (string) ($closure['status'] ?? '');
+        if ($status === 'confirmed') {
+            // Idempotent — already closed. Report success without
+            // re-applying anything (H1 idempotency requirement — a second
+            // Confirm click must never carry twice).
+            return $this->json_success(['message' => 'This Leave Year was already closed.', 'idempotent' => true, 'year' => $year]);
+        }
+        if ($status !== 'previewed') {
+            $this->json_error("Closure is in an unexpected state ({$status}). Re-run the preview.");
+        }
+
+        $pendingCount = $this->_count_pending_leave_requests_for_year($year);
+        if ($pendingCount > 0) {
+            $this->json_error("Cannot confirm closure — {$pendingCount} pending leave request(s) still open for {$year}. Resolve them first.");
+        }
+
+        // CAS lock: previewed -> closing. Mirrors decide_leave()'s own
+        // pending->processing transition exactly.
+        $lockToken = (string) ($closure['__updateTime'] ?? '');
+        $wonLock = false;
+        $client = $this->fs->raw_client();
+        if ($lockToken !== '' && $client !== null && method_exists($client, 'commitBatch')) {
+            $wonLock = $client->commitBatch([[
+                'op'           => 'set',
+                'collection'   => 'leaveYearClosures',
+                'docId'        => $docId,
+                'data'         => ['status' => 'closing', 'updatedAt' => date('c')],
+                'merge'        => true,
+                'precondition' => ['updateTime' => $lockToken],
+            ]]);
+        } else {
+            // No CAS token available — best-effort lock + re-read (weaker
+            // guarantee, same documented fallback used throughout Hr.php).
+            try {
+                $this->fs->update('leaveYearClosures', $docId, ['status' => 'closing', 'updatedAt' => date('c')]);
+                $recheck = $this->fs->get('leaveYearClosures', $docId);
+                $wonLock = is_array($recheck) && (string) ($recheck['status'] ?? '') === 'closing';
+            } catch (\Exception $e) { $wonLock = false; }
+        }
+        if (!$wonLock) {
+            $this->json_error('This closure is being processed by another user, or was already confirmed. Please refresh.');
+        }
+
+        $perStaff = is_array($closure['perStaff'] ?? null) ? $closure['perStaff'] : [];
+        $byStaff = [];
+        foreach ($perStaff as $row) {
+            $sid = (string) ($row['staffId'] ?? '');
+            if ($sid === '') continue;
+            $byStaff[$sid][] = $row;
+        }
+
+        $appliedCount = 0;
+        foreach ($byStaff as $staffId => $rows) {
+            $ok = $this->_casLeaveBalance($staffId, $nextYear, function (array $balances) use ($rows) {
+                foreach ($rows as $row) {
+                    $tid = (string) ($row['typeId'] ?? '');
+                    $carryAmt = (float) ($row['actualCarry'] ?? 0);
+                    if ($tid === '' || $carryAmt <= 0) continue;
+                    $entry = is_array($balances[$tid] ?? null) ? $balances[$tid] : [];
+                    // Additive: a next-year BAL doc may already exist (e.g.
+                    // staff created mid-way, or Phase 4 pro-rata already
+                    // seeded it) — carry-forward ADDS to whatever carried
+                    // already holds, never overwrites it.
+                    $entry['carried'] = (float) ($entry['carried'] ?? 0) + $carryAmt;
+                    $balances[$tid] = $entry;
+                }
+                return $balances;
+            });
+            if ($ok) $appliedCount++;
+        }
+
+        try {
+            $this->fs->update('leaveYearClosures', $docId, [
+                'status'      => 'confirmed',
+                'confirmedAt' => date('c'),
+                'confirmedBy' => (string) ($this->admin_id ?? ''),
+            ]);
+        } catch (\Exception $e) {
+            log_message('error', 'Hr::confirm_leave_year_closure final status write failed: ' . $e->getMessage());
+        }
+
+        $this->_log_leave_audit([
+            'action'        => 'leave_year_closed',
+            'year'          => $year,
+            'next_year'     => $nextYear,
+            'staff_count'   => count($byStaff),
+            'applied_count' => $appliedCount,
+        ]);
+
+        $this->json_success([
+            'message'        => 'Leave Year closed.',
+            'year'           => $year,
+            'nextYear'       => $nextYear,
+            'staffProcessed' => count($byStaff),
+            'staffApplied'   => $appliedCount,
+        ]);
     }
 
     /**
@@ -590,6 +1076,23 @@ class Hr extends MY_Controller
         if (!isset($request['staff_id']))   $request['staff_id']   = $request['staffId']       ?? $request['applicantId']   ?? '';
         if (!isset($request['staff_name'])) $request['staff_name'] = $request['staffName']     ?? $request['applicantName'] ?? '';
         if (!isset($request['type_id']))    $request['type_id']    = $request['typeId']        ?? $request['leaveType']     ?? '';
+        // Consolidated reconciliation audit (2026-08-19) — DEFECT FIX.
+        // type_code was the ONE field the sibling reader
+        // _fsGetAllLeaveRequests() normalises that this one did not.
+        // cancel_leave() branches on it to decide between releasing
+        // Comp-Off ledger credits and restoring a standard leave balance
+        // (Hr.php ~5536, an if/elseif — the two are mutually exclusive).
+        // Without this line a Comp-Off request whose doc carries only the
+        // camelCase `typeCode` — every Teacher-app-filed request, plus any
+        // request where decide_leave() could not resolve the type and wrote
+        // '?' — fell into the STANDARD-balance branch on cancellation,
+        // which both credited a BAL doc that was never debited AND left the
+        // consumed Comp-Off credits permanently stranded as 'consumed'.
+        // Verified non-disruptive at all three callers: decide_leave reads
+        // `leaveType` ahead of `type_code` for its display string and only
+        // ever WRITES type_code otherwise, so only cancel_leave's branch
+        // changes — which is the defect being repaired.
+        if (!isset($request['type_code']))  $request['type_code']  = $request['typeCode']      ?? $request['leaveType']     ?? '';
         if (!isset($request['from_date']))  $request['from_date']  = $request['fromDate']      ?? $request['startDate']     ?? '';
         if (!isset($request['to_date']))    $request['to_date']    = $request['toDate']        ?? $request['endDate']       ?? '';
         if (!isset($request['paid_days']))  $request['paid_days']  = $request['paidDays']      ?? 0;
@@ -699,6 +1202,302 @@ class Hr extends MY_Controller
     // ====================================================================
 
     /**
+     * W3.2.1 — employment-window mask for the attendance snapshot.
+     *
+     * '1' = the day is inside the employment window and therefore countable;
+     * '0' = pre-join or post-exit, which the calculation skips entirely.
+     *
+     * A per-day mask rather than the startDay/endDay pair already on the slip:
+     * that pair describes a single contiguous window, and a rehire within one
+     * month is not contiguous. Reproducing from the pair would quietly pay a
+     * rehired employee for the gap.
+     *
+     * Static and pure so the reproducibility tests can exercise it without a
+     * CodeIgniter context.
+     */
+    public static function _att_window_mask(array $inWindow, int $daysInMonth): string
+    {
+        require_once APPPATH . 'helpers/payroll_snapshot_helper.php';
+        return payroll_window_mask($inWindow, $daysInMonth);
+    }
+
+    /**
+     * W3.2.1 — leave-without-pay mask for the attendance snapshot.
+     *
+     *   '-' no LWP · 'F' full-day LWP · 'H' half-day LWP
+     *
+     * The distinction is load-bearing, not cosmetic: the calculation treats a
+     * full-day LWP as fully covering an 'A' mark (0 absent added) but a
+     * half-day LWP as covering only half (0.5 added). Collapsing both to a
+     * boolean would make the snapshot unable to reproduce the absent count it
+     * sits next to.
+     */
+    /**
+     * How much of ONE day's expected work is already covered by approved leave,
+     * expressed in expected-work units and capped at the day's expectation.
+     *
+     * WHY THIS EXISTS (2026-08-19). The absence loop had three branches — 'A',
+     * 'V' and 'M' — each applying leave coverage differently:
+     *   • 'A' honoured the LWP set but ignored PAID coverage;
+     *   • 'M' honoured both, but as an all-or-nothing skip;
+     *   • 'V' — the UNMARKED-day fill (Staff_attendance_writer initialises a
+     *     month as str_repeat('V', …)) — honoured NEITHER.
+     *
+     * That last one is the damaging case, because a half-day leave deliberately
+     * writes no attendance mark: the covered day stays 'V'. With vacant
+     * treatment 'absent' the employee was charged the whole day's expectation
+     * despite approved leave, and a full-day unpaid leave was charged TWICE —
+     * once as lwpDays by the leave engine and again as daysAbsent here. Both
+     * are over-deductions: the employee is underpaid.
+     *
+     * These are the deductions that decide someone's pay, so they now come from
+     * one place instead of three. Coverage is capped at $dayExpected so leave
+     * can never manufacture credit, and 'M' subtracts coverage from the half it
+     * actually leaves uncovered rather than skipping wholesale — a partial LWP
+     * portion that covers less than the missing half now correctly leaves the
+     * remainder chargeable.
+     *
+     * @param float      $dayExpected expected work for this day (1.0, or 0.5 on a Calendar Half-Day)
+     * @param mixed      $lwpEntry    LWP set entry: true = whole day, float = portion, null = none
+     * @param mixed      $paidEntry   paid-leave coverage portion, or null
+     */
+    public static function _leave_coverage_for_day(float $dayExpected, $lwpEntry, $paidEntry): float
+    {
+        $cov = 0.0;
+        if ($lwpEntry !== null) {
+            $cov += ($lwpEntry === true) ? $dayExpected : (float) $lwpEntry;
+        }
+        if ($paidEntry !== null) {
+            $cov += (float) $paidEntry;
+        }
+        if ($cov < 0.0) $cov = 0.0;
+        return ($cov > $dayExpected) ? $dayExpected : $cov;
+    }
+
+    public static function _att_lwp_mask(array $lwpSet, int $daysInMonth): string
+    {
+        require_once APPPATH . 'helpers/payroll_snapshot_helper.php';
+        return payroll_lwp_mask($lwpSet, $daysInMonth);
+    }
+
+    /**
+     * Payroll-period override service (ZenX HRMS W3.2.2).
+     *
+     * Memoised per request: the review grid, a drill-down and a recalculation
+     * can each ask for it without re-constructing, and `forRun()` is a single
+     * bulk query rather than a per-employee read.
+     */
+    private function _payroll_overrides(): Payroll_override_service
+    {
+        static $svc = null;
+        if ($svc !== null) return $svc;
+
+        require_once APPPATH . 'libraries/Payroll_override_service.php';
+        $svc = new Payroll_override_service();
+        $svc->init($this->fs, $this->admin_name ?: $this->admin_id);
+        return $svc;
+    }
+
+    /**
+     * The compensation seam (ZenX HRMS W3.1).
+     *
+     * Every payroll read of "what is this employee paid" goes through here, so
+     * the later W2 component cutover is a MODE change in one place rather than
+     * a rewrite of the payroll run. With both flags false this resolves to
+     * MODE_LEGACY, whose bulk read is the same single `schoolWhere()` query the
+     * inline loop used to perform — the swap is byte-identical, not merely
+     * equivalent.
+     *
+     * The flag is read here and nowhere else in the payroll path, and this
+     * controller still queries none of the W2 component-model collections
+     * itself — resolving those is the reader's job, and the source-level guards
+     * in the W2 test suite assert that by searching this file for their names.
+     * (Which is why those names are deliberately not written out here.)
+     */
+    private function _compensation_reader(): Compensation_reader
+    {
+        static $reader = null;
+        if ($reader !== null) return $reader;
+
+        require_once APPPATH . 'libraries/Compensation_reader.php';
+        $this->config->load('hrms_compensation_flags', true);
+        $mode = Compensation_reader::modeFromFlags(
+            (bool) $this->config->item('USE_COMPONENT_COMPENSATION', 'hrms_compensation_flags'),
+            (bool) $this->config->item('COMPENSATION_SHADOW_COMPARE', 'hrms_compensation_flags')
+        );
+
+        // Nothing about the component model is named here on purpose: the
+        // reader builds whatever it needs for the mode it was given, so the
+        // payroll controller depends on the seam and on nothing behind it.
+        $reader = new Compensation_reader();
+        $reader->init($this->fs, $mode);
+        return $reader;
+    }
+
+    /**
+     * The tenant's statutory configuration in force on a given date, or NULL.
+     *
+     * WHY THIS EXISTS (S-1, found 2026-08-22)
+     * ---------------------------------------
+     * `Statutory_config_service` is a complete, effective-dated, overlap-checked
+     * configuration system with its own Admin UI (`Compensation::
+     * get_statutory_config` / `save_statutory_config`). Every one of the four
+     * `_compute_payslip()` call sites passed a hard-coded `null` for
+     * `$statutory`, so the statutory-aware branch was unreachable and a tenant
+     * that configured a PF ceiling, an eligibility rule or a PT slab table got
+     * NOTHING — the configuration was accepted, stored, listed back in the UI,
+     * and silently ignored by payroll.
+     *
+     * That is worse than an unimplemented feature: it is a setting that lies.
+     *
+     * FAIL-SAFE BY CONSTRUCTION
+     * -------------------------
+     * A tenant with NO statutory configuration resolves to `null`, which is
+     * exactly the legacy branch and byte-for-byte today's behaviour. So wiring
+     * this changes nothing until a tenant deliberately creates a configuration —
+     * which is opt-in, per tenant, through the UI. There are zero statutory
+     * configurations in any tenant at the time of writing.
+     *
+     * AS-OF, NOT NOW
+     * --------------
+     * Resolution is by the PERIOD date, never by today. A configuration created
+     * in September must not reprice July, and `ed_select_for()` — the same
+     * effective-dating helper salary assignments use — is what guarantees that.
+     * A single shared helper is deliberate: two implementations would eventually
+     * disagree, and the disagreement would surface as a period resolving to one
+     * statutory config but a different salary assignment.
+     *
+     * Memoised per (date) for the life of the request, so a 200-employee run
+     * costs ONE Firestore read rather than 200.
+     */
+    private function _statutory_config_for(string $asOfDate): ?array
+    {
+        static $memo = [];
+        if (array_key_exists($asOfDate, $memo)) return $memo[$asOfDate];
+
+        $resolved = null;
+        try {
+            if (!class_exists('Statutory_config_service')) {
+                require_once APPPATH . 'libraries/Statutory_config_service.php';
+            }
+            $svc = new Statutory_config_service();
+            $svc->init($this->fs, (string) ($this->admin_name ?? ''));
+
+            $all = $svc->listAll();
+            if (!empty($all)) {
+                $resolved = Statutory_config_service::selectFor($all, $asOfDate);
+            }
+        } catch (\Throwable $e) {
+            // A statutory read failure must NEVER silently fall back to a
+            // different money answer. Null is the legacy branch, which is the
+            // conservative outcome, and it is logged loudly rather than absorbed.
+            log_message('error', 'HR statutory config resolution failed for '
+                . $asOfDate . ' — ' . $e->getMessage());
+            $resolved = null;
+        }
+
+        return $memo[$asOfDate] = $resolved;
+    }
+
+    /**
+     * One work location, memoised for the life of the request.
+     *
+     * FEATURE 2. ESI applicability is a property of a PLACE, so a payroll run
+     * has to know where each employee works. A school has a handful of
+     * locations and hundreds of staff, so this is memoised per locationId —
+     * without it a 200-employee run would issue 200 reads for perhaps three
+     * distinct campuses.
+     *
+     * A missing or unreadable location returns null, which the resolver treats
+     * as "inherit the tenant-wide setting" — never as "not applicable".
+     */
+    private function _location_doc(string $locationId): ?array
+    {
+        static $memo = [];
+        $locationId = trim($locationId);
+        if ($locationId === '') return null;
+        if (array_key_exists($locationId, $memo)) return $memo[$locationId];
+
+        $doc = null;
+        try {
+            $row = $this->fs->get('locations', $this->fs->docId($locationId));
+            if (is_array($row) && $row !== []) $doc = $row;
+        } catch (\Throwable $e) {
+            log_message('error', 'HR location read failed for ' . $locationId . ' — ' . $e->getMessage());
+        }
+
+        return $memo[$locationId] = $doc;
+    }
+
+    /**
+     * The employee-level statutory facts payroll needs, assembled once.
+     *
+     * Both the PF membership profile and the ESI work-location applicability
+     * are facts about the PERSON, so they travel together. `_esiLocationApplicable` is
+     * a RESOLVED hint written by the caller — null means nobody decided, which
+     * the engine distinguishes from an explicit false.
+     */
+    private function _staff_statutory_facts(array $staffDoc, ?array $statutoryCfg): array
+    {
+        // Loaded HERE, not relied on from _compute_payslip: this method runs
+        // FIRST, so the class would not yet exist. php -l cannot see that.
+        if (!class_exists('Staff_statutory_profile_service')) {
+            require_once APPPATH . 'libraries/Staff_statutory_profile_service.php';
+        }
+        if (!class_exists('Statutory_config_service')) {
+            require_once APPPATH . 'libraries/Statutory_config_service.php';
+        }
+
+        $facts = is_array($staffDoc[Staff_statutory_profile_service::FIELD] ?? null)
+            ? $staffDoc[Staff_statutory_profile_service::FIELD] : [];
+
+        $locationId = trim((string) ($staffDoc['locationId'] ?? $staffDoc['location_id'] ?? ''));
+        if (is_array($statutoryCfg)) {
+            $resolved = Statutory_config_service::resolveEsiApplicability(
+                $statutoryCfg,
+                $locationId !== '' ? $this->_location_doc($locationId) : null
+            );
+            $facts['_esiLocationApplicable'] = $resolved['applicable'];
+            $facts['_esiSource']     = $resolved['source'];
+            $facts['_esiReason']     = $resolved['reason'];
+        }
+
+        return $facts;
+    }
+
+    /**
+     * The reproducibility snapshot for a resolved statutory configuration.
+     *
+     * A finalized payslip must stay reproducible across a later statutory
+     * change. Storing the resolved window's identity with the run is what makes
+     * "why was July computed this way?" answerable in December.
+     */
+    private function _statutory_snapshot(?array $statutory): array
+    {
+        if (!is_array($statutory)) {
+            return [
+                'configured'    => false,
+                'source'        => 'structure',
+                'effectiveFrom' => null,
+                'effectiveTo'   => null,
+                'note'          => 'No tenant statutory configuration in force for this period; '
+                    . 'rates were taken from the salary structure.',
+            ];
+        }
+
+        return [
+            'configured'    => true,
+            'source'        => 'statutoryConfig',
+            'effectiveFrom' => (string) ($statutory['effective_from'] ?? $statutory['effectiveFrom'] ?? ''),
+            'effectiveTo'   => (string) ($statutory['effective_to'] ?? $statutory['effectiveTo'] ?? ''),
+            'pf'            => is_array($statutory['pf'] ?? null) ? $statutory['pf'] : null,
+            'esi'           => is_array($statutory['esi'] ?? null) ? $statutory['esi'] : null,
+            'pt'            => is_array($statutory['pt'] ?? null) ? $statutory['pt'] : null,
+            'tds'           => is_array($statutory['tds'] ?? null) ? $statutory['tds'] : null,
+            'note'          => 'Resolved as of the period end and frozen with the run.',
+        ];
+    }
+    /**
      * Sync salary structure to Firestore salarySlips collection.
      * Best-effort — never blocks RTDB writes.
      */
@@ -751,6 +1550,16 @@ class Hr extends MY_Controller
                 'schoolId'  => $this->school_id,
                 'session'   => $this->session_year,
                 'type'      => 'run',
+                // OFF-CYCLE (2026-08-22) — every run declares its kind.
+                //
+                // `monthly` is the default and is what every existing run is,
+                // so a document written before this field existed reads as
+                // monthly wherever it is consumed (`?? self::RUN_TYPE_MONTHLY`).
+                // The distinction matters because monthly runs are unique per
+                // school/month/year — two would pay the school's staff twice —
+                // while an off-cycle run (F&F, arrears, bonus) is a different
+                // event that may legitimately coexist with the monthly one.
+                'runType'   => (string) ($runData['runType'] ?? self::RUN_TYPE_MONTHLY),
                 'runId'     => $runId,
                 'updatedAt' => date('c'),
             ]);
@@ -792,24 +1601,47 @@ class Hr extends MY_Controller
     }
 
     /**
-     * Sync individual payslip to Firestore.
+     * Build the payslip document exactly as it is stored (ZenX HRMS W3.2.5).
+     *
+     * Extracted so the single-write and batched-write paths CANNOT diverge.
+     * Two builders would eventually disagree on a field, and the difference
+     * would show up as a payslip that renders differently depending on whether
+     * it was written by a small run or a large one.
      */
-    private function _fsSyncPayslip(string $runId, string $staffId, array $slipData): void
+    private function _buildPayslipDoc(string $runId, string $staffId, array $slipData): array
     {
-        try {
-            // Canonical camelCase mirror for cross-system consumers (Teacher app SalarySlipDoc).
-            // Snake_case kept alongside so admin-side code that reads these docs continues to work.
-            $canonical = [
+        // Canonical camelCase mirror for cross-system consumers (Teacher app SalarySlipDoc).
+        // Snake_case kept alongside so admin-side code that reads these docs continues to work.
+        $canonical = [
                 'staffName'       => (string) ($slipData['staff_name'] ?? ''),
                 'netPayable'      => (float) ($slipData['net_pay'] ?? 0),
                 'grossEarnings'   => (float) ($slipData['gross'] ?? 0),
                 'totalDeductions' => (float) ($slipData['total_deductions'] ?? 0),
-                'workingDays'     => (int) ($slipData['working_days'] ?? 0),
-                'presentDays'     => (int) ($slipData['days_worked'] ?? 0),
-                'daysAbsent'      => (int) ($slipData['days_absent'] ?? 0),
-                'lwpDays'         => (int) ($slipData['lwp_days'] ?? 0),
-                'paidLeaveDays'   => (int) ($slipData['paid_leave_days'] ?? 0),
-                'monthKey'        => (string) ($slipData['month_key'] ?? ''),
+                // Fraction safety (2026-08-19) — these were (int) casts, which
+                // TRUNCATED values that are already fractional today: an
+                // attendance 'M' yields days_absent = 0.5, a half-day LWP
+                // yields lwp_days = 0.5, and days_worked is derived from both.
+                // The stored mirror therefore said 0 while the snake_case
+                // source said 0.5, and the Teacher app read the truncated
+                // value. Truncating at WRITE time destroys the information
+                // permanently, so the document now carries the true number.
+                //
+                // The Teacher app's SalarySlipDoc now declares all five of these
+                // as Double (widened 2026-08-20), so the true fractional value
+                // survives the read as well as the write. Do NOT narrow either
+                // side back to Int: an attendance 'M' or a half-day LWP is 0.5,
+                // and truncating at either end destroys that permanently.
+                // Covered by PayslipDayFormattingTest (Teacher, JVM).
+                'workingDays'     => (float) ($slipData['working_days'] ?? 0),
+                'presentDays'     => (float) ($slipData['days_worked'] ?? 0),
+                'daysAbsent'      => (float) ($slipData['days_absent'] ?? 0),
+                'lwpDays'         => (float) ($slipData['lwp_days'] ?? 0),
+                'paidLeaveDays'   => (float) ($slipData['paid_leave_days'] ?? 0),
+                // Accepts either spelling: generate_payroll() supplies `month_key`,
+                // regenerate_staff_payroll() carries the already-camel `monthKey`.
+                // Without the fallback, routing the regeneration path through this
+                // builder would blank the key it already holds.
+                'monthKey'        => (string) ($slipData['month_key'] ?? $slipData['monthKey'] ?? ''),
                 'earnings'        => [
                     'basic'           => (float) ($slipData['basic'] ?? 0),
                     'hra'             => (float) ($slipData['hra'] ?? 0),
@@ -827,17 +1659,84 @@ class Hr extends MY_Controller
                 ],
             ];
 
-            $fsData = array_merge($slipData, $canonical, [
-                'schoolId'  => $this->school_id,
-                'staffId'   => $staffId,
-                'runId'     => $runId,
-                'type'      => 'payslip',
-                'updatedAt' => date('c'),
-            ]);
-            $this->fs->set('salarySlips', $this->fs->docId("SLIP_{$runId}_{$staffId}"), $fsData, true);
+        return array_merge($slipData, $canonical, [
+            'schoolId'  => $this->school_id,
+            'staffId'   => $staffId,
+            'runId'     => $runId,
+            'type'      => 'payslip',
+            'updatedAt' => date('c'),
+        ]);
+    }
+
+    /** Single-slip write. Unchanged behaviour; the document now comes from the shared builder. */
+    private function _fsSyncPayslip(string $runId, string $staffId, array $slipData): void
+    {
+        try {
+            $this->fs->set(
+                'salarySlips',
+                $this->fs->docId("SLIP_{$runId}_{$staffId}"),
+                $this->_buildPayslipDoc($runId, $staffId, $slipData),
+                true
+            );
         } catch (\Exception $e) {
             log_message('error', "HR: Payslip → Firestore FAILED for {$staffId}: " . $e->getMessage());
         }
+    }
+
+    /**
+     * BATCHED slip write for a whole run (ZenX HRMS W3.2.5).
+     *
+     * WHY THIS EXISTS — the measured bottleneck
+     * -----------------------------------------
+     * `generate_payroll()` wrote slips in a `foreach` of single `set()` calls:
+     * one Firestore round-trip per employee, sequentially. Every INPUT was
+     * already bulk-read in one query each, so reads were never the problem —
+     * the run cost N round-trips on the write side and nothing else.
+     *
+     * `Firestore_service::batchWrite()` already existed, already chunks at 450
+     * under Firestore's 500-per-request limit, and already falls back to
+     * per-doc `set()` on a client that lacks batch support. Payroll simply
+     * never called it.
+     *
+     * SAME BYTES. The documents come from `_buildPayslipDoc()` — the same
+     * builder the single-write path uses — and `merge` stays `true`, so a
+     * batched run stores exactly what a sequential run stored.
+     *
+     * FAILURE BEHAVIOUR IS PRESERVED, NOT IMPROVED HERE. The old loop swallowed
+     * a per-slip exception and continued; this returns the ids that failed so
+     * the caller can report them per employee instead of losing them. No slip
+     * is silently dropped either way.
+     *
+     * @return array{written:int, failed:string[]}
+     */
+    private function _fsSyncPayslipsBatch(string $runId, array $slipsByStaff): array
+    {
+        if (empty($slipsByStaff)) return ['written' => 0, 'failed' => []];
+
+        $docs = [];
+        foreach ($slipsByStaff as $staffId => $slipData) {
+            if (!is_array($slipData)) continue;
+            $docs[$this->fs->docId("SLIP_{$runId}_{$staffId}")]
+                = $this->_buildPayslipDoc($runId, (string) $staffId, $slipData);
+        }
+        if (empty($docs)) return ['written' => 0, 'failed' => []];
+
+        $failed = [];
+        try {
+            $result = $this->fs->batchWrite('salarySlips', $docs, true);
+            foreach ($docs as $docId => $_) {
+                if (empty($result[$docId])) $failed[] = (string) $docId;
+            }
+        } catch (\Exception $e) {
+            log_message('error', "HR: Payslip batch → Firestore FAILED run={$runId}: " . $e->getMessage());
+            $failed = array_map('strval', array_keys($docs));
+        }
+
+        $written = count($docs) - count($failed);
+        log_message('info', "PAYROLL_SLIP_BATCH run={$runId} docs=" . count($docs)
+            . " written={$written} failed=" . count($failed));
+
+        return ['written' => $written, 'failed' => $failed];
     }
 
     /**
@@ -853,7 +1752,27 @@ class Hr extends MY_Controller
     private function _fsSyncLeaveBalance(string $staffId, string $year, array $balances): bool
     {
         return $this->_casLeaveBalance($staffId, $year, function (array $existing) use ($balances) {
-            $merged = array_merge($existing, $balances);
+            // FIELD-LEVEL merge, not type-level (2026-08-20).
+            //
+            // `array_merge($existing, $balances)` replaced each TYPE's entry
+            // wholesale, so every key the calling writer did not restate was
+            // deleted. allocate_leave_balances() writes exactly four keys —
+            // allocated / used / carried / balance — while the monthly accrual
+            // engine owns two others on the same entry: `accruedToDate` and
+            // `lastAccrualMonth`.
+            //
+            // One allocate run therefore erased the accrual ledger, and because
+            // accrual resumes from `lastAccrualMonth`, the next run restarted at
+            // the year's beginning and CREDITED THE SAME MONTHS AGAIN. Silent
+            // data loss followed by silent double-credit.
+            //
+            // Merging per field keeps one canonical writer per fact: each engine
+            // updates what it owns and leaves the rest untouched.
+            $merged = $existing;
+            foreach ($balances as $tid => $bd) {
+                $prev = $existing[$tid] ?? null;
+                $merged[$tid] = (is_array($prev) && is_array($bd)) ? array_merge($prev, $bd) : $bd;
+            }
             // Negative guard (H3): no type may persist a negative balance/used.
             foreach ($merged as $tid => $bd) {
                 if (!is_array($bd)) continue;
@@ -931,6 +1850,441 @@ class Hr extends MY_Controller
         }
         log_message('error', "HR _casLeaveBalance: CAS exhausted {$maxAttempts} attempts for {$staffId}/{$year}");
         return false;
+    }
+
+    // ====================================================================
+    //  COMP-OFF LEDGER
+    //  Trail 2 (Work Schedule → Calendar → Attendance → Leave/LOP →
+    //  Payroll), Phase E, 2026-08-18.
+    //
+    //  Prior audit (this same programme) confirmed COMP_OFF existed only as
+    //  a seeded leave-type row with days_per_year=0 — no earn/consume
+    //  ledger, so it could never behave as a genuine earned benefit (the
+    //  standard balance formula `allocated + carried - used` is always 0
+    //  when `allocated` is always 0). This section adds the missing
+    //  lifecycle WITHOUT touching that formula or any other leave type —
+    //  Comp-Off gets its own, entirely separate balance source.
+    //
+    //  Deliberately scoped to avoid inventing financial policy (per the
+    //  standing instruction):
+    //    - Earn trigger: an EXPLICIT HR/manager action (earn_comp_off()),
+    //      never automatic from a punch alone — but it may ONLY be taken
+    //      against a date already marked 'W' (extraWorked, "worked a
+    //      scheduled rest day") by the EXISTING Attendance_policy engine,
+    //      so no new "was this a rest day worked" judgement is invented
+    //      here — it reuses the one that already exists.
+    //    - Earn ratio: 1 worked rest day = 1 Comp-Off day. A technical
+    //      default (not a negotiated policy) — the same posture the Staff
+    //      HR programme already took for NOTICE_PERIOD_DEFAULT_DAYS=30.
+    //    - Expiry: DELIBERATELY NOT IMPLEMENTED. An `expiresOn` field
+    //      exists on each credit but is left null/unset — no automatic
+    //      forfeiture job runs. Auto-discarding an employee's earned time
+    //      off without an explicit, tenant-confirmed policy is exactly the
+    //      kind of financial-consequence decision this phase must not
+    //      invent; this is the one open decision from this feature (see
+    //      the Phase E report).
+    //    - Consumption: FIFO by earned date, whole credits only (no
+    //      splitting a single credit across two leave requests) — any
+    //      requested days beyond what whole available credits can cover
+    //      become LWP, mirroring the exact paid/LWP overflow behaviour
+    //      every other leave type already has.
+    // ====================================================================
+
+    private const COMP_OFF_TYPE_CODE = 'COMP_OFF';
+    /** Technical default: 1 worked rest day earns 1 Comp-Off day. Not a negotiated policy. */
+    private const COMP_OFF_DEFAULT_CREDIT_DAYS = 1.0;
+
+    private function _comp_off_ledger_doc_id(string $staffId, string $earnedDate): string
+    {
+        return $this->fs->docId("{$staffId}_{$earnedDate}");
+    }
+
+    /**
+     * All 'available' credits for a staff member, oldest earnedDate first
+     * (FIFO consumption order).
+     */
+    private function _comp_off_available_entries(string $staffId): array
+    {
+        try {
+            $rows = $this->fs->schoolWhere('compOffLedger', [
+                ['staffId', '==', $staffId],
+                ['status',  '==', 'available'],
+            ]);
+        } catch (\Throwable $e) {
+            log_message('error', "HR _comp_off_available_entries query failed for {$staffId}: " . $e->getMessage());
+            return [];
+        }
+        $today = date('Y-m-d');
+
+        $entries = [];
+        foreach ((is_array($rows) ? $rows : []) as $row) {
+            $d = is_array($row['data'] ?? null) ? $row['data'] : (is_array($row) ? $row : null);
+            if (!is_array($d)) continue;
+
+            // A lapsed credit is not spendable. `expiresOn` is only ever set
+            // when the tenant has configured an expiry window, so a credit
+            // earned while the policy was off carries null and never lapses —
+            // an entitlement already granted is not withdrawn retroactively by
+            // switching the policy on.
+            $expiresOn = (string) ($d['expiresOn'] ?? '');
+            if ($expiresOn !== '' && $expiresOn < $today) continue;
+
+            $entries[] = $d;
+        }
+        usort($entries, fn($a, $b) => strcmp((string) ($a['earnedDate'] ?? ''), (string) ($b['earnedDate'] ?? '')));
+        return $entries;
+    }
+
+    /**
+     * Per-tenant Comp-Off policy, read from `schools.attendancePolicy`.
+     *
+     * Both settings default to DISABLED, so a tenant that has configured
+     * nothing behaves exactly as before: credits never lapse and no ceiling is
+     * enforced. Neither is inferred from a market norm — expiring an earned
+     * entitlement or refusing to grant one is the school's decision, not a
+     * default this code may pick.
+     *
+     *   compOffExpiryDays      int   days a credit stays spendable. 0/absent = never.
+     *                                Market practice sits between 30 and 90 days.
+     *   compOffMaxBalanceDays  float ceiling on a staff member's live balance.
+     *                                0/absent = uncapped. Market practice is 5-10 days.
+     *
+     * @return array{expiryDays: int, maxBalanceDays: float}
+     */
+    private function _comp_off_policy(): array
+    {
+        $pol = $this->_attendance_policy();
+        $pol = is_array($pol) ? $pol : [];
+
+        $days = (int) ($pol['compOffExpiryDays'] ?? 0);
+        $cap  = (float) ($pol['compOffMaxBalanceDays'] ?? 0);
+
+        return [
+            'expiryDays'     => $days > 0 ? $days : 0,
+            'maxBalanceDays' => $cap  > 0 ? $cap  : 0.0,
+        ];
+    }
+
+    /** Sum of a staff member's available Comp-Off credit, in days. */
+    private function _comp_off_available_balance(string $staffId): float
+    {
+        $sum = 0.0;
+        foreach ($this->_comp_off_available_entries($staffId) as $e) {
+            // D-001 — a credit may be PARTLY spent, so the balance is the sum
+            // of what is left, not of what was originally granted. Falls back
+            // to creditDays for credits written before partial consumption
+            // existed, which by definition have their full value.
+            $sum += (float) ($e['remainingDays'] ?? $e['creditDays'] ?? 0);
+        }
+        return round($sum, 2);
+    }
+
+    /**
+     * Consume up to $daysNeeded of Comp-Off credit, FIFO, whole credits
+     * only. Each credit is individually CAS-protected (its own doc,
+     * independent precondition) so consuming several credits at once
+     * cannot race with a concurrent earn/consume/release on a DIFFERENT
+     * credit — only a genuine double-consumption of the SAME credit is
+     * ever contended, and that fails closed (skipped, not double-spent).
+     *
+     * @return array{paid: float, lwp: float, consumedIds: string[]}
+     *         'paid' = days actually covered by consumed credits;
+     *         'lwp'  = the shortfall (requested minus covered), matching
+     *         every other leave type's paid/LWP overflow behaviour.
+     */
+    private function _consumeCompOffLedger(string $staffId, float $daysNeeded): array
+    {
+        $covered = 0.0;
+        $consumedIds = [];
+        $client = $this->fs->raw_client();
+
+        $takes = [];
+
+        foreach ($this->_comp_off_available_entries($staffId) as $entry) {
+            $need = round($daysNeeded - $covered, 2);
+            if ($need <= 0) break;
+
+            $docId = (string) ($entry['_docId'] ?? $entry['id'] ?? '');
+            if ($docId === '') continue;
+            $updateTime = (string) ($entry['__updateTime'] ?? '');
+
+            // D-001 — PARTIAL CONSUMPTION.
+            //
+            // This loop used to mark the whole credit 'consumed' and add its
+            // full creditDays to $covered. A half-day comp-off leave therefore
+            // spent a whole 1.0 credit and SILENTLY FORFEITED the other half —
+            // an entitlement the employee had already earned by working a rest
+            // day. Take only what the request needs and leave the remainder
+            // available.
+            //
+            // `remainingDays` defaults to `creditDays` so credits written
+            // before this change (and any hand-seeded row) behave correctly
+            // without a backfill.
+            $remaining = round((float) ($entry['remainingDays'] ?? $entry['creditDays'] ?? 0), 2);
+            if ($remaining <= 0) continue;
+
+            $take       = min($remaining, $need);
+            $leftOver   = round($remaining - $take, 2);
+            $nowIso     = date('c');
+
+            $data = $leftOver > 0
+                ? [
+                    // Still has value — stays available for the next request.
+                    'status'        => 'available',
+                    'remainingDays' => $leftOver,
+                    'updatedAt'     => $nowIso,
+                ]
+                : [
+                    'status'        => 'consumed',
+                    'remainingDays' => 0.0,
+                    'consumedAt'    => $nowIso,
+                    'updatedAt'     => $nowIso,
+                ];
+
+            $ok = false;
+            if ($updateTime !== '' && $client !== null && method_exists($client, 'commitBatch')) {
+                $ok = $client->commitBatch([[
+                    'op' => 'set', 'collection' => 'compOffLedger', 'docId' => $docId,
+                    'data' => $data, 'merge' => true,
+                    'precondition' => ['updateTime' => $updateTime],
+                ]]);
+            } else {
+                $ok = (bool) $this->fs->set('compOffLedger', $docId, $data, true);
+            }
+            if (!$ok) continue; // lost a race for this credit — try the next one, never double-spend
+
+            $covered      = round($covered + $take, 2);
+            $consumedIds[] = $docId;
+            $takes[$docId] = $take;   // exact amount taken, so a release restores exactly this much
+        }
+
+        $paid = min($covered, $daysNeeded);
+        $lwp  = max(0.0, round($daysNeeded - $paid, 2));
+        return ['paid' => $paid, 'lwp' => $lwp, 'consumedIds' => $consumedIds, 'takes' => $takes];
+    }
+
+    /** Reverse a consumption — used on leave cancellation/rejection rollback. */
+    /**
+     * Return credits to the ledger after a failed or cancelled consumption.
+     *
+     * D-001 — with partial consumption a credit may have been only PARTLY
+     * spent, so a blanket reset to `available` would silently CREDIT the
+     * employee with days they never had. `$takes` carries the exact amount
+     * taken from each credit; when it is supplied the remainder is restored by
+     * addition.
+     *
+     * `$takes` is optional so requests approved before this change — which
+     * recorded only an id list — still release correctly: with no recorded
+     * amount the credit was necessarily consumed whole, and resetting it to
+     * `available` with a full `remainingDays` is exactly right.
+     */
+    private function _releaseCompOffLedger(array $ids, array $takes = []): void
+    {
+        foreach ($ids as $docId) {
+            $docId = (string) $docId;
+            if ($docId === '') continue;
+
+            $restore = null;
+            if (array_key_exists($docId, $takes)) {
+                $restore = round((float) $takes[$docId], 2);
+                if ($restore <= 0) continue;   // nothing was taken; nothing to give back
+            }
+
+            try {
+                if ($restore !== null) {
+                    // Partial: add back exactly what was taken.
+                    $current = 0.0;
+                    try {
+                        $doc = $this->fs->get('compOffLedger', $docId);
+                        $current = round((float) ($doc['remainingDays']
+                            ?? $doc['creditDays'] ?? 0), 2);
+                    } catch (\Throwable $e) {
+                        log_message('error', "HR _releaseCompOffLedger read failed for {$docId}: " . $e->getMessage());
+                    }
+
+                    $this->fs->update('compOffLedger', $docId, [
+                        'status'        => 'available',
+                        'remainingDays' => round($current + $restore, 2),
+                        'consumedAt'    => null,
+                        'consumedBy'    => null,
+                        'updatedAt'     => date('c'),
+                    ]);
+                    continue;
+                }
+
+                $this->fs->update('compOffLedger', $docId, [
+                    'status'     => 'available',
+                    'consumedAt' => null,
+                    'consumedBy' => null,
+                    'updatedAt'  => date('c'),
+                ]);
+            } catch (\Throwable $e) {
+                log_message('error', "HR _releaseCompOffLedger failed for {$docId}: " . $e->getMessage());
+            }
+        }
+    }
+
+    /**
+     * POST — HR/manager marks one already-worked rest day as Comp-Off
+     * eligible, crediting the staff member's ledger.
+     *
+     * Deliberately requires the date to already carry the 'W' (extraWorked)
+     * attendance mark — the EXISTING Attendance_policy engine's own
+     * "worked a scheduled rest day" signal (Gate 6b). This endpoint never
+     * makes that judgement itself; it only converts an already-established
+     * fact into a Comp-Off credit. Idempotent — a second call for the same
+     * staff+date returns the existing credit rather than creating a
+     * duplicate (deterministic doc id).
+     */
+    public function earn_comp_off()
+    {
+        $this->_require_role(self::HR_ROLES, 'earn_comp_off', 'HR', 'edit');
+
+        $staffId = $this->safe_path_segment(trim($this->input->post('staff_id') ?? ''), 'staff_id');
+        $date    = trim($this->input->post('date') ?? '');
+        if ($staffId === '' || !preg_match('/^\d{4}-\d{2}-\d{2}$/', $date)) {
+            $this->json_error('staff_id and a valid date (YYYY-MM-DD) are required.');
+        }
+        if ($date > date('Y-m-d')) {
+            $this->json_error('Cannot credit Comp-Off for a future date.');
+        }
+
+        $staffProfile = $this->_fsGetStaffProfile($staffId);
+        if (!is_array($staffProfile)) {
+            $this->json_error('Staff member not found.');
+        }
+        $rawStatus = (string) ($staffProfile['status'] ?? $staffProfile['Status'] ?? 'Active');
+        if (strtolower(trim($rawStatus)) !== 'active') {
+            $this->json_error('Cannot perform this action for an inactive staff member.');
+        }
+
+        // The one hard gate: the date must already carry the 'W' mark this
+        // engine already produces for "worked a scheduled rest day" —
+        // reusing the existing fact, not inventing a new eligibility check.
+        $attDoc = null;
+        try {
+            $attDoc = $this->fs->get('staffAttendance', "{$this->school_id}_{$date}_{$staffId}");
+        } catch (\Throwable $e) {
+            log_message('error', "HR earn_comp_off attendance read failed for {$staffId} {$date}: " . $e->getMessage());
+        }
+        $mark = is_array($attDoc) ? strtoupper((string) ($attDoc['status'] ?? '')) : '';
+        if ($mark !== 'W') {
+            $this->json_error("This date is not marked as worked-on-a-rest-day ('W') for this staff member — nothing to credit.");
+        }
+
+        $docId = $this->_comp_off_ledger_doc_id($staffId, $date);
+        $existing = null;
+        try { $existing = $this->fs->get('compOffLedger', $docId); } catch (\Throwable $e) {}
+        if (is_array($existing) && !empty($existing)) {
+            $this->json_success(['message' => 'Comp-Off was already credited for this date.', 'entry' => $existing]);
+            return;
+        }
+
+        // Per-tenant policy. Both settings are disabled unless the school has
+        // configured them, so this block is inert for every tenant that has not.
+        $compOffPolicy = $this->_comp_off_policy();
+
+        // ACCUMULATION CAP — refuse rather than silently drop the credit, so
+        // the person is told why and can take leave to make room. Checked here
+        // and not at consumption time: a credit that was legitimately granted
+        // is never confiscated later by a policy change.
+        if ($compOffPolicy['maxBalanceDays'] > 0) {
+            $liveBalance = $this->_comp_off_available_balance($staffId);
+            if ($liveBalance + (float) self::COMP_OFF_DEFAULT_CREDIT_DAYS > $compOffPolicy['maxBalanceDays']) {
+                $this->json_error(
+                    'Comp-Off balance cap reached ('
+                    . rtrim(rtrim(number_format($compOffPolicy['maxBalanceDays'], 2, '.', ''), '0'), '.')
+                    . ' days). Use existing Comp-Off before earning more.'
+                );
+                return;
+            }
+        }
+
+        // EXPIRY — stamped at earn time from the policy in force on that day.
+        // Left null when no window is configured, and a credit keeps whatever
+        // stamp it was born with: switching the policy on later does not
+        // retroactively lapse entitlements already granted.
+        $expiresOn = null;
+        if ($compOffPolicy['expiryDays'] > 0) {
+            $expiresOn = date('Y-m-d', strtotime($date . ' +' . $compOffPolicy['expiryDays'] . ' days'));
+        }
+
+        $entry = [
+            'schoolId'    => $this->school_id,
+            'session'     => $this->session_year,
+            'staffId'     => $staffId,
+            'earnedDate'  => $date,
+            'creditDays'  => self::COMP_OFF_DEFAULT_CREDIT_DAYS,
+            // D-001 — `creditDays` is what was GRANTED and never changes;
+            // `remainingDays` is what is left to spend and moves with partial
+            // consumption. Written explicitly here so a new credit does not
+            // depend on the reader-side fallback.
+            'remainingDays' => (float) self::COMP_OFF_DEFAULT_CREDIT_DAYS,
+            'status'      => 'available',
+            'earnedFrom'  => 'attendance_extra_worked',
+            'approvedBy'  => (string) ($this->admin_id ?? ''),
+            'approvedAt'  => date('c'),
+            'consumedBy'  => null,
+            'consumedAt'  => null,
+            // Null unless the tenant configured `compOffExpiryDays`. A credit
+            // keeps the stamp it was born with, so enabling expiry later never
+            // lapses an entitlement already earned.
+            'expiresOn'   => $expiresOn,
+            'createdAt'   => date('c'),
+            'updatedAt'   => date('c'),
+        ];
+        $ok = false;
+        try { $ok = (bool) $this->fs->set('compOffLedger', $docId, $entry, true); }
+        catch (\Throwable $e) { log_message('error', "HR earn_comp_off write failed for {$staffId} {$date}: " . $e->getMessage()); }
+        if (!$ok) {
+            $this->json_error('Could not credit Comp-Off. Please try again.');
+        }
+
+        $this->_log_leave_audit([
+            'action'     => 'comp_off_earned',
+            'staff_id'   => $staffId,
+            'staff_name' => $staffProfile['Name'] ?? $staffProfile['name'] ?? $staffId,
+            'earned_date' => $date,
+            'credit_days' => self::COMP_OFF_DEFAULT_CREDIT_DAYS,
+        ]);
+
+        $this->json_success(['message' => "Comp-Off credited for {$date}.", 'entry' => $entry]);
+    }
+
+    /**
+     * GET — a staff member's Comp-Off ledger (all entries + available
+     * balance). Self-service (own ledger) or HR:view for any staff member.
+     */
+    public function get_comp_off_ledger()
+    {
+        $this->_require_role(self::VIEW_ROLES, 'get_comp_off_ledger', 'HR', 'view');
+
+        $staffId = $this->safe_path_segment(trim($this->input->get('staff_id') ?? ''), 'staff_id');
+        if (!(function_exists('has_permission') && has_permission('HR', 'view'))) {
+            $ownId = (string) ($this->admin_id ?? '');
+            if ($ownId === '') $this->json_error('Not permitted.');
+            $staffId = $ownId;
+        }
+        if ($staffId === '') $this->json_error('staff_id is required.');
+
+        try {
+            $rows = $this->fs->schoolWhere('compOffLedger', [['staffId', '==', $staffId]]);
+        } catch (\Throwable $e) {
+            log_message('error', "HR get_comp_off_ledger query failed for {$staffId}: " . $e->getMessage());
+            $this->json_error('Could not load the Comp-Off ledger.');
+            return;
+        }
+        $entries = [];
+        foreach ((is_array($rows) ? $rows : []) as $row) {
+            $d = is_array($row['data'] ?? null) ? $row['data'] : (is_array($row) ? $row : null);
+            if (is_array($d)) $entries[] = $d;
+        }
+        usort($entries, fn($a, $b) => strcmp((string) ($b['earnedDate'] ?? ''), (string) ($a['earnedDate'] ?? '')));
+
+        $this->json_success([
+            'entries'          => $entries,
+            'available_balance' => $this->_comp_off_available_balance($staffId),
+        ]);
     }
 
     /**
@@ -1055,37 +2409,12 @@ class Hr extends MY_Controller
         // the claimed integer, so concurrent callers can never collide. The
         // counter is seeded ONCE from the legacy hrCounters value (missing-
         // pointer callback) so we never re-issue an already-used number.
-        $kind = 'hr_' . $type;
-        $seedFromLegacy = function () use ($type) {
-            try {
-                $schoolDoc = $this->fs->get('schools', $this->fs->docId('profile'));
-                $counters  = (is_array($schoolDoc) && isset($schoolDoc['hrCounters'])) ? $schoolDoc['hrCounters'] : [];
-                return (isset($counters[$type]) && is_numeric($counters[$type])) ? (int) $counters[$type] : 0;
-            } catch (\Throwable $e) {
-                return 0;
-            }
-        };
-
-        $n = 0;
-        try {
-            $n = $this->fs->nextSchoolCounter($kind, 0, 12, [], $seedFromLegacy);
-        } catch (\Throwable $e) {
-            log_message('error', "HR _next_id counter failed [{$type}]: " . $e->getMessage());
-            $n = 0;
-        }
-
-        if ($n > 0) {
-            // Best-effort mirror onto legacy hrCounters (no longer authoritative)
-            // so any legacy reader stays roughly in sync. Never affects correctness.
-            try {
-                $this->fs->update('schools', $this->fs->docId('profile'), ["hrCounters.{$type}" => $n]);
-            } catch (\Throwable $e) { /* non-fatal */ }
-            return $prefix . str_pad((string) $n, $pad, '0', STR_PAD_LEFT);
-        }
-
-        // Counter unavailable — unique NON-sequential fallback (never a dup seq id).
-        $fallback = (int) (microtime(true) * 1000) % 100000;
-        return $prefix . str_pad((string) $fallback, $pad, '0', STR_PAD_LEFT) . '_' . substr(bin2hex(random_bytes(2)), 0, 4);
+        // W1.3: the implementation moved verbatim to helpers/hr_id_helper.php so
+        // Ats.php can mint APP ids from the SAME atomic counter. Previously ATS
+        // kept a separate non-atomic RTDB counter, so once both modules wrote
+        // hrApplicants they could issue the same id and overwrite each other's
+        // candidates. Behaviour here is unchanged for all nine call sites.
+        return hr_next_id($this->fs, $prefix, $type, $pad);
     }
 
     // ====================================================================
@@ -1119,6 +2448,68 @@ class Hr extends MY_Controller
         } catch (\Exception $e) {
             log_message('error', "HR _log_payroll Firestore failed: " . $e->getMessage());
         }
+    }
+
+    /**
+     * Production hardening programme (2026-08-19) — PAYROLL AUDIT TRAIL.
+     *
+     * The consolidated reconciliation found that Hr.php called log_audit()
+     * ZERO times, despite owning every money-mutating payroll operation.
+     * `_log_payroll()` above writes to `systemLogs` — that is DIAGNOSTIC
+     * telemetry (free-form, unindexed, not surfaced in any audit view), not
+     * an audit trail. Both are kept: this method is additive and never
+     * replaces a _log_payroll() call.
+     *
+     * NO NEW AUDIT SYSTEM IS INTRODUCED. This is a thin call-shape wrapper
+     * over the ONE canonical mechanism — helpers/audit_helper.php's
+     * log_audit(), writing the canonical `auditLogs` collection, already
+     * loaded for every controller by MY_Controller::__construct (:295) and
+     * already used throughout Staff.php. The wrapper exists only so that
+     * nine call sites emit a consistent entityType/meta shape rather than
+     * nine hand-rolled variants.
+     *
+     * The helper itself captures actor (userId/userName/userRole), school,
+     * IP and timestamp. This adds: operation, the target run, the payroll
+     * PERIOD, and a bounded previous→new state transition.
+     *
+     * Deliberately logs RUN-LEVEL aggregates only. Per-employee salary,
+     * bank and PII values are never written to the audit trail — the
+     * auditable fact is "who moved this run to this state, for which
+     * period, at what total", not each individual's pay.
+     *
+     * @param string $action  canonical action key, e.g. 'payroll_finalized'
+     * @param string $runId   the payroll run this concerns
+     * @param string $desc    human-readable description
+     * @param array  $meta    bounded context — period, from/to state, counts
+     */
+    private function _audit_payroll(string $action, string $runId, string $desc, array $meta = []): void
+    {
+        if (!function_exists('log_audit')) return;   // degrade silently, never block a payroll write
+        try {
+            log_audit('HR', $action, $runId, $desc, [
+                'entityType' => 'payrollRun',
+                'meta'       => $meta,
+            ]);
+        } catch (\Throwable $e) {
+            log_message('error', 'Hr::_audit_payroll failed for ' . $runId . ': ' . $e->getMessage());
+        }
+    }
+
+    /**
+     * Bounded period/state descriptor for a payroll run, for audit `meta`.
+     * Reads only fields the run document already carries; never recomputes.
+     */
+    private function _audit_run_meta(?array $run, array $extra = []): array
+    {
+        $m = [];
+        if (is_array($run)) {
+            if (isset($run['month']))      $m['month']       = (string) $run['month'];
+            if (isset($run['year']))       $m['year']        = (string) $run['year'];
+            if (isset($run['status']))     $m['fromStatus']  = (string) $run['status'];
+            if (isset($run['total_net']))  $m['totalNet']    = $run['total_net'];
+            if (isset($run['staff_count'])) $m['staffCount'] = $run['staff_count'];
+        }
+        return array_merge($m, $extra);
     }
 
     // ====================================================================
@@ -1163,7 +2554,18 @@ class Hr extends MY_Controller
     {
         $coa = [];
         try {
-            $fsDocs = $this->fs->schoolWhere('accounting', [['type', '==', 'chartOfAccounts']]);
+            // COA-D1: the chart lives in its OWN collection. Accounting.php owns it
+            // (reads :158, writes :202, deletes :209) and records at :1063 that the
+            // old `accounting` mirror became a no-op duplicate after the migration.
+            // Reading the pre-migration shape here meant payroll saw an EMPTY chart
+            // and refused to run — 65 accounts in chartOfAccounts, 0 in accounting.
+            //
+            // Canonical first, legacy second, so a tenant still on the old shape is
+            // not stranded and nothing needs migrating for this to work.
+            $fsDocs = $this->fs->schoolWhere('chartOfAccounts', []);
+            if (!is_array($fsDocs) || $fsDocs === []) {
+                $fsDocs = $this->fs->schoolWhere('accounting', [['type', '==', 'chartOfAccounts']]);
+            }
             if (is_array($fsDocs)) {
                 foreach ($fsDocs as $doc) {
                     $d = is_array($doc['data'] ?? null) ? $doc['data'] : $doc;
@@ -1510,7 +2912,16 @@ class Hr extends MY_Controller
                 ['year', '==', $year],
             ]);
             foreach ($fsRuns as $doc) {
-                $st = $doc['data']['status'] ?? '';
+                $rd = is_array($doc['data'] ?? null) ? $doc['data'] : [];
+                // G-1: only the MONTHLY run may satisfy the lock precondition.
+                // Off-cycle runs (F&F, bonus, arrears) can be finalized and paid
+                // for a period whose monthly payroll was never run at all — an
+                // off-cycle run for one leaver would otherwise let an admin lock
+                // the month and freeze out the payroll that still owes everyone
+                // else. Absent field reads as monthly: runs written before
+                // runType existed are monthly by definition.
+                if ((string) ($rd['runType'] ?? self::RUN_TYPE_MONTHLY) !== self::RUN_TYPE_MONTHLY) continue;
+                $st = $rd['status'] ?? '';
                 if (in_array($st, ['Finalized', 'Paid', 'Partially Paid'], true)) {
                     $runFound = true;
                     break;
@@ -1542,10 +2953,147 @@ class Hr extends MY_Controller
         }
 
         $this->_log_payroll('month_locked', '', ['month' => $month, 'year' => $year]);
+        // Period lock — entityId is the lock key rather than a run id,
+        // because this closes a whole payroll PERIOD, not one run.
+        $this->_audit_payroll('payroll_month_locked', $lockKey,
+            "Payroll period locked for {$month} {$year}",
+            ['month' => $month, 'year' => $year, 'toStatus' => 'locked']);
 
         $this->json_success(['message' => "{$month} {$year} payroll locked. No further changes allowed."]);
     }
 
+    /**
+     * POST — re-open a locked payroll month.
+     *
+     * The counterpart `lock_payroll_month()` never had. Without it the lock was
+     * a one-way door, and `_check_payroll_lock()` told the operator to "Unlock
+     * before making changes" — an instruction nothing could carry out.
+     *
+     * Params: month, year, reason (>= 10 chars)
+     *
+     * Deliberately does NOT reverse anything. Run statuses, slips and the
+     * accounting books are untouched; this re-opens the PERIOD so the existing
+     * run-level tools can be used. unlock_payroll() already states that books
+     * are not reversed by an unlock, and inventing a reversal here would be
+     * making up policy.
+     */
+    public function unlock_payroll_month()
+    {
+        $this->_require_role(self::ADMIN_ROLES, 'unlock_payroll_month', 'HR', 'manage');
+
+        $month = trim($this->input->post('month') ?? '');
+        $year  = trim($this->input->post('year') ?? '');
+
+        $validMonths = ['January','February','March','April','May','June',
+                        'July','August','September','October','November','December'];
+        if (!in_array($month, $validMonths, true) || !preg_match('/^\d{4}$/', $year)) {
+            $this->json_error('Invalid month or year.');
+        }
+
+        // Same bar unlock_payroll() sets for re-opening a finalised RUN.
+        $reason = trim((string) $this->input->post('reason'));
+        if (strlen($reason) < 10) {
+            $this->json_error('Reason (at least 10 characters) is required to re-open a payroll period.');
+        }
+        $reason = mb_substr($reason, 0, 500);
+
+        $lockKey = "{$year}_{$month}";
+
+        // Must actually be locked — otherwise this silently "succeeds" and the
+        // operator believes they changed something.
+        $lock = null;
+        try {
+            $schoolDoc = $this->fs->get('schools', $this->fs->docId('profile'));
+            if (is_array($schoolDoc) && isset($schoolDoc['payrollLocks'][$lockKey])) {
+                $lock = $schoolDoc['payrollLocks'][$lockKey];
+            }
+        } catch (\Exception $e) {
+            log_message('error', "HR unlock_payroll_month FS read failed: " . $e->getMessage());
+            $this->json_error('Could not read the payroll lock. Please retry.');
+        }
+
+        if (!is_array($lock) || empty($lock['locked'])) {
+            $this->json_error("{$month} {$year} payroll is not locked.");
+        }
+
+        // locked=false, never a delete: the record that the period WAS closed,
+        // by whom and when, is the audit trail. Same shape as
+        // Attendance::unlock_staff_attendance().
+        $unlockData = array_merge(is_array($lock) ? $lock : [], [
+            'locked'        => false,
+            'unlocked_by'   => $this->admin_name,
+            'unlocked_at'   => date('c'),
+            'unlock_reason' => $reason,
+        ]);
+
+        try {
+            $this->fs->update('schools', $this->fs->docId('profile'), [
+                "payrollLocks.{$lockKey}" => $unlockData,
+            ]);
+        } catch (\Exception $e) {
+            log_message('error', "HR unlock_payroll_month FS write failed: " . $e->getMessage());
+            $this->json_error('Failed to re-open the payroll period. Please retry.');
+        }
+
+        $this->_log_payroll('month_unlocked', '', [
+            'month' => $month, 'year' => $year, 'reason' => $reason,
+        ]);
+        $this->_audit_payroll('payroll_month_unlocked', $lockKey,
+            "Payroll period re-opened for {$month} {$year}",
+            ['month' => $month, 'year' => $year, 'reason' => $reason, 'toStatus' => 'unlocked']);
+
+        $this->json_success(['message' => "{$month} {$year} payroll re-opened."]);
+    }
+
+    /**
+     * POST — payroll lock state for the session's months.
+     *
+     * Read side of the period lock. Without it the panel could set a lock it
+     * could not see, which is how the attendance lock went unnoticed for so
+     * long (GAP-1). ONE document read: every lock lives in the `payrollLocks`
+     * map on the school profile.
+     */
+    public function payroll_lock_status()
+    {
+        $this->_require_role(self::VIEW_ROLES, 'payroll_lock_status', 'HR', 'view');
+
+        $locks = [];
+        try {
+            $schoolDoc = $this->fs->get('schools', $this->fs->docId('profile'));
+            if (is_array($schoolDoc) && is_array($schoolDoc['payrollLocks'] ?? null)) {
+                $locks = $schoolDoc['payrollLocks'];
+            }
+        } catch (\Exception $e) {
+            log_message('error', "HR payroll_lock_status FS read failed: " . $e->getMessage());
+            $this->json_error('Could not read payroll locks.');
+        }
+
+        $out = [];
+        foreach ($locks as $key => $row) {
+            if (!is_array($row)) continue;
+            $parts = explode('_', (string) $key, 2);
+            if (count($parts) !== 2) continue;
+
+            $out[] = [
+                'key'          => (string) $key,
+                'year'         => $parts[0],
+                'month'        => $parts[1],
+                'locked'       => !empty($row['locked']),
+                'lockedBy'     => (string) ($row['locked_by'] ?? ''),
+                'lockedAt'     => (string) ($row['locked_at'] ?? ''),
+                'unlockedBy'   => (string) ($row['unlocked_by'] ?? ''),
+                'unlockedAt'   => (string) ($row['unlocked_at'] ?? ''),
+                'unlockReason' => (string) ($row['unlock_reason'] ?? ''),
+            ];
+        }
+
+        usort($out, static function ($a, $b) { return strcmp($b['key'], $a['key']); });
+
+        $this->json_success([
+            'locks'     => $out,
+            'canManage' => function_exists('has_permission') ? has_permission('HR', 'manage') : false,
+        ]);
+    }
     /**
      * Check if a payroll month is locked. Used by generate_payroll and delete_payroll_run.
      */
@@ -1584,12 +3132,38 @@ class Hr extends MY_Controller
         $this->_require_role(self::VIEW_ROLES, 'hr_view', 'HR', 'view');
 
         $tab = $this->uri->segment(2, 'dashboard');
-        $allowed = ['dashboard', 'departments', 'recruitment', 'leaves', 'payroll', 'appraisals'];
+
+        // The "Departments" tab was removed on 2026-08-23 — it had become a
+        // placeholder pointing at Staff & Roles, which is where departments are
+        // actually edited. An old bookmark REDIRECTS there rather than silently
+        // landing on the dashboard, so the link still does what its owner meant.
+        if ($tab === 'departments') {
+            redirect('staff_access');
+            return;
+        }
+
+        $allowed = ['dashboard', 'recruitment', 'leaves', 'payroll', 'appraisals', 'training', 'orgchart'];
         if (!in_array($tab, $allowed, true)) {
             $tab = 'dashboard';
         }
 
         $data['active_tab'] = $tab;
+
+        // Phase 1 ZenX HRMS proof-of-concept: resolve one terminology label
+        // through the capability-gated org_term() mechanism. A tenant
+        // without HRMS_CORE_CAPABILITY gets the exact hardcoded default this
+        // page always showed — zero visible change. This is deliberately
+        // the ONLY heading wired this way in Phase 1; a full retrofit of
+        // every HR/Staff/Attendance view is later-phase work.
+        $data['staff_term'] = 'Staff';
+        if (has_capability(HRMS_CORE_CAPABILITY)) {
+            $this->load->helper('terminology');
+            $schoolDoc = $this->fs->get('schools', $this->school_id);
+            if (is_array($schoolDoc)) {
+                $data['staff_term'] = org_term('person', $schoolDoc);
+            }
+        }
+
         $this->load->view('include/header');
         $this->load->view('hr/index', $data);
         $this->load->view('include/footer');
@@ -1713,6 +3287,14 @@ class Hr extends MY_Controller
         if (is_array($runs)) {
             $latest = null;
             foreach ($runs as $rid => $r) {
+                // G-2: "last payroll" on the dashboard means the last MONTHLY
+                // run. An off-cycle settlement for a single leaver is newer by
+                // created_at but is not the school's latest payroll, and showing
+                // its one-person total as the headline figure understates the
+                // month by the entire rest of the roster. The RUN COUNT above
+                // deliberately still includes every run — that is a count of runs,
+                // and off-cycle runs are runs.
+                if ((string) ($r['runType'] ?? self::RUN_TYPE_MONTHLY) !== self::RUN_TYPE_MONTHLY) continue;
                 if (!$latest || (isset($r['created_at']) && $r['created_at'] > ($latest['created_at'] ?? ''))) {
                     $latest = $r;
                     $latest['id'] = $rid;
@@ -1759,16 +3341,14 @@ class Hr extends MY_Controller
         $pipelineCounts = ['Applied' => 0, 'Shortlisted' => 0, 'Interviewed' => 0, 'Selected' => 0, 'Hired' => 0];
         $rejectedCount  = 0;
         $recentApplicants = [];
-        $stageMap = [
-            'Applied' => 'Applied', 'Shortlisted' => 'Shortlisted',
-            'Interview' => 'Interviewed', 'Interviewed' => 'Interviewed',
-            'Selected' => 'Selected', 'Joined' => 'Hired', 'Hired' => 'Hired',
-        ];
+        // W1.3: the local $stageMap that used to live here was a third private
+        // copy of the same table (Ats.php held two more). All four now resolve
+        // through the shared bridge in helpers/recruitment_helper.php.
         if (is_array($applicants)) {
             foreach ($applicants as $appId => $app) {
                 if (!is_array($app)) continue;
                 $rawStage = $app['stage'] ?? ($app['status'] ?? 'Applied');
-                $stage    = $stageMap[$rawStage] ?? 'Applied';
+                $stage    = recruitment_stage_from_status((string) $rawStage);
                 $atsStatus = $app['ats_status'] ?? 'active';
 
                 if ($atsStatus === 'rejected') {
@@ -1926,223 +3506,23 @@ class Hr extends MY_Controller
     }
 
     /**
-     * POST — Create or update a department.
-     * Params: id (optional for update), name, head_staff_id, description, status
+     * RETIRED 2026-08-21 (Staff Lifecycle audit) — save_department() and
+     * delete_department() were removed.
+     *
+     * They were a duplicate writer of schools.departments. "Staff & Roles"
+     * (Staff_access) owns departments and staffRoles together and is the
+     * superset; the HR "Departments" tab had already been replaced by a
+     * signpost, and the Org page that also posted here has been retired.
+     *
+     * The two fields these endpoints accepted that Staff_access does not —
+     * head_staff_id and department status — were verified DEAD before removal:
+     * head_staff_id was written but read by nothing, and no code filters
+     * departments by status. Nothing consumed them, so nothing was migrated.
+     *
+     * get_departments() above STAYS: edit_staff, new_staff, teacher_profile and
+     * the HR page all read it to populate department dropdowns, and three test
+     * suites assert on it.
      */
-    public function save_department()
-    {
-        $this->_require_role(self::HR_ROLES, 'save_department', 'HR', 'edit');
-
-        $id          = trim($this->input->post('id') ?? '');
-        $name        = trim($this->input->post('name') ?? '');
-        $headStaffId = trim($this->input->post('head_staff_id') ?? '');
-        $description = trim($this->input->post('description') ?? '');
-        $status      = trim($this->input->post('status') ?? 'Active');
-
-        if ($name === '') {
-            $this->json_error('Department name is required.');
-        }
-        if (!in_array($status, ['Active', 'Inactive'], true)) {
-            $status = 'Active';
-        }
-
-        $now = date('c');
-        $isNew = ($id === '');
-
-        if ($isNew) {
-            $id = $this->_next_id('DEPT', 'Department');
-        }
-
-        // Check for duplicate name — Firestore first, RTDB fallback
-        $existing = [];
-        try {
-            $fsSchool = $this->fs->get('schools', $this->fs->schoolId());
-            if (is_array($fsSchool) && is_array($fsSchool['departments'] ?? null)) {
-                foreach ($fsSchool['departments'] as $k => $v) {
-                    $existing[$k] = is_array($v) ? $v : (array) $v;
-                }
-            }
-        } catch (\Exception $e) {}
-        if (!is_array($existing)) $existing = [];
-        foreach ($existing as $eid => $ed) {
-            if ($eid !== $id && isset($ed['name']) && dept_key($ed['name']) === dept_key($name)) {
-                $this->json_error('A department with this name already exists.');
-            }
-        }
-
-        $data = [
-            'name'          => $name,
-            'head_staff_id' => $headStaffId,
-            'description'   => $description,
-            'status'        => $status,
-            'updated_at'    => $now,
-        ];
-        if ($isNew) {
-            $data['created_at'] = $now;
-        }
-
-        // Department → allowed staff roles (Departments & Roles section).
-        // The whole dept doc is overwritten below, so we must PRESERVE fields
-        // this form doesn't submit: created_at and role_ids. Only overwrite
-        // role_ids when the caller actually sent them (the Org editor does; the
-        // legacy HR modal does not — so editing there won't wipe the mapping).
-        $prev = is_array($existing[$id] ?? null) ? $existing[$id] : [];
-        if (!$isNew && isset($prev['created_at'])) {
-            $data['created_at'] = $prev['created_at'];
-        }
-        // The Departments & Roles editor always posts `role_ids_present=1` so an
-        // EMPTY selection can genuinely CLEAR a department's roles. Without that
-        // marker an empty FormData omits role_ids entirely, which is
-        // indistinguishable from "field not submitted" — so the legacy branch
-        // below preserved the old list and unchecking-all-then-Save was a no-op.
-        $roleIdsPosted  = $this->input->post('role_ids');
-        $roleIdsPresent = $this->input->post('role_ids_present') !== null;
-        if ($roleIdsPosted !== null || $roleIdsPresent) {
-            $roleIds = is_array($roleIdsPosted)
-                ? $roleIdsPosted
-                : array_map('trim', explode(',', (string) $roleIdsPosted));
-            $roleIds = array_values(array_filter(array_unique($roleIds), function ($r) {
-                return is_string($r) && preg_match('/^ROLE_[A-Z0-9_]+$/', $r);
-            }));
-            $data['role_ids'] = $roleIds;
-        } elseif (isset($prev['role_ids']) && is_array($prev['role_ids'])) {
-            $data['role_ids'] = $prev['role_ids'];
-        }
-
-        // 1. Firestore FIRST — store departments in schools doc
-        try {
-            $fsSchool = $this->fs->get('schools', $this->fs->schoolId());
-            $allDepts = [];
-            if (is_array($fsSchool) && isset($fsSchool['departments'])) {
-                $raw = $fsSchool['departments'];
-                if (is_array($raw)) {
-                    foreach ($raw as $k => $v) {
-                        $allDepts[$k] = is_array($v) ? $v : (array) $v;
-                    }
-                }
-            }
-            $allDepts[$id] = $data;
-            $this->fs->update('schools', $this->fs->schoolId(), ['departments' => $allDepts, 'updatedAt' => date('c')]);
-        } catch (\Exception $e) {
-            log_message('error', "HR save_department Firestore failed: " . $e->getMessage());
-        }
-
-        // If an existing department was RENAMED, cascade the new name onto every
-        // staff doc that still carries the old one. Staff store the department
-        // NAME (not its id), so without this a rename orphans their department
-        // and silently zeroes the dept's staff count / delete guard. Best-effort.
-        $renamedFrom = (!$isNew && isset($prev['name'])) ? trim((string) $prev['name']) : '';
-        $cascaded = 0; $cascadeFailed = 0;
-        if ($renamedFrom !== '' && dept_key($renamedFrom) !== dept_key($name)) {
-            $fromKey = dept_key($renamedFrom);
-            try {
-                $fsStaff = $this->fs->schoolWhere('staff', []);
-                if (is_array($fsStaff)) {
-                    foreach ($fsStaff as $doc) {
-                        $d   = is_array($doc['data'] ?? null) ? $doc['data'] : $doc;
-                        $cur = $d['Department'] ?? $d['department'] ?? '';
-                        if ($cur !== '' && dept_key($cur) === $fromKey) {
-                            $sid = (string) ($d['staffId'] ?? $d['User ID'] ?? '');
-                            if ($sid === '') continue;
-                            // Per-staff try so one failed write doesn't abort the
-                            // rest (re-running save is idempotent). Write BOTH the
-                            // canonical Department and legacy lowercase department
-                            // so neither is left pointing at the old name.
-                            try {
-                                $this->fs->update('staff', $this->fs->docId($sid), ['Department' => $name, 'department' => $name]);
-                                $cascaded++;
-                            } catch (\Throwable $ie) {
-                                $cascadeFailed++;
-                                log_message('error', "HR save_department rename cascade write failed for {$sid}: " . $ie->getMessage());
-                            }
-                        }
-                    }
-                }
-            } catch (\Throwable $e) {
-                log_message('error', 'HR save_department rename cascade failed: ' . $e->getMessage());
-            }
-        }
-
-        $msg = $isNew ? 'Department created.' : 'Department updated.';
-        if ($cascaded > 0) $msg .= " Renamed department on {$cascaded} staff record(s).";
-        if ($cascadeFailed > 0) $msg .= " {$cascadeFailed} staff update(s) failed — save again to retry.";
-        $this->json_success(['id' => $id, 'message' => $msg, 'renamed_staff' => $cascaded, 'renamed_failed' => $cascadeFailed]);
-    }
-
-    /**
-     * POST — Delete a department.
-     * Params: id
-     */
-    public function delete_department()
-    {
-        $this->_require_role(self::HR_ROLES, 'delete_department', 'HR', 'manage');
-
-        $id = $this->safe_path_segment(trim($this->input->post('id') ?? ''), 'id');
-
-        // Check if department exists (Firestore)
-        $dept = null;
-        $deptName = '';
-        try {
-            $fsSchool = $this->fs->get('schools', $this->fs->schoolId());
-            if (is_array($fsSchool) && is_array($fsSchool['departments'] ?? null) && isset($fsSchool['departments'][$id])) {
-                $dept = $fsSchool['departments'][$id];
-                $deptName = $dept['name'] ?? '';
-            }
-        } catch (\Exception $e) {}
-        if (!is_array($dept)) {
-            $this->json_error('Department not found.');
-        }
-
-        // Check if staff are assigned to this department (Firestore)
-        try {
-            $fsStaff = $this->fs->schoolWhere('staff', []);
-            if (is_array($fsStaff)) {
-                $deptNameKey = dept_key($deptName);
-                foreach ($fsStaff as $doc) {
-                    $d = is_array($doc['data'] ?? null) ? $doc['data'] : $doc;
-                    // Case/whitespace-insensitive match so an Excel-imported
-                    // "Science " or legacy "science" can't slip past the guard
-                    // and orphan the staff (see delete-guard bypass audit).
-                    if (dept_key($d['Department'] ?? $d['department'] ?? '') === $deptNameKey) {
-                        $this->json_error('Cannot delete: staff members are assigned to this department. Reassign them first.');
-                    }
-                }
-            }
-        } catch (\Exception $e) {}
-
-        // Check if any open jobs reference this department (Firestore)
-        try {
-            $fsJobs = $this->fs->schoolList('hrJobs');
-            if (is_array($fsJobs)) {
-                foreach ($fsJobs as $j) {
-                    $d = $j['data'] ?? $j;
-                    if (($d['department'] ?? '') === $deptName && ($d['status'] ?? '') === 'Open') {
-                        $this->json_error('Cannot delete: there are open job postings in this department.');
-                    }
-                }
-            }
-        } catch (\Exception $e) {}
-
-        // 1. Firestore FIRST — remove from departments map
-        try {
-            $fsSchool = $this->fs->get('schools', $this->fs->schoolId());
-            $allDepts = [];
-            if (is_array($fsSchool) && isset($fsSchool['departments'])) {
-                $raw = $fsSchool['departments'];
-                if (is_array($raw)) {
-                    foreach ($raw as $k => $v) {
-                        $allDepts[$k] = is_array($v) ? $v : (array) $v;
-                    }
-                }
-            }
-            unset($allDepts[$id]);
-            $this->fs->update('schools', $this->fs->schoolId(), ['departments' => $allDepts, 'updatedAt' => date('c')]);
-        } catch (\Exception $e) {
-            log_message('error', "HR delete_department Firestore failed: " . $e->getMessage());
-        }
-
-        $this->json_success(['message' => 'Department deleted.']);
-    }
 
     // ====================================================================
     //  RECRUITMENT — JOBS
@@ -2172,7 +3552,11 @@ class Hr extends MY_Controller
                 foreach ($fsDocs as $doc) {
                     $d = $doc['data'] ?? $doc;
                     $r = is_array($doc['data'] ?? null) ? $doc['data'] : [];
-                    $rawId = (string) ($d['id'] ?? '');
+                    // Wrapper bug (as in get_departments): the doc id is on the wrapper,
+                    // not inside data. Reading it from the data dict yielded '' for every
+                    // row, so the view fell back to the array index and row actions
+                    // posted "0"/"1" as the entity id.
+                    $rawId = (string) ($doc['id'] ?? ($d['id'] ?? ''));
                     $r['id'] = (strpos($rawId, $prefix) === 0)
                         ? substr($rawId, strlen($prefix))
                         : $rawId;
@@ -2499,97 +3883,254 @@ class Hr extends MY_Controller
     }
 
     /**
-     * Build a professional HTML poster for a job circular.
+     * Build the recruitment circular.
+     *
+     * This is an official school notice, not a marketing graphic: letterhead,
+     * reference number, dated, a bordered particulars table, and a signature
+     * block. That is the form a school actually pins to a board, emails as a
+     * PDF and files — the previous gradient card with a "We Are Hiring" pill
+     * could not be used as any of those.
+     *
+     * Everything is driven by the tenant's own school profile. Fields the
+     * tenant has not published are omitted rather than filled with
+     * placeholders, so an incomplete profile yields a plainer — never a
+     * broken or fictitious — notice.
      */
     private function _build_circular_poster(array $job, string $circularId = ''): string
     {
-        $e = function($v) { return htmlspecialchars((string)$v, ENT_QUOTES, 'UTF-8'); };
+        $e = function ($v) { return htmlspecialchars((string) $v, ENT_QUOTES, 'UTF-8'); };
 
-        $schoolName = $e($this->school_display_name ?: $this->school_name);
-        $title      = $e($job['title'] ?? 'Open Position');
-        $dept       = $e($job['department'] ?? '');
-        $positions  = (int)($job['positions'] ?? 1);
-        $quals      = $e($job['qualifications'] ?? '');
-        $exp        = $e($job['experience_required'] ?? '');
-        $salMin     = (float)($job['salary_range_min'] ?? 0);
-        $salMax     = (float)($job['salary_range_max'] ?? 0);
-        $deadline   = $job['deadline'] ?? '';
-        $desc       = $e($job['description'] ?? '');
-        $refId      = $e($circularId);
-        $today      = date('d M Y');
-
-        $salary = '';
-        if ($salMin > 0 && $salMax > 0) {
-            $salary = number_format($salMin) . ' &ndash; ' . number_format($salMax);
-        } elseif ($salMax > 0) {
-            $salary = 'Up to ' . number_format($salMax);
-        } elseif ($salMin > 0) {
-            $salary = number_format($salMin) . '+';
+        /* ── School letterhead data ─────────────────────────────────── */
+        $sch = [];
+        try {
+            $doc = $this->fs->get('schools', $this->fs->schoolId());
+            if (is_array($doc)) $sch = $doc;
+        } catch (\Exception $ex) {
+            log_message('error', 'HR circular: school lookup failed: ' . $ex->getMessage());
         }
-
-        $deadlineFormatted = $deadline ? date('d M Y', strtotime($deadline)) : '';
-
-        // Build detail rows
-        $details = '';
-        $row = function($icon, $label, $value) use (&$details) {
-            if (trim($value) === '') return;
-            $details .= "<tr><td style=\"padding:8px 12px;width:36px;text-align:center;color:#BC5A3C;font-size:16px;\"><i class=\"fa {$icon}\"></i></td>"
-                       . "<td style=\"padding:8px 0;font-size:13px;color:#64748b;width:130px;\">{$label}</td>"
-                       . "<td style=\"padding:8px 0;font-size:14px;color:#1e293b;font-weight:600;\">{$value}</td></tr>";
+        $g = function (string ...$keys) use ($sch) {
+            foreach ($keys as $k) {
+                $v = trim((string) ($sch[$k] ?? ''));
+                if ($v !== '') return $v;
+            }
+            return '';
         };
 
-        $row('fa-building-o', 'Department',      $dept);
-        $row('fa-users',      'Positions',        $positions . ($positions > 1 ? ' vacancies' : ' vacancy'));
-        $row('fa-graduation-cap', 'Qualifications', $quals);
-        $row('fa-clock-o',    'Experience',       $exp);
-        if ($salary) $row('fa-inr', 'Salary Range', "&#x20B9; {$salary} /month");
-        if ($deadlineFormatted) $row('fa-calendar', 'Last Date', $deadlineFormatted);
+        $schoolName = $g('display_name') ?: ($this->school_display_name ?: $this->school_name);
+        $schEmail   = $g('email');
+        $schPhone   = $g('phone');
+        $website    = $g('website');
+        // upload_logo writes logo_url but reads logoUrl elsewhere — accept either.
+        $logo       = $g('logo_url', 'logoUrl', 'logo');
+        $principal  = $g('principal_name');
+        $board      = $g('affiliation_board');
+        $affNo      = $g('affiliation_no');
 
+        $addrLine = implode(', ', array_filter([
+            $g('address'), $g('city'), $g('state'), $g('pincode'),
+        ], static function ($v) { return $v !== ''; }));
+
+        /* ── Post data ──────────────────────────────────────────────── */
+        $title     = $job['title'] ?? 'Open Position';
+        $dept      = $job['department'] ?? '';
+        $positions = (int) ($job['positions'] ?? 1);
+        $quals     = $job['qualifications'] ?? '';
+        $exp       = $job['experience_required'] ?? '';
+        $desc      = $job['description'] ?? '';
+        $salMin    = (float) ($job['salary_range_min'] ?? 0);
+        $salMax    = (float) ($job['salary_range_max'] ?? 0);
+        $deadline  = $job['deadline'] ?? '';
+        $today     = date('d M Y');
+
+        $salary = '';
+        if ($salMin > 0 && $salMax > 0)      $salary = '&#x20B9; ' . number_format($salMin) . ' &ndash; &#x20B9; ' . number_format($salMax) . ' per month';
+        elseif ($salMax > 0)                 $salary = 'Up to &#x20B9; ' . number_format($salMax) . ' per month';
+        elseif ($salMin > 0)                 $salary = '&#x20B9; ' . number_format($salMin) . '+ per month';
+
+        $deadlineFmt = $deadline ? date('d M Y', strtotime($deadline)) : '';
+
+        /* ── Particulars table ──────────────────────────────────────── */
+        $rows = '';
+        $row = function (string $label, string $value, bool $raw = false) use (&$rows, $e) {
+            if (trim($value) === '') return;
+            $v = $raw ? $value : $e($value);
+            $rows .= '<tr>'
+                  . '<th class="zc-th">' . $e($label) . '</th>'
+                  . '<td class="zc-td">' . $v . '</td>'
+                  . '</tr>';
+        };
+        $row('Name of Post',   $title);
+        $row('Department',     $dept);
+        $row('No. of Vacancies', (string) $positions);
+        $row('Qualification',  $quals);
+        $row('Experience',     $exp);
+        if ($salary !== '')     $row('Salary Range', $salary, true);
+        if ($deadlineFmt !== '') $row('Last Date to Apply', $deadlineFmt);
+
+        /* ── Role description ───────────────────────────────────────── */
         $descHtml = '';
-        if ($desc !== '') {
-            $descHtml = "<div style=\"margin-top:20px;padding:14px 18px;background:#f0fdf4;border-left:4px solid #BC5A3C;border-radius:0 8px 8px 0;\">"
-                      . "<div style=\"font-size:12px;font-weight:700;color:#BC5A3C;text-transform:uppercase;letter-spacing:.5px;margin-bottom:6px;\">About the Role</div>"
-                      . "<div style=\"font-size:13.5px;color:#334155;line-height:1.6;white-space:pre-line;\">{$desc}</div></div>";
+        if (trim($desc) !== '') {
+            $descHtml = '<div class="zc-sec"><div class="zc-sec-h">Job Description</div>'
+                      . '<div class="zc-sec-b">' . $e($desc) . '</div></div>';
         }
 
+        /* ── How to apply ───────────────────────────────────────────── */
+        $subject = rawurlencode('Application: ' . $title . ($circularId !== '' ? ' (' . $circularId . ')' : ''));
+        if ($schEmail !== '') {
+            $applyBody = 'Eligible candidates may submit their application, along with a complete '
+                       . 'curriculum vitae and self-attested copies of testimonials, to '
+                       . '<strong>' . $e($schEmail) . '</strong>'
+                       . ($schPhone !== '' ? ', or contact the school office at <strong>' . $e($schPhone) . '</strong>' : '')
+                       . ($deadlineFmt !== '' ? ', on or before <strong>' . $e($deadlineFmt) . '</strong>' : '')
+                       . '.';
+            $applyBtn = '<a class="zc-btn" href="mailto:' . $e($schEmail) . '?subject=' . $subject . '">Apply Now</a>';
+        } elseif ($schPhone !== '') {
+            $applyBody = 'Eligible candidates may contact the school office at <strong>' . $e($schPhone) . '</strong>'
+                       . ($deadlineFmt !== '' ? ', on or before <strong>' . $e($deadlineFmt) . '</strong>' : '')
+                       . ', for application details.';
+            $applyBtn  = '<a class="zc-btn" href="tel:' . $e(preg_replace('/[^0-9+]/', '', $schPhone)) . '">Call to Apply</a>';
+        } else {
+            // Nothing published to act on — state that plainly and draw no
+            // control, rather than a button that cannot do anything.
+            $applyBody = 'Eligible candidates may contact the school administration for application details.';
+            $applyBtn  = '';
+        }
+
+        /* ── Letterhead identity ────────────────────────────────────── */
+        if ($logo !== '') {
+            $mark = '<img class="zc-logo" src="' . $e($logo) . '" alt="">';
+        } else {
+            // No logo published: a monogram keeps the letterhead balanced
+            // instead of leaving a broken image or an empty column.
+            $initials = '';
+            foreach (preg_split('/\s+/', trim($schoolName)) as $w) {
+                if ($w !== '' && $initials !== '' && strlen($initials) >= 2) break;
+                if ($w !== '') $initials .= strtoupper(substr($w, 0, 1));
+            }
+            $mark = '<div class="zc-logo zc-mono">' . $e($initials ?: 'S') . '</div>';
+        }
+
+        $subLines = [];
+        if ($addrLine !== '') $subLines[] = $e($addrLine);
+        $contact = array_filter([
+            $schPhone !== '' ? 'Tel: ' . $e($schPhone) : '',
+            $schEmail !== '' ? $e($schEmail) : '',
+            $website  !== '' ? $e($website)  : '',
+        ], static function ($v) { return $v !== ''; });
+        if ($contact) $subLines[] = implode(' &nbsp;&middot;&nbsp; ', $contact);
+        if ($board !== '' || $affNo !== '') {
+            $subLines[] = trim($e($board) . ($affNo !== '' ? ' &nbsp;&middot;&nbsp; Affiliation No. ' . $e($affNo) : ''));
+        }
+        $subHtml = $subLines ? '<div class="zc-sub">' . implode('<br>', $subLines) . '</div>' : '';
+
+        $refHtml = $circularId !== ''
+            ? '<span>Ref. No.: <strong>' . $e($circularId) . '</strong></span>'
+            : '<span></span>';
+
+        $signName = $principal !== '' ? $e($principal) : '';
+        $signHtml = '<div class="zc-sign">'
+                  . ($signName !== '' ? '<div class="zc-sign-n">' . $signName . '</div>' : '')
+                  . '<div class="zc-sign-t">Principal</div>'
+                  . '<div class="zc-sign-s">' . $e($schoolName) . '</div></div>';
+
+        $schoolNameHtml = $e($schoolName);
+        $titleHtml      = $e($title);
+        $btnBlock       = $applyBtn !== '' ? '<div class="zc-cta">' . $applyBtn . '</div>' : '';
+
+        /* Styles are scoped under .zx-circ so injecting this into the admin
+           modal cannot disturb the surrounding page. @page is deliberately NOT
+           set here — the print window owns page geometry. */
         return <<<HTML
-<div style="font-family:'Segoe UI',system-ui,-apple-system,sans-serif;max-width:600px;margin:0 auto;background:#ffffff;border-radius:16px;overflow:hidden;border:1px solid #e2e8f0;">
-  <!-- Header -->
-  <div style="background:linear-gradient(135deg,#BC5A3C 0%,#D4725C 100%);padding:32px 28px 26px;text-align:center;position:relative;">
-    <div style="font-size:13px;font-weight:600;letter-spacing:1.5px;text-transform:uppercase;color:rgba(255,255,255,.75);margin-bottom:6px;">{$schoolName}</div>
-    <div style="display:inline-block;padding:6px 20px;background:rgba(255,255,255,.2);border-radius:20px;margin-bottom:14px;">
-      <span style="font-size:11px;font-weight:700;letter-spacing:2px;text-transform:uppercase;color:#fff;">We Are Hiring</span>
+<style>
+.zx-circ{--zc-ink:#1f2937;--zc-mut:#6b7280;--zc-line:#d8dee7;--zc-acc:#BC5A3C;
+  max-width:820px;margin:0 auto;background:#fff;color:var(--zc-ink);
+  font:14px/1.65 "Segoe UI",system-ui,-apple-system,sans-serif;
+  border:1px solid var(--zc-line);padding:38px 44px 30px;box-sizing:border-box;}
+.zx-circ *{box-sizing:border-box;}
+.zx-circ .zc-head{display:flex;align-items:center;gap:18px;}
+.zx-circ .zc-logo{width:74px;height:74px;flex:0 0 74px;object-fit:contain;border-radius:6px;}
+.zx-circ .zc-mono{display:flex;align-items:center;justify-content:center;
+  background:var(--zc-acc);color:#fff;font:700 27px/1 Georgia,"Times New Roman",serif;letter-spacing:1px;}
+.zx-circ .zc-name{margin:0;font:700 27px/1.2 Georgia,"Times New Roman",serif;letter-spacing:.3px;}
+.zx-circ .zc-sub{margin-top:5px;font-size:12px;color:var(--zc-mut);line-height:1.55;}
+.zx-circ .zc-rule{margin:16px 0 0;border-top:2.5px solid var(--zc-acc);}
+.zx-circ .zc-rule2{margin-top:2px;border-top:1px solid var(--zc-line);}
+.zx-circ .zc-meta{display:flex;justify-content:space-between;gap:12px;flex-wrap:wrap;
+  margin-top:14px;font-size:12.5px;color:var(--zc-mut);}
+.zx-circ .zc-title{margin:22px 0 4px;text-align:center;font:700 17px/1.3 Georgia,"Times New Roman",serif;
+  letter-spacing:2.2px;text-transform:uppercase;}
+.zx-circ .zc-title-u{width:132px;height:2px;background:var(--zc-acc);margin:0 auto 20px;}
+.zx-circ .zc-lead{margin:0 0 18px;text-align:justify;}
+.zx-circ .zc-tbl{width:100%;border-collapse:collapse;margin-bottom:4px;}
+.zx-circ .zc-th,.zx-circ .zc-td{border:1px solid var(--zc-line);padding:9px 13px;
+  font-size:13.5px;text-align:left;vertical-align:top;}
+.zx-circ .zc-th{width:210px;background:#f6f7f9;font-weight:600;color:var(--zc-mut);}
+.zx-circ .zc-sec{margin-top:18px;}
+.zx-circ .zc-sec-h{font-size:11.5px;font-weight:700;letter-spacing:1.1px;text-transform:uppercase;
+  color:var(--zc-acc);margin-bottom:6px;}
+.zx-circ .zc-sec-b{white-space:pre-line;text-align:justify;}
+.zx-circ .zc-cta{margin-top:16px;}
+.zx-circ .zc-btn{display:inline-block;padding:10px 30px;background:var(--zc-acc);color:#fff;
+  font-size:14px;font-weight:600;border-radius:4px;text-decoration:none;}
+.zx-circ .zc-sign{margin-top:44px;text-align:right;}
+.zx-circ .zc-sign-n{font:600 15px/1.4 Georgia,"Times New Roman",serif;}
+.zx-circ .zc-sign-t{font-size:13px;font-weight:600;margin-top:2px;}
+.zx-circ .zc-sign-s{font-size:12px;color:var(--zc-mut);}
+.zx-circ .zc-foot{margin-top:26px;padding-top:10px;border-top:1px solid var(--zc-line);
+  display:flex;justify-content:space-between;gap:10px;flex-wrap:wrap;font-size:11px;color:var(--zc-mut);}
+@media(max-width:640px){
+  .zx-circ{padding:22px 18px;}
+  .zx-circ .zc-head{flex-direction:column;text-align:center;}
+  .zx-circ .zc-th{width:auto;}
+  .zx-circ .zc-tbl,.zx-circ .zc-th,.zx-circ .zc-td{display:block;width:100%;}
+  .zx-circ .zc-th{border-bottom:0;}
+}
+@media print{
+  .zx-circ{border:0;padding:0;max-width:none;}
+  .zx-circ .zc-btn{display:none;}          /* a link cannot be clicked on paper */
+  .zx-circ .zc-tbl{page-break-inside:avoid;}
+  .zx-circ .zc-sign{page-break-inside:avoid;}
+}
+</style>
+
+<div class="zx-circ">
+  <div class="zc-head">
+    {$mark}
+    <div>
+      <h1 class="zc-name">{$schoolNameHtml}</h1>
+      {$subHtml}
     </div>
-    <h1 style="margin:0;font-size:26px;font-weight:800;color:#fff;line-height:1.3;">{$title}</h1>
+  </div>
+  <div class="zc-rule"></div>
+  <div class="zc-rule2"></div>
+
+  <div class="zc-meta">{$refHtml}<span>Date: <strong>{$today}</strong></span></div>
+
+  <div class="zc-title">Recruitment Notice</div>
+  <div class="zc-title-u"></div>
+
+  <p class="zc-lead">Applications are invited from eligible candidates for the following post at
+    {$schoolNameHtml}. The particulars of the post are given below.</p>
+
+  <table class="zc-tbl">{$rows}</table>
+
+  {$descHtml}
+
+  <div class="zc-sec">
+    <div class="zc-sec-h">How to Apply</div>
+    <div class="zc-sec-b">{$applyBody}</div>
+    {$btnBlock}
   </div>
 
-  <!-- Body -->
-  <div style="padding:24px 28px;">
-    <table style="width:100%;border-collapse:collapse;">{$details}</table>
-    {$descHtml}
+  {$signHtml}
 
-    <!-- CTA -->
-    <div style="margin-top:24px;text-align:center;">
-      <div style="display:inline-block;padding:12px 36px;background:linear-gradient(135deg,#BC5A3C,#D4725C);color:#fff;font-size:15px;font-weight:700;border-radius:10px;letter-spacing:.5px;">
-        Apply Now
-      </div>
-      <div style="margin-top:10px;font-size:12.5px;color:#64748b;">Contact the school administration for application details</div>
-    </div>
-  </div>
-
-  <!-- Footer -->
-  <div style="padding:14px 28px;background:#f8fafc;border-top:1px solid #e2e8f0;display:flex;justify-content:space-between;align-items:center;flex-wrap:wrap;gap:6px;">
-    <div style="font-size:11px;color:#94a3b8;">{$refId} &middot; Issued: {$today}</div>
-    <div style="font-size:11px;color:#94a3b8;">{$schoolName}</div>
+  <div class="zc-foot">
+    <span>{$titleHtml}</span>
+    <span>Issued {$today}</span>
   </div>
 </div>
 HTML;
     }
-
-    /**
-     * POST — Delete a job posting + cascade-deactivate its circular.
-     * Params: id
-     */
     public function delete_job()
     {
         $this->_require_role(self::HR_ROLES, 'delete_job', 'HR', 'manage');
@@ -2769,7 +4310,11 @@ HTML;
                 foreach ($fsDocs as $doc) {
                     $d = $doc['data'] ?? $doc;
                     $r = is_array($doc['data'] ?? null) ? $doc['data'] : [];
-                    $rawId = (string) ($d['id'] ?? '');
+                    // Wrapper bug (as in get_departments): the doc id is on the wrapper,
+                    // not inside data. Reading it from the data dict yielded '' for every
+                    // row, so the view fell back to the array index and row actions
+                    // posted "0"/"1" as the entity id.
+                    $rawId = (string) ($doc['id'] ?? ($d['id'] ?? ''));
                     $r['id'] = (strpos($rawId, $prefix) === 0)
                         ? substr($rawId, strlen($prefix))
                         : $rawId;
@@ -2810,7 +4355,10 @@ HTML;
         $interviewDate = trim($this->input->post('interview_date') ?? '');
         $interviewNotes= trim($this->input->post('interview_notes') ?? '');
         $rating        = (int) ($this->input->post('rating') ?? 0);
-        $status        = trim($this->input->post('status') ?? 'Applied');
+        // REC-D5: ?? only catches a MISSING field. A select with nothing selected
+        // posts an empty string, which slipped past it and stored status=''.
+        $status        = trim($this->input->post('status') ?? '');
+        if ($status === '') $status = 'Applied';
         $notes         = trim($this->input->post('notes') ?? '');
 
         if ($name === '') {
@@ -2878,6 +4426,18 @@ HTML;
             $data['applied_date'] = $existingApplicant['applied_date'] ?? date('Y-m-d');
         }
 
+        // ── W1.3 dual-emit: see update_applicant_status() for the reasoning ──
+        // The HR status vocabulary and the ATS stage vocabulary are exact
+        // inverses for every non-rejected value, so round-tripping an edit
+        // through this form cannot move a candidate backwards.
+        if ($status !== 'Rejected') {
+            $data['stage'] = recruitment_stage_from_status($status);
+        }
+        $derivedAtsStatus = recruitment_ats_status_from_status($status);
+        if ($derivedAtsStatus !== null) {
+            $data['ats_status'] = $derivedAtsStatus;
+        }
+
         // ── Firestore-first write ────────────────────────────────────
         try {
             $this->fs->setEntity('hrApplicants', $id, $data);
@@ -2924,6 +4484,21 @@ HTML;
         ];
         if ($notes !== '') {
             $update['notes'] = $notes;
+        }
+
+        // ── W1.3 dual-emit: keep the ATS view of this document in step ──
+        // Ats.php reads `stage` in preference to `status`, so writing `status`
+        // alone would leave a stale stage behind and the ATS board would keep
+        // showing the candidate in their old column. 'Rejected' is deliberately
+        // excluded from the stage write: rejection is carried by `ats_status`
+        // and has no stage of its own, so mapping it would destroy the record
+        // of how far the candidate actually got.
+        if ($status !== 'Rejected') {
+            $update['stage'] = recruitment_stage_from_status($status);
+        }
+        $derivedAtsStatus = recruitment_ats_status_from_status($status);
+        if ($derivedAtsStatus !== null) {
+            $update['ats_status'] = $derivedAtsStatus;
         }
 
         // ── Firestore write ────────────────────────────────────
@@ -2992,7 +4567,96 @@ HTML;
             }
         }
 
-        $this->json_success(['leave_types' => $list]);
+        // Surface the school's OWN resolved leave-policy switches so the config
+        // screen renders each toggle in its true state. Every value is resolved
+        // per-school (schools.leavePolicy override, else platform default) — the
+        // exact values the engine + apply_leave act on, so the UI never lies.
+        $this->json_success([
+            'leave_types'    => $list,
+            'accrualEnabled' => $this->_school_accrual_enabled(),
+            'leavePolicy'    => [
+                'accrual_enabled'  => $this->_school_accrual_enabled(),
+                'effective_dating' => $this->_leave_flag('LEAVE_EFFECTIVE_DATING_ENABLED'),
+                'prorata'          => $this->_leave_flag('LEAVE_PRORATA_ENABLED'),
+                'waiting_period'   => $this->_leave_flag('LEAVE_WAITING_PERIOD_ENABLED'),
+                'max_balance'      => $this->_leave_flag('LEAVE_MAX_BALANCE_ENABLED'),
+                'year_closure'     => $this->_leave_flag('LEAVE_YEAR_CLOSURE_ENABLED'),
+            ],
+        ]);
+    }
+
+    /**
+     * POST — the school's master leave-accrual switch
+     * (schools.leavePolicy.accrualEnabled). When ON, leave types whose version
+     * carries accrual_mode='monthly' drip their entitlement across the year
+     * (run via Run Monthly Accrual) and an employee may only take what has
+     * accrued so far; when OFF (the default for every school), the full annual
+     * is granted up front exactly as before. This is the per-school choice that
+     * replaces the old fleet-wide LEAVE_ACCRUAL_ENABLED flag.
+     */
+    /**
+     * The per-school leave-policy switches a school configures FOR ITSELF. Each
+     * POST key maps to the schools.leavePolicy field the resolvers read
+     * (_school_accrual_enabled / _leave_flag). Every one defaults OFF, so a new
+     * school behaves exactly as before until it opts in from its own config page
+     * — this is the multi-tenant contract: the developer ships the machinery,
+     * the SCHOOL decides the policy. (accrualEnabled is the accrual master switch;
+     * the LEAVE_* keys are the same names the platform-default flags use, so a
+     * per-school value simply overrides the platform default for that tenant.)
+     */
+    private const LEAVE_POLICY_KEYS = [
+        'accrual_enabled'  => 'accrualEnabled',
+        'effective_dating' => 'LEAVE_EFFECTIVE_DATING_ENABLED',
+        'prorata'          => 'LEAVE_PRORATA_ENABLED',
+        'waiting_period'   => 'LEAVE_WAITING_PERIOD_ENABLED',
+        'max_balance'      => 'LEAVE_MAX_BALANCE_ENABLED',
+        'year_closure'     => 'LEAVE_YEAR_CLOSURE_ENABLED',
+    ];
+
+    public function save_leave_policy()
+    {
+        $this->_require_role(self::HR_ROLES, 'save_leave_policy', 'HR', 'manage');
+
+        $truthy = function ($v) {
+            return ($v === true || $v === 1 || $v === '1' || $v === 'true' || $v === 'on' || $v === 'yes');
+        };
+        // Only update the toggles actually submitted (a partial save must not
+        // silently reset the others).
+        $patch = [];
+        $changed = [];
+        foreach (self::LEAVE_POLICY_KEYS as $postKey => $field) {
+            $raw = $this->input->post($postKey);
+            if ($raw === null) continue;
+            $val = $truthy($raw);
+            $patch["leavePolicy.{$field}"] = $val;
+            $changed[$field] = $val;
+        }
+        if (empty($patch)) {
+            return $this->json_error('No leave-policy setting was provided.');
+        }
+
+        $ok = $this->fs->update('schools', $this->fs->schoolId(), $patch);
+        if (!$ok) {
+            return $this->json_error('Could not save the leave policy. Please retry.');
+        }
+
+        $this->_log_leave_audit([
+            'action'  => 'leave_policy_updated',
+            'changed' => $changed,
+        ]);
+
+        // Back-compat for the accrual toggle, which reads r.accrualEnabled.
+        $resp = [
+            'leavePolicy' => $changed,
+            'message'     => 'Leave policy saved — each setting is this school\'s own; defaults stay off until you enable them.',
+        ];
+        if (array_key_exists('accrualEnabled', $changed)) {
+            $resp['accrualEnabled'] = $changed['accrualEnabled'];
+            $resp['message'] = $changed['accrualEnabled']
+                ? 'Monthly accrual is ON. Entitlement now accrues month by month — run Run Monthly Accrual to credit the year so far.'
+                : 'Monthly accrual is OFF. The full annual leave is granted up front, as before.';
+        }
+        $this->json_success($resp);
     }
 
     /**
@@ -3012,11 +4676,30 @@ HTML;
         $description  = trim($this->input->post('description') ?? '');
         $status       = trim($this->input->post('status') ?? 'Active');
 
+        // Phase 3 (accrual) — per-type mode. Default 'lump_sum' preserves
+        // current behavior for every type that never sets this explicitly.
+        $accrualMode = trim((string) $this->input->post('accrual_mode'));
+        if (!in_array($accrualMode, ['lump_sum', 'monthly'], true)) $accrualMode = 'lump_sum';
+
+        // Phase 6 (maximum balance) — forward-declared in the version shape
+        // now so Phase 6 doesn't need a second schema change later. null =
+        // no ceiling (current behavior); only consulted when
+        // LEAVE_MAX_BALANCE_ENABLED is on (Hr::_accrue_monthly_leave_one_type()).
+        $maxBalanceRaw = trim((string) $this->input->post('max_balance'));
+        $maxBalance    = ($maxBalanceRaw === '') ? null : (float) $maxBalanceRaw;
+
+        // Phase 5 (waiting period) — same forward-declaration; default 0
+        // preserves current behavior (no eligibility delay).
+        $waitingPeriodDays = max(0, (int) ($this->input->post('waiting_period_days') ?? 0));
+
         if ($name === '') {
             $this->json_error('Leave type name is required.');
         }
         if ($daysPerYear < 0 || $daysPerYear > 365) {
             $this->json_error('Days per year must be between 0 and 365.');
+        }
+        if ($maxBalance !== null && $maxBalance < 0) {
+            $this->json_error('Maximum balance cannot be negative.');
         }
         if (!in_array($status, ['Active', 'Inactive'], true)) {
             $status = 'Active';
@@ -3051,9 +4734,79 @@ HTML;
             'description'   => $description,
             'status'        => $status,
             'updated_at'    => $now,
+            // Additive flat mirrors of the version fields (Phases 3/5/6) —
+            // extra keys on a Firestore doc the Teacher app already reads
+            // directly are safe (its Kotlin model simply doesn't parse
+            // them); nothing existing changes shape or is removed.
+            'accrual_mode'        => $accrualMode,
+            'max_balance'         => $maxBalance,
+            'waiting_period_days' => $waitingPeriodDays,
         ];
         if ($isNew) {
             $data['created_at'] = $now;
+        }
+
+        // Allocation-affecting change detection — shared by the Phase 2
+        // effective-dated version append below AND the legacy retroactive
+        // propagation path further down, so both agree on what counts as
+        // a real policy change (a description/name-only edit is neither).
+        $allocAffecting = [
+            'days_per_year', 'carry_forward', 'max_carry', 'status',
+            'accrual_mode', 'max_balance', 'waiting_period_days',
+        ];
+        $allocChanged = false;
+        if (!$isNew && is_array($prevType)) {
+            foreach ($allocAffecting as $f) {
+                $old = $prevType[$f] ?? null;
+                $new = $data[$f] ?? null;
+                if (is_bool($old) || is_bool($new)) {
+                    if ((bool) $old !== (bool) $new) { $allocChanged = true; break; }
+                } elseif ((string) $old !== (string) $new) {
+                    $allocChanged = true; break;
+                }
+            }
+        }
+
+        // Leave Policy Programme Phase 2 (2026-08-18) — effective-dated
+        // versions. Flat fields above stay the dual-written, currently-
+        // effective SNAPSHOT (unchanged shape — the Teacher app reads
+        // schools.leaveTypes directly), so nothing outside this block is
+        // aware versions[] exists. Only written/appended when
+        // LEAVE_EFFECTIVE_DATING_ENABLED — off by default, so this whole
+        // block is inert (identical document shape to before) for every
+        // school until explicitly turned on. Only appended on a genuine
+        // allocation-affecting change (or type creation) — a no-op resave
+        // or a description-only edit must not mint a redundant version.
+        $versionAppendError = null;
+        if ($this->_leave_flag('LEAVE_EFFECTIVE_DATING_ENABLED') && ($isNew || $allocChanged)) {
+            require_once APPPATH . 'libraries/Leave_policy_service.php';
+            $existingVersions = (!$isNew && is_array($prevType) && is_array($prevType['versions'] ?? null))
+                ? $prevType['versions'] : [];
+            $effectiveFrom = trim((string) $this->input->post('effective_from'));
+            if ($effectiveFrom === '') $effectiveFrom = substr($now, 0, 10); // server today
+            $check = \Leave_policy_service::canAppendVersion($existingVersions, $effectiveFrom);
+            if ($check['ok']) {
+                $existingVersions[] = [
+                    'effectiveFrom'      => $effectiveFrom,
+                    'days_per_year'      => $daysPerYear,
+                    'carry_forward'      => $carryForward,
+                    'max_carry'          => $maxCarry,
+                    'paid'               => $paid,
+                    'status'             => $status,
+                    'accrual_mode'       => $accrualMode,
+                    'max_balance'        => $maxBalance,
+                    'waiting_period_days'=> $waitingPeriodDays,
+                ];
+                $data['versions'] = $existingVersions;
+            } else {
+                // Refuse ambiguity, never silently overwrite/last-write-wins
+                // (mirrors Policy_assignment_service's convention). The base
+                // type save still proceeds with its flat-field snapshot —
+                // only the new dated version is rejected — so a mistaken
+                // duplicate date doesn't block ordinary editing entirely.
+                $versionAppendError = $check['error'];
+                if (!empty($existingVersions)) $data['versions'] = $existingVersions;
+            }
         }
 
         // 1. Firestore FIRST — update leaveTypes map on schools doc.
@@ -3075,45 +4828,62 @@ HTML;
         }
 
         // Audit (MEDIUM #9): leave-type config changes are now audit-logged.
-        $this->_log_leave_audit([
+        // Phase F (2026-08-18) — the entry previously recorded only the NEW
+        // value, so a later reader could see THAT days_per_year changed but
+        // not the actual delta (e.g. "was 12, now 20") that drove a
+        // retroactive balance rewrite via _propagate_leave_type_to_balances().
+        // Purely additive traceability — does not change what gets
+        // propagated or how; ground-laying for the still-undecided
+        // effective-dating policy (retroactive vs. prospective quota edits),
+        // not an implementation of it.
+        $auditEntry = [
             'action'       => $isNew ? 'leave_type_created' : 'leave_type_updated',
             'leave_type_id'=> $id,
             'leave_type'   => $code,
             'type_name'    => $name,
             'paid_flag'    => $paid,
             'days_per_year'=> $daysPerYear,
-        ]);
+        ];
+        if (!$isNew && is_array($prevType)) {
+            $auditEntry['previous_days_per_year'] = (int) ($prevType['days_per_year'] ?? 0);
+            $auditEntry['previous_carry_forward'] = (bool) ($prevType['carry_forward'] ?? false);
+            $auditEntry['previous_max_carry']     = (int) ($prevType['max_carry'] ?? 0);
+            $auditEntry['previous_status']        = (string) ($prevType['status'] ?? 'Active');
+            $auditEntry['previous_paid_flag']     = (bool) ($prevType['paid'] ?? false);
+        }
+        $this->_log_leave_audit($auditEntry);
 
         // Propagate to existing stored balances if an allocation-affecting field
         // changed (single source of truth, retroactive). New types have no stored
         // balances yet — get_leave_balances derives their entitlement live — so we
         // only propagate on EDITS. Propagation failure must NOT fail the type save;
         // it is surfaced as a non-fatal warning instead.
+        //
+        // Phase 2 — this retroactive rewrite is exactly what effective-dated
+        // versioning replaces. When the flag is on, a new version was
+        // already appended above (prospective — future Leave Years only);
+        // running the retroactive propagator too would reintroduce the
+        // exact "quota edit silently changes an already-consumed balance"
+        // risk this phase exists to close, so it's skipped entirely.
         $warning = null;
-        if (!$isNew && is_array($prevType)) {
-            $affecting = ['days_per_year', 'carry_forward', 'max_carry', 'status'];
-            $changed = false;
-            foreach ($affecting as $f) {
-                $old = $prevType[$f] ?? null;
-                $new = $data[$f] ?? null;
-                if (is_bool($old) || is_bool($new)) {
-                    if ((bool) $old !== (bool) $new) { $changed = true; break; }
-                } elseif ((string) $old !== (string) $new) {
-                    $changed = true; break;
-                }
-            }
-            if ($changed) {
+        if ($versionAppendError !== null) {
+            $warning = $versionAppendError === 'duplicate_effective_from'
+                ? "Leave type saved, but a policy version effective {$effectiveFrom} already exists — choose a different effective date to record this change."
+                : 'Leave type saved, but the effective date for this change was invalid — no new policy version was recorded.';
+        } elseif (!$isNew && is_array($prevType) && !$this->_leave_flag('LEAVE_EFFECTIVE_DATING_ENABLED')) {
+            if ($allocChanged) {
                 try {
                     $propYear = date('Y');
                     $affected = $this->_propagate_leave_type_to_balances($id, $data, $propYear);
                     $this->_log_leave_audit([
-                        'action'        => 'leave_type_propagated',
-                        'leave_type_id' => $id,
-                        'leave_type'    => $code,
-                        'type_name'     => $name,
-                        'days_per_year' => $daysPerYear,
-                        'year'          => $propYear,
-                        'staff_updated' => $affected,
+                        'action'                 => 'leave_type_propagated',
+                        'leave_type_id'          => $id,
+                        'leave_type'             => $code,
+                        'type_name'              => $name,
+                        'days_per_year'          => $daysPerYear,
+                        'previous_days_per_year' => (int) ($prevType['days_per_year'] ?? 0),
+                        'year'                   => $propYear,
+                        'staff_updated'          => $affected,
                     ]);
                 } catch (\Exception $e) {
                     log_message('error', "HR: save_leave_type -> balance propagation FAILED for {$id}: " . $e->getMessage());
@@ -3344,7 +5114,17 @@ HTML;
         // H10 (privilege): non-HR viewers (e.g. Teacher) may only read their
         // OWN balances. Force staff_id to the caller's own id ($this->admin_id
         // is the raw uid = staffId) and ignore any requested staff_id.
-        $isHr = (function_exists('has_permission') && has_permission('HR', 'edit')) || in_array($this->admin_role, self::HR_ROLES, true);
+        //
+        // P0-1/D2 (HRMS alignment): the legacy `|| in_array($this->admin_role,
+        // HR_ROLES)` re-grant was REMOVED. It defeated the graded map — a user
+        // whose role NAME is in HR_ROLES (Admin/Principal/HR Manager) but who
+        // has been deliberately graded down to HR:view regained cross-staff
+        // reads. The graded capability is now the sole authority here, matching
+        // _require_role()'s own graded-authoritative contract and the rules
+        // layer, which already dropped the bare 'Principal' label (audit C3).
+        // Bypass roles (Super Admin / School Super Admin) are unaffected —
+        // has_permission() short-circuits true for them.
+        $isHr = (function_exists('has_permission') && has_permission('HR', 'edit'));
         if (!$isHr) {
             $staffId = (string) ($this->admin_id ?? '');
             if ($staffId === '') {
@@ -3363,7 +5143,12 @@ HTML;
             $stored    = $this->_fsGetLeaveBalance($staffId, $year);
             $stored    = is_array($stored) ? $stored : [];
             $staffMeta = $this->_fsGetStaffProfile($staffId);
-            $balances  = $this->_deriveLiveBalances($stored, $activeTypes, is_array($staffMeta) ? $staffMeta : null);
+            // Phase 2 — resolve against the END of the requested calendar
+            // year (Phase 1's balance-doc key is still the raw calendar
+            // year, not yet cut over to a session label — see
+            // Leave_year_service's docblock), so a mid-year policy edit is
+            // reflected for the year it actually applies to.
+            $balances  = $this->_deriveLiveBalances($stored, $activeTypes, is_array($staffMeta) ? $staffMeta : null, "{$year}-12-31");
             $this->json_success([
                 'balances' => $balances,
                 'staff_id' => $staffId,
@@ -3385,7 +5170,7 @@ HTML;
         foreach ($staffIds as $sid) {
             $stored = is_array($result[$sid] ?? null) ? $result[$sid] : [];
             $meta   = is_array($roster[$sid] ?? null) ? $roster[$sid] : null;
-            $derived[$sid] = $this->_deriveLiveBalances($stored, $activeTypes, $meta);
+            $derived[$sid] = $this->_deriveLiveBalances($stored, $activeTypes, $meta, "{$year}-12-31");
         }
 
         // Leave type names — include ALL types (active + any stored-inactive) so
@@ -3468,10 +5253,23 @@ HTML;
                 $sid = $req['staff_id'] ?? '';
                 $tid = $req['type_id'] ?? '';
                 if ($sid === '' || $tid === '') continue;
-                $d = (int) ($req['days'] ?? 0);
+                // FRACTION SAFETY (2026-08-19). This was `(int)`, and `days` is
+                // provably fractional: a half-day request is 0.5, and under
+                // Calendar Half-Day the calendar-aware count makes a FULL-day
+                // request on such a day 0.5 as well (a multi-day span crossing
+                // one yields e.g. 2.5). Truncating here meant a half-day leave
+                // consumed ZERO balance in the reconciler that this very loop
+                // calls the authoritative source — so the entitlement could be
+                // taken repeatedly without ever being debited.
+                //
+                // Integer-preserving on purpose: a whole-day value is added as
+                // an int, so a tenant with no fractional leave keeps integer
+                // `used` and `balance` values and its stored documents do not
+                // change type. Same precedent as the leave counters in payroll.
+                $d = (float) ($req['days'] ?? 0);
                 if (!isset($usedMap[$sid])) $usedMap[$sid] = [];
                 if (!isset($usedMap[$sid][$tid])) $usedMap[$sid][$tid] = 0;
-                $usedMap[$sid][$tid] += $d;
+                $usedMap[$sid][$tid] += ($d == floor($d)) ? (int) $d : $d;
             }
         }
 
@@ -3488,10 +5286,35 @@ HTML;
                 if (!empty($lt['carry_forward'])) {
                     $prevBal = 0;
                     if (is_array($prevBalances) && isset($prevBalances[$staffId][$typeId]['balance'])) {
-                        $prevBal = (int) $prevBalances[$staffId][$typeId]['balance'];
+                        // Also fraction-safe: last year's closing balance is
+                        // fractional whenever a half-day was taken, and an (int)
+                        // here silently confiscated the half day on carry-forward.
+                        $pb = (float) $prevBalances[$staffId][$typeId]['balance'];
+                        $prevBal = ($pb == floor($pb)) ? (int) $pb : $pb;
                     }
-                    $maxCarry = (int) ($lt['max_carry'] ?? 0);
-                    $carried = ($maxCarry > 0) ? min($prevBal, $maxCarry) : $prevBal;
+                    // SEMANTICS UNIFIED (2026-08-20). This path treated
+                    // max_carry = 0 as UNLIMITED — an undocumented magic value
+                    // with no affordance in the UI, whose field is labelled
+                    // plainly "Max Carry Days". preview_leave_year_closure()
+                    // computes `min($unused, $maxCarry)`, i.e. 0 means ZERO
+                    // days, and it is the newer effective-dated engine. The two
+                    // therefore produced OPPOSITE entitlement from one config:
+                    // closure forfeited the whole balance while this reconciler
+                    // carried all of it forward.
+                    //
+                    // Unified on the closure semantics: 0 means zero. Census
+                    // 2026-08-20 across all tenants found 13 leave types, 1 with
+                    // carry_forward enabled and none with max_carry = 0, so no
+                    // employee's balance changes today — this closes the trap
+                    // before the first tenant sets 0 and silently gets unlimited
+                    // carry-forward.
+                    //
+                    // Fraction-safe and integer-preserving for the same reason as
+                    // $prevBal above: a whole-number cap stays an int so untouched
+                    // tenants keep integer balances.
+                    $mc       = (float) ($lt['max_carry'] ?? 0);
+                    $maxCarry = ($mc == floor($mc)) ? (int) $mc : $mc;
+                    $carried  = min($prevBal, $maxCarry);
                     if ($carried < 0) $carried = 0;
                 }
 
@@ -3549,8 +5372,12 @@ HTML;
 
         // H10 (privilege): non-HR viewers (e.g. Teacher) may only list their OWN
         // requests. Force the staff filter to the caller's own id regardless of
-        // any requested staff_id. HR_ROLES keep full cross-staff visibility.
-        $isHr = (function_exists('has_permission') && has_permission('HR', 'edit')) || in_array($this->admin_role, self::HR_ROLES, true);
+        // any requested staff_id. Holders of HR:edit keep cross-staff visibility.
+        //
+        // P0-1/D3 (HRMS alignment): legacy role-name re-grant REMOVED — see the
+        // rationale on get_leave_balances(). Graded capability is the sole
+        // authority; a name-matched but graded-down caller is now clamped to self.
+        $isHr = (function_exists('has_permission') && has_permission('HR', 'edit'));
         if (!$isHr) {
             $filterStaffId = (string) ($this->admin_id ?? '');
             if ($filterStaffId === '') {
@@ -3657,8 +5484,13 @@ HTML;
 
         // H10 (privilege): a non-HR caller (e.g. Teacher) may only apply for
         // THEMSELVES. Force staff_id to the caller's own id ($this->admin_id is
-        // the raw uid = staffId); only HR_ROLES may apply on behalf of others.
-        if (!(function_exists('has_permission') && has_permission('HR', 'edit')) && !in_array($this->admin_role, self::HR_ROLES, true)) {
+        // the raw uid = staffId); only HR:edit holders may apply on behalf of others.
+        //
+        // P0-1/D4 (HRMS alignment): legacy role-name re-grant REMOVED — see the
+        // rationale on get_leave_balances(). This was the highest-integrity of the
+        // four: it let a name-matched but graded-down caller file leave ON BEHALF
+        // OF another employee. Graded capability is now the sole authority.
+        if (!(function_exists('has_permission') && has_permission('HR', 'edit'))) {
             $ownId = (string) ($this->admin_id ?? '');
             if ($ownId === '') {
                 $this->json_error('You are not permitted to apply leave for another staff member.');
@@ -3697,9 +5529,13 @@ HTML;
         if ($spanDays > self::LEAVE_MAX_SPAN_DAYS) {
             $this->json_error('Leave span cannot exceed ' . self::LEAVE_MAX_SPAN_DAYS . ' days.');
         }
+
         // MEDIUM (#7): a half-day counts as 0.5 (matches payroll's 0.5 LWP and
-        // the 0.5 balance deduction below); a full-day range counts its span.
-        $days = $halfDay ? 0.5 : $spanDays;
+        // the 0.5 balance deduction below); a full-day range's chargeable
+        // count is calendar-resolved below once the staff profile (and so
+        // department) is known.
+        $days = $halfDay ? 0.5 : (float) $spanDays;
+        $calendarAware = false;
 
         // Verify leave type — Firestore-first via helper
         $leaveType = $this->_fsGetLeaveType($typeId);
@@ -3729,20 +5565,98 @@ HTML;
             $this->json_error('Cannot perform this action for an inactive staff member.');
         }
 
-        $staffName = $staffProfile['Name'] ?? $staffProfile['name'] ?? $staffId;
+        $staffName  = $staffProfile['Name'] ?? $staffProfile['name'] ?? $staffId;
+        $department = (string) ($staffProfile['Department'] ?? $staffProfile['department'] ?? '');
+
+        // Leave Policy Programme Phase 5 (2026-08-18) — waiting period.
+        // Evaluated at APPLICATION time (not decision time — an applicant
+        // shouldn't be able to queue a request they were never eligible to
+        // file in the first place). OFF (default): no eligibility delay,
+        // byte-identical to before this phase. Composes with Phase 2 —
+        // resolves waiting_period_days from whichever version governs
+        // $fromDate when effective-dating is also live.
+        if ($this->_leave_flag('LEAVE_WAITING_PERIOD_ENABLED')) {
+            $waitingDays = (int) ($leaveType['waiting_period_days'] ?? 0);
+            if ($this->_leave_flag('LEAVE_EFFECTIVE_DATING_ENABLED')) {
+                require_once APPPATH . 'libraries/Leave_policy_service.php';
+                $ver = \Leave_policy_service::effectiveVersion($leaveType, $fromDate);
+                if ($ver !== null) $waitingDays = (int) ($ver['waiting_period_days'] ?? 0);
+            }
+            if ($waitingDays > 0) {
+                $joinDateRaw = $staffProfile['joinDate'] ?? $staffProfile['dateOfJoining']
+                    ?? $staffProfile['Date Of Joining'] ?? $staffProfile['Joining Date'] ?? null;
+                $joinDate = ($joinDateRaw !== null) ? $this->_normalize_date((string) $joinDateRaw, 'apply_leave.joinDate') : null;
+                if ($joinDate !== null && $joinDate !== '') {
+                    $eligibleFrom = date('Y-m-d', strtotime("{$joinDate} +{$waitingDays} days"));
+                    if ($fromDate < $eligibleFrom) {
+                        $this->json_error(
+                            "This leave type has a {$waitingDays}-day waiting period from the join date. "
+                            . "Eligible from {$eligibleFrom}."
+                        );
+                    }
+                }
+                // Unknown/unparseable join date → fail OPEN (no block) —
+                // the eligibility gate must never punish missing profile
+                // data by silently refusing every application; a missing
+                // join date is a data-quality issue for HR to fix, not
+                // grounds to block leave filing.
+            }
+        }
+
+        // Phase F (2026-08-18) — calendar-aware chargeable-day count for a
+        // full-day request. A leave request no longer deducts weekly-offs/
+        // holidays that fall inside its span; only actual working days are
+        // chargeable, using the SAME resolver Payroll's LOP already uses.
+        // Half-day stays the pre-existing fixed 0.5 — untouched, separate
+        // concept. Fails open to the raw calendar span (pre-existing
+        // behaviour) when the employee's work-schedule calendar cannot be
+        // resolved — filing leave must never hard-block on a payroll-config
+        // gap.
+        if (!$halfDay) {
+            try {
+                $this->load->library('holiday_service');
+                $this->holiday_service->init($this->fs, (string) $this->school_id, (string) $this->session_year);
+            } catch (\Throwable $e) {
+                log_message('error', 'apply_leave: holiday_service load failed: ' . $e->getMessage());
+            }
+            $chargeable = $this->_count_chargeable_leave_days($staffId, $department, $fromDate, $toDate);
+            $days = $chargeable['days'];
+            $calendarAware = $chargeable['calendarAware'];
+        }
 
         // Determine if leave type is paid — paid leaves never become LWP
         $isPaidType = filter_var($leaveType['paid'] ?? false, FILTER_VALIDATE_BOOLEAN);
         $leaveCode  = strtoupper(trim($leaveType['code'] ?? ''));
         log_message('debug', "apply_leave: type_id={$typeId}, code={$leaveCode}, paid=" . ($isPaidType ? 'YES' : 'NO') . ", days={$days}, staff={$staffId}");
 
-        // Check leave balance — Firestore-first via helper
+        // Check leave balance — Firestore-first via helper.
+        // Comp-Off is deliberately NOT read from the standard allocated/
+        // carried/used balance doc (its days_per_year is 0 by design — see
+        // the COMP-OFF LEDGER section) — its balance comes from the earned
+        // credit ledger instead.
         $year = date('Y', strtotime($fromDate));
-        $balance = $this->_fsGetLeaveBalance($staffId, $year, $typeId);
         $currentBalance = 0.0;
-        if (is_array($balance) && isset($balance['balance'])) {
-            // Balances may be fractional (0.5) after half-day deductions — use float.
-            $currentBalance = max(0.0, (float) $balance['balance']);
+        if ($leaveCode === self::COMP_OFF_TYPE_CODE) {
+            $currentBalance = $this->_comp_off_available_balance($staffId);
+        } else {
+            $balance = $this->_fsGetLeaveBalance($staffId, $year, $typeId);
+            if (is_array($balance) && isset($balance['balance'])) {
+                // Balances may be fractional (0.5) after half-day deductions — use float.
+                $currentBalance = max(0.0, (float) $balance['balance']);
+                // Monthly accrual (per-school opt-in, 2026-09-19): a type that
+                // accrues monthly can only be taken up to what has ACCRUED so
+                // far, not the full annual the stored balance still reflects.
+                // Cap here; any excess still degrades to LWP below (never hard-
+                // blocked). Default (no accrual) leaves currentBalance untouched,
+                // so every existing and brand-new school is byte-identical.
+                if ($this->_type_accrues($leaveType, "{$year}-12-31")) {
+                    $accrualAvail = max(0.0,
+                        (float) ($balance['accruedToDate'] ?? 0)
+                        + (float) ($balance['carried'] ?? 0)
+                        - (float) ($balance['used'] ?? 0));
+                    $currentBalance = min($currentBalance, $accrualAvail);
+                }
+            }
         }
 
         if (!$isPaidType) {
@@ -3786,14 +5700,17 @@ HTML;
         }
 
         // Build human-readable calculation reason
+        $calSuffix = ($calendarAware && !$halfDay && $days != (float) $spanDays)
+            ? " [{$days} working day(s) of {$spanDays} calendar day(s) — weekly-offs/holidays excluded]"
+            : '';
         if (!$isPaidType) {
-            $calcReason = "Unpaid leave type ({$leaveCode}) — all {$days} day(s) are LWP by definition";
+            $calcReason = "Unpaid leave type ({$leaveCode}) — all {$days} day(s) are LWP by definition" . $calSuffix;
             $payLabel   = 'Unpaid Leave (LWP)';
         } elseif ($lwpDays === 0) {
-            $calcReason = "Paid leave ({$leaveCode}), balance sufficient ({$currentBalance} available)";
+            $calcReason = "Paid leave ({$leaveCode}), balance sufficient ({$currentBalance} available)" . $calSuffix;
             $payLabel   = 'Fully Paid';
         } else {
-            $calcReason = "Paid leave ({$leaveCode}) but balance exhausted — {$paidDays} paid (balance: {$currentBalance}), {$lwpDays} day(s) as LWP";
+            $calcReason = "Paid leave ({$leaveCode}) but balance exhausted — {$paidDays} paid (balance: {$currentBalance}), {$lwpDays} day(s) as LWP" . $calSuffix;
             $payLabel   = 'Partially Paid (Exceeds Balance)';
         }
 
@@ -3807,6 +5724,8 @@ HTML;
             'from_date'           => $fromDate,
             'to_date'             => $toDate,
             'days'                => $days,
+            'calendar_days'       => (float) $spanDays,
+            'calendar_aware'      => $calendarAware,
             'paid_days'           => $paidDays,
             'lwp_days'            => $lwpDays,
             'half_day'            => $halfDay,
@@ -4073,9 +5992,22 @@ HTML;
         // the previous read-modify-write + post-write "verify negative then roll
         // back" dance, which could not actually serialize concurrent deductions.
         // #7 — half-day $days is 0.5, so the deduction is 0.5 (matches payroll).
+        $isCompOff = is_array($leaveType) && strtoupper(trim($leaveType['code'] ?? '')) === self::COMP_OFF_TYPE_CODE;
+        $compOffConsumedIds = [];
+        $compOffTakes       = [];
         $paidDays = $days;
         $lwpDays  = 0.0;
-        if ($decision === 'Approved') {
+        if ($decision === 'Approved' && $isCompOff) {
+            // Comp-Off never touches the standard allocated/carried/used
+            // balance doc — it consumes the earned-credit ledger instead
+            // (see the COMP-OFF LEDGER section). Consumption is per-credit
+            // CAS-protected already; no outer retry loop needed here.
+            $result = $this->_consumeCompOffLedger($staffId, $days);
+            $paidDays = $result['paid'];
+            $lwpDays  = $result['lwp'];
+            $compOffConsumedIds = $result['consumedIds'];
+            $compOffTakes       = is_array($result['takes'] ?? null) ? $result['takes'] : [];
+        } elseif ($decision === 'Approved') {
             $allocatedForNew = is_array($leaveType) ? (int) ($leaveType['days_per_year'] ?? 0) : 0;
             $capturedPaid = null;
             $capturedLwp  = null;
@@ -4185,6 +6117,12 @@ HTML;
                 'payLabel'  => $payLabel,
                 'calculationReason' => $calcReason,
                 'updatedAt' => date('c'),
+                // Persisted so cancel_leave() can release exactly these
+                // credits back to 'available' — never guesses which ones.
+                'compOffLedgerIds'   => $compOffConsumedIds,
+                // D-001: exact amount taken per credit, so a later cancellation
+                // restores precisely that much rather than a whole credit.
+                'compOffLedgerTakes' => $compOffTakes,
             ]);
             // Use the actual Firestore doc ID (works for both HR-format and Teacher-app-format)
             $writeDocId = $fsDocId !== '' ? $fsDocId : $this->fs->docId("LR_{$id}");
@@ -4195,7 +6133,9 @@ HTML;
         }
         if (!$writeOk) {
             // Roll back the balance deduction (approvals only) to its exact prior state.
-            if ($decision === 'Approved') {
+            if ($decision === 'Approved' && $isCompOff) {
+                $this->_releaseCompOffLedger($compOffConsumedIds, $compOffTakes);
+            } elseif ($decision === 'Approved') {
                 $this->_casLeaveBalance($staffId, $year, function (array $balances) use ($typeId, $capturedOrig) {
                     if ($capturedOrig === null) {
                         unset($balances[$typeId]);           // type had no record before — remove it
@@ -4212,14 +6152,16 @@ HTML;
         // On approval, automatically mark attendance as "L" (Leave) for each leave day —
         // EXCEPT for half-day leave, which lives only on the leave doc (payroll prorates).
         $isHalfDay = filter_var($request['half_day'] ?? $request['halfDay'] ?? false, FILTER_VALIDATE_BOOLEAN);
+        $attendanceWarnings = [];
         if ($decision === 'Approved' && !$isHalfDay) {
-            $this->_apply_leave_to_attendance(
+            $attendanceWarnings = $this->_apply_leave_to_attendance(
                 $staffId,
                 $request['from_date'] ?? '',
                 $request['to_date'] ?? '',
                 $isPaidType ? 'Paid' : 'Unpaid',
                 $paidDays,
-                $lwpDays
+                $lwpDays,
+                (string) $id
             );
         }
 
@@ -4262,7 +6204,10 @@ HTML;
         if ($decision === 'Approved' && $lwpDays > 0) {
             $msg .= " ({$paidDays} paid, {$lwpDays} LWP)";
         }
-        $this->json_success(['message' => $msg, 'paid_days' => $paidDays, 'lwp_days' => $lwpDays]);
+        if (!empty($attendanceWarnings)) {
+            $msg .= ' Note: ' . implode(' ', $attendanceWarnings);
+        }
+        $this->json_success(['message' => $msg, 'paid_days' => $paidDays, 'lwp_days' => $lwpDays, 'attendance_warnings' => $attendanceWarnings]);
     }
 
     /**
@@ -4361,7 +6306,20 @@ HTML;
         $lwpDays  = (float) ($request['lwp_days'] ?? 0);
         $totalUsedDays = $paidDays + $lwpDays;
         if ($totalUsedDays <= 0) $totalUsedDays = $days;        // legacy fallback
-        if ($currentStatus === 'approved' && $staffId !== '' && $typeId !== '' && $totalUsedDays > 0) {
+        $isCompOffCancel = strtoupper(trim((string) ($request['type_code'] ?? ''))) === self::COMP_OFF_TYPE_CODE;
+        if ($currentStatus === 'approved' && $isCompOffCancel) {
+            // Release exactly the credits this request consumed — recorded
+            // on the request doc at approval time, never re-derived/guessed.
+            //
+            // D-001: `compOffLedgerTakes` carries how MUCH was taken from each
+            // credit, so a partially-spent credit gets back precisely that
+            // amount. Requests approved before partial consumption existed
+            // carry only the id list; those credits were necessarily spent
+            // whole, and the id-only release restores them correctly.
+            $ledgerIds = is_array($request['compOffLedgerIds'] ?? null) ? $request['compOffLedgerIds'] : [];
+            $ledgerTakes = is_array($request['compOffLedgerTakes'] ?? null) ? $request['compOffLedgerTakes'] : [];
+            if (!empty($ledgerIds)) $this->_releaseCompOffLedger($ledgerIds, $ledgerTakes);
+        } elseif ($currentStatus === 'approved' && $staffId !== '' && $typeId !== '' && $totalUsedDays > 0) {
             $this->_casLeaveBalance($staffId, $year, function (array $balances) use ($typeId, $totalUsedDays) {
                 $cur = is_array($balances[$typeId] ?? null) ? $balances[$typeId] : null;
                 if ($cur === null) return $balances;            // nothing to restore
@@ -4373,8 +6331,9 @@ HTML;
         }
 
         // Revert attendance marks if the leave was previously approved
+        $revertWarnings = [];
         if ($currentStatus === 'approved') {
-            $this->_revert_leave_from_attendance(
+            $revertWarnings = $this->_revert_leave_from_attendance(
                 $staffId,
                 $request['from_date'] ?? '',
                 $request['to_date'] ?? ''
@@ -4419,8 +6378,13 @@ HTML;
             'decision_reason'  => ($currentStatus === 'approved' ? 'balance restored + attendance reverted' : 'pending request withdrawn'),
         ]);
 
+        $cancelMsg = 'Leave request cancelled.' . ($currentStatus === 'approved' ? ' Balance restored, attendance reverted.' : '');
+        if (!empty($revertWarnings)) {
+            $cancelMsg .= ' Note: ' . implode(' ', $revertWarnings);
+        }
         $this->json_success([
-            'message' => 'Leave request cancelled.' . ($currentStatus === 'approved' ? ' Balance restored, attendance reverted.' : ''),
+            'message' => $cancelMsg,
+            'attendance_warnings' => $revertWarnings,
         ]);
     }
 
@@ -4429,19 +6393,45 @@ HTML;
     // ====================================================================
 
     /**
-     * Mark attendance as "L" (Leave) for each day of an approved leave request.
-     * Called automatically when leave is approved.
+     * Trail 2 (Work Schedule → Calendar → Attendance → Leave/LOP → Payroll),
+     * Phase D §5 follow-up (2026-08-18) — REWRITTEN to close a confirmed,
+     * compounding defect: the previous implementation wrote directly via
+     * $this->firebase->firestoreSet(), bypassing Staff_attendance_writer
+     * entirely — no lock check (could silently write into a payroll-closed
+     * month), no CAS on the summary rebuild (a race with a concurrent
+     * punch/grid-save/finaliser write could clobber either side), a drifted
+     * field name ('vacation' instead of the canonical 'void', with
+     * halfDay/extraWorked/weeklyOff never written at all), and an unbounded
+     * per-staff query scanning ALL of staffAttendance with no server-side
+     * date filter.
      *
-     * Staff attendance is stored at:
-     *   Schools/{school}/{session}/Staff_Attendance/{Month Year}/{staffId}
-     * as a string like "PPAPPP..." where each char = day status (P/A/L/H/T/V).
+     * Now routes through Staff_attendance_writer::markSingleDay() — the
+     * SAME canonical writer punch/mark_staff_day/bulk_mark_staff/the grid's
+     * whole-month save already use. No second writer created. This also
+     * fixes the field-name drift and the unbounded query as a direct
+     * consequence (the writer owns the summary shape and reads by doc ID,
+     * not a full collection scan).
      *
-     * @param string $staffId   Staff ID
-     * @param string $fromDate  Leave start date (YYYY-MM-DD)
-     * @param string $toDate    Leave end date (YYYY-MM-DD)
-     * @param string $leaveType "Paid" or "Unpaid"
-     * @param int    $paidDays  Number of paid leave days
-     * @param int    $lwpDays   Number of unpaid (LWP) leave days
+     * Mark attendance as "L" (Leave) for each day of an approved leave
+     * request. Called automatically when leave is approved.
+     *
+     * A month that is locked (payroll-closed) is deliberately NOT written
+     * to — the leave decision itself still succeeds (this function never
+     * blocks the caller), but that specific date's attendance is skipped
+     * and reported back as a warning string, exactly mirroring the
+     * fail-tolerant "warnings[]" pattern payroll already uses elsewhere in
+     * this file. Silently corrupting a closed month, or silently blocking
+     * an otherwise-valid leave decision because of one unrelated locked
+     * date, are both worse than a visible, explicit skip.
+     *
+     * @param string $staffId    Staff ID
+     * @param string $fromDate   Leave start date (YYYY-MM-DD)
+     * @param string $toDate     Leave end date (YYYY-MM-DD)
+     * @param string $leaveType  "Paid" or "Unpaid"
+     * @param int    $paidDays   Number of paid leave days
+     * @param int    $lwpDays    Number of unpaid (LWP) leave days
+     * @param string $leaveAppId The leave application's own doc/request id, for audit cross-reference
+     * @return string[] Warnings for any date that could not be written (locked month / writer failure)
      */
     private function _apply_leave_to_attendance(
         string $staffId,
@@ -4449,79 +6439,37 @@ HTML;
         string $toDate,
         string $leaveType,
         int $paidDays,
-        int $lwpDays
-    ): void {
-        if (!$staffId || !$fromDate || !$toDate) return;
+        int $lwpDays,
+        string $leaveAppId = ''
+    ): array {
+        if (!$staffId || !$fromDate || !$toDate) return [];
 
         $school  = $this->school_name;
         $session = $this->session_year;
-        $months  = [
-            1 => 'January', 2 => 'February', 3 => 'March', 4 => 'April',
-            5 => 'May', 6 => 'June', 7 => 'July', 8 => 'August',
-            9 => 'September', 10 => 'October', 11 => 'November', 12 => 'December',
-        ];
 
-        // Iterate each day in the leave range
+        $this->load->library('staff_attendance_writer');
+        $this->staff_attendance_writer->init($this->firebase, $this->school_id, $this->session_year);
+
+        $warnings = [];
         $cursor = new DateTime($fromDate);
         $end    = new DateTime($toDate);
-
         while ($cursor <= $end) {
-            $dayNum   = (int) $cursor->format('j');  // 1-based day of month
-            $monthNum = (int) $cursor->format('n');
-            $yearNum  = (int) $cursor->format('Y');
-            $monthName = $months[$monthNum] ?? '';
-            $attKey    = "{$monthName} {$yearNum}";
-            $daysInMonth = (int) $cursor->format('t');
-
-            // Read existing attendance — Firestore summary first
-            $attStr = '';
+            $dateISO = $cursor->format('Y-m-d');
             try {
-                $monthKeyISO = sprintf('%04d-%02d', $yearNum, $monthNum);
-                $fsSummary = $this->firebase->firestoreGet('staffAttendanceSummary', "{$school}_{$staffId}_{$monthKeyISO}");
-                if (is_array($fsSummary) && isset($fsSummary['dayWise'])) {
-                    $attStr = $fsSummary['dayWise'];
-                }
-            } catch (\Exception $e) {
-                log_message('error', "Hr::_apply_leave_to_attendance Firestore summary read failed: " . $e->getMessage());
+                $ctx = ['markedBy' => 'leave_approval', 'source' => 'leave_approval', 'leaveType' => $leaveType];
+                if ($leaveAppId !== '') $ctx['leaveAppId'] = $leaveAppId;
+                $this->staff_attendance_writer->markSingleDay($staffId, $dateISO, 'L', $ctx);
+            } catch (MonthLockedException $e) {
+                $warnings[] = "Attendance for {$dateISO} was not updated — that month is locked.";
+            } catch (\Throwable $e) {
+                log_message('error', "Hr::_apply_leave_to_attendance writer failed for {$staffId} {$dateISO}: " . $e->getMessage());
+                $warnings[] = "Attendance for {$dateISO} could not be updated — please verify manually.";
             }
-
-            if (!is_string($attStr) || strlen($attStr) === 0) {
-                $attStr = str_repeat('V', $daysInMonth);
-            }
-            while (strlen($attStr) < $daysInMonth) {
-                $attStr .= 'V';
-            }
-
-            // Only overwrite if the day is not already marked as leave
-            $idx = $dayNum - 1; // 0-based index
-            $currentMark = strtoupper($attStr[$idx] ?? 'V');
-            if ($currentMark !== 'L') {
-                // Mark as "L" (Leave) — prevents double-counting as Absent
-                $attStr[$idx] = 'L';
-            }
-
-            // Firestore: write/update staffAttendance doc for this day
-            try {
-                $dateISO = $cursor->format('Y-m-d');
-                $fsDocId = "{$school}_{$dateISO}_{$staffId}";
-                $this->firebase->firestoreSet('staffAttendance', $fsDocId, [
-                    'schoolId'  => $this->school_id ?? $school,
-                    'session'   => $session,
-                    'date'      => $dateISO,
-                    'staffId'   => $staffId,
-                    'status'    => 'L',
-                    'markedBy'  => 'leave_approval',
-                    'markedAt'  => date('c'),
-                    'leaveType' => $leaveType,
-                ], true);
-            } catch (\Exception $e) {
-                log_message('error', "Hr::_apply_leave_to_attendance Firestore write failed: " . $e->getMessage());
-            }
-
             $cursor->modify('+1 day');
         }
 
-        // Store leave metadata for attendance cross-reference (Firestore)
+        // Store leave metadata for attendance cross-reference (Firestore) —
+        // unchanged, not part of the bug being fixed here.
         $recordKey = str_replace('-', '', $fromDate) . '_' . str_replace('-', '', $toDate);
         try {
             $metaDocId = "{$school}_{$staffId}_leave_records";
@@ -4540,137 +6488,81 @@ HTML;
             log_message('error', "Hr::_apply_leave_to_attendance meta write failed: " . $e->getMessage());
         }
 
-        // Rebuild summary for all affected months — Firestore-first
-        $cursor2 = new DateTime($fromDate);
-        $end2    = new DateTime($toDate);
-        $touchedMonths = [];
-        while ($cursor2 <= $end2) {
-            $mk = $cursor2->format('F Y');
-            $touchedMonths[$mk] = [(int)$cursor2->format('n'), (int)$cursor2->format('Y')];
-            $cursor2->modify('+1 day');
-        }
-        foreach ($touchedMonths as $attK => list($mn, $yr)) {
-            // Build dayWise string from Firestore per-day staffAttendance docs
-            $daysInMonth = cal_days_in_month(CAL_GREGORIAN, $mn, $yr);
-            $dayWise = str_repeat('V', $daysInMonth);
-
-            try {
-                $monthStart = sprintf('%04d-%02d-01', $yr, $mn);
-                $monthEnd   = sprintf('%04d-%02d-%02d', $yr, $mn, $daysInMonth);
-                // Query by staffId only (avoids composite index requirement)
-                // Filter date range client-side
-                $fsDayDocs = $this->fs->schoolWhere('staffAttendance', [
-                    ['staffId', '==', $staffId],
-                ]);
-                foreach ($fsDayDocs as $doc) {
-                    $d = is_array($doc['data'] ?? null) ? $doc['data'] : $doc;
-                    $dateStr = $d['date'] ?? '';
-                    if ($dateStr < $monthStart || $dateStr > $monthEnd) continue;
-                    $mark = strtoupper(substr($d['status'] ?? 'V', 0, 1));
-                    if ($dateStr !== '') {
-                        $dayNum = (int) date('j', strtotime($dateStr));
-                        if ($dayNum >= 1 && $dayNum <= $daysInMonth) {
-                            $dayWise[$dayNum - 1] = $mark;
-                        }
-                    }
-                }
-            } catch (\Exception $e) {
-                log_message('error', "Hr: Firestore staffAttendance read failed for summary: " . $e->getMessage());
-            }
-
-            // Count marks
-            $present = substr_count($dayWise, 'P');
-            $absent  = substr_count($dayWise, 'A');
-            $leave   = substr_count($dayWise, 'L');
-            $tardy   = substr_count($dayWise, 'T');
-            $holiday = substr_count($dayWise, 'H');
-            $vacation = substr_count($dayWise, 'V');
-
-            $monthKey = sprintf('%04d-%02d', $yr, $mn);
-            $fsDocId = "{$school}_{$staffId}_{$monthKey}";
-
-            // Write to Firestore staffAttendanceSummary
-            try {
-                $this->firebase->firestoreSet('staffAttendanceSummary', $fsDocId, [
-                    'schoolId'   => $this->school_id ?? $school,
-                    'session'    => $session,
-                    'staffId'    => $staffId,
-                    'type'       => 'staff',
-                    'month'      => $monthKey,
-                    'monthLabel' => $attK,
-                    'dayWise'    => $dayWise,
-                    'present'    => $present,
-                    'absent'     => $absent,
-                    'leave'      => $leave,
-                    'holiday'    => $holiday,
-                    'tardy'      => $tardy,
-                    'vacation'   => $vacation,
-                    'updatedAt'  => date('c'),
-                ], true);
-            } catch (\Exception $e) {
-                log_message('error', "Hr: staffAttendanceSummary Firestore write failed: " . $e->getMessage());
-            }
-
-        }
+        return $warnings;
     }
 
     /**
-     * Revert attendance marks from "L" back to "V" when a leave is cancelled.
-     * Only reverts days that are currently marked as "L".
+     * Trail 2 (Work Schedule → Calendar → Attendance → Leave/LOP → Payroll),
+     * Phase D §5 follow-up (2026-08-18) — REWRITTEN to close two confirmed
+     * defects, the second more serious than anything else found in this
+     * file's leave↔attendance integration:
+     *
+     *   1. Same bypass as _apply_leave_to_attendance() — no lock check, no
+     *      CAS, direct firestoreDelete() with no audit trail preserved.
+     *   2. The previous implementation computed the corrected dayWise
+     *      string (in-memory) and then NEVER WROTE IT BACK — only the
+     *      per-day staffAttendance doc was deleted and the leave metadata
+     *      record removed. staffAttendanceSummary.dayWise was left
+     *      permanently stale, still showing 'L' for a cancelled leave.
+     *
+     * Now routes through Staff_attendance_writer::markSingleDay() and
+     * restores each day to its RECORDED previousStatus — the status the
+     * writer itself captured on the staffAttendance doc when the leave was
+     * originally applied (Staff_attendance_writer::markSingleDay() always
+     * stamps 'previousStatus' on the doc it writes). This is a genuine
+     * correctness improvement over the pre-fix blind reset-to-'V': if the
+     * employee had a real punch/manual mark on that date BEFORE the leave
+     * was approved over it, cancelling the leave now restores that mark
+     * instead of erasing it to Vacant. A day whose current status is no
+     * longer 'L' (e.g. an admin already corrected it since) is left
+     * strictly alone — never clobbered by a stale cancellation.
+     *
+     * Revert attendance marks when a leave is cancelled. Only reverts days
+     * currently marked "L".
+     *
+     * @return string[] Warnings for any date that could not be reverted (locked month / writer failure)
      */
-    private function _revert_leave_from_attendance(string $staffId, string $fromDate, string $toDate): void
+    private function _revert_leave_from_attendance(string $staffId, string $fromDate, string $toDate): array
     {
-        if (!$staffId || !$fromDate || !$toDate) return;
+        if (!$staffId || !$fromDate || !$toDate) return [];
 
         $school  = $this->school_name;
         $session = $this->session_year;
-        $months  = [
-            1 => 'January', 2 => 'February', 3 => 'March', 4 => 'April',
-            5 => 'May', 6 => 'June', 7 => 'July', 8 => 'August',
-            9 => 'September', 10 => 'October', 11 => 'November', 12 => 'December',
-        ];
 
+        $this->load->library('staff_attendance_writer');
+        $this->staff_attendance_writer->init($this->firebase, $this->school_id, $this->session_year);
+
+        $warnings = [];
         $cursor = new DateTime($fromDate);
         $end    = new DateTime($toDate);
-
         while ($cursor <= $end) {
-            $dayNum   = (int) $cursor->format('j');
-            $monthNum = (int) $cursor->format('n');
-            $yearNum  = (int) $cursor->format('Y');
-            $monthName = $months[$monthNum] ?? '';
-            $attKey    = "{$monthName} {$yearNum}";
-            $daysInMonth = (int) $cursor->format('t');
-
-            // Read attendance — Firestore summary first
-            $attStr = '';
+            $dateISO = $cursor->format('Y-m-d');
+            $attDocId = "{$this->school_id}_{$dateISO}_{$staffId}";
             try {
-                $mkISO = sprintf('%04d-%02d', $yearNum, $monthNum);
-                $fsSummary = $this->firebase->firestoreGet('staffAttendanceSummary', "{$school}_{$staffId}_{$mkISO}");
-                if (is_array($fsSummary) && isset($fsSummary['dayWise'])) {
-                    $attStr = $fsSummary['dayWise'];
+                $existing = $this->firebase->firestoreGet('staffAttendance', $attDocId);
+                $currentStatus = is_array($existing) ? strtoupper((string) ($existing['status'] ?? '')) : '';
+                if ($currentStatus === 'L') {
+                    $restoreTo = (is_array($existing) && !empty($existing['previousStatus']))
+                        ? strtoupper((string) $existing['previousStatus']) : 'V';
+                    if (!in_array($restoreTo, \Staff_attendance_writer::ALLOWED_STATUS, true)) $restoreTo = 'V';
+                    $this->staff_attendance_writer->markSingleDay($staffId, $dateISO, $restoreTo, [
+                        'markedBy' => 'leave_cancellation',
+                        'source'   => 'leave_cancellation',
+                    ]);
                 }
-            } catch (\Exception $e) {
-                log_message('error', "Hr::_revert_leave_from_attendance Firestore summary read failed: " . $e->getMessage());
+                // currentStatus !== 'L' → a newer change already exists on this
+                // date (manual correction, re-punch, etc.); leave it untouched.
+            } catch (MonthLockedException $e) {
+                $warnings[] = "Attendance for {$dateISO} was not reverted — that month is locked.";
+            } catch (\Throwable $e) {
+                log_message('error', "Hr::_revert_leave_from_attendance writer failed for {$staffId} {$dateISO}: " . $e->getMessage());
+                $warnings[] = "Attendance for {$dateISO} could not be reverted — please verify manually.";
             }
-
-            if (is_string($attStr) && strlen($attStr) >= $dayNum) {
-                $idx = $dayNum - 1;
-                if (strtoupper($attStr[$idx]) === 'L') {
-                    $attStr[$idx] = 'V';
-                }
-            }
-
-            // Firestore: delete the staffAttendance doc for this day
-            try {
-                $dateISO = $cursor->format('Y-m-d');
-                $fsDocId = "{$school}_{$dateISO}_{$staffId}";
-                $this->firebase->firestoreDelete('staffAttendance', $fsDocId);
-            } catch (\Exception $e) {}
-
             $cursor->modify('+1 day');
         }
 
-        // Remove leave metadata record from Firestore
+        // Remove leave metadata record from Firestore — unchanged, not part
+        // of the bug being fixed here.
         $recordKey = str_replace('-', '', $fromDate) . '_' . str_replace('-', '', $toDate);
         try {
             $metaDocId = "{$school}_{$staffId}_leave_records";
@@ -4682,6 +6574,8 @@ HTML;
         } catch (\Exception $e) {
             log_message('error', "Hr::_revert_leave_from_attendance meta delete failed: " . $e->getMessage());
         }
+
+        return $warnings;
     }
 
     // ====================================================================
@@ -5025,7 +6919,7 @@ HTML;
             }
             unset($r);
         } catch (\Exception $e) {
-            log_message('warning', 'M-5 stale check failed: ' . $e->getMessage());
+            log_message('error', 'M-5 stale check failed: ' . $e->getMessage());
             // Don't block the listing — just leave stale flags absent.
         }
 
@@ -5070,6 +6964,18 @@ HTML;
                 foreach ($fsRuns as $doc) {
                     $docId = $doc['id'] ?? '';
                     if ($docId === '') continue;
+
+                    // OFF-CYCLE (2026-08-22) — preflight mirrors the guard in
+                    // generate_payroll(): only an existing MONTHLY run blocks a
+                    // new monthly run. An off-cycle run for the same period is
+                    // a different event and must not make preflight refuse.
+                    // Read with a monthly default so pre-`runType` documents
+                    // still block, which is where they belong.
+                    $dData = is_array($doc['data'] ?? null) ? $doc['data'] : [];
+                    if ((string) ($dData['runType'] ?? self::RUN_TYPE_MONTHLY) !== self::RUN_TYPE_MONTHLY) {
+                        continue;
+                    }
+
                     $parts = explode('_RUN_', $docId, 2);
                     $rid = isset($parts[1]) ? $parts[1] : $docId;
                     $this->json_error("A payroll run already exists for {$month} {$year} (ID: {$rid}). Delete or use it.");
@@ -5096,30 +7002,41 @@ HTML;
             $this->json_error('No staff found in the current session roster.');
         }
 
-        // ── Firestore-first: check salary structures coverage ──
-        $staffWithSalary = [];
-        try {
-            $fsSals = $this->fs->schoolWhere('salarySlips', [['type', '==', 'salary_structure']]);
-            if (!empty($fsSals)) {
-                foreach ($fsSals as $doc) {
-                    $sid = $doc['data']['staffId'] ?? '';
-                    if ($sid !== '') $staffWithSalary[] = $sid;
-                }
-            }
-        } catch (\Exception $e) {
-            log_message('error', "HR preflight FS salary check failed: " . $e->getMessage());
-        }
+        // ── Salary structure coverage — through the W3.1 compensation seam ──
+        $rosterIds       = array_keys($roster);
+        $periodEndDate   = date('Y-m-t', mktime(0, 0, 0, array_search($month, $validMonths) + 1, 1, (int) $year));
+        $structures      = $this->_compensation_reader()->resolveMany($rosterIds, $periodEndDate);
+        $staffWithSalary = array_keys($structures);
 
-        $rosterIds = array_keys($roster);
-        $missingStructures = array_diff($rosterIds, $staffWithSalary);
-        if (!empty($staffWithSalary)) {
-            $coveredCount = count(array_intersect($rosterIds, $staffWithSalary));
-        } else {
-            $coveredCount = 0;
-        }
+        $missingStructures = array_values(array_diff($rosterIds, $staffWithSalary));
+        $coveredCount      = count(array_intersect($rosterIds, $staffWithSalary));
 
         if (empty($staffWithSalary)) {
             $this->json_error('No salary structures found. Please set up salary structures first.');
+        }
+
+        // W3.1 — preflight names the people it is going to skip.
+        //
+        // This block used to report `count($missingStructures) . ' staff
+        // member(s) ... will be skipped'`. The named list was already computed
+        // and then discarded into a count, which left the operator with a
+        // number they could not act on: "3 will be skipped" gives you nothing
+        // to go fix. Generation has always named them
+        // ("Rahul Sharma: no salary data — skipped"), so preflight was the
+        // weaker half of the same story — you only learned WHO after running
+        // payroll. `blockers` carries that detail through to the UI; the prose
+        // warning stays so nothing that reads `warnings` today regresses.
+        $blockers = [];
+        foreach ($missingStructures as $sid) {
+            $p = $roster[$sid] ?? [];
+            $blockers[] = [
+                'staff_id'   => $sid,
+                'staff_name' => (string) ($p['Name'] ?? $p['name'] ?? $sid),
+                'department' => (string) ($p['Department'] ?? $p['department'] ?? ''),
+                'severity'   => 'blocker',
+                'reason'     => 'No salary structure — this employee will be skipped',
+                'resolution' => 'Set up a salary structure for this employee',
+            ];
         }
         if (!empty($missingStructures)) {
             $warnings[] = count($missingStructures) . ' staff member(s) in the roster have no salary structure and will be skipped.';
@@ -5178,12 +7095,106 @@ HTML;
             $warnings[] = "{$pendingCount} pending leave request(s) overlap with {$month} {$year}. Consider approving/rejecting them before generating payroll.";
         }
 
+        // ── N-15 (W3.2.5) — payout-readiness blockers, named per employee ──
+        //
+        // `hasBankDetails()` and a PAN check already existed in
+        // the W2.3 compensation readiness surface, and preflight already named
+        // people (W3.1) — the two were simply never connected, so an operator
+        // still got no warning that an employee could not actually be PAID.
+        //
+        // REUSED, NOT DUPLICATED: the bank-detail rule lives in
+        // `payroll_readiness_helper.php` and the W2 readiness surface delegates
+        // to the SAME function, so the two can never disagree. It sits in a
+        // helper rather than the compensation service because "can this person
+        // be paid" is a question about the staff document alone — and because
+        // naming that service here would trip the W2 guards that keep the
+        // compensation cutover un-wired. The guards are right; the predicate
+        // was in the wrong place.
+        //
+        // DELIBERATELY NOT the full readiness check. That also asserts a W2
+        // salary ASSIGNMENT exists, and the component model is off with an
+        // empty collection — running it today would block EVERY employee in
+        // EVERY tenant with "no salary assignment is effective". Payout checks
+        // are independent of the component model; assignment checks belong to
+        // the W2 cutover gate, not here.
+        require_once APPPATH . 'helpers/payroll_readiness_helper.php';
+        $rosterPii = $this->_apply_staff_private_map($roster);
+        foreach ($rosterIds as $sid) {
+            if (!isset($structures[$sid])) continue;   // already blocked above
+            $s = is_array($rosterPii[$sid] ?? null) ? $rosterPii[$sid] : ($roster[$sid] ?? []);
+            if (!is_array($s)) continue;
+
+            $name = (string) ($s['Name'] ?? $s['name'] ?? $sid);
+            $dept = (string) ($s['Department'] ?? $s['department'] ?? '');
+
+            if (!payroll_has_bank_details($s)) {
+                $blockers[] = [
+                    'staff_id'   => $sid,
+                    'staff_name' => $name,
+                    'department' => $dept,
+                    'severity'   => 'blocker',
+                    'reason'     => 'Bank details missing — this employee cannot be paid',
+                    'resolution' => 'Complete bank/payment details before payroll generation',
+                ];
+            }
+
+            // PAN is a WARNING, not a blocker, until TDS is actually live for
+            // the tenant. Blocking pay over a document nothing currently uses
+            // would stop payroll for the wrong reason.
+            $panOnRecord = payroll_pan_on_record($s);
+            if (!$panOnRecord) {
+                $blockers[] = [
+                    'staff_id'   => $sid,
+                    'staff_name' => $name,
+                    'department' => $dept,
+                    'severity'   => 'warning',
+                    'reason'     => 'PAN not on record — required once TDS deduction is enabled',
+                    'resolution' => 'Add PAN to the employee record',
+                ];
+            }
+        }
+
+        // W3.1 — name the employees missing attendance too. Same principle as
+        // the structure blockers above: this is a WARNING not a blocker,
+        // because "treated as fully present" is a defined outcome rather than
+        // a failure — but the operator still deserves to know which people it
+        // is about to apply to.
+        if (!empty($attendance)) {
+            foreach ($rosterIds as $sid) {
+                if (isset($attendance[$sid]) || !isset($structures[$sid])) continue;
+                $p = $roster[$sid] ?? [];
+                $blockers[] = [
+                    'staff_id'   => $sid,
+                    'staff_name' => (string) ($p['Name'] ?? $p['name'] ?? $sid),
+                    'department' => (string) ($p['Department'] ?? $p['department'] ?? ''),
+                    'severity'   => 'warning',
+                    'reason'     => "No attendance recorded for {$month} {$year} — will be treated as fully present",
+                    'resolution' => 'Mark attendance for this employee, or accept full presence',
+                ];
+            }
+        }
+
+        // Blockers first, then warnings; within each, by name. An operator
+        // works top-down, so the things that stop payroll must not be buried
+        // under the things that merely inform it.
+        usort($blockers, function ($a, $b) {
+            if ($a['severity'] !== $b['severity']) return $a['severity'] === 'blocker' ? -1 : 1;
+            return strcasecmp($a['staff_name'], $b['staff_name']);
+        });
+
+        $blockerCount = count(array_filter($blockers, fn($b) => $b['severity'] === 'blocker'));
+
         $this->json_success([
             'ready'          => true,
             'staff_covered'  => $coveredCount,
             'staff_total'    => count($rosterIds),
             'pending_leaves' => $pendingCount,
             'warnings'       => $warnings,
+            // W3.1 — per-employee, named, actionable. `warnings` is retained
+            // unchanged so existing readers do not regress.
+            'blockers'       => $blockers,
+            'blocker_count'  => $blockerCount,
+            'warning_count'  => count($blockers) - $blockerCount,
         ]);
     }
 
@@ -5199,7 +7210,18 @@ HTML;
         // Read existing CoA from Firestore
         $coa = [];
         try {
-            $fsDocs = $this->fs->schoolWhere('accounting', [['type', '==', 'chartOfAccounts']]);
+            // COA-D1: the chart lives in its OWN collection. Accounting.php owns it
+            // (reads :158, writes :202, deletes :209) and records at :1063 that the
+            // old `accounting` mirror became a no-op duplicate after the migration.
+            // Reading the pre-migration shape here meant payroll saw an EMPTY chart
+            // and refused to run — 65 accounts in chartOfAccounts, 0 in accounting.
+            //
+            // Canonical first, legacy second, so a tenant still on the old shape is
+            // not stranded and nothing needs migrating for this to work.
+            $fsDocs = $this->fs->schoolWhere('chartOfAccounts', []);
+            if (!is_array($fsDocs) || $fsDocs === []) {
+                $fsDocs = $this->fs->schoolWhere('accounting', [['type', '==', 'chartOfAccounts']]);
+            }
             if (is_array($fsDocs)) {
                 foreach ($fsDocs as $doc) {
                     $d = is_array($doc['data'] ?? null) ? $doc['data'] : $doc;
@@ -5364,9 +7386,97 @@ HTML;
      * @param float $staffWorkingDays Payable working days in the employment window.
      * @param float $daysAbsent       Unpaid absent days (already window-capped).
      * @param float $lwpDays          Leave-without-pay days (supports 0.5).
+     * @param float $extraWorkedDays  P0-4/A2 — days worked on a scheduled off-day
+     *                                (attendance status 'W'). Defaults to 0.0, so a
+     *                                caller that does not pass it gets byte-identical
+     *                                output to the pre-A2 behaviour.
+     * @param float $extraWorkedRate  Multiplier applied to the daily rate for those
+     *                                days. Defaults to 1.0 (pay the day at par).
+     *                                Per-school override: schools.attendanceRules
+     *                                .extra_worked_rate. NOT a statutory overtime
+     *                                rate — see the note at the computation site.
      * @return array Per-employee breakdown consumed by both callers.
      */
-    private function _compute_payslip(array $sal, float $staffWorkingDays, float $daysAbsent, float $lwpDays): array
+    // ═══════════════════════════════════════════════════════════════════
+    //  W1.2 — MONEY PRECISION
+    //
+    //  AUTHORITATIVE UNIT: integer PAISE (1/100 INR). Every addition,
+    //  subtraction and comparison below is exact integer arithmetic.
+    //
+    //  ROUNDING POLICY — ONE policy, stated once:
+    //    1. Rupees → paise happens ONCE, at the input boundary
+    //       (_toPaise), round-half-up.
+    //    2. Ratio application (proration, percentages) rounds ONCE per
+    //       component, half-up, at paise granularity (_applyRatio). There is
+    //       no intermediate re-rounding.
+    //    3. Sums, differences and comparisons NEVER round — they are exact
+    //       integers.
+    //    4. Paise → rupees happens ONCE, at the return boundary (_toRupees).
+    //
+    //  WHY: previously every component was a float rounded to 2dp, then those
+    //  floats were summed and re-rounded. Per-component precision was already
+    //  paise-granular, so the gain is not per-component accuracy — it is that
+    //  SUMS, COMPARISONS and the deduction waterfall become exact. That is what
+    //  guarantees `Σ components == gross` and `gross − deductions == net` to
+    //  the paise for every input, and what keeps Dr == Cr when totals are
+    //  accumulated across N employees (the failure mode behind the historical
+    //  journal imbalance PayrollAccountingService documents).
+    //
+    //  STORAGE BOUNDARY: unchanged. Firestore continues to store rupee
+    //  decimals; paise is internal to the calculation only. No migration.
+    //  BUSINESS POLICY: unchanged. No rate, threshold, multiplier or rule
+    //  is altered here — only the arithmetic used to evaluate them.
+    // ═══════════════════════════════════════════════════════════════════
+
+    /** Rupees (int|float|numeric-string) → integer paise. Round-half-up, once. */
+    private static function _toPaise($rupees): int
+    {
+        return (int) round(((float) $rupees) * 100.0);
+    }
+
+    /** Integer paise → rupees, 2dp. The single output boundary. */
+    private static function _toRupees(int $paise): float
+    {
+        return round($paise / 100.0, 2);
+    }
+
+    /**
+     * Apply a ratio to an exact paise amount with exactly ONE rounding.
+     * Used for proration and percentage deductions so a value is never
+     * rounded, re-multiplied and rounded again.
+     */
+    private static function _applyRatio(int $paise, float $ratio): int
+    {
+        if ($paise === 0 || $ratio == 0.0) return 0;
+        return (int) round($paise * $ratio);
+    }
+
+    /**
+     * W2.7 — two OPTIONAL parameters were added, both defaulting to exactly
+     * today's behaviour:
+     *
+     *   $statutory       null  → PF/ESI/TDS stay flat percentages of the earned
+     *                            base, ignoring ceilings and thresholds, exactly
+     *                            as this engine has always behaved.
+     *                     array → the tenant's effective statutoryConfig is
+     *                            applied: PF wage ceiling and eligibility-above-
+     *                            ceiling, ESI threshold coverage, PT slabs.
+     *
+     *   $extraComponents []    → nothing changes.
+     *                     array → tenant-defined components outside the legacy
+     *                            thirteen reach the payslip instead of being
+     *                            silently dropped.
+     *
+     * Both defaults are load-bearing: with them, this function is
+     * byte-identical to its W1.2-certified form, which is what lets the
+     * compensation cutover happen without reopening the money contract.
+     * `HrPayslipStatutoryTest` pins that equivalence.
+     *
+     * @param array|null $statutory        effective statutoryConfig, or null for legacy behaviour
+     * @param array      $extraComponents  [['code'=>, 'kind'=>'earning'|'deduction'|'employer_contribution',
+     *                                       'amountPaise'=>int, 'prorated'=>bool], …]
+     */
+    private function _compute_payslip(array $sal, float $staffWorkingDays, float $daysAbsent, float $lwpDays, float $extraWorkedDays = 0.0, float $extraWorkedRate = 1.0, ?array $statutory = null, array $extraComponents = [], array $statutoryProfile = [], string $periodEndDate = ''): array
     {
         $warnings = [];
 
@@ -5381,60 +7491,230 @@ HTML;
         $daysWorked = $staffWorkingDays - $daysAbsent - $lwpDays;
         if ($daysWorked < 0) $daysWorked = 0;
 
-        $basic = (float) ($sal['basic'] ?? 0);
+        // W1.2 — inputs converted to exact paise ONCE, here.
+        $basicP = self::_toPaise($sal['basic'] ?? 0);
 
-        $effectiveBasic  = round($basic                                  * $retention, 2);
-        $hra             = round((float) ($sal['hra'] ?? 0)              * $retention, 2);
-        $da              = round((float) ($sal['da'] ?? 0)               * $retention, 2);
-        $ta              = round((float) ($sal['ta'] ?? 0)              * $retention, 2);
-        $medical         = round((float) ($sal['medical'] ?? 0)          * $retention, 2);
-        $otherAllowances = round((float) ($sal['other_allowances'] ?? 0) * $retention, 2);
+        $effectiveBasicP  = self::_applyRatio($basicP,                                        $retention);
+        $hraP             = self::_applyRatio(self::_toPaise($sal['hra'] ?? 0),               $retention);
+        $daP              = self::_applyRatio(self::_toPaise($sal['da'] ?? 0),                $retention);
+        $taP              = self::_applyRatio(self::_toPaise($sal['ta'] ?? 0),                $retention);
+        $medicalP         = self::_applyRatio(self::_toPaise($sal['medical'] ?? 0),           $retention);
+        $otherAllowancesP = self::_applyRatio(self::_toPaise($sal['other_allowances'] ?? 0),  $retention);
 
-        $gross = round($effectiveBasic + $hra + $da + $ta + $medical + $otherAllowances, 2);
+        // EXACT — integer sum, no rounding. This is what guarantees
+        // `Σ earnings == gross` to the paise for every possible input.
+        $grossP = $effectiveBasicP + $hraP + $daP + $taP + $medicalP + $otherAllowancesP;
 
-        // Display-only day accounting (unchanged semantics).
-        $dailySalary  = ($staffWorkingDays > 0) ? round($basic / $staffWorkingDays, 2) : 0.0;
-        $lwpDeduction = round($dailySalary * $lwpDays, 2);
+        // Display-only day accounting (unchanged semantics + unchanged value).
+        $dailySalary = ($staffWorkingDays > 0)
+            ? round(($basicP / 100.0) / $staffWorkingDays, 2)
+            : 0.0;
+
+        // W1.2 — the MONEY is derived in ONE step from the exact paise base
+        // (basic × days ÷ workingDays) rather than rounding a daily rate to 2dp
+        // and then multiplying it, which amplified the rounding error. The
+        // displayed daily rate above is untouched.
+        $lwpDeductionP = ($staffWorkingDays > 0)
+            ? self::_applyRatio($basicP, $lwpDays / $staffWorkingDays)
+            : 0;
+
+        // P0-4/A2 — extra pay for days worked on a scheduled off-day (the current
+        // Attendance writer's 'W' status, which exists specifically to trigger
+        // extra pay and which payroll previously ignored entirely).
+        //
+        // Paid at the SAME daily rate the engine already uses for the LWP
+        // deduction, so a day lost and a day gained are symmetric — no second
+        // rate basis is introduced. Added to gross BEFORE the statutory block so
+        // ESI/TDS treat it as earned wages (consistent with this function's
+        // "statutory is a % of the EARNED wage" contract). It deliberately does
+        // NOT inflate $effectiveBasic, so the PF base stays basic-only.
+        //
+        // NOTE: extra_worked_rate is a PAY-POLICY multiplier, defaulting to 1.0
+        // (pay the extra day at par). It is NOT a statutory overtime multiplier —
+        // no statutory OT engine exists here, consistent with this function's
+        // documented "no ceilings/slabs/tax engines" scope.
+        // W1.2 — same one-step derivation from the exact paise base.
+        $extraWorkedPayP = ($staffWorkingDays > 0)
+            ? self::_applyRatio($basicP, ($extraWorkedDays * $extraWorkedRate) / $staffWorkingDays)
+            : 0;
+        if ($extraWorkedPayP > 0) {
+            $grossP += $extraWorkedPayP;   // EXACT
+        }
+
+        // W2.7 — tenant-defined EARNINGS join gross BEFORE the statutory block,
+        // for the same reason the 'W' extra-pay does: they are earned wages, so
+        // ESI/TDS must see them. Without this they were silently dropped from
+        // the payslip, which is a money error rather than a missing feature.
+        // Prorated extras are scaled by the same retention ratio as basic/HRA.
+        $extraEarningsP   = 0;
+        $extraDeductionsP = 0;
+        $extraBreakdownP  = [];
+        foreach ($extraComponents as $xc) {
+            if (!is_array($xc)) continue;
+            $code = (string) ($xc['code'] ?? '');
+            $kind = (string) ($xc['kind'] ?? 'earning');
+            $amtP = (int) ($xc['amountPaise'] ?? 0);
+            if ($code === '' || $amtP <= 0) continue;
+            if (!empty($xc['prorated'])) $amtP = self::_applyRatio($amtP, $retention);
+
+            if ($kind === 'earning')          { $extraEarningsP   += $amtP; $extraBreakdownP[$code] = $amtP; }
+            elseif ($kind === 'deduction')    { $extraDeductionsP += $amtP; $extraBreakdownP[$code] = -$amtP; }
+            // employer_contribution does not touch gross or net; it is reported
+            // by deriveCtc(), not deducted here.
+        }
+        if ($extraEarningsP > 0) {
+            $grossP += $extraEarningsP;   // EXACT
+        }
 
         // Statutory deductions: % of the earned basic/gross (same base as earnings),
         // so a deduction can never outstrip what was earned.
+        // W1.2: rates and bases are UNCHANGED — only the arithmetic is exact.
         $pfPct      = (float) ($sal['pf_employee'] ?? 0);
         $esiPct     = (float) ($sal['esi_employee'] ?? 0);
         $tdsPct     = (float) ($sal['tds'] ?? 0);
 
-        $pfEmployee  = round($effectiveBasic * ($pfPct  / 100), 2);
-        $esiEmployee = round($gross          * ($esiPct / 100), 2);
-        $tds         = round($gross          * ($tdsPct / 100), 2);
+        // Flat deductions (may be superseded by a PT slab table below).
+        $professionalTaxP = self::_toPaise($sal['professional_tax'] ?? 0);
+        $otherDeductionsP = self::_toPaise($sal['other_deductions'] ?? 0);
 
-        // Employer contributions use the same earned base as their employee
-        // counterpart (PF on earned basic, ESI on earned gross).
-        $pfEmployer  = round($effectiveBasic * ((float) ($sal['pf_employer']  ?? 0) / 100), 2);
-        $esiEmployer = round($gross          * ((float) ($sal['esi_employer'] ?? 0) / 100), 2);
+        if ($statutory === null) {
+            // ── LEGACY PATH — unchanged since W1.2, byte for byte ──
+            $pfEmployeeP  = self::_applyRatio($effectiveBasicP, $pfPct  / 100);
+            $esiEmployeeP = self::_applyRatio($grossP,          $esiPct / 100);
+            $tdsP         = self::_applyRatio($grossP,          $tdsPct / 100);
 
-        // Flat deductions.
-        $professionalTax = (float) ($sal['professional_tax'] ?? 0);
-        $otherDeductions = (float) ($sal['other_deductions'] ?? 0);
+            // Employer contributions use the same earned base as their employee
+            // counterpart (PF on earned basic, ESI on earned gross).
+            $pfEmployerP  = self::_applyRatio($effectiveBasicP, ((float) ($sal['pf_employer']  ?? 0)) / 100);
+            $esiEmployerP = self::_applyRatio($grossP,          ((float) ($sal['esi_employer'] ?? 0)) / 100);
+        } else {
+            // ── STATUTORY-AWARE PATH (W2.7) ──
+            // Resolution is delegated to Statutory_config_service so the payslip,
+            // the CTC preview and the statutory engine can never disagree — the
+            // inconsistency W2.6 flagged and deliberately did not leave standing.
+            //
+            // The BASES are unchanged (PF on earned basic, ESI on earned gross);
+            // only ceilings, eligibility and thresholds are now honoured. An
+            // operator who configures a ₹15,000 PF ceiling now gets one, instead
+            // of a setting that silently does nothing.
+            if (!class_exists('Statutory_config_service')) {
+                require_once APPPATH . 'libraries/Statutory_config_service.php';
+            }
+
+            $pf  = Statutory_config_service::computePf($statutory, $effectiveBasicP);
+            // Feature 2: ESI applicability may have been decided at the work
+            // location. Absent key ⇒ null ⇒ the tenant-wide setting stands.
+            $esiLocationApplicable = array_key_exists('_esiLocationApplicable', $statutoryProfile)
+                ? ($statutoryProfile['_esiLocationApplicable'] === null ? null : (bool) $statutoryProfile['_esiLocationApplicable'])
+                : null;
+            $esi = Statutory_config_service::computeEsi($statutory, $grossP, $esiLocationApplicable);
+            if ($esiLocationApplicable === false && !empty($statutoryProfile['_esiReason'])) {
+                $warnings[] = 'ESI not applied: ' . (string) $statutoryProfile['_esiReason'] . '.';
+            }
+
+            // CA-6: the EMPLOYEE's recorded membership outranks the wage-versus-
+            // ceiling derivation.
+            //
+            // The derivation alone cannot express the commonest real case —
+            // someone who joined below the ceiling, became a member, and now
+            // earns above it. Such a person REMAINS a member, but a pure
+// wage comparison drops them out of PF the month they cross it.
+            //
+            // Fail-safe: an employee with no recorded profile resolves to
+            // `ceiling_derivation`, which returns exactly what computePf()
+            // already decided. No staff document carries a profile today, so
+            // this is inert until one is deliberately recorded.
+            if ($statutoryProfile !== []) {
+                if (!class_exists('Staff_statutory_profile_service')) {
+                    require_once APPPATH . 'libraries/Staff_statutory_profile_service.php';
+                }
+                $pfDecision = Staff_statutory_profile_service::resolvePf(
+                    $statutoryProfile,
+                    $periodEndDate,
+                    (bool) ($pf['covered'] ?? false)
+                );
+
+                if ($pfDecision['source'] === 'profile'
+                    && $pfDecision['covered'] !== (bool) ($pf['covered'] ?? false)) {
+
+                    if ($pfDecision['covered'] === true) {
+                        // Recorded member the derivation would have excluded.
+// Contributions are computed on the SAME base and rates the
+// configuration already resolved — only coverage changes.
+                        $pf = Statutory_config_service::computePf(
+                            array_replace_recursive($statutory, ['pf' => ['eligibleAboveCeiling' => true]]),
+                            $effectiveBasicP
+                        );
+                        $warnings[] = 'PF applied from the employee statutory profile: '
+                            . $pfDecision['reason'] . '.';
+                    } else {
+                        // Recorded non-member the derivation would have covered.
+                        $pf = ['employeePaise' => 0, 'employerPaise' => 0, 'basePaise' => 0,
+                               'covered' => false, 'reason' => $pfDecision['reason']];
+                        $warnings[] = 'PF withheld from the employee statutory profile: '
+                            . $pfDecision['reason'] . '.';
+                    }
+                }
+            }
+
+            $pfEmployeeP  = (int) $pf['employeePaise'];
+            $pfEmployerP  = (int) $pf['employerPaise'];
+            $esiEmployeeP = (int) $esi['employeePaise'];
+            $esiEmployerP = (int) $esi['employerPaise'];
+
+            $tds  = Statutory_config_service::computeTds($statutory, $grossP);
+            $tdsP = (int) $tds['amountPaise'];
+            if (empty($tds['supported'])) {
+                // Never guess a tax figure: fall back to the structure's flat
+                // rate and say so on the payslip.
+                $tdsP = self::_applyRatio($grossP, $tdsPct / 100);
+                $warnings[] = 'TDS mode ' . (string) ($tds['mode'] ?? '?')
+                    . ' is not implemented; the structure\'s flat rate was used.';
+            }
+
+            // PT slabs are authoritative WHEN CONFIGURED. With no slab table the
+            // structure's flat amount stands, so configuring statutory policy
+            // never silently zeroes an existing professional-tax deduction.
+            $ptSlabs = is_array($statutory['pt']['slabs'] ?? null) ? $statutory['pt']['slabs'] : [];
+            if (!empty($ptSlabs)) {
+                $pt = Statutory_config_service::computePt($statutory, $grossP);
+                $professionalTaxP = (int) $pt['amountPaise'];
+            }
+
+            if (!$pf['covered'] && $effectiveBasicP > 0) {
+                $warnings[] = 'PF not applied: ' . (string) $pf['reason'] . '.';
+            }
+            if (!$esi['covered'] && $grossP > 0) {
+                $warnings[] = 'ESI not applied: ' . (string) $esi['reason'] . '.';
+            }
+        }
+
+        // Tenant-defined deductions join the employee deduction pool below.
+        $otherDeductionsP += $extraDeductionsP;
 
         // Net pay. Statutory-on-earned-base is ≤ gross for any sane config, so this
         // normally does nothing. It engages only when flat PT+Other would push total
         // deductions past a (very low) earned gross: reduce Other first, then PT, so
         // net lands at 0 — never negative — and gross == net + Σ deductions exactly.
-        $deferredOther = 0.0; $deferredPt = 0.0; $deferredStatutory = 0.0;
-        $employeeDeductions = round($pfEmployee + $esiEmployee + $tds + $professionalTax + $otherDeductions, 2);
+        // W1.2 — the entire waterfall is exact integer paise. Comparisons and
+        // subtractions no longer need epsilons, and the residual step below is
+        // an exact equality rather than an `abs(...) >= 0.01` approximation.
+        $deferredOtherP = 0; $deferredPtP = 0; $deferredStatutoryP = 0;
+        $employeeDeductionsP = $pfEmployeeP + $esiEmployeeP + $tdsP + $professionalTaxP + $otherDeductionsP;
 
-        if ($employeeDeductions > $gross) {
-            $overflow = round($employeeDeductions - $gross, 2);
+        if ($employeeDeductionsP > $grossP) {
+            $overflowP = $employeeDeductionsP - $grossP;
 
-            $cut = min($otherDeductions, $overflow);
-            $otherDeductions = round($otherDeductions - $cut, 2);
-            $deferredOther   = round($cut, 2);
-            $overflow        = round($overflow - $cut, 2);
+            $cut = min($otherDeductionsP, $overflowP);
+            $otherDeductionsP -= $cut;
+            $deferredOtherP    = $cut;
+            $overflowP        -= $cut;
 
-            if ($overflow > 0) {
-                $cut = min($professionalTax, $overflow);
-                $professionalTax = round($professionalTax - $cut, 2);
-                $deferredPt      = round($cut, 2);
-                $overflow        = round($overflow - $cut, 2);
+            if ($overflowP > 0) {
+                $cut = min($professionalTaxP, $overflowP);
+                $professionalTaxP -= $cut;
+                $deferredPtP       = $cut;
+                $overflowP        -= $cut;
             }
 
             // Last-resort guard: only reachable with an INVALID structure whose
@@ -5442,32 +7722,59 @@ HTML;
             // statutory trio proportionally to keep the two hard invariants
             // (net ≥ 0, journal balanced) and warn loudly so the misconfigured
             // salary structure is corrected. Not a normal-absence path.
-            $statutory = round($pfEmployee + $esiEmployee + $tds, 2);
-            if ($overflow > 0.005 && $statutory > 0) {
-                $factor = ($gross > 0) ? ($gross / $statutory) : 0.0;
-                $pfEmployee  = round($pfEmployee  * $factor, 2);
-                $esiEmployee = round($esiEmployee * $factor, 2);
-                $tds         = round($tds         * $factor, 2);
-                $deferredStatutory = round($overflow, 2);
+            $statutoryP = $pfEmployeeP + $esiEmployeeP + $tdsP;
+            // W1.2: `> 0` is exact in paise — the old `> 0.005` epsilon existed
+            // only to tolerate float noise and is no longer needed.
+            if ($overflowP > 0 && $statutoryP > 0) {
+                $factor = ($grossP > 0) ? ($grossP / $statutoryP) : 0.0;
+                $pfEmployeeP  = self::_applyRatio($pfEmployeeP,  $factor);
+                $esiEmployeeP = self::_applyRatio($esiEmployeeP, $factor);
+                $tdsP         = self::_applyRatio($tdsP,         $factor);
+                $deferredStatutoryP = $overflowP;
                 $warnings[] = 'statutory rates exceed 100% of earned wages — check salary structure (PF/ESI/TDS %)';
             }
 
-            // Recompute total, then absorb any paisa rounding residual into the
-            // largest remaining positive component so total === gross exactly.
-            $employeeDeductions = round($pfEmployee + $esiEmployee + $tds + $professionalTax + $otherDeductions, 2);
-            $residual = round($gross - $employeeDeductions, 2);
-            if (abs($residual) >= 0.01) {
-                if ($otherDeductions > 0)      { $otherDeductions = round($otherDeductions + $residual, 2); }
-                elseif ($professionalTax > 0)  { $professionalTax = round($professionalTax + $residual, 2); }
-                elseif ($tds > 0)              { $tds             = round($tds + $residual, 2); }
-                elseif ($esiEmployee > 0)      { $esiEmployee     = round($esiEmployee + $residual, 2); }
-                else                           { $pfEmployee      = round($pfEmployee + $residual, 2); }
-                $employeeDeductions = round($pfEmployee + $esiEmployee + $tds + $professionalTax + $otherDeductions, 2);
+            // Recompute total, then absorb any residual into the largest
+            // remaining positive component so total === gross EXACTLY.
+            // W1.2: `!== 0` is an exact integer test; the residual can now only
+            // arise from the proportional clamp above, never from float drift.
+            $employeeDeductionsP = $pfEmployeeP + $esiEmployeeP + $tdsP + $professionalTaxP + $otherDeductionsP;
+            $residualP = $grossP - $employeeDeductionsP;
+            if ($residualP !== 0) {
+                if ($otherDeductionsP > 0)      { $otherDeductionsP += $residualP; }
+                elseif ($professionalTaxP > 0)  { $professionalTaxP += $residualP; }
+                elseif ($tdsP > 0)              { $tdsP             += $residualP; }
+                elseif ($esiEmployeeP > 0)      { $esiEmployeeP     += $residualP; }
+                else                            { $pfEmployeeP      += $residualP; }
+                $employeeDeductionsP = $pfEmployeeP + $esiEmployeeP + $tdsP + $professionalTaxP + $otherDeductionsP;
             }
         }
 
-        $netPay = round($gross - $employeeDeductions, 2);
-        if ($netPay < 0) $netPay = 0; // invariant guard; unreachable after waterfall
+        $netPayP = $grossP - $employeeDeductionsP;   // EXACT
+        if ($netPayP < 0) $netPayP = 0; // invariant guard; unreachable after waterfall
+
+        // ── W1.2 output boundary: paise → rupees, ONCE, here. ───────────────
+        $effectiveBasic     = self::_toRupees($effectiveBasicP);
+        $hra                = self::_toRupees($hraP);
+        $da                 = self::_toRupees($daP);
+        $ta                 = self::_toRupees($taP);
+        $medical            = self::_toRupees($medicalP);
+        $otherAllowances    = self::_toRupees($otherAllowancesP);
+        $gross              = self::_toRupees($grossP);
+        $lwpDeduction       = self::_toRupees($lwpDeductionP);
+        $extraWorkedPay     = self::_toRupees($extraWorkedPayP);
+        $pfEmployee         = self::_toRupees($pfEmployeeP);
+        $pfEmployer         = self::_toRupees($pfEmployerP);
+        $esiEmployee        = self::_toRupees($esiEmployeeP);
+        $esiEmployer        = self::_toRupees($esiEmployerP);
+        $tds                = self::_toRupees($tdsP);
+        $professionalTax    = self::_toRupees($professionalTaxP);
+        $otherDeductions    = self::_toRupees($otherDeductionsP);
+        $employeeDeductions = self::_toRupees($employeeDeductionsP);
+        $netPay             = self::_toRupees($netPayP);
+        $deferredOther      = self::_toRupees($deferredOtherP);
+        $deferredPt         = self::_toRupees($deferredPtP);
+        $deferredStatutory  = self::_toRupees($deferredStatutoryP);
 
         return [
             // day accounting
@@ -5476,6 +7783,9 @@ HTML;
             'absent_fraction'    => $absentFraction,
             'daily_salary'       => $dailySalary,
             'lwp_deduction'      => $lwpDeduction,
+            // P0-4/A2 — extra-worked ('W') day accounting + its earning line.
+            'extra_worked_days'  => $extraWorkedDays,
+            'extra_worked_pay'   => $extraWorkedPay,
             // earned wages
             'basic'              => $effectiveBasic,
             'hra'                => $hra,
@@ -5502,6 +7812,59 @@ HTML;
                 'professional_tax' => $deferredPt,
                 'statutory'        => $deferredStatutory,
             ],
+            // ── W3.2.4 — the bases and rates this calculation actually used ──
+            //
+            // Additive: every existing caller reads named keys, so a new key
+            // cannot disturb them. Added because the trace must show WHY a
+            // deduction is the size it is, and "PF is 12% of ₹28,500" is only
+            // checkable if the ₹28,500 is stated. Deriving it in the trace
+            // would be a second arithmetic path for a statutory base — the
+            // engine states it instead.
+            //
+            // These are the exact integers the deductions were computed from,
+            // not rounded rupee echoes of them.
+            'bases'              => [
+                'retention_ratio'   => $retention,
+                'absent_fraction'   => $absentFraction,
+                // PF is a percentage of EARNED basic; ESI and TDS of EARNED
+                // gross. That asymmetry is the single most misread rule in the
+                // engine, so both bases are named rather than implied.
+                'pf_base_paise'     => $effectiveBasicP,
+                'esi_base_paise'    => $grossP,
+                'tds_base_paise'    => $grossP,
+                'basic_paise'       => $effectiveBasicP,
+                // Percentages as applied. Under a statutory policy these are
+                // the CONFIGURED rates; with no policy they are the structure's.
+                'pf_employee_pct'   => $pfPct,
+                'esi_employee_pct'  => $esiPct,
+                'tds_pct'           => $tdsPct,
+                'pf_employer_pct'   => (float) ($sal['pf_employer']  ?? 0),
+                'esi_employer_pct'  => (float) ($sal['esi_employer'] ?? 0),
+            ],
+            // W1.2 — EXACT paise, for callers that accumulate across employees.
+            // Summing the rupee floats above across N employees reintroduces the
+            // very drift this change removes, and the payroll → accounting
+            // journal must balance Dr == Cr exactly (see the historical
+            // imbalance documented in PayrollAccountingService). Callers should
+            // accumulate these and convert once at the end.
+            'paise'              => [
+                'gross'              => $grossP,
+                'net_pay'            => $netPayP,
+                'total_deductions'   => $employeeDeductionsP,
+                'pf_employee'        => $pfEmployeeP,
+                'pf_employer'        => $pfEmployerP,
+                'esi_employee'       => $esiEmployeeP,
+                'esi_employer'       => $esiEmployerP,
+                'tds'                => $tdsP,
+                'professional_tax'   => $professionalTaxP,
+                'other_deductions'   => $otherDeductionsP,
+                'extra_worked_pay'   => $extraWorkedPayP,
+            ],
+            // W2.7 — tenant-defined components, in exact paise, positive for
+            // earnings and negative for deductions. Empty on the legacy path, so
+            // every existing consumer of this array is unaffected.
+            'extra_components'   => $extraBreakdownP,
+            'statutory_source'   => $statutory === null ? 'structure' : 'statutoryConfig',
             'warnings'           => $warnings,
         ];
     }
@@ -5521,6 +7884,51 @@ HTML;
         $month = trim($this->input->post('month') ?? '');
         $year  = trim($this->input->post('year') ?? '');
 
+        // ── OFF-CYCLE (Feature 7, 2026-08-22) ────────────────────────────
+        //
+        // `runType` had been declared, and every consumer read it defensively,
+        // but NOTHING could ever set it to `offcycle` — the whole capability
+        // was scaffolding with no producer.
+        //
+        // Built GENERICALLY rather than as a Full & Final special case. An
+        // off-cycle run is "pay these specific people, outside the monthly
+        // cycle": F&F is one use, arrears and a bonus payout are others, and a
+        // mechanism that only understood settlements would have to be rebuilt
+        // for each of them.
+        //
+        // Absent parameter ⇒ monthly ⇒ today's behaviour, byte for byte.
+        $runType = strtolower(trim((string) ($this->input->post('run_type') ?? '')));
+        if ($runType === '') $runType = self::RUN_TYPE_MONTHLY;
+        if (!in_array($runType, self::RUN_TYPES, true)) {
+            $this->json_error('Unknown run type. Expected one of: ' . implode(', ', self::RUN_TYPES) . '.');
+        }
+
+        $subsetRaw = $this->input->post('staff_ids');
+        $subset = [];
+        if (is_string($subsetRaw) && trim($subsetRaw) !== '') {
+            $decoded = json_decode($subsetRaw, true);
+            $subsetRaw = is_array($decoded) ? $decoded : explode(',', $subsetRaw);
+        }
+        if (is_array($subsetRaw)) {
+            foreach ($subsetRaw as $sid) {
+                $sid = trim((string) $sid);
+                if ($sid !== '' && !in_array($sid, $subset, true)) $subset[] = $sid;
+            }
+        }
+
+        // An off-cycle run MUST name its employees. A whole-roster off-cycle
+        // run is indistinguishable from a second monthly payroll, which is the
+        // one thing the uniqueness guard exists to prevent — so the guard is
+        // reinstated here in the only form that makes sense for this run type.
+        if ($runType === self::RUN_TYPE_OFFCYCLE && $subset === []) {
+            $this->json_error('An off-cycle run must name the staff it covers.');
+        }
+        // Conversely a monthly run covers everyone, by definition.
+        if ($runType === self::RUN_TYPE_MONTHLY && $subset !== []) {
+            $this->json_error('A monthly run covers the whole roster and cannot be limited to a subset. '
+                . 'Use an off-cycle run to pay specific staff.');
+        }
+
         $validMonths = [
             'January', 'February', 'March', 'April', 'May', 'June',
             'July', 'August', 'September', 'October', 'November', 'December',
@@ -5535,14 +7943,35 @@ HTML;
         // Check payroll month lock
         $this->_check_payroll_lock($month, $year);
 
-        // Check for existing run for the same month/year (Firestore)
+        // ── MONTHLY UNIQUENESS (scoped 2026-08-22) ───────────────────────
+        //
+        // Exactly ONE MONTHLY run may exist per school/month/year — a second
+        // would pay the whole roster twice. That invariant is unchanged and is
+        // what this guard still enforces.
+        //
+        // What changed is its SCOPE. It previously refused any second run for
+        // the period, which also blocked an off-cycle run (a Full & Final for a
+        // March leaver, arrears, a bonus payout) that is a different event
+        // entirely and must be able to coexist with March's monthly payroll.
+        //
+        // The filter is applied in PHP rather than added to the query on
+        // purpose: existing run documents predate `runType` and carry no such
+        // field, so `['runType','==','monthly']` would not match them and the
+        // guard would silently stop protecting every run written before today.
+        // Reading the field with a `monthly` default keeps those documents in
+        // scope, which is precisely where they belong.
         try {
             $fsExRuns = $this->fs->schoolWhere('salarySlips', [
                 ['type', '==', 'run'], ['month', '==', $month], ['year', '==', $year],
             ]);
-            if (!empty($fsExRuns)) {
-                $parts = explode('_RUN_', $fsExRuns[0]['id'], 2);
-                $rid = isset($parts[1]) ? $parts[1] : $fsExRuns[0]['id'];
+
+            foreach ((array) $fsExRuns as $exRun) {
+                $exData = is_array($exRun['data'] ?? null) ? $exRun['data'] : (is_array($exRun) ? $exRun : []);
+                $exType = (string) ($exData['runType'] ?? self::RUN_TYPE_MONTHLY);
+                if ($exType !== self::RUN_TYPE_MONTHLY) continue;   // off-cycle may coexist
+
+                $parts = explode('_RUN_', (string) ($exRun['id'] ?? ''), 2);
+                $rid = isset($parts[1]) ? $parts[1] : (string) ($exRun['id'] ?? '');
                 $this->json_error("A payroll run already exists for {$month} {$year} (ID: {$rid}). Delete or use it.");
             }
         } catch (\Exception $e) {}
@@ -5559,6 +7988,49 @@ HTML;
                 }
             }
         } catch (\Exception $e) {}
+
+        // P0-6/C2 — FINAL-PAY ROSTER. Selecting purely on status=='Active' meant
+        // an employee who left mid-period was removed from payroll RETROACTIVELY
+        // and their final partial month was never paid. Employment during the
+        // period — not the current status flag — decides inclusion.
+        //
+        // Second bounded query rather than dropping the status filter entirely:
+        // loading every staff doc ever created would grow without limit, whereas
+        // this is one extra equality query per RUN (not per employee), reusing the
+        // same index shape as the Active query above. No new composite index.
+        //
+        // Only exits ON OR AFTER the period start qualify — an earlier leaver was
+        // not employed in this period. An Inactive record with NO exitDate is
+        // skipped: it predates P0-6/C1, so its window is unknowable, and including
+        // it would retroactively pay every historical leaver. _staff_working_days()
+        // then clamps the window, so an exit after period end simply pays in full.
+        $periodMonthNum = array_search($month, $validMonths) + 1;
+        $periodStart    = sprintf('%04d-%02d-01', (int) $year, $periodMonthNum);
+        $exitedIncluded = 0;
+        try {
+            $fsExited = $this->fs->schoolWhere('staff', [['status', '==', 'Inactive']]);
+            if (is_array($fsExited)) {
+                foreach ($fsExited as $doc) {
+                    $d   = is_array($doc['data'] ?? null) ? $doc['data'] : $doc;
+                    $sid = $d['staffId'] ?? $d['userId'] ?? '';
+                    if ($sid === '' || isset($roster[$sid])) continue;
+
+                    // _normalize_date() returns YYYY-MM-DD or NULL (never ''), so
+                    // an unparseable/absent exit date is explicitly skipped rather
+                    // than relying on a null-vs-string comparison.
+                    $xd = $this->_normalize_date((string) ($d['exitDate'] ?? $d['lastWorkingDate'] ?? ''));
+                    if ($xd === null || $xd < $periodStart) continue;
+
+                    $roster[$sid] = $d;
+                    $exitedIncluded++;
+                }
+            }
+        } catch (\Exception $e) {
+            log_message('error', 'HR generate_payroll exited-staff roster read failed: ' . $e->getMessage());
+        }
+        if ($exitedIncluded > 0) {
+            log_message('info', "PAYROLL_FINAL_PAY_ROSTER school={$this->school_id} month={$month} {$year} exited_staff_included={$exitedIncluded}");
+        }
         if (empty($roster)) {
             $this->json_error('No staff found in the current session roster.');
         }
@@ -5566,17 +8038,46 @@ HTML;
         // for the auto-create-structure fallback (_auto_create_from_profile).
         $roster = $this->_apply_staff_private_map($roster);
 
-        // Get all salary structures (Firestore)
-        $salaryStructures = [];
-        try {
-            $fsSals = $this->fs->schoolWhere('salarySlips', [['type', '==', 'salary_structure']]);
-            if (is_array($fsSals)) {
-                foreach ($fsSals as $doc) {
-                    $sid = $doc['data']['staffId'] ?? '';
-                    if ($sid !== '') $salaryStructures[$sid] = $doc['data'];
-                }
+        // Feature 7: an off-cycle run pays only the staff it names. Narrowed
+        // AFTER the privacy map so an off-cycle run can never see a record the
+        // monthly run could not.
+        if ($runType === self::RUN_TYPE_OFFCYCLE) {
+            $unknown = [];
+            $narrowed = [];
+            foreach ($subset as $sid) {
+                if (isset($roster[$sid])) $narrowed[$sid] = $roster[$sid];
+                else $unknown[] = $sid;
             }
-        } catch (\Exception $e) {}
+            // Naming the missing ones rather than paying a smaller set in
+            // silence: an off-cycle run that quietly skipped a leaver would be
+            // discovered by the leaver.
+            if ($unknown !== []) {
+                $this->json_error('Not in the active roster for this period: ' . implode(', ', $unknown));
+            }
+            $roster = $narrowed;
+        }
+
+        // Get all salary structures — through the W3.1 compensation seam.
+        // Legacy mode performs the same single query this loop used to do
+        // inline; the difference is that the cutover now has one place to move.
+        //
+        // The run resolves compensation as of the LAST day of the pay period:
+        // an effective-dated raise mid-month is in force by period end, and
+        // period end is stable for a closed month in a way that `today` is not
+        // — regenerating a finalized run must not silently reprice it.
+        $periodEndDate = date(
+            'Y-m-t',
+            mktime(0, 0, 0, array_search($month, $validMonths) + 1, 1, (int) $year)
+        );
+        $salaryStructures = $this->_compensation_reader()->resolveMany(
+            array_keys($roster),
+            $periodEndDate
+        );
+
+        // S-1: the tenant's statutory policy in force FOR THIS PERIOD, resolved
+        // once for the whole run. Null when the tenant has configured none,
+        // which is the legacy branch and today's behaviour byte-for-byte.
+        $statutoryCfg = $this->_statutory_config_for($periodEndDate);
         if (empty($salaryStructures)) {
             $this->json_error('No salary structures found. Please set up salary structures first.');
         }
@@ -5597,6 +8098,7 @@ HTML;
         $allLeaveReqs = $this->_fsGetAllLeaveRequests();
         $lwpByStaff       = []; // staffId => total LWP days in this month
         $lwpDaysByStaff   = []; // staffId => array of day-of-month numbers that are LWP
+        $paidDaysByStaff  = []; // staffId => [day => 0.5] covered by APPROVED PAID leave (Half-Day programme)
         $leaveDetailStaff = []; // staffId => array of leave detail objects for payslip transparency
         if (!empty($allLeaveReqs)) {
             $monthStart = sprintf('%04d-%02d-01', (int) $year, array_search($month, $validMonths) + 1);
@@ -5623,6 +8125,17 @@ HTML;
                         // Existing full-day mark wins over a later half-day mark.
                         if (isset($lwpDaysByStaff[$sid][$dn]) && $lwpDaysByStaff[$sid][$dn] === true) continue;
                         $lwpDaysByStaff[$sid][$dn] = $portion;
+                    }
+                }
+
+                // Half-Day programme (2026-08-19) — days covered by APPROVED
+                // PAID leave. Carries no deduction of its own; it exists so
+                // the absence loop can tell "covered by paid leave" apart
+                // from "genuinely unworked". See _process_leave_for_payroll().
+                if (!empty($res['paidDaySet'])) {
+                    if (!isset($paidDaysByStaff[$sid])) $paidDaysByStaff[$sid] = [];
+                    foreach ($res['paidDaySet'] as $dn => $portion) {
+                        $paidDaysByStaff[$sid][$dn] = $portion;
                     }
                 }
             }
@@ -5704,40 +8217,50 @@ HTML;
         $sundayCount    = 0;
         $offSatCount    = 0;
         $holidayCount   = 0;
-        $satCount       = 0;
-        for ($d = 1; $d <= $daysInMonth; $d++) {
-            $dow = (int) date('w', mktime(0, 0, 0, $monthNum, $d, (int) $year));
-            if ($dow === 0) {
-                $sundayCount++;
-                $nonWorkingDays++;
-            } elseif ($dow === 6) {
-                $satCount++;
-                if ($satCount === 2 || $satCount === 4) {
-                    $offSatCount++;
-                    $nonWorkingDays++;
-                }
-            } elseif (isset($holidays[$d])) {
-                $holidayCount++;
-                $nonWorkingDays++;
-            }
-        }
-        $workingDays = $daysInMonth - $nonWorkingDays;
+        // ── N-31/N-33 — there is no longer ONE run-level calendar ──
+        //
+        // This block used to resolve a single tenant calendar for the whole run.
+        // With per-employee work schedules that number is undefined: teaching
+        // staff may have 21 working days in the same month admin staff have 26.
+        // Resolving a tenant calendar here would also have blocked runs where
+        // every employee IS correctly assigned, simply because no tenant-wide
+        // policy exists — which is no longer a meaningful thing to require.
+        //
+        // `working_days` on the run document is therefore DERIVED from the
+        // employees actually priced (see after the loop): the shared value when
+        // they agree, and 0 meaning "varies by schedule" when they do not.
+        // `sundays` / `off_saturdays` / `holidays` are retained as 0 for reader
+        // back-compatibility rather than reporting one schedule's numbers as if
+        // they applied to everyone.
+        $workingDays        = 0;
+        $employeeWorkingSet = [];   // distinct per-employee working-day counts
 
         // Generate run ID
         $runId = $this->_next_id('PR', 'PayrollRun');
 
-        $totalGross          = 0;
-        $totalDeductions     = 0;
-        $totalNet            = 0;
-        $totalPF             = 0;
-        $totalESI            = 0;
-        $totalTDS            = 0;
-        $totalProfTax        = 0;
-        $totalOtherDed       = 0;
-        $staffCount          = 0;
-        $totalTeachingExp    = 0;
-        $totalNonTeachingExp = 0;
-        $slips               = [];
+        // W3.2.2 — payroll-period overrides for this run, in ONE query for the
+        // whole roster. A fresh run id normally has none; the read exists so
+        // BOTH engine call sites receive overrides identically. `regenerate` is
+        // contractually required to produce the same numbers as `generate` for
+        // the same inputs, and that contract silently breaks the moment one of
+        // them can see an adjustment the other cannot.
+        $overridesByStaff = $this->_payroll_overrides()->forRun($runId);
+
+        // W1.2 — run totals accumulate in EXACT integer paise (see the
+        // conversion boundary further down). Rupee equivalents are derived once,
+        // after the loop, so no float addition happens across employees.
+        $totalGrossP          = 0;
+        $totalDeductionsP     = 0;
+        $totalNetP            = 0;
+        $totalPFP             = 0;
+        $totalESIP            = 0;
+        $totalTDSP            = 0;
+        $totalProfTaxP        = 0;
+        $totalOtherDedP       = 0;
+        $staffCount           = 0;
+        $totalTeachingExpP    = 0;
+        $totalNonTeachingExpP = 0;
+        $slips                = [];
 
         $payrollWarnings = [];
         $deptGross       = []; // department → total gross (cost center tracking)
@@ -5779,15 +8302,88 @@ HTML;
             $department = $profile['Department'] ?? $profile['department'] ?? '';
             $position   = $profile['Position'] ?? '';
 
+            // Trail 2 Phase J (2026-08-18) — resolve the department that was
+            // ACTUALLY effective for this payroll PERIOD, not the live/
+            // current value. Without this, an admin editing a staff
+            // member's department today could silently change the computed
+            // working-days/holiday-audience math for this same past period
+            // if it is later regenerated. Resolves against the period
+            // START date — a genuine mid-month department transfer split
+            // is deferred pending the Staff Transfer feature (not yet
+            // built; Trail 2 Phase B confirmed it doesn't exist today).
+            // Falls open to the live $department on any resolver failure —
+            // this must never block payroll generation.
+            //
+            // Consolidated reconciliation audit (2026-08-19) — POSITION is
+            // resolved here too, for the same reason and against the same
+            // period-start date. It is not cosmetic: $position feeds the
+            // Teaching/Non-Teaching expense-account split below (GL 5010 vs
+            // 5020), so leaving it live meant one boolean expression mixed
+            // a period-effective $department with a live $position. A
+            // promotion out of a teaching post would retroactively
+            // reclassify a REGENERATED past month's salary expense. The
+            // classification RULE is unchanged — only the date at which its
+            // inputs are read. 'position' is already in the tracked
+            // Staff_employment_history_service::ATTRIBUTES vocabulary, so
+            // this needs no schema change.
+            try {
+                $this->load->library('staff_employment_history_service');
+                $this->staff_employment_history_service->init($this->fs, $this->school_id, (string) ($this->admin_id ?? ''));
+                // NO-N+1: this loop resolves TWO attributes per employee, each a
+                // real Firestore query. Warm the whole tenant timeline once —
+                // after the first employee every resolve is served from memory,
+                // turning 2N queries into 1. Idempotent, and a failed warm just
+                // leaves the per-staff reads in place.
+                $this->staff_employment_history_service->warmTimeline();
+                $periodStart = sprintf('%04d-%02d-01', (int) $year, $monthNum);
+                $histDept = $this->staff_employment_history_service->resolveAttributeAsOf($staffId, 'department', $periodStart);
+                if ($histDept !== null && $histDept !== '') $department = $histDept;
+                $histPos = $this->staff_employment_history_service->resolveAttributeAsOf($staffId, 'position', $periodStart);
+                if ($histPos !== null && $histPos !== '') $position = $histPos;
+            } catch (\Throwable $e) {
+                log_message('error', "generate_payroll: department/position history resolve failed for {$staffId}: " . $e->getMessage());
+            }
+
             // ── Per-staff working days — pro-rated for join/exit ──
             // If the staff joined or left mid-month, only count working days
             // inside their employment window. Days outside the window are
             // ignored (not absent, not vacant).
             $jd = $profile['joinDate']  ?? $profile['Date Of Joining'] ?? $profile['Joining Date']    ?? null;
             $xd = $profile['exitDate']  ?? $profile['Resignation Date'] ?? $profile['leaveDate']       ?? null;
-            $swd = $this->_staff_working_days($monthNum, (int) $year, $holidays, $jd, $xd);
+            $swd = $this->_staff_working_days($monthNum, (int) $year, $holidays, $jd, $xd, $staffId, $department);
             $staffWorkingDays = $swd['working'];
             $staffInWindow    = $swd['inWindow'];
+            $staffIsWorking   = $swd['isWorking'] ?? [];
+            // CALENDAR HALF-DAY — per-day EXPECTED WORK. A day the calendar
+            // declared a half-day expects $halfDayWeight (0.5 when the tenant
+            // has the model enabled for this period, else 1.0). Everything the
+            // absence loop below charges is scaled by this, so reconciliation
+            // happens against the REDUCED expectation, never the full day.
+            $staffDayReason   = $swd['dayReason'] ?? [];
+            $halfDayWeight    = $this->_half_day_weight((int) $year, $monthNum);
+            // Calendar Half-Day contract audit (2026-08-19) — FRACTION SAFETY.
+            // $staffWorkingDays is a float. Using it directly as a PHP array
+            // key TRUNCATES it (21.5 → 21), which would both misreport the
+            // run-level figure and, worse, make 21.5 and 21 collide into one
+            // key so genuinely-differing schedules would look uniform. Keyed
+            // as a string instead; the value carries the true number.
+            if ($staffWorkingDays > 0) {
+                $employeeWorkingSet[(string) $staffWorkingDays] = (float) $staffWorkingDays;
+            }
+
+            // ── N-32/N-33 — per-employee schedule blocker ──
+            //
+            // No default schedule is ever substituted. This employee is skipped
+            // with a named reason and the run continues for everyone correctly
+            // assigned — consistent with the existing "no salary structure —
+            // skipped" model, so operators read one familiar warning list.
+            if (!empty($swd['calBlocked'])) {
+                $payrollWarnings[] = $staffName . ': ' . $swd['calBlockWhy']
+                    . ' — slip not generated';
+                log_message('error', 'PAYROLL_SCHEDULE_BLOCKED school=' . $this->school_id
+                    . " staff={$staffId} code=" . ($swd['calBlockCode'] ?? '?'));
+                continue;
+            }
 
             // If the staff didn't work this month at all (joined after / left before)
             // skip the slip entirely — no salary, no warning that would clutter the UI.
@@ -5808,7 +8404,15 @@ HTML;
             $paidLeaveDays   = 0;
             $unpaidLeaveDays = 0;
             $vacantDays      = 0;
+            $halfDays        = 0;     // P0-3/A1 — attendance 'M' count
+            $extraWorkedDays = 0.0;   // P0-4/A2 — attendance 'W' count
             $staffLwpSet     = isset($lwpDaysByStaff[$staffId]) ? $lwpDaysByStaff[$staffId] : [];
+            $staffPaidSet    = isset($paidDaysByStaff[$staffId]) ? $paidDaysByStaff[$staffId] : [];
+
+            // W3.2.1 — captured for the reproducibility snapshot written with
+            // the slip below. Declared here because the parse block scopes it.
+            $attStr       = '';
+            $attSnapSource = 'none';
 
             // Config: how to treat vacant (unmarked) days.
             //   'block'   = refuse to generate slip; admin must override (default — payroll-safe)
@@ -5818,8 +8422,9 @@ HTML;
             $vacantTreatment = is_array($attConfig) ? ($attConfig['vacant_treatment'] ?? 'block') : 'block';
 
             if (is_array($attendance) && isset($attendance[$staffId])) {
-                $attStr = (string) $attendance[$staffId];
-                $len    = strlen($attStr);
+                $attStr        = (string) $attendance[$staffId];
+                $attSnapSource = 'staffAttendanceSummary';
+                $len           = strlen($attStr);
                 for ($i = 0; $i < $len; $i++) {
                     $dayNum = $i + 1;
                     // Days outside the employment window are not the staff's
@@ -5827,26 +8432,144 @@ HTML;
                     // absent or vacant.
                     if (!isset($staffInWindow[$dayNum])) continue;
                     $ch = strtoupper($attStr[$i]);
+
+                    // ── N-23 — non-working days are not chargeable ──
+                    //
+                    // Previously this gated on the employment window ALONE, so
+                    // an 'A' on a Sunday was charged as absence. Proven live:
+                    // 6 of 28 'A' marks fell on non-working days, the clamp hid
+                    // the overflow, and an employee on FULLY-PAID leave was paid
+                    // ₹0 instead of ₹1,250.
+                    //
+                    // 'W' is the deliberate exception: it MEANS "worked on a
+                    // scheduled non-working day", so suppressing it here would
+                    // destroy the extra-worked-pay feature this gate must keep.
+                    if ($ch !== 'W' && !isset($staffIsWorking[$dayNum])) continue;
+
+                    // CALENDAR HALF-DAY — expected work for THIS day. 1.0
+                    // normally; $halfDayWeight (0.5) when the calendar
+                    // declared it a half-day and the tenant has the model on.
+                    $dayExpected = (($staffDayReason[$dayNum] ?? '') === \Working_calendar_service::REASON_HALF_DAY)
+                        ? $halfDayWeight : 1.0;
+
+                    // Approved-leave coverage for THIS day, from one shared rule.
+                    // See _leave_coverage_for_day() for why the three branches
+                    // below no longer each carry their own version of it.
+                    $dayCoverage = self::_leave_coverage_for_day(
+                        $dayExpected,
+                        $staffLwpSet[$dayNum]  ?? null,
+                        $staffPaidSet[$dayNum] ?? null
+                    );
+
                     if ($ch === 'A') {
-                        if (!isset($staffLwpSet[$dayNum])) {
-                            $daysAbsent += 1.0;
-                        } elseif ($staffLwpSet[$dayNum] === 0.5) {
-                            // Half-day LWP — attendance 'A' on the OTHER half also deducts
-                            $daysAbsent += 0.5;
-                        }
-                        // Full-day LWP (=== true) → fully covered by leave, 0 absent
+                        // Absent for whatever the day expected, less anything
+                        // approved leave already covers. Paid coverage counts
+                        // here now: it previously did not, so an employee on
+                        // approved PAID half-day leave who was also marked
+                        // absent was charged the full day.
+                        $daysAbsent += max(0.0, $dayExpected - $dayCoverage);
                     } elseif ($ch === 'L') {
+                        // S2 — a leave day consumes the day's EXPECTED work, not a
+                        // flat 1. On a Calendar Half-Day only 0.5 is expected, so a
+                        // full-day leave falling on it consumes 0.5 leave day. The
+                        // bare ++ reported 1.0, which disagreed with the leave
+                        // engine's own chargeable-days weighting and told the
+                        // employee their balance had been debited a whole day for
+                        // half a day of expected work.
+                        //
+                        // Reporting only: neither counter is an input to
+                        // _compute_payslip(), so this cannot move any money. Pay on
+                        // such a day is already full and stays full.
+                        // Adds a literal int 1 on a normal day so a flag-OFF run
+                        // stays byte-identical in TYPE as well as value — `+= 1.0`
+                        // would silently promote the stored counter to a float for
+                        // every tenant. Same precedent as
+                        // Working_calendar_service::resolveFromVersion().
+                        $step = ($dayExpected == 1.0) ? 1 : $dayExpected;
                         if (isset($staffLwpSet[$dayNum]) && $staffLwpSet[$dayNum] === true) {
-                            $unpaidLeaveDays++;
+                            $unpaidLeaveDays += $step;
                         } else {
-                            $paidLeaveDays++;
+                            $paidLeaveDays += $step;
                         }
+                    } elseif ($ch === 'M') {
+                        // P0-3/A1 — attendance HALF-DAY. Previously fell through
+                        // every branch and was silently paid as a FULL day.
+                        // 'M' = half the day worked ⇒ 0.5 day unworked.
+                        //
+                        // Double-count guard (mirrors the 'A' branch above): if
+                        // leave already accounts for this day, the missing half is
+                        // already deducted by the leave engine — adding another
+                        // 0.5 here would deduct the same half twice. Only an
+                        // unleaved 'M' contributes.
+                        //
+                        // Half-Day programme (2026-08-19): the guard now also
+                        // honours APPROVED PAID leave coverage. Previously it
+                        // checked only the LWP set, so a paid half-day leave —
+                        // which produces no LWP and deliberately writes no
+                        // attendance mark — left this 'M' unguarded and the
+                        // employee was docked 0.5 day despite approved leave.
+                        // Paid coverage adds no deduction of its own, so the
+                        // day correctly nets to zero uncovered work.
+                        // S1 (authorized 2026-08-19): 'M' means the employee
+                        // covered HALF of whatever was expected of them that
+                        // day — half of a full day normally, half of the
+                        // reduced day on a Calendar Half-Day. So a half-day
+                        // mark on a declared half-day leaves 0.25 uncovered,
+                        // not 0.5.
+                        //
+                        // Coverage is now SUBTRACTED from the half this mark
+                        // leaves uncovered, rather than skipping the day
+                        // wholesale when any leave exists. Identical wherever
+                        // coverage meets or exceeds the missing half — which is
+                        // every case the old all-or-nothing guard handled — but
+                        // a partial LWP portion smaller than that half now
+                        // correctly leaves the remainder chargeable instead of
+                        // waiving the whole thing.
+                        $halfDays++;
+                        $daysAbsent += max(0.0, ($dayExpected * 0.5) - $dayCoverage);
+                    } elseif ($ch === 'W') {
+                        // P0-4/A2 — worked on a scheduled off-day. Previously
+                        // ignored entirely, so the extra pay this status exists to
+                        // trigger was never credited. Counted here and priced in
+                        // _compute_payslip(); it does NOT reduce absence.
+                        $extraWorkedDays += 1.0;
                     } elseif ($ch === 'V') {
                         $vacantDays++;
                         if ($vacantTreatment === 'absent') {
-                            $daysAbsent += 1.0;
+                            // Scaled like 'A' — an unmarked half-day cannot
+                            // cost more than the half day that was expected —
+                            // and, since 2026-08-19, it also honours approved
+                            // leave. 'V' is the UNMARKED fill, and a half-day
+                            // leave deliberately writes no attendance mark, so
+                            // this is the branch a covered day actually lands
+                            // in. Without the coverage term an approved leave
+                            // was charged in full, and a full-day unpaid leave
+                            // was charged twice — once as lwpDays by the leave
+                            // engine and again as absence here.
+                            $daysAbsent += max(0.0, $dayExpected - $dayCoverage);
                         }
                         // 'present', 'ignore', 'block' → don't add to absent here
+                    }
+                    // 'P' present, 'H' holiday, 'T' late, 'O' weekly-off → no pay
+                    // effect. Non-working days are derived by _staff_working_days()
+                    // from the holiday calendar + weekly-off policy, so 'H'/'O'
+                    // marks are informational here and must NOT be double-counted.
+
+                    // APPROVED PAID LEAVE THAT LEFT NO 'L' MARK (2026-08-20).
+                    // The 'L' branch tallies leave-MARKED days, but a half-day
+                    // leave deliberately writes no attendance mark — the day
+                    // carries 'M', or nothing at all. Its balance is consumed
+                    // and leave_details reports it, yet paid_leave_days counted
+                    // zero, so the slip contradicted its own breakdown: "Paid
+                    // leave 0" beside a leave_details row reading paid 0.5.
+                    // The Teacher app gates its Paid-leave row on > 0, so the
+                    // row vanished for exactly the employees who had taken it.
+                    //
+                    // Reporting only — paidLeaveDays is not an input to
+                    // _compute_payslip(), so no money moves. Guarded on $ch to
+                    // avoid double-counting a day that already had an 'L'.
+                    if ($ch !== 'L' && isset($staffPaidSet[$dayNum])) {
+                        $paidLeaveDays += (float) $staffPaidSet[$dayNum];
                     }
                 }
             } else {
@@ -5887,7 +8610,36 @@ HTML;
             // from the single shared calculator so this path and
             // regenerate_staff_payroll() can never drift. Pure in-memory call —
             // no Firestore, safe inside this per-employee loop.
-            $calc = $this->_compute_payslip($sal, (float) $staffWorkingDays, (float) $daysAbsent, (float) $staffLwpDays);
+            // P0-4/A2 — extra-worked rate is a per-school pay policy read from the
+            // existing attendanceRules config doc (absent ⇒ 1.0, i.e. pay the extra
+            // day at par). No new config collection is introduced.
+            $extraWorkedRate = is_array($attConfig)
+                ? (float) ($attConfig['extra_worked_rate'] ?? 1.0)
+                : 1.0;
+            if ($extraWorkedRate < 0) $extraWorkedRate = 1.0;
+
+            // W3.2.2 — same seam as regenerate_staff_payroll(). Overrides were
+            // bulk-read once for the whole run before this loop, so applying
+            // them costs no extra Firestore read per employee.
+            $extraComponents = Payroll_override_service::toExtraComponents($overridesByStaff[$staffId] ?? []);
+
+            // Same engine-derived baseline as regenerate_staff_payroll(). A run
+            // generated while adjustments already exist must still record what
+            // it would have paid without them — otherwise the slip carries
+            // adjusted figures and no evidence that it was adjusted.
+            $baselineCalc = $extraComponents
+                ? $this->_compute_payslip($sal, (float) $staffWorkingDays, (float) $daysAbsent, (float) $staffLwpDays, (float) $extraWorkedDays, $extraWorkedRate, $statutoryCfg)
+                : null;
+
+            // CA-6: the employee's recorded statutory profile, taken from the
+            // roster document ALREADY in memory — no extra read per employee.
+            $staffStatProfile = $this->_staff_statutory_facts(
+                is_array($roster[$staffId] ?? null) ? $roster[$staffId] : [],
+                $statutoryCfg
+            );
+
+            $calc = $this->_compute_payslip($sal, (float) $staffWorkingDays, (float) $daysAbsent, (float) $staffLwpDays, (float) $extraWorkedDays, $extraWorkedRate, $statutoryCfg,
+                $extraComponents, $staffStatProfile, $periodEndDate);
 
             $daysWorked         = $calc['days_worked'];
             $deductionDays      = $calc['deduction_days'];
@@ -5910,6 +8662,7 @@ HTML;
             $otherDeductions    = $calc['other_deductions'];
             $employeeDeductions = $calc['total_deductions'];
             $netPay             = $calc['net_pay'];
+            $extraWorkedPay     = $calc['extra_worked_pay'];   // P0-4/A2
             foreach ($calc['warnings'] as $w) { $payrollWarnings[] = $staffName . ': ' . $w; }
 
             // Classify as Teaching or Non-Teaching for expense accounts
@@ -5943,10 +8696,14 @@ HTML;
                     stripos($department, 'teaching') !== false
                 );
             }
+            // W1.2 — accumulate in EXACT paise. The expense split (Dr side) and
+            // the net+statutory credits (Cr side) must still balance after N
+            // employees; summing rupee floats is what allows a 1-paise Dr≠Cr
+            // imbalance to reach the journal.
             if ($isTeaching) {
-                $totalTeachingExp += $gross;
+                $totalTeachingExpP += $calc['paise']['gross'];
             } else {
-                $totalNonTeachingExp += $gross;
+                $totalNonTeachingExpP += $calc['paise']['gross'];
             }
 
             // Track department-wise totals for cost center reporting
@@ -5986,11 +8743,139 @@ HTML;
                 'lwp_days'         => $staffLwpDays,
                 'lwp_deduction'    => $lwpDeduction,
                 'working_days'     => $staffWorkingDays,
+                // P0-3/A1 + P0-4/A2 — attendance-derived day accounting that was
+                // previously invisible to payroll. half_days is informational
+                // (its 0.5 pay effect is already inside days_absent);
+                // extra_worked_pay is a real earning included in gross.
+                'half_days'        => $halfDays,
+                'extra_worked_days'=> $extraWorkedDays,
+                'extra_worked_pay' => $extraWorkedPay,
                 'staff_window'     => [
                     'startDay' => $swd['startDay'],
                     'endDay'   => $swd['endDay'],
                     'joinDate' => $jd,
                     'exitDate' => $xd,
+                ],
+                // ── W3.2.1 — attendance day-wise reproducibility snapshot ──
+                //
+                // The slip already froze the attendance RESULT (days_absent,
+                // half_days, lwp_days, …). What it did not freeze was the
+                // EVIDENCE those numbers were derived from, so a later
+                // attendance correction changed what a regeneration would
+                // produce with no record of the original inputs — you could see
+                // `days_absent: 3` but never which three days.
+                //
+                // This freezes the three inputs that, together with the scalars
+                // already on the slip, fully determine the attendance side of
+                // the calculation. They are positional strings of the same
+                // length, indexed day-1 = offset-0 — the same convention
+                // `dayWise` already uses, so this introduces no second encoding
+                // and no second attendance system. Payroll consumes Attendance
+                // and freezes the payroll-relevant result; the authoritative
+                // Attendance architecture is untouched.
+                '_attendance_snapshot' => [
+                    'version'          => 1,
+                    'month_key'        => $monthKey,
+                    // The attendance string exactly as read. '' means no
+                    // attendance document existed — which is a different fact
+                    // from "all present", and the vacant treatment below is
+                    // what decided how it was priced.
+                    'day_wise'         => $attStr,
+                    'source'           => $attSnapSource,
+                    // '1' = inside the employment window. Stored as a per-day
+                    // mask rather than re-derived from startDay/endDay so a
+                    // non-contiguous window (rehire) reproduces correctly.
+                    'window_mask'      => self::_att_window_mask($staffInWindow, $daysInMonth),
+                    // '-' none · 'F' full-day LWP · 'H' half-day LWP.
+                    'lwp_mask'         => self::_att_lwp_mask($staffLwpSet, $daysInMonth),
+                    // The policy that priced unmarked days, and the calendar
+                    // basis the working-day count came from.
+                    'vacant_treatment' => $vacantTreatment,
+                    'working_days'     => $staffWorkingDays,
+                    // HISTORICAL SELF-DESCRIPTION. Without this a stored slip
+                    // cannot state whether Calendar Half-Day pay was in force
+                    // when it was produced: the reduced working_days implies it,
+                    // but only to a reader who already knows that month's
+                    // calendar. Freezing the weight lets a reviewer tell "the
+                    // flag was off" apart from "there was no half-day that
+                    // month", years later. 1.0 = not applied.
+                    'calendar_half_day_weight' => $halfDayWeight,
+                    'days_in_month'    => $daysInMonth,
+                    'holiday_days'     => array_map('intval', array_keys($holidays)),
+                    // ── N-23/N-30 §6 — the CALENDAR this slip was priced against ──
+                    //
+                    // Same positional convention as day_wise: '1' working,
+                    // '0' non-working, '-' outside the employment window.
+                    // Frozen here so a later policy change cannot alter the
+                    // calendar evidence of an already-generated slip — the same
+                    // guarantee W3.2.1 gave attendance, now extended to the
+                    // working week itself.
+                    'working_mask'          => (string) ($swd['workingMask'] ?? ''),
+                    'policy_version'        => $swd['policyVersion'] ?? null,
+                    'policy_effective_from' => (string) ($swd['policyEffectiveFrom'] ?? ''),
+                    'policy_source'         => (string) ($swd['policySource'] ?? ''),
+                    // WHOSE calendar priced this slip (N-32/N-33). Frozen so a
+                    // later reassignment cannot reinterpret a closed period.
+                    'schedule_id'               => (string) ($swd['scheduleId'] ?? ''),
+                    'schedule_name'             => (string) ($swd['scheduleName'] ?? ''),
+                    'assignment_effective_from' => (string) ($swd['assignmentEffectiveFrom'] ?? ''),
+                    // The counts the calculation actually used. Redundant on
+                    // purpose: an auditor can re-derive these from the masks
+                    // above and confirm the two agree. A divergence means the
+                    // snapshot and the payslip disagree, which is exactly the
+                    // condition worth being able to detect.
+                    'derived'          => [
+                        'days_absent'       => $daysAbsent,
+                        'half_days'         => $halfDays,
+                        'extra_worked_days' => $extraWorkedDays,
+                        'paid_leave_days'   => $paidLeaveDays,
+                        'unpaid_leave_days' => $unpaidLeaveDays,
+                        'vacant_days'       => $vacantDays,
+                    ],
+                ],
+                // W3.2.2 — identical shape to regenerate_staff_payroll()'s block.
+                // null when unadjusted, so an adjusted run that nets to zero is
+                // still distinguishable from one that was never adjusted.
+                '_payroll_adjustments' => $extraComponents ? [
+                    'version'        => 1,
+                    'count'          => count($extraComponents),
+                    'lines'          => array_map(function ($xc) {
+                        return [
+                            'override_id' => $xc['code'],
+                            'type'        => $xc['type']  ?? '',
+                            'label'       => $xc['label'] ?? '',
+                            'kind'        => $xc['kind'],
+                            'amount'      => self::_toRupees($xc['amountPaise']),
+                            'prorated'    => !empty($xc['prorated']),
+                        ];
+                    }, $extraComponents),
+                    'original_gross' => $baselineCalc['gross']   ?? null,
+                    'original_net'   => $baselineCalc['net_pay'] ?? null,
+                    'final_gross'    => $calc['gross'],
+                    'final_net'      => $calc['net_pay'],
+                    'applied_at'     => date('c'),
+                    'applied_by'     => $this->admin_name ?: $this->admin_id,
+                ] : null,
+                // ── W3.2.4 — frozen calculation trace ──
+                //
+                // A verbatim copy of what the engine RETURNED. Nothing here is
+                // recomputed, reformatted or re-rounded — `paise` is the exact
+                // integer arithmetic the payslip was built from, so a trace can
+                // be checked against the stored slip to the paisa rather than
+                // to a tolerance that would hide a one-paisa drift.
+                //
+                // Frozen for the same reason as the other snapshots: a payslip
+                // must stay explainable after the salary structure, statutory
+                // policy or component catalogue change.
+                '_calculation_trace' => [
+                    'version'          => 1,
+                    'engine'           => '_compute_payslip',
+                    'statutory_source' => $calc['statutory_source'] ?? 'structure',
+                    'bases'            => $calc['bases']    ?? [],
+                    'paise'            => $calc['paise']    ?? [],
+                    'deferred'         => $calc['deferred'] ?? [],
+                    'warnings'         => $calc['warnings'] ?? [],
+                    'computed_at'      => date('c'),
                 ],
                 'daily_salary'     => $dailySalary,
                 'deduction_days'   => $deductionDays,
@@ -6017,31 +8902,75 @@ HTML;
                 ],
             ];
 
-            $totalGross      += $gross;
-            $totalDeductions += $employeeDeductions;
-            $totalNet        += $netPay;
-            $totalPF         += $pfEmployee;
-            $totalESI        += $esiEmployee;
-            $totalTDS        += $tds;
-            $totalProfTax    += $professionalTax;
-            $totalOtherDed   += $otherDeductions;
+            // W1.2 — exact paise accumulation (see the expense-split note above).
+            $totalGrossP      += $calc['paise']['gross'];
+            $totalDeductionsP += $calc['paise']['total_deductions'];
+            $totalNetP        += $calc['paise']['net_pay'];
+            $totalPFP         += $calc['paise']['pf_employee'];
+            $totalESIP        += $calc['paise']['esi_employee'];
+            $totalTDSP        += $calc['paise']['tds'];
+            $totalProfTaxP    += $calc['paise']['professional_tax'];
+            $totalOtherDedP   += $calc['paise']['other_deductions'];
             $staffCount++;
         }
 
         if ($staffCount === 0) {
-            $this->json_error('No staff with salary structures found in the roster.');
+            // PAY-DIAG-1: the loop above records exactly why it skipped each
+            // person ("no salary data", "corrupt salary data", …) in
+            // $payrollWarnings, and this used to throw all of it away — leaving
+            // the operator with "no staff with salary structures" and no way to
+            // find out which employee or which reason. The information already
+            // exists; withholding it just makes payroll undiagnosable.
+            // json_error() takes (message, http_code) only — the reasons go in
+            // the sentence itself, capped so one bad roster cannot produce an
+            // unreadable wall of text.
+            $detail = array_slice($payrollWarnings, 0, 10);
+            $more   = count($payrollWarnings) - count($detail);
+
+            $this->json_error(
+                'No staff with salary structures found in the roster.'
+                . ($detail !== [] ? ' Skipped: ' . implode('; ', $detail) : '')
+                . ($more > 0 ? sprintf(' (and %d more)', $more) : ''),
+                400
+            );
         }
 
-        $totalGross          = round($totalGross, 2);
-        $totalDeductions     = round($totalDeductions, 2);
-        $totalNet            = round($totalNet, 2);
-        $totalPF             = round($totalPF, 2);
-        $totalESI            = round($totalESI, 2);
-        $totalTDS            = round($totalTDS, 2);
-        $totalProfTax        = round($totalProfTax, 2);
-        $totalOtherDed       = round($totalOtherDed, 2);
-        $totalTeachingExp    = round($totalTeachingExp, 2);
-        $totalNonTeachingExp = round($totalNonTeachingExp, 2);
+        // W1.2 — single conversion boundary for the run totals. Because the
+        // accumulators above are exact integers, the journal identity
+        //   (teachingExp + nonTeachingExp) == (net + PF + ESI + TDS + PT + other)
+        // holds exactly in paise, and converting each side once preserves it.
+        $totalGross          = self::_toRupees($totalGrossP);
+        $totalDeductions     = self::_toRupees($totalDeductionsP);
+        $totalNet            = self::_toRupees($totalNetP);
+        $totalPF             = self::_toRupees($totalPFP);
+        $totalESI            = self::_toRupees($totalESIP);
+        $totalTDS            = self::_toRupees($totalTDSP);
+        $totalProfTax        = self::_toRupees($totalProfTaxP);
+        $totalOtherDed       = self::_toRupees($totalOtherDedP);
+        $totalTeachingExp    = self::_toRupees($totalTeachingExpP);
+        $totalNonTeachingExp = self::_toRupees($totalNonTeachingExpP);
+
+        // N-31/N-33 — run-level working days: the shared value when every
+        // priced employee agrees, otherwise 0 meaning "varies by schedule".
+        // Reporting one schedule's number as if it applied to everyone would be
+        // wrong the moment two schedules exist.
+        // Fraction-safe (2026-08-19): read the VALUE, not the key, and do not
+        // cast to int — a Calendar Half-Day makes this legitimately 21.5.
+        $workingDays = (count($employeeWorkingSet) === 1)
+            ? (float) reset($employeeWorkingSet)
+            : 0;
+
+        // The 0 above is a SENTINEL meaning "varies by schedule", not a real
+        // count of zero working days. That distinction was previously carried
+        // only by a comment, and Calendar Half-Day makes the varying case far
+        // more common (any month where one department has a half-day and
+        // another does not). Stating it as data means a future consumer cannot
+        // silently render the sentinel as an employee's working days.
+        //
+        // Verified at the time of writing: no view, export or app reads the
+        // run-level working_days — every surface reads the SLIP-level value,
+        // which is per-employee and correct.
+        $workingDaysVaries = (count($employeeWorkingSet) !== 1);
 
         // Create payroll run record
         $runData = [
@@ -6053,6 +8982,7 @@ HTML;
             'total_net'        => $totalNet,
             'staff_count'      => $staffCount,
             'working_days'     => $workingDays,
+            'working_days_varies' => $workingDaysVaries,
             'days_in_month'    => $daysInMonth,
             'sundays'          => $sundayCount,
             'off_saturdays'    => $offSatCount,
@@ -6069,6 +8999,24 @@ HTML;
             'balance_due'      => $totalNet,
             'warnings'         => $payrollWarnings,
             'dept_breakdown'   => $deptGross,
+
+            // Feature 7: what KIND of run this is, and — for an off-cycle run —
+            // exactly who it covered. Recorded so a later reader can tell a
+            // three-person arrears run from a monthly payroll that happened to
+            // have three staff.
+            'runType'          => $runType,
+            'runScope'         => $runType === self::RUN_TYPE_OFFCYCLE
+                ? ['staffIds' => array_keys($roster), 'count' => count($roster)]
+                : ['staffIds' => [], 'count' => count($roster)],
+
+            // S-1: the statutory policy this run was priced against, frozen
+            // with the run. Without it a configuration created in September
+            // would leave July's payslips unexplainable — the figures would be
+            // right but nothing would record WHICH rules produced them.
+            //
+            // Stored even when no configuration exists, because "there was no
+            // configuration" is itself the fact that explains the numbers.
+            'statutory_snapshot' => $this->_statutory_snapshot($statutoryCfg),
         ];
 
         // Engine PRE-FLIGHT before any operational record is written: verify
@@ -6103,9 +9051,20 @@ HTML;
         ];
 
         // 1. Firestore FIRST — sync payroll run + slips
+        //
+        // W3.2.5: slips are written in BATCHES instead of one round-trip per
+        // employee. This was the entire scale bottleneck — every input was
+        // already bulk-read in a single query, so the run's cost was N
+        // sequential writes and nothing else. Same documents, same merge
+        // semantics, same builder; only the number of round-trips changes.
         $this->_fsSyncPayrollRun($runId, $runData);
-        foreach ($slips as $sid => $slip) {
-            $this->_fsSyncPayslip($runId, $sid, $slip);
+        $batchResult = $this->_fsSyncPayslipsBatch($runId, $slips);
+        if (!empty($batchResult['failed'])) {
+            // Named, not counted — an operator who is told "12 slips failed"
+            // cannot act, and a silently dropped slip is an unpaid employee.
+            foreach ($batchResult['failed'] as $failedDocId) {
+                $payrollWarnings[] = "Payslip write failed for {$failedDocId} — regenerate this employee.";
+            }
         }
 
         // ── Post the accrual journal through the canonical engine ───────
@@ -6157,6 +9116,19 @@ HTML;
             'staff_count' => $staffCount, 'total_net' => $totalNet,
             'journal_id' => $journalId,
         ]);
+        // Run creation — the point at which a payroll liability first exists.
+        // Run-level aggregates only; no per-employee figures.
+        $this->_audit_payroll('payroll_generated', $runId,
+            "Payroll generated for {$month} {$year}: {$staffCount} staff",
+            [
+                'month'        => (string) $month,
+                'year'         => (string) $year,
+                'toStatus'     => 'Draft',
+                'staffCount'   => $staffCount,
+                'totalNet'     => $totalNet,
+                'journalId'    => $journalId,
+                'warningCount' => count($payrollWarnings),
+            ]);
 
         $msg = "Payroll generated for {$month} {$year}: {$staffCount} staff, Net: {$totalNet}.";
         if (!empty($payrollWarnings)) {
@@ -6176,6 +9148,322 @@ HTML;
                 'journal_id'       => $journalId,
             ],
         ]);
+    }
+
+    // ═════════════════════════════════════════════════════════════════
+    //  W3.2.3 — LOP REVIEW / CONFIRMATION
+    // ═════════════════════════════════════════════════════════════════
+
+    /**
+     * GET — run-level loss-of-pay review.
+     *
+     * WHY THIS EXISTS
+     * ---------------
+     * Every fact below was already stored per slip, but only reachable by
+     * opening one employee at a time. An operator finalising a 200-person run
+     * had no way to answer "who is losing pay this month, and why" without 200
+     * clicks — so in practice the deduction was approved unseen.
+     *
+     * READS FROZEN EVIDENCE, NOT LIVE ATTENDANCE
+     * ------------------------------------------
+     * Everything comes from the slip: the W3.2.1 `_attendance_snapshot`
+     * (`lwp_mask` — which days, full or half) and `leave_details` (which
+     * request, which type, paid or not). Re-deriving from live Attendance would
+     * show a review that does not match the payslip the moment anyone corrects
+     * an attendance record — which is exactly the drift the snapshot exists to
+     * prevent.
+     *
+     * NO SECOND LEAVE ENGINE
+     * ----------------------
+     * Nothing here recomputes LOP. `_process_leave_for_payroll()` remains the
+     * single resolver shared by generate and regenerate; this reports what it
+     * decided.
+     */
+    public function lop_review(): void
+    {
+        $this->_require_role(self::ADMIN_ROLES, 'lop_review', 'HR', 'view');
+
+        $runId = trim((string) ($this->input->get('run_id') ?? ''));
+        if ($runId === '') $this->json_error('run_id is required.');
+
+        $run = $this->fs->get('salarySlips', $this->fs->docId("RUN_{$runId}"));
+        if (!is_array($run) || empty($run)) $this->json_error('Payroll run not found.');
+
+        $slips = $this->_fsGetAllSlips($runId);
+
+        $rows = [];
+        $totalLwpDays = 0.0;
+        $totalDeduction = 0.0;
+        $missingSnapshot = 0;
+
+        foreach ($slips as $staffId => $s) {
+            if (!is_array($s)) continue;
+
+            $lwpDays    = (float) ($s['lwp_days'] ?? 0);
+            $deduction  = (float) ($s['lwp_deduction'] ?? 0);
+            $leaveDet   = is_array($s['leave_details'] ?? null) ? $s['leave_details'] : [];
+
+            // Half-days live on the leave document, not on the attendance mark.
+            $halfFromLeave = 0;
+            foreach ($leaveDet as $ld) {
+                if (is_array($ld) && !empty($ld['half_day'])) $halfFromLeave++;
+            }
+
+            if ($lwpDays <= 0 && $halfFromLeave === 0) continue;   // no loss of pay
+
+            // Day-level detail from the frozen mask. Absent on slips generated
+            // before W3.2.1 — reported as such rather than reconstructed from
+            // today's attendance, which would be a fabricated history.
+            $snap = is_array($s['_attendance_snapshot'] ?? null) ? $s['_attendance_snapshot'] : null;
+            require_once APPPATH . 'helpers/payroll_snapshot_helper.php';
+            $decoded  = payroll_lwp_days_from_mask($snap['lwp_mask'] ?? null);
+            $fullDays = $decoded['full'];
+            $halfDays = $decoded['half'];
+            if ($snap === null) $missingSnapshot++;
+
+            $sources = [];
+            foreach ($leaveDet as $ld) {
+                if (!is_array($ld)) continue;
+                if (empty($ld['lwp_days']) && empty($ld['half_day'])) continue;
+                $sources[] = [
+                    'request_id' => (string) ($ld['request_id'] ?? ''),
+                    'type_name'  => (string) ($ld['type_name'] ?? ''),
+                    'type_code'  => (string) ($ld['type_code'] ?? ''),
+                    'paid_type'  => !empty($ld['paid']),
+                    'from'       => (string) ($ld['from'] ?? ''),
+                    'to'         => (string) ($ld['to'] ?? ''),
+                    // Fraction safety (2026-08-19): this fed the
+                    // `balance_exhausted` flag below, which exists precisely
+                    // so an operator does not report exhausted-balance LOP as
+                    // a bug. (int) floored a 0.5-day LOP to 0, so the flag
+                    // never fired for exactly the fractional case it was
+                    // meant to explain.
+                    'lwp_days'   => (float) ($ld['lwp_days'] ?? 0),
+                    'half_day'   => !empty($ld['half_day']),
+                    'pay_label'  => (string) ($ld['pay_label'] ?? ''),
+                ];
+            }
+
+            // A paid leave type that still produced LOP means the balance was
+            // exhausted when the leave was approved. Operators consistently
+            // read that as a bug, so it is labelled rather than left to be
+            // rediscovered.
+            $balanceExhausted = false;
+            foreach ($sources as $src) {
+                if ($src['paid_type'] && $src['lwp_days'] > 0) { $balanceExhausted = true; break; }
+            }
+
+            $rows[] = [
+                'staff_id'          => $staffId,
+                'staff_name'        => (string) ($s['staff_name'] ?? $staffId),
+                'department'        => (string) ($s['department'] ?? ''),
+                'working_days'      => (float) ($s['working_days'] ?? 0),
+                'days_worked'       => (float) ($s['days_worked'] ?? 0),
+                'lwp_days'          => $lwpDays,
+                'lwp_full_days'     => $fullDays,
+                'lwp_half_days'     => $halfDays,
+                'daily_salary'      => (float) ($s['daily_salary'] ?? 0),
+                'lwp_deduction'     => $deduction,
+                'net_pay'           => (float) ($s['net_pay'] ?? 0),
+                'sources'           => $sources,
+                'balance_exhausted' => $balanceExhausted,
+                'day_detail_available' => $snap !== null,
+            ];
+
+            $totalLwpDays   += $lwpDays;
+            $totalDeduction += $deduction;
+        }
+
+        usort($rows, function ($a, $b) {
+            if ($a['lwp_deduction'] === $b['lwp_deduction']) {
+                return strcasecmp($a['staff_name'], $b['staff_name']);
+            }
+            return $b['lwp_deduction'] <=> $a['lwp_deduction'];   // largest loss first
+        });
+
+        $confirmation = is_array($run['lop_confirmation'] ?? null) ? $run['lop_confirmation'] : null;
+
+        $this->json_success([
+            'run_id'            => $runId,
+            // See payslip_trace(): a 'status' key would overwrite the
+            // json_success() envelope and break every caller's success check.
+            'run_status'        => (string) ($run['status'] ?? ''),
+            'affected'          => $rows,
+            'affected_count'    => count($rows),
+            'total_lwp_days'    => $totalLwpDays,
+            'total_deduction'   => $totalDeduction,
+            'missing_day_detail'=> $missingSnapshot,
+            'confirmation'      => $confirmation,
+            'confirmed'         => $confirmation !== null,
+            // Stated by the server so the UI cannot invent its own advice: LOP
+            // is derived from Attendance and Leave, and the correction belongs
+            // there. A payroll deduction that "fixes" LOP would make payroll a
+            // second attendance system and leave the two disagreeing forever.
+            'correction_guidance' => 'LOP is derived from approved leave and attendance. '
+                . 'To change it, correct the leave request or the attendance record and then regenerate '
+                . 'this employee. Do not use a payroll adjustment to offset LOP — that would leave '
+                . 'payroll and attendance permanently disagreeing.',
+        ]);
+    }
+
+    /**
+     * GET — the full calculation trace for ONE employee's payslip (W3.2.4).
+     *
+     * Answers "why did this employee receive this exact payslip" from FROZEN
+     * evidence only: the salary snapshot, the attendance snapshot, the
+     * adjustments block and the calculation trace the engine itself produced.
+     *
+     * ONE READ. The whole trace is assembled from a single payslip document —
+     * no per-step query, nothing fetched from the compensation, attendance,
+     * leave or statutory collections. That is both the performance property and
+     * the correctness one: a trace that consulted today's configuration would
+     * stop explaining the payslip the moment any of it changed.
+     *
+     * Assembly is delegated to `payroll_build_trace()`, a pure function, so the
+     * chain is unit-testable and this controller adds no arithmetic.
+     */
+    public function payslip_trace(): void
+    {
+        $this->_require_role(self::ADMIN_ROLES, 'payslip_trace', 'HR', 'view');
+
+        $runId   = trim((string) ($this->input->get('run_id') ?? ''));
+        $staffId = trim((string) ($this->input->get('staff_id') ?? ''));
+        if ($runId === '' || $staffId === '') $this->json_error('run_id and staff_id are required.');
+
+        // docId() prefixes the caller's own tenant, so a foreign run/staff pair
+        // resolves to a document that does not exist rather than another
+        // tenant's payslip.
+        $slip = $this->fs->get('salarySlips', $this->fs->docId("SLIP_{$runId}_{$staffId}"));
+        if (!is_array($slip) || empty($slip)) $this->json_error('Payslip not found in this run.');
+
+        $owner = (string) ($slip['schoolId'] ?? '');
+        if ($owner !== '' && $owner !== $this->school_id) {
+            log_message('error', "PAYSLIP_TRACE_TENANT_MISMATCH run={$runId} staff={$staffId} owner={$owner}");
+            $this->json_error('Payslip not found in this run.');
+        }
+
+        require_once APPPATH . 'helpers/payroll_snapshot_helper.php';
+        require_once APPPATH . 'helpers/payroll_trace_helper.php';
+
+        $trace = payroll_build_trace($slip);
+
+        // S-1: the statutory policy is frozen on the RUN, not copied onto
+        // every slip — a 200-employee run would otherwise carry 200 identical
+        // copies of it. One extra read here keeps the run the single
+        // authority for run-level policy.
+        $run = $this->fs->get('salarySlips', $this->fs->docId("RUN_{$runId}"));
+        if (!is_array($run)) $run = [];
+
+        $this->json_success([
+            'run_id'      => $runId,
+            'staff_id'    => $staffId,
+            'staff_name'  => (string) ($slip['staff_name'] ?? $staffId),
+            // NOT 'status': json_success() merges ['status' => 'success'] with
+            // this payload, and a 'status' key here OVERWRITES the envelope —
+            // so every caller's `r.status === 'success'` check failed and the
+            // trace never loaded. Found in UAT on the first real click.
+            'slip_status' => (string) ($slip['status'] ?? ''),
+            'steps'       => $trace['steps'],
+            'warnings'    => $trace['warnings'],
+            'consistency' => $trace['consistency'],
+            'evidence'    => $trace['evidence'],
+            // S-1 (2026-08-22): the run now carries the statutory policy it was
+            // priced against, so this reports what was actually frozen instead
+            // of asserting that freezing is impossible.
+            //
+            // Read from the RUN, not re-resolved: re-resolving here would
+            // answer "what would apply today", which is precisely the question
+            // a reproducibility trace must not answer.
+            'statutory_snapshot' => is_array($run['statutory_snapshot'] ?? null)
+                ? $run['statutory_snapshot']
+                : null,
+            'statutory_snapshot_status' => is_array($run['statutory_snapshot'] ?? null)
+                ? (!empty($run['statutory_snapshot']['configured'])
+                    ? 'FROZEN — priced against the tenant statutory configuration effective '
+                      . (string) ($run['statutory_snapshot']['effectiveFrom'] ?? '?') . '.'
+                    : 'NO TENANT POLICY — rates came from the salary structure. That is itself '
+                      . 'reproducible, because it is recorded.')
+                : 'PRE-DATES SNAPSHOTTING — this run was generated before the statutory policy '
+                  . 'was frozen with runs, so the policy in force at the time is not recorded.',
+        ]);
+    }
+
+    /**
+     * POST — confirm that the run's loss-of-pay has been reviewed.
+     *
+     * Records WHO accepted the deductions and when. This is the sign-off
+     * `finalize_payroll()` now requires when a run deducts pay, so an unreviewed
+     * LOP deduction cannot be finalised silently.
+     *
+     * The confirmation is bound to the exact figures reviewed. If a
+     * regeneration later changes the LOP total, the stored figures no longer
+     * match and the confirmation is treated as stale — otherwise a sign-off on
+     * ₹2,000 of LOP would silently authorise ₹40,000.
+     */
+    public function confirm_lop(): void
+    {
+        $this->_require_role(self::ADMIN_ROLES, 'confirm_lop', 'HR', 'manage');
+
+        $runId = trim((string) $this->input->post('run_id'));
+        $note  = trim((string) $this->input->post('note'));
+        if ($runId === '') $this->json_error('run_id is required.');
+
+        $run = $this->fs->get('salarySlips', $this->fs->docId("RUN_{$runId}"));
+        if (!is_array($run) || empty($run)) $this->json_error('Payroll run not found.');
+        if (($run['status'] ?? '') !== 'Draft') {
+            $this->json_error('Only a Draft run can be reviewed. A finalized run is already frozen.');
+        }
+
+        [$lwpDays, $deduction, $affected] = $this->_lop_totals($runId);
+
+        $confirmation = [
+            'confirmed_by'      => $this->admin_name ?: $this->admin_id,
+            'confirmed_at'      => date('c'),
+            'note'              => $note,
+            // The figures this sign-off actually covers.
+            'lwp_days'          => $lwpDays,
+            'lwp_deduction'     => $deduction,
+            'affected_staff'    => $affected,
+        ];
+
+        $this->fs->set('salarySlips', $this->fs->docId("RUN_{$runId}"),
+            ['lop_confirmation' => $confirmation], true);
+
+        log_message('info', "PAYROLL_LOP_CONFIRMED school={$this->school_id} run={$runId} "
+            . "staff={$affected} days={$lwpDays} deduction={$deduction} by={$this->admin_name}");
+        // W3.2.3 makes this sign-off the on-the-record authorisation for
+        // deducting pay, and finalize_payroll() refuses without it — so it
+        // belongs in the permanent audit trail, not only in a log line.
+        $this->_audit_payroll('payroll_lop_confirmed', $runId,
+            "Loss of pay confirmed: {$lwpDays} day(s) across {$affected} employee(s)",
+            [
+                'lwpDays'       => $lwpDays,
+                'lwpDeduction'  => $deduction,
+                'affectedStaff' => $affected,
+                'note'          => $note,
+            ]);
+
+        $this->json_success(['confirmation' => $confirmation],
+            'Loss of pay reviewed and confirmed.');
+    }
+
+    /**
+     * Current LOP totals for a run, from the frozen slips.
+     *
+     * @return array{0:float,1:float,2:int} [lwpDays, deduction, affectedStaff]
+     */
+    private function _lop_totals(string $runId): array
+    {
+        $days = 0.0; $ded = 0.0; $n = 0;
+        foreach ($this->_fsGetAllSlips($runId) as $s) {
+            if (!is_array($s)) continue;
+            $d = (float) ($s['lwp_days'] ?? 0);
+            if ($d <= 0) continue;
+            $days += $d;
+            $ded  += (float) ($s['lwp_deduction'] ?? 0);
+            $n++;
+        }
+        return [$days, $ded, $n];
     }
 
     /**
@@ -6253,6 +9541,45 @@ HTML;
             $this->json_error('Only Draft payroll runs can be finalized.');
         }
 
+        // ── W3.2.3 — loss of pay must be reviewed before it is finalised ──
+        //
+        // A run that deducts pay for LOP cannot be frozen until someone has
+        // said, on the record, that the deductions are correct. Before this
+        // gate the deduction was approved implicitly by whoever clicked
+        // Finalize, with nothing stored about whether it had been looked at.
+        //
+        // The gate applies ONLY when the run actually deducts pay, so runs with
+        // no LOP finalize exactly as before.
+        //
+        // The confirmation is bound to the figures it covered: if a
+        // regeneration changed the LOP after sign-off, the old confirmation is
+        // stale and must be renewed. Otherwise a sign-off on a small deduction
+        // would silently authorise a much larger one.
+        [$lopDays, $lopDeduction, $lopStaff] = $this->_lop_totals($runId);
+        if ($lopDays > 0) {
+            $conf = is_array($run['lop_confirmation'] ?? null) ? $run['lop_confirmation'] : null;
+
+            if ($conf === null) {
+                $this->json_error(
+                    "This run deducts pay for {$lopDays} LOP day(s) across {$lopStaff} employee(s) "
+                    . "(total {$lopDeduction}). Review and confirm loss of pay before finalizing.",
+                    409
+                );
+            }
+
+            $sameDays = abs(((float) ($conf['lwp_days'] ?? -1)) - $lopDays) < 0.001;
+            $sameDed  = abs(((float) ($conf['lwp_deduction'] ?? -1)) - $lopDeduction) < 0.005;
+            if (!$sameDays || !$sameDed) {
+                $this->json_error(
+                    'Loss of pay changed after it was confirmed (confirmed '
+                    . ($conf['lwp_days'] ?? '?') . ' day(s) / ' . ($conf['lwp_deduction'] ?? '?')
+                    . ', now ' . $lopDays . ' day(s) / ' . $lopDeduction
+                    . '). Review and confirm again before finalizing.',
+                    409
+                );
+            }
+        }
+
         $updateData = [
             'status'       => 'Finalized',
             'finalized_at' => date('c'),
@@ -6269,6 +9596,14 @@ HTML;
         }
 
         $this->_log_payroll('finalized', $runId);
+        $this->_audit_payroll('payroll_finalized', $runId,
+            'Payroll run finalized (Draft → Finalized)',
+            $this->_audit_run_meta($run, [
+                'toStatus'     => 'Finalized',
+                'lopDays'      => $lopDays,
+                'lopDeduction' => $lopDeduction,
+                'lopStaff'     => $lopStaff,
+            ]));
 
         $this->json_success(['message' => 'Payroll run finalized.']);
     }
@@ -6309,6 +9644,9 @@ HTML;
         }
 
         $this->_log_payroll('approved', $runId);
+        $this->_audit_payroll('payroll_approved', $runId,
+            'Payroll run approved (Finalized → Approved)',
+            $this->_audit_run_meta($run, ['toStatus' => 'Approved']));
         $this->json_success(['message' => 'Payroll approved. Ready for payment.']);
     }
 
@@ -6324,8 +9662,20 @@ HTML;
         $runId   = $this->safe_path_segment(trim($this->input->get('run_id') ?? ''), 'run_id');
         $staffId = trim($this->input->get('staff_id') ?? '');
 
-        // Non-admin can only download own
-        if (!(function_exists('has_permission') && has_permission('HR', 'manage')) && !in_array($this->admin_role, self::ADMIN_ROLES, true)) {
+        // Non-admin can only download own.
+        //
+        // P0-1/D1 (HRMS alignment): the legacy `|| in_array($this->admin_role,
+        // ADMIN_ROLES)` re-grant was REMOVED — highest-impact of the four bypasses.
+        // A caller whose role NAME sat in ADMIN_ROLES (Admin/Principal/HR Manager)
+        // but who had been graded down to HR:view passed the gate above at
+        // view>=view, then skipped this clamp and kept the request-supplied
+        // staff_id — downloading ANY employee's payslip PDF (gross/net pay, bank
+        // account, PAN/PF/ESI). Cross-staff payslip access is now strictly
+        // HR:manage, matching every other cross-staff payroll read
+        // (get_payslip / get_payroll_slips / export_payroll_report).
+        // Self-service is unaffected: a caller without HR:manage is clamped to
+        // their own id, and my_payslips() remains the dedicated self-service path.
+        if (!(function_exists('has_permission') && has_permission('HR', 'manage'))) {
             $staffId = $this->admin_id;
         }
         $staffId = $this->safe_path_segment($staffId, 'staff_id');
@@ -6431,13 +9781,37 @@ HTML;
         } elseif ($month !== '' && $year !== '') {
             // Firestore first for finding run by month/year
             try {
+                // OFF-CYCLE (2026-08-22) — resolve the MONTHLY run explicitly.
+                //
+                // This used to take LIMIT 1 and `[0]`, which was fine while a
+                // period could only ever hold one run. Now that an off-cycle
+                // run (F&F, arrears, bonus) may sit alongside March's monthly
+                // payroll, `[0]` would return whichever the query happened to
+                // yield — so exporting "the March salary register" could hand
+                // an accountant a single leaver's settlement instead.
+                //
+                // The limit is dropped so the monthly run is actually reachable,
+                // and `runType` is read with a monthly default so runs written
+                // before the field existed still resolve.
+                //
+                // Callers that want a specific run already pass `run_id`, which
+                // is the deterministic path and is untouched.
                 $fsRuns = $this->fs->schoolWhere('salarySlips', [
                     ['type', '==', 'run'],
                     ['month', '==', $month],
                     ['year', '==', $year],
-                ], null, 'ASC', 1);
-                if (!empty($fsRuns)) {
-                    $doc = $fsRuns[0];
+                ]);
+
+                $doc = null;
+                foreach ((array) $fsRuns as $candidate) {
+                    $cData = is_array($candidate['data'] ?? null) ? $candidate['data'] : [];
+                    if ((string) ($cData['runType'] ?? self::RUN_TYPE_MONTHLY) === self::RUN_TYPE_MONTHLY) {
+                        $doc = $candidate;
+                        break;
+                    }
+                }
+
+                if ($doc !== null) {
                     $run = $doc['data'];
                     $parts = explode('_RUN_', $doc['id'], 2);
                     $runId = isset($parts[1]) ? $parts[1] : $doc['id'];
@@ -6531,6 +9905,7 @@ HTML;
         $fmt = function ($v) { return number_format((float) $v, 2, '.', ','); };
 
         $css = 'body{font-family:sans-serif;font-size:11px;color:#1a2e2a;margin:0;padding:20px 30px}
+        .cur{font-family:"DejaVu Sans"}
         table{width:100%;border-collapse:collapse}
         .hdr{text-align:center;margin-bottom:16px}
         .hdr h1{font-size:16px;margin:0;color:#BC5A3C}
@@ -6593,7 +9968,12 @@ HTML;
         $h .= '</td></tr></table>';
 
         // Net Pay
-        $h .= '<div class="net">Net Pay: ₹ ' . $fmt($netPay) . '</div>';
+        // RT-5: the symbol needs its own DejaVu span. dompdf resolves this
+        // document's `sans-serif` to core Helvetica, which cannot encode U+20B9
+        // and substitutes a literal '?' — so every payslip generated to date has
+        // read "Net Pay: ? 71,940.25". Scoping the font to the symbol leaves all
+        // other payslip text metrics on Helvetica, so nothing else reflows.
+        $h .= '<div class="net">Net Pay: <span class="cur">₹</span> ' . $fmt($netPay) . '</div>';
 
         // Footer
         $h .= '<div class="footer">This is a computer-generated payslip. Generated on ' . date('d M Y, h:i A') . '</div>';
@@ -6808,6 +10188,23 @@ HTML;
             'payment_reference' => $paymentReference,
             'journal_id'        => $journalId,
         ]);
+        $this->_audit_payroll(
+            $isFullPayment ? 'payroll_paid' : 'payroll_partial_payment',
+            $runId,
+            $isFullPayment
+                ? "Payroll run marked fully paid via {$paymentMode}"
+                : "Partial payroll payment recorded via {$paymentMode}",
+            $this->_audit_run_meta($run, [
+                'toStatus'         => $newStatus,
+                'paymentSeq'       => $paymentSeq,
+                'amount'           => $payAmount,
+                'totalPaid'        => $newTotalPaid,
+                'balanceDue'       => round($totalNet - $newTotalPaid, 2),
+                'paymentMode'      => $paymentMode,
+                'paymentDate'      => $paymentDate,
+                'paymentReference' => $paymentReference,
+                'journalId'        => $journalId,
+            ]));
 
         $this->json_success([
             'message'     => $isFullPayment
@@ -6827,7 +10224,7 @@ HTML;
      */
     public function payroll_health_page()
     {
-        $this->_require_role(self::ADMIN_ROLES, 'payroll_health_page');
+        $this->_require_role(self::ADMIN_ROLES, 'payroll_health_page', 'HR', 'manage');
         $this->load->view('include/header');
         $this->load->view('hr/payroll_health');
         $this->load->view('include/footer');
@@ -6843,7 +10240,7 @@ HTML;
      */
     public function payroll_health()
     {
-        $this->_require_role(self::ADMIN_ROLES, 'payroll_health');
+        $this->_require_role(self::ADMIN_ROLES, 'payroll_health', 'HR', 'manage');
 
         $recon = null;
         try {
@@ -7182,6 +10579,15 @@ HTML;
             'month' => $run['month'] ?? '', 'year' => $run['year'] ?? '',
             'total_net' => $run['total_net'] ?? 0,
         ]);
+        // Canonical audit trail — emitted BEFORE the delete for the same
+        // reason as the diagnostic line above: once _delete_payroll_docs()
+        // runs, the run's period and totals are unrecoverable.
+        $this->_audit_payroll('payroll_run_deleted', $runId,
+            'Draft payroll run deleted; accrual journal reversed',
+            $this->_audit_run_meta($run, [
+                'toStatus'          => 'deleted',
+                'expenseJournalId'  => (string) ($run['expense_journal_id'] ?? ''),
+            ]));
 
         $expenseJournalId = $run['expense_journal_id'] ?? '';
 
@@ -7255,7 +10661,11 @@ HTML;
                     $d = $doc['data'] ?? $doc;
                     $r = is_array($doc['data'] ?? null) ? $doc['data'] : [];
                     // Strip schoolId prefix from doc id (format: {schoolId}_APR0001)
-                    $rawId = (string) ($d['id'] ?? '');
+                    // Wrapper bug (as in get_departments): the doc id is on the wrapper,
+                    // not inside data. Reading it from the data dict yielded '' for every
+                    // row, so the view fell back to the array index and row actions
+                    // posted "0"/"1" as the entity id.
+                    $rawId = (string) ($doc['id'] ?? ($d['id'] ?? ''));
                     $prefix = $this->school_id . '_';
                     $r['id'] = (strpos($rawId, $prefix) === 0)
                         ? substr($rawId, strlen($prefix))
@@ -7345,7 +10755,8 @@ HTML;
         if ($isNew) {
             $id = $this->_next_id('APR', 'Appraisal');
         } else {
-            // Only allow editing Draft appraisals (Firestore-first, RTDB fallback)
+            // Only allow editing Draft appraisals. Firestore is the only source; a
+            // failed read falls through to 'not found' (fail-closed). No RTDB path.
             $existing = null;
             try {
                 $existing = $this->fs->getEntity('appraisals', $id);
@@ -7541,6 +10952,408 @@ HTML;
         }
 
         $this->json_success(['message' => 'Appraisal deleted.']);
+    }
+
+    // ====================================================================
+    //  STAFF HR ADVANCED CAPABILITY PROGRAMME — Phase 7: Training /
+    //  Development (2026-08-19)
+    // ====================================================================
+    //
+    // Confirmed green-field by a dedicated research pass: no training,
+    // certification, or skill-development concept existed anywhere for
+    // staff (the one "training" hit in this file is unrelated free text in
+    // a Leave Type description). Modeled directly on this SAME file's
+    // Appraisals section immediately above — the closest existing
+    // precedent for "an independently CRUD-able, per-staff HR record type"
+    // — same collection shape (one doc per record, `_next_id()`-minted id,
+    // dual snake_case/camelCase field mirror for cross-system consumers),
+    // same RBAC grading (HR:view to list, HR:edit to save, HR:manage to
+    // delete).
+    //
+    // Deliberately NO Draft→Submitted→Reviewed workflow (unlike
+    // Appraisals) — a training/certification record is a factual log entry
+    // HR maintains, not a graded evaluation requiring a review gate; adding
+    // an approval workflow here would be inventing process the real-world
+    // concept doesn't call for.
+    //
+    // Deliberately NO file/certificate upload here — Phase A's canonical
+    // Document Service (Staff::upload_staff_document()) already exists for
+    // exactly that, is already wired into edit_staff.php's "HR Documents"
+    // section, and already supports arbitrary document types; attaching a
+    // certificate scan is "upload it there", not a reason to build a
+    // second, parallel upload path or a new writer.
+    private const TRAINING_STATUSES = ['Planned', 'In Progress', 'Completed'];
+    private const TRAINING_CATEGORIES = ['Training', 'Certification', 'Workshop', 'Course'];
+
+    /**
+     * GET — List training/development records. Optional filters:
+     * ?staff_id=XXX&status=Completed&category=Certification
+     */
+    public function get_training_records()
+    {
+        $this->_require_role(self::VIEW_ROLES, 'get_training_records', 'HR', 'view');
+
+        $filterStaffId  = trim($this->input->get('staff_id') ?? '');
+        $filterStatus   = trim($this->input->get('status') ?? '');
+        $filterCategory = trim($this->input->get('category') ?? '');
+        $list = [];
+
+        try {
+            $conditions = [];
+            if ($filterStaffId !== '') $conditions[] = ['staff_id', '==', $filterStaffId];
+            if ($filterStatus !== '') $conditions[] = ['status', '==', $filterStatus];
+            if ($filterCategory !== '') $conditions[] = ['category', '==', $filterCategory];
+            $fsDocs = $this->fs->schoolWhere('staffTraining', $conditions);
+            if (is_array($fsDocs) && !empty($fsDocs)) {
+                foreach ($fsDocs as $doc) {
+                    $r = is_array($doc['data'] ?? null) ? $doc['data'] : [];
+                    // Wrapper bug (as in get_departments): the doc id is on the wrapper,
+                    // not inside data. Reading it from the data dict yielded '' for every
+                    // row, so the view fell back to the array index and row actions
+                    // posted "0"/"1" as the entity id.
+                    $rawId = (string) ($doc['id'] ?? ($r['id'] ?? ''));
+                    $prefix = $this->school_id . '_';
+                    $r['id'] = (strpos($rawId, $prefix) === 0) ? substr($rawId, strlen($prefix)) : $rawId;
+                    $list[] = $r;
+                }
+            }
+        } catch (\Exception $e) {
+            log_message('error', 'HR get_training_records: Firestore read failed: ' . $e->getMessage());
+        }
+
+        usort($list, function ($a, $b) {
+            return strcmp($b['created_at'] ?? $b['createdAt'] ?? '', $a['created_at'] ?? $a['createdAt'] ?? '');
+        });
+
+        $this->json_success(['training_records' => $list]);
+    }
+
+    /**
+     * POST — Create or update a training/development record.
+     */
+    public function save_training_record()
+    {
+        $this->_require_role(self::HR_ROLES, 'save_training_record', 'HR', 'edit');
+
+        $id            = trim($this->input->post('id') ?? '');
+        $staffId       = $this->safe_path_segment(trim($this->input->post('staff_id') ?? ''), 'staff_id');
+        $title         = trim($this->input->post('title') ?? '');
+        $provider      = trim($this->input->post('provider') ?? '');
+        $category      = trim($this->input->post('category') ?? 'Training');
+        $status        = trim($this->input->post('status') ?? 'Completed');
+        $completedDate = trim($this->input->post('completed_date') ?? '');
+        $expiryDate    = trim($this->input->post('expiry_date') ?? '');
+        $hours         = trim($this->input->post('hours') ?? '');
+        $notes         = trim($this->input->post('notes') ?? '');
+
+        if ($title === '') $this->json_error('Training/certification title is required.');
+        if (!in_array($category, self::TRAINING_CATEGORIES, true)) $this->json_error('Invalid category.');
+        if (!in_array($status, self::TRAINING_STATUSES, true)) $this->json_error('Invalid status.');
+        foreach ([$completedDate, $expiryDate] as $d) {
+            if ($d !== '' && !preg_match('/^\d{4}-\d{2}-\d{2}$/', $d)) $this->json_error('Dates must be in YYYY-MM-DD format.');
+        }
+        if ($status === 'Completed' && $completedDate === '') {
+            $this->json_error('Completed date is required for a Completed record.');
+        }
+
+        $staffProfile = $this->_fsGetStaffProfile($staffId);
+        if (!is_array($staffProfile)) $this->json_error('Staff member not found.');
+
+        $rawStatus = (string) ($staffProfile['status'] ?? $staffProfile['Status'] ?? 'Active');
+        if (strtolower(trim($rawStatus)) !== 'active') {
+            $this->json_error('Cannot perform this action for an inactive staff member.');
+        }
+
+        $staffName  = $staffProfile['Name'] ?? $staffProfile['name'] ?? $staffId;
+        $department = $staffProfile['Department'] ?? $staffProfile['department'] ?? '';
+
+        $now   = date('c');
+        $isNew = ($id === '');
+
+        if ($isNew) {
+            $id = $this->_next_id('TRN', 'Training');
+        } else {
+            $existing = null;
+            try {
+                $existing = $this->fs->getEntity('staffTraining', $id);
+            } catch (\Exception $e) {
+                log_message('error', "HR save_training_record: Firestore read FAILED for {$id}: " . $e->getMessage());
+            }
+            if (!is_array($existing)) $this->json_error('Training record not found.');
+        }
+
+        $data = [
+            'staff_id'        => $staffId,
+            'staff_name'      => $staffName,
+            'department'      => $department,
+            'title'           => $title,
+            'provider'        => $provider,
+            'category'        => $category,
+            'status'          => $status,
+            'completed_date'  => $completedDate,
+            'expiry_date'     => $expiryDate,
+            'hours'           => $hours,
+            'notes'           => $notes,
+            'updated_at'      => $now,
+            'updated_by'      => $this->admin_id,
+            // Canonical camelCase mirror for cross-system consumers.
+            'staffId'         => $staffId,
+            'staffName'       => $staffName,
+            'completedDate'   => $completedDate,
+            'expiryDate'      => $expiryDate,
+        ];
+        if ($isNew) {
+            $data['created_at'] = $now;
+            $data['created_by'] = $this->admin_id;
+        }
+
+        try {
+            $this->fs->setEntity('staffTraining', $id, $data);
+            log_message('debug', "HR save_training_record: Firestore OK for {$id}");
+        } catch (\Exception $e) {
+            log_message('error', "HR save_training_record: Firestore FAILED for {$id}: " . $e->getMessage());
+        }
+
+        $this->json_success(['id' => $id, 'message' => $isNew ? 'Training record added.' : 'Training record updated.']);
+    }
+
+    /**
+     * POST — Delete a training/development record.
+     * Params: id
+     */
+    public function delete_training_record()
+    {
+        $this->_require_role(self::HR_ROLES, 'delete_training_record', 'HR', 'manage');
+
+        $id = $this->safe_path_segment(trim($this->input->post('id') ?? ''), 'id');
+
+        $record = null;
+        try {
+            $record = $this->fs->getEntity('staffTraining', $id);
+        } catch (\Exception $e) {
+            log_message('error', "HR delete_training_record: Firestore read FAILED for {$id}: " . $e->getMessage());
+        }
+        if (!is_array($record)) $this->json_error('Training record not found.');
+
+        try {
+            $this->fs->removeEntity('staffTraining', $id);
+            log_message('debug', "HR delete_training_record: Firestore OK for {$id}");
+        } catch (\Exception $e) {
+            log_message('error', "HR delete_training_record: Firestore FAILED for {$id}: " . $e->getMessage());
+        }
+
+        $this->json_success(['message' => 'Training record deleted.']);
+    }
+
+    // ====================================================================
+    //  STAFF HR ADVANCED CAPABILITY PROGRAMME — Phase 8: Reporting
+    //  Hierarchy / Org Chart (2026-08-19)
+    // ====================================================================
+    //
+    // Confirmed green-field by a dedicated research pass: `reportingManagerId`
+    // has been STORED on the staff doc and cycle-VALIDATED at write time
+    // (Staff_employment_history_service::validateManagerAssignment()) since
+    // Phase 2C, but was never RENDERED as a hierarchy anywhere in the
+    // codebase — HR could set a manager but never see the resulting shape.
+    //
+    // STRICTLY READ-ONLY. This endpoint writes nothing, and deliberately
+    // creates no second source of truth for the hierarchy: the tree is
+    // derived, every request, from the SAME `reportingManagerId` field the
+    // existing writers already own. There is no denormalised "reports[]"
+    // array, no cached tree document, nothing to drift.
+    //
+    // It is also a DIAGNOSTIC surface, modelled on
+    // Work_schedules::_blockedStaff() — the closest existing precedent in
+    // this codebase for "make the unresolvable visible rather than
+    // silently skipping it." That matters here specifically because
+    // validateManagerAssignment() deliberately tolerates several states it
+    // cannot safely reject at write time, and this is the first surface
+    // that can see them at all:
+    //   • orphan_manager   — reportingManagerId points at a doc that does
+    //                        not resolve in this tenant. validateManagerAssignment()
+    //                        explicitly does NOT reject a broken link found
+    //                        mid-chain ("a broken link ends the walk without
+    //                        rejecting"), so these can accumulate.
+    //   • inactive_manager — the manager was Active when assigned (that IS
+    //                        validated) but was deactivated LATER; nothing
+    //                        re-checks existing reports on deactivation.
+    //   • cycle            — validateManagerAssignment() breaks out of a
+    //                        PRE-EXISTING loop rather than blocking on it
+    //                        ("pre-existing corrupt loop unrelated to this
+    //                        new assignment — stop, don't block"), so a
+    //                        legacy cycle stays invisible until rendered.
+    //   • self_reference   — rejected at write time, but legacy/imported
+    //                        data predates that check.
+    // Reporting them is the whole point; a chart that silently dropped a
+    // cyclic branch would read as "the hierarchy is fine."
+    //
+    // ONE bulk read for the whole roster, tree built in memory — the same
+    // no-N+1 discipline _schedule_assignments() already established for
+    // per-employee lookups that grow with headcount.
+    private const ORG_CHART_MAX_DEPTH = 25; // mirrors REPORTING_MANAGER_MAX_CHAIN_DEPTH
+
+    /**
+     * GET — the reporting hierarchy for this tenant, as a flat node map plus
+     * root ids plus a diagnostics list. Flat (not pre-nested) deliberately:
+     * the client needs the flat map for the diagnostics panel anyway, and a
+     * flat payload avoids deep-nesting serialisation limits on a large roster.
+     */
+    public function get_org_chart()
+    {
+        $this->_require_role(self::VIEW_ROLES, 'get_org_chart', 'HR', 'view');
+
+        // ALL staff, not just Active — an Inactive manager who still has
+        // Active reports is precisely one of the defects this surface
+        // exists to reveal, and filtering them out here would hide it.
+        $nodes = [];
+        try {
+            $fsDocs = $this->fs->schoolWhere('staff', []);
+            foreach ((is_array($fsDocs) ? $fsDocs : []) as $doc) {
+                $d = is_array($doc['data'] ?? null) ? $doc['data'] : $doc;
+                if (!is_array($d)) continue;
+                $sid = trim((string) ($d['staffId'] ?? $d['userId'] ?? ''));
+                if ($sid === '') continue;
+                $nodes[$sid] = [
+                    'staffId'    => $sid,
+                    'name'       => (string) ($d['Name'] ?? $d['name'] ?? $sid),
+                    'position'   => (string) ($d['designation'] ?? $d['Position'] ?? $d['position'] ?? ''),
+                    'department' => (string) ($d['Department'] ?? $d['department'] ?? ''),
+                    'managerId'  => trim((string) ($d['reportingManagerId'] ?? '')),
+                    'status'     => (string) ($d['status'] ?? $d['Status'] ?? 'Active'),
+                ];
+            }
+        } catch (\Exception $e) {
+            log_message('error', 'HR get_org_chart: Firestore read failed: ' . $e->getMessage());
+            return $this->json_error('Could not load the reporting hierarchy.');
+        }
+
+        $issues = [];
+        $cyclic = [];   // staffIds proven to sit on a cycle — excluded from roots
+
+        // ── Per-node link integrity ──────────────────────────────────
+        foreach ($nodes as $sid => $n) {
+            $mid = $n['managerId'];
+            if ($mid === '') continue;
+
+            if ($mid === $sid) {
+                $issues[] = [
+                    'type' => 'self_reference', 'staffId' => $sid, 'staffName' => $n['name'],
+                    'detail' => 'This employee is recorded as their own reporting manager.',
+                ];
+                continue;
+            }
+            if (!isset($nodes[$mid])) {
+                $issues[] = [
+                    'type' => 'orphan_manager', 'staffId' => $sid, 'staffName' => $n['name'],
+                    'detail' => "Reporting manager '{$mid}' does not exist in this school's staff records.",
+                ];
+                continue;
+            }
+            if (strtolower(trim($nodes[$mid]['status'])) !== 'active'
+                && strtolower(trim($n['status'])) === 'active') {
+                $issues[] = [
+                    'type' => 'inactive_manager', 'staffId' => $sid, 'staffName' => $n['name'],
+                    'detail' => "Reports to {$nodes[$mid]['name']}, who is no longer active.",
+                ];
+            }
+        }
+
+        // ── Cycle detection (iterative, bounded) ─────────────────────
+        // Walks each node's manager chain upward. Nodes proven to reach a
+        // root are memoised as 'safe' so the whole roster costs one pass,
+        // not one walk per node. The walk is kept as an ORDERED list, not
+        // just a lookup set, because only the segment from the
+        // loop-closing node onward is actually ON the loop — anything
+        // before it is a tail feeding INTO the loop, and naming those in
+        // the cycle path (or marking them cyclic) would misreport where
+        // the corruption actually is. Tail nodes are caught instead by the
+        // reachability pass below.
+        $safe = [];
+        foreach (array_keys($nodes) as $startId) {
+            if (isset($safe[$startId]) || isset($cyclic[$startId])) continue;
+
+            $order = [];    // ordered walk
+            $pos    = [];   // staffId → index in $order
+            $cursor = $startId;
+            $depth  = 0;
+            $hitCycle = false;
+            while ($cursor !== '' && $depth++ < self::ORG_CHART_MAX_DEPTH) {
+                if (isset($safe[$cursor])) break;                 // reaches a known-good root
+                if (isset($cyclic[$cursor])) { $hitCycle = true; break; }
+                if (isset($pos[$cursor])) {                       // closed a loop
+                    $loop = array_slice($order, $pos[$cursor]);
+                    foreach ($loop as $pid) $cyclic[$pid] = true;
+                    $issues[] = [
+                        'type' => 'cycle', 'staffId' => $cursor, 'staffName' => $nodes[$cursor]['name'],
+                        'detail' => 'Circular reporting chain: ' . implode(' → ', array_map(
+                            fn($pid) => $nodes[$pid]['name'], $loop)) . ' → ' . $nodes[$cursor]['name'],
+                    ];
+                    $hitCycle = true;
+                    break;
+                }
+                $pos[$cursor] = count($order);
+                $order[] = $cursor;
+                $next = $nodes[$cursor]['managerId'] ?? '';
+                if ($next === '' || !isset($nodes[$next]) || $next === $cursor) break;  // root / broken link / self
+                $cursor = $next;
+            }
+            // Only a walk that genuinely terminated at a root proves its
+            // whole path reaches one. A walk that ran into a cycle proves
+            // the opposite for every node on it.
+            if (!$hitCycle) {
+                foreach ($order as $pid) $safe[$pid] = true;
+            }
+        }
+
+        // ── Roots: no manager, or a manager that cannot be followed ──
+        // A node whose manager is an orphan/self-reference is rendered as a
+        // root so the branch below it stays visible instead of vanishing.
+        // Cyclic nodes are deliberately NOT roots — they are reported as an
+        // issue instead of being drawn as a fake top-level branch.
+        $roots = [];
+        foreach ($nodes as $sid => $n) {
+            if (isset($cyclic[$sid])) continue;
+            $mid = $n['managerId'];
+            if ($mid === '' || $mid === $sid || !isset($nodes[$mid])) $roots[] = $sid;
+        }
+
+        usort($roots, fn($a, $b) => strcmp($nodes[$a]['name'], $nodes[$b]['name']));
+
+        // ── Reachability — nothing may silently vanish from the chart ──
+        // The client renders downward from $roots. Any node a root cannot
+        // reach (e.g. an employee whose manager sits on a cycle) would
+        // simply never be drawn, and an incomplete chart that LOOKS
+        // complete is exactly the failure mode Work_schedules::_blockedStaff()
+        // exists to prevent. Report them rather than lose them.
+        $childrenOf = [];
+        foreach ($nodes as $sid => $n) {
+            if (isset($cyclic[$sid])) continue;   // never drawn as anyone's child
+            $mid = $n['managerId'];
+            if ($mid !== '' && $mid !== $sid && isset($nodes[$mid])) $childrenOf[$mid][] = $sid;
+        }
+        $reachable = [];
+        $stack = $roots;
+        while (!empty($stack)) {
+            $id = array_pop($stack);
+            if (isset($reachable[$id])) continue;
+            $reachable[$id] = true;
+            foreach ($childrenOf[$id] ?? [] as $childId) $stack[] = $childId;
+        }
+        foreach ($nodes as $sid => $n) {
+            if (isset($reachable[$sid]) || isset($cyclic[$sid])) continue;
+            $issues[] = [
+                'type' => 'unreachable', 'staffId' => $sid, 'staffName' => $n['name'],
+                'detail' => 'Not reachable from any top-level manager — the reporting chain above this employee is broken or circular.',
+            ];
+        }
+
+        return $this->json_success([
+            'nodes'       => $nodes,
+            'roots'       => $roots,
+            'issues'      => $issues,
+            'cyclic_ids'  => array_keys($cyclic),
+            'total_staff' => count($nodes),
+        ]);
     }
 
     // ====================================================================
@@ -8046,7 +11859,7 @@ HTML;
         if (preg_match('/^(\d{2})-(\d{2})-(\d{4})$/', $s, $m))   return "{$m[3]}-{$m[2]}-{$m[1]}";
         if (preg_match('/^(\d{2})\/(\d{2})\/(\d{4})$/', $s, $m)) return "{$m[3]}-{$m[2]}-{$m[1]}";
 
-        log_message('warning', "M-4 date normalize failed for '{$s}'" . ($context !== '' ? " (context: {$context})" : ''));
+        log_message('error', "M-4 date normalize failed for '{$s}'" . ($context !== '' ? " (context: {$context})" : ''));
         return null;
     }
 
@@ -8121,7 +11934,7 @@ HTML;
                 FILTER_VALIDATE_BOOLEAN
             );
             $ridLog = $rid !== '' ? "for '{$rid}'" : '';
-            log_message('warning', "_process_leave_for_payroll: type '{$ltId}' missing {$ridLog} — fallback type_paid=" . ($ltPaid ? 'true' : 'false'));
+            log_message('error', "_process_leave_for_payroll: type '{$ltId}' missing {$ridLog} — fallback type_paid=" . ($ltPaid ? 'true' : 'false'));
         }
 
         // Half-day flag (Phase 4)
@@ -8137,25 +11950,83 @@ HTML;
             'paid'            => $ltPaid,
             'from'            => $lrFrom,
             'to'              => $lrTo,
-            'total_days'      => (int) ($leaveDoc['days']      ?? 0),
-            'paid_days'       => (int) ($leaveDoc['paid_days'] ?? 0),
-            'lwp_days'        => (int) ($leaveDoc['lwp_days']  ?? 0),
+            // Fraction safety (2026-08-19). These three were (int) casts, and
+            // this $leaveDetail array is FROZEN onto the payslip as
+            // leave_details[] — the permanent record of a pay decision. A
+            // half-day leave was therefore DEDUCTED as 0.5 (the half-day
+            // branch below hard-codes 0.5 and bypasses $lwpDaysOnDoc) while
+            // being DOCUMENTED as 0, so the slip contradicted itself and an
+            // auditor could not reconcile the deduction against the detail.
+            'total_days'      => (float) ($leaveDoc['days']      ?? 0),
+            'paid_days'       => (float) ($leaveDoc['paid_days'] ?? 0),
+            'lwp_days'        => (float) ($leaveDoc['lwp_days']  ?? 0),
             'half_day'        => $isHalfDay,
             'half_day_period' => $isHalfDay ? $halfPeriod : '',
             'pay_label'       => $leaveDoc['pay_label'] ?? ($ltPaid ? 'Paid Leave' : 'Unpaid Leave (LWP)'),
         ];
 
-        $emptyResult = ['leaveDetail' => $leaveDetail, 'lwpDays' => 0.0, 'lwpDaySet' => []];
+        $emptyResult = ['leaveDetail' => $leaveDetail, 'lwpDays' => 0.0, 'lwpDaySet' => [], 'paidDaySet' => []];
+
+        // CR-4: staff employment window for filtering pre-join/post-exit days.
+        // Hoisted above the CR-1 early return below so the PAID half-day
+        // branch can apply the same window filter.
+        $jd = $staffProfile['joinDate']  ?? $staffProfile['Date Of Joining'] ?? $staffProfile['Joining Date'] ?? null;
+        $xd = $staffProfile['exitDate']  ?? $staffProfile['Resignation Date'] ?? $staffProfile['leaveDate']  ?? null;
 
         // CR-1: only skip LWP attribution when paid type AND no LWP days. A
         // paid type with lwp_days>0 (balance was exhausted at decide time)
         // MUST still produce a deduction.
-        $lwpDaysOnDoc = (int) ($leaveDoc['lwp_days'] ?? 0);
-        if ($ltPaid && $lwpDaysOnDoc === 0) return $emptyResult;
+        //
+        // ── MONEY DEFECT FIXED (2026-08-19) ──
+        // This was `(int) (...)`, and lwp_days is provably fractional: a
+        // half-day leave stores 0.5 (apply_leave ~:4964), and
+        // `lwpDays = days - paidDays` is computed against a balance that is
+        // explicitly float ("balances may be fractional (0.5) after half-day
+        // deductions"). The cast manufactured exactly the integer that the
+        // strict `=== 0` tests below were looking for, so:
+        //   • a PAID half-day with lwp_days = 0.5 cast to 0, satisfied
+        //     `=== 0`, and was treated as fully covered — the 0.5-day
+        //     deduction was silently never taken;
+        //   • a 3-day leave against a 1.5-day balance (lwp_days = 1.5) cast
+        //     to 1, charging 1 day of LOP instead of 1.5.
+        // Both are under-deductions, i.e. the employer pays for time that
+        // was not covered. Now a float, with the comparisons below widened
+        // from `=== 0` to `<= 0.0` so they still mean "no LWP at all".
+        $lwpDaysOnDoc = (float) ($leaveDoc['lwp_days'] ?? 0);
 
-        // CR-4: staff employment window for filtering pre-join/post-exit days
-        $jd = $staffProfile['joinDate']  ?? $staffProfile['Date Of Joining'] ?? $staffProfile['Joining Date'] ?? null;
-        $xd = $staffProfile['exitDate']  ?? $staffProfile['Resignation Date'] ?? $staffProfile['leaveDate']  ?? null;
+        // ── HALF-DAY PROGRAMME (2026-08-19) — PAID half-day coverage ──
+        //
+        // A PAID half-day leave produces no LWP, so it used to fall straight
+        // into the CR-1 early return below and report NOTHING. But half-day
+        // leave deliberately writes no attendance mark (the employee really
+        // did work the other half), so the day still carries whatever
+        // attendance was recorded — typically 'M'.
+        //
+        // The payroll absence loop guards 'M' only against the LWP day set:
+        //     if (!isset($staffLwpSet[$dayNum])) $daysAbsent += 0.5;
+        // With nothing reported, that guard saw nothing and charged 0.5 day
+        // absent — so an employee on APPROVED PAID half-day leave was docked
+        // half a day's pay. (On a 44,000 gross over 22 working days that is
+        // a silent 1,000 deduction; see HalfDayReconciliationTest.)
+        //
+        // Reporting the day in a separate `paidDaySet` lets the loop treat it
+        // as COVERED without adding any LWP. The three concepts stay
+        // separate: this records that approved leave covers the day, it does
+        // not convert an attendance half-day into leave, and it does not
+        // touch Calendar Half-Day (which remains a declared calendar fact
+        // with no pay effect, pending an explicit policy decision).
+        if ($isHalfDay && $ltPaid && $lwpDaysOnDoc <= 0.0) {
+            if ($lrFrom < $monthStart || $lrFrom > $monthEnd) return $emptyResult;
+            if (!$this->_in_employment_window($lrFrom, $jd, $xd)) return $emptyResult;
+            return [
+                'leaveDetail' => $leaveDetail,
+                'lwpDays'     => 0.0,                                        // paid — never a deduction
+                'lwpDaySet'   => [],
+                'paidDaySet'  => [(int) date('j', strtotime($lrFrom)) => 0.5],
+            ];
+        }
+
+        if ($ltPaid && $lwpDaysOnDoc <= 0.0) return $emptyResult;
 
         // Half-day branch — always single-day, contributes 0.5 LWP
         if ($isHalfDay) {
@@ -8166,25 +12037,44 @@ HTML;
                 'leaveDetail' => $leaveDetail,
                 'lwpDays'     => 0.5,
                 'lwpDaySet'   => [$dn => 0.5],
+                'paidDaySet'  => [],
             ];
         }
 
-        // Full-day LWP branch — paid days consumed first, LWP days at the END
-        if ($lwpDaysOnDoc <= 0) return $emptyResult;
-        $lwpStart = date('Y-m-d', strtotime("{$lrTo} -" . ($lwpDaysOnDoc - 1) . " days"));
+        // Multi-day LWP branch — paid days are consumed FIRST, so the LWP
+        // days sit at the END of the leave span.
+        //
+        // A fractional total is real: a 3-day leave against a 1.5-day balance
+        // leaves lwp_days = 1.5. The span then covers ceil(1.5) = 2 calendar
+        // days — the LAST day fully unpaid, and the day before it half
+        // unpaid. Previously `$lwpDaysOnDoc - 1` was fed straight to
+        // strtotime(), which cannot express a fractional day offset, and the
+        // (int) cast upstream had already flattened 1.5 to 1 so the span was
+        // simply one day short.
+        if ($lwpDaysOnDoc <= 0.0) return $emptyResult;
+
+        $fullDays = (int) floor($lwpDaysOnDoc);
+        $fraction = round($lwpDaysOnDoc - $fullDays, 2);   // 0.0 or 0.5 in practice
+        $spanDays = (int) ceil($lwpDaysOnDoc);
+
+        $lwpStart = date('Y-m-d', strtotime("{$lrTo} -" . ($spanDays - 1) . " days"));
         if ($lwpStart > $monthEnd || $lrTo < $monthStart) return $emptyResult;
         $overlapStart = max($lwpStart, $monthStart);
         $overlapEnd   = min($lrTo, $monthEnd);
 
-        $lwpInWindow = 0;
+        $lwpInWindow = 0.0;
         $lwpDaySet   = [];
         $cursor = new DateTime($overlapStart);
         $end    = new DateTime($overlapEnd);
         while ($cursor <= $end) {
             $dateStr = $cursor->format('Y-m-d');
             if ($this->_in_employment_window($dateStr, $jd, $xd)) {
-                $lwpInWindow++;
-                $lwpDaySet[(int) $cursor->format('j')] = true;
+                // Only the EARLIEST day of the span can be partial — the
+                // remaining days are fully unpaid.
+                $isSpanStart = ($dateStr === $lwpStart);
+                $portion     = ($isSpanStart && $fraction > 0.0) ? $fraction : true;
+                $lwpInWindow += ($portion === true) ? 1.0 : $portion;
+                $lwpDaySet[(int) $cursor->format('j')] = $portion;
             }
             $cursor->modify('+1 day');
         }
@@ -8193,6 +12083,7 @@ HTML;
             'leaveDetail' => $leaveDetail,
             'lwpDays'     => (float) $lwpInWindow,
             'lwpDaySet'   => $lwpDaySet,
+            'paidDaySet'  => [],
         ];
     }
 
@@ -8211,9 +12102,132 @@ HTML;
      *   'endDay'   => int                    // 1-based day where window ends
      * }
      */
+    /**
+     * CALENDAR HALF-DAY — what one declared half-day contributes to EXPECTED
+     * WORK for the given payroll period (2026-08-19, authorized model S1–S4).
+     *
+     * Returns 0.5 only when BOTH hold:
+     *   1. the tenant has explicitly enabled the model, and
+     *   2. the period start is on/after the tenant's chosen effective date.
+     * Otherwise 1.0 — byte-identical to the pre-existing behaviour.
+     *
+     * Per-tenant, not deployment-wide: the setting lives on the school
+     * document alongside the rest of the attendance policy, so one school
+     * enabling it cannot move another school's payroll. The effective-date
+     * boundary is what protects HISTORICAL runs — regenerating a period from
+     * before the boundary still resolves 1.0 and reproduces the original
+     * figures exactly.
+     *
+     * Fails CLOSED to 1.0 on any read error: an unreadable flag must never
+     * silently reprice payroll.
+     */
+    private function _half_day_weight(int $year, int $monthNum): float
+    {
+        static $memo = null;   // per-request; the school doc cannot change mid-run
+        if ($memo === null) {
+            $memo = ['enabled' => false, 'from' => ''];
+            try {
+                $school = $this->fs->get('schools', $this->school_id);
+                $pol = (is_array($school) && is_array($school['attendancePolicy'] ?? null))
+                    ? $school['attendancePolicy'] : [];
+                $memo['enabled'] = !empty($pol['calendarHalfDayPayEnabled']);
+                $memo['from']    = (string) ($pol['calendarHalfDayPayEffectiveFrom'] ?? '');
+            } catch (\Throwable $e) {
+                log_message('error', 'Hr::_half_day_weight config read failed: ' . $e->getMessage());
+                $memo = ['enabled' => false, 'from' => ''];
+            }
+        }
+        if (empty($memo['enabled'])) return 1.0;
+
+        // An enabled tenant with no effective date set is treated as NOT yet
+        // rolled out — an explicit boundary is required, never assumed.
+        $from = $memo['from'];
+        if ($from === '' || !preg_match('/^\d{4}-\d{2}-\d{2}$/', $from)) return 1.0;
+
+        $periodStart = sprintf('%04d-%02d-01', $year, $monthNum);
+        return ($periodStart >= $from) ? 0.5 : 1.0;
+    }
+
+    /**
+     * N-40 — split an employment window into consecutive same-department runs.
+     *
+     * Returns at least one segment. With no employment-timeline history (every
+     * tenant today) the department is constant and exactly ONE segment comes
+     * back, so the caller behaves exactly as it did before segmentation existed.
+     *
+     * `$fallback` is the caller's period-start department, used for any day the
+     * timeline cannot answer for — a missing history must never blank out a
+     * department that payroll already had.
+     *
+     * @return array<int, array{department: string, from: int, to: int}>
+     */
+    private function _department_segments(
+        string $staffId, int $year, int $monthNum, int $startDay, int $endDay, string $fallback
+    ): array {
+        if ($startDay > $endDay) return [];
+
+        $segments = [];
+        $current  = null;
+
+        for ($d = $startDay; $d <= $endDay; $d++) {
+            $dateISO = sprintf('%04d-%02d-%02d', $year, $monthNum, $d);
+
+            $dept = $fallback;
+            if ($staffId !== '') {
+                $resolved = $this->_department_as_of($staffId, $dateISO, $fallback);
+                if (is_string($resolved) && $resolved !== '') $dept = $resolved;
+            }
+
+            if ($current !== null && $current['department'] === $dept) {
+                $current['to'] = $d;
+                continue;
+            }
+            if ($current !== null) $segments[] = $current;
+            $current = ['department' => $dept, 'from' => $d, 'to' => $d];
+        }
+
+        if ($current !== null) $segments[] = $current;
+        return $segments;
+    }
+
+    /**
+     * N-40 — resolve one segment's calendar for a single department.
+     *
+     * Extracted verbatim from `_staff_working_days()` so the same resolution
+     * runs once per department segment. Nothing about the resolution changed;
+     * only how many times it is invoked.
+     */
+    private function _resolve_segment_calendar(
+        int $year, int $monthNum, array $holidays, string $staffId, string $department, array $window
+    ): array {
+        // Phase D — re-derive holidays / special-working-days / half-days
+        // FILTERED for this employee AND this segment's department. The
+        // holiday service caches its calendarEvents read per request, so
+        // re-filtering per segment costs no extra Firestore read.
+        $staffHolidays      = $holidays;
+        $specialWorkingDays = [];
+        $halfDays           = [];
+
+        if (isset($this->holiday_service) && $this->holiday_service->isReady()) {
+            $staffHolidays      = $this->holiday_service->holidays_in_month($year, $monthNum, 'staff', $department, $staffId);
+            $specialWorkingDays = $this->holiday_service->special_working_days_in_month($year, $monthNum, 'staff', $department, $staffId);
+            $halfDays           = $this->holiday_service->half_days_in_month($year, $monthNum, 'staff', $department, $staffId);
+        }
+
+        require_once APPPATH . 'libraries/Work_schedule_service.php';
+
+        return Work_schedule_service::resolveEmployeeCalendar(
+            $this->_attendance_policy(), $this->_schedule_assignments(), $staffId,
+            $year, $monthNum, $staffHolidays, $window, $department,
+            $specialWorkingDays, $halfDays,
+            $this->_half_day_weight($year, $monthNum)
+        );
+    }
+
     private function _staff_working_days(
         int $monthNum, int $year, array $holidays,
-        ?string $joinDate, ?string $exitDate
+        ?string $joinDate, ?string $exitDate,
+        string $staffId = '', string $department = ''
     ): array {
         $daysInMonth = (int) date('t', mktime(0, 0, 0, $monthNum, 1, $year));
         $monthStart  = sprintf('%04d-%02d-01',  $year, $monthNum);
@@ -8234,32 +12248,446 @@ HTML;
         $startDay = (int) substr($windowStart, 8, 2);
         $endDay   = (int) substr($windowEnd, 8, 2);
 
-        $working  = 0;
+        // Employment window only. This loop no longer decides ANY weekday rule —
+        // no Sunday check, no Saturday check, no nth-Saturday counter. Payroll
+        // holds zero working-week business logic (N-23/P-021 §9).
         $inWindow = [];
-        $satCount = 0;
+        for ($d = $startDay; $d <= $endDay; $d++) $inWindow[$d] = true;
 
-        // Walk every day so Saturday counter (1st/2nd/3rd/4th/5th)
-        // stays correct regardless of where the window starts.
-        for ($d = 1; $d <= $daysInMonth; $d++) {
-            $dow = (int) date('w', mktime(0, 0, 0, $monthNum, $d, $year));
-            if ($dow === 6) $satCount++;
+        // Phase D (2026-08-18) — re-derive holidays/special-working-days/
+        // half-days FILTERED for this employee (audience=staff, department,
+        // exceptStaff), rather than trusting the school-wide $holidays the
+        // caller loaded once for the whole run. Holiday_service caches the
+        // raw calendarEvents read per request, so re-filtering per employee
+        // costs no extra Firestore read — it only re-scans the in-memory map.
+        // Falls back to the unfiltered $holidays param if holiday_service
+        // isn't loaded (defensive; both current call sites load it).
+        // ── N-40 (2026-08-22) — DEPARTMENT IS RESOLVED PER DAY ───────────
+        //
+        // Payroll used to resolve department ONCE at $periodStart and apply that
+        // department's calendar to the whole month, while Leave and Attendance
+        // both resolve per day (Hr::_department_as_of, Attendance::
+        // _department_as_of, Staff_attendance_finaliser::_departmentAsOf).
+        // Payroll was the lone outlier, so an employee transferred mid-month had
+        // days priced against the OLD department's holiday/half-day calendar —
+        // and expected work is the denominator of the pay retention ratio.
+        //
+        // The month is split into consecutive same-department SEGMENTS and the
+        // calendar is resolved once per segment. With no transfer there is
+        // exactly ONE segment and the result is byte-identical to before, which
+        // is every tenant today (0 timeline rows). A transfer produces two.
+        //
+        // This is NOT a per-day query: `_department_as_of()` is memoised per
+        // (staffId|date) and the timeline is warmed once per run, so a segmented
+        // month costs the same Firestore reads as an unsegmented one.
+        $segments = $this->_department_segments($staffId, $year, $monthNum, $startDay, $endDay, $department);
 
-            if ($d < $startDay || $d > $endDay) continue;
-            $inWindow[$d] = true;
+        $merged = null;
+        foreach ($segments as $seg) {
+            $segDept = $seg['department'];
 
-            if ($dow === 0) continue;
-            if ($dow === 6 && ($satCount === 2 || $satCount === 4)) continue;
-            if (isset($holidays[$d])) continue;
+            // Only this segment's days are in scope for this resolution.
+            $segWindow = [];
+            for ($d = $seg['from']; $d <= $seg['to']; $d++) $segWindow[$d] = true;
 
-            $working++;
+            $segCal = $this->_resolve_segment_calendar(
+                $year, $monthNum, $holidays, $staffId, $segDept, $segWindow
+            );
+
+            if ($merged === null) {
+                $merged = $segCal;
+                continue;
+            }
+
+            // Merge per-day maps; sum the counts. Each segment only ever
+            // contributes days it owns, so no day is counted twice.
+            foreach (['isWorking', 'reason', 'workingMask'] as $k) {
+                foreach ((array) ($segCal[$k] ?? []) as $day => $v) {
+                    if (isset($segWindow[$day])) $merged[$k][$day] = $v;
+                }
+            }
+            $merged['workingCount'] = (float) $merged['workingCount'] + (float) $segCal['workingCount'];
+            $merged['halfDayCount'] = (int) ($merged['halfDayCount'] ?? 0) + (int) ($segCal['halfDayCount'] ?? 0);
+
+            // A block anywhere in the month blocks the employee — payroll must
+            // not price a month it could only partly resolve.
+            if (!empty($segCal['blocked'])) {
+                $merged['blocked']     = true;
+                $merged['blockReason'] = $segCal['blockReason'];
+                $merged['blockCode']   = $segCal['blockCode'] ?? '';
+            }
         }
 
+        $cal = $merged ?? $this->_resolve_segment_calendar(
+            $year, $monthNum, $holidays, $staffId, $department, $inWindow
+        );
+
+        // THIS EMPLOYEE's calendar (N-33). Two employees in the same run can
+        // legitimately have different working days, so the calendar is resolved
+        // per staff member from their effective schedule assignment — never
+        // from a tenant-wide calendar reused for everyone.
+        //
+        // A missing/expired/ambiguous assignment comes back BLOCKED with a
+        // named reason. Payroll refuses that employee rather than inventing a
+        // calendar; the run continues for employees who are correctly assigned.
         return [
-            'working'  => $working,
-            'inWindow' => $inWindow,
-            'startDay' => $startDay,
-            'endDay'   => $endDay,
+            'working'   => $cal['workingCount'],
+            'inWindow'  => $inWindow,
+            'startDay'  => $startDay,
+            'endDay'    => $endDay,
+            // Consumed by the attendance parse loops and frozen into the slip.
+            'isWorking'    => $cal['isWorking'],
+            'dayReason'    => $cal['reason'],
+            'workingMask'  => $cal['workingMask'],
+            'calBlocked'   => $cal['blocked'],
+            'calBlockWhy'  => $cal['blockReason'],
+            'calBlockCode' => $cal['blockCode'] ?? '',
+            // Trail 2 Phase C (2026-08-18) — surfaces the Calendar Half Day
+            // count Work_schedule_service already computes (its own docblock:
+            // "informational only, does not change workingCount arithmetic").
+            // Previously computed here and silently discarded — never read by
+            // either call site. Exposed now so a caller CAN see it; 'working'
+            // and every other key above are UNCHANGED, so this has zero effect
+            // on today's payable-days math. Whether/how a half day should
+            // reduce payable days is an unresolved financial-policy question
+            // (full pay vs. 0.5 reduction vs. "half attendance excuses the
+            // other half") — not decided here, not invented here.
+            'halfDayCount' => $cal['halfDayCount'] ?? 0,
+            // Identity of WHOSE calendar — frozen into the slip so a later
+            // schedule change cannot reinterpret a closed period.
+            'scheduleId'              => $cal['scheduleId'] ?? '',
+            'scheduleName'            => $cal['scheduleName'] ?? '',
+            'assignmentEffectiveFrom' => $cal['assignmentEffectiveFrom'] ?? '',
+            'policyVersion'       => $cal['policyVersion'],
+            'policyEffectiveFrom' => $cal['policyEffectiveFrom'],
+            'policySource'        => $cal['policySource'],
         ];
+    }
+
+    /**
+     * Workforce Policy Programme Phase F (2026-08-18) — Leave calendar-
+     * awareness. Counts the CHARGEABLE (working) days within [fromDate,
+     * toDate] for one staff member, excluding weekly-offs and holidays via
+     * the SAME canonical resolver Payroll uses for LOP
+     * (Work_schedule_service::resolveEmployeeCalendar /
+     * Working_calendar_service) — so leave-balance deduction and LOP can
+     * never disagree about "what counts as a working day". A Special
+     * Working Day inside the range still counts as chargeable (it IS a day
+     * the employee would otherwise have to attend).
+     *
+     * Fails OPEN to the pre-existing raw calendar-day span when the
+     * employee's work-schedule calendar cannot be resolved (no assignment
+     * configured, ambiguous, etc.) — filing leave is a self-service HR
+     * action, not a financial calculation, and must never hard-block on a
+     * payroll-config gap. Callers should treat `calendarAware=false` as
+     * "unchanged legacy behaviour", never as a silent wrong answer.
+     *
+     * Deliberately NOT used for half-day leave — half-day stays a fixed 0.5
+     * per the existing, separately-authorized Calendar-Half-Day/Attendance-
+     * Half-Day/Half-Day-Leave boundary; this only affects multi/single
+     * FULL-day span counting.
+     *
+     * @return array{days: float, calendarAware: bool, blockReason: string}
+     */
+    /**
+     * ZenX Leave Policy Programme, Phase 1 (2026-08-18) — reads the two
+     * OPTIONAL, additive tenant fields Leave_year_service consumes:
+     * `schools/{id}.academicYearStartMonth` (int 1-12, default 4 — the
+     * pre-existing April convention already duplicated at Sis.php/
+     * Attendance.php/Fees.php, now centralised rather than reinvented) and
+     * `schools/{id}.sessionBoundaries` (an optional per-session override
+     * map). Neither field exists on any tenant today; their absence is the
+     * expected, fully-supported case — Leave_year_service derives correct
+     * bounds from the session label alone when both are empty/default.
+     *
+     * Read-only. Does not gate on LEAVE_SESSION_YEAR_ENABLED itself —
+     * that's the caller's job, once a caller exists (Phase 2+). This
+     * helper only has zero effect today because nothing calls it yet.
+     *
+     * @return array{startMonth:int, overrides:array}
+     */
+    private function _leave_year_config(): array
+    {
+        static $cfg = null;
+        if ($cfg !== null) return $cfg;
+        require_once APPPATH . 'libraries/Leave_year_service.php';
+        $startMonth = \Leave_year_service::DEFAULT_START_MONTH;
+        $overrides  = [];
+        try {
+            $school = $this->fs->get('schools', $this->school_id);
+            if (is_array($school)) {
+                $sm = (int) ($school['academicYearStartMonth'] ?? 0);
+                if ($sm >= 1 && $sm <= 12) $startMonth = $sm;
+                $ov = $school['sessionBoundaries'] ?? null;
+                if (is_array($ov)) $overrides = $ov;
+            }
+        } catch (\Throwable $e) {
+            log_message('error', 'Hr::_leave_year_config failed, using default April-start: ' . $e->getMessage());
+        }
+        $cfg = ['startMonth' => $startMonth, 'overrides' => $overrides];
+        return $cfg;
+    }
+
+    /**
+     * ZenX Leave Policy Programme, Phase 1 — is the session-year balance
+     * keying live for this tenant? Gate lives here (not inline at each call
+     * site) so Phase 2+ can add their own gates the same way without
+     * re-deriving the config->load() boilerplate each time.
+     */
+    private function _leave_flag(string $name): bool
+    {
+        // PURE PER-SCHOOL (2026-09-20): a leave-policy capability is the SCHOOL's
+        // own choice — resolved ONLY from schools.leavePolicy[$name]. Absent ⇒ OFF.
+        // The legacy fleet-wide `leave_policy_v2_flags` fallback has been CUT: the
+        // developer ships the machinery, the school decides the policy from its
+        // own config page, and a new school defaults OFF with no code involvement.
+        // Cache is keyed by school so the fleet cron (which re-points school_id)
+        // reads each tenant fresh; within one web request the key never changes.
+        static $lpBySchool = [];
+        $sid = (string) ($this->school_id ?? '');
+        if (!array_key_exists($sid, $lpBySchool)) {
+            try {
+                $doc = $this->fs->get('schools', $sid);
+                $lpBySchool[$sid] = (is_array($doc) && is_array($doc['leavePolicy'] ?? null)) ? $doc['leavePolicy'] : [];
+            } catch (\Throwable $e) {
+                $lpBySchool[$sid] = [];
+            }
+        }
+        $v = $lpBySchool[$sid][$name] ?? false;
+        return ($v === true || $v === 1 || $v === '1' || $v === 'yes' || $v === 'true');
+    }
+
+    private function _count_chargeable_leave_days(string $staffId, string $liveFallbackDepartment, string $fromDate, string $toDate): array
+    {
+        $rawSpan = (float) ((new DateTime($fromDate))->diff(new DateTime($toDate))->days + 1);
+
+        if (!isset($this->holiday_service) || !$this->holiday_service->isReady()) {
+            return ['days' => $rawSpan, 'calendarAware' => false, 'blockReason' => 'Holiday service unavailable'];
+        }
+
+        require_once APPPATH . 'libraries/Work_schedule_service.php';
+        $assignments = $this->_schedule_assignments();
+        $attendancePolicy = $this->_attendance_policy();
+
+        $from = new DateTime($fromDate);
+        $to   = new DateTime($toDate);
+        $chargeable = 0.0;
+
+        // Trail 2 Priority 2 (2026-08-19) — resolve department AS OF the
+        // relevant date(s), not just the live/passed-in value for the whole
+        // span. Staff::transfer_staff() writes staff.Department immediately
+        // regardless of the chosen effective date (Trail 2 Phase I/J
+        // precedent), so a leave request spanning a transfer's effective
+        // date must count old-department working days before that date and
+        // new-department working days on/after it. Reuses the SAME
+        // read-only Staff_employment_history_service::resolveAttributeAsOf()
+        // Payroll and Attendance already use — no second history system, no
+        // new writer.
+        //
+        // Performance (no-N+1 gate): resolveAttributeAsOf() is a real
+        // Firestore query with no internal caching. Calling it once per
+        // calendar day (up to LEAVE_MAX_SPAN_DAYS = 366) would be an N+1 on
+        // every single leave application, the overwhelming majority of
+        // which never cross a transfer date at all. Instead: probe just the
+        // two span endpoints (2 queries, memoized). If they agree — the
+        // common case — the whole span shares one department and the
+        // original single-department month-slice loop below runs unchanged
+        // (net cost: +2 queries vs. the pre-fix baseline of 0). Only when
+        // the endpoints genuinely disagree (a transfer's effective date
+        // truly falls inside this span) does the rarer, more expensive
+        // per-day path run, bounded by the same 366-day span cap.
+        // Known, disclosed limit: this endpoint probe cannot detect a
+        // double transfer that lands the department back at its original
+        // value entirely inside the span (e.g. A→B on day 3, B→A on day 5
+        // of a 10-day request) — an extreme edge case Payroll's own Phase J
+        // resolver does not attempt to handle either (it resolves once, at
+        // period start, and explicitly defers mid-period splits). A single
+        // transfer crossing the span — the actual scenario this priority
+        // was scoped to fix — is always caught, since exactly that changes
+        // the start/end probe values.
+        $deptAtStart = $this->_department_as_of($staffId, $fromDate, $liveFallbackDepartment);
+        $deptAtEnd   = $this->_department_as_of($staffId, $toDate, $liveFallbackDepartment);
+
+        if ($deptAtStart === $deptAtEnd) {
+            return $this->_chargeable_days_single_department($staffId, $deptAtStart, $from, $to, $rawSpan, $attendancePolicy, $assignments);
+        }
+
+        // A transfer's effective date genuinely falls inside this span —
+        // resolve department per day (memoized by exact date, so a retried/
+        // duplicate call for the same date is free) and cache each month's
+        // resolved calendar per (year, month, department) pair, so a run of
+        // consecutive same-department days within a month still resolves
+        // that month's holiday/SWD/half-day batch only once.
+        $monthCalCache = [];
+        $cursor = clone $from;
+        while ($cursor <= $to) {
+            $dateISO    = $cursor->format('Y-m-d');
+            $department = $this->_department_as_of($staffId, $dateISO, $liveFallbackDepartment);
+
+            $year     = (int) $cursor->format('Y');
+            $monthNum = (int) $cursor->format('n');
+            $day      = (int) $cursor->format('j');
+            $cacheKey = $year . '-' . $monthNum . '|' . $department;
+
+            if (!isset($monthCalCache[$cacheKey])) {
+                $monthEndDay = (int) $cursor->format('t');
+                $inWindow = [];
+                for ($d = 1; $d <= $monthEndDay; $d++) $inWindow[$d] = true;
+
+                $holidays = $this->holiday_service->holidays_in_month($year, $monthNum, 'staff', $department, $staffId);
+                $swd      = $this->holiday_service->special_working_days_in_month($year, $monthNum, 'staff', $department, $staffId);
+                $halfDays = $this->holiday_service->half_days_in_month($year, $monthNum, 'staff', $department, $staffId);
+
+                $monthCalCache[$cacheKey] = Work_schedule_service::resolveEmployeeCalendar(
+                    $attendancePolicy, $assignments, $staffId, $year, $monthNum,
+                    $holidays, $inWindow, $department, $swd, $halfDays
+                );
+            }
+
+            $cal = $monthCalCache[$cacheKey];
+            if (!empty($cal['blocked'])) {
+                return ['days' => $rawSpan, 'calendarAware' => false, 'blockReason' => (string) ($cal['blockReason'] ?? '')];
+            }
+            if (!empty($cal['isWorking'][$day])) $chargeable += 1.0;
+
+            $cursor->modify('+1 day');
+        }
+
+        return ['days' => $chargeable, 'calendarAware' => true, 'blockReason' => ''];
+    }
+
+    /**
+     * The pre-Priority-2 month-slice chargeable-day loop, unchanged, for the
+     * common case where the whole [$from, $to] span shares one resolved
+     * department (no transfer's effective date falls inside it).
+     */
+    private function _chargeable_days_single_department(string $staffId, string $department, DateTime $from, DateTime $to, float $rawSpan, ?array $attendancePolicy, array $assignments): array
+    {
+        $chargeable = 0.0;
+        $cursor = clone $from;
+
+        while ($cursor <= $to) {
+            $year        = (int) $cursor->format('Y');
+            $monthNum    = (int) $cursor->format('n');
+            $monthEndDay = (int) $cursor->format('t');
+            $monthEnd    = new DateTime(sprintf('%04d-%02d-%02d', $year, $monthNum, $monthEndDay));
+            $sliceEnd    = ($monthEnd < $to) ? $monthEnd : $to;
+
+            $startDay = (int) $cursor->format('j');
+            $endDay   = (int) $sliceEnd->format('j');
+            $inWindow = [];
+            for ($d = $startDay; $d <= $endDay; $d++) $inWindow[$d] = true;
+
+            $holidays = $this->holiday_service->holidays_in_month($year, $monthNum, 'staff', $department, $staffId);
+            $swd      = $this->holiday_service->special_working_days_in_month($year, $monthNum, 'staff', $department, $staffId);
+            $halfDays = $this->holiday_service->half_days_in_month($year, $monthNum, 'staff', $department, $staffId);
+
+            // S2 (authorized 2026-08-19): leave consumption is measured in
+            // EXPECTED-WORK units, so the same half-day weight applies here.
+            $hdWeight = $this->_half_day_weight($year, $monthNum);
+            $cal = Work_schedule_service::resolveEmployeeCalendar(
+                $attendancePolicy, $assignments, $staffId, $year, $monthNum,
+                $holidays, $inWindow, $department, $swd, $halfDays, $hdWeight
+            );
+
+            if (!empty($cal['blocked'])) {
+                return ['days' => $rawSpan, 'calendarAware' => false, 'blockReason' => (string) ($cal['blockReason'] ?? '')];
+            }
+
+            for ($d = $startDay; $d <= $endDay; $d++) {
+                if (empty($cal['isWorking'][$d])) continue;
+                // S2: a full-day leave on a Calendar Half-Day consumes only
+                // 0.5, because only 0.5 of work was expected. You cannot be
+                // absent from work that was never expected.
+                $chargeable += (($cal['reason'][$d] ?? '') === \Working_calendar_service::REASON_HALF_DAY)
+                    ? $hdWeight : 1.0;
+            }
+
+            $cursor = (clone $sliceEnd)->modify('+1 day');
+        }
+
+        return ['days' => $chargeable, 'calendarAware' => true, 'blockReason' => ''];
+    }
+
+    /**
+     * Resolve the department that was ACTUALLY effective for $staffId on
+     * $dateISO, per Staff_employment_history_service's read-only
+     * staffEmploymentTimeline lookup. Falls open to $liveFallback on any
+     * error or absent history (the common case — most staff have never
+     * been transferred) — identical to pre-fix behaviour in that case, so
+     * nothing regresses for the overwhelming majority of leave requests.
+     * Memoised per (staffId, date) — the same pattern used by
+     * Staff_attendance::_department_as_of(),
+     * Staff_attendance_finaliser::_departmentAsOf(), and
+     * Attendance::_department_as_of(). No second history system.
+     */
+    private function _department_as_of(string $staffId, string $dateISO, string $liveFallback): string
+    {
+        static $deptMemo = [];
+        $k = $staffId . '|' . $dateISO;
+        if (array_key_exists($k, $deptMemo)) return $deptMemo[$k];
+        try {
+            $this->load->library('staff_employment_history_service');
+            $this->staff_employment_history_service->init($this->fs, $this->school_id, (string) ($this->admin_id ?? ''));
+            $hist = $this->staff_employment_history_service->resolveAttributeAsOf($staffId, 'department', $dateISO);
+            if ($hist !== null && $hist !== '') return $deptMemo[$k] = $hist;
+        } catch (\Throwable $e) {
+            log_message('error', 'Hr::_department_as_of failed for ' . $staffId . ' ' . $dateISO . ': ' . $e->getMessage());
+        }
+        return $deptMemo[$k] = $liveFallback;
+    }
+
+    /**
+     * Every employee→schedule assignment on the tenant, in ONE query (N-32).
+     *
+     * Memoised per request and loaded in bulk deliberately: a payroll run
+     * resolves the whole roster, so a per-employee read would be an N+1 that
+     * grows with headcount — the same trap `Compensation_reader::resolveMany()`
+     * and the W3.2.5 batched writes exist to avoid.
+     *
+     * @return array<string,array> staffId → assignment rows
+     */
+    /**
+     * ALL active work-schedule assignments on the tenant, flat and
+     * normalised — any attachment level. Not grouped by staffId: a
+     * department-level assignment has no staffId field at all, and
+     * `Policy_assignment_service::resolve()` (the canonical resolver,
+     * converged onto 2026-08-18) does its own per-employee/per-department
+     * filtering internally, so it needs the whole tenant list, not a
+     * pre-filtered slice.
+     */
+    private function _schedule_assignments(): array
+    {
+        static $list = null;
+        if ($list !== null) return $list;
+
+        require_once APPPATH . 'libraries/Work_schedule_service.php';
+        $svc = new Work_schedule_service();
+        $svc->init($this->fs, $this->admin_name ?: $this->admin_id);
+        $list = $svc->allAssignmentsForRun();
+        return $list;
+    }
+
+    /**
+     * The tenant's attendance policy document, memoised per request.
+     * Read-only: payroll consumes policy, it never authors or defaults it.
+     */
+    private function _attendance_policy(): ?array
+    {
+        static $pol = null;
+        static $loaded = false;
+        if ($loaded) return $pol;
+        $loaded = true;
+
+        try {
+            $school = $this->fs->get('schools', $this->school_id);
+            $pol = (is_array($school) && is_array($school['attendancePolicy'] ?? null))
+                ? $school['attendancePolicy'] : null;
+        } catch (\Exception $e) {
+            log_message('error', 'HR: attendance policy read failed: ' . $e->getMessage());
+            $pol = null;
+        }
+        return $pol;
     }
 
     /**
@@ -8307,6 +12735,17 @@ HTML;
             'unlocked_by' => $update['unlocked_by'],
             'slip_count'  => count($slips),
         ]);
+        // Unlocking reopens a frozen financial period — the single most
+        // sensitive payroll transition. The caller-supplied reason is
+        // already mandatory here, so it is carried into the audit entry.
+        $this->_audit_payroll('payroll_unlocked', $runId,
+            "Payroll run unlocked ({$curStatus} → Draft): {$reason}",
+            $this->_audit_run_meta($run, [
+                'toStatus'   => 'Draft',
+                'fromStatus' => $curStatus,
+                'reason'     => $reason,
+                'slipCount'  => count($slips),
+            ]));
 
         $this->json_success([
             'message' => 'Payroll run unlocked. Edits and regeneration are now allowed.',
@@ -8384,6 +12823,22 @@ HTML;
             if (!$isStale) {
                 $this->json_error('Slip is being regenerated by another admin. Try again in a moment.', 409);
             }
+
+            // DEADLOCK FIX (2026-08-19). Having taken the stale escape, this
+            // request must NOT carry 'Processing' forward as the resting
+            // status. $preStatus is written back verbatim at the end of this
+            // method, alongside `processingStartedAt => ''` — so a slip that
+            // recovered from one crashed regeneration would come to rest at
+            // status='Processing' with an EMPTY timestamp, and the stale escape
+            // above ($startedAt !== '') could never be satisfied again. The
+            // slip would be permanently unregenerable, with no way back through
+            // the UI.
+            //
+            // 'Draft' is the correct resting status, not a guess: regeneration
+            // already refuses unless the RUN is Draft, so every slip reaching
+            // this point belongs to a Draft run. 'Processing' is a transient
+            // lock state and is never a resting status.
+            $preStatus = 'Draft';
         }
         $procOk = $this->fs->set('salarySlips', $slipDocId, [
             'status'              => 'Processing',
@@ -8418,15 +12873,66 @@ HTML;
             $regenWarnings[] = "Staff status is '{$rawStaffStatus}' — regenerating slip for an inactive staff member.";
         }
 
-        $structureDoc = $this->fs->get('salarySlips', $this->fs->docId("SAL_{$staffId}"));
+        // ── D-006 (2026-08-22) — REGENERATION RESOLVES SALARY THE SAME WAY
+        //    GENERATION DOES.
+        //
+        // This read used to be a raw `SAL_{staffId}` fetch, bypassing
+        // Compensation_reader entirely, while generate_payroll() resolves
+        // through the reader as of the LAST DAY OF THE PAY PERIOD. Today both
+        // land on the same legacy document because USE_COMPONENT_COMPENSATION
+        // is false, so the two agree and nothing is wrong.
+        //
+        // They stop agreeing the moment that flag flips: generation would
+        // resolve the effective-dated assignment for the period while
+        // regeneration kept reading the live legacy structure — so regenerating
+        // a closed month would reprice it at whatever salary the employee has
+        // TODAY. Generation's own comment already names this as the thing to
+        // avoid ("regenerating a finalized run must not silently reprice it");
+        // it simply was not enforced on this path.
+        //
+        // The period-end date is computed identically to generate_payroll(), so
+        // both engines ask the one reader the same question. Legacy mode is
+        // byte-identical to the previous behaviour.
+        $periodEndDate = date(
+            'Y-m-t',
+            mktime(0, 0, 0, (int) $monthNum, 1, (int) $year)
+        );
+        $structureDoc = $this->_compensation_reader()->resolve($staffId, $periodEndDate);
         $structure = is_array($structureDoc) ? $structureDoc : null;
         if (!is_array($structure)) {
+            // E-1. The auto-create fallback belongs to the LEGACY store and only
+            // makes sense there. It derives a structure from salaryDefaults and
+            // writes it to `SAL_{staffId}` via _fsSyncSalary().
+            //
+            // Once the reader is resolving compensation the post-cutover way,
+            // that legacy document is no longer the authority and is never read
+            // back. Auto-creating then would do two wrong things at once: pay
+            // the employee from DEFAULT percentages rather than from whatever
+            // the reader would have resolved for them, and write into a store
+            // nothing consults — silently, on every regeneration.
+            //
+            // Nothing behind the seam is named here, deliberately: the reader is
+            // asked which mode it is in and nothing about what that mode reads.
+            //
+            // An unresolvable employee after cutover is a data gap, not a thing
+            // to paper over with defaults. Refuse, and say what is missing.
+            if ($this->_compensation_reader()->mode() === Compensation_reader::MODE_COMPONENT) {
+                $this->json_error(
+                    'Cannot recompute — no effective salary assignment for this staff member '
+                    . 'as of ' . $periodEndDate . '. Assign a salary structure before regenerating.'
+                );
+            }
             $autoStruct = $this->_auto_create_from_profile($staffId, $profile);
             if ($autoStruct === null) $this->json_error('Cannot recompute — no salary data for staff.');
             $structure = $autoStruct;
         }
         $sal = $this->_validate_structure($structure);
         if ($sal === null) $this->json_error('Salary structure is corrupt.');
+
+        // S-1: same resolution the generating run used, keyed on the same
+        // period-end date — so a regeneration cannot silently price the month
+        // against a statutory configuration created after the fact.
+        $statutoryCfg = $this->_statutory_config_for($periodEndDate);
 
         // ── Holidays for the month — canonical Holiday_service (HC-2) ─
         // Same source as generate_payroll: calendarEvents via Holiday_service.
@@ -8443,11 +12949,39 @@ HTML;
         // ── Per-staff working days (includes join/exit pro-ration) ─
         $jd = $profile['joinDate']  ?? $profile['Date Of Joining'] ?? $profile['Joining Date'] ?? null;
         $xd = $profile['exitDate']  ?? $profile['Resignation Date'] ?? $profile['leaveDate'] ?? null;
-        $swd = $this->_staff_working_days($monthNum, (int) $year, $holidays, $jd, $xd);
+        $department = (string) ($profile['Department'] ?? $profile['department'] ?? '');
+
+        // Trail 2 Phase J (2026-08-18) — same fix as generate_payroll():
+        // resolve the department effective for THIS period, not the live
+        // value. Regeneration is exactly the scenario the confirmed bug
+        // described (edit today, then regenerate a past period).
+        try {
+            $this->load->library('staff_employment_history_service');
+            $this->staff_employment_history_service->init($this->fs, $this->school_id, (string) ($this->admin_id ?? ''));
+            $periodStart = sprintf('%04d-%02d-01', (int) $year, $monthNum);
+            $histDept = $this->staff_employment_history_service->resolveAttributeAsOf($staffId, 'department', $periodStart);
+            if ($histDept !== null && $histDept !== '') $department = $histDept;
+        } catch (\Throwable $e) {
+            log_message('error', "regenerate_staff_payroll: department history resolve failed for {$staffId}: " . $e->getMessage());
+        }
+
+        $swd = $this->_staff_working_days($monthNum, (int) $year, $holidays, $jd, $xd, $staffId, $department);
+
+        // N-32/N-33 — same schedule gate as generate_payroll(). Regeneration is
+        // a single-employee action, so the block is a hard error here rather
+        // than a skip-and-continue: there is no one else to carry on for.
+        if (!empty($swd['calBlocked'])) {
+            $this->json_error($swd['calBlockWhy'], 409);
+        }
+
         $staffWorkingDays = $swd['working'];
         if ($staffWorkingDays <= 0) {
             $this->json_error('Staff has zero working days this month (joined after or left before the month).');
         }
+        // CALENDAR HALF-DAY — must mirror generate_payroll() exactly;
+        // regenerate is contractually required to reproduce identical numbers.
+        $staffDayReason = $swd['dayReason'] ?? [];
+        $halfDayWeight  = $this->_half_day_weight((int) $year, $monthNum);
 
         // ── Approved leaves overlapping the month, scoped to this staff ─
         $monthStart = sprintf('%04d-%02d-01', $year, $monthNum);
@@ -8460,6 +12994,7 @@ HTML;
 
         $lwpDays      = 0.0;            // total LWP days for this staff (float — supports half-day)
         $lwpDaysSet   = [];             // dayNum => true | 0.5
+        $paidDaysSet  = [];             // dayNum => 0.5, covered by APPROVED PAID leave (Half-Day programme)
         $leaveDetail  = [];
 
         if (!empty($allLeaveReqs)) {
@@ -8480,6 +13015,14 @@ HTML;
                         // Existing full-day mark wins over a later half-day mark.
                         if (isset($lwpDaysSet[$dn]) && $lwpDaysSet[$dn] === true) continue;
                         $lwpDaysSet[$dn] = $portion;
+                    }
+                }
+                // Half-Day programme — must mirror generate_payroll() exactly;
+                // regenerate is contractually required to produce identical
+                // numbers for the same inputs.
+                if (!empty($res['paidDaySet'])) {
+                    foreach ($res['paidDaySet'] as $dn => $portion) {
+                        $paidDaysSet[$dn] = $portion;
                     }
                 }
             }
@@ -8513,28 +13056,80 @@ HTML;
         $paidLeaveDays   = 0;
         $unpaidLeaveDays = 0;
         $vacantDays      = 0;
+        $halfDays        = 0;     // P0-3/A1 — attendance 'M' count
+        $extraWorkedDays = 0.0;   // P0-4/A2 — attendance 'W' count
 
         if ($attStr !== '') {
             $len = strlen($attStr);
             for ($i = 0; $i < $len; $i++) {
                 $dayNum = $i + 1;
                 if (!isset($swd['inWindow'][$dayNum])) continue;   // outside employment window — ignore
+                // N-23 — identical gate to generate_payroll(), including the
+                // 'W' exemption. One rule, both writers; see that call site for
+                // the full rationale.
+                if (strtoupper($attStr[$i]) !== 'W'
+                    && !isset($swd['isWorking'][$dayNum])) continue;
                 $ch = strtoupper($attStr[$i]);
+
+                // CALENDAR HALF-DAY — expected work for THIS day. Mirrors
+                // generate_payroll() exactly.
+                $dayExpected = (($staffDayReason[$dayNum] ?? '') === \Working_calendar_service::REASON_HALF_DAY)
+                    ? $halfDayWeight : 1.0;
+
+                // Approved-leave coverage from the SAME shared rule
+                // generate_payroll() uses — regeneration is contractually
+                // required to produce identical numbers for identical inputs,
+                // so this must never carry its own copy of the logic.
+                $dayCoverage = self::_leave_coverage_for_day(
+                    $dayExpected,
+                    $lwpDaysSet[$dayNum]  ?? null,
+                    $paidDaysSet[$dayNum] ?? null
+                );
+
                 if ($ch === 'A') {
-                    if (!isset($lwpDaysSet[$dayNum])) {
-                        $daysAbsent += 1.0;
-                    } elseif ($lwpDaysSet[$dayNum] === 0.5) {
-                        $daysAbsent += 0.5;
-                    }
+                    $daysAbsent += max(0.0, $dayExpected - $dayCoverage);
                 } elseif ($ch === 'L') {
+                    // S2 — mirrors generate_payroll() exactly; see that branch for
+                    // the rationale. Regeneration is contractually required to
+                    // produce identical numbers for identical inputs, so this
+                    // weighting must never diverge from the generation engine.
+                    $step = ($dayExpected == 1.0) ? 1 : $dayExpected;
                     if (isset($lwpDaysSet[$dayNum]) && $lwpDaysSet[$dayNum] === true) {
-                        $unpaidLeaveDays++;
+                        $unpaidLeaveDays += $step;
                     } else {
-                        $paidLeaveDays++;
+                        $paidLeaveDays += $step;
                     }
+                } elseif ($ch === 'M') {
+                    // P0-3/A1 — attendance half-day. MUST mirror generate_payroll()'s
+                    // branch exactly; regenerate is contractually required to produce
+                    // identical numbers to generate for the same inputs.
+                    // Half-Day programme (2026-08-19): guard also honours
+                    // APPROVED PAID leave coverage — mirrors generate_payroll().
+                    // S1: 'M' covers half of whatever was expected that day.
+                    // Coverage subtracted from the uncovered half — mirrors
+                    // generate_payroll().
+                    $halfDays++;
+                    $daysAbsent += max(0.0, ($dayExpected * 0.5) - $dayCoverage);
+                } elseif ($ch === 'W') {
+                    // P0-4/A2 — worked on a scheduled off-day. Mirrors generate_payroll().
+                    $extraWorkedDays += 1.0;
                 } elseif ($ch === 'V') {
+                    // 'V' is the UNMARKED fill and therefore the branch an
+                    // approved half-day leave actually lands in — it must honour
+                    // coverage. Mirrors generate_payroll().
                     $vacantDays++;
-                    if ($vacantTreatment === 'absent') $daysAbsent += 1.0;
+                    if ($vacantTreatment === 'absent') {
+                        $daysAbsent += max(0.0, $dayExpected - $dayCoverage);
+                    }
+                }
+                // 'P'/'H'/'T'/'O' → no pay effect (see generate_payroll() for why).
+
+                // Approved paid leave that left no 'L' mark — mirrors
+                // generate_payroll(); see that call site for the rationale.
+                // Regeneration must report the same paid-leave figure as
+                // generation for identical inputs.
+                if ($ch !== 'L' && isset($paidDaysSet[$dayNum])) {
+                    $paidLeaveDays += (float) $paidDaysSet[$dayNum];
                 }
             }
         } else {
@@ -8553,7 +13148,41 @@ HTML;
         // so generate and regenerate can never produce different numbers.
         if ($daysAbsent > $staffWorkingDays) $daysAbsent = $staffWorkingDays;
 
-        $calc = $this->_compute_payslip($sal, (float) $staffWorkingDays, (float) $daysAbsent, (float) $lwpDays);
+        // P0-4/A2 — same per-school extra-worked rate as generate_payroll().
+        $extraWorkedRate = is_array($attConfig)
+            ? (float) ($attConfig['extra_worked_rate'] ?? 1.0)
+            : 1.0;
+        if ($extraWorkedRate < 0) $extraWorkedRate = 1.0;
+
+        // W3.2.2 — payroll-period overrides for THIS employee in THIS run are
+        // handed to the engine through the `$extraComponents` parameter W2.7
+        // already added. No override arithmetic exists anywhere: earnings join
+        // gross before the statutory block, deductions join the pool, all in
+        // integer paise. That is what keeps `gross == net + deductions` true and
+        // keeps this the only payroll engine.
+        $staffOverrides = $this->_payroll_overrides()->forStaff($runId, $staffId);
+        $extraComponents = Payroll_override_service::toExtraComponents($staffOverrides);
+
+        // ORIGINAL → ADJUSTMENT → FINAL, all engine-derived.
+        //
+        // The baseline is computed by running the SAME engine with no
+        // adjustments, not by subtracting the adjustments from the final
+        // figures. Subtraction would be a second, independent arithmetic path
+        // for money — and it would be wrong wherever an adjustment moves a
+        // statutory base, because an added earning also changes ESI and TDS.
+        // `_compute_payslip()` is pure computation with no Firestore access, so
+        // the extra call costs nothing but keeps the engine the only source of
+        // these numbers. Skipped entirely when there is nothing to adjust.
+        $baselineCalc = $extraComponents
+            ? $this->_compute_payslip($sal, (float) $staffWorkingDays, (float) $daysAbsent, (float) $lwpDays, (float) $extraWorkedDays, $extraWorkedRate, $statutoryCfg)
+            : null;
+
+        // CA-6: same profile, same period date, so a regeneration cannot reach a
+        // different coverage conclusion than the run that produced the slip.
+        $staffStatProfile = $this->_staff_statutory_facts($profile, $statutoryCfg);
+
+        $calc = $this->_compute_payslip($sal, (float) $staffWorkingDays, (float) $daysAbsent, (float) $lwpDays, (float) $extraWorkedDays, $extraWorkedRate, $statutoryCfg,
+            $extraComponents, $staffStatProfile, $periodEndDate);
 
         $daysWorked     = $calc['days_worked'];
         $deductionDays  = $calc['deduction_days'];
@@ -8569,6 +13198,15 @@ HTML;
         $gross          = $calc['gross'];
         $pfEmployee     = $calc['pf_employee'];
         $esiEmployee    = $calc['esi_employee'];
+        // EMPLOYER-SIDE STATUTORY COST. The engine recomputes these on every
+        // regeneration (they derive from effectiveBasic and gross, both of which
+        // move with attendance), but this path never read them and never wrote
+        // them — so the array_merge over the old slip left employer PF and ESI
+        // frozen at the PRE-correction figures while every employee-side number
+        // was recomputed. That understates or overstates employer liability and
+        // the statutory remittance derived from it.
+        $pfEmployer     = $calc['pf_employer'];
+        $esiEmployer    = $calc['esi_employer'];
         $tds            = $calc['tds'];
         $profTax        = $calc['professional_tax'];
         $otherDed       = $calc['other_deductions'];
@@ -8597,6 +13235,13 @@ HTML;
             'processingBy'        => '',
             'staff_id'         => $staffId,
             'staff_name'       => $profile['Name'] ?? $profile['name'] ?? $staffId,
+            // Restated for the same reason as the statutory pair below: without
+            // it the merge kept the department captured at the ORIGINAL run,
+            // even though $department here is the period-effective value that
+            // this recomputation actually used for the calendar and the GL
+            // expense classification. A slip must not name one department while
+            // its numbers came from another.
+            'department'       => $department,
             'month'            => $month,
             'year'             => $year,
             'monthKey'         => $monthKey,
@@ -8607,6 +13252,16 @@ HTML;
             'leave_days'       => $paidLeaveDays + $unpaidLeaveDays,
             'lwp_days'         => $lwpDays,
             'lwp_deduction'    => $lwpDeduction,
+            // The engine recomputes the daily rate every regeneration
+            // ($calc['daily_salary'], above) but it was never restated here.
+            // `$newSlip` merges over the OLD slip, so the stale rate survived:
+            // after a regeneration that changed the expected-day count, the
+            // payslip rendered basic ÷ the PREVIOUS working days.
+            'daily_salary'     => $dailySalary,
+            // P0-3/A1 + P0-4/A2 — mirrors generate_payroll()'s slip payload.
+            'half_days'        => $halfDays,
+            'extra_worked_days'=> $extraWorkedDays,
+            'extra_worked_pay' => $calc['extra_worked_pay'],
             'basic'            => $effectiveBasic,
             'hra'              => $hra,
             'da'               => $da,
@@ -8616,6 +13271,8 @@ HTML;
             'gross'            => $gross,
             'pf_employee'      => $pfEmployee,
             'esi_employee'     => $esiEmployee,
+            'pf_employer'      => $pfEmployer,
+            'esi_employer'     => $esiEmployer,
             'tds'              => $tds,
             'professional_tax' => $profTax,
             'other_deductions' => $otherDed,
@@ -8631,6 +13288,116 @@ HTML;
                 'joinDate' => $jd,
                 'exitDate' => $xd,
             ],
+            // ── W3.2.1 — both snapshots MUST be rewritten on regeneration ──
+            //
+            // `$newSlip` is an array_merge over the OLD slip, so any snapshot
+            // key not restated here survives untouched. That was already true
+            // of `_salary_snapshot` before this wave: a regenerated slip kept
+            // the pre-regeneration structure while its money was recomputed
+            // from the current one — a snapshot that describes inputs the
+            // numbers next to it did not come from.
+            //
+            // Regeneration is precisely when the inputs have changed, so it is
+            // the one path where a stale snapshot is guaranteed to be wrong.
+            // Both are therefore rewritten from the values THIS recomputation
+            // actually used.
+            '_salary_snapshot' => [
+                'basic' => (float) ($sal['basic'] ?? 0),
+                'hra' => (float) ($sal['hra'] ?? 0), 'da' => (float) ($sal['da'] ?? 0),
+                'ta' => (float) ($sal['ta'] ?? 0), 'medical' => (float) ($sal['medical'] ?? 0),
+                'other_allowances' => (float) ($sal['other_allowances'] ?? 0),
+                'pf_employee' => (float) ($sal['pf_employee'] ?? 0),
+                'esi_employee' => (float) ($sal['esi_employee'] ?? 0),
+                'professional_tax' => (float) ($sal['professional_tax'] ?? 0),
+                'tds' => (float) ($sal['tds'] ?? 0),
+            ],
+            '_attendance_snapshot' => [
+                'version'          => 1,
+                'month_key'        => $monthKey,
+                'day_wise'         => $attStr,
+                'source'           => $attStr !== '' ? 'staffAttendanceSummary' : 'none',
+                'window_mask'      => self::_att_window_mask(
+                    is_array($swd['inWindow'] ?? null) ? $swd['inWindow'] : [], $daysInMonth),
+                'lwp_mask'         => self::_att_lwp_mask(
+                    is_array($lwpDaysSet ?? null) ? $lwpDaysSet : [], $daysInMonth),
+                'vacant_treatment' => $vacantTreatment,
+                'working_days'     => $staffWorkingDays,
+                // Identical to generate_payroll(); see that snapshot for the
+                // rationale. Restated because $newSlip merges over the OLD slip,
+                // so an un-restated weight would describe the previous
+                // computation while the money beside it is new.
+                'calendar_half_day_weight' => $halfDayWeight,
+                'days_in_month'    => $daysInMonth,
+                'holiday_days'     => array_map('intval', array_keys($holidays)),
+                // N-23/N-30 §6 — identical to generate_payroll(). Restated on
+                // regeneration because `$newSlip` merges over the OLD slip: an
+                // un-restated mask would survive describing the previous
+                // calendar while the money beside it was recomputed.
+                'working_mask'          => (string) ($swd['workingMask'] ?? ''),
+                'policy_version'        => $swd['policyVersion'] ?? null,
+                'policy_effective_from' => (string) ($swd['policyEffectiveFrom'] ?? ''),
+                'policy_source'         => (string) ($swd['policySource'] ?? ''),
+                'schedule_id'             => (string) ($swd['scheduleId'] ?? ''),
+                'schedule_name'           => (string) ($swd['scheduleName'] ?? ''),
+                'assignment_effective_from' => (string) ($swd['assignmentEffectiveFrom'] ?? ''),
+                'derived'          => [
+                    'days_absent'       => $daysAbsent,
+                    'half_days'         => $halfDays,
+                    'extra_worked_days' => $extraWorkedDays,
+                    'paid_leave_days'   => $paidLeaveDays,
+                    'unpaid_leave_days' => $unpaidLeaveDays,
+                    'vacant_days'       => $vacantDays,
+                ],
+                // Distinguishes a regenerated snapshot from the original run's,
+                // so an auditor can tell which recomputation produced it.
+                'regenerated'      => true,
+            ],
+            // W3.2.4 — same verbatim engine passthrough as generate_payroll().
+            // Restated here because `$newSlip` is an array_merge over the OLD
+            // slip: a trace left un-restated would survive describing the
+            // previous computation while the money beside it is new — the same
+            // staleness class W3.2.1 found in `_salary_snapshot`.
+            '_calculation_trace' => [
+                'version'          => 1,
+                'engine'           => '_compute_payslip',
+                'statutory_source' => $calc['statutory_source'] ?? 'structure',
+                'bases'            => $calc['bases']    ?? [],
+                'paise'            => $calc['paise']    ?? [],
+                'deferred'         => $calc['deferred'] ?? [],
+                'warnings'         => $calc['warnings'] ?? [],
+                'computed_at'      => date('c'),
+                'regenerated'      => true,
+            ],
+            // ── W3.2.2 — payroll-period adjustments, audit-shaped ──
+            //
+            // Persists the three figures an auditor needs to reconstruct the
+            // change WITHOUT recomputing anything: what the run would have paid
+            // with no adjustments, what each adjustment was, and what was
+            // actually paid. Every value comes from the engine.
+            //
+            // Absent (null) when there are no adjustments, so an unadjusted
+            // slip is distinguishable from an adjusted one that nets to zero.
+            '_payroll_adjustments' => $extraComponents ? [
+                'version'          => 1,
+                'count'            => count($extraComponents),
+                'lines'            => array_map(function ($xc) {
+                    return [
+                        'override_id' => $xc['code'],
+                        'type'        => $xc['type']  ?? '',
+                        'label'       => $xc['label'] ?? '',
+                        'kind'        => $xc['kind'],
+                        'amount'      => self::_toRupees($xc['amountPaise']),
+                        'prorated'    => !empty($xc['prorated']),
+                    ];
+                }, $extraComponents),
+                // Engine-derived, never subtracted.
+                'original_gross'   => $baselineCalc['gross']   ?? null,
+                'original_net'     => $baselineCalc['net_pay'] ?? null,
+                'final_gross'      => $calc['gross'],
+                'final_net'        => $calc['net_pay'],
+                'applied_at'       => date('c'),
+                'applied_by'       => $this->admin_name ?: $this->admin_id,
+            ] : null,
             'regeneratedAt'    => date('c'),
             'regeneratedBy'    => $this->admin_name ?: $this->admin_id,
             'regenerationReason'=> $reason,
@@ -8640,7 +13407,17 @@ HTML;
         // Persist the regen counter — it drives the adjustment journal's
         // deterministic idempotency id.
         $newSlip['regen_count'] = $regenCount;
-        $this->fs->set('salarySlips', $slipDocId, $newSlip, true);
+        // Written through the SHARED builder, exactly as generate_payroll() is.
+        // This path used to write $newSlip raw, which meant the canonical
+        // camelCase mirror the Teacher app reads (workingDays / presentDays /
+        // daysAbsent / lwpDays / paidLeaveDays) was never rewritten: it survived
+        // from the ORIGINAL run via the array_merge over $oldSlip. Every
+        // regeneration — the normal correction path, not just Calendar Half-Day
+        // — therefore left the employee's app showing the pre-correction day
+        // counts beside admin-side money that had been recomputed. This is the
+        // "two builders eventually disagree" failure the builder's own docblock
+        // warns about; there is now one builder again.
+        $this->fs->set('salarySlips', $slipDocId, $this->_buildPayslipDoc($runId, $staffId, $newSlip), true);
 
         // ── CR-2: Adjustment journal entry to keep books in sync ────
         // Compute slip-level deltas and post a corrective JE so the
@@ -8687,8 +13464,30 @@ HTML;
                     }
                 }
             } else {
-                $_pos = (string) ($profile['Position']  ?? '');
-                $_dep = (string) ($profile['Department'] ?? '');
+                // Consolidated reconciliation audit (2026-08-19) — DEFECT FIXED.
+                // This branch previously re-read $profile['Position'] and
+                // $profile['Department'] RAW, silently bypassing the
+                // period-effective $department this very function had already
+                // resolved ~400 lines above (Trail 2 Phase J, line ~11340).
+                // The result picked the expense GL account (5010 Teaching vs
+                // 5020 Non-Teaching) for the adjustment journal, so
+                // regenerating a past month for someone who had since
+                // transferred department booked that month's delta to the
+                // wrong expense account. $department is now the already-
+                // resolved value; $position is resolved the same way, against
+                // the same period start. The classification RULE and the
+                // account codes are unchanged.
+                $_dep = $department;   // already period-effective (Phase J, above)
+                $_pos = (string) ($profile['Position'] ?? '');
+                try {
+                    $this->load->library('staff_employment_history_service');
+                    $this->staff_employment_history_service->init($this->fs, $this->school_id, (string) ($this->admin_id ?? ''));
+                    $histPos = $this->staff_employment_history_service->resolveAttributeAsOf(
+                        $staffId, 'position', sprintf('%04d-%02d-01', (int) $year, $monthNum));
+                    if ($histPos !== null && $histPos !== '') $_pos = $histPos;
+                } catch (\Throwable $e) {
+                    log_message('error', "regenerate_staff_payroll: position history resolve failed for {$staffId}: " . $e->getMessage());
+                }
                 $isTeaching = (
                     stripos($_pos, 'teacher')  !== false ||
                     stripos($_pos, 'lecturer') !== false ||
@@ -8815,6 +13614,20 @@ HTML;
             'gross_delta'           => $dGross,
             'net_delta'             => round($netPay - $oldNetPay, 2),
         ]);
+        // Individual pay was recomputed. The before/after net IS the
+        // auditable fact here, so it is recorded deliberately — but nothing
+        // further: no salary component breakdown, no bank or PII values.
+        $this->_audit_payroll('payroll_slip_regenerated', $runId,
+            "Payslip regenerated for {$staffId}: {$reason}",
+            $this->_audit_run_meta($run, [
+                'staffId'             => $staffId,
+                'reason'              => $reason,
+                'oldNetPay'           => $oldNetPay,
+                'newNetPay'           => $netPay,
+                'netDelta'            => round($netPay - $oldNetPay, 2),
+                'archiveId'           => $archiveDocId,
+                'adjustmentJournalId' => $adjJournalId,
+            ]));
 
         $this->json_success([
             'message'              => 'Slip regenerated.',

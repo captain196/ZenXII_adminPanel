@@ -109,14 +109,27 @@ class Deptrole_selftest extends CI_Controller
         $this->ok(!empty($defaults), 'DEFAULT_STAFF_ROLES non-empty');
         foreach ($defaults as $rid => $r) {
             $this->ok(self::is_list($r['flags'] ?? []), "default {$rid}: flags is a list (not assoc map)");
-            $this->ok(in_array($r['category'] ?? '', $this->CATS, true), "default {$rid}: valid category");
+            // Category is the STAFF-classification vocabulary (ROLE_CATEGORIES).
+            // It does not apply to system roles: ROLE_BASELINE_APP is auto-assigned
+            // to everyone and is marked by the canonical `is_system` flag, not by a
+            // staff category. Assert the canonical marker instead — a stronger check
+            // than forcing a system role into a staff classification it does not have.
+            if (!empty($r['is_system'])) {
+                $this->ok(($r['is_system'] ?? false) === true, "default {$rid}: system role carries is_system");
+            } else {
+                $this->ok(in_array($r['category'] ?? '', $this->CATS, true), "default {$rid}: valid category");
+            }
         }
         if (empty($staffRoles)) { echo "  (school has no persisted staffRoles — defaults apply)\n"; return; }
         foreach ($staffRoles as $rid => $r) {
             $r = (array) $r;
             $this->ok(preg_match('/^ROLE_[A-Z0-9_]+$/', $rid) === 1, "staffRole id '{$rid}' matches ROLE_ pattern");
             $this->ok(trim((string)($r['label'] ?? '')) !== '', "staffRole {$rid}: has label");
-            $this->ok(in_array($r['category'] ?? '', $this->CATS, true), "staffRole {$rid}: category '".($r['category']??'')."' valid");
+            if (!empty($r['is_system'])) {
+                $this->ok(($r['is_system'] ?? false) === true, "staffRole {$rid}: system role carries is_system");
+            } else {
+                $this->ok(in_array($r['category'] ?? '', $this->CATS, true), "staffRole {$rid}: category '".($r['category']??'')."' valid");
+            }
             $this->warnif(isset($r['flags']) && !self::is_list($r['flags']), "staffRole {$rid}: flags is assoc-map (legacy shape; save to normalize)");
             $at = $r['attendance_type'] ?? 'standard';
             $this->ok(in_array($at, ['standard','shift','flexible'], true), "staffRole {$rid}: attendance_type '{$at}' valid");

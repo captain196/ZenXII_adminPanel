@@ -355,6 +355,104 @@ class Superadmin_schools extends MY_Superadmin_Controller
                 $this->json_error($errMsg); return;
             }
 
+            // ── ONBOARD-LEDGER-1 · A NEW SCHOOL MUST START CORRECT ──────────
+            //
+            // Onboarding created `schoolControl` but never set `rolloutFlags`,
+            // so a brand-new tenant inherited the global default —
+            // `USE_ALLOCATION_LEDGER = false`. It would then generate
+            // discounted demands with NO allocation rows and immediately begin
+            // accumulating exactly the I2 violations the historical backfill
+            // exists to repair. A school that has never had a single demand
+            // would need a data migration on its second week.
+            //
+            // Worse, nothing said so. Correct behaviour depended on a developer
+            // remembering to issue a grant for every new school — operational
+            // debt that grows linearly with customers and fails silently.
+            //
+            // ── WHY IT IS SAFE TO ENABLE HERE AND NOT GLOBALLY ──────────────
+            // The ledger's only risk is a tenant whose HISTORICAL demands carry
+            // discounts without allocations; switching it on there enforces an
+            // invariant the existing data already violates. A tenant created
+            // seconds ago provably has no history — that is not an assumption,
+            // it is what "just created" means. So the safe rule is not "on for
+            // everyone" or "off for everyone", but:
+            //
+            //   brand-new tenant  → enabled automatically, here
+            //   existing tenant   → gated until backfilled and certified
+            //
+            // The global default therefore stays FALSE, which keeps legacy
+            // tenants protected, while new schools stop inheriting a state that
+            // was only ever correct for legacy data.
+            //
+            // Issued through Rollout_grant_service — the one authorized grant
+            // surface — so its allowlist, reason requirement and audit trail all
+            // apply. NON-FATAL by design: a tenant that exists without this flag
+            // is recoverable with one command, whereas failing the onboarding
+            // after the tenant, admin and indexes are already written is not.
+            try {
+                $this->load->library('Rollout_grant_service', null, 'grantsOnboard');
+                $__svc = $this->grantsOnboard
+                    ->init($this->firebase, (string) ($this->sa_id ?? 'onboarding'));
+
+                // ── LEDGER-EMIT-1 · GRANT THE PAIR, NEVER ONE HALF ──────────
+                //
+                // USE_ALLOCATION_LEDGER alone is INERT. The ledger records which
+                // GRANT caused a discount, and only the entitlement authority
+                // supplies a grant identity; under the legacy concession
+                // authority every row is unbackable, and the generator now
+                // refuses the whole ledger with LEDGER_AUTHORITY_MISMATCH.
+                //
+                // Granting only the ledger — which is what this block used to
+                // do — produced a tenant whose flag read ON and whose genuinely
+                // discounted demands carried no allocations at all. That is
+                // exactly the "a developer has to remember a hidden flag"
+                // failure this automatic grant exists to prevent, so both are
+                // issued together, entitlement authority FIRST.
+                //
+                // Safe on a NEW tenant specifically because it has no history:
+                // no legacy studentConcessions to strand, and no existing
+                // demands needing an allocation backfill first.
+                // ── WHY THE PAIR IS *NOT* GRANTED HERE ──────────────────────
+                //
+                // Granting USE_ENTITLEMENT_BILLING at onboarding was implemented
+                // and then REVERTED on evidence. Rollout_grant_service refuses
+                // it without an active USE_FEE_HEAD_REGISTRY (M5) grant, and M5
+                // on a tenant whose feeHeadRegistry is still empty makes fee
+                // head resolution fail closed: measured on a clean two-tenant
+                // fixture, every admission logged
+                //   ACC_FEEHEAD_UNRESOLVED head=[Tuition Fee] reason=[not_found]
+                // and produced demands=0. Students admitted, nobody billed, and
+                // the admission still reported success.
+                //
+                // A new tenant has an EMPTY registry by construction — the fee
+                // chart sync deliberately never mints heads — so auto-granting
+                // the chain would zero the billing of every school it touched.
+                // The ledger flag alone is inert but harmless; the chain is not.
+                //
+                // The real dependency is therefore: registry heads exist →
+                // M5 → entitlement authority → a meaningful ledger. Onboarding
+                // cannot short-circuit that, and pretending otherwise trades a
+                // silent no-ledger for a silent no-bill.
+                $__pairs = [
+                    'USE_ALLOCATION_LEDGER'   => 'Automatic on onboarding. A newly created '
+                        . 'tenant has no historical demands, so no allocation backfill is '
+                        . 'required and the ledger is correct from the first generation. '
+                        . 'See ONBOARD-LEDGER-1.',
+                ];
+                foreach ($__pairs as $__flag => $__reason) {
+                    $__g = $__svc->set($school_id, $__flag, true, $__reason);
+                    log_message('error', empty($__g['ok'])
+                        ? 'ONBOARD_LEDGER_GRANT_FAILED school=[' . $school_id . '] flag=['
+                          . $__flag . '] reason=[' . (string) ($__g['error'] ?? '?') . '] — the '
+                          . 'tenant is fine, but its first discounted demands will carry no '
+                          . 'allocations until BOTH flags are granted.'
+                        : 'ONBOARD_LEDGER_GRANTED school=[' . $school_id . '] flag=[' . $__flag . ']');
+                }
+            } catch (\Throwable $e) {
+                log_message('error', 'ONBOARD_LEDGER_GRANT_FAILED school=[' . $school_id
+                    . ']: ' . $e->getMessage() . ' — onboarding continues; grant manually.');
+            }
+
             // ── HELD-BRIDGE WRITES (NOT B2 surface — owned by other waves) ──
             // Users/Admin/{code}/{ssaId} — tenant-admin auth (B-AUTH-RES retirement).
             // Still read by Admin_login for the legacy authn-record path; cannot
@@ -786,6 +884,108 @@ class Superadmin_schools extends MY_Superadmin_Controller
         if (!$ok) { $this->json_error('Failed to assign plan.'); return; }
         $this->sa_log('plan_assigned', $school_name, ['plan_id' => $plan_id, 'expiry' => $expiry_date]);
         $this->json_success(['message' => "Plan '{$plan_name}' assigned. Expires {$expiry_date}."]);
+    }
+
+    // ─────────────────────────────────────────────────────────────────────────
+    // POST  /superadmin/schools/set_module_override        (W1.1)
+    //
+    // Grant / revoke / clear ONE module for ONE tenant.
+    //
+    // This is the per-tenant entitlement axis. It writes only that tenant's
+    // schoolControl.overrides and never touches the shared plan, so tenants on
+    // the same base plan are unaffected — which is what makes HRMS sellable to
+    // an individual tenant without a plan-catalogue change.
+    //
+    // Params: school_uid, module, mode ('grant'|'revoke'|'' to clear),
+    //         reason (optional), expires_at (optional YYYY-MM-DD).
+    // ─────────────────────────────────────────────────────────────────────────
+    public function set_module_override()
+    {
+        $school_uid = trim($this->input->post('school_uid', TRUE) ?? '');
+        $module     = trim($this->input->post('module',     TRUE) ?? '');
+        $mode       = trim($this->input->post('mode',       TRUE) ?? '');
+        $reason     = trim($this->input->post('reason',     TRUE) ?? '');
+        $expires_at = trim($this->input->post('expires_at', TRUE) ?? '');
+
+        if ($school_uid === '' || $module === '') {
+            $this->json_error('School and module are required.'); return;
+        }
+        if (!preg_match("/^[A-Za-z0-9 ',_\-]+$/u", $school_uid)) {
+            $this->json_error('Invalid school identifier.'); return;
+        }
+        // Module keys are snake_case identifiers — reject path/injection shapes.
+        if (!preg_match('/^[a-z0-9_]+$/', $module)) {
+            $this->json_error('Invalid module key.'); return;
+        }
+        if ($mode !== '' && !in_array($mode, ['grant', 'revoke'], true)) {
+            $this->json_error("Mode must be 'grant', 'revoke', or empty to clear."); return;
+        }
+        if ($expires_at !== ''
+            && (!preg_match('/^\d{4}-\d{2}-\d{2}$/', $expires_at) || strtotime($expires_at) === false)) {
+            $this->json_error('Expiry must be YYYY-MM-DD.'); return;
+        }
+
+        $svc    = $this->_b23c_registry();
+        $tenant = $svc->get_tenant_detail($school_uid);
+        if (!is_array($tenant)) { $this->json_error('School not found.'); return; }
+
+        $res = $svc->set_module_override(
+            $school_uid, $module, $mode,
+            (string) ($this->sa_id ?? ''), $reason,
+            $expires_at !== '' ? $expires_at : null
+        );
+
+        if (empty($res['ok'])) {
+            $why = (string) ($res['reason'] ?? 'unknown');
+            if ($why === 'requires_hrms_core') {
+                $this->json_error("'{$module}' extends HRMS Core — grant hrms_core to this school first.");
+                return;
+            }
+            $this->json_error('Could not update the module override (' . $why . ').');
+            return;
+        }
+
+        $this->sa_log('module_override', $school_uid, [
+            'module' => $module, 'mode' => $mode !== '' ? $mode : 'cleared', 'expires' => $expires_at,
+        ]);
+
+        $verb = $mode === 'grant' ? 'granted' : ($mode === 'revoke' ? 'revoked' : 'cleared');
+        $this->json_success([
+            'message'        => "Module '{$module}' {$verb} for this school.",
+            'active_modules' => $res['activeModules'],
+        ]);
+    }
+
+    // ─────────────────────────────────────────────────────────────────────────
+    // POST  /superadmin/schools/recompute_entitlements     (W1.1)
+    //
+    // Re-derive a tenant's entitlements from its CURRENT plan + add-ons +
+    // overrides. Needed because a plan edit does not propagate to already-
+    // subscribed tenants, and because time-bounded grants expire silently.
+    // Idempotent and tenant-scoped.
+    // ─────────────────────────────────────────────────────────────────────────
+    public function recompute_entitlements()
+    {
+        $school_uid = trim($this->input->post('school_uid', TRUE) ?? '');
+        if ($school_uid === '' || !preg_match("/^[A-Za-z0-9 ',_\-]+$/u", $school_uid)) {
+            $this->json_error('Invalid school identifier.'); return;
+        }
+
+        $svc = $this->_b23c_registry();
+        $res = $svc->recompute_entitlements($school_uid, (string) ($this->sa_id ?? ''));
+        if (empty($res['ok'])) {
+            $this->json_error('Recompute failed (' . (string) ($res['reason'] ?? 'unknown') . ').');
+            return;
+        }
+
+        $this->sa_log('entitlements_recomputed', $school_uid, ['changed' => !empty($res['changed'])]);
+        $this->json_success([
+            'message'        => !empty($res['changed'])
+                ? 'Entitlements recomputed — modules changed.'
+                : 'Entitlements recomputed — no change.',
+            'active_modules' => $res['activeModules'],
+            'changed'        => !empty($res['changed']),
+        ]);
     }
 
     // ─────────────────────────────────────────────────────────────────────────
@@ -1246,6 +1446,37 @@ class Superadmin_schools extends MY_Superadmin_Controller
     //  these POSTs need no config change.
     // ═════════════════════════════════════════════════════════════════
 
+    /**
+     * ── DAY-ONE-3 · GO-LIVE ACTIVATES THE FINANCIAL CAPABILITY ──────────────
+     *
+     * Readiness already gated the transition; this is its consequence. The
+     * decision logic — clean-vs-historical tenant, the chain, idempotency —
+     * lives in Financial_activation_service, which holds no authority of its
+     * own and routes every grant through Rollout_grant_service.
+     *
+     * This controller is one of exactly two surfaces authorized to issue a
+     * tenant grant (T3). Keeping the decision in a library rather than inline
+     * means the operator CLI front door and the lifecycle proof exercise the
+     * SAME logic the console does, instead of a second copy that could drift.
+     *
+     * Never fatal: the transition has already committed, and a school that is
+     * live and billing correctly on its previous authority beats a go-live
+     * rolled back because an optional capability could not be enabled.
+     */
+    private function _activateFinancialCapabilities(string $schoolId): array
+    {
+        try {
+            $this->load->library('Financial_activation_service', null, 'financeActivation');
+            return $this->financeActivation
+                ->init($this->firebase, (string) ($this->sa_id ?? 'sa_console'))
+                ->activate($schoolId);
+        } catch (Throwable $e) {
+            log_message('error', 'GOLIVE_FINANCE_FAILED school=[' . $schoolId . ']: '
+                . $e->getMessage() . ' — non-fatal; the school is live on the previous authority.');
+            return ['status' => 'error', 'reason' => $e->getMessage()];
+        }
+    }
+
     /** @return Institution_lifecycle */
     private function _lifecycle()
     {
@@ -1427,10 +1658,36 @@ class Superadmin_schools extends MY_Superadmin_Controller
             return;
         }
 
+        // ── DAY-ONE-3 · GO-LIVE ACTIVATES THE FINANCIAL CAPABILITY ──────────
+        //
+        // Readiness already gated this transition above. What was missing was
+        // the consequence: a school could pass every readiness check, go live,
+        // and still bill on the legacy authority until someone remembered three
+        // rollout flags and the order they depend on.
+        //
+        // This is the right place for it, and the only right place. It is the
+        // superadmin HTTP surface — one of exactly two surfaces authorized to
+        // issue a tenant grant (T3) — acting on a decision a superadmin just
+        // made, with readiness recomputed moments earlier and recorded as
+        // evidence on the lifecycle event. Nothing school-facing gains any
+        // authority, and no second flag authority is introduced: every grant
+        // still goes through Rollout_grant_service and its dependency rules.
+        //
+        // Deliberately NOT a timer or an estate sweep. P6 keeps estate-wide
+        // activation from being one call away, and a scheduled activator would
+        // be exactly that.
+        $activation = null;
+        if ($toState === Lifecycle_resolver::INST_ACTIVE
+            && $res['from'] === Lifecycle_resolver::INST_ONBOARDING
+            && empty($res['idempotent'])) {
+            $activation = $this->_activateFinancialCapabilities($schoolId);
+        }
+
         $this->sa_log('school_lifecycle_transition', $schoolId, [
             'from' => $res['from'], 'to' => $res['to'],
             'reason' => $reason, 'eventId' => $res['eventId'],
             'idempotent' => (bool) $res['idempotent'],
+            'financialActivation' => $activation,
         ]);
 
         $this->json_success([

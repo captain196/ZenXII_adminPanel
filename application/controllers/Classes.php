@@ -1,5 +1,13 @@
 <?php
 defined('BASEPATH') or exit('No direct script access allowed');
+// Phase 20.3 — Section_seat_guard is a STATIC utility, so CI's loader never brings
+// it in (load->library() instantiates; nothing here holds an instance). Without this
+// the class is undefined at every call site and placement fatals with
+// "Class Section_seat_guard not found". require_once at file level is this repo's
+// existing pattern for static libraries; idempotent, one include, no behaviour change
+// beyond making the already-wired guard resolvable.
+require_once APPPATH . 'libraries/Section_seat_guard.php';
+
 
 class Classes extends MY_Controller
 {
@@ -40,71 +48,22 @@ class Classes extends MY_Controller
         ]);
     }
 
-    public function manage_classes()
-    {
-        $this->_require_role(self::VIEW_ROLES, '', 'Configuration', 'view');
-        $school_id    = $this->parent_db_key;
-        $school_name  = $this->school_name;
-        $session_year = $this->session_year;
-
-
-        $this->load->view('include/header');
-        $this->load->view('manage_classes');
-        $this->load->view('include/footer');
-    }
-
-
-
-
-
-    public function section_students($class_slug, $section_slug)
-    {
-        $this->_require_role(self::VIEW_ROLES, '', 'Configuration', 'view');
-        $class = urldecode($class_slug);
-
-        // Numeric class → add prefix
-        if (is_numeric($class) || preg_match('/^\d+/', $class)) {
-            $data['class_name'] = 'Class ' . $class;
-        } else {
-            // Nursery / LKG / UKG
-            $data['class_name'] = $class;
-        }
-
-        $data['section_name'] = 'Section ' . urldecode($section_slug);
-
-        $this->load->view('include/header');
-        $this->load->view('section_students', $data);
-        $this->load->view('include/footer');
-    }
-
-    public function fetch_classes_grid()
-    {
-        $this->_require_role(self::VIEW_ROLES, '', 'Configuration', 'view');
-        header('Content-Type: application/json');
-
-        // Query all sections for this school from Firestore
-        $sectionDocs = $this->fs->schoolWhere('sections', []);
-
-        // Firestore is the sole source per no-RTDB policy.
-
-        $classSet = [];
-        foreach ($sectionDocs as $doc) {
-            $name = $doc['data']['className'] ?? '';
-            if ($name === '' || isset($classSet[$name])) continue;
-
-            if (preg_match('/^Class\s+(Nursery|LKG|UKG)$/i', $name, $m)) {
-                $label = ucfirst(strtolower($m[1]));
-            } else {
-                $label = $name;
-            }
-
-            $classSet[$name] = ['key' => $name, 'label' => $label];
-        }
-
-        echo json_encode(array_values($classSet));
-    }
-
-
+    // ─────────────────────────────────────────────────────────────────────
+    // REMOVED 2026-08-29 — `manage_classes()`, `fetch_classes_grid()` and their
+    // two private label/order helpers.
+    //
+    // CLS-NAV-1 (2026-08-16) restored that listing screen for ONE reason: it was
+    // the only clickable path to a section`s `maxStrength`. Phase 20.2 (P20.2-UI-1
+    // / P20.2-CAP-3) then put "Section Strength & Occupancy" on the school_config
+    // Sections tab, backed by `School_config::save_section_capacity()` — the one
+    // capacity writer on the modern surface, with server-computed occupancy and
+    // the over-capacity confirm flow this screen never had. The doorway is no
+    // longer missing, so the duplicate listing is retired.
+    //
+    // `view()` / class_profile is deliberately KEPT: studentAdmission deep-links
+    // into it ("Change capacity" for the class being admitted into) and
+    // section_students links back through it.
+    // ─────────────────────────────────────────────────────────────────────
 
     public function fetch_class_sections()
     {
@@ -140,16 +99,51 @@ class Classes extends MY_Controller
             // Count students in this section from students collection
             $sectionPrefixed = Firestore_service::sectionKey($sectionName);
             $classPrefixed   = Firestore_service::classKey($classKey);
-            $studentDocs = $this->fs->schoolWhere('students', [
-                ['Class', '==', $classPrefixed],
-                ['Section', '==', $sectionPrefixed],
-                ['Status', '==', 'Active'],
-            ]);
-
-            // Student fallback if Firestore students also empty
-            if (empty($studentDocs)) {
-                $studentDocs = []; // Firestore-only; no RTDB fallback
-            }
+            // ── Phase 16.6 (SEC-11) — SESSION-SCOPED SECTION STRENGTH ───
+            //
+            // THE DEFECT THIS CLOSES: this query was school-scoped but NOT
+            // session-scoped, so the strength shown on the Classes screen
+            // counted students from EVERY session. A 5-A holding 40 students
+            // last year and 5 this year displayed as 45/40 — "FULL" — while
+            // the server (correctly, since Phase 16.5) still admitted more.
+            // The UI and the server disagreed about the same section, which
+            // is precisely what the capacity work exists to prevent.
+            //
+            // Filtered through the canonical roster rule so the number shown
+            // is produced by the SAME logic the capacity guard enforces, and
+            // so legacy blank-session students are still counted.
+            // ── LC-1 — DUAL STATUS/CLASS FIELD SHAPE ────────────────────
+            //
+            // THE DEFECT THIS CLOSES: the `students` collection holds BOTH
+            // legacy PascalCase (`Class`, `Section`, `Status`) and canonical
+            // camelCase (`className`, `section`, `status`) field shapes, with
+            // mixed value casing. A Firestore equality predicate matches ONE
+            // exact field name, so `['Class','==',…]` + `['Status','==','Active']`
+            // SILENTLY DROPPED every student stored in the camelCase shape.
+            // No error — the class simply came back short.
+            //
+            // This already caused a production incident: see the note at
+            // Attendance.php:1218 — "students disappear from parent/teacher
+            // views after admin bulk saves".
+            //
+            // ⚠ MY OWN PHASE 16.6 FIX WAS INCOMPLETE HERE. It correctly added
+            // session scoping via _filterSectionRoster(), but left these two
+            // single-shape predicates in the query — so the tolerant PHP
+            // filter never saw the rows Firestore had already discarded.
+            //
+            // Fixed by removing ALL field predicates and filtering entirely in
+            // _filterSectionRoster(), which reads both shapes for class,
+            // section, session and status, and treats a blank session as
+            // legacy-but-valid.
+            //
+            // PERFORMANCE: this is now cheaper, not dearer. The shared
+            // request-memoised snapshot (also file-cached, write-invalidated)
+            // replaces a per-call Firestore query — so a page listing many
+            // sections costs ONE read instead of one per section.
+            $studentDocs = $this->_filterSectionRoster(
+                $this->_cachedStudentDocsForRollCheck(),
+                $classPrefixed, $sectionPrefixed, $this->session_year
+            );
 
             $students = [];
             foreach ($studentDocs as $sDocs) {
@@ -283,10 +277,13 @@ class Classes extends MY_Controller
         // Get distinct class names from sections collection
         $sectionDocs = $this->fs->schoolWhere('sections', []);
 
-        // RTDB fallback + auto-heal
-        if (empty($sectionDocs)) {
-            $sectionDocs = $this->_rtdb_fallback_all_sections();
-        }
+        // Phase 16.6 (SEC-12) — dead call removed. `_rtdb_fallback_all_sections()`
+        // was deleted with the other RTDB fallbacks (see the note near the end
+        // of this file) but THREE call sites were left behind, so an empty
+        // Firestore result raised a PHP fatal error instead of returning an
+        // empty list. A school that has not configured any sections yet — i.e.
+        // every school on its first run — crashed this screen. Firestore-only:
+        // an empty result is a legitimate answer, not a reason to fall back.
 
         $classSet = [];
         foreach ($sectionDocs as $doc) {
@@ -366,17 +363,40 @@ class Classes extends MY_Controller
         $classPrefixed   = Firestore_service::classKey($class);
         $sectionPrefixed = Firestore_service::sectionKey($section);
 
-        // Query students from Firestore by class + section
-        $studentDocs = $this->fs->schoolWhere('students', [
-            ['Class', '==', $classPrefixed],
-            ['Section', '==', $sectionPrefixed],
-            ['Status', '==', 'Active'],
-        ], 'Name', 'ASC');
-
-        // RTDB fallback + auto-heal
-        if (empty($studentDocs)) {
-            $studentDocs = $this->_rtdb_fallback_students($classPrefixed, $sectionPrefixed);
-        }
+        // ── Phase 16.6 (SEC-11 + SEC-12) ────────────────────────────────
+        //
+        // SEC-12 🔴 THE CRASH THIS REMOVES: the block that stood here called
+        // `$this->_rtdb_fallback_students(...)` whenever the Firestore query
+        // came back empty. THAT METHOD DOES NOT EXIST — not on this
+        // controller, not on MY_Controller, nowhere in the repository. So
+        // opening a section with no active students (a newly created section,
+        // or one whose students have all been promoted out or withdrawn)
+        // raised a PHP fatal error instead of returning an empty roster.
+        // It was also an RTDB fallback, which the Firestore-only rule forbids
+        // outright — so it is deleted rather than implemented.
+        //
+        // ⚠ The SEC-11 fix below makes an empty result MORE likely (a section
+        // holding only other-session students now correctly returns nothing),
+        // so leaving the dead call would have widened the crash.
+        //
+        // SEC-11: session scoping — see the note in get_class_sections().
+        // LC-1 — see the note in get_class_sections(). Single-shape `Class` /
+        // `Status` predicates silently dropped camelCase students, so all
+        // field filtering now happens in _filterSectionRoster(), which reads
+        // both shapes. Sorting moves to PHP for the same reason: a Firestore
+        // orderBy('Name') would exclude documents that only carry `name`.
+        $studentDocs = $this->_filterSectionRoster(
+            $this->_cachedStudentDocsForRollCheck(),
+            $classPrefixed, $sectionPrefixed, $this->session_year
+        );
+        usort($studentDocs, static function ($a, $b) {
+            $ad = is_array($a) ? ($a['data'] ?? $a) : [];
+            $bd = is_array($b) ? ($b['data'] ?? $b) : [];
+            return strcasecmp(
+                trim((string) ($ad['name'] ?? $ad['Name'] ?? '')),
+                trim((string) ($bd['name'] ?? $bd['Name'] ?? ''))
+            );
+        });
 
         $students = [];
         foreach ($studentDocs as $doc) {
@@ -389,6 +409,16 @@ class Classes extends MY_Controller
                 'phone'       => $profile['Phone Number'] ?? $profile['phone'] ?? '-',
                 'photo'       => $profile['Profile Pic'] ?? $profile['profilePic'] ?? null,
                 'last_result' => $profile['Last_result'] ?? 'N/A',
+                // Phase 11 (P11-G1) — school identity on the student list. The
+                // full student document is ALREADY loaded by the query above, so
+                // these are free: no extra read, no extra query, no join against
+                // srNoIndex / admissionNoIndex (those are server-only indexes and
+                // must never be queried for display).
+                // Alias-tolerant because older documents predate the camelCase
+                // convergence. APAAR is deliberately absent — masked/audited
+                // admin-only, never in a list payload.
+                'sr_no'        => (string) ($profile['srNo'] ?? $profile['srNumber'] ?? $profile['SR Number'] ?? ''),
+                'admission_no' => (string) ($profile['admissionNumber'] ?? $profile['Admission Number'] ?? ''),
             ];
         }
 
@@ -501,10 +531,13 @@ class Classes extends MY_Controller
         // Query all sections for this school from Firestore
         $sectionDocs = $this->fs->schoolWhere('sections', []);
 
-        // RTDB fallback + auto-heal
-        if (empty($sectionDocs)) {
-            $sectionDocs = $this->_rtdb_fallback_all_sections();
-        }
+        // Phase 16.6 (SEC-12) — dead call removed. `_rtdb_fallback_all_sections()`
+        // was deleted with the other RTDB fallbacks (see the note near the end
+        // of this file) but THREE call sites were left behind, so an empty
+        // Firestore result raised a PHP fatal error instead of returning an
+        // empty list. A school that has not configured any sections yet — i.e.
+        // every school on its first run — crashed this screen. Firestore-only:
+        // an empty result is a legitimate answer, not a reason to fall back.
 
         $data = [
             'classes'  => [],
@@ -768,13 +801,6 @@ class Classes extends MY_Controller
         // Mints no identity: transfer moves existing students, so SRNO, Student
         // ID and Admission Number are untouched (verified Phase 20.3e-1).
         $casTransferIds = [];
-        // LOAD IT BEFORE THE STATIC CALL. This worked only transitively:
-        // MY_Controller's constructor loads student_write_service, whose file
-        // has a top-level require_once for this class. CI3 has no autoloader
-        // for libraries, so the day that binding moves, the line below becomes
-        // a fatal instead of a guard. Sis does this at every one of its call
-        // sites; this was the one place relying on someone else's include.
-        require_once APPPATH . 'libraries/Section_seat_guard.php';
         if (Section_seat_guard::enabled()) {
             // CI3 has NO autoloader for libraries — both must be loaded here or
             // the first property access is a hard fatal. Classes.php does not
@@ -842,6 +868,24 @@ class Classes extends MY_Controller
             $casTransferIds = $studentIds;
         }
 
+        // DYNAMIC (decision C): does this school RE-PRICE fees on a class change?
+        // Per-school flag `reprice_on_class_transfer` in the fees policy doc
+        // (feeSettings/{school}_{session}_blocking_policy — same screen as the TC
+        // dues policy); absent ⇒ false ⇒ keep existing demands and just WARN the
+        // operator (the safe default). When true, a cross-class move archives
+        // unpaid old-class tuition and regenerates at the new class chart (paid
+        // history + one-off module charges preserved by reassignFeesOnPromotion).
+        // Read once per request.
+        $repriceOnClassChange = false;
+        try {
+            $polDoc = $this->firebase->firestoreGet(
+                'feeSettings', "{$this->school_name}_{$this->session_year}_blocking_policy"
+            );
+            $repriceOnClassChange = is_array($polDoc) && !empty($polDoc['reprice_on_class_transfer'])
+                && $polDoc['reprice_on_class_transfer'] !== 'false';
+        } catch (\Throwable $e) { /* default false — keep + warn */ }
+        $feesRepriced = 0;
+
         $transferred = 0;
         foreach ($studentIds as $stuId) {
             if (Section_seat_guard::enabled()) {
@@ -858,6 +902,37 @@ class Classes extends MY_Controller
             }
             if (!$ok) continue;
             $transferred++;
+
+            // Lifecycle-critic fix: keep the denormalized class/section LABEL on
+            // this student's current-session feeDemands in step with their new
+            // placement, so section-filtered fee reports don't misplace their
+            // dues. ONLY for a same-class section move — a cross-class transfer
+            // needs a fee REASSIGNMENT (different chart), not a relabel, so we
+            // deliberately skip it here rather than mask an amount mismatch.
+            // Best-effort: a label refresh must never fail an executed transfer.
+            if ($fromClassKey === $cleanClass) {
+                try {
+                    $this->feeLifecycle->updateDemandPlacement($stuId, $cleanClass, $cleanSection);
+                } catch (\Throwable $e) {
+                    log_message('error', "transfer_students: demand relabel failed for {$stuId}: " . $e->getMessage());
+                }
+            } elseif ($repriceOnClassChange) {
+                // Cross-class move + school opted into re-pricing: archive unpaid
+                // old-class tuition and regenerate at the new class chart. Paid /
+                // partial demands and one-off module charges are preserved by
+                // reassignFeesOnPromotion. Best-effort — never fail an executed move.
+                try {
+                    // prorate=true — a mid-year TRANSFER re-prices only the current
+                    // month onward; past + already-paid months stay at the old class.
+                    $this->feeLifecycle->reassignFeesOnPromotion(
+                        $stuId, $fromClassKey, $fromSectionKey,
+                        $cleanClass, $cleanSection, (string) $this->school_id, true
+                    );
+                    $feesRepriced++;
+                } catch (\Throwable $e) {
+                    log_message('error', "transfer_students: fee reprice failed for {$stuId}: " . $e->getMessage());
+                }
+            }
 
             // Audit AFTER a confirmed write, so history never records a move
             // that did not happen. A failed audit never fails the transfer.
@@ -878,10 +953,27 @@ class Classes extends MY_Controller
             // RTDB mirror removed per no-RTDB policy. Firestore `students` is the sole source.
         }
 
-        echo json_encode([
+        // Lifecycle-critic fix: a CROSS-class move does not re-bill fees (the new
+        // class may have a different chart) and we deliberately do NOT relabel or
+        // silently re-price existing demands (that would mask an amount mismatch).
+        // Tell the operator to review/regenerate fees rather than let it pass
+        // silently. A same-class section move already relabelled the demands above.
+        $crossClass = ($fromClassKey !== $cleanClass);
+        $note = '';
+        if ($crossClass && $feesRepriced > 0) {
+            $note = ". Fees were re-priced at the {$cleanClass} chart for {$feesRepriced} student(s) "
+                  . "(unpaid old-class demands archived; paid history preserved).";
+        } elseif ($crossClass) {
+            $note = ". NOTE: this is a class change — existing fee demands were NOT re-billed at the "
+                  . "{$cleanClass} rates. Review or regenerate fees for the moved student(s).";
+        }
+        $resp = [
             'status'  => 'success',
-            'message' => "{$transferred} student(s) transferred successfully",
-        ]);
+            'message' => "{$transferred} student(s) transferred successfully" . $note,
+        ];
+        if ($crossClass && $feesRepriced === 0) { $resp['fee_review_required'] = true; }
+        if ($feesRepriced > 0) { $resp['fees_repriced'] = $feesRepriced; }
+        echo json_encode($resp);
     }
 
     /**
@@ -906,11 +998,19 @@ class Classes extends MY_Controller
             $classPrefixed   = Firestore_service::classKey($class);
             $sectionPrefixed = Firestore_service::sectionKey($section);
 
-            $sectionStudents = $this->fs->schoolWhere('students', [
-                ['Class', '==', $classPrefixed],
-                ['Section', '==', $sectionPrefixed],
-                ['Status', '==', 'Active'],
-            ]);
+            // Phase 16.6 (SEC-11) — session-scoped. This guard blocks deleting
+            // a section whose students still owe fees; counting EVERY session
+            // meant last year's students could veto the deletion of a section
+            // that is empty this year, with a dues figure the operator cannot
+            // act on. Same canonical roster rule as the capacity guard.
+            // LC-1 — see get_class_sections(). This guard blocks deleting a
+            // section whose students still owe fees; a single-shape predicate
+            // could hide camelCase students and let the section be deleted
+            // while children were still assigned to it.
+            $sectionStudents = $this->_filterSectionRoster(
+                $this->_cachedStudentDocsForRollCheck(),
+                $classPrefixed, $sectionPrefixed, $this->session_year
+            );
 
             if (!empty($sectionStudents)) {
                 $studentsWithDues = 0;

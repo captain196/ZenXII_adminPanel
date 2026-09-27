@@ -37,7 +37,16 @@ class Staff extends MY_Controller
     // they live in the server-only `staffPrivate/{schoolId}_{staffId}` mirror
     // (Firestore rules deny ALL clients; the service account bypasses).
     // Keep this list in lockstep with Hr.php and Staff_pii_migrate.php.
-    private const PII_KEYS = ['panNumber', 'aadharNumber', 'pfNumber', 'esiNumber', 'salaryDetails', 'bankDetails'];
+    // Phase 3A.1 — added exitReason/deactivationReason/deactivatedBy/reactivatedBy
+    // (separation-metadata privacy closure). Deliberately NOT added:
+    // exitDate/lastWorkingDate — Hr.php's payroll final-pay roster
+    // (schoolWhere('staff', ...) bulk reads, e.g. Hr.php:6183) reads these two
+    // directly off the bulk staff row; moving them would require changing
+    // Payroll's read path, which is out of this phase's authorized scope.
+    // exitReason/deactivationReason/deactivatedBy/reactivatedBy have zero
+    // consumers outside Staff.php (verified) so they move with no cross-module
+    // impact — the narrative/actor fields are the sensitive part, not the dates.
+    private const PII_KEYS = ['panNumber', 'aadharNumber', 'pfNumber', 'esiNumber', 'salaryDetails', 'salaryStructure', 'bankDetails', 'exitReason', 'deactivationReason', 'deactivatedBy', 'reactivatedBy'];
 
     // ── Unified role catalogue (single source of truth) ────────────────────
     // ONE role entity now serves BOTH staff (HR: category/flags/attendance_type)
@@ -58,6 +67,16 @@ class Staff extends MY_Controller
         // only reachable via the umbrella).
         'Red Flags','Library','Transport','Hostel','Inventory','Assets',
     ];
+    /**
+     * ROLE-LEVEL `surface` — which LOGIN SURFACE a role admits its holder to:
+     * 'app' (staff app only — web panel login REFUSED), 'web', or 'both'.
+     * Distinct from RBAC_MODULE_META's module-level surface, which only decides
+     * where a module is DISPLAYED. This one is enforced, at Admin_login.
+     * ABSENT = web permitted, so every untagged role keeps its existing behaviour.
+     * Union rule (rbac_roles_allow_web): a staff member reaches the panel if ANY
+     * held role is non-'app' — which is why the auto-assigned ROLE_BASELINE_APP is
+     * tagged 'app'; otherwise it alone would re-open the panel to everyone.
+     */
     private const DEFAULT_STAFF_ROLES = [
         // ── System roles ─────────────────────────────────────────────────────
         // Global auto-assigned baseline: every staff member (peon → principal)
@@ -65,7 +84,7 @@ class Staff extends MY_Controller
         // out of the department tree; auto_assign means onboarding always attaches
         // it. Whether its "both"-surface modules also grant PANEL access is settled
         // by the surface-tagging rule in Phase B (baseline is app-facing).
-        'ROLE_BASELINE_APP'         => ['label' => 'App Baseline',         'description' => 'Baseline app modules every staff member receives (Stories, Events, Communication).', 'category' => 'System',         'flags' => [], 'attendance_type' => 'standard', 'is_system' => true, 'is_global' => true, 'auto_assign' => true, 'tier' => 9, 'sort_order' => 0, 'permissions' => ['Stories','Events','Communication'], 'permissionLevels' => ['Stories' => 'view', 'Events' => 'view', 'Communication' => 'view']],
+        'ROLE_BASELINE_APP'         => ['label' => 'App Baseline',         'description' => 'Baseline app modules every staff member receives (Stories, Events, Communication).', 'category' => 'System',         'flags' => [], 'attendance_type' => 'standard', 'is_system' => true, 'is_global' => true, 'auto_assign' => true, 'tier' => 9, 'sort_order' => 0, 'surface' => 'app', 'permissions' => ['Stories','Events','Communication'], 'permissionLevels' => ['Stories' => 'view', 'Events' => 'view', 'Communication' => 'view']],
         // ── Access-oriented roles (formerly the RBAC catalogue) ──────────────
         'ROLE_ADMIN'                => ['label' => 'Admin',                'description' => 'Full school-level access, all modules',                 'category' => 'Administrative', 'flags' => [],                                     'attendance_type' => 'standard', 'is_system' => true, 'tier' => 1, 'sort_order' => 1,  'permissions' => self::ALL_MODULES],
         'ROLE_PRINCIPAL'            => ['label' => 'Principal',            'description' => 'Academic oversight, approvals, reports (no accounting)', 'category' => 'Administrative', 'flags' => [],                                     'attendance_type' => 'standard', 'is_system' => true, 'tier' => 2, 'sort_order' => 2,  'permissions' => ['SIS','Attendance','Examinations','Results','LMS','Certificates','Academic','Reports','Events','Communication','Stories','Configuration']],
@@ -74,19 +93,33 @@ class Staff extends MY_Controller
         'ROLE_HR_MANAGER'           => ['label' => 'HR Manager',          'description' => 'Staff, payroll, leaves, recruitment, appraisals',        'category' => 'Administrative', 'flags' => [],                                     'attendance_type' => 'standard', 'is_system' => true, 'tier' => 3, 'sort_order' => 5,  'permissions' => ['HR','Attendance','Reports']],
         'ROLE_ACCOUNTANT'           => ['label' => 'Accountant',          'description' => 'Fees, accounting, ledgers, bank recon, reports',         'category' => 'Administrative', 'flags' => ['can_handle_fees'],                    'attendance_type' => 'standard', 'is_system' => true, 'tier' => 3, 'sort_order' => 6,  'permissions' => ['Fees','Accounting','Reports']],
         'ROLE_FRONT_OFFICE'         => ['label' => 'Front Office',         'description' => 'Admissions CRM, visitor log, communication, certificates','category' => 'Administrative', 'flags' => [],                                     'attendance_type' => 'standard', 'is_system' => true, 'tier' => 4, 'sort_order' => 7,  'permissions' => ['SIS','Communication','Certificates','Events','Stories']],
+        // 'Academic' added to both teaching roles (TT-C8, 2026-09-13): each already
+        // carries the `can_access_timetable` flag — the declared intent that teachers
+        // reach the timetable — but the Teacher App gates the timetable screen on the
+        // 'Academic' module (ModuleGate: "timetable"→"Academic"), which was absent, so
+        // a freshly onboarded school's teachers could not open it. Granted at VIEW
+        // level in Rbac_levels_backfill (teachers see the timetable; coordinators and
+        // principals still manage it), following the same convention Stories/Communication use.
+        // permissionLevels pins Academic to VIEW inline (not just in the flat
+        // permissions[]), because a freshly-seeded role carries no other level
+        // entries and the capability CF defaults an un-levelled module to
+        // 'manage' — which would give a new-school teacher timetable MANAGE, not
+        // view. Only 'Academic' is pinned; every other module keeps exactly the
+        // level it resolves to today (unchanged). Existing schools get the same
+        // Academic=>view through Rbac_levels_backfill's LEVEL_MAP.
         'ROLE_CLASS_TEACHER'        => ['label' => 'Class Teacher',        'description' => 'Teacher + section reports, parent communication, flags',  'category' => 'Teaching',       'flags' => ['can_teach','can_access_timetable'],   'attendance_type' => 'standard', 'is_system' => true, 'tier' => 4, 'sort_order' => 8,  'permissions' => ['SIS','Attendance','Examinations','Results','LMS','Academic','Stories','Communication','Reports','Events'], 'permissionLevels' => ['Academic' => 'view']],
         'ROLE_TEACHER'              => ['label' => 'Teacher',             'description' => 'Own class attendance, homework, marks, stories, messages','category' => 'Teaching',       'flags' => ['can_teach','can_access_timetable'],   'attendance_type' => 'standard', 'is_system' => true, 'tier' => 4, 'sort_order' => 9,  'permissions' => ['Attendance','Examinations','Results','LMS','Academic','Stories','Communication'], 'permissionLevels' => ['Academic' => 'view']],
         'ROLE_LIBRARIAN'            => ['label' => 'Librarian',           'description' => 'Library module',                                         'category' => 'Non-Teaching',   'flags' => ['can_manage_library'],                 'attendance_type' => 'standard', 'is_system' => true, 'tier' => 5, 'sort_order' => 10, 'permissions' => ['Library']],
-        'ROLE_TRANSPORT_MANAGER'    => ['label' => 'Transport Manager',   'description' => 'Transport, routes, vehicles, GPS tracking',              'category' => 'Support',        'flags' => ['can_manage_transport'],               'attendance_type' => 'standard', 'is_system' => true, 'tier' => 5, 'sort_order' => 11, 'permissions' => ['Transport','Reports']],
+        'ROLE_TRANSPORT_MANAGER'    => ['label' => 'Transport Manager',   'description' => 'Transport, routes, vehicles, GPS tracking',              'category' => 'Support',        'flags' => ['can_manage_transport'],               'attendance_type' => 'standard', 'is_system' => true, 'tier' => 5, 'sort_order' => 11, 'surface' => 'both', 'permissions' => ['Transport','Reports']],
         'ROLE_HOSTEL_WARDEN'        => ['label' => 'Hostel Warden',       'description' => 'Hostel allocation, hostel attendance',                   'category' => 'Non-Teaching',   'flags' => ['can_manage_hostel'],                  'attendance_type' => 'standard', 'is_system' => true, 'tier' => 5, 'sort_order' => 12, 'permissions' => ['Hostel']],
         'ROLE_STAFF'                => ['label' => 'Staff',               'description' => 'View-only access, no module permissions',                'category' => 'Support',        'flags' => [],                                     'attendance_type' => 'standard', 'is_system' => true, 'tier' => 6, 'sort_order' => 13, 'permissions' => []],
         // ── Job-oriented roles (formerly staff-only; no default panel access) ─
         'ROLE_LAB_ASST'             => ['label' => 'Lab Assistant',       'description' => 'Laboratory support',                                     'category' => 'Non-Teaching',   'flags' => [],                                     'attendance_type' => 'standard', 'is_system' => true, 'tier' => 6, 'sort_order' => 20, 'permissions' => []],
         'ROLE_CLERK'                => ['label' => 'Clerk',               'description' => 'Office clerical work',                                    'category' => 'Administrative', 'flags' => [],                                     'attendance_type' => 'standard', 'is_system' => true, 'tier' => 6, 'sort_order' => 21, 'permissions' => []],
-        'ROLE_DRIVER'               => ['label' => 'Driver',              'description' => 'Transport driver',                                       'category' => 'Support',        'flags' => ['can_manage_transport'],               'attendance_type' => 'shift',    'is_system' => true, 'tier' => 6, 'sort_order' => 22, 'permissions' => []],
-        'ROLE_SECURITY'             => ['label' => 'Security',            'description' => 'Campus security / guard',                                 'category' => 'Support',        'flags' => [],                                     'attendance_type' => 'shift',    'is_system' => true, 'tier' => 6, 'sort_order' => 23, 'permissions' => []],
+        'ROLE_DRIVER'               => ['label' => 'Driver',              'description' => 'Transport driver (staff app only)',                      'category' => 'Support',        'flags' => ['can_manage_transport'],               'attendance_type' => 'shift',    'is_system' => true, 'tier' => 6, 'sort_order' => 22, 'surface' => 'app', 'permissions' => []],
+        'ROLE_SECURITY'             => ['label' => 'Security',            'description' => 'Campus security / guard (staff app only)',                'category' => 'Support',        'flags' => [],                                     'attendance_type' => 'shift',    'is_system' => true, 'tier' => 6, 'sort_order' => 23, 'surface' => 'app', 'permissions' => []],
         'ROLE_HOUSE_WARDEN'         => ['label' => 'House Warden',        'description' => 'Boarding house supervision',                             'category' => 'Non-Teaching',   'flags' => ['can_manage_hostel'],                  'attendance_type' => 'standard', 'is_system' => false,'tier' => 6, 'sort_order' => 24, 'permissions' => []],
-        'ROLE_PEON'                 => ['label' => 'Peon',                'description' => 'General attendant',                                      'category' => 'Support',        'flags' => [],                                     'attendance_type' => 'standard', 'is_system' => false,'tier' => 6, 'sort_order' => 25, 'permissions' => []],
+        'ROLE_PEON'                 => ['label' => 'Peon',                'description' => 'General attendant (staff app only)',                     'category' => 'Support',        'flags' => [],                                     'attendance_type' => 'standard', 'is_system' => false,'tier' => 6, 'sort_order' => 25, 'surface' => 'app', 'permissions' => []],
     ];
 
     // Keyword → role_id mapping for migration from free-text Position field
@@ -286,13 +319,19 @@ class Staff extends MY_Controller
     {
         if ($basic <= 0) return false;
 
-        $staffDoc = $this->fs->getEntity('staff', $staffId);
-        $existing = $staffDoc['salaryStructure'] ?? null;
+        // Staff Lifecycle audit finding: salaryStructure now lives in
+        // staffPrivate (PII_KEYS), same as salaryDetails/bankDetails — read
+        // the private mirror, not the public staff doc.
+        $existing = $this->_load_staff_private($staffId)['salaryStructure'] ?? null;
         $now      = date('c');
 
         // Manual structure → don't overwrite, just note the sync
         if (is_array($existing) && ($existing['source'] ?? '') === 'manual') {
-            $this->fs->updateEntity('staff', $staffId, ['salaryStructure' => array_merge($existing, ['last_synced_at' => $now])]);
+            $patch = ['salaryStructure' => array_merge($existing, ['last_synced_at' => $now])];
+            $this->_split_staff_private($staffId, $patch);
+            // $patch['salaryStructure'] is now null (scrubbed by the split) —
+            // write it back so any pre-existing public copy is actively cleared.
+            $this->fs->updateEntity('staff', $staffId, $patch);
             return false;
         }
 
@@ -319,7 +358,20 @@ class Staff extends MY_Controller
             $structure['last_synced_at'] = $now;
         }
 
-        $this->fs->updateEntity('staff', $staffId, ['salaryStructure' => $structure]);
+        $patch = ['salaryStructure' => $structure];
+        $this->_split_staff_private($staffId, $patch);
+        // Same active-scrub pattern as the manual branch above.
+        $this->fs->updateEntity('staff', $staffId, $patch);
+
+        // SAL-D1. The private mirror is where the structure is read back for
+        // editing, but it is not the payroll authority. Compensation_reader --
+        // and the HR Salary Structure screen -- both resolve a salary from
+        // salarySlips/{schoolId}_SAL_{staffId}, the document Hr::_fsSyncSalary()
+        // writes. Registration wrote only the mirror, so a salary captured on the
+        // hiring form was invisible to both: HR showed a blank structure and
+        // payroll reported the employee as having no effective salary. Writing the
+        // canonical document here closes the hire -> payroll seam.
+        $this->_fs_sync_canonical_salary($staffId, $structure);
 
         log_message('info',
             "Salary structure auto-" . (is_array($existing) ? "updated(v{$structure['_version']})" : 'created')
@@ -328,6 +380,34 @@ class Staff extends MY_Controller
         );
 
         return true;
+    }
+
+    /**
+     * Mirror a registration-built salary structure into the canonical payroll
+     * document, matching Hr::_fsSyncSalary() exactly so two writers of the same
+     * concept cannot drift into two different shapes.
+     *
+     * Best-effort: a failure here must not fail the hire, but it is logged at
+     * error level because the consequence -- an employee who cannot be paid --
+     * is not something to discover at the end of the month.
+     */
+    private function _fs_sync_canonical_salary(string $staffId, array $structure): void
+    {
+        try {
+            $doc = array_merge($structure, [
+                'schoolId'  => $this->school_id,
+                'staffId'   => $staffId,
+                'type'      => 'salary_structure',
+                'updatedAt' => date('c'),
+            ]);
+            unset($doc['_prev']);   // the audit trail stays on the private mirror
+            $this->fs->set('salarySlips', $this->fs->docId("SAL_{$staffId}"), $doc, true);
+            log_message('info', "Staff: canonical salary structure written for {$staffId}");
+        } catch (Exception $e) {
+            log_message('error',
+                "Staff: canonical salary structure write FAILED for {$staffId}: " . $e->getMessage()
+                . ' -- this employee is not payable until a salary is saved from the HR screen.');
+        }
     }
 
     // ── Private helpers ───────────────────────────────────────────────────────
@@ -1436,6 +1516,12 @@ class Staff extends MY_Controller
             'category'       => $category,
             'profilePic'     => '',
             'updatedAt'      => date('c'),
+            // Pre-Phase-1 foundational metadata — see the identical block in
+            // new_staff() for the full rationale. Bulk import is a second live
+            // staff-creation entry point and must carry the same immutable
+            // creation record.
+            'createdAt'      => date('c'),
+            'createdBy'      => (string) ($this->admin_id ?? ''),
         ]);
         unset($fsData['Password'], $fsData['Credentials']);
         // Audit C1: route PAN/Aadhar/PF/ESI/salary/bank to the server-only
@@ -1461,6 +1547,33 @@ class Staff extends MY_Controller
             'userId'   => $staffId,
             'type'     => 'staff',
         ]);
+
+        // Employment History Phase 1 — JOINED event, same rationale/sequencing
+        // as new_staff() (see Staff_employment_history_service docblock).
+        // Bulk import is a second live staff-creation entry point and must
+        // carry the same JOINED trail. Non-fatal on failure.
+        $employmentHistoryWarning = null;
+        try {
+            $this->load->library('staff_employment_history_service');
+            $ehRes = $this->staff_employment_history_service
+                ->init($this->fs, $this->school_id, (string) ($this->admin_id ?? ''))
+                ->recordJoined($staffId, [
+                    'position'           => $positionLabel,
+                    'department'         => $department,
+                    'employmentType'     => $empType,
+                    // Bulk import has no Reporting Manager column — always blank
+                    // at creation, assignable later via Staff Edit (§16 design).
+                    'reportingManagerId' => '',
+                    'employmentStatus'   => 'Active',
+                ]);
+            if (empty($ehRes['ok'])) {
+                $employmentHistoryWarning = 'employment history JOINED event could not be recorded';
+                log_message('error', "Staff::_commit_staff_row JOINED event failed staff={$staffId} reason=" . ($ehRes['reason'] ?? 'unknown'));
+            }
+        } catch (\Throwable $ehErr) {
+            $employmentHistoryWarning = 'employment history JOINED event could not be recorded';
+            log_message('error', 'Staff::_commit_staff_row JOINED event threw for ' . $staffId . ': ' . $ehErr->getMessage());
+        }
 
         // Firebase Auth (best-effort).
         try {
@@ -1490,7 +1603,11 @@ class Staff extends MY_Controller
 
         // Return the plaintext password too — it's hashed on the doc, so this is
         // the only point it's available for the login-handout PDF.
-        return ['status' => 'created', 'staffId' => $staffId, 'name' => $name, 'phone' => $phone, 'password' => $plainPassword];
+        $row = ['status' => 'created', 'staffId' => $staffId, 'name' => $name, 'phone' => $phone, 'password' => $plainPassword];
+        if ($employmentHistoryWarning !== null) {
+            $row['warning'] = $employmentHistoryWarning;
+        }
+        return $row;
     }
 
     /** Convert a mapping-UI canonical row (keyed by field key) → label-keyed,
@@ -2176,6 +2293,22 @@ class Staff extends MY_Controller
             $roleClaimLabel = $this->_role_id_to_label($primaryRole);
             if ($roleClaimLabel === '') $roleClaimLabel = $positionLabel;
 
+            // Reporting Manager (Phase 2C) — optional at admission; validated
+            // server-side regardless of what the client sends (self-reference,
+            // same-school existence, Active-only eligibility, bounded cycle
+            // check — see Staff_employment_history_service::validateManagerAssignment()).
+            $reportingManagerId = trim($normalizedPostData['reporting_manager_id'] ?? '');
+            if ($reportingManagerId !== '') {
+                $this->load->library('staff_employment_history_service');
+                $rmValidation = $this->staff_employment_history_service
+                    ->init($this->fs, $this->school_id, (string) ($this->admin_id ?? ''))
+                    ->validateManagerAssignment($staffId, $reportingManagerId);
+                if (!$rmValidation['ok']) {
+                    $this->json_error('Invalid Reporting Manager: ' . $rmValidation['reason'], 400);
+                    return;
+                }
+            }
+
             $staffRecord = [
                 'Name'            => $staffName,
                 'User ID'         => $staffId,
@@ -2251,6 +2384,7 @@ class Staff extends MY_Controller
                 'department'   => $normalizedPostData['department']      ?? '',
                 'gender'       => $normalizedPostData['gender']          ?? '',
                 'employmentType' => $normalizedPostData['employment_type'] ?? '',
+                'reportingManagerId' => $reportingManagerId,
                 'fatherName'   => $normalizedPostData['father_name']     ?? '',
                 'dateOfJoining' => $formattedData['dateOfJoining']      ?? '',
                 'dob'          => $formattedData['DOB']                  ?? '',
@@ -2259,7 +2393,27 @@ class Staff extends MY_Controller
                 'category'     => $normalizedPostData['category']        ?? '',
                 'profilePic'   => $docData['Photo']['url']               ?? '',
                 'updatedAt' => date('c'),
+                // Pre-Phase-1 foundational metadata (authorized narrowly, ahead of
+                // Employment History): the TRUE creation event, immutable —
+                // written ONLY on this create path, never touched by edit_staff()
+                // or any other update site, so Firestore's merge-write semantics
+                // preserve it automatically once set. createdBy is the server-
+                // trusted session actor ($this->admin_id, MY_Controller.php:293),
+                // never client input — mirrors the existing createdBy/publishedBy
+                // convention already used for exam-lifecycle events (Exam.php).
+                'createdAt' => date('c'),
+                'createdBy' => (string) ($this->admin_id ?? ''),
             ]);
+            // Phase 1 ZenX HRMS — additive, optional, capability-gated. A
+            // school without HRMS_CORE_CAPABILITY never sees this field on
+            // its form, so $normalizedPostData won't carry it; the explicit
+            // gate here is defense-in-depth against a raw POST regardless.
+            if (has_capability(HRMS_CORE_CAPABILITY)) {
+                $locationIdInput = trim((string) ($normalizedPostData['location_id'] ?? ''));
+                if ($locationIdInput !== '') {
+                    $fsData['locationId'] = $locationIdInput;
+                }
+            }
             unset($fsData['Password'], $fsData['Credentials']);
             // Audit C1: PAN/Aadhar/PF/ESI/salary/bank → server-only staffPrivate.
             $this->_split_staff_private($staffId, $fsData);
@@ -2278,15 +2432,72 @@ class Staff extends MY_Controller
 
             // RTDB mirror removed per no-RTDB policy. Firestore `staff` is the sole source.
 
+            // Employment History Phase 1 — JOINED event + Position/Department/
+            // EmploymentType timeline entries. Fired only AFTER the staff doc
+            // create above is confirmed (never before) — see
+            // Staff_employment_history_service's class docblock for the
+            // sequencing rationale. A failure here never touches the
+            // already-successful staff record; it is logged and surfaced as
+            // a soft warning, same pattern as $authWarning below.
+            $employmentHistoryWarning = null;
+            try {
+                $this->load->library('staff_employment_history_service');
+                $ehRes = $this->staff_employment_history_service
+                    ->init($this->fs, $this->school_id, (string) ($this->admin_id ?? ''))
+                    ->recordJoined($staffId, [
+                        'position'           => $positionLabel,
+                        'department'         => $normalizedPostData['department']      ?? '',
+                        'employmentType'     => $normalizedPostData['employment_type'] ?? '',
+                        'reportingManagerId' => $reportingManagerId,
+                        'employmentStatus'   => 'Active',
+                    ]);
+                if (empty($ehRes['ok'])) {
+                    $employmentHistoryWarning = 'Staff record saved, but the employment history JOINED event could not be recorded.';
+                    log_message('error', "Staff::new_staff JOINED event failed staff={$staffId} reason=" . ($ehRes['reason'] ?? 'unknown'));
+                }
+            } catch (\Throwable $ehErr) {
+                $employmentHistoryWarning = 'Staff record saved, but the employment history JOINED event could not be recorded.';
+                log_message('error', 'Staff::new_staff JOINED event threw for ' . $staffId . ': ' . $ehErr->getMessage());
+            }
+
             // Auto-create leave balance for new staff
             try {
                 $fsSchool = $this->fs->get('schools', $this->fs->schoolId());
                 $leaveTypes = (is_array($fsSchool) && !empty($fsSchool['leaveTypes'])) ? $fsSchool['leaveTypes'] : [];
                 if (!empty($leaveTypes)) {
+                    // Leave Policy Programme Phase 4 (2026-08-18) — pro-rate
+                    // the initial allocation for a mid-year joiner. This is
+                    // the choke point that actually gates what a new hire
+                    // can apply for (Hr::get_leave_balances() only DISPLAYS
+                    // a derived figure; this seed is what apply_leave()'s
+                    // balance check reads). OFF (default): $alloc stays the
+                    // full flat days_per_year, byte-identical to before —
+                    // every existing school's new-hire seeding is untouched
+                    // until LEAVE_PRORATA_ENABLED is explicitly turned on.
+                    // PURE per-school (2026-09-20): resolved from
+                    // schools.leavePolicy.LEAVE_PRORATA_ENABLED (same key
+                    // Hr::_leave_flag reads); the legacy fleet-wide platform-flag
+                    // fallback has been cut. Absent => OFF, fail-safe on error.
+                    $prorataOn = false;
+                    try {
+                        $doc = $this->fs->get('schools', $this->school_id);
+                        $lp  = (is_array($doc) && is_array($doc['leavePolicy'] ?? null)) ? $doc['leavePolicy'] : [];
+                        $v   = $lp['LEAVE_PRORATA_ENABLED'] ?? false;
+                        $prorataOn = ($v === true || $v === 1 || $v === '1' || $v === 'yes' || $v === 'true');
+                    } catch (\Throwable $e) { /* fails safe to prorataOn=false */ }
+                    $joinDateForProrate = $prorataOn ? ($formattedData['dateOfJoining'] ?? null) : null;
+
                     $balances = [];
                     foreach ($leaveTypes as $tid => $lt) {
                         if (!is_array($lt)) continue;
                         $alloc = (int) ($lt['days_per_year'] ?? 0);
+                        if ($prorataOn && $joinDateForProrate) {
+                            require_once APPPATH . 'libraries/Leave_year_service.php';
+                            $pr = \Leave_year_service::prorateEntitlement(
+                                (float) $alloc, $joinDateForProrate, null, date('Y')
+                            );
+                            $alloc = $pr['days'];
+                        }
                         $balances[$tid] = ['allocated' => $alloc, 'used' => 0, 'carried' => 0, 'balance' => $alloc];
                     }
                     $balDocId = "{$this->school_id}_BAL_{$staffId}_" . date('Y');
@@ -2368,7 +2579,7 @@ class Staff extends MY_Controller
                         . ' — the user will not be able to log in until this is resolved.';
                 }
 
-                $warnings = array_filter([$authWarning, $phoneIndexWarning]);
+                $warnings = array_filter([$authWarning, $phoneIndexWarning, $employmentHistoryWarning]);
                 $payload  = [
                     'message'          => !empty($warnings)
                         ? 'Staff added (with warnings).'
@@ -2386,6 +2597,15 @@ class Staff extends MY_Controller
                 $this->json_error('Failed to save staff record.', 500);
             }
         }
+
+        // Phase 1 ZenX HRMS — additive, capability-gated. A school without
+        // HRMS_CORE_CAPABILITY gets an empty list and the flag off; the view
+        // hides the location field entirely in that case (no visible change).
+        $this->load->helper('terminology');
+        $data['hrms_capability_enabled'] = has_capability(HRMS_CORE_CAPABILITY);
+        $data['locations'] = $data['hrms_capability_enabled']
+            ? org_locations_for_school($this->fs, $this->school_id)
+            : [];
 
         $this->load->view('include/header');
         $this->load->view('new_staff', $data);
@@ -2440,6 +2660,21 @@ class Staff extends MY_Controller
         }
 
         $oldStatus = $existing['status'] ?? $existing['Status'] ?? 'Active';
+
+        // Rehire Workflow — optional attribute fields, ONLY meaningful on an
+        // Active transition. Read here (before the no-op short-circuit below)
+        // so an accidental "Rehire" submit against an already-Active staff
+        // member gets a clear rejection instead of a silent no-op that would
+        // otherwise drop the submitted attribute changes on the floor.
+        $rehireFieldsSubmitted = $newStatus === 'Active' && (
+            array_key_exists('position', $_POST) || array_key_exists('department', $_POST)
+            || array_key_exists('employment_type', $_POST) || array_key_exists('reporting_manager_id', $_POST)
+        );
+        if ($rehireFieldsSubmitted && $oldStatus === $newStatus) {
+            $this->json_error('Staff is already Active — Rehire only applies to a currently separated (Inactive) staff member.', 409);
+            return;
+        }
+
         if ($oldStatus === $newStatus) {
             // Note: don't put a 'status' key in the data — json_success already
             // sets status='success'; a second 'status' key would overwrite it.
@@ -2459,10 +2694,147 @@ class Staff extends MY_Controller
             $patch['deactivatedAt']      = $now;
             $patch['deactivationReason'] = $reason;
             $patch['deactivatedBy']      = $actorId;
-        } else { // Active (reactivation)
+
+            // P0-6/C1 — canonical employment EXIT model.
+            //
+            // deactivatedAt records WHEN THE ADMIN FLIPPED THE SWITCH; it is not
+            // the employee's last working day (an exit is routinely recorded days
+            // or weeks late). Payroll pro-rates on the employment WINDOW, so it
+            // needs the real last working day — and previously no field on the
+            // staff record supplied one: Hr.php reads exitDate / 'Resignation
+            // Date' / leaveDate and NONE of the three was ever written by any
+            // path. That left only two outcomes, both wrong: leave the record
+            // Active and pay a full month after the person left, or flip it to
+            // Inactive and have them vanish from the roster so the final partial
+            // month was never paid at all.
+            //
+            // ONE canonical field (`exitDate`) is written here rather than
+            // extending the legacy alias chain. `lastWorkingDate` mirrors it
+            // unless the caller distinguishes the two (notice served vs actually
+            // worked). Absent an explicit date we fall back to today, which is
+            // the best available signal and matches the previous implicit
+            // assumption — but it is recorded so payroll can pro-rate instead of
+            // silently dropping the employee.
+            $exitDateIn = trim((string) $this->input->post('exit_date'));
+            $lastWorkIn = trim((string) $this->input->post('last_working_date'));
+
+            $exitDate = preg_match('/^\d{4}-\d{2}-\d{2}$/', $exitDateIn) ? $exitDateIn : date('Y-m-d');
+            $lastWork = preg_match('/^\d{4}-\d{2}-\d{2}$/', $lastWorkIn) ? $lastWorkIn : $exitDate;
+
+            // A last working day AFTER the exit date is not a policy question —
+            // it is impossible: nobody works after their employment has ended.
+            // Both dates feed leave proration (_prorate_entitlement) and payroll
+            // period eligibility, so an inverted pair produces a wrong entitlement
+            // and a wrong payslip with nothing downstream to catch it.
+            //
+            // Future dates are DELIBERATELY still allowed: a notice period means
+            // resigning today and exiting next month, which is the normal case.
+            if (strtotime($lastWork) > strtotime($exitDate)) {
+                $this->json_error(
+                    'The last working day cannot be after the exit date. '
+                    . 'Check both dates and try again.', 400);
+            }
+
+            $patch['exitDate']        = $exitDate;
+            $patch['lastWorkingDate'] = $lastWork;
+            $patch['exitReason']      = $reason;
+        } else { // Active (reactivation / rehire)
             $patch['reactivatedAt'] = $now;
             $patch['reactivatedBy'] = $actorId;
+
+            // P0-6/C1 — a rehire/reactivation must clear the exit window, or the
+            // payroll employment-window calculation would keep clamping pay to a
+            // stale exit date. Nulled (not removed) so the field's absence still
+            // means "never exited" for records that never had one.
+            $patch['exitDate']        = null;
+            $patch['lastWorkingDate'] = null;
+            $patch['exitReason']      = null;
+
+            // D-005 (2026-08-21) — clear a separation that never completed.
+            //
+            // There is ONE notice document per staff member. Clearing the exit
+            // window while leaving that record in a decided-but-incomplete state
+            // (approved / waived / reduced) produced a permanent dead end: a new
+            // resignation was refused because an "active" notice existed,
+            // withdraw and decide both require 'pending', and complete requires
+            // the staff member to be Inactive — which a rehire has just undone.
+            // The employee could never resign again through the system.
+            //
+            // 'cancelled' rather than a new state: it is the vocabulary
+            // established HRMS platforms already use for a separation that did
+            // not take effect (rehire flows key off the "most recent
+            // non-cancelled separation record"), it is what Fnf_state_machine
+            // already means by the word, and unlike the alternatives it
+            // misstates nothing — HR did not reject it, the employee did not
+            // withdraw it, and it certainly did not complete.
+            //
+            // Cancelling only ever RELEASES a stuck record: terminal notices are
+            // left untouched, so a normal rehire after a completed separation is
+            // byte-identical to before.
+            $this->_cancel_notice_on_rehire($user_id, $actorId);
+
+            // Rehire Workflow — optional attribute fields, present only when
+            // the caller is a Rehire action (not a bare Reactivate). Each is
+            // read individually via array_key_exists so a plain Reactivate
+            // (which submits none of these) is byte-identical to before this
+            // change. Position/Department/EmploymentType are accepted as
+            // simple direct values here — deliberately NOT routed through
+            // edit_staff()'s role-derivation/Designation logic, which is
+            // RBAC-adjacent and out of this phase's authorized scope; HR
+            // types the new Position freely, exactly as on Staff Admission.
+            $rehireOtherChanges = [];
+            if (array_key_exists('position', $_POST)) {
+                $v = trim((string) $this->input->post('position'));
+                if ($v !== '' && $v !== (string) ($existing['Position'] ?? $existing['position'] ?? '')) {
+                    $rehireOtherChanges['position'] = $v;
+                    $patch['Position'] = $v;
+                    $patch['position'] = $v;
+                    $patch['role']     = $v; // mirrors edit_staff()'s own Position->role mirroring convention
+                }
+            }
+            if (array_key_exists('department', $_POST)) {
+                $v = trim((string) $this->input->post('department'));
+                if ($v !== (string) ($existing['Department'] ?? $existing['department'] ?? '')) {
+                    $rehireOtherChanges['department'] = $v;
+                    $patch['Department'] = $v;
+                    $patch['department'] = $v;
+                }
+            }
+            if (array_key_exists('employment_type', $_POST)) {
+                $v = trim((string) $this->input->post('employment_type'));
+                if ($v !== (string) ($existing['Employment Type'] ?? $existing['employmentType'] ?? '')) {
+                    $rehireOtherChanges['employmentType'] = $v;
+                    $patch['Employment Type'] = $v;
+                    $patch['employmentType']  = $v;
+                }
+            }
+            if (array_key_exists('reporting_manager_id', $_POST)) {
+                $v = trim((string) $this->input->post('reporting_manager_id'));
+                if ($v !== (string) ($existing['reportingManagerId'] ?? '')) {
+                    $this->load->library('staff_employment_history_service');
+                    $rmValidation = $this->staff_employment_history_service
+                        ->init($this->fs, $this->school_id, $actorId)
+                        ->validateManagerAssignment($user_id, $v);
+                    if (!$rmValidation['ok']) {
+                        $this->json_error('Invalid Reporting Manager: ' . $rmValidation['reason'], 400);
+                        return;
+                    }
+                    $rehireOtherChanges['reportingManagerId'] = $v;
+                    $patch['reportingManagerId'] = $v;
+                }
+            }
+
+            $rehireEffectiveDateIn = trim((string) $this->input->post('effective_date'));
+            $rehireEffectiveDate = preg_match('/^\d{4}-\d{2}-\d{2}$/', $rehireEffectiveDateIn) ? $rehireEffectiveDateIn : date('Y-m-d');
         }
+
+        // Phase 3A.1 — separation-metadata privacy closure. set_status() is a
+        // 4th staff-write path (alongside new_staff/_commit_staff_row/edit_staff)
+        // that never called _split_staff_private() — meaning exitReason/
+        // deactivationReason/deactivatedBy/reactivatedBy were written straight
+        // onto the same-school-readable staff doc. Same call, same place in the
+        // sequence (immediately before the write) as the other 3 call sites.
+        $this->_split_staff_private($user_id, $patch);
 
         try {
             // Use updateEntity (school-scoped) — bare update() targets the wrong doc id
@@ -2492,18 +2864,88 @@ class Staff extends MY_Controller
             ? $this->_disable_firebase_user($user_id)
             : $this->_enable_firebase_user($user_id);
 
+        // Phase 3B.1 (+ Rehire Workflow) — Employment History integration.
+        // Added AFTER the existing write + cascades succeed (same non-fatal,
+        // try/catch, never-rolls-back pattern already used for Position/
+        // Department/EmploymentType/ReportingManagerId) — set_status()'s own
+        // logic above this point is completely unchanged. On Inactive: fires
+        // SEPARATED and creates the linked staffSeparations record in the
+        // SAME atomic commitBatch as the event. On Active: fires REACTIVATED
+        // (bare status flip, no attribute changes submitted) or REHIRED (one
+        // or more of position/department/employmentType/reportingManagerId
+        // submitted — see determineReactivationEventType()). REHIRED's
+        // accompanying attribute changes are recorded via a SECOND,
+        // independent recordChanges() call — two atomic operations, not one
+        // combined mega-batch, per the documented, reviewed Phase 3B.1
+        // design tradeoff (recordEmploymentStatusChange() and recordChanges()
+        // remain two separate, already-proven mechanisms; not merged here).
+        $employmentHistoryWarning = null;
+        try {
+            $this->load->library('staff_employment_history_service');
+            $ehSvc = $this->staff_employment_history_service
+                ->init($this->fs, $this->school_id, $actorId);
+
+            if ($newStatus === 'Inactive') {
+                $separationType = trim((string) $this->input->post('separation_type'));
+                if ($separationType === '') $separationType = 'Other';
+                $ehRes = $ehSvc->recordEmploymentStatusChange(
+                    $user_id,
+                    'SEPARATED',
+                    'Inactive',
+                    $lastWork,           // effectiveFrom = actualLastWorkingDate, never expectedLastWorkingDate
+                    $reason,
+                    [],
+                    $separationType,
+                    $lastWork            // actualLastWorkingDate, explicit
+                );
+            } else {
+                $otherChanges   = $rehireOtherChanges ?? [];
+                $effectiveDate  = $rehireEffectiveDate ?? date('Y-m-d');
+                $eventType      = $ehSvc->determineReactivationEventType($otherChanges);
+                $ehRes = $ehSvc->recordEmploymentStatusChange(
+                    $user_id,
+                    $eventType,
+                    'Active',
+                    $effectiveDate,
+                    $reason,
+                    []
+                );
+                if (!empty($ehRes['ok']) && !empty($otherChanges)) {
+                    $attrRes = $ehSvc->recordChanges($user_id, $otherChanges, $effectiveDate, $reason);
+                    if (empty($attrRes['ok'])) {
+                        $employmentHistoryWarning = 'Staff rehired, but the accompanying Position/Department/'
+                            . 'Employment Type/Reporting Manager change could not be fully recorded in Employment History ('
+                            . ($attrRes['reason'] ?? 'unknown') . ').';
+                        log_message('error', "Staff::set_status rehire attribute history failed staff={$user_id} reason=" . ($attrRes['reason'] ?? 'unknown'));
+                    }
+                }
+            }
+            if (empty($ehRes['ok'])) {
+                $employmentHistoryWarning = 'Staff status updated, but employment history could not be recorded ('
+                    . ($ehRes['reason'] ?? 'unknown') . ').';
+                log_message('error', "Staff::set_status employment history failed staff={$user_id} reason=" . ($ehRes['reason'] ?? 'unknown'));
+            }
+        } catch (\Throwable $ehErr) {
+            $employmentHistoryWarning = 'Staff status updated, but employment history could not be recorded.';
+            log_message('error', 'Staff::set_status employment history threw for ' . $user_id . ': ' . $ehErr->getMessage());
+        }
+
         log_message('info', "STAFF_STATUS user={$user_id} {$oldStatus}->{$newStatus} by={$actorId} "
             . "reason=" . ($reason ?: '(none)')
             . " cascade=" . json_encode($cascadeStats)
             . " auth=" . json_encode($authStats));
         // Note: 'newStatus' (not 'status') so it doesn't collide with json_success's
         // own 'status' => 'success' field.
-        $this->json_success([
+        $payload = [
             'newStatus' => $newStatus,
             'message'   => 'Status changed to ' . $newStatus . '.',
             'cascade'   => $cascadeStats,
             'auth'      => $authStats,
-        ]);
+        ];
+        if ($employmentHistoryWarning !== null) {
+            $payload['warning'] = $employmentHistoryWarning;
+        }
+        $this->json_success($payload);
     }
 
     /**
@@ -2551,8 +2993,15 @@ class Staff extends MY_Controller
 
         // 3) Delete userDevices entries (FCM cleanup) — multiple docs per user
         //    (one per device); we delete them all so push notifications stop.
+        //    Phase 0D (Staff Lifecycle security hardening): was ->where(),
+        //    unscoped by schoolId — this runs via the Admin SDK service
+        //    account, which BYPASSES Firestore rules entirely, so the rules
+        //    fix on userDevices (Phase 0C) does not cover this query. userId
+        //    (staffId) is only unique PER SCHOOL (sequential counter), so an
+        //    unscoped query risked deleting another school's same-id staff
+        //    member's device docs. schoolWhere() prepends the tenant filter.
         try {
-            $devices = $this->fs->where('userDevices', [['userId', '==', $userId]]);
+            $devices = $this->fs->schoolWhere('userDevices', [['userId', '==', $userId]]);
             if (is_array($devices)) {
                 foreach ($devices as $entry) {
                     $docId = is_array($entry) ? ($entry['id'] ?? '') : '';
@@ -2597,19 +3046,45 @@ class Staff extends MY_Controller
     }
 
     /**
-     * Phase 3 — flip subjectAssignments.archived for every row owned by this teacher.
+     * Academic Assignment Policy (Option B, locked): Staff Employment
+     * Lifecycle and Academic Assignment Lifecycle are separate. Deactivation
+     * archives this teacher's subjectAssignments rows so they stop appearing
+     * as live/eligible — that half is unchanged. Reactivation/Rehire
+     * deliberately does NOT restore them anymore: Academic Planner is the
+     * sole source of truth for current academic responsibility, and the
+     * school must explicitly re-assign. (Previously this un-archived rows
+     * carrying archivedBecauseOfDeactivation=true on the Active transition —
+     * that auto-restore path is removed, not merely gated, per the approved
+     * design report.)
      *
-     * Inactive: set archived=true on all rows where teacherId==userId.
-     * Active   : set archived=false on rows we previously archived (marker
-     *            archivedBecauseOfDeactivation=true). Manually-archived rows
-     *            from Academic Planner are left alone.
+     * Also closes a verified gap: archiving a class-teacher row left
+     * `sections.classTeacherId` pointing at the departed/inactive staff
+     * member (every consumer — Ptm.php, Gate_pass_service.php, the Teacher
+     * and Parent apps — already treats a blank classTeacherId as a normal,
+     * handled "no class teacher configured" state, so clearing it is safe).
+     * The clear is compare-and-clear (only if the section doc still names
+     * THIS teacher) so a class teacher reassigned to someone else in the
+     * meantime is never overwritten — see the conflict scenario documented
+     * in the design report.
      *
-     * @return array  ['matched' => int, 'patched' => int, 'failed' => int]
+     * @return array  ['matched' => int, 'patched' => int, 'failed' => int,
+     *                 'classTeacherPointersCleared' => int, 'classTeacherPointerClearFailed' => int]
      */
     private function _cascade_subject_assignments(
         string $userId, string $newStatus, string $reason, string $actorId, string $nowIso
     ): array {
-        $stats = ['matched' => 0, 'patched' => 0, 'failed' => 0];
+        $stats = [
+            'matched' => 0, 'patched' => 0, 'failed' => 0,
+            'classTeacherPointersCleared' => 0, 'classTeacherPointerClearFailed' => 0,
+        ];
+
+        // Reactivation/Rehire: no assignment restoration, ever — nothing to
+        // do here. Academic Planner is the only path back to an active
+        // assignment; see the Academic Assignment Policy design report.
+        if ($newStatus !== 'Inactive') {
+            return $stats;
+        }
+
         try {
             $rows = $this->fs->schoolWhere('subjectAssignments', [
                 ['teacherId', '==', $userId],
@@ -2626,27 +3101,15 @@ class Staff extends MY_Controller
             $d     = $row['data'] ?? [];
             if ($docId === '') { $stats['failed']++; continue; }
 
-            if ($newStatus === 'Inactive') {
-                $patch = [
-                    'archived'                       => true,
-                    'archivedAt'                     => $nowIso,
-                    'archivedReason'                 => $reason !== ''
-                        ? $reason
-                        : 'Teacher deactivated',
-                    'archivedBy'                     => $actorId,
-                    'archivedBecauseOfDeactivation'  => true,
-                ];
-            } else { // Active — only un-archive rows we ourselves archived
-                if (empty($d['archivedBecauseOfDeactivation'])) {
-                    continue; // skip — manually-archived row, leave it alone
-                }
-                $patch = [
-                    'archived'                       => false,
-                    'archivedBecauseOfDeactivation'  => false,
-                    'unarchivedAt'                   => $nowIso,
-                    'unarchivedBy'                   => $actorId,
-                ];
-            }
+            $patch = [
+                'archived'                       => true,
+                'archivedAt'                     => $nowIso,
+                'archivedReason'                 => $reason !== ''
+                    ? $reason
+                    : 'Teacher deactivated',
+                'archivedBy'                     => $actorId,
+                'archivedBecauseOfDeactivation'  => true,
+            ];
 
             try {
                 $ok = $this->fs->update('subjectAssignments', $docId, $patch);
@@ -2654,9 +3117,49 @@ class Staff extends MY_Controller
             } catch (\Throwable $e) {
                 log_message('error', "cascade patch failed docId={$docId}: " . $e->getMessage());
                 $stats['failed']++;
+                continue;
+            }
+
+            if (!empty($d['isClassTeacher'])) {
+                $this->_clear_stale_class_teacher_pointer($userId, $d, $stats);
             }
         }
         return $stats;
+    }
+
+    /**
+     * Compare-and-clear: only blanks sections.classTeacherId if it still
+     * names the teacher being deactivated — never overwrites a pointer that
+     * already points at a different (e.g. newly reassigned) teacher. Same
+     * school-scoped doc-id construction Subject_assignment_service uses when
+     * it originally cross-wrote the field, using this row's own
+     * schoolId/session/className/section (not the current session), since
+     * the cascade query itself is not session-filtered.
+     */
+    private function _clear_stale_class_teacher_pointer(string $userId, array $assignmentRow, array &$stats): void
+    {
+        $schoolId = (string) ($assignmentRow['schoolId'] ?? $this->school_id);
+        $session  = (string) ($assignmentRow['session']  ?? '');
+        $class    = (string) ($assignmentRow['className'] ?? '');
+        $section  = (string) ($assignmentRow['section']   ?? '');
+        if ($schoolId === '' || $session === '' || $class === '' || $section === '') {
+            return; // can't safely resolve the section doc — leave it alone
+        }
+        $sectionDocId = "{$schoolId}_{$session}_{$class}_{$section}";
+
+        try {
+            $sectionDoc = $this->fs->get('sections', $sectionDocId);
+            if (!is_array($sectionDoc)) return;
+            $currentClassTeacherId = trim((string) ($sectionDoc['classTeacherId'] ?? ''));
+            if ($currentClassTeacherId !== $userId) {
+                return; // already reassigned to someone else — never overwrite
+            }
+            $ok = $this->fs->update('sections', $sectionDocId, ['classTeacherId' => '']);
+            $ok ? $stats['classTeacherPointersCleared']++ : $stats['classTeacherPointerClearFailed']++;
+        } catch (\Throwable $e) {
+            log_message('error', "classTeacherId clear failed section={$sectionDocId} teacher={$userId}: " . $e->getMessage());
+            $stats['classTeacherPointerClearFailed']++;
+        }
     }
 
     /**
@@ -2892,9 +3395,14 @@ class Staff extends MY_Controller
             log_message('error', "delete cascade indexPhones failed for {$userId}: " . $e->getMessage());
         }
 
-        // 2) userDevices (FCM) — one doc per device, NOT school-scoped.
+        // 2) userDevices (FCM) — one doc per device.
+        //    Phase 0D (Staff Lifecycle security hardening): was ->where(),
+        //    unscoped by schoolId. Same fix as _disable_firebase_user() above
+        //    — schoolWhere() prepends the tenant filter so this hard-delete
+        //    cascade can't touch another school's same-id staff member's
+        //    device docs.
         try {
-            $devices = $this->fs->where('userDevices', [['userId', '==', $userId]]);
+            $devices = $this->fs->schoolWhere('userDevices', [['userId', '==', $userId]]);
             if (is_array($devices)) {
                 foreach ($devices as $entry) {
                     $docId = $entry['id'] ?? '';
@@ -3159,16 +3667,110 @@ class Staff extends MY_Controller
             if (isset($formattedData['ProfilePic']))      $formattedData['profilePic']     = $formattedData['ProfilePic'];
 
             unset($formattedData['Password'], $formattedData['Credentials']);
+
+            // Phase 1 ZenX HRMS — additive, optional, capability-gated. Same
+            // "only touch when the form actually submitted the field" rule as
+            // teaching_subjects above, so a stale/cached edit form never
+            // silently clears an existing assignment.
+            if (has_capability(HRMS_CORE_CAPABILITY) && array_key_exists('location_id', $postData)) {
+                $formattedData['locationId'] = trim((string) $postData['location_id']);
+            }
+
             // Audit C1: PAN/Aadhar/PF/ESI/bank submitted on this edit go to the
             // server-only staffPrivate mirror; the readable staff doc is nulled
             // for those keys. (salaryDetails is handled by the salary block below.)
             $this->_split_staff_private($user_id, $formattedData);
+
+            // P0-8 — session membership upkeep. `sessions[]` was written ONCE at
+            // creation and never refreshed on edit, so a staff member created in
+            // session A stayed invisible to session-scoped operations in session B
+            // (e.g. Attendance::bulk_mark_staff filters
+            // sessions array-contains <current session>). Merge-append the current
+            // session here; existing entries are preserved and the array stays
+            // unique, so this can never drop a historical session or duplicate a
+            // record. Only touched when a current session is actually resolved.
+            if (!empty($this->session_year)) {
+                $existingSessions = $existingData['sessions'] ?? [];
+                if (!is_array($existingSessions)) $existingSessions = [];
+                if (!in_array($this->session_year, $existingSessions, true)) {
+                    $existingSessions[] = $this->session_year;
+                    $formattedData['sessions'] = array_values(array_unique($existingSessions));
+                }
+            }
+
+            // Reporting Manager (Phase 2C) — optional; only touched when the
+            // edit form actually submitted the field (same "don't silently
+            // clear on a stale form" discipline as teaching_subjects/location_id
+            // above). Validated server-side regardless of client input.
+            $reportingManagerSubmitted = array_key_exists('reporting_manager_id', $postData);
+            if ($reportingManagerSubmitted) {
+                $rmCandidate = trim((string) ($postData['reporting_manager_id'] ?? ''));
+                $this->load->library('staff_employment_history_service');
+                $rmValidation = $this->staff_employment_history_service
+                    ->init($this->fs, $this->school_id, (string) ($this->admin_id ?? ''))
+                    ->validateManagerAssignment($user_id, $rmCandidate);
+                if (!$rmValidation['ok']) {
+                    $this->json_error('Invalid Reporting Manager: ' . $rmValidation['reason'], 400);
+                    return;
+                }
+                $formattedData['reportingManagerId'] = $rmCandidate;
+            }
 
             $updateRes = $this->fs->updateEntity('staff', $user_id, $formattedData);
 
             // RTDB mirror removed per no-RTDB policy. Firestore `staff` is the sole source.
 
             if ($updateRes) {
+                // Employment History Phase 1 — fired only AFTER updateEntity()
+                // above is confirmed to have succeeded (never before), and only
+                // for the Phase-1 attributes that were both actually submitted
+                // on this edit AND actually changed value. See
+                // Staff_employment_history_service's class docblock for the
+                // full sequencing rationale (the staff doc write itself is
+                // left completely unmodified by this phase).
+                $employmentHistoryWarning = null;
+                $ehChanges = [];
+                if (isset($formattedData['position'])) {
+                    $oldPosition = (string) ($existingData['position'] ?? $existingData['Position'] ?? '');
+                    if ($oldPosition !== (string) $formattedData['position']) {
+                        $ehChanges['position'] = (string) $formattedData['position'];
+                    }
+                }
+                if (isset($formattedData['department'])) {
+                    $oldDepartment = (string) ($existingData['department'] ?? $existingData['Department'] ?? '');
+                    if ($oldDepartment !== (string) $formattedData['department']) {
+                        $ehChanges['department'] = (string) $formattedData['department'];
+                    }
+                }
+                if (isset($formattedData['employmentType'])) {
+                    $oldEmpType = (string) ($existingData['employmentType'] ?? $existingData['Employment Type'] ?? '');
+                    if ($oldEmpType !== (string) $formattedData['employmentType']) {
+                        $ehChanges['employmentType'] = (string) $formattedData['employmentType'];
+                    }
+                }
+                if ($reportingManagerSubmitted && isset($formattedData['reportingManagerId'])) {
+                    $oldReportingManager = (string) ($existingData['reportingManagerId'] ?? '');
+                    if ($oldReportingManager !== (string) $formattedData['reportingManagerId']) {
+                        $ehChanges['reportingManagerId'] = (string) $formattedData['reportingManagerId'];
+                    }
+                }
+                if (!empty($ehChanges)) {
+                    try {
+                        $this->load->library('staff_employment_history_service');
+                        $ehRes = $this->staff_employment_history_service
+                            ->init($this->fs, $this->school_id, (string) ($this->admin_id ?? ''))
+                            ->recordChanges($user_id, $ehChanges);
+                        if (empty($ehRes['ok'])) {
+                            $employmentHistoryWarning = 'Staff record updated, but employment history could not be recorded ('
+                                . ($ehRes['reason'] ?? 'unknown') . ').';
+                            log_message('error', "Staff::edit_staff employment history recordChanges failed staff={$user_id} reason=" . ($ehRes['reason'] ?? 'unknown'));
+                        }
+                    } catch (\Throwable $ehErr) {
+                        $employmentHistoryWarning = 'Staff record updated, but employment history could not be recorded.';
+                        log_message('error', 'Staff::edit_staff employment history threw for ' . $user_id . ': ' . $ehErr->getMessage());
+                    }
+                }
+
                 // Phone number changed — update phone index, but DON'T hijack a
                 // number another account already owns (mirrors new_staff). If a
                 // different staff/parent/student owns it, skip the index swap and
@@ -3252,7 +3854,8 @@ class Staff extends MY_Controller
                     log_message('error', 'Staff: Firebase Auth sync failed on edit_staff for ' . $user_id . ': ' . $e->getMessage());
                 }
 
-                $this->json_success($phoneWarning ? ['warning' => $phoneWarning] : []);
+                $editWarnings = array_filter([$phoneWarning, $employmentHistoryWarning]);
+                $this->json_success(!empty($editWarnings) ? ['warning' => implode(' | ', $editWarnings)] : []);
             } else {
                 $this->json_error('Update failed.', 500);
             }
@@ -3261,8 +3864,88 @@ class Staff extends MY_Controller
             $data['staff_data'] = $this->_get_staff_with_fallback($user_id);
 
             if (!empty($data['staff_data'])) {
+                // Phase 1 ZenX HRMS — additive, capability-gated (see new_staff()
+                // for the same pattern and rationale).
+                $this->load->helper('terminology');
+                $hrmsEnabled = has_capability(HRMS_CORE_CAPABILITY);
+
+                // Reporting Manager (Phase 2C) — resolve the CURRENT manager's
+                // status for the view's inactive-manager warning. get_staff_list()
+                // (used to populate the picker) already filters to Active-only, so
+                // an inactive current manager would never appear there — this is a
+                // small necessary read on the render path, not the write path, to
+                // surface that fact to HR without changing anything.
+                $reportingManagerStatus = null;
+                $reportingManagerName   = null;
+                $currentRmId = trim((string) ($data['staff_data']['reportingManagerId'] ?? ''));
+                if ($currentRmId !== '') {
+                    try {
+                        $rmDoc = $this->fs->get('staff', $this->fs->docId($currentRmId));
+                        if (is_array($rmDoc)) {
+                            $reportingManagerStatus = (string) ($rmDoc['status'] ?? '');
+                            $reportingManagerName   = (string) ($rmDoc['Name'] ?? $rmDoc['name'] ?? $currentRmId);
+                        }
+                    } catch (\Throwable $e) {
+                        $reportingManagerStatus = null; // non-fatal — warning simply won't show
+                    }
+                }
+
+                // Priority 3 (Trail 2, 2026-08-19) — the Transfer modal's
+                // optional Work Schedule composition step calls the
+                // EXISTING Work_schedules::save_assignment() (gated
+                // HR:manage), a genuinely different RBAC module from this
+                // controller's own SIS:manage gate (established, not a
+                // bug — see the RBAC audit above transfer_staff()). Rather
+                // than weakening either gate, the option is offered ONLY
+                // to an admin who already independently holds HR:manage —
+                // has_permission()'s graded ranking means 'manage' already
+                // implies 'view', so this single flag is sufficient to
+                // gate both previewing the current assignment (via
+                // work_schedules/get_data) and saving the new one.
+                $hrManage = function_exists('has_permission') && has_permission('HR', 'manage');
+
+                // CROSS-D1 (2026-08-25) — the staff cycle and the academic cycle
+                // never meet. Hiring a teacher creates the record, the login and
+                // the app access, but `subjectAssignments` is the single source of
+                // truth the Teacher app reads for classes, and NOTHING in the staff
+                // lifecycle writes one. The result is a working sign-in to an empty
+                // product: no classes, no students, no timetable — with nobody told
+                // the hire is only half done. `teaching_subjects` captured on this
+                // form only filters the eligible-teacher dropdown in Academic; it
+                // does not assign anybody to anything.
+                //
+                // Surfaced here, where the hire is managed, rather than left for a
+                // teacher to discover on their phone. Session-scoped on purpose: an
+                // assignment from a previous session does not populate this year.
+                $teachingNeedsAssignment = false;
+                try {
+                    $sd      = $data['staff_data'] ?? [];
+                    $roleIds = is_array($sd['staff_roles'] ?? null) ? $sd['staff_roles'] : [];
+                    $isTeaching = in_array('ROLE_TEACHER', $roleIds, true)
+                        || stripos((string) ($sd['role'] ?? ''), 'teacher') !== false;
+
+                    if ($isTeaching) {
+                        $assigned = $this->fs->sessionWhere(
+                            'subjectAssignments', [['teacherId', '==', $user_id]]);
+                        $teachingNeedsAssignment = empty($assigned);
+                    }
+                } catch (\Throwable $e) {
+                    // Never block the profile over an advisory banner.
+                    log_message('error', 'Staff::edit_staff subjectAssignments probe failed for '
+                        . $user_id . ': ' . $e->getMessage());
+                    $teachingNeedsAssignment = false;
+                }
+
                 $this->load->view('include/header');
-                $this->load->view('edit_staff', ['staff_data' => $data['staff_data']]);
+                $this->load->view('edit_staff', [
+                    'staff_data'               => $data['staff_data'],
+                    'hrms_capability_enabled'  => $hrmsEnabled,
+                    'locations'                => $hrmsEnabled ? org_locations_for_school($this->fs, $this->school_id) : [],
+                    'reporting_manager_status' => $reportingManagerStatus,
+                    'reporting_manager_name'   => $reportingManagerName,
+                    'hr_manage'                => $hrManage,
+                    'teaching_needs_assignment' => $teachingNeedsAssignment,
+                ]);
                 $this->load->view('include/footer');
             } else {
                 log_message('error', 'Staff data not found in Firestore or RTDB for ID: ' . $user_id);
@@ -3291,9 +3974,151 @@ class Staff extends MY_Controller
             return;
         }
 
+        // Employment History Read Surface — resolve the CURRENT Reporting
+        // Manager's display name for the Professional tab (Phase 2C wrote
+        // reportingManagerId; this is the first UI surface that ever reads
+        // it — previously the field existed but was never rendered anywhere).
+        // Consistency fix: edit_staff() already resolves and warns on an
+        // Inactive current manager (Phase 2C) — this read-only profile view
+        // resolved only the name, with no inactive indicator. Same
+        // read-only, additive pattern; reportingManagerId itself is never
+        // touched, reassigned, or cleared here or anywhere else (locked
+        // policy: HR reviews and reassigns manually via Staff Edit).
+        $reportingManagerName   = null;
+        $reportingManagerStatus = null;
+        $rmId = trim((string) ($teacherData['reportingManagerId'] ?? ''));
+        if ($rmId !== '') {
+            $rmDoc = $this->_get_staff_with_fallback($rmId);
+            $reportingManagerName   = !empty($rmDoc) ? (string) ($rmDoc['Name'] ?? $rmDoc['name'] ?? $rmId) : null;
+            $reportingManagerStatus = !empty($rmDoc) ? (string) ($rmDoc['status'] ?? $rmDoc['Status'] ?? '') : null;
+        }
+
         $this->load->view('include/header');
-        $this->load->view('teacher_profile', ['teacher' => $teacherData]);
+        $this->load->view('teacher_profile', [
+            'teacher'                => $teacherData,
+            'reportingManagerName'   => $reportingManagerName,
+            'reportingManagerStatus' => $reportingManagerStatus,
+        ]);
         $this->load->view('include/footer');
+    }
+
+    /**
+     * Employment History Read Surface — read-only. Returns the full
+     * staffEmploymentEvents log for one staff member plus derived episode
+     * boundaries, gated at two levels within the SAME response:
+     *   - SIS/view (this action's own gate, identical to teacher_profile()):
+     *     event existence/type/effectiveFrom/fromValue/toValue/changed_by,
+     *     and Reporting Manager history — none of this is sensitive, matches
+     *     what Position/Department/EmploymentType already show same-tab.
+     *   - SIS/manage (checked WITHIN this action via has_permission(), never
+     *     denying the request — only shaping the payload): the `reason` on
+     *     each event, plus the entire `staffSeparations` linked-record fetch,
+     *     mirroring the exact read boundary already locked for
+     *     staffSeparations' own Firestore rule (Phase 3B.1) — a view-only
+     *     caller must never receive separation-reason text in the response
+     *     body at all, not merely have it hidden client-side.
+     *
+     * No write. No Employment History schema change. Reuses the existing
+     * staffEmploymentEvents/staffSeparations collections and their existing
+     * rules verbatim.
+     */
+    public function get_employment_history($id)
+    {
+        $this->_require_role(self::VIEW_ROLES, "", "SIS", "view");
+        header('Content-Type: application/json');
+
+        if (!$id || !preg_match('/^[A-Za-z0-9_]+$/', $id)) {
+            $this->json_error('Invalid staff id.', 400);
+            return;
+        }
+
+        $canViewSensitive = function_exists('has_permission') && has_permission('SIS', 'manage');
+
+        try {
+            $rows = $this->fs->schoolWhere('staffEmploymentEvents', [['staffId', '==', $id]], 'changed_at', 'ASC');
+        } catch (\Throwable $e) {
+            log_message('error', "get_employment_history query failed for {$id}: " . $e->getMessage());
+            $this->json_error('Could not load employment history.', 500);
+            return;
+        }
+
+        $events       = [];
+        $changedByIds = [];
+        foreach ((array) $rows as $row) {
+            $d = is_array($row['data'] ?? null) ? $row['data'] : [];
+            if (empty($d)) continue;
+            $evt = [
+                'eventType'     => (string) ($d['eventType'] ?? ''),
+                'attribute'     => (string) ($d['attribute'] ?? ''),
+                'fromValue'     => (string) ($d['fromValue'] ?? ''),
+                'toValue'       => (string) ($d['toValue'] ?? ''),
+                'effectiveFrom' => (string) ($d['effectiveFrom'] ?? ''),
+                'changed_by'    => (string) ($d['changed_by'] ?? ''),
+                'changed_at'    => (string) ($d['changed_at'] ?? ''),
+                'metadata'      => is_array($d['metadata'] ?? null) ? $d['metadata'] : [],
+            ];
+            if ($canViewSensitive) {
+                $evt['reason'] = (string) ($d['reason'] ?? '');
+            }
+            if ($evt['changed_by'] !== '') $changedByIds[$evt['changed_by']] = true;
+            $events[] = $evt;
+        }
+
+        // Batched changed_by -> display name resolution (one lookup per
+        // DISTINCT actor across the whole event set, never per-card).
+        $changedByNames = [];
+        foreach (array_keys($changedByIds) as $actorId) {
+            try {
+                $actorDoc = $this->_get_staff_with_fallback($actorId);
+                $changedByNames[$actorId] = !empty($actorDoc) ? (string) ($actorDoc['Name'] ?? $actorDoc['name'] ?? $actorId) : $actorId;
+            } catch (\Throwable $e) {
+                $changedByNames[$actorId] = $actorId; // best-effort — never fails the whole response
+            }
+        }
+
+        // Episode derivation — JOINED/REHIRED open, SEPARATED closes,
+        // REACTIVATED continues the currently-open episode. Pure read-time
+        // derivation over the already-fetched event list — no schema change,
+        // no new collection (Phase 3B.1's own locked decision, reaffirmed).
+        //
+        // EXTRACTED 2026-08-22 into Staff_employment_history_service so the
+        // Full & Final settlement can resolve service duration from the SAME
+        // derivation this screen shows. Duplicating it would have created a
+        // second source of truth about how long someone worked here — the one
+        // number a gratuity calculation turns on. Behaviour is unchanged; this
+        // is a move, not a rewrite.
+        $this->load->library('staff_employment_history_service');
+        $episodes = Staff_employment_history_service::episodesFromEvents($events);
+
+        $separations = [];
+        if ($canViewSensitive) {
+            try {
+                $sepRows = $this->fs->schoolWhere('staffSeparations', [['staffId', '==', $id]]);
+                foreach ((array) $sepRows as $row) {
+                    $d = is_array($row['data'] ?? null) ? $row['data'] : [];
+                    if (empty($d)) continue;
+                    $separations[] = [
+                        'separationType'        => (string) ($d['separationType'] ?? ''),
+                        'reason'                => (string) ($d['reason'] ?? ''),
+                        'status'                => (string) ($d['status'] ?? ''),
+                        'actualLastWorkingDate' => (string) ($d['actualLastWorkingDate'] ?? ''),
+                        'employmentEventRef'    => (string) ($d['employmentEventRef'] ?? ''),
+                    ];
+                }
+            } catch (\Throwable $e) {
+                log_message('error', "get_employment_history staffSeparations query failed for {$id}: " . $e->getMessage());
+                // Non-fatal — the general timeline still renders without separation detail.
+            }
+        }
+
+        $this->json_success([
+            'events'           => $events,
+            'episodes'         => $episodes,
+            'changedByNames'   => $changedByNames,
+            'separations'      => $separations,
+            'canViewSensitive' => $canViewSensitive,
+            'hasHistory'       => !empty($events),
+        ]);
     }
 
     // ─────────────────────────────────────────────────────────────────────────
@@ -3423,7 +4248,13 @@ class Staff extends MY_Controller
         if (preg_match("/^(.+?)\\s*'([^']*)'\\s*$/", $classSection, $csm)) {
             $classKey = trim($csm[1]);
             $sectionLetter = trim($csm[2]);
-            $sectionDocId = $this->fs->schoolId() . '_' . $classKey . '_Section ' . $sectionLetter;
+            // Phase 16.5 (SEC-2 completion) — use the canonical section
+            // doc-id. This hand-built form omitted the session, so once
+            // create_section() was corrected in Phase 16.4 this addressed a
+            // DIFFERENT document: class-teacher and subject-teacher
+            // assignments would have been written to an orphaned record that
+            // no section reader ever looks at, silently losing them.
+            $sectionDocId = $this->fs->sectionDocId($classKey, $sectionLetter);
             $sectionDoc = $this->fs->get('sections', $sectionDocId);
             $subjectTeachers = $sectionDoc['subjects'] ?? [];
             if (!isset($subjectTeachers[$subject])) $subjectTeachers[$subject] = [];
@@ -3512,7 +4343,13 @@ class Staff extends MY_Controller
         if (preg_match("/^(.+?)\\s*'([^']*)'\\s*$/", $class_name, $csm)) {
             $classKey = trim($csm[1]);
             $sectionLetter = trim($csm[2]);
-            $sectionDocId = $this->fs->schoolId() . '_' . $classKey . '_Section ' . $sectionLetter;
+            // Phase 16.5 (SEC-2 completion) — use the canonical section
+            // doc-id. This hand-built form omitted the session, so once
+            // create_section() was corrected in Phase 16.4 this addressed a
+            // DIFFERENT document: class-teacher and subject-teacher
+            // assignments would have been written to an orphaned record that
+            // no section reader ever looks at, silently losing them.
+            $sectionDocId = $this->fs->sectionDocId($classKey, $sectionLetter);
             $sectionDoc = $this->fs->get('sections', $sectionDocId);
             $subjectTeachers = $sectionDoc['subjects'] ?? [];
 
@@ -3846,5 +4683,1383 @@ class Staff extends MY_Controller
     {
         $priv = $this->_load_staff_private($staffId);
         return $priv ? array_merge($profile, $priv) : $profile;
+    }
+
+    // ════════════════════════════════════════════════════════════════════
+    //  STAFF HR ADVANCED CAPABILITY PROGRAMME — Phase A: Document Management
+    //  (2026-08-18)
+    // ════════════════════════════════════════════════════════════════════
+    //
+    // Reuses the canonical Document Service exactly as it was designed to
+    // be reused ("Student/HR/Hostel/... can adopt it later WITHOUT
+    // redesign") — no new collection, no new library, config-only addition
+    // (application/config/document_service.php). The endpoint shape below
+    // mirrors Sis.php's proven student-document pattern
+    // (upload_student_document/verify_student_document/
+    // replace_student_document/_delete_managed_student_document) field for
+    // field, so the two document surfaces stay structurally identical
+    // rather than diverging into two different conventions for the same
+    // underlying service.
+    //
+    // documentRefs lives on the PUBLIC `staff` doc — same placement the
+    // proven student precedent already uses for equally sensitive document
+    // TYPES (birth certificate, Aadhaar). The pointer array itself
+    // (documentId/type/label/verificationStatus) is not the sensitive
+    // payload; the actual file bytes are Storage-gated and the `documents`/
+    // `documentLinks` Firestore collections carry their own access rules,
+    // unchanged by this phase. Upload/replace/verify/delete stay HR-managed
+    // (MANAGE_ROLES) — this is an admin-panel HR record, not a staff
+    // self-service portal (no self-upload path exists elsewhere in this
+    // controller to extend consistently).
+
+    /** GET — list a staff member's uploaded documents. */
+    public function get_staff_documents()
+    {
+        $this->_require_role(self::VIEW_ROLES, "", "SIS", "view");
+        $staffId = $this->safe_path_segment(trim((string) $this->input->get('staff_id')), 'staff_id');
+        if ($staffId === '') return $this->json_error('Invalid staff ID.');
+
+        $staff = $this->_get_staff_with_fallback($staffId);
+        if (empty($staff)) return $this->json_error('Staff member not found.');
+
+        $refs = array_values(array_filter((array) ($staff['documentRefs'] ?? []), 'is_array'));
+        $this->json_success(['documents' => $refs]);
+    }
+
+    /** POST (multipart) — upload or replace-in-place a staff document. */
+    public function upload_staff_document()
+    {
+        $this->_require_role(self::MANAGE_ROLES, "", "SIS", "manage");
+        $staffId = $this->safe_path_segment(trim((string) $this->input->post('staff_id')), 'staff_id');
+        $type    = trim((string) $this->input->post('type'));
+        $custom  = trim((string) $this->input->post('label'));
+        if ($staffId === '' || $type === '') return $this->json_error('Staff ID and document type are required.');
+        if (empty($_FILES['document']) || ($_FILES['document']['error'] ?? UPLOAD_ERR_NO_FILE) !== UPLOAD_ERR_OK) {
+            return $this->json_error('Please choose a file to upload.');
+        }
+
+        $staff = $this->_get_staff_with_fallback($staffId);
+        if (empty($staff)) return $this->json_error('Staff member not found.');
+
+        $this->load->library('document_service', null, 'docsvc');
+        $this->docsvc->init($this->firebase, $this->school_id);
+        $actor = (string) ($this->admin_id ?? 'system');
+        $label = $custom !== '' ? $custom : '';
+        $tmp   = (string) $_FILES['document']['tmp_name'];
+        $orig  = (string) ($_FILES['document']['name'] ?? 'file');
+        $fileBytes = (int) ($_FILES['document']['size'] ?? 0);
+
+        // Predefined single-slot: replace the existing document of this type
+        // (mirrors Sis::upload_student_document()'s exact rule).
+        $existingId = '';
+        if ($type !== 'additional') {
+            foreach ((array) ($staff['documentRefs'] ?? []) as $r) {
+                if (is_array($r) && (string) ($r['type'] ?? '') === $type) { $existingId = (string) ($r['documentId'] ?? ''); break; }
+            }
+        }
+
+        if ($existingId !== '') {
+            $res = $this->docsvc->replace($existingId, $tmp, $orig, $actor);
+            if (empty($res['ok'])) return $this->json_error($res['error'] ?? 'Upload failed.');
+            $this->_staff_sync_docref($staffId, $res['document'], $label, $type, $fileBytes);
+            log_audit('Staff', 'document_replace', $staffId, "Document replaced: " . ($label ?: $type));
+            return $this->json_success(['message' => 'Document updated.', 'documentId' => $existingId, 'url' => $res['document']['downloadUrl'] ?? '']);
+        }
+
+        $res = $this->docsvc->upload($tmp, $orig, $type, ['uploadedBy' => $actor, 'label' => $label]);
+        if (empty($res['ok'])) return $this->json_error($res['error'] ?? 'Upload failed.');
+        $doc = $res['document'];
+        $this->docsvc->link($doc['documentId'], 'staff', $staffId, $type, $actor);
+        $this->_staff_sync_docref($staffId, $doc, $label, $type, $fileBytes);
+        log_audit('Staff', 'document_upload', $staffId, "Document uploaded: " . ($label ?: $type));
+        return $this->json_success(['message' => 'Document uploaded.', 'documentId' => $doc['documentId'], 'url' => $doc['downloadUrl'] ?? '']);
+    }
+
+    /** POST — set a staff document's verification status (verified|rejected|pending). */
+    public function verify_staff_document()
+    {
+        $this->_require_role(self::MANAGE_ROLES, "", "SIS", "manage");
+        $staffId = $this->safe_path_segment(trim((string) $this->input->post('staff_id')), 'staff_id');
+        $docId   = trim((string) $this->input->post('document_id'));
+        $status  = trim((string) $this->input->post('status'));
+        if (!preg_match('/^[A-Za-z0-9_]+$/', $docId)) return $this->json_error('Invalid document id.');
+        if (!in_array($status, ['verified', 'rejected', 'pending'], true)) return $this->json_error('Invalid status.');
+
+        $staff = $this->_get_staff_with_fallback($staffId);
+        if (empty($staff)) return $this->json_error('Staff member not found.');
+        if (!$this->_staff_doc_owned($staff, $docId)) return $this->json_error('Document does not belong to this staff member.');
+
+        $this->load->library('document_service', null, 'docsvc');
+        $this->docsvc->init($this->firebase, $this->school_id);
+        $res = $this->docsvc->verify($docId, $status, (string) ($this->admin_id ?? 'system'));
+        if (empty($res['ok'])) return $this->json_error($res['error'] ?? 'Verification failed.');
+
+        $refs = array_map(function ($r) use ($docId, $status) {
+            if (is_array($r) && (string) ($r['documentId'] ?? '') === $docId) $r['verificationStatus'] = $status;
+            return $r;
+        }, (array) ($staff['documentRefs'] ?? []));
+        $this->fs->updateEntity('staff', $staffId, ['documentRefs' => array_values($refs)]);
+        log_audit('Staff', 'document_verify', $staffId, "Document {$docId} marked {$status}");
+        // NOTE: do NOT return a 'status' key — json_success() already sets
+        // status:'success' (same gotcha Sis::verify_student_document() documents).
+        return $this->json_success(['verificationStatus' => $status]);
+    }
+
+    /** POST — delete a staff document (ownership-guarded, reference-counted purge via the Document Service). */
+    public function delete_staff_document()
+    {
+        $this->_require_role(self::MANAGE_ROLES, "", "SIS", "manage");
+        $staffId = $this->safe_path_segment(trim((string) $this->input->post('staff_id')), 'staff_id');
+        $docId   = trim((string) $this->input->post('document_id'));
+        if (!preg_match('/^[A-Za-z0-9_]+$/', $docId)) return $this->json_error('Invalid document id.');
+
+        $staff = $this->_get_staff_with_fallback($staffId);
+        if (empty($staff)) return $this->json_error('Staff member not found.');
+        if (!$this->_staff_doc_owned($staff, $docId)) return $this->json_error('Document does not belong to this staff member.');
+
+        $this->load->library('document_service', null, 'docsvc');
+        $this->docsvc->init($this->firebase, $this->school_id);
+        $res = $this->docsvc->delete($docId, 'staff', $staffId, (string) ($this->admin_id ?? 'system'), false);
+        if (empty($res['ok'])) return $this->json_error($res['error'] ?? 'Delete failed.');
+
+        $refs = [];
+        foreach ((array) ($staff['documentRefs'] ?? []) as $r) {
+            if (is_array($r) && (string) ($r['documentId'] ?? '') === $docId) continue;
+            $refs[] = $r;
+        }
+        $this->fs->updateEntity('staff', $staffId, ['documentRefs' => array_values($refs)]);
+        log_audit('Staff', 'document_delete', $staffId, "Document {$docId} deleted");
+        return $this->json_success(['message' => 'Document deleted.']);
+    }
+
+    /** Is $docId one of $staff's own documentRefs? (ownership guard, mirrors Sis::_student_doc_owned()) */
+    private function _staff_doc_owned(array $staff, string $docId): bool
+    {
+        foreach ((array) ($staff['documentRefs'] ?? []) as $r) {
+            if (is_array($r) && (string) ($r['documentId'] ?? '') === $docId) return true;
+        }
+        return false;
+    }
+
+    /** Upsert one documentRefs[] pointer entry on the staff doc (predefined types: one slot; additional: appended). */
+    private function _staff_sync_docref(string $staffId, array $doc, string $label, string $type, int $fileBytes): void
+    {
+        $staff = $this->_get_staff_with_fallback($staffId);
+        $refs  = array_values(array_filter((array) ($staff['documentRefs'] ?? []), 'is_array'));
+
+        $entry = [
+            'documentId'         => (string) $doc['documentId'],
+            'type'               => $type,
+            'label'              => $label !== '' ? $label : (string) ($doc['label'] ?? $type),
+            'sizeBytes'          => $fileBytes,
+            'verificationStatus' => (string) ($doc['verificationStatus'] ?? 'pending'),
+            'uploadedAt'         => (string) ($doc['uploadedAt'] ?? date('c')),
+        ];
+
+        $found = false;
+        foreach ($refs as $i => $r) {
+            if ((string) ($r['documentId'] ?? '') === $entry['documentId']) { $refs[$i] = $entry; $found = true; break; }
+        }
+        if (!$found) $refs[] = $entry;
+
+        $this->fs->updateEntity('staff', $staffId, ['documentRefs' => $refs]);
+    }
+
+    // ════════════════════════════════════════════════════════════════════
+    //  STAFF HR ADVANCED CAPABILITY PROGRAMME — Phase I: Promotion
+    //  (2026-08-18)
+    // ════════════════════════════════════════════════════════════════════
+    //
+    // DELIBERATELY does NOT add a new event type to
+    // Staff_employment_history_service. That service's own vocabulary
+    // (ATTRIBUTES/EMPLOYMENT_STATUS_EVENT_TYPES) is explicitly commented
+    // "Phase 1+2C+3B.1 locked vocabulary — do not extend without a new
+    // authorized phase" — a generic "Phase I — Promotion" authorization is
+    // not, on its own, the deliberate sign-off that comment calls for. The
+    // underlying safety property a Promotion feature actually needs
+    // (position/department changes are tracked as effective-dated
+    // episodes, never a silent overwrite) is ALREADY satisfied by the
+    // existing, unmodified POSITION_CHANGED/DEPARTMENT_CHANGED generic
+    // attribute-change events — confirmed by reading edit_staff()'s
+    // existing recordChanges() call site. What was actually missing was a
+    // *business-meaningful* action: a dedicated endpoint that captures WHY
+    // (reason) and WHEN (effective date) a change happened, using
+    // recordChanges()'s own $reason/$effectiveFrom parameters — both
+    // already existed on that method's signature, just never populated by
+    // the generic edit form. This is additive use of an existing,
+    // untouched service, not an architecture change.
+    //
+    // Explicitly does NOT touch salary/Payroll — per the standing
+    // instruction, promotion must never silently trigger a Payroll change.
+    // A salary revision remains its own, separate, explicit action via the
+    // existing Salary Structure screen.
+
+    /** POST — record a promotion (position/department/reporting-manager change with a reason). */
+    public function promote_staff()
+    {
+        $this->_require_role(self::MANAGE_ROLES, "", "SIS", "manage");
+
+        $staffId          = $this->safe_path_segment(trim((string) $this->input->post('staff_id')), 'staff_id');
+        $newPosition      = trim((string) $this->input->post('new_position'));
+        $newDepartment    = trim((string) $this->input->post('new_department'));
+        $reportingManagerSubmitted = array_key_exists('new_reporting_manager_id', $_POST);
+        $newReportingMgr  = trim((string) $this->input->post('new_reporting_manager_id'));
+        $effectiveFrom    = trim((string) $this->input->post('effective_from'));
+        $reasonNote       = trim((string) $this->input->post('reason'));
+
+        if ($staffId === '') return $this->json_error('Staff ID is required.');
+        if ($newPosition === '' && $newDepartment === '' && !$reportingManagerSubmitted) {
+            return $this->json_error('Provide a new position, department, and/or reporting manager.');
+        }
+        if ($effectiveFrom !== '' && !preg_match('/^\d{4}-\d{2}-\d{2}$/', $effectiveFrom)) {
+            return $this->json_error('Effective date must be in YYYY-MM-DD format.');
+        }
+
+        $staff = $this->_get_staff_with_fallback($staffId);
+        if (empty($staff)) return $this->json_error('Staff member not found.');
+        $rawStatus = (string) ($staff['status'] ?? $staff['Status'] ?? 'Active');
+        if (strtolower(trim($rawStatus)) !== 'active') {
+            return $this->json_error('Cannot record a promotion for an inactive staff member.');
+        }
+
+        $oldPosition   = (string) ($staff['position'] ?? $staff['Position'] ?? '');
+        $oldDepartment = (string) ($staff['department'] ?? $staff['Department'] ?? '');
+        $oldManagerId  = (string) ($staff['reportingManagerId'] ?? '');
+
+        $this->load->library('staff_employment_history_service');
+        $ehSvc = $this->staff_employment_history_service
+            ->init($this->fs, $this->school_id, (string) ($this->admin_id ?? ''));
+
+        $fieldUpdate = [];
+        $ehChanges   = [];
+        if ($newPosition !== '' && $newPosition !== $oldPosition) {
+            $fieldUpdate['position'] = $newPosition;
+            $fieldUpdate['Position'] = $newPosition; // dual-cased, matching every other write site in this controller
+            $ehChanges['position']  = $newPosition;
+        }
+        if ($newDepartment !== '' && $newDepartment !== $oldDepartment) {
+            $fieldUpdate['department'] = $newDepartment;
+            $fieldUpdate['Department'] = $newDepartment;
+            $ehChanges['department']  = $newDepartment;
+        }
+        if ($reportingManagerSubmitted && $newReportingMgr !== $oldManagerId) {
+            // Same validation edit_staff() already applies to a manager
+            // change — reused, not reimplemented (self-reference/inactive/
+            // circular-chain guards).
+            $rmValidation = $ehSvc->validateManagerAssignment($staffId, $newReportingMgr);
+            if (!$rmValidation['ok']) {
+                return $this->json_error('Invalid Reporting Manager: ' . $rmValidation['reason'], 400);
+            }
+            $fieldUpdate['reportingManagerId'] = $newReportingMgr;
+            $ehChanges['reportingManagerId']  = $newReportingMgr;
+        }
+        if (empty($ehChanges)) {
+            return $this->json_error('At least one of position, department, or reporting manager must differ from the current value.');
+        }
+
+        $fieldUpdate['updated_at'] = date('c');
+        $ok = $this->fs->updateEntity('staff', $staffId, $fieldUpdate);
+        if (!$ok) return $this->json_error('Could not update the staff record. Please try again.');
+
+        $reason = 'Promotion' . ($reasonNote !== '' ? ": {$reasonNote}" : '')
+            . " ({$oldPosition}" . ($oldDepartment !== '' ? "/{$oldDepartment}" : '') . " -> "
+            . ($newPosition !== '' ? $newPosition : $oldPosition)
+            . ($newDepartment !== '' ? "/{$newDepartment}" : '') . ')';
+
+        $historyWarning = null;
+        try {
+            $ehRes = $ehSvc->recordChanges($staffId, $ehChanges, $effectiveFrom, $reason);
+            if (empty($ehRes['ok'])) {
+                $historyWarning = 'Promotion recorded, but employment history could not be updated ('
+                    . ($ehRes['reason'] ?? 'unknown') . ').';
+                log_message('error', "Staff::promote_staff employment history recordChanges failed staff={$staffId} reason=" . ($ehRes['reason'] ?? 'unknown'));
+            }
+        } catch (\Throwable $ehErr) {
+            $historyWarning = 'Promotion recorded, but employment history could not be updated.';
+            log_message('error', 'Staff::promote_staff employment history threw for ' . $staffId . ': ' . $ehErr->getMessage());
+        }
+
+        log_audit('Staff', 'promotion', $staffId, $reason);
+
+        $resp = [
+            'message'          => 'Promotion recorded.',
+            'old_position'     => $oldPosition,
+            'new_position'     => $newPosition !== '' ? $newPosition : $oldPosition,
+            'old_department'   => $oldDepartment,
+            'new_department'   => $newDepartment !== '' ? $newDepartment : $oldDepartment,
+            'old_manager_id'   => $oldManagerId,
+            'new_manager_id'   => $reportingManagerSubmitted ? $newReportingMgr : $oldManagerId,
+        ];
+        if ($historyWarning !== null) $resp['warning'] = $historyWarning;
+        return $this->json_success($resp);
+    }
+
+    // ════════════════════════════════════════════════════════════════════
+    //  STAFF HR ADVANCED CAPABILITY PROGRAMME — Phase 2: Notice Period
+    //  (2026-08-18)
+    // ════════════════════════════════════════════════════════════════════
+    //
+    // New collection: staffNoticePeriods/{schoolId}_{staffId} — ONE active
+    // notice record per staff member (same "one active thing, keyed by
+    // subject" shape as leaveYearClosures). Deliberately upstream of, and
+    // never overlapping, the EXISTING, UNMODIFIED Staff::set_status()
+    // separation path — this phase never calls set_status() internally
+    // (it reads $_POST directly and is HTTP-response-shaped, not a clean
+    // internal API; wrapping it would mean either duplicating its logic or
+    // fragile superglobal manipulation, both explicitly out of bounds).
+    // Instead, the finalize step is a thin, AFTER-the-fact bookkeeping
+    // action: HR calls the existing set_status endpoint exactly as the
+    // pre-existing separation modal already does, then calls
+    // complete_notice_period() to close out the notice record — the two
+    // features compose at the workflow level, set_status() itself is
+    // never touched.
+    //
+    // NOTICE DURATION POLICY — explicitly a technical default, not an
+    // invented business rule. schools/{id}.noticePeriodDays is an OPTIONAL
+    // per-employment-type map (falls back to a single 'default' key, and
+    // finally to the hardcoded 30 below if the school has configured
+    // nothing at all) — the same "ships with a sane, operator-editable
+    // default" shape every other configurable policy in this codebase
+    // already uses (leave type day counts, etc.). The number itself is
+    // NOT asserted as correct policy for any real school; it is
+    // deliberately overridable per-tenant and even per-submission (HR can
+    // adjust notice_start_date/see the computed date before submitting).
+    // No money is calculated anywhere in this phase.
+    private const NOTICE_PERIOD_DEFAULT_DAYS = 30;
+    private const NOTICE_PERIOD_COL = 'staffNoticePeriods';
+    private const NOTICE_ACTIVE_STATUSES = ['pending', 'approved', 'waived', 'reduced'];
+
+    private function _notice_doc_id(string $staffId): string
+    {
+        return "{$this->school_id}_{$staffId}";
+    }
+
+    /**
+     * D-005 — cancel a separation that a rehire has just made void.
+     *
+     * Called only from the reactivation branch of set_status(). Terminal
+     * notices (completed / rejected / withdrawn / cancelled) are left exactly
+     * as they are, so this can only ever RELEASE the single notice slot, never
+     * rewrite a concluded one.
+     *
+     * Deliberately best-effort: a rehire must not fail because the notice
+     * record could not be read or written. The worst case is the pre-existing
+     * behaviour — a stuck record — which is logged rather than silently
+     * swallowed.
+     */
+    private function _cancel_notice_on_rehire(string $staffId, string $actorId): void
+    {
+        if ($staffId === '') return;
+
+        $docId = $this->_notice_doc_id($staffId);
+
+        try {
+            $notice = $this->fs->get(self::NOTICE_PERIOD_COL, $docId);
+        } catch (\Throwable $e) {
+            log_message('error', "Staff::_cancel_notice_on_rehire read failed for {$staffId}: " . $e->getMessage());
+            return;
+        }
+
+        if (!is_array($notice) || empty($notice)) return;
+
+        $status = (string) ($notice['status'] ?? '');
+        if (!in_array($status, self::NOTICE_ACTIVE_STATUSES, true)) return;   // terminal — untouched
+
+        try {
+            $ok = $this->fs->update(self::NOTICE_PERIOD_COL, $docId, [
+                'status'           => 'cancelled',
+                'cancelledAt'      => date('c'),
+                'cancelledBy'      => $actorId,
+                'cancelledReason'  => 'rehire',
+                'cancelledFrom'    => $status,   // what it was, for the audit trail
+                'updatedAt'        => date('c'),
+            ]);
+        } catch (\Throwable $e) {
+            log_message('error', "Staff::_cancel_notice_on_rehire write failed for {$staffId}: " . $e->getMessage());
+            return;
+        }
+
+        if ($ok) {
+            log_audit(
+                'Staff',
+                'notice_period_cancelled_on_rehire',
+                $staffId,
+                "Notice period cancelled by rehire (was '{$status}')"
+            );
+        }
+    }
+
+    /** Resolve the configured notice-period duration for a staff member's employment type (falls back to 'default', then the hardcoded constant). */
+    private function _notice_period_days(string $employmentType): int
+    {
+        try {
+            $school = $this->fs->get('schools', $this->school_id);
+            $map = is_array($school['noticePeriodDays'] ?? null) ? $school['noticePeriodDays'] : [];
+            if ($employmentType !== '' && isset($map[$employmentType]) && (int) $map[$employmentType] > 0) {
+                return (int) $map[$employmentType];
+            }
+            if (isset($map['default']) && (int) $map['default'] > 0) {
+                return (int) $map['default'];
+            }
+        } catch (\Throwable $e) {
+            log_message('error', 'Staff::_notice_period_days config read failed: ' . $e->getMessage());
+        }
+        return self::NOTICE_PERIOD_DEFAULT_DAYS;
+    }
+
+    /** GET — the current (if any) notice-period record for a staff member. */
+    public function get_notice_period()
+    {
+        $this->_require_role(self::VIEW_ROLES, "", "SIS", "view");
+        $staffId = $this->safe_path_segment(trim((string) $this->input->get('staff_id')), 'staff_id');
+        if ($staffId === '') return $this->json_error('Invalid staff ID.');
+
+        try {
+            $doc = $this->fs->get(self::NOTICE_PERIOD_COL, $this->_notice_doc_id($staffId));
+        } catch (\Throwable $e) {
+            log_message('error', 'Staff::get_notice_period read failed: ' . $e->getMessage());
+            return $this->json_error('Could not load notice period status.');
+        }
+        return $this->json_success(['notice' => is_array($doc) ? $doc : null]);
+    }
+
+    /** POST — HR submits (on behalf of) a resignation, opening a notice-period record. */
+    public function submit_resignation()
+    {
+        $this->_require_role(self::MANAGE_ROLES, "", "SIS", "manage");
+
+        $staffId        = $this->safe_path_segment(trim((string) $this->input->post('staff_id')), 'staff_id');
+        $noticeStartRaw = trim((string) $this->input->post('notice_start_date'));
+        $reason         = trim((string) $this->input->post('reason'));
+
+        if ($staffId === '') return $this->json_error('Staff ID is required.');
+        $noticeStart = $noticeStartRaw !== '' ? $noticeStartRaw : date('Y-m-d');
+        if (!preg_match('/^\d{4}-\d{2}-\d{2}$/', $noticeStart)) {
+            return $this->json_error('Notice start date must be in YYYY-MM-DD format.');
+        }
+
+        $staff = $this->_get_staff_with_fallback($staffId);
+        if (empty($staff)) return $this->json_error('Staff member not found.');
+        $rawStatus = (string) ($staff['status'] ?? $staff['Status'] ?? 'Active');
+        if (strtolower(trim($rawStatus)) !== 'active') {
+            return $this->json_error('Cannot open a notice period for an already-inactive staff member.');
+        }
+
+        $docId = $this->_notice_doc_id($staffId);
+        try {
+            $existing = $this->fs->get(self::NOTICE_PERIOD_COL, $docId);
+        } catch (\Throwable $e) {
+            $existing = null;
+        }
+        if (is_array($existing) && in_array((string) ($existing['status'] ?? ''), self::NOTICE_ACTIVE_STATUSES, true)) {
+            return $this->json_error('An active notice period already exists for this staff member. Withdraw or decide it first.');
+        }
+
+        $employmentType = (string) ($staff['employmentType'] ?? $staff['Employment Type'] ?? '');
+        $durationDays = $this->_notice_period_days($employmentType);
+        $expectedLwd = date('Y-m-d', strtotime("{$noticeStart} +{$durationDays} days"));
+
+        $now = date('c');
+        $data = [
+            'schoolId'               => $this->school_id,
+            'staffId'                => $staffId,
+            'staffName'              => (string) ($staff['Name'] ?? $staff['name'] ?? $staffId),
+            'status'                 => 'pending',
+            'submittedBy'            => (string) ($this->admin_id ?? ''),
+            'submittedAt'            => $now,
+            'noticeStartDate'        => $noticeStart,
+            'noticeDurationDays'     => $durationDays,
+            'expectedLastWorkingDay' => $expectedLwd,
+            'reason'                 => $reason,
+            'decidedBy'              => null,
+            'decidedAt'              => null,
+            'decision'               => null,
+            'decisionNote'           => null,
+            'actualLastWorkingDay'   => null,
+            'separationCompleted'    => false,
+            'createdAt'              => $now,
+            'updatedAt'              => $now,
+        ];
+
+        try {
+            $ok = $this->fs->set(self::NOTICE_PERIOD_COL, $docId, $data, true);
+        } catch (\Throwable $e) {
+            log_message('error', 'Staff::submit_resignation write failed: ' . $e->getMessage());
+            $ok = false;
+        }
+        if (!$ok) return $this->json_error('Could not open the notice period. Please try again.');
+
+        log_audit('Staff', 'notice_period_submitted', $staffId, "Notice period opened, expected last working day {$expectedLwd}");
+        return $this->json_success(['message' => 'Notice period recorded.', 'notice' => $data]);
+    }
+
+    /** POST — HR decides a pending notice period: approve as-is, waive (release early), reduce (shorten), or reject. */
+    public function decide_notice_period()
+    {
+        $this->_require_role(self::MANAGE_ROLES, "", "SIS", "manage");
+
+        $staffId  = $this->safe_path_segment(trim((string) $this->input->post('staff_id')), 'staff_id');
+        $decision = trim((string) $this->input->post('decision'));
+        $actualLwdRaw = trim((string) $this->input->post('actual_last_working_day'));
+        $note     = trim((string) $this->input->post('decision_note'));
+
+        if ($staffId === '') return $this->json_error('Staff ID is required.');
+        if (!in_array($decision, ['approve', 'waive', 'reduce', 'reject'], true)) {
+            return $this->json_error('Decision must be approve, waive, reduce, or reject.');
+        }
+
+        $docId = $this->_notice_doc_id($staffId);
+        try {
+            $notice = $this->fs->get(self::NOTICE_PERIOD_COL, $docId);
+        } catch (\Throwable $e) {
+            $notice = null;
+        }
+        if (!is_array($notice) || empty($notice)) return $this->json_error('No notice period found for this staff member.');
+        if ((string) ($notice['status'] ?? '') !== 'pending') {
+            return $this->json_error('This notice period has already been decided.');
+        }
+
+        $expectedLwd = (string) ($notice['expectedLastWorkingDay'] ?? '');
+        $actualLwd = $expectedLwd;
+        if (in_array($decision, ['waive', 'reduce'], true)) {
+            if ($actualLwdRaw === '' || !preg_match('/^\d{4}-\d{2}-\d{2}$/', $actualLwdRaw)) {
+                return $this->json_error('An actual last working day (YYYY-MM-DD) is required to waive or reduce notice.');
+            }
+            if ($actualLwdRaw > $expectedLwd) {
+                return $this->json_error('The adjusted last working day cannot be LATER than the original expected date — use Approve for that.');
+            }
+            $actualLwd = $actualLwdRaw;
+        }
+        if ($decision === 'reject') $actualLwd = null;
+
+        $statusMap = ['approve' => 'approved', 'waive' => 'waived', 'reduce' => 'reduced', 'reject' => 'rejected'];
+        $patch = [
+            'status'               => $statusMap[$decision],
+            'decision'             => $decision,
+            'decidedBy'            => (string) ($this->admin_id ?? ''),
+            'decidedAt'            => date('c'),
+            'decisionNote'         => $note,
+            'actualLastWorkingDay' => $actualLwd,
+            'updatedAt'            => date('c'),
+        ];
+
+        try {
+            $ok = $this->fs->update(self::NOTICE_PERIOD_COL, $docId, $patch);
+        } catch (\Throwable $e) {
+            log_message('error', 'Staff::decide_notice_period write failed: ' . $e->getMessage());
+            $ok = false;
+        }
+        if (!$ok) return $this->json_error('Could not record the decision. Please try again.');
+
+        log_audit('Staff', 'notice_period_decided', $staffId, "Notice period {$decision}" . ($actualLwd ? ", last working day {$actualLwd}" : ''));
+        return $this->json_success(['message' => 'Decision recorded.', 'status' => $statusMap[$decision], 'actual_last_working_day' => $actualLwd]);
+    }
+
+    /** POST — HR withdraws a still-pending notice period (employee changed their mind, or it was filed in error). */
+    public function withdraw_resignation()
+    {
+        $this->_require_role(self::MANAGE_ROLES, "", "SIS", "manage");
+        $staffId = $this->safe_path_segment(trim((string) $this->input->post('staff_id')), 'staff_id');
+        if ($staffId === '') return $this->json_error('Staff ID is required.');
+
+        $docId = $this->_notice_doc_id($staffId);
+        try {
+            $notice = $this->fs->get(self::NOTICE_PERIOD_COL, $docId);
+        } catch (\Throwable $e) {
+            $notice = null;
+        }
+        if (!is_array($notice) || empty($notice)) return $this->json_error('No notice period found for this staff member.');
+        if ((string) ($notice['status'] ?? '') !== 'pending') {
+            return $this->json_error('Only a pending notice period can be withdrawn.');
+        }
+
+        $ok = $this->fs->update(self::NOTICE_PERIOD_COL, $docId, [
+            'status' => 'withdrawn', 'updatedAt' => date('c'),
+        ]);
+        if (!$ok) return $this->json_error('Could not withdraw the notice period. Please try again.');
+
+        log_audit('Staff', 'notice_period_withdrawn', $staffId, 'Notice period withdrawn');
+        return $this->json_success(['message' => 'Notice period withdrawn.']);
+    }
+
+    /**
+     * POST — mark a decided notice period's separation as completed. Called
+     * by the UI ONLY AFTER the existing, unmodified Staff::set_status()
+     * endpoint has already been called (Inactive) — this never triggers
+     * that separation itself, purely closes out the notice record so it
+     * stops showing as "awaiting separation".
+     */
+    public function complete_notice_period()
+    {
+        $this->_require_role(self::MANAGE_ROLES, "", "SIS", "manage");
+        $staffId = $this->safe_path_segment(trim((string) $this->input->post('staff_id')), 'staff_id');
+        if ($staffId === '') return $this->json_error('Staff ID is required.');
+
+        $docId = $this->_notice_doc_id($staffId);
+        try {
+            $notice = $this->fs->get(self::NOTICE_PERIOD_COL, $docId);
+        } catch (\Throwable $e) {
+            $notice = null;
+        }
+        if (!is_array($notice) || empty($notice)) return $this->json_error('No notice period found for this staff member.');
+        if (!in_array((string) ($notice['status'] ?? ''), ['approved', 'waived', 'reduced'], true)) {
+            return $this->json_error('Only an approved/waived/reduced notice period can be completed.');
+        }
+
+        // Confirm the staff record is now actually Inactive — the UI must
+        // have already called set_status() before this. Refuses rather
+        // than silently trusting the caller's sequencing.
+        $staff = $this->_get_staff_with_fallback($staffId);
+        $rawStatus = (string) ($staff['status'] ?? $staff['Status'] ?? 'Active');
+        if (strtolower(trim($rawStatus)) !== 'inactive') {
+            return $this->json_error('The staff member must be marked Inactive (via Separation) before the notice period can be completed.');
+        }
+
+        $ok = $this->fs->update(self::NOTICE_PERIOD_COL, $docId, [
+            'status' => 'completed', 'separationCompleted' => true, 'updatedAt' => date('c'),
+        ]);
+        if (!$ok) return $this->json_error('Could not complete the notice period. Please try again.');
+
+        log_audit('Staff', 'notice_period_completed', $staffId, 'Notice period closed out after separation');
+        return $this->json_success(['message' => 'Notice period completed.']);
+    }
+
+    // ════════════════════════════════════════════════════════════════════
+    //  STAFF HR ADVANCED CAPABILITY PROGRAMME — Phase 3: Clearance / Handover
+    //  (2026-08-18)
+    // ════════════════════════════════════════════════════════════════════
+    //
+    // New collection: staffClearances/{schoolId}_{staffId} — confirmed
+    // green-field: no clearance/handover/asset-return/NOC concept exists
+    // anywhere else in this codebase (HR or otherwise) to reuse or risk
+    // duplicating.
+    //
+    // Department LIST is configurable per tenant (schools.clearanceDepartments),
+    // NOT a fixed 9-department assumption — "do not assume every school
+    // needs every department." Falls back to a standard default list only
+    // when a school hasn't configured its own.
+    //
+    // Explicitly does NOT create a Payroll deduction of any kind when a
+    // department is flagged — a flagged department blocks THIS workflow's
+    // own completion (real-world meaning of "flagged"), nothing more. Any
+    // link from an outstanding due to an actual salary deduction is a
+    // separate, not-yet-authorized financial-policy decision.
+    private const CLEARANCE_COL = 'staffClearances';
+    private const CLEARANCE_DEFAULT_DEPARTMENTS = ['HR', 'Accounts', 'IT', 'Library', 'Transport', 'Hostel', 'Academic', 'Administration', 'Assets'];
+    private const CLEARANCE_DEPT_STATUSES = ['pending', 'cleared', 'flagged'];
+
+    private function _clearance_doc_id(string $staffId): string
+    {
+        return "{$this->school_id}_{$staffId}";
+    }
+
+    /** The configured clearance department list for this tenant (operator-editable, sane default). */
+    private function _clearance_departments(): array
+    {
+        try {
+            $school = $this->fs->get('schools', $this->school_id);
+            $list = is_array($school['clearanceDepartments'] ?? null) ? $school['clearanceDepartments'] : [];
+            $list = array_values(array_filter(array_map('strval', $list), fn($d) => trim($d) !== ''));
+            if (!empty($list)) return $list;
+        } catch (\Throwable $e) {
+            log_message('error', 'Staff::_clearance_departments config read failed: ' . $e->getMessage());
+        }
+        return self::CLEARANCE_DEFAULT_DEPARTMENTS;
+    }
+
+    /** GET — the current clearance record for a staff member (or null if none started). */
+    public function get_clearance()
+    {
+        $this->_require_role(self::VIEW_ROLES, "", "SIS", "view");
+        $staffId = $this->safe_path_segment(trim((string) $this->input->get('staff_id')), 'staff_id');
+        if ($staffId === '') return $this->json_error('Invalid staff ID.');
+
+        try {
+            $doc = $this->fs->get(self::CLEARANCE_COL, $this->_clearance_doc_id($staffId));
+        } catch (\Throwable $e) {
+            log_message('error', 'Staff::get_clearance read failed: ' . $e->getMessage());
+            return $this->json_error('Could not load clearance status.');
+        }
+        return $this->json_success(['clearance' => is_array($doc) ? $doc : null]);
+    }
+
+    /** POST — HR starts a clearance process for a staff member, opening one entry per configured department. */
+    public function initiate_clearance()
+    {
+        $this->_require_role(self::MANAGE_ROLES, "", "SIS", "manage");
+        $staffId = $this->safe_path_segment(trim((string) $this->input->post('staff_id')), 'staff_id');
+        if ($staffId === '') return $this->json_error('Staff ID is required.');
+
+        $staff = $this->_get_staff_with_fallback($staffId);
+        if (empty($staff)) return $this->json_error('Staff member not found.');
+
+        $docId = $this->_clearance_doc_id($staffId);
+        try {
+            $existing = $this->fs->get(self::CLEARANCE_COL, $docId);
+        } catch (\Throwable $e) {
+            $existing = null;
+        }
+        if (is_array($existing) && (string) ($existing['status'] ?? '') === 'in_progress') {
+            return $this->json_error('A clearance process is already in progress for this staff member.');
+        }
+
+        $departments = $this->_clearance_departments();
+        $deptState = [];
+        foreach ($departments as $dept) {
+            $deptState[$dept] = ['status' => 'pending', 'note' => '', 'decidedBy' => null, 'decidedAt' => null];
+        }
+
+        $now = date('c');
+        $data = [
+            'schoolId'     => $this->school_id,
+            'staffId'      => $staffId,
+            'staffName'    => (string) ($staff['Name'] ?? $staff['name'] ?? $staffId),
+            'status'       => 'in_progress',
+            'departments'  => $deptState,
+            'initiatedBy'  => (string) ($this->admin_id ?? ''),
+            'initiatedAt'  => $now,
+            'completedAt'  => null,
+            'createdAt'    => $now,
+            'updatedAt'    => $now,
+        ];
+
+        try {
+            $ok = $this->fs->set(self::CLEARANCE_COL, $docId, $data, true);
+        } catch (\Throwable $e) {
+            log_message('error', 'Staff::initiate_clearance write failed: ' . $e->getMessage());
+            $ok = false;
+        }
+        if (!$ok) return $this->json_error('Could not start the clearance process. Please try again.');
+
+        log_audit('Staff', 'clearance_initiated', $staffId, 'Clearance process started (' . implode(', ', $departments) . ')');
+        return $this->json_success(['message' => 'Clearance process started.', 'clearance' => $data]);
+    }
+
+    /** POST — mark one department's clearance status (pending/cleared/flagged) + note. Recomputes overall completion. */
+    public function update_clearance_department()
+    {
+        $this->_require_role(self::MANAGE_ROLES, "", "SIS", "manage");
+        $staffId = $this->safe_path_segment(trim((string) $this->input->post('staff_id')), 'staff_id');
+        $dept    = trim((string) $this->input->post('department'));
+        $status  = trim((string) $this->input->post('dept_status'));
+        $note    = trim((string) $this->input->post('note'));
+
+        if ($staffId === '' || $dept === '') return $this->json_error('Staff ID and department are required.');
+        if (!in_array($status, self::CLEARANCE_DEPT_STATUSES, true)) {
+            return $this->json_error('Status must be pending, cleared, or flagged.');
+        }
+
+        $docId = $this->_clearance_doc_id($staffId);
+        try {
+            $clearance = $this->fs->get(self::CLEARANCE_COL, $docId);
+        } catch (\Throwable $e) {
+            $clearance = null;
+        }
+        if (!is_array($clearance) || empty($clearance)) return $this->json_error('No clearance process found for this staff member.');
+        if ((string) ($clearance['status'] ?? '') !== 'in_progress') {
+            return $this->json_error('This clearance process is already completed.');
+        }
+
+        $departments = is_array($clearance['departments'] ?? null) ? $clearance['departments'] : [];
+        if (!array_key_exists($dept, $departments)) {
+            return $this->json_error("'{$dept}' is not part of this clearance process.");
+        }
+
+        $departments[$dept] = [
+            'status'    => $status,
+            'note'      => $note,
+            'decidedBy' => (string) ($this->admin_id ?? ''),
+            'decidedAt' => date('c'),
+        ];
+
+        // Overall completion: every department must be explicitly 'cleared'
+        // — a single still-'pending' or 'flagged' department blocks it.
+        // Never auto-clears a department that wasn't explicitly reviewed.
+        $allCleared = true;
+        foreach ($departments as $d) {
+            if (!is_array($d) || (string) ($d['status'] ?? '') !== 'cleared') { $allCleared = false; break; }
+        }
+
+        $patch = [
+            'departments' => $departments,
+            'updatedAt'   => date('c'),
+        ];
+        if ($allCleared) {
+            $patch['status'] = 'completed';
+            $patch['completedAt'] = date('c');
+        }
+
+        try {
+            $ok = $this->fs->update(self::CLEARANCE_COL, $docId, $patch);
+        } catch (\Throwable $e) {
+            log_message('error', 'Staff::update_clearance_department write failed: ' . $e->getMessage());
+            $ok = false;
+        }
+        if (!$ok) return $this->json_error('Could not update the clearance department. Please try again.');
+
+        log_audit('Staff', 'clearance_department_updated', $staffId, "{$dept} marked {$status}" . ($allCleared ? ' — clearance fully completed' : ''));
+        return $this->json_success(['message' => 'Clearance updated.', 'overall_status' => $allCleared ? 'completed' : 'in_progress']);
+    }
+
+    // ════════════════════════════════════════════════════════════════════
+    //  STAFF HR ADVANCED CAPABILITY PROGRAMME — Phase 4: Exit Documents
+    //  (2026-08-18)
+    // ════════════════════════════════════════════════════════════════════
+    //
+    // Follows the EXISTING, closest precedent — Sis::print_tc() — rather
+    // than inventing a new PDF architecture: a standalone HTML view (no
+    // header/footer chrome), browser print-to-PDF via window.print(). This
+    // codebase's Dompdf usage (Pdf_generator.php) is for report cards only,
+    // an unrelated document class; exit documents are shaped like the TC,
+    // not a report card.
+    //
+    // Uses ONLY verified employment facts already on the staff record
+    // (name, position, department, join date, last working day) — NO
+    // settlement figures of any kind, per the standing instruction (Phase 5
+    // is a separate, explicitly-scoped, read-only-aggregation-only phase
+    // that itself stops short of any financial calculation).
+    private const EXIT_DOCUMENT_TYPES = ['relieving', 'experience', 'service'];
+
+    /** GET — standalone printable exit document (Relieving Letter / Experience Certificate / Service Certificate). */
+    public function print_exit_document($staffId = null)
+    {
+        $this->_require_role(self::VIEW_ROLES, "", "SIS", "view");
+        if (empty($staffId) || !preg_match('/^[A-Za-z0-9_\-]+$/', $staffId)) show_404();
+
+        $docType = trim((string) $this->input->get('type'));
+        if (!in_array($docType, self::EXIT_DOCUMENT_TYPES, true)) $docType = 'relieving';
+
+        $staff = $this->_get_staff_with_fallback($staffId);
+        if (empty($staff)) show_404();
+
+        $rawStatus = (string) ($staff['status'] ?? $staff['Status'] ?? 'Active');
+        $exitDate = (string) ($staff['exitDate'] ?? $staff['Resignation Date'] ?? $staff['leaveDate'] ?? '');
+        if (strtolower(trim($rawStatus)) !== 'inactive' || $exitDate === '') {
+            $this->output->set_status_header(409);
+            echo '<!DOCTYPE html><html><head><title>Exit Document Unavailable</title>'
+               . '<style>body{font:15px/1.5 system-ui;padding:60px;color:#334155;text-align:center;}h1{color:#dc2626;}</style></head><body>'
+               . '<h1>Exit Document Unavailable</h1>'
+               . '<p>This document can only be generated for a separated staff member with a recorded last working day.</p>'
+               . '</body></html>';
+            return;
+        }
+
+        $schoolProfile = $this->fs->get('schools', $this->school_id) ?? [];
+
+        $data['staff']         = $staff;
+        $data['doc_type']      = $docType;
+        $data['school_profile']= $schoolProfile;
+        $data['school_name']   = $this->school_name;
+
+        $this->load->view('staff/exit_document_print', $data);
+    }
+
+    // ════════════════════════════════════════════════════════════════════
+    //  STAFF HR ADVANCED CAPABILITY PROGRAMME — Phase 5: Read-Only Exit
+    //  Summary (2026-08-18)
+    // ════════════════════════════════════════════════════════════════════
+    //
+    // PURE AGGREGATION. Every field below is READ, verbatim, from a
+    // collection/computation that already exists and is already owned by
+    // its own module (Payroll's salarySlips, Leave's leaveApplications
+    // balance doc, this programme's own Notice Period / Clearance
+    // records). This endpoint computes NOTHING — no leave-encashment rate,
+    // no notice-recovery formula, no deduction priority, no statutory
+    // treatment, no final payable figure. Where a concept has no existing
+    // ZenX implementation to read from (pending reimbursements — confirmed
+    // by this programme's own Phase-0 research: no expense-claim workflow
+    // exists anywhere in this codebase), the field is returned as
+    // `not_tracked: true` rather than a fabricated zero — a silent 0 would
+    // misrepresent "nothing owed" when the true answer is "ZenX has no way
+    // to know".
+    //
+    // The LOP/attendance/payroll figures shown are whatever the MOST
+    // RECENT finalized/paid payslip already contains — this endpoint does
+    // not re-derive LOP itself (that would risk silently duplicating or
+    // diverging from Payroll's own `_compute_payslip()`), it only surfaces
+    // what that engine already decided and locked into a slip.
+    public function get_exit_summary()
+    {
+        $this->_require_role(self::VIEW_ROLES, "", "SIS", "view");
+        $staffId = $this->safe_path_segment(trim((string) $this->input->get('staff_id')), 'staff_id');
+        if ($staffId === '') return $this->json_error('Invalid staff ID.');
+
+        $staff = $this->_get_staff_with_fallback($staffId);
+        if (empty($staff)) return $this->json_error('Staff member not found.');
+
+        $summary = [
+            'staffId'   => $staffId,
+            'staffName' => (string) ($staff['Name'] ?? $staff['name'] ?? $staffId),
+            'status'    => (string) ($staff['status'] ?? $staff['Status'] ?? 'Active'),
+            'lastWorkingDay' => (string) ($staff['exitDate'] ?? $staff['Resignation Date'] ?? $staff['leaveDate'] ?? ''),
+        ];
+
+        // Notice period — read-only.
+        try {
+            $notice = $this->fs->get(self::NOTICE_PERIOD_COL, $this->_notice_doc_id($staffId));
+            $summary['noticePeriod'] = is_array($notice) ? $notice : null;
+            if (is_array($notice) && !empty($notice['actualLastWorkingDay']) && $summary['lastWorkingDay'] === '') {
+                $summary['lastWorkingDay'] = (string) $notice['actualLastWorkingDay'];
+            }
+        } catch (\Throwable $e) {
+            $summary['noticePeriod'] = null;
+        }
+
+        // Clearance / outstanding dues status — read-only.
+        try {
+            $clearance = $this->fs->get(self::CLEARANCE_COL, $this->_clearance_doc_id($staffId));
+            $summary['clearance'] = is_array($clearance) ? $clearance : null;
+        } catch (\Throwable $e) {
+            $summary['clearance'] = null;
+        }
+
+        // Leave balance — read-only, straight from the existing Leave
+        // balance doc (same doc Hr::get_leave_balances() itself reads);
+        // no recomputation.
+        try {
+            $year = date('Y');
+            $balDoc = $this->fs->get('leaveApplications', $this->fs->docId("BAL_{$staffId}_{$year}"));
+            $summary['leaveBalance'] = (is_array($balDoc) && isset($balDoc['balances'])) ? $balDoc['balances'] : null;
+        } catch (\Throwable $e) {
+            $summary['leaveBalance'] = null;
+        }
+
+        // Most recent FINALIZED/PAID payslip — read-only, same query shape
+        // and field names Hr::my_payslips() already uses for the identical
+        // "list this staff member's own slips" lookup.
+        $summary['latestPayslip'] = null;
+        try {
+            $fsDocs = $this->fs->schoolWhere('salarySlips', [
+                ['type', '==', 'payslip'],
+                ['staffId', '==', $staffId],
+            ]);
+            $latest = null;
+            $latestKey = '';
+            foreach ((is_array($fsDocs) ? $fsDocs : []) as $doc) {
+                $s = is_array($doc['data'] ?? null) ? $doc['data'] : $doc;
+                if (!is_array($s)) continue;
+                $rid = (string) ($s['runId'] ?? '');
+                if ($rid === '') continue;
+                $run = null;
+                try { $run = $this->fs->get('salarySlips', $this->fs->docId("RUN_{$rid}")); } catch (\Throwable $e) {}
+                if (!is_array($run) || !in_array((string) ($run['status'] ?? ''), ['Finalized', 'Paid'], true)) continue;
+                $sortKey = sprintf('%s-%02d', $run['year'] ?? '0000', (int) ($run['month'] ?? 0));
+                if ($sortKey > $latestKey) {
+                    $latestKey = $sortKey;
+                    $latest = [
+                        'run_id'           => $rid,
+                        'month'            => $run['month'] ?? '',
+                        'year'             => $run['year'] ?? '',
+                        'status'           => $run['status'] ?? '',
+                        'gross'            => $s['gross'] ?? 0,
+                        'net_pay'          => $s['net_pay'] ?? 0,
+                        'total_deductions' => $s['total_deductions'] ?? 0,
+                        'days_worked'      => $s['days_worked'] ?? '',
+                        'days_absent'      => $s['days_absent'] ?? 0,
+                        'lwp_days'         => $s['lwp_days'] ?? 0,
+                    ];
+                }
+            }
+            $summary['latestPayslip'] = $latest;
+        } catch (\Throwable $e) {
+            log_message('error', 'Staff::get_exit_summary payslip read failed: ' . $e->getMessage());
+        }
+
+        // Pending reimbursements — no expense-claim/reimbursement workflow
+        // exists anywhere in this codebase (confirmed by this programme's
+        // own research pass). Reported explicitly as untracked, never as a
+        // fabricated zero.
+        $summary['pendingReimbursements'] = ['not_tracked' => true, 'note' => 'ZenX has no expense/reimbursement claim workflow to read from.'];
+
+        return $this->json_success(['summary' => $summary]);
+    }
+
+    // ════════════════════════════════════════════════════════════════════
+    //  STAFF HR ADVANCED CAPABILITY PROGRAMME — Phase 6: Structured
+    //  Onboarding (2026-08-19)
+    // ════════════════════════════════════════════════════════════════════
+    //
+    // Confirmed green-field by direct research pass: new_staff() creates a
+    // staff RECORD only (position, department, docs, salary) — there was no
+    // post-hire task/checklist concept (IT setup, ID card, orientation,
+    // documents collected, induction) anywhere in this codebase. Modeled
+    // directly on Phase 3's Clearance/Handover — the closest existing
+    // precedent for "a configurable, per-department-or-per-task checklist
+    // with an overall completion state" — same doc-id shape
+    // (staffOnboarding/{schoolId}_{staffId}), same tenant-configurable-list-
+    // with-sane-default pattern, same manual-initiate + per-item-update +
+    // recomputed-overall-status choreography.
+    //
+    // Task LIST is configurable per tenant (schools.onboardingTasks), not a
+    // fixed assumption — same "don't assume every school needs every task"
+    // reasoning Clearance already established for its department list.
+    //
+    // Deliberately MANUAL-initiate, not auto-triggered from new_staff() —
+    // new_staff() is an already-proven, already-tested creation flow;
+    // composing at the workflow level (HR clicks "Start Onboarding" once
+    // the hire is ready to begin, same as Clearance is HR-initiated at
+    // exit) avoids touching that flow at all, consistent with this whole
+    // Trail's "compose existing/adjacent actions, never entangle a proven
+    // engine" discipline.
+    //
+    // Three-state per task ('pending' | 'done' | 'skipped') rather than
+    // Clearance's binary-toward-cleared: a real onboarding checklist
+    // legitimately has tasks that don't apply to every hire (e.g. "Desk/IT
+    // Setup" for a fully-remote role) — 'skipped' lets HR explicitly opt a
+    // task out of blocking completion without silently marking it done
+    // (misrepresenting "not needed" as "actually completed").
+    private const ONBOARDING_COL = 'staffOnboarding';
+    private const ONBOARDING_DEFAULT_TASKS = [
+        'Offer Letter Signed', 'Documents Collected', 'ID Card Issued',
+        'Desk / IT Setup', 'Bank Details Verified', 'Policy Handbook Acknowledged',
+        'Induction / Orientation Completed',
+    ];
+    private const ONBOARDING_TASK_STATUSES = ['pending', 'done', 'skipped'];
+
+    private function _onboarding_doc_id(string $staffId): string
+    {
+        return "{$this->school_id}_{$staffId}";
+    }
+
+    /** The configured onboarding task list for this tenant (operator-editable, sane default). */
+    private function _onboarding_tasks(): array
+    {
+        try {
+            $school = $this->fs->get('schools', $this->school_id);
+            $list = is_array($school['onboardingTasks'] ?? null) ? $school['onboardingTasks'] : [];
+            $list = array_values(array_filter(array_map('strval', $list), fn($t) => trim($t) !== ''));
+            if (!empty($list)) return $list;
+        } catch (\Throwable $e) {
+            log_message('error', 'Staff::_onboarding_tasks config read failed: ' . $e->getMessage());
+        }
+        return self::ONBOARDING_DEFAULT_TASKS;
+    }
+
+    /** GET — the current onboarding checklist for a staff member (or null if none started). */
+    public function get_onboarding()
+    {
+        $this->_require_role(self::VIEW_ROLES, "", "SIS", "view");
+        $staffId = $this->safe_path_segment(trim((string) $this->input->get('staff_id')), 'staff_id');
+        if ($staffId === '') return $this->json_error('Invalid staff ID.');
+
+        try {
+            $doc = $this->fs->get(self::ONBOARDING_COL, $this->_onboarding_doc_id($staffId));
+        } catch (\Throwable $e) {
+            log_message('error', 'Staff::get_onboarding read failed: ' . $e->getMessage());
+            return $this->json_error('Could not load onboarding status.');
+        }
+        return $this->json_success(['onboarding' => is_array($doc) ? $doc : null]);
+    }
+
+    /** POST — HR starts an onboarding checklist for a staff member, opening one entry per configured task. */
+    public function initiate_onboarding()
+    {
+        $this->_require_role(self::MANAGE_ROLES, "", "SIS", "manage");
+        $staffId = $this->safe_path_segment(trim((string) $this->input->post('staff_id')), 'staff_id');
+        if ($staffId === '') return $this->json_error('Staff ID is required.');
+
+        $staff = $this->_get_staff_with_fallback($staffId);
+        if (empty($staff)) return $this->json_error('Staff member not found.');
+
+        $docId = $this->_onboarding_doc_id($staffId);
+        try {
+            $existing = $this->fs->get(self::ONBOARDING_COL, $docId);
+        } catch (\Throwable $e) {
+            $existing = null;
+        }
+        if (is_array($existing) && (string) ($existing['status'] ?? '') === 'in_progress') {
+            return $this->json_error('An onboarding checklist is already in progress for this staff member.');
+        }
+
+        $tasks = $this->_onboarding_tasks();
+        $taskState = [];
+        foreach ($tasks as $task) {
+            $taskState[$task] = ['status' => 'pending', 'note' => '', 'decidedBy' => null, 'decidedAt' => null];
+        }
+
+        $now = date('c');
+        $data = [
+            'schoolId'     => $this->school_id,
+            'staffId'      => $staffId,
+            'staffName'    => (string) ($staff['Name'] ?? $staff['name'] ?? $staffId),
+            'status'       => 'in_progress',
+            'tasks'        => $taskState,
+            'initiatedBy'  => (string) ($this->admin_id ?? ''),
+            'initiatedAt'  => $now,
+            'completedAt'  => null,
+            'createdAt'    => $now,
+            'updatedAt'    => $now,
+        ];
+
+        try {
+            $ok = $this->fs->set(self::ONBOARDING_COL, $docId, $data, true);
+        } catch (\Throwable $e) {
+            log_message('error', 'Staff::initiate_onboarding write failed: ' . $e->getMessage());
+            $ok = false;
+        }
+        if (!$ok) return $this->json_error('Could not start the onboarding checklist. Please try again.');
+
+        log_audit('Staff', 'onboarding_initiated', $staffId, 'Onboarding checklist started (' . implode(', ', $tasks) . ')');
+        return $this->json_success(['message' => 'Onboarding checklist started.', 'onboarding' => $data]);
+    }
+
+    /** POST — mark one task's onboarding status (pending/done/skipped) + note. Recomputes overall completion. */
+    public function update_onboarding_task()
+    {
+        $this->_require_role(self::MANAGE_ROLES, "", "SIS", "manage");
+        $staffId = $this->safe_path_segment(trim((string) $this->input->post('staff_id')), 'staff_id');
+        $task    = trim((string) $this->input->post('task'));
+        $status  = trim((string) $this->input->post('task_status'));
+        $note    = trim((string) $this->input->post('note'));
+
+        if ($staffId === '' || $task === '') return $this->json_error('Staff ID and task are required.');
+        if (!in_array($status, self::ONBOARDING_TASK_STATUSES, true)) {
+            return $this->json_error('Status must be pending, done, or skipped.');
+        }
+
+        $docId = $this->_onboarding_doc_id($staffId);
+        try {
+            $onboarding = $this->fs->get(self::ONBOARDING_COL, $docId);
+        } catch (\Throwable $e) {
+            $onboarding = null;
+        }
+        if (!is_array($onboarding) || empty($onboarding)) return $this->json_error('No onboarding checklist found for this staff member.');
+        if ((string) ($onboarding['status'] ?? '') !== 'in_progress') {
+            return $this->json_error('This onboarding checklist is already completed.');
+        }
+
+        $tasks = is_array($onboarding['tasks'] ?? null) ? $onboarding['tasks'] : [];
+        if (!array_key_exists($task, $tasks)) {
+            return $this->json_error("'{$task}' is not part of this onboarding checklist.");
+        }
+
+        $tasks[$task] = [
+            'status'    => $status,
+            'note'      => $note,
+            'decidedBy' => (string) ($this->admin_id ?? ''),
+            'decidedAt' => date('c'),
+        ];
+
+        // Overall completion: every task must be explicitly 'done' or
+        // 'skipped' — a single still-'pending' task blocks it. Never
+        // auto-completes a task that wasn't explicitly reviewed.
+        $allResolved = true;
+        foreach ($tasks as $t) {
+            $st = is_array($t) ? (string) ($t['status'] ?? '') : '';
+            if ($st !== 'done' && $st !== 'skipped') { $allResolved = false; break; }
+        }
+
+        $patch = [
+            'tasks'     => $tasks,
+            'updatedAt' => date('c'),
+        ];
+        if ($allResolved) {
+            $patch['status'] = 'completed';
+            $patch['completedAt'] = date('c');
+        }
+
+        try {
+            $ok = $this->fs->update(self::ONBOARDING_COL, $docId, $patch);
+        } catch (\Throwable $e) {
+            log_message('error', 'Staff::update_onboarding_task write failed: ' . $e->getMessage());
+            $ok = false;
+        }
+        if (!$ok) return $this->json_error('Could not update the onboarding task. Please try again.');
+
+        log_audit('Staff', 'onboarding_task_updated', $staffId, "{$task} marked {$status}" . ($allResolved ? ' — onboarding fully completed' : ''));
+        return $this->json_success(['message' => 'Onboarding task updated.', 'overall_status' => $allResolved ? 'completed' : 'in_progress']);
+    }
+
+    // ════════════════════════════════════════════════════════════════════
+    //  Trail 2 (Work Schedule → Calendar → Attendance → Leave/LOP →
+    //  Payroll), Phase I — Staff Transfer (2026-08-18)
+    // ════════════════════════════════════════════════════════════════════
+    //
+    // "Do not implement Transfer until this dependency is understood"
+    // (the standing instruction) — Trail 2 Phase J just verified and fixed
+    // exactly this dependency: Payroll now resolves an employee's
+    // department for a given period from the effective-dated employment-
+    // history timeline (Staff_employment_history_service::resolveAttributeAsOf()),
+    // not the live staff.Department field. Transfer is safe to build now
+    // because that resolver already exists and is already wired in.
+    //
+    // Deliberately modeled on promote_staff() — SAME pattern, not a new
+    // one: the live staff.Department/reportingManagerId fields are updated
+    // IMMEDIATELY (matching every other attribute-change path in this
+    // controller), while Staff_employment_history_service::recordChanges()
+    // records the change against the caller-supplied $effectiveFrom. A
+    // downstream resolver (today: Payroll's department resolution; Attendance/
+    // Leave dept-scoped calendar reads would need the same treatment in a
+    // future phase if they're ever found to have the same live-read gap)
+    // is what makes an EFFECTIVE-in-the-future or backdated transfer behave
+    // correctly — this endpoint's own write is intentionally immediate,
+    // consistent with the rest of the controller.
+    //
+    // Work Schedule reassignment is DELIBERATELY NOT part of this endpoint.
+    // Work_schedules::save_assignment() already fully and safely supports
+    // creating/closing a staff-level schedule assignment (overlap
+    // validation via Policy_assignment_service::validateAssignment()/
+    // findOverlaps(), already proven, already in production) — reimplementing
+    // that here would be exactly the "second writer for the same collection"
+    // this whole Trail has been eliminating. A transfer that also needs a
+    // new work schedule composes at the WORKFLOW level: complete this
+    // transfer, then use the existing Work Schedules → Assignments screen
+    // to close the old assignment (set its effectiveTo) and open the new
+    // one — the same "compose existing actions, don't build a new engine"
+    // choreography already established for Notice Period's separation flow
+    // in this same controller.
+    public function transfer_staff()
+    {
+        $this->_require_role(self::MANAGE_ROLES, "", "SIS", "manage");
+
+        $staffId         = $this->safe_path_segment(trim((string) $this->input->post('staff_id')), 'staff_id');
+        $newDepartment   = trim((string) $this->input->post('new_department'));
+        $reportingManagerSubmitted = array_key_exists('new_reporting_manager_id', $_POST);
+        $newReportingMgr = trim((string) $this->input->post('new_reporting_manager_id'));
+        $effectiveFrom   = trim((string) $this->input->post('effective_from'));
+        $reasonNote      = trim((string) $this->input->post('reason'));
+
+        if ($staffId === '') return $this->json_error('Staff ID is required.');
+        if ($newDepartment === '' && !$reportingManagerSubmitted) {
+            return $this->json_error('Provide a new department and/or reporting manager.');
+        }
+        // Unlike promote_staff() (effective date optional, defaults to
+        // today), a transfer's effective date is the entire point of the
+        // action — required, not optional.
+        if ($effectiveFrom === '' || !preg_match('/^\d{4}-\d{2}-\d{2}$/', $effectiveFrom)) {
+            return $this->json_error('Effective date is required (YYYY-MM-DD).');
+        }
+
+        $staff = $this->_get_staff_with_fallback($staffId);
+        if (empty($staff)) return $this->json_error('Staff member not found.');
+        $rawStatus = (string) ($staff['status'] ?? $staff['Status'] ?? 'Active');
+        if (strtolower(trim($rawStatus)) !== 'active') {
+            return $this->json_error('Cannot record a transfer for an inactive staff member.');
+        }
+
+        $oldDepartment = (string) ($staff['department'] ?? $staff['Department'] ?? '');
+        $oldManagerId  = (string) ($staff['reportingManagerId'] ?? '');
+
+        $this->load->library('staff_employment_history_service');
+        $ehSvc = $this->staff_employment_history_service
+            ->init($this->fs, $this->school_id, (string) ($this->admin_id ?? ''));
+
+        $fieldUpdate = [];
+        $ehChanges   = [];
+        if ($newDepartment !== '' && $newDepartment !== $oldDepartment) {
+            $fieldUpdate['department'] = $newDepartment;
+            $fieldUpdate['Department'] = $newDepartment; // dual-cased, matching every other write site in this controller
+            $ehChanges['department']  = $newDepartment;
+        }
+        if ($reportingManagerSubmitted && $newReportingMgr !== $oldManagerId) {
+            // Same validation promote_staff()/edit_staff() already apply —
+            // reused, not reimplemented (self-reference/inactive/circular-
+            // chain guards).
+            $rmValidation = $ehSvc->validateManagerAssignment($staffId, $newReportingMgr);
+            if (!$rmValidation['ok']) {
+                return $this->json_error('Invalid Reporting Manager: ' . $rmValidation['reason'], 400);
+            }
+            $fieldUpdate['reportingManagerId'] = $newReportingMgr;
+            $ehChanges['reportingManagerId']  = $newReportingMgr;
+        }
+        if (empty($ehChanges)) {
+            return $this->json_error('At least one of department or reporting manager must differ from the current value.');
+        }
+
+        $fieldUpdate['updated_at'] = date('c');
+        $ok = $this->fs->updateEntity('staff', $staffId, $fieldUpdate);
+        if (!$ok) return $this->json_error('Could not update the staff record. Please try again.');
+
+        $reason = 'Transfer' . ($reasonNote !== '' ? ": {$reasonNote}" : '')
+            . " ({$oldDepartment} -> " . ($newDepartment !== '' ? $newDepartment : $oldDepartment)
+            . "), effective {$effectiveFrom}";
+
+        $historyWarning = null;
+        try {
+            $ehRes = $ehSvc->recordChanges($staffId, $ehChanges, $effectiveFrom, $reason);
+            if (empty($ehRes['ok'])) {
+                $historyWarning = 'Transfer recorded, but employment history could not be updated ('
+                    . ($ehRes['reason'] ?? 'unknown') . ').';
+                log_message('error', "Staff::transfer_staff employment history recordChanges failed staff={$staffId} reason=" . ($ehRes['reason'] ?? 'unknown'));
+            }
+        } catch (\Throwable $ehErr) {
+            $historyWarning = 'Transfer recorded, but employment history could not be updated.';
+            log_message('error', 'Staff::transfer_staff employment history threw for ' . $staffId . ': ' . $ehErr->getMessage());
+        }
+
+        log_audit('Staff', 'transfer', $staffId, $reason);
+
+        $resp = [
+            'message'          => 'Transfer recorded.' . ($newDepartment !== '' && $newDepartment !== $oldDepartment
+                ? ' If this employee also needs a new Work Schedule, set it separately under Attendance → Work Schedules → Assignments (close the old assignment, open a new one effective ' . $effectiveFrom . ').'
+                : ''),
+            'old_department'   => $oldDepartment,
+            'new_department'   => $newDepartment !== '' ? $newDepartment : $oldDepartment,
+            'old_manager_id'   => $oldManagerId,
+            'new_manager_id'   => $reportingManagerSubmitted ? $newReportingMgr : $oldManagerId,
+            'effective_from'   => $effectiveFrom,
+        ];
+        if ($historyWarning !== null) $resp['warning'] = $historyWarning;
+        return $this->json_success($resp);
+    }
+
+    // ════════════════════════════════════════════════════════════════════
+    //  TRANSFER × WORK SCHEDULE — persistent follow-up reminder
+    //  (Trail 2 Priority 3/4, 2026-08-19)
+    // ════════════════════════════════════════════════════════════════════
+    //
+    // The ratified Transfer × Work Schedule Decision requires the optional
+    // schedule-change step to compose at the WORKFLOW level: the admin
+    // panel calls this endpoint's transfer_staff() first, then — only if
+    // the admin explicitly opted in — the panel separately calls the
+    // EXISTING, UNMODIFIED Work_schedules::save_assignment() to close the
+    // old staff-level assignment and open the new one. Department transfer
+    // and Schedule assignment are independent facts: if that second call
+    // fails, the already-successful transfer is never rolled back — but a
+    // silently-dropped failure would leave the employee on the wrong
+    // schedule with nothing pointing HR back at it. These two endpoints
+    // give that failure a PERSISTENT (Firestore-backed, survives reload/
+    // relogin/different admin session), dismissible reminder — a flag
+    // field on the `staff` doc, exactly like every other profile attribute
+    // this controller already writes. This is NOT a second writer for
+    // `staffScheduleAssignments` — it never touches that collection.
+    private const SCHEDULE_REVIEW_FIELD = 'pendingScheduleReview';
+
+    /** POST — record that a post-transfer Work Schedule composition attempt failed and needs manual follow-up. */
+    public function flag_pending_schedule_review()
+    {
+        $this->_require_role(self::MANAGE_ROLES, "", "SIS", "manage");
+        $staffId = $this->safe_path_segment(trim((string) $this->input->post('staff_id')), 'staff_id');
+        if ($staffId === '') return $this->json_error('Staff ID is required.');
+
+        $reason        = trim((string) $this->input->post('reason'));
+        $effectiveFrom = trim((string) $this->input->post('effective_from'));
+
+        $ok = $this->fs->updateEntity('staff', $staffId, [
+            self::SCHEDULE_REVIEW_FIELD => [
+                'reason'        => $reason !== '' ? $reason : 'Work Schedule composition failed after a transfer.',
+                'effectiveFrom' => $effectiveFrom,
+                'since'         => date('c'),
+                'setBy'         => (string) ($this->admin_id ?? ''),
+            ],
+        ]);
+        if (!$ok) return $this->json_error('Could not record the follow-up reminder. Please try again.');
+
+        log_audit('Staff', 'schedule_review_flagged', $staffId, $reason);
+        return $this->json_success();
+    }
+
+    /** POST — dismiss a pending Work Schedule review reminder (composition was completed manually, or is no longer needed). */
+    public function clear_pending_schedule_review()
+    {
+        $this->_require_role(self::MANAGE_ROLES, "", "SIS", "manage");
+        $staffId = $this->safe_path_segment(trim((string) $this->input->post('staff_id')), 'staff_id');
+        if ($staffId === '') return $this->json_error('Staff ID is required.');
+
+        $ok = $this->fs->updateEntity('staff', $staffId, [self::SCHEDULE_REVIEW_FIELD => null]);
+        if (!$ok) return $this->json_error('Could not clear the reminder. Please try again.');
+
+        log_audit('Staff', 'schedule_review_dismissed', $staffId, '');
+        return $this->json_success();
     }
 }

@@ -88,6 +88,20 @@ class Exam extends MY_Controller
      */
     private function _parse_schedule_rows(array $scheduleRows, array $structure, int $passingPct): array
     {
+        // Phase 0.2B (G-09 propagation) — resolved server-side from the
+        // canonical `subjects` collection, keyed by the ALREADY-VALIDATED
+        // className+subjectName pair below. Deliberately NOT trusted from
+        // client payload (no subjectCode field is read from $row at all) —
+        // the client (both schedule-builder JS paths) is unmodified and
+        // keeps posting subjectName only, exactly as before. This avoids a
+        // client ever being able to inject an incorrect/stale code and
+        // keeps `subjects.subjectCode` as the single source of truth.
+        $subjectCodesByClass = $this->_build_subject_codes_map($structure);
+        return $this->_parse_schedule_rows_impl($scheduleRows, $structure, $passingPct, $subjectCodesByClass);
+    }
+
+    private function _parse_schedule_rows_impl(array $scheduleRows, array $structure, int $passingPct, array $subjectCodesByClass): array
+    {
         $savedCount  = 0;
         $skippedRows = [];
         $rowIndex    = 0;
@@ -138,6 +152,14 @@ class Exam extends MY_Controller
                 $passMks = (int) round($totalMarks * $passingPct / 100);
             }
 
+            // Phase 0.2B (G-09 propagation) — resolve the canonical subjectCode
+            // for this row from the server-built map (never from client input).
+            // Empty string if the subject name doesn't currently resolve (e.g. a
+            // renamed/removed subject) — stored as empty, not omitted, so
+            // downstream consumers can distinguish "resolved to empty" from
+            // "field absent on old data" consistently.
+            $subjectCode = $subjectCodesByClass[$className][strtolower($subject)] ?? '';
+
             // Save to each section of the class.
             $sections = $structure[$className] ?? [];
             if (empty($sections)) {
@@ -150,6 +172,7 @@ class Exam extends MY_Controller
                 $sectionKey = "Section {$sectionLetter}";
                 $schedAccum[$className][$sectionKey][] = [
                     'subjectName'  => $subject,
+                    'subjectCode'  => $subjectCode,
                     'date'         => $dateKey,
                     'startTime'    => $stDt->format('h:iA'),
                     'endTime'      => $etDt->format('h:iA'),
@@ -308,18 +331,29 @@ class Exam extends MY_Controller
         // returned [] for every class, leaving the UX-1.4.1 combobox empty.
         // Shape unchanged: [className => [subjectName, …]].
         $subjects = $this->_build_subjects_map($structure);
+        // Phase 0.2B (G-09 propagation) — additive, does not alter $subjects.
+        $subjectCodes = $this->_build_subject_codes_map($structure);
+
+        // CAL-D9 — resolved once per render; see _non_scheduling_dates().
+        $examCal = $this->_non_scheduling_dates();
 
         $this->load->view('include/header');
         $this->load->view('exam/create', [
-            'classNames' => array_keys($structure),
-            'subjects'   => $subjects,
+            'classNames'   => array_keys($structure),
+            'subjects'     => $subjects,
+            'subjectCodes' => $subjectCodes,
             // UX-1.4: read-only [className => [sectionLetter,…]] for fan-out
             // visibility. Same $structure already used by the POST fan-out;
             // exposed verbatim — no business-logic/serializer/payload impact.
             'sections'   => $structure,
             // UX-2.0.1-B P6-B: read-only holiday dates (Firestore calendarEvents)
             // for auto-sequence/holiday-aware scheduling. No write, no contract impact.
-            'holidays'   => $this->_holiday_dates(),
+            'holidays'   => $examCal['dates'],
+            // CAL-D9: [] once the student calendar is readable, because weekly
+            // closures are already inside `holidays`. Falls back to the legacy
+            // Sunday-only guess ONLY when the calendar could not be read, so an
+            // outage degrades to today's behaviour rather than to no skipping.
+            'weekendDays' => $examCal['calendarOk'] ? [] : [0],
             // UX-2.0.1-B P7-B: brief exam list for the "Clone previous exam" picker (read-only).
             'exams'      => $this->_exam_list_brief(),
         ]);
@@ -351,6 +385,8 @@ class Exam extends MY_Controller
         $structure = $this->exam_engine->get_class_structure();
         // UX-1.4.1.1: canonical Firestore subject source (see create()).
         $subjects  = $this->_build_subjects_map($structure);
+        // Phase 0.2B (G-09 propagation) — additive, does not alter $subjects.
+        $subjectCodes = $this->_build_subject_codes_map($structure);
 
         $instr = '';
         if (is_array($raw['generalInstructions'] ?? null) && !empty($raw['generalInstructions'])) {
@@ -369,14 +405,19 @@ class Exam extends MY_Controller
             'rows'           => $this->_build_edit_rows($id),
         ];
 
+        // CAL-D9 — resolved once per render; see _non_scheduling_dates().
+        $examCal = $this->_non_scheduling_dates();
+
         $this->load->view('include/header');
         $this->load->view('exam/create', [
-            'classNames' => array_keys($structure),
-            'subjects'   => $subjects,
+            'classNames'   => array_keys($structure),
+            'subjects'     => $subjects,
+            'subjectCodes' => $subjectCodes,
             'editExam'   => $editExam,
             // UX-1.4: read-only section map for fan-out visibility (see create()).
             'sections'   => $structure,
-            'holidays'   => $this->_holiday_dates(), // UX-2.0.1-B P6-B (see create())
+            'holidays'   => $examCal['dates'],            // CAL-D9 (see create())
+            'weekendDays' => $examCal['calendarOk'] ? [] : [0],
             'exams'      => $this->_exam_list_brief(), // P7-B clone source list
         ]);
         $this->load->view('include/footer');
@@ -409,6 +450,42 @@ class Exam extends MY_Controller
         return $subjects;
     }
 
+    /**
+     * Phase 0.2B (G-09 propagation) — className → { nameLower => subjectCode }.
+     *
+     * Deliberately a SEPARATE helper from _build_subjects_map(), not a change
+     * to its return shape: _build_subjects_map()'s flat [className => [name,…]]
+     * contract is directly consumed by get_subjects()'s AJAX response
+     * ("API contract unchanged: { subjects: [name, …] }", documented at that
+     * call site as used by Marks Entry / Template Designer) — changing that
+     * shape would silently break those other callers. This helper re-reads
+     * the same canonical `subjects` collection independently so every
+     * existing caller of _build_subjects_map() is completely unaffected.
+     *
+     * Uses the exact same canonical field precedence already established at
+     * every other `subjects` reader in this codebase (Academic.php
+     * _getSubjectsFromFirestore/_getSubjectCatalog): subjectCode ?? code.
+     */
+    private function _build_subject_codes_map(array $structure): array
+    {
+        $byKey = [];
+        $rows  = $this->fs->schoolWhere('subjects', []);
+        foreach ((array) $rows as $row) {
+            $d  = is_array($row['data'] ?? null) ? $row['data'] : (is_array($row) ? $row : []);
+            $ck = trim((string) ($d['classKey'] ?? ''));
+            $nm = trim((string) ($d['name'] ?? $d['subject_name'] ?? ''));
+            $code = trim((string) ($d['subjectCode'] ?? $d['code'] ?? ''));
+            if ($ck === '' || $nm === '' || $code === '') continue;
+            $byKey[$ck][strtolower($nm)] = $code;
+        }
+
+        $codes = [];
+        foreach (array_keys($structure) as $className) {
+            $codes[(string) $className] = $byKey[$this->_subject_class_key((string) $className)] ?? [];
+        }
+        return $codes;
+    }
+
     /** className → Firestore `subjects.classKey` (matches the Subjects module mapping). */
     private function _subject_class_key(string $className): string
     {
@@ -430,19 +507,95 @@ class Exam extends MY_Controller
      */
     private function _holiday_dates(): array
     {
-        // HC-1 (holiday convergence): consume the canonical Holiday_service —
-        // the single read abstraction over calendarEvents — instead of an
-        // inline query. Identical date set + one normalization path (type/
-        // category, startDate/start_date, range expansion, cancelled-skip).
-        // Firestore-only; no RTDB.
+        return $this->_non_scheduling_dates()['dates'];
+    }
+
+    /**
+     * CAL-D9 — dates the datesheet builder should not lay an exam on.
+     *
+     * WHAT WAS WRONG. This used `all_holiday_dates()` with no audience, which
+     * defaults to `'staff'`. So the builder avoided STAFF-only closures (a
+     * teacher training day) but happily proposed exams on STUDENT-only closures
+     * — the days with no candidates in the building. The weekly pattern was
+     * worse still: the view hardcoded `weekend: [0]`, so a five-day school was
+     * offered Saturdays.
+     *
+     * WHY THE UNION, AND WHY IT IS NOT A MERGING OF DOMAINS. An exam needs two
+     * populations present at once: students to sit it and staff to invigilate.
+     * Neither calendar alone answers that. Both sets come from the SAME
+     * `calendarEvents` ledger, differing only by the `appliesTo` audience filter
+     * — this reads institutional events, and never touches the staff
+     * WORK-SCHEDULE authority (Work_schedules / Policy_assignment_service),
+     * which stays exactly where it is. The student/staff domain separation is
+     * about who decides working time, not about who may read a declared holiday.
+     *
+     * ADVISORY, NOT A BLOCK. Nothing here rejects a date. There is no
+     * server-side exam-date validation anywhere in this module (verified), so
+     * this only shapes what Auto-sequence proposes; an administrator can still
+     * place a paper on any date deliberately. That matters, because scheduling
+     * an exam on a non-working day is normal practice — it is handled as
+     * invigilator workload, not as an impossibility.
+     *
+     * WINDOW. Resolved over a fixed span around today rather than an academic
+     * session, because no session-window helper exists in this codebase and
+     * inventing one here would be a second, unowned authority.
+     *
+     * @return array{dates: string[], calendarOk: bool}
+     */
+    private function _non_scheduling_dates(): array
+    {
+        $dates = [];
+        $calendarOk = false;
+
+        // 1. STUDENT side — the canonical student calendar. Covers the weekly
+        //    pattern, nth-weekday closures and student holidays, and correctly
+        //    RE-OPENS a declared special working day.
         try {
             $this->load->library('holiday_service');
-            $this->holiday_service->init($this->fs, (string) $this->school_id, (string) $this->session_year);
-            return array_keys($this->holiday_service->all_holiday_dates());
+            $this->holiday_service->init(
+                $this->fs, (string) $this->school_id, (string) $this->session_year);
+
+            $this->load->library('student_calendar_reader');
+            $this->student_calendar_reader->init(
+                $this->fs, (string) $this->school_id, (string) $this->session_year);
+
+            $cursor = new \DateTimeImmutable(date('Y-m-01', strtotime('-3 months')));
+            for ($i = 0; $i < 18; $i++) {
+                $m = (int) $cursor->format('n');
+                $y = (int) $cursor->format('Y');
+
+                $hol = $this->holiday_service->holidays_in_month($y, $m, 'students');
+                $swd = $this->holiday_service->special_working_days_in_month($y, $m, 'students');
+
+                $nw = $this->student_calendar_reader
+                    ->resolveMonth($y, $m, $hol, $swd)['nonWorking'];
+
+                foreach (array_keys($nw) as $day) {
+                    $dates[sprintf('%04d-%02d-%02d', $y, $m, (int) $day)] = true;
+                }
+                $cursor = $cursor->modify('+1 month');
+            }
+            $calendarOk = (bool) $this->student_calendar_reader->load_ok();
         } catch (\Throwable $e) {
-            log_message('error', 'Exam::_holiday_dates Holiday_service failed: ' . $e->getMessage());
-            return [];
+            log_message('error', 'Exam::_non_scheduling_dates student calendar failed: '
+                . $e->getMessage());
         }
+
+        // 2. STAFF side — institutional closures that apply to staff. Without
+        //    these the builder would propose a paper on a day with nobody to
+        //    invigilate it.
+        try {
+            foreach (array_keys($this->holiday_service->all_holiday_dates('staff')) as $d) {
+                $dates[$d] = true;
+            }
+        } catch (\Throwable $e) {
+            log_message('error', 'Exam::_non_scheduling_dates staff holidays failed: '
+                . $e->getMessage());
+        }
+
+        $out = array_keys($dates);
+        sort($out);
+        return ['dates' => $out, 'calendarOk' => $calendarOk];
     }
 
     /**

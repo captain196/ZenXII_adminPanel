@@ -850,6 +850,38 @@ class Lifecycle_probe extends CI_Controller
                 ]);
                 return;
 
+            // Administrative student edit. userId is a URL segment, so it goes
+            // through the dispatcher's args, not POST. Deliberately posts class/
+            // section/status to test whether they can move a placement.
+            case 'edit':
+                require_once APPPATH . 'libraries/Probe_dispatch.php';
+                Probe_dispatch::run('sis', 'edit_student', [
+                    'class'   => $a2, 'Class' => $a2, 'class_name' => $a2,
+                    'section' => $a3, 'Section' => $a3,
+                    'status'  => $a4, 'Status' => $a4,
+                    'name'    => 'Edit Move', 'Name' => 'Edit Move',
+                ], [$a1]);
+                return;
+
+            // Promotion. Drives the real execute_promotion endpoint.
+            // a1=from_class a2=from_section a3=to_class a4=to_section,
+            // student_ids via ZX_PROMOTE_IDS, target session via ZX_TO_SESSION.
+            case 'promote':
+                $this->dispatch('sis', 'execute_promotion', [
+                    'from_class'   => $a1,
+                    'from_section' => $a2,
+                    'to_class'     => $a3,
+                    'to_section'   => $a4,
+                    'to_session'   => (string) getenv('ZX_TO_SESSION'),
+                    // execute_promotion tests is_array($rawSelectedIds); a string
+                    // falls through to "promote EVERY student in the source", which
+                    // silently turned a 1-student test into a 4-student one. Send the
+                    // array the real form posts.
+                    'student_ids'  => array_values(array_filter(array_map(
+                        'trim', explode(',', (string) getenv('ZX_PROMOTE_IDS'))))),
+                ]);
+                return;
+
             case 'change_status':
                 $this->dispatch('sis', 'change_status', ['user_id' => $a1, 'status' => $a2]);
                 return;
@@ -890,9 +922,11 @@ class Lifecycle_probe extends CI_Controller
                 $this->dispatch('school_config', 'rollover_session', [
                     'from_session'     => $a1,
                     'to_session'       => $a2,
-                    'copy_sections'    => 0,   // the fixture already has both sessions
+                    'copy_sections'    => (getenv('ZX_COPY_SECTIONS') === '1') ? 1 : 0,
                     'promote_students' => 1,
                     'set_active'       => 0,
+                    'class_from'       => (string) getenv('ZX_CLASS_FROM'),
+                    'class_to'         => (string) getenv('ZX_CLASS_TO'),
                 ]);
                 return;
 

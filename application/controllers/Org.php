@@ -2,26 +2,23 @@
 defined('BASEPATH') or exit('No direct script access allowed');
 
 /**
- * Org — "Departments & Roles" setup section.
+ * Org — RETIRED PAGE, live endpoints.
  *
- * A single Setup screen that ties the org structure together:
- *   • Departments  (org units — stored at schools/{id}.departments)
- *   • Staff Roles  (job functions — stored at schools/{id}.staffRoles)
- *   • the link between them: each department carries `role_ids[]` = the staff
- *     roles allowed within it ("role is a subset of department").
+ * The "Departments & Roles" screen was retired 2026-08-21 (Staff Lifecycle
+ * audit): it duplicated Staff_access ("Staff & Roles"), which owns
+ * schools.departments and schools.staffRoles together. index() now redirects
+ * there and the view has been deleted.
  *
- * Design decisions (see the Department↔Role integration write-up):
- *   - Departments are WRITTEN via the existing hr/save_department + hr/delete_department
- *     endpoints (single writer → no drift). This page reads them here and posts
- *     role_ids to hr/save_department.
- *   - Staff roles are written here (save_role/delete_role) — this is now the SOLE
- *     writer of schools.staffRoles. The old twin Staff::save_staff_role /
- *     delete_staff_role were retired (2026-07-07) to a 410 stub to end the
- *     two-writer drift; Staff::get_staff_roles (read) still feeds the staff forms.
- *   - The whole page is HR-permissioned so it works as one coherent screen.
- *   - Access roles (RBAC) are surfaced here on the "Access Roles" tab (single
- *     editing surface) but still stored/served by AdminUsers::*_role endpoints;
- *     the Admin Users page keeps ASSIGNING roles to admins, not defining them.
+ * WHAT STILL LIVES HERE — do not remove without checking these callers:
+ *   - save_role() / delete_role()  ← the Admin Users page POSTs to both
+ *     (application/views/admin_users/index.php).
+ *   - backfill_legacy_departments() ← one-off migration.
+ *   - get_data() ← was only used by the deleted view; kept as a read-only API.
+ *
+ * The former hr/save_department + hr/delete_department writers this page used
+ * were retired at the same time; their two extra fields (head_staff_id and
+ * department status) were verified to have no readers before removal.
+ * schools.departments is now written only by Staff_access.
  */
 class Org extends MY_Controller
 {
@@ -39,12 +36,22 @@ class Org extends MY_Controller
     }
 
     /** The Departments & Roles management page. */
+    /**
+     * RETIRED 2026-08-21 (Staff Lifecycle audit).
+     *
+     * This page was a duplicate editor of schools.departments / staffRoles.
+     * "Staff & Roles" (Staff_access) is the superset that owns both, and this
+     * door's sidebar entry was already removed by an earlier Tier-3
+     * supersession. The view is gone; the deep link redirects rather than 404s
+     * so any bookmark still lands somewhere useful.
+     *
+     * The rest of this controller STAYS: Admin Users posts to org/save_role and
+     * org/delete_role, and backfill_legacy_departments is a one-off migration.
+     */
     public function index()
     {
         $this->_require_role(self::VIEW_ROLES, '', 'HR', 'view');
-        $this->load->view('include/header');
-        $this->load->view('org/index');
-        $this->load->view('include/footer');
+        redirect(base_url('staff_access'));
     }
 
     /**

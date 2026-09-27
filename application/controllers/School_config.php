@@ -38,12 +38,7 @@ class School_config extends MY_Controller
      * set_active_session's role gate; the rest of School_config's
      * mutating endpoints remain ADMIN_ROLES-gated.
      */
-    /**
-     * Bounded re-decides after a CAS conflict on a rollover destination.
-     * Same reason as Sis::SEAT_RETRY_ATTEMPTS: a loser re-decides against the
-     * roster as it is now rather than being refused outright, and stops as
-     * soon as the destination is genuinely full.
-     */
+    /** Bounded re-decides after a CAS conflict on a rollover destination. */
     private const ROLLOVER_SEAT_ATTEMPTS = 4;
 
     private const VIEW_ROLES = ['Super Admin', 'School Super Admin', 'Admin', 'Principal', 'Vice Principal', 'Academic Coordinator', 'HR Manager', 'Accountant', 'Front Office', 'Class Teacher', 'Teacher', 'Librarian', 'Transport Manager', 'Hostel Warden'];
@@ -214,11 +209,42 @@ class School_config extends MY_Controller
                             ? array_values(array_filter($fsSchool['archivedSessions'], 'is_string'))
                             : [];
 
+        // ── Phase 1 ZenX HRMS: Organisation / terminology (capability-gated) ──
+        // Entirely additive to this shared endpoint. When the tenant does not
+        // have HRMS_CORE_CAPABILITY, we do nothing here — no read beyond the
+        // one already-loaded $fsSchool, no write (ensure_org_profile is NOT
+        // called), and the response omits org data. This is what keeps
+        // "existing school tenants behave exactly as before when the
+        // capability is not enabled" true at the field level, not just the
+        // endpoint level, since get_config() is shared with pre-existing
+        // profile/session/board/class functionality that must keep working
+        // regardless of this capability's state.
+        $hrmsEnabled = has_capability(HRMS_CORE_CAPABILITY);
+        $orgPayload  = ['hrms_capability_enabled' => $hrmsEnabled];
+        if ($hrmsEnabled) {
+            $this->load->helper('terminology');
+            ensure_org_profile($this->fs, $this->school_id);
+            $fsSchoolForOrg = $this->fs->get('schools', $this->school_id);
+            $fsSchoolForOrg = is_array($fsSchoolForOrg) ? $fsSchoolForOrg : [];
+            $orgPayload['org_type'] = (string) ($fsSchoolForOrg['orgType'] ?? 'EDUCATION');
+            $orgPayload['labels']   = is_array($fsSchoolForOrg['labels'] ?? null) ? $fsSchoolForOrg['labels'] : [];
+            $orgPayload['terms']    = [
+                'person'   => org_term('person', $fsSchoolForOrg),
+                'location' => org_term('location', $fsSchoolForOrg),
+                'manager'  => org_term('manager', $fsSchoolForOrg),
+            ];
+        }
+
         $this->json_success([
             'profile'                 => is_array($profile)  ? $profile  : [],
             'forget_password_details' => $forgetPwd,
             'board'                   => is_array($board)     ? $board    : [],
             'classes'                 => $classes,
+            // ADM-AGE-1 — the tenant's own class-vs-age rule. Absent means never
+            // configured, which the editor renders as "off" rather than inventing a
+            // default band: a school that has not stated a rule must not be given one.
+            'admission_age_policy'     => is_array($fsSchool['admissionAgePolicy'] ?? null)
+                                            ? $fsSchool['admissionAgePolicy'] : [],
             'streams'                 => (object) (is_array($streams) ? $streams : []),
             'sessions'                => $sessions,
             'active_session'          => (string) $activeSess,
@@ -228,6 +254,7 @@ class School_config extends MY_Controller
             'report_card_config'      => (object) $rcConfig,
             'session_not_configured'  => $sessionNotConfigured,
             'name_not_configured'     => $nameNotConfigured,  // BUG-031
+            'organisation'            => $orgPayload,
         ]);
     }
 
@@ -270,6 +297,285 @@ class School_config extends MY_Controller
     // Cap is 200 per query — enough to know "there are dependencies" without
     // burning quota; the response surfaces the count, not the rows.
     // ─────────────────────────────────────────────────────────────────────
+    /**
+     * ── PHASE 20.1 (P20-F1) — THE SINGLE DEFINITION OF "IS THIS SECTION EMPTY?" ──
+     *
+     * THE DEFECT THIS CLOSES: both section-delete guards decided emptiness with
+     *
+     *     schoolWhere('students', [['sectionKey','==',$k], ['status','==','Active']])
+     *
+     * A Firestore equality predicate binds to ONE exact field name. The
+     * `students` collection carries BOTH legacy PascalCase (`Status`,
+     * `Class`, `Section`) and canonical camelCase shapes, and legacy documents
+     * may carry no `sectionKey` composite at all. Such a student is invisible
+     * to that predicate — so the guard saw zero students, reported the section
+     * empty, and DELETED A SECTION THAT STILL HELD CHILDREN.
+     *
+     * This is the same anti-pattern documented at Classes.php:245-255, which
+     * already caused a production incident (Attendance.php:1218 — "students
+     * disappear from parent/teacher views after admin bulk saves").
+     *
+     * ── WHY TWO SIGNALS, NOT ONE ────────────────────────────────────────────
+     * Both are passed through the SAME canonical filter
+     * (MY_Controller::_filterSectionRoster) — there is exactly one definition
+     * of membership here, not two. They differ only in where the documents
+     * come from, because each source has a failure mode the other does not:
+     *
+     *   A. cached snapshot — shape-tolerant and catches students with no
+     *      `sectionKey`, but _cachedStudentDocsForRollCheck() returns [] on
+     *      error (MY_Controller:1404). An empty snapshot is indistinguishable
+     *      from "school has no students", so ALONE it can still fail open.
+     *
+     *   B. indexed query — independent of snapshot health, so it catches the
+     *      case above; narrower, because it needs `sectionKey`.
+     *
+     * Blocking on max(A,B) means a section is deletable only when BOTH agree
+     * it is empty. Neither source alone is trusted.
+     *
+     * Both results are filtered by session, so a 2025-26 student never blocks
+     * a 2026-27 section (Phase 20.1 Part 4). Disagreement therefore indicates
+     * snapshot staleness or failure — not a legitimate cross-session student —
+     * and is logged with both counts.
+     *
+     * FAIL CLOSED: if either source throws, `determined` is false and the
+     * caller MUST refuse the delete. Uncertainty is never an empty section.
+     *
+     * @return array{count:int, determined:bool, canonical:?int, indexed:?int, errors:string[]}
+     */
+    private function _section_active_students(string $classNode, string $sectionNode, string $sessionYear): array
+    {
+        $canonical = null;
+        $indexed   = null;
+        $errors    = [];
+
+        // A — shared snapshot (memoised per request + file-cached 90s).
+        try {
+            $canonical = count($this->_filterSectionRoster(
+                $this->_cachedStudentDocsForRollCheck(),
+                $classNode, $sectionNode, $sessionYear
+            ));
+        } catch (\Throwable $e) {
+            $errors[] = 'snapshot: ' . $e->getMessage();
+        }
+
+        // B — indexed query, then through the SAME canonical filter so this
+        // signal is session-scoped and shape-tolerant too. No second rule.
+        try {
+            $rows = $this->fs->schoolWhere('students', [
+                ['sectionKey', '==', "{$classNode}/{$sectionNode}"],
+                ['status',     '==', 'Active'],
+            ], null, 'ASC', 200);
+            $indexed = count($this->_filterSectionRoster(
+                is_array($rows) ? $rows : [],
+                $classNode, $sectionNode, $sessionYear
+            ));
+        } catch (\Throwable $e) {
+            $errors[] = 'indexed: ' . $e->getMessage();
+        }
+
+        $determined = ($canonical !== null && $indexed !== null);
+
+        if ($determined && $canonical !== $indexed) {
+            log_message('error',
+                "ACC_SECTION_ROSTER_DIVERGENCE schoolId={$this->school_id} "
+                . "section={$classNode}/{$sectionNode} session={$sessionYear} "
+                . "snapshot={$canonical} indexed={$indexed} — blocking delete (fail-closed)");
+        }
+
+        return [
+            'count'      => max((int) $canonical, (int) $indexed),
+            'determined' => $determined,
+            'canonical'  => $canonical,
+            'indexed'    => $indexed,
+            'errors'     => $errors,
+        ];
+    }
+
+    /**
+     * ── PHASE 20.1b (P20-F8) — CANONICAL STREAM MEMBERSHIP ──────────────────
+     *
+     * WHAT SOURCE TRACING ACTUALLY FOUND — this is NOT the defect Phase 20.1
+     * predicted, and the difference matters.
+     *
+     * delete_stream() blocked deletion with
+     *     schoolWhere('students', [['streamKey','==',$k], ['status','==','Active']])
+     * and Phase 20.1 registered it as another single-shape `status` predicate.
+     *
+     * It is worse than that. **No code anywhere in this application writes
+     * `streamKey` — or any other stream field — onto a student document.**
+     * Verified by exhaustive grep (streamKey appears only in this controller,
+     * the school_config view and log lines) and confirmed on live data by
+     * scripts/p20f8_stream_delete_exposure_probe.js: 0 of 23 students carry
+     * `streamKey`, `stream`, `Stream`, `streamName`, `StreamKey` or
+     * `stream_key`.
+     *
+     * So that predicate ALWAYS returned 0. It was inert, not merely
+     * shape-sensitive — correcting `status` → `Status` would not have changed
+     * its result by a single row. The student-protection check on stream
+     * deletion has never been able to block anything.
+     *
+     * ── THE REAL RELATIONSHIP ───────────────────────────────────────────────
+     * A student's stream membership is expressed through a STREAM-NAMED
+     * SECTION, which is the shape bulk_save_sections() already accepts
+     * (its label regex allows "Science A", not just "A"). Such a section
+     * normalises via Entity_firestore_sync::normalizeClassSection() to
+     *     section     = "Section Science A"
+     *     sectionCode = "Science A"
+     * so a student in stream "Science" is one whose section token is
+     * "{stream} {letter}". That is the only link the data model actually has.
+     *
+     * ── WHY ONE SOURCE, NOT TWO (Phase 20.1b Part 6) ────────────────────────
+     * Phase 20.1 needed two signals because both a snapshot and an indexed
+     * query were available and each had a distinct blind spot. Here a second
+     * indexed signal is IMPOSSIBLE: there is no student-level stream field to
+     * index on. Copying that architecture would have meant inventing an index
+     * for data that does not exist.
+     *
+     * The snapshot's own failure mode is still handled:
+     * _cachedStudentDocsForRollCheck() returns [] on error
+     * (MY_Controller:1404), indistinguishable from "school has no students".
+     * A bounded ONE-document existence probe separates those two cases without
+     * duplicating any membership logic and without an N+1.
+     *
+     * ── TRI-STATE, FAIL CLOSED ──────────────────────────────────────────────
+     * Returns state EMPTY | NON_EMPTY | UNDETERMINED. Deletion requires an
+     * explicit EMPTY. Uncertainty is never "zero students".
+     *
+     * @return array{state:string, count:int, reason:string}
+     */
+    private function _stream_active_students(string $streamKey, string $session): array
+    {
+        $streamKey = trim($streamKey);
+        if ($streamKey === '') {
+            return ['state' => 'UNDETERMINED', 'count' => 0, 'reason' => 'blank_stream_key'];
+        }
+
+        try {
+            $docs = $this->_cachedStudentDocsForRollCheck();
+        } catch (\Throwable $e) {
+            return ['state' => 'UNDETERMINED', 'count' => 0, 'reason' => 'snapshot: ' . $e->getMessage()];
+        }
+
+        // Snapshot health: [] is returned both for "no students" and on error.
+        // One bounded document tells the two apart. This is an existence
+        // probe, not a roster query — it applies no membership rule.
+        if (empty($docs)) {
+            try {
+                $probe = $this->fs->schoolWhere('students', [], null, 'ASC', 1);
+                if (!empty($probe)) {
+                    log_message('error',
+                        "ACC_STREAM_ROSTER_SNAPSHOT_SUSPECT schoolId={$this->school_id} "
+                        . "stream={$streamKey} — snapshot empty but students exist; failing closed");
+                    return ['state' => 'UNDETERMINED', 'count' => 0, 'reason' => 'snapshot_empty_but_students_exist'];
+                }
+            } catch (\Throwable $e) {
+                return ['state' => 'UNDETERMINED', 'count' => 0, 'reason' => 'probe: ' . $e->getMessage()];
+            }
+            return ['state' => 'EMPTY', 'count' => 0, 'reason' => 'school_has_no_students'];
+        }
+
+        $sessionCmp = mb_strtolower(trim($session));
+        $count = 0;
+
+        foreach ($docs as $row) {
+            $d = is_array($row) ? ($row['data'] ?? $row) : null;
+            if (!is_array($d)) continue;
+
+            $sid = (string) ($d['studentId'] ?? $d['userId'] ?? $d['User Id'] ?? '');
+            if ($sid === '') continue;
+
+            // Same status semantics as the canonical roster rule
+            // (MY_Controller:1280) — both shapes, ABSENT means Active.
+            $status = trim((string) ($d['status'] ?? $d['Status'] ?? 'Active'));
+            if ($status !== '' && strcasecmp($status, 'Active') !== 0) continue;
+
+            // Same blank-session tolerance as the canonical roster rule
+            // (MY_Controller:1288): a legacy blank session is kept, never
+            // excluded. Stream definitions themselves are NOT session-scoped
+            // (they live on the school document), but the students blocking a
+            // delete must belong to the session being operated on.
+            $rowSession = mb_strtolower(trim((string) ($d['session'] ?? '')));
+            if ($sessionCmp !== '' && $rowSession !== '' && $rowSession !== $sessionCmp) continue;
+
+            $section = (string) ($d['section'] ?? $d['Section'] ?? '');
+            if (self::_sectionBelongsToStream($section, $streamKey)) $count++;
+        }
+
+        return [
+            'state'  => $count > 0 ? 'NON_EMPTY' : 'EMPTY',
+            'count'  => $count,
+            'reason' => 'stream_named_section',
+        ];
+    }
+
+    /**
+     * Does a section token belong to $streamKey?
+     *
+     * Accepts either stored form — "Section Science A" or "Science A" — and
+     * matches "{stream} {letter}", the shape bulk_save_sections() creates and
+     * normalizeClassSection() preserves. Case-insensitive because stream keys
+     * are `[A-Za-z0-9_]+` while section labels are operator-typed.
+     */
+    private static function _sectionBelongsToStream(string $sectionToken, string $streamKey): bool
+    {
+        $t = trim(preg_replace('/^Section\s+/i', '', trim($sectionToken)));
+        if ($t === '' || $streamKey === '') return false;
+        return (bool) preg_match('/^' . preg_quote($streamKey, '/') . '\s+[A-Za-z]$/i', $t);
+    }
+
+    /**
+     * Sections belonging to $streamKey in $session.
+     *
+     * The existing `sections` dependency check filters on `sections.streamKey`
+     * — a field NO writer produces (Firestore_service::saveSection does not
+     * stamp it; Academic.php:847 and Classes.php:340/595 do not either), and
+     * which the live probe found on 0 of 35 section documents. That check was
+     * therefore inert too. This restores its INTENDED behaviour using the same
+     * stream-named-section rule as the student check; it does not add a new
+     * class of block.
+     *
+     * @return array{state:string, count:int, reason:string}
+     */
+    private function _stream_live_sections(string $streamKey, string $session): array
+    {
+        $cap = 500;
+        try {
+            $rows = $this->fs->schoolWhere('sections', [], null, 'ASC', $cap);
+        } catch (\Throwable $e) {
+            return ['state' => 'UNDETERMINED', 'count' => 0, 'reason' => 'sections: ' . $e->getMessage()];
+        }
+
+        // Cap saturation would silently truncate the scan, and a truncated
+        // scan that finds nothing is NOT proof of emptiness — it is exactly
+        // the fail-open this phase exists to remove. Refuse instead.
+        if (is_array($rows) && count($rows) >= $cap) {
+            log_message('error',
+                "ACC_STREAM_SECTIONS_SCAN_SATURATED schoolId={$this->school_id} "
+                . "stream={$streamKey} cap={$cap} — cannot prove emptiness; failing closed");
+            return ['state' => 'UNDETERMINED', 'count' => 0, 'reason' => 'sections_scan_saturated'];
+        }
+
+        $sessionCmp = mb_strtolower(trim($session));
+        $count = 0;
+        foreach ((is_array($rows) ? $rows : []) as $row) {
+            $d = is_array($row) ? ($row['data'] ?? $row) : null;
+            if (!is_array($d)) continue;
+
+            $rowSession = mb_strtolower(trim((string) ($d['session'] ?? '')));
+            if ($sessionCmp !== '' && $rowSession !== '' && $rowSession !== $sessionCmp) continue;
+
+            // Honour an explicit streamKey where one exists (nothing writes it
+            // today, but a future writer must not be ignored), else fall back
+            // to the stream-named section rule.
+            $explicit = trim((string) ($d['streamKey'] ?? $d['stream'] ?? ''));
+            if ($explicit !== '' && strcasecmp($explicit, $streamKey) === 0) { $count++; continue; }
+
+            if (self::_sectionBelongsToStream((string) ($d['section'] ?? ''), $streamKey)) $count++;
+        }
+
+        return ['state' => $count > 0 ? 'NON_EMPTY' : 'EMPTY', 'count' => $count, 'reason' => 'stream_named_section'];
+    }
+
     private function _dep_count_safe(array $checks): array
     {
         $out = [
@@ -335,6 +641,101 @@ class School_config extends MY_Controller
      * `ACC_DELETE_BLOCKED endpoint=…` to spot governance-relevant
      * rejections.
      */
+    /**
+     * ── PHASE 20.1c (P20-F9) — FAIL CLOSED ON AN UNVERIFIABLE DEPENDENCY ────
+     *
+     * THE DEFECT THIS CLOSES: _dep_count_safe() catches each check's exception,
+     * records `errors[$key]`, and then leaves `has_any` false and `by_key[$key]`
+     * unset. A dependency query that FAILED is therefore indistinguishable from
+     * one that found nothing, and every caller's `if (!empty($deps['has_any']))`
+     * evaluates false — so the delete proceeds. Proven by reading the catch
+     * block at :597-599.
+     *
+     * That is a fail-OPEN on the checks that exist specifically to prevent
+     * orphaning live records. Phase 20.1 closed it inline at delete_section()
+     * and Phase 20.1b at delete_stream(); this helper closes the remaining
+     * three callers uniformly.
+     *
+     * ── WHY NOT FIX _dep_count_safe() ITSELF ────────────────────────────────
+     * Changing it centrally would alter behaviour at five endpoints in one
+     * edit, including two that are already correct and proven by tests. The
+     * partial-result contract is also deliberate: `errors[]` exists so a caller
+     * CAN distinguish the states. The defect was never that _dep_count_safe()
+     * hides failures — it reports them — but that callers ignored the report.
+     * This helper makes honouring it a one-line call, without touching the
+     * collector or the two already-fixed paths.
+     *
+     * Does not return when it fires: _json_error_with_data() calls exit (:626).
+     */
+    private function _dep_fail_closed(array $deps, string $endpoint, string $entityLabel, string $entityId, array $extra = []): void
+    {
+        if (empty($deps['errors'])) return;
+
+        $failed = array_keys($deps['errors']);
+        log_message('error',
+            "ACC_DEP_UNDETERMINED endpoint={$endpoint} schoolId={$this->school_id} "
+            . "actor={$this->admin_id} entity={$entityId} failed_checks=" . implode(',', $failed));
+
+        $this->_json_error_with_data(
+            "Cannot delete {$entityLabel} '{$entityId}': dependent records could not be verified ("
+            . implode(', ', $failed) . '). Nothing has been changed. Please retry in a moment.',
+            array_merge([
+                'reason'        => 'dependencies_undetermined',
+                'failed_checks' => $failed,
+            ], $extra),
+            409
+        );
+    }
+
+    /**
+     * ── PHASE 20.2 (P20.2-CAP-1) — DISPLAY-ONLY CAPACITY RESOLUTION ─────────
+     *
+     * Mirrors MY_Controller::_sectionCapacity()'s D17 rule EXACTLY:
+     *   configured positive wins · absent / 0 / negative / non-numeric → 40.
+     *
+     * ── WHY A MIRROR RATHER THAN THE CANONICAL ACCESSOR ─────────────────────
+     * _sectionCapacity() resolves ONE section and issues an uncached
+     * Firestore_service::get() per call (:310 — a live round-trip, no cache).
+     * The sections listing already holds every section document in memory from
+     * one schoolWhere(); routing it through the canonical accessor would add
+     * one network round-trip PER SECTION — 35 on the probed tenant, at the
+     * ~1-3s/op this codebase documents (see bulk_save_sections' set_time_limit
+     * rationale). That is precisely the N+1 this phase is required to avoid,
+     * and it would be slower than the 2,092 ms screen it replaces.
+     *
+     * ── WHY THIS IS SAFE DESPITE BEING A SECOND COPY OF THE RULE ────────────
+     * This value is DISPLAY ONLY. No placement decision consults it. Every
+     * admission / promotion / import / enroll / rollover / transfer continues
+     * to resolve capacity through _sectionCapacityExceeded() →
+     * _sectionCapacity(), which is untouched. If this mirror ever drifted, a
+     * number on screen would be wrong — no student would be wrongly admitted
+     * or refused.
+     *
+     * Drift is additionally guarded: Phase201cCapacityWorkflowTest asserts this
+     * resolver and the canonical rule agree across the whole input space
+     * (absent, 0, negative, non-numeric, string-numeric, positive).
+     *
+     * ⚠ Do NOT call this from an enforcement path. Registered follow-up
+     * P20.2-CAP-4: a bulk capacity accessor on MY_Controller would remove the
+     * mirror entirely, but MY_Controller is a protected file requiring separate
+     * authorization.
+     */
+    private static function _display_capacity($rawDoc): int
+    {
+        $raw = 0;
+        if (is_array($rawDoc)) {
+            $raw = (int) ($rawDoc['maxStrength'] ?? $rawDoc['max_strength'] ?? 0);
+        }
+        return $raw > 0 ? $raw : 40;
+    }
+
+    /** True when the section document carries an operator-configured capacity. */
+    private static function _capacity_is_configured($rawDoc): bool
+    {
+        if (!is_array($rawDoc)) return false;
+        return ((int) ($rawDoc['maxStrength'] ?? $rawDoc['max_strength'] ?? 0)) > 0;
+    }
+
     private function _log_dep_block(string $endpoint, string $entityId, array $depSummary): void
     {
         $kv = [];
@@ -416,6 +817,21 @@ class School_config extends MY_Controller
             }
         }
 
+        // Phase 1 ZenX HRMS: org_type is capability-gated separately from the
+        // rest of this endpoint's fields — a tenant without HRMS_CORE_CAPABILITY
+        // simply cannot submit it, so its (pre-existing) profile fields keep
+        // saving exactly as before regardless of this capability's state.
+        $orgTypeRaw = trim((string) $this->input->post('org_type', TRUE));
+        if ($orgTypeRaw !== '') {
+            if (!has_capability(HRMS_CORE_CAPABILITY)) {
+                return $this->json_error('This feature is not enabled for your school.');
+            }
+            if (!in_array($orgTypeRaw, ['EDUCATION', 'CORPORATE', 'RETAIL'], true)) {
+                return $this->json_error('org_type must be one of EDUCATION, CORPORATE, RETAIL.');
+            }
+            $data['orgType'] = $orgTypeRaw;
+        }
+
         if (empty($data)) {
             return $this->json_error('No data provided.');
         }
@@ -469,6 +885,44 @@ class School_config extends MY_Controller
             'display_name'     => $data['display_name'] ?? null, // let the page update the header live
             'admission_slug'   => $admissionSlug !== '' ? $admissionSlug : null,
         ]);
+    }
+
+    // ─────────────────────────────────────────────────────────────────────
+    // POST  /school_config/save_terminology  — Phase 1 ZenX HRMS
+    //
+    // Saves the 3-key terminology dictionary (person/location/manager).
+    // A whole new endpoint, not folded into save_profile(), since it has a
+    // materially different shape (a nested map vs. flat scalar fields) and
+    // its own capability gate — every check here is in addition to, never
+    // instead of, save_profile()'s existing ADMIN_ROLES/Configuration gate.
+    // ─────────────────────────────────────────────────────────────────────
+    public function save_terminology()
+    {
+        $this->_require_role(self::ADMIN_ROLES, 'school_config_save_terminology', 'Configuration', 'edit');
+        require_capability(HRMS_CORE_CAPABILITY, 'school_config_save_terminology');
+
+        $keys = ['person', 'location', 'manager'];
+        $labels = [];
+        foreach ($keys as $key) {
+            $val = trim((string) $this->input->post($key, TRUE));
+            if ($val === '') {
+                return $this->json_error("Please provide a label for '{$key}'.");
+            }
+            if (strlen($val) > 60) {
+                return $this->json_error("Label for '{$key}' exceeds 60 characters.");
+            }
+            $labels[$key] = $val;
+        }
+
+        try {
+            $this->fs->update('schools', $this->school_id, ['labels' => $labels]);
+        } catch (\Throwable $e) {
+            log_message('error', 'School_config::save_terminology write failed: ' . $e->getMessage());
+            return $this->json_error('Could not save terminology — please try again.');
+        }
+
+        log_audit('Configuration', 'save_terminology', $this->school_name, 'Updated HRMS terminology labels');
+        $this->json_success(['message' => 'Terminology saved successfully.', 'labels' => $labels]);
     }
 
     // ─────────────────────────────────────────────────────────────────────
@@ -688,6 +1142,91 @@ class School_config extends MY_Controller
     // ─────────────────────────────────────────────────────────────────────
     // POST  /school_config/save_board
     // ─────────────────────────────────────────────────────────────────────
+    /**
+     * ADM-AGE-1 (2026-09-19) — save the class-vs-age admission policy.
+     *
+     * DELIBERATELY TENANT POLICY, NOT CODE. The age band for a class is not a
+     * property of this software:
+     *   - education is a concurrent subject, so states differ;
+     *   - CBSE, ICSE and the state boards expect different things;
+     *   - the cut-off date is a school choice (31 March, 31 May, 30 September).
+     *
+     * Hard-coding "6+ as on 31 March" would block every legitimate admission in a
+     * state that permits 5+, the front office would start overriding the system on
+     * day one, and once staff are routing around a check, every check you own is
+     * decorative. So the school states its own rule and chooses how hard it bites.
+     */
+    public function save_age_policy()
+    {
+        $this->_require_role(self::ADMIN_ROLES, 'school_config_save_age_policy', 'Configuration', 'edit');
+
+        $mode = trim((string) $this->input->post('mode', TRUE));
+        if (!in_array($mode, ['off', 'warn', 'block'], true)) {
+            return $this->json_error('Mode must be off, warn or block.');
+        }
+
+        // Cut-off as MM-DD. Validated as a real calendar day so 02-31 cannot be
+        // stored and then silently roll every year the policy is evaluated.
+        $cutoff = trim((string) $this->input->post('cutoff', TRUE));
+        if ($cutoff === '') $cutoff = '03-31';
+        if (!preg_match('/^(\d{2})-(\d{2})$/', $cutoff, $m)
+            || !checkdate((int) $m[1], (int) $m[2], 2024)) {
+            return $this->json_error('Cut-off must be a real date in MM-DD form, e.g. 03-31.');
+        }
+
+        // bands[<class name>][min|max] — a class with neither is simply unbanded,
+        // which is how a school opts a class out without deleting its row.
+        $raw   = $this->input->post('bands');
+        $bands = [];
+        if (is_array($raw)) {
+            foreach ($raw as $className => $b) {
+                $className = trim((string) $className);
+                if ($className === '') continue;
+                $min = trim((string) ($b['min'] ?? ''));
+                $max = trim((string) ($b['max'] ?? ''));
+                if ($min === '' && $max === '') continue;
+
+                $min = $min === '' ? null : max(0, min(30, (int) $min));
+                $max = $max === '' ? null : max(0, min(30, (int) $max));
+                if ($min !== null && $max !== null && $min > $max) {
+                    return $this->json_error(
+                        "Minimum age is greater than maximum for {$className}. No admission could satisfy that."
+                    );
+                }
+                $bands[$className] = ['min' => $min, 'max' => $max];
+            }
+        }
+
+        if ($mode !== 'off' && !$bands) {
+            return $this->json_error(
+                'Set an age band for at least one class before turning the policy on, '
+                . 'or it would check nothing while claiming to.'
+            );
+        }
+
+        $policy = [
+            'mode'      => $mode,
+            'cutoff'    => $cutoff,
+            'bands'     => $bands,
+            'updatedAt' => date('c'),
+        ];
+
+        $this->fs->update('schools', $this->fs->schoolId(),
+            ['admissionAgePolicy' => $policy, 'updatedAt' => date('c')]);
+
+        log_audit('Configuration', 'save_age_policy', $this->school_name, sprintf(
+            'Admission age policy set to %s with cut-off %s across %d class band(s).',
+            $mode, $cutoff, count($bands)
+        ), ['mode' => $mode, 'cutoff' => $cutoff, 'classes' => array_keys($bands)]);
+
+        return $this->json_success([
+            'message' => $mode === 'off'
+                ? 'Age policy saved and turned off — admissions will not be age-checked.'
+                : sprintf('Age policy saved: %s, cut-off %s, %d class band(s).',
+                          $mode === 'block' ? 'blocking' : 'warning only', $cutoff, count($bands)),
+        ]);
+    }
+
     public function save_board()
     {
         $this->_require_role(self::ADMIN_ROLES, 'school_config_save_board', 'Configuration', 'edit');
@@ -966,12 +1505,43 @@ class School_config extends MY_Controller
                 $secName = $d['section'] ?? '';
                 if ($secName === '') continue;
                 $sectionKey = "{$classNode}/{$secName}";
-                $stuDocs = $this->fs->schoolWhere('students', [
-                    ['sectionKey', '==', $sectionKey],
-                    ['status', '==', 'Active'],
-                ]);
-                if (!empty($stuDocs)) {
-                    $stuCount = count($stuDocs);
+
+                // ── PHASE 20.1 (P20-F1), THIRD SITE ─────────────────────
+                // Found during the Part 8 regression sweep — this repeats the
+                // same single-shape predicate as the two section-delete
+                // guards, with a LARGER blast radius: on a false "empty" it
+                // removes the whole class from `schools.classes[]` while
+                // students are still enrolled in it. Routed through the same
+                // canonical definition.
+                //
+                // Session comes from the section document being examined, not
+                // the operator's viewing session: this loop walks the class's
+                // sections across sessions, and a student enrolled in ANY of
+                // them must block removal of the class definition.
+                $secSession = trim((string) ($d['session'] ?? '')) ?: $this->session_year;
+                $roster     = $this->_section_active_students($classNode, $secName, $secSession);
+
+                if (!$roster['determined']) {
+                    log_message('error',
+                        "ACC_SECTION_DELETE_UNDETERMINED endpoint=soft_delete_class "
+                        . "schoolId={$this->school_id} actor={$this->admin_id} "
+                        . "sectionKey={$sectionKey} session={$secSession} errors="
+                        . implode('; ', $roster['errors']));
+                    $this->_json_error_with_data(
+                        "Cannot delete class {$classNode}: enrolment for {$secName} could not be "
+                        . "verified right now. Nothing has been changed. Please retry in a moment.",
+                        [
+                            'sectionKey' => $sectionKey,
+                            'session'    => $secSession,
+                            'reason'     => 'roster_undetermined',
+                        ],
+                        409
+                    );
+                    return;
+                }
+
+                if ($roster['count'] > 0) {
+                    $stuCount = $roster['count'];
                     log_message('error',
                         "ACC_DELETE_BLOCKED endpoint=soft_delete_class schoolId={$this->school_id} "
                         . "actor={$this->admin_id} classKey={$classKey} reason=enrolled_students "
@@ -1024,6 +1594,9 @@ class School_config extends MY_Controller
                 'label'      => 'subject assignment(s)',
             ],
         ]);
+        // P20-F9 — refuse when a dependency check could not be evaluated.
+        $this->_dep_fail_closed($deps, 'soft_delete_class', 'class', $classKey, ['classKey' => $classKey]);
+
         if (!empty($deps['has_any'])) {
             $this->_log_dep_block('soft_delete_class', $classKey, $deps);
             $this->_json_error_with_data(
@@ -1347,13 +1920,38 @@ class School_config extends MY_Controller
         // section that no longer exists. Each per-collection query is
         // bounded at 200 rows (count is authoritative, not the rows).
         $sectionKey = "{$classNode}/{$sectionNode}";
+
+        // ── PHASE 20.1 (P20-F1) ─────────────────────────────────────────
+        // The `students` check MOVED OUT of _dep_count_safe() and now runs
+        // through the canonical roster rule. Two reasons it could not stay:
+        //
+        //   1. Its predicate was single-shape and missed legacy students
+        //      (see _section_active_students() for the full rationale).
+        //   2. _dep_count_safe() SWALLOWS a query exception — it records
+        //      `errors[key]` but leaves `has_any` false, so a failed students
+        //      query read as "no students" and the delete proceeded. That is
+        //      a fail-OPEN on the one check that protects children.
+        //
+        // The other five checks stay: they guard non-student collections
+        // (feeDemands/attendance/marks/timetables/subjectAssignments) which
+        // are canonically written WITH `sectionKey`, so the predicate is
+        // correct for them. Their fail-open is closed separately below.
+        $roster = $this->_section_active_students($classNode, $sectionNode, $sessionYear);
+
+        if (!$roster['determined']) {
+            log_message('error',
+                "ACC_SECTION_DELETE_UNDETERMINED schoolId={$this->school_id} actor={$this->admin_id} "
+                . "sectionKey={$sectionKey} session={$sessionYear} errors="
+                . implode('; ', $roster['errors']));
+            return $this->_json_error_with_data(
+                'Cannot delete section ' . $sectionKey . ': the student roster could not be '
+                . 'verified right now. Nothing has been changed. Please retry in a moment.',
+                ['sectionKey' => $sectionKey, 'session' => $sessionYear, 'reason' => 'roster_undetermined'],
+                409
+            );
+        }
+
         $deps = $this->_dep_count_safe([
-            [
-                'key'        => 'students',
-                'collection' => 'students',
-                'filters'    => [['sectionKey', '==', $sectionKey], ['status', '==', 'Active']],
-                'label'      => 'active student(s)',
-            ],
             [
                 'key'        => 'feeDemands',
                 'collection' => 'feeDemands',
@@ -1385,6 +1983,39 @@ class School_config extends MY_Controller
                 'label'      => 'subject assignment(s)',
             ],
         ]);
+
+        // Fold the canonically-derived student count in, so the response shape
+        // (`dependencies.students`) is unchanged for the UI.
+        $deps['by_key']['students'] = $roster['count'];
+        if ($roster['count'] > 0) {
+            $deps['has_any'] = true;
+            $deps['total']  += $roster['count'];
+            array_unshift($deps['human'], $roster['count'] . ' active student(s)');
+        }
+
+        // P20-F1 companion fix — fail CLOSED on an unverifiable dependency.
+        // _dep_count_safe() catches per-check exceptions and returns partial
+        // results; previously a failed check silently counted as zero and the
+        // delete proceeded, orphaning the very records the check exists to
+        // protect. Uncertainty must never read as "no dependencies".
+        if (!empty($deps['errors'])) {
+            log_message('error',
+                "ACC_SECTION_DELETE_DEP_UNDETERMINED schoolId={$this->school_id} actor={$this->admin_id} "
+                . "sectionKey={$sectionKey} session={$sessionYear} failed_checks="
+                . implode(',', array_keys($deps['errors'])));
+            return $this->_json_error_with_data(
+                'Cannot delete section ' . $sectionKey . ': dependent records could not be verified ('
+                . implode(', ', array_keys($deps['errors'])) . '). Nothing has been changed.',
+                [
+                    'sectionKey'     => $sectionKey,
+                    'session'        => $sessionYear,
+                    'reason'         => 'dependencies_undetermined',
+                    'failed_checks'  => array_keys($deps['errors']),
+                ],
+                409
+            );
+        }
+
         if (!empty($deps['has_any'])) {
             $this->_log_dep_block('delete_section', $sectionKey, $deps);
             $this->_json_error_with_data(
@@ -1409,6 +2040,158 @@ class School_config extends MY_Controller
         log_audit('Configuration', 'delete_section', $sectionKey, "Deleted section {$sectionKey} (session={$sessionYear})");
 
         $this->json_success(['message' => "{$classNode} / {$sectionNode} deleted."]);
+    }
+
+    // ─────────────────────────────────────────────────────────────────────
+    // POST  /school_config/save_section_capacity
+    //
+    // PHASE 20.2 (P20.2-CAP-3) — the ONE capacity writer on the modern surface.
+    //
+    // Writes exactly one field: `maxStrength`, on the canonical section
+    // document. It does NOT touch students, roll numbers, SRNO, section
+    // identity (className / section / sectionCode / sectionKey / docId) or any
+    // capacity RULE. The resolution semantics (D17) live in
+    // MY_Controller::_sectionCapacity() and are untouched.
+    //
+    // ── CAPACITY-REDUCTION POLICY (P20-D5, operator-approved) ─────────────
+    // Reducing capacity below current occupancy is ALLOWED, because refusing
+    // it would leave a school unable to correct a mistyped 400 without first
+    // moving children. It requires explicit confirmation, and it NEVER
+    // removes, transfers or renumbers a student:
+    //
+    //   • first call (no confirm_over_capacity) → 409 `confirm_required`
+    //     carrying occupancy + the exact consequence, so the UI can show a
+    //     truthful warning instead of inventing one;
+    //   • second call with confirmation → saved, every student retained.
+    //
+    // Existing students stay enrolled and the section simply reads
+    // over-capacity until strength falls. Enforcement acts on the NEXT
+    // placement, never retroactively.
+    //
+    // ⚠ Capacity is not race-safe against concurrent PLACEMENT — see
+    // P20.2-RACE-1 in the Phase 20.2 report. That is a pre-existing engine
+    // property this endpoint neither introduces nor fixes.
+    // ─────────────────────────────────────────────────────────────────────
+    public function save_section_capacity()
+    {
+        // RBAC: student-lifecycle capability, per the Phase 20.2 brief.
+        // NOTE (P20.2-RBAC-1): section CREATE/DELETE on this same screen is
+        // gated on Configuration:edit. The two halves therefore require
+        // different capabilities — registered as an open decision.
+        // `[]` (empty allow-list) deliberately REMOVES the legacy role-name
+        // fallback, making the graded `SIS:manage` capability the sole
+        // authority — a user merely NAMED "Principal" cannot bypass it
+        // (MY_Controller:1699 falls through to the name list only when the
+        // caller supplies one). Super Admin / School Super Admin still pass at
+        // :1672-1673, so the operator account is unaffected.
+        $this->_require_role([], 'school_config_save_section_capacity', 'SIS', 'manage');
+
+        $classKey    = trim((string) $this->input->post('class_key', TRUE));
+        $sectionRaw  = trim((string) $this->input->post('section',   TRUE));
+        $sessionYear = trim((string) $this->input->post('session',   TRUE));
+        $capacityRaw = (string) $this->input->post('capacity', TRUE);
+        $confirmed   = in_array((string) $this->input->post('confirm_over_capacity', TRUE), ['1', 'true', 'yes'], true);
+
+        if ($classKey === '' || $sectionRaw === '') {
+            return $this->json_error('class_key and section are required.');
+        }
+        if ($sessionYear === '') $sessionYear = $this->session_year;
+        if (!preg_match('/^\d{4}-\d{2}$/', $sessionYear)) {
+            return $this->json_error('Invalid session format.');
+        }
+
+        // Capacity must be an explicit positive integer.
+        //
+        // 0 is REJECTED, not treated as "unlimited". P20-F2 established that
+        // the engine's `<= 0 means unlimited` branch is unreachable dead code —
+        // _sectionCapacity() initialises to 40 and only raises it — so storing
+        // 0 would silently mean 40, the opposite of the operator's intent.
+        // Exposing "unlimited" requires an engine change and is explicitly
+        // NOT authorized (P20-D2 = NO).
+        if (!preg_match('/^\d{1,4}$/', trim($capacityRaw))) {
+            return $this->json_error('Capacity must be a whole number.');
+        }
+        $capacity = (int) trim($capacityRaw);
+        if ($capacity < 1) {
+            return $this->json_error('Capacity must be at least 1.');
+        }
+        if ($capacity > 500) {
+            return $this->json_error('Capacity above 500 is not supported. Check the value and retry.');
+        }
+
+        $classNode   = $this->_class_node_name($classKey);
+        $sectionNode = (stripos($sectionRaw, 'Section ') === 0) ? $sectionRaw : "Section {$sectionRaw}";
+
+        // Canonical identity — never hand-built (SEC-2).
+        $docId  = $this->fs->sectionDocId($classNode, $sectionNode, $sessionYear);
+        $secDoc = $this->fs->get('sections', $docId);
+        if (!is_array($secDoc)) {
+            return $this->json_error("Section {$classNode} / {$sectionNode} does not exist in {$sessionYear}.");
+        }
+
+        // Occupancy via the CANONICAL roster rule — same derivation the
+        // capacity guard enforces with. Fails CLOSED: if occupancy cannot be
+        // determined we refuse rather than let the operator confirm a warning
+        // computed from a number we do not trust.
+        try {
+            $occupied = count($this->_filterSectionRoster(
+                $this->_cachedStudentDocsForRollCheck(), $classNode, $sectionNode, $sessionYear
+            ));
+        } catch (\Throwable $e) {
+            log_message('error',
+                "ACC_CAPACITY_OCCUPANCY_UNDETERMINED schoolId={$this->school_id} "
+                . "section={$classNode}/{$sectionNode} err=" . $e->getMessage());
+            return $this->_json_error_with_data(
+                'Current occupancy could not be verified, so capacity was not changed. Please retry in a moment.',
+                ['reason' => 'occupancy_undetermined'],
+                409
+            );
+        }
+
+        if ($capacity < $occupied && !$confirmed) {
+            return $this->_json_error_with_data(
+                "Current occupancy is {$occupied} student(s). The new capacity of {$capacity} is below "
+                . 'that. Existing students will remain enrolled, but the section will be over capacity '
+                . 'and further placements will be blocked until strength falls below the new capacity.',
+                [
+                    'reason'       => 'confirm_required',
+                    'occupied'     => $occupied,
+                    'requested'    => $capacity,
+                    'current'      => self::_display_capacity($secDoc),
+                    'over_by'      => $occupied - $capacity,
+                    'class'        => $classNode,
+                    'section'      => $sectionNode,
+                ],
+                409
+            );
+        }
+
+        // Merge write — ONLY maxStrength. Identity fields and every other key
+        // on the document are left exactly as they are.
+        $ok = $this->fs->set('sections', $docId, [
+            'maxStrength' => $capacity,
+            'updatedAt'   => date('c'),
+        ], true);
+
+        if (!$ok) {
+            return $this->json_error('Capacity could not be saved. Please retry.');
+        }
+
+        log_message('error',
+            "ACC_SECTION_CAPACITY_SET schoolId={$this->school_id} actor={$this->admin_id} "
+            . "section={$classNode}/{$sectionNode} session={$sessionYear} "
+            . "capacity={$capacity} occupied={$occupied}"
+            . (($capacity < $occupied) ? ' OVER_CAPACITY_CONFIRMED' : ''));
+        log_audit('Configuration', 'save_section_capacity', "{$classNode}/{$sectionNode}",
+            "Capacity set to {$capacity} (occupied={$occupied}, session={$sessionYear})");
+
+        $this->json_success([
+            'message'   => "Capacity for {$classNode} / {$sectionNode} set to {$capacity}.",
+            'capacity'  => $capacity,
+            'occupied'  => $occupied,
+            'available' => max(0, $capacity - $occupied),
+            'over'      => max(0, $occupied - $capacity),
+        ]);
     }
 
     // ─────────────────────────────────────────────────────────────────────
@@ -1476,7 +2259,8 @@ class School_config extends MY_Controller
         }
 
         // Pre-fetch ALL sections from Firestore for this school+session
-        $fsSections = [];
+        $fsSections    = [];
+        $fsSectionDocs = [];   // P20.2-CAP-1 — raw docs, so capacity needs no re-read
         $fsDocs = $this->fs->schoolWhere('sections', [
             ['session', '==', $sessionYear],
         ]);
@@ -1487,8 +2271,33 @@ class School_config extends MY_Controller
                 $sn = $d['section'] ?? '';
                 if ($cn !== '' && $sn !== '') {
                     $fsSections[$cn][] = $sn;
+                    // P20.2-CAP-1 — keep the raw doc so capacity is resolved
+                    // from data already fetched, never re-read per section.
+                    $fsSectionDocs[$cn][$sn] = $d;
                 }
             }
+        }
+
+        // ── PHASE 20.2 (P20.2-CAP-2) — OCCUPANCY ────────────────────────
+        // ONE shared student snapshot for the whole screen, filtered per
+        // section by the CANONICAL roster rule
+        // (MY_Controller::_filterSectionRoster). This is the same derivation
+        // the capacity guard enforces with, so the number shown and the number
+        // enforced cannot disagree — the defect SEC-11 closed.
+        //
+        // COST: 0 extra Firestore reads when the snapshot is warm (it is
+        // memoised per request and file-cached 90s under the key the student
+        // list / ID card / fee search already populate); 1 collection read
+        // when cold. NOT per-section, NOT per-student.
+        //
+        // Fails soft on the DISPLAY path only: if the snapshot is unavailable
+        // occupancy is reported as null and the UI shows "—" rather than a
+        // fabricated 0. Enforcement is unaffected and remains authoritative.
+        $rosterSnapshot = null;
+        try {
+            $rosterSnapshot = $this->_cachedStudentDocsForRollCheck();
+        } catch (\Throwable $e) {
+            log_message('error', 'get_all_sections occupancy snapshot failed: ' . $e->getMessage());
         }
 
         $result = [];
@@ -1532,11 +2341,45 @@ class School_config extends MY_Controller
             foreach ($streamSections as &$letters) sort($letters);
             unset($letters);
 
+            // ── P20.2-CAP-2 — per-section seat detail ────────────────────
+            // Keyed by the SAME label the matrix renders, so the table and the
+            // toggles cannot disagree about which section they describe.
+            // `capacity_configured` distinguishes an operator decision from the
+            // engine's 40 fallback — P20-F3 showed 35/35 sections inheriting
+            // 40 that nobody chose. The UI must never present a fallback as a
+            // setting (P20-D3: no backfill).
+            $seats = [];
+            foreach ($rawSections as $rawLabel) {
+                $sectionNode = (strpos($rawLabel, 'Section ') === 0) ? $rawLabel : "Section {$rawLabel}";
+                $label       = (strpos($rawLabel, 'Section ') === 0)
+                    ? substr($rawLabel, 8) : $rawLabel;
+
+                $doc      = $fsSectionDocs[$classNode][$rawLabel] ?? null;
+                $capacity = self::_display_capacity($doc);
+
+                $occupied = null;
+                if (is_array($rosterSnapshot)) {
+                    $occupied = count($this->_filterSectionRoster(
+                        $rosterSnapshot, $classNode, $sectionNode, $sessionYear
+                    ));
+                }
+
+                $seats[$label] = [
+                    'capacity'            => $capacity,
+                    'capacity_configured' => self::_capacity_is_configured($doc),
+                    'occupied'            => $occupied,
+                    'available'           => ($occupied === null) ? null : max(0, $capacity - $occupied),
+                    'over'                => ($occupied === null) ? null : max(0, $occupied - $capacity),
+                    'section_node'        => $sectionNode,
+                ];
+            }
+
             $entry = [
                 'key'             => $cls['key'],
                 'label'           => $cls['label'] ?? $classNode,
                 'node'            => $classNode,
                 'sections'        => $sections,
+                'seats'           => $seats,
                 'streams_enabled' => $streamsEnabled,
             ];
             if ($streamsEnabled) {
@@ -1671,24 +2514,47 @@ class School_config extends MY_Controller
                         ];
                         continue;
                     }
-                    $sectionKey = "{$classNode}/Section {$sectionLabel}";
-                    $stuDocs    = $this->fs->schoolWhere('students', [
-                        ['sectionKey', '==', $sectionKey],
-                        ['status', '==', 'Active'],
-                    ]);
-                    if (!empty($stuDocs)) {
+                    $sectionNode = "Section {$sectionLabel}";
+                    $sectionKey  = "{$classNode}/{$sectionNode}";
+
+                    // ── PHASE 20.1 (P20-F1) ─────────────────────────────
+                    // Was a single-shape predicate identical to the one in
+                    // delete_section(); it missed legacy-shaped students and
+                    // could delete a populated section. Now routed through the
+                    // one canonical definition — the SAME helper the single
+                    // delete path uses, so the two can no longer diverge.
+                    $roster = $this->_section_active_students($classNode, $sectionNode, $sessionYear);
+
+                    if (!$roster['determined']) {
+                        // Fail closed: never delete on an unverifiable roster.
+                        $skipped[] = "{$classNode} Section {$sectionLabel} (roster unverifiable)";
+                        $failed[]  = [
+                            'class_key' => $classKey,
+                            'section'   => $sectionLabel,
+                            'action'    => 'remove',
+                            'reason'    => 'roster_undetermined',
+                        ];
+                        log_message('error',
+                            "ACC_SECTION_DELETE_UNDETERMINED endpoint=bulk_save_sections "
+                            . "schoolId={$this->school_id} actor={$this->admin_id} "
+                            . "sectionKey={$sectionKey} session={$sessionYear} errors="
+                            . implode('; ', $roster['errors']));
+                        continue;
+                    }
+
+                    if ($roster['count'] > 0) {
                         $skipped[] = "{$classNode} Section {$sectionLabel} (has students)";
                         $failed[]  = [
                             'class_key' => $classKey,
                             'section'   => $sectionLabel,
                             'action'    => 'remove',
                             'reason'    => 'has_active_students',
-                            'count'     => count($stuDocs),
+                            'count'     => $roster['count'],
                         ];
                         log_message('error',
                             "ACC_ORPHAN_PREVENTED endpoint=bulk_save_sections "
                             . "schoolId={$this->school_id} actor={$this->admin_id} "
-                            . "sectionKey={$sectionKey} students=" . count($stuDocs));
+                            . "sectionKey={$sectionKey} students=" . $roster['count']);
                         continue;
                     }
                     $this->fs->remove('sections', $fsDocId);
@@ -2158,6 +3024,9 @@ class School_config extends MY_Controller
                 'label'      => 'active teacher assignment(s)',
             ],
         ]);
+        // P20-F9 — refuse when a dependency check could not be evaluated.
+        $this->_dep_fail_closed($deps, 'delete_subject', 'subject', $entityId);
+
         if (!empty($deps['has_any'])) {
             $this->_log_dep_block('delete_subject', $entityId, $deps);
             // Surface up to 25 dependent teacher identifiers so the operator
@@ -2391,11 +3260,53 @@ class School_config extends MY_Controller
         $numKey = $this->_numeric_class_key($classKey);
         $validCategories = ['Core', 'Elective', 'Additional', 'Language', 'Vocational', 'Assessment'];
 
-        // Build the full subject map to write
+        // ── EXISTING DOCS (read first, and read LOUD) ─────────────────────
+        // Needed for two things below: reconciling deletions, and making sure a
+        // newly added row is never handed a code that another subject already
+        // owns. Read through the *OrFail variant deliberately: schoolWhere()
+        // returns [] on failure exactly as it does for a genuinely empty class,
+        // and "no existing subjects" is the one reading that would make this
+        // endpoint skip every deletion while still reporting success.
+        $existing           = [];      // subjectCode => stored name
+        $existingReadFailed = false;
+        try {
+            foreach ($this->fs->schoolWhereOrFail('subjects', [['classKey', '==', (string) $numKey]]) as $row) {
+                $d = is_array($row['data'] ?? null) ? $row['data'] : [];
+                $c = trim((string) ($d['subjectCode'] ?? ''));
+                if ($c === '') continue;
+                $existing[$c] = (string) ($d['name'] ?? $d['subject_name'] ?? '');
+            }
+        } catch (\Throwable $e) {
+            $existingReadFailed = true;
+            log_message('error',
+                "ACC_BULK_EXISTING_READ_FAILED endpoint=save_bulk_subjects schoolId={$this->school_id} "
+                . "classKey={$numKey} err=" . $e->getMessage());
+        }
+
+        // Build the full subject map to write.
+        //
+        // ── CODE ALLOCATION ───────────────────────────────────────────────
+        // The code IS the identity: subjects/{schoolId}_{classKey}_{code}. The
+        // previous allocator derived a blank row's code from its POSITION in the
+        // batch (classKey*100 + count+1) while rows loaded from Firestore kept
+        // their stored code. Delete the 3rd of 6 subjects, add a replacement, and
+        // the new row was handed 906 — a code an existing subject already owned —
+        // so $subjectMap[906] silently overwrote it. The operator saw "6 subjects
+        // saved" while an untouched subject had been renamed out from under them.
+        //
+        // Allocation is now two-pass: every code carried in from the client is
+        // claimed first, then blank rows take the lowest code nobody holds —
+        // "nobody" including subjects currently in Firestore, so a new row can
+        // never land on top of an existing one.
         $subjectMap = [];
         $usedNames  = [];
+        $claimed    = [];
+        $pending    = [];
+        foreach (array_keys($existing) as $c) $claimed[$c] = true;
 
-        foreach ($subjects as $idx => $sub) {
+        foreach ($subjects as $sub) {
+            if (!is_array($sub)) continue;
+
             $name     = trim($sub['name'] ?? '');
             $category = trim($sub['category'] ?? 'Core');
             $stream   = trim($sub['stream'] ?? 'common');
@@ -2410,29 +3321,51 @@ class School_config extends MY_Controller
 
             if (!in_array($category, $validCategories, true)) $category = 'Core';
 
-            // Auto-generate code if blank
-            if ($code === '') {
-                if (is_numeric($numKey)) {
-                    $code = (string) ((int) $numKey * 100 + count($subjectMap) + 1);
-                } else {
-                    $prefix = strtoupper(substr($numKey, 0, 3));
-                    $code   = $prefix . str_pad(count($subjectMap) + 1, 2, '0', STR_PAD_LEFT);
-                }
-            }
-
-            if (!preg_match('/^[A-Za-z0-9_]+$/', $code)) {
-                $code = 'SUB' . str_pad(count($subjectMap) + 1, 3, '0', STR_PAD_LEFT);
-            }
-
             $entry = [
                 'subject_name' => $name,
                 'name'         => $name,
                 'category'     => $category,
-                'subject_code' => $code,
+                'subject_code' => '',
             ];
             if ($stream !== 'common') $entry['stream'] = $stream;
 
-            $subjectMap[$code] = $entry;
+            // A code the client carried back identifies an EXISTING document, so
+            // writing to it is the rename/edit path. Anything blank, malformed, or
+            // already taken by an earlier row in this same batch goes to pass 2.
+            $isReclaim = ($code !== '')
+                && preg_match('/^[A-Za-z0-9_]+$/', $code)
+                && isset($existing[$code])
+                && !isset($subjectMap[$code]);
+
+            if ($isReclaim) {
+                $entry['subject_code'] = $code;
+                $subjectMap[$code]     = $entry;
+                continue;
+            }
+            $pending[] = $entry;
+        }
+
+        // Pass 2 — every unclaimed row takes the lowest free code.
+        $seq = 1;
+        foreach ($pending as $entry) {
+            $code = '';
+            while ($seq < 10000) {
+                if (is_numeric($numKey)) {
+                    $candidate = (string) ((int) $numKey * 100 + $seq);
+                } else {
+                    $candidate = strtoupper(substr($numKey, 0, 3)) . str_pad((string) $seq, 2, '0', STR_PAD_LEFT);
+                }
+                if (!preg_match('/^[A-Za-z0-9_]+$/', $candidate)) {
+                    $candidate = 'SUB' . str_pad((string) $seq, 3, '0', STR_PAD_LEFT);
+                }
+                $seq++;
+                if (!isset($claimed[$candidate])) { $code = $candidate; break; }
+            }
+            if ($code === '') continue;   // pathological: code space exhausted
+
+            $claimed[$code]        = true;
+            $entry['subject_code'] = $code;
+            $subjectMap[$code]     = $entry;
         }
 
         if (empty($subjectMap)) {
@@ -2468,7 +3401,104 @@ class School_config extends MY_Controller
             }
         }
 
-        $failedCount = count($failed);
+        // ── RECONCILE DELETIONS ───────────────────────────────────────────
+        // The editor is a whole-list editor and answers "N subjects saved", but
+        // this endpoint was write-only: a subject removed in the UI was never
+        // removed in Firestore. It reappeared on the next load, and "delete one
+        // and replace it" silently kept both. Removals now actually happen.
+        //
+        // They go through the SAME referential-integrity guard delete_subject
+        // enforces: a subject teachers are still assigned to is KEPT and reported,
+        // never quietly deleted out from under the Teacher app's auth gate. Every
+        // branch here fails SAFE — anything undetermined keeps the subject — and
+        // each skip is reported in kept[] rather than swallowed, so a subject that
+        // comes back always has a reason attached to it.
+        //
+        // Deleting is a stronger act than editing, so it is gated on
+        // Configuration:manage, matching delete_subject, while saving stays at
+        // Configuration:edit. An edit-only operator saves names and categories
+        // exactly as before and is told which removals need a manager.
+        $removed   = [];
+        $kept      = [];
+        $canManage = has_permission('Configuration', 'manage');
+
+        if ($existingReadFailed) {
+            $kept[] = [
+                'subject_code' => '',
+                'name'         => '',
+                'reason'       => 'Existing subjects could not be read, so no removals were applied.',
+            ];
+        } else {
+            foreach ($existing as $code => $existingName) {
+                if (isset($subjectMap[$code])) continue;   // still in the submitted list
+
+                if (!$canManage) {
+                    $kept[] = [
+                        'subject_code' => (string) $code,
+                        'name'         => $existingName,
+                        'reason'       => 'Removing a subject needs Configuration: manage.',
+                    ];
+                    continue;
+                }
+
+                $deps = $this->_dep_count_safe([
+                    [
+                        'key'        => 'subjectAssignments',
+                        'collection' => 'subjectAssignments',
+                        'filters'    => [
+                            ['classKey',    '==', $numKey],
+                            ['subjectCode', '==', (string) $code],
+                        ],
+                        'label'      => 'active teacher assignment(s)',
+                    ],
+                ]);
+
+                if (!empty($deps['errors'])) {
+                    log_message('error',
+                        "ACC_DEP_UNDETERMINED endpoint=save_bulk_subjects schoolId={$this->school_id} "
+                        . "actor={$this->admin_id} entity={$numKey}_{$code} failed_checks=subjectAssignments");
+                    $kept[] = [
+                        'subject_code' => (string) $code,
+                        'name'         => $existingName,
+                        'reason'       => 'Teacher assignments could not be verified, so it was not removed.',
+                    ];
+                    continue;
+                }
+
+                if (!empty($deps['has_any'])) {
+                    $this->_log_dep_block('save_bulk_subjects', "{$numKey}_{$code}", $deps);
+                    $kept[] = [
+                        'subject_code' => (string) $code,
+                        'name'         => $existingName,
+                        'reason'       => 'Assigned to ' . $deps['by_key']['subjectAssignments']
+                                          . ' teacher(s) — reassign those first.',
+                    ];
+                    continue;
+                }
+
+                try {
+                    $this->fs->removeEntity('subjects', "{$numKey}_{$code}");
+                    $removed[] = ['subject_code' => (string) $code, 'name' => $existingName];
+                    log_message('error',
+                        "ACC_SUBJECT_DELETED schoolId={$this->school_id} actor={$this->admin_id} "
+                        . "classKey={$numKey} subjectCode={$code} via=save_bulk_subjects");
+                } catch (\Throwable $e) {
+                    $kept[] = [
+                        'subject_code' => (string) $code,
+                        'name'         => $existingName,
+                        'reason'       => 'Removal failed: ' . $e->getMessage(),
+                    ];
+                    log_message('error',
+                        "ACC_BULK_REMOVE_FAILED endpoint=save_bulk_subjects schoolId={$this->school_id} "
+                        . "classKey={$numKey} subjectCode={$code} err=" . $e->getMessage());
+                }
+            }
+        }
+
+        $failedCount  = count($failed);
+        $removedCount = count($removed);
+        $keptCount    = count($kept);
+
         if ($failedCount > 0) {
             log_message('error',
                 "ACC_BULK_PARTIAL_FAILURE endpoint=save_bulk_subjects schoolId={$this->school_id} "
@@ -2490,14 +3520,29 @@ class School_config extends MY_Controller
             );
         }
 
-        log_audit('Configuration', 'save_bulk_subjects', $classKey, "Bulk subjects update for class {$classKey}: {$saved} saved, {$failedCount} failed");
+        log_audit('Configuration', 'save_bulk_subjects', $classKey,
+            "Bulk subjects update for class {$classKey}: {$saved} saved, {$failedCount} failed, "
+            . "{$removedCount} removed, {$keptCount} kept");
+
+        // The message reports removals and refusals too. "6 subjects saved" while
+        // a 7th quietly survived in Firestore is precisely how this defect stayed
+        // invisible: a count of what was written is not a description of the
+        // resulting list.
+        $message = $saved . ' subject(s) saved for class ' . $classKey;
+        if ($removedCount > 0) $message .= ", {$removedCount} removed";
+        if ($keptCount    > 0) $message .= ", {$keptCount} could not be removed — see below";
+        if ($failedCount  > 0) $message .= ", {$failedCount} failed — see failed[]";
+        $message .= '.';
 
         $this->json_success([
-            'message'         => $saved . ' subjects saved for class ' . $classKey
-                . ($failedCount > 0 ? ", {$failedCount} failed — see failed[]." : '.'),
+            'message'         => $message,
             'count'           => $saved,
             'failed'          => $failed,
             'failed_count'    => $failedCount,
+            'removed'         => $removed,
+            'removed_count'   => $removedCount,
+            'kept'            => $kept,
+            'kept_count'      => $keptCount,
             'partial_failure' => $failedCount > 0,
         ]);
     }
@@ -2798,26 +3843,86 @@ class School_config extends MY_Controller
             // that reference this stream. Cap each at 200 (count is
             // authoritative, not the rows).
             $curSession = $this->session_year;
+
+            // ── PHASE 20.1b (P20-F8) ────────────────────────────────────
+            // The `students` and `sections` checks MOVED OUT of
+            // _dep_count_safe(). Both filtered on `streamKey`, a field no
+            // writer in this application ever produces — on students OR on
+            // sections — so both were inert and could never block a delete.
+            // See _stream_active_students() for the full trace.
+            //
+            // They are now resolved through the canonical stream-membership
+            // rule (stream-named sections), tri-state and fail-closed.
+            //
+            // `subjectAssignments` stays in _dep_count_safe(): it filters on
+            // `stream`, which IS the field written for that shape.
+            $streamStudents = $this->_stream_active_students($streamKey, $curSession);
+            $streamSections = $this->_stream_live_sections($streamKey, $curSession);
+
+            foreach ([['students', $streamStudents], ['sections', $streamSections]] as [$what, $res]) {
+                if ($res['state'] === 'UNDETERMINED') {
+                    log_message('error',
+                        "ACC_STREAM_DELETE_UNDETERMINED schoolId={$this->school_id} actor={$this->admin_id} "
+                        . "streamKey={$streamKey} session={$curSession} check={$what} reason={$res['reason']}");
+                    $this->_json_error_with_data(
+                        "Cannot delete stream '{$streamKey}': {$what} could not be verified right now. "
+                        . 'Nothing has been changed. Please retry in a moment.',
+                        [
+                            'streamKey' => $streamKey,
+                            'session'   => $curSession,
+                            'reason'    => 'dependencies_undetermined',
+                            'check'     => $what,
+                        ],
+                        409
+                    );
+                    return;
+                }
+            }
+
             $deps = $this->_dep_count_safe([
-                [
-                    'key'        => 'sections',
-                    'collection' => 'sections',
-                    'filters'    => [['streamKey', '==', $streamKey], ['session', '==', $curSession]],
-                    'label'      => 'live section(s)',
-                ],
                 [
                     'key'        => 'subjectAssignments',
                     'collection' => 'subjectAssignments',
                     'filters'    => [['stream', '==', $streamKey], ['session', '==', $curSession]],
                     'label'      => 'subject assignment(s)',
                 ],
-                [
-                    'key'        => 'students',
-                    'collection' => 'students',
-                    'filters'    => [['streamKey', '==', $streamKey], ['status', '==', 'Active']],
-                    'label'      => 'active student(s)',
-                ],
             ]);
+
+            // Fold the canonically-derived counts back in, preserving the
+            // existing `dependencies: {...}` response shape for the UI.
+            $deps['by_key']['students'] = $streamStudents['count'];
+            $deps['by_key']['sections'] = $streamSections['count'];
+            if ($streamSections['count'] > 0) {
+                $deps['has_any'] = true;
+                $deps['total']  += $streamSections['count'];
+                array_unshift($deps['human'], $streamSections['count'] . ' live section(s)');
+            }
+            if ($streamStudents['count'] > 0) {
+                $deps['has_any'] = true;
+                $deps['total']  += $streamStudents['count'];
+                array_unshift($deps['human'], $streamStudents['count'] . ' active student(s)');
+            }
+
+            // Fail CLOSED on an unverifiable remaining check — same defect
+            // closed for section deletion in Phase 20.1.
+            if (!empty($deps['errors'])) {
+                log_message('error',
+                    "ACC_STREAM_DELETE_DEP_UNDETERMINED schoolId={$this->school_id} actor={$this->admin_id} "
+                    . "streamKey={$streamKey} failed_checks=" . implode(',', array_keys($deps['errors'])));
+                $this->_json_error_with_data(
+                    "Cannot delete stream '{$streamKey}': dependent records could not be verified ("
+                    . implode(', ', array_keys($deps['errors'])) . '). Nothing has been changed.',
+                    [
+                        'streamKey'     => $streamKey,
+                        'session'       => $curSession,
+                        'reason'        => 'dependencies_undetermined',
+                        'failed_checks' => array_keys($deps['errors']),
+                    ],
+                    409
+                );
+                return;
+            }
+
             if (!empty($deps['has_any'])) {
                 $this->_log_dep_block('delete_stream', $streamKey, $deps);
                 $this->_json_error_with_data(
@@ -3466,22 +4571,70 @@ class School_config extends MY_Controller
             return $this->json_error("Source session '{$from}' is not in the sessions list. Add it first or pick a listed session.");
         }
 
-        // Source sections
+        // ── Phase 16.7 (SEC-13 visibility) — CAPACITY + TARGET STATE ────
+        //
+        // The preview previously listed only className/section, so an operator
+        // could not see what capacity was about to be carried, nor whether the
+        // target session already held that section. Both are now surfaced:
+        // the rollover copies `maxStrength` (SEC-13), and an operator must be
+        // able to check that number BEFORE confirming rather than discover it
+        // afterwards.
+        //
+        // Target sections are fetched in ONE bulk query and indexed, exactly
+        // as rollover_session() does — deliberately not one lookup per section.
         $srcSections = $this->fs->schoolWhere('sections', [['session', '==', $from]]);
         $srcSections = is_array($srcSections) ? $srcSections : [];
+
+        $dstSections = $this->fs->schoolWhere('sections', [['session', '==', $to]]);
+        $dstById = [];
+        foreach (is_array($dstSections) ? $dstSections : [] as $row) {
+            $id = (string) ($row['id'] ?? '');
+            if ($id !== '') $dstById[$id] = $row['data'] ?? [];
+        }
+
         $sectionList = [];
         foreach ($srcSections as $row) {
-            $d = $row['data'] ?? [];
+            $d         = $row['data'] ?? [];
+            $className = (string) ($d['className'] ?? '');
+            $section   = (string) ($d['section']   ?? '');
+            if ($className === '' || $section === '') continue;
+
+            $srcCap  = (int) ($d['maxStrength'] ?? $d['max_strength'] ?? 0);
+            $targetId = $this->fs->sectionDocId($className, $section, $to);
+            $exists   = array_key_exists($targetId, $dstById);
+            $dstCap   = $exists
+                ? (int) ($dstById[$targetId]['maxStrength'] ?? $dstById[$targetId]['max_strength'] ?? 0)
+                : null;
+
+            // Non-destructive states, per Phase 16.7 Part 4. A section that
+            // already exists in the target is SKIPPED by rollover_session();
+            // it is never overwritten, so a differing capacity is reported for
+            // the operator to reconcile, not silently replaced.
+            if (!$exists)                    $state = 'NEW';
+            elseif ($dstCap === $srcCap)     $state = 'EXISTS_UNCHANGED';
+            else                             $state = 'EXISTS_DIFFERENT_CAPACITY';
+
             $sectionList[] = [
-                'className' => (string) ($d['className'] ?? ''),
-                'section'   => (string) ($d['section']   ?? ''),
+                'className'       => $className,
+                'section'         => $section,
+                'currentCapacity' => $srcCap,          // 0 = never configured
+                'targetCapacity'  => $dstCap,          // null = does not exist yet
+                'state'           => $state,
+                'willCopy'        => !$exists,
             ];
         }
 
         // Source students (for promotion preview)
         $srcStudents = $this->fs->schoolWhere('students', [['session', '==', $from]]);
         $srcStudents = is_array($srcStudents) ? $srcStudents : [];
-        $byClass = []; $graduating = 0; $active = 0;
+        // LC-11 — the preview must count graduates by the SAME rule the
+        // rollover applies. Hardcoded to 12, this told a school whose highest
+        // class is Class 10 that nobody would graduate, and the rollover then
+        // graduated its entire Class 10. A preview that disagrees with the
+        // action it previews is worse than no preview: the operator confirms
+        // one thing and gets another.
+        $terminalOrder = $this->_terminalClassOrder();
+        $byClass = []; $graduating = 0; $active = 0; $graduatingClass = '';
         foreach ($srcStudents as $row) {
             $d = $row['data'] ?? [];
             if (($d['status'] ?? 'Active') !== 'Active') continue;
@@ -3489,7 +4642,10 @@ class School_config extends MY_Controller
             $order = $d['classOrder'] ?? null;
             $label = $d['className'] ?? 'Unknown';
             $byClass[$label] = ($byClass[$label] ?? 0) + 1;
-            if ($order === 12) $graduating++;
+            if (is_numeric($order) && (int) $order === $terminalOrder) {
+                $graduating++;
+                if ($graduatingClass === '') $graduatingClass = (string) $label;
+            }
         }
 
         // Target session checks
@@ -3517,6 +4673,10 @@ class School_config extends MY_Controller
             'active_students'    => $active,
             'students_by_class'  => $byClass,
             'graduating'         => $graduating,
+            // Named so the preview can say WHICH class completes, rather than
+            // leaving the operator to assume it is Class 12.
+            'graduating_class'   => $graduatingClass,
+            'terminal_class_order' => $terminalOrder,
             'existing_sections'  => count($dstSections),
             'existing_students'  => count($dstStudents),
             'warnings'           => $warnings,
@@ -3535,6 +4695,124 @@ class School_config extends MY_Controller
     //   promote_students  (0 default)
     //   set_active        (0 default)
     // ─────────────────────────────────────────────────────────────────────
+    /**
+     * Phase 17 (SEC-17) — canonical class transition for session rollover.
+     *
+     * Extracted so the PRE-FLIGHT and the WRITE LOOP resolve a student's
+     * destination through ONE implementation. If the pre-flight computed a
+     * destination even slightly differently it would validate capacity and
+     * roll numbers for a section the write never touches — the validation
+     * would be worthless while looking correct.
+     *
+     * Returns:
+     *   ['kind' => 'alumni']                          Class 12 → Alumni (no destination section)
+     *   ['kind' => 'promote', 'label' => …, 'order' => …]
+     *   ['kind' => 'skip',   'reason' => …]           unknown / unmappable classOrder
+     *
+     * Pure: no reads, no writes, no side effects.
+     */
+    private function _rolloverNextClass($order, $terminalOrder = 12): array
+    {
+        // ── LC-11 · COMPLETION HAPPENS AT THE SCHOOL'S LAST CLASS ────────
+        //
+        // This arm was hardcoded to classOrder 12. A school's classes are
+        // CONFIGURED, in `schools.classes`, and a school ending at Class 10 is
+        // an ordinary tenant — measured on live data, 2 of 3 tenanted schools
+        // terminate below Class 12, one of them with 12 active students in its
+        // terminal class.
+        //
+        // For those schools nobody ever completed schooling: the terminal
+        // cohort fell into the +1 arm below and was promoted into a class the
+        // school does not have.
+        //
+        // ── THIS IS NOT AN INVENTED POLICY ───────────────────────────────
+        // UDISE+, the Government of India system every one of these schools
+        // must already file into, records exactly three exits — "Left with
+        // TC", "Dropout", and "Passed Out" — and applies "Passed Out" at the
+        // school's OWN terminal class, naming Class 10 alongside Class 12. It
+        // does not hardcode a grade. The same separation appears in mature
+        // SIS products generally, where graduation is a distinct terminal exit
+        // code rather than a kind of withdrawal.
+        //
+        // So the model ZenX already has (status 'Alumni' + `graduatedFrom`) is
+        // correct; only the constant was wrong. `$terminalOrder` is the
+        // school's highest CONFIGURED classOrder — the school's own
+        // declaration of what it runs, which it must maintain anyway to have
+        // sections and capacities.
+        //
+        // Defaults to 12, so a caller that cannot determine the configuration
+        // behaves exactly as before rather than graduating an entire school.
+        //
+        // Strict equality on purpose. A student stamped ABOVE the terminal
+        // class is not silently graduated; they fall through to the promote
+        // arm and are refused by the unconfigured-destination guard, which
+        // reports the problem instead of hiding it behind a graduation.
+        $t = (is_numeric($terminalOrder) && (int) $terminalOrder !== 0) ? (int) $terminalOrder : 12;
+        if (is_numeric($order) && (int) $order === $t) {
+            return ['kind' => 'alumni'];
+        }
+
+        if (is_numeric($order) && (int) $order >= 1 && (int) $order <= 11) {
+            $nextNum   = (int) $order + 1;
+            $nextLabel = 'Class ' . $nextNum
+                       . (in_array($nextNum, [11, 12], true) ? 'th' : $this->_ordinal($nextNum));
+            return ['kind' => 'promote', 'label' => $nextLabel, 'order' => $nextNum];
+        }
+
+        $foundationalNext  = [-5 => -4, -4 => -3, -3 => -2, -2 => -1, -1 => 1];
+        $foundationalLabel = [-4 => 'Class Pre-Nursery', -3 => 'Class Nursery',
+                              -2 => 'Class LKG', -1 => 'Class UKG', 1 => 'Class 1st'];
+        if (is_numeric($order) && isset($foundationalNext[(int) $order])) {
+            $nextOrder = $foundationalNext[(int) $order];
+            $nextLabel = $foundationalLabel[$nextOrder] ?? '';
+            if ($nextLabel === '') return ['kind' => 'skip', 'reason' => 'no_foundational_label'];
+            return ['kind' => 'promote', 'label' => $nextLabel, 'order' => $nextOrder];
+        }
+
+        return ['kind' => 'skip', 'reason' => 'unknown_classOrder'];
+    }
+
+    /**
+     * The school's terminal classOrder — the class a student completes school
+     * from — derived from `schools.classes`.
+     *
+     * Derived, never assumed: this is the school's own declaration of what it
+     * runs, and it has to maintain it anyway to have sections and capacities.
+     * A school opening a Class 11 next year configures it first, which moves
+     * its terminal class before any rollover sees it.
+     *
+     * Returns 12 when the list is missing, unreadable or yields no orderable
+     * class, so an unconfigured tenant behaves exactly as it did before
+     * LC-11 rather than graduating its whole roll.
+     *
+     * Both label conventions are handled by normalising through
+     * `Entity_firestore_sync`: `schools.classes` stores "Nursery" and
+     * "Class 10th", and only the normaliser maps both onto a classOrder.
+     */
+    private function _terminalClassOrder(): int
+    {
+        require_once APPPATH . 'libraries/Entity_firestore_sync.php';
+        try {
+            $doc = $this->fs->get('schools', $this->fs->schoolId());
+        } catch (\Throwable $e) {
+            log_message('error', 'terminal class resolve failed: ' . $e->getMessage());
+            return 12;
+        }
+        $raw = (is_array($doc) && is_array($doc['classes'] ?? null)) ? $doc['classes'] : [];
+        $max = null;
+        foreach ($raw as $c) {
+            $label = is_string($c)
+                ? $c
+                : (string) (is_array($c) ? ($c['className'] ?? $c['name'] ?? $c['label'] ?? '') : '');
+            if (trim($label) === '') continue;
+            $n = Entity_firestore_sync::normalizeClassSection($label, '');
+            $ord = $n['classOrder'] ?? null;
+            if ($ord === null || !is_numeric($ord)) continue;
+            if ($max === null || (int) $ord > $max) $max = (int) $ord;
+        }
+        return $max === null ? 12 : $max;
+    }
+
     public function rollover_session()
     {
         $this->_require_role(self::ADMIN_ROLES, 'school_config_rollover_session', 'Configuration', 'manage');
@@ -4408,11 +5686,22 @@ class School_config extends MY_Controller
                             }
                         }
                         if (!empty($stillOver)) {
-                            log_audit('Configuration', 'rollover_promotion_blocked', $to, [
-                                'from' => $from, 'to' => $to, 'outcome' => 'blocked',
-                                'stage' => 'post_conflict_recheck',
-                                'capacityIssues' => count($stillOver),
-                            ]);
+                            // ROLL-AUDIT-1 (2026-09-19) — the structured payload belongs in
+                            // $context (5th), not $description (4th, typed string). Passing the
+                            // array raised an uncaught TypeError, so the json_error() below was
+                            // never reached and this audit row was never written: a blocked
+                            // promotion crashed instead of refusing, and left no trail.
+                            log_audit('Configuration', 'rollover_promotion_blocked', $to,
+                                sprintf(
+                                    'Promotion %s to %s blocked at the post-conflict capacity recheck: %d section(s) would still be over capacity. No students were promoted.',
+                                    $from, $to, count($stillOver)
+                                ),
+                                [
+                                    'from' => $from, 'to' => $to, 'outcome' => 'blocked',
+                                    'stage' => 'post_conflict_recheck',
+                                    'capacityIssues' => count($stillOver),
+                                ]
+                            );
                             return $this->json_error(
                                 'Promotion blocked — no students were promoted. Capacity: '
                                 . implode('; ', array_slice($stillOver, 0, 10)), 409);
@@ -4446,10 +5735,21 @@ class School_config extends MY_Controller
                         "ACC_ROLLOVER_FAIL schoolId={$this->school_id} stage=atomic_commit "
                         . "status=" . ($lastRes['status'] ?? '?') . " dests=" . count($byDest)
                         . " students=" . ($promotedN + $graduatedN));
-                    log_audit('Configuration', 'rollover_promotion_blocked', $to, [
-                        'from' => $from, 'to' => $to, 'outcome' => 'blocked',
-                        'stage' => 'atomic_commit', 'status' => $lastRes['status'] ?? '?',
-                    ]);
+                    // ROLL-AUDIT-1 (2026-09-19) — same defect as the capacity-recheck
+                    // branch above. This one is the more serious of the two: it is the
+                    // seat-guard refusal path, so the operator saw a fatal instead of
+                    // "Promotion blocked — no students were promoted" and could not tell
+                    // whether anything had been applied.
+                    log_audit('Configuration', 'rollover_promotion_blocked', $to,
+                        sprintf(
+                            'Promotion %s to %s blocked at the atomic commit (seat guard status: %s). No students were promoted.',
+                            $from, $to, (string) ($lastRes['status'] ?? '?')
+                        ),
+                        [
+                            'from' => $from, 'to' => $to, 'outcome' => 'blocked',
+                            'stage' => 'atomic_commit', 'status' => $lastRes['status'] ?? '?',
+                        ]
+                    );
                     return $this->json_error(
                         'Promotion blocked — no students were promoted. '
                         . ($lastRes['message'] ?? ''), 409);
@@ -4763,6 +6063,18 @@ class School_config extends MY_Controller
             ['key' => 'subjectAssignments', 'collection' => 'subjectAssignments', 'filters' => [['session', '==', $session]], 'label' => 'subject assignment(s)'],
         ]);
         $blockers = $deps['human']; // backward-compat alias for legacy callers
+
+        // ── P20-F9 (HIGHEST-RISK CALLER) ────────────────────────────────
+        // Nine dependency checks guard removal of an entire academic session
+        // from schools.sessions[]. Every one of them could throw and leave
+        // `has_any` false, so a transient Firestore failure was enough to let
+        // a session with live students, fees, marks and timetables be removed
+        // from the session list. The records themselves are not deleted — but
+        // they become unreachable through the session picker, which is a
+        // governance and reporting failure, and recovery means re-adding the
+        // session by hand.
+        $this->_dep_fail_closed($deps, 'delete_session', 'session', $session, ['session' => $session]);
+
         if (!empty($deps['has_any'])) {
             $this->_log_dep_block('delete_session', $session, $deps);
             $this->_json_error_with_data(
@@ -5780,122 +7092,249 @@ class School_config extends MY_Controller
         ]);
     }
 
+    /* ================================================================
+       NOTIFICATION PREFERENCES (per school)
+       ----------------------------------------------------------------
+       MARKET EVIDENCE: the Asanify admin demo shows a Company →
+       Notifications area with per-event configuration and role-based
+       recipient targeting (observations supplied by the operator; this
+       programme did not watch the recording).
+
+       ZenX's MARK_REGISTRY is a platform constant shared by every tenant,
+       so before this a school could not switch an event off without a code
+       change and a Cloud Functions deploy for all tenants at once.
+
+       Enforcement lives in Push_enqueue_service::enqueue() — the one choke
+       point every producer passes through. These endpoints only read and
+       write the preference; they never send anything.
+
+       DELIBERATELY NOT INCLUDED: recipient re-targeting. Which audience an
+       event reaches is resolved inside MARK_REGISTRY in functions/, so
+       changing it needs a Functions deploy, and the correct per-event
+       audience is a product decision rather than an engineering one.
+       ================================================================ */
 
     /**
-     * The school's terminal classOrder — the class a student completes school
-     * from — derived from `schools.classes`.
+     * The events a school may switch off, grouped for the screen.
      *
-     * Derived, never assumed: this is the school's own declaration of what it
-     * runs, and it has to maintain it anyway to have sections and capacities.
-     * A school opening a Class 11 next year configures it first, which moves
-     * its terminal class before any rollover sees it.
-     *
-     * Returns 12 when the list is missing, unreadable or yields no orderable
-     * class, so an unconfigured tenant behaves exactly as it did before
-     * LC-11 rather than graduating its whole roll.
-     *
-     * Both label conventions are handled by normalising through
-     * `Entity_firestore_sync`: `schools.classes` stores "Nursery" and
-     * "Class 10th", and only the normaliser maps both onto a classOrder.
+     * A DELIBERATE ALLOW-LIST, not a dump of MARK_REGISTRY. Two reasons:
+     * a school must not be able to silence something it does not control,
+     * and an event with no meaningful "off" (a direct message) should not be
+     * offered as if it had one.
      */
-    private function _terminalClassOrder(): int
+    private const NOTIFICATION_EVENTS = [
+        'Attendance' => [
+            'STAFF_REG_DECIDED'   => 'Attendance request approved or rejected (to the employee)',
+            'ATTENDANCE_MARKED'   => 'Student marked absent (to the parent)',
+        ],
+        'Leave' => [
+            'STAFF_LEAVE_DECIDED' => 'Staff leave approved or rejected (to the employee)',
+            'LEAVE_DECIDED'       => 'Student leave approved or rejected (to the parent)',
+        ],
+        'Payroll' => [
+            'SALARY_PROCESSED'    => 'Salary processed (to the employee)',
+        ],
+        'Fees' => [
+            'FEE_PAID'            => 'Fee payment received (to the parent)',
+            'FEE_DUE'             => 'Fee reminder (to the parent)',
+        ],
+    ];
+
+    /** POST — current notification preferences for this school. */
+    public function get_notification_settings()
     {
-        require_once APPPATH . 'libraries/Entity_firestore_sync.php';
+        $this->_require_role(self::ADMIN_ROLES, 'school_config_get_notification_settings', 'Configuration', 'view');
+
+        $saved = [];
         try {
-            $doc = $this->fs->get('schools', $this->fs->schoolId());
+            $doc = $this->fs->get('schools', $this->fs->docId('profile'));
+            if (is_array($doc) && is_array($doc['notificationSettings'] ?? null)) {
+                $saved = $doc['notificationSettings'];
+            }
         } catch (\Throwable $e) {
-            log_message('error', 'terminal class resolve failed: ' . $e->getMessage());
-            return 12;
+            log_message('error', 'get_notification_settings read failed: ' . $e->getMessage());
+            return $this->json_error('Could not read notification settings.', 500);
         }
-        $raw = (is_array($doc) && is_array($doc['classes'] ?? null)) ? $doc['classes'] : [];
-        $max = null;
-        foreach ($raw as $c) {
-            $label = is_string($c)
-                ? $c
-                : (string) (is_array($c) ? ($c['className'] ?? $c['name'] ?? $c['label'] ?? '') : '');
-            if (trim($label) === '') continue;
-            $n = Entity_firestore_sync::normalizeClassSection($label, '');
-            $ord = $n['classOrder'] ?? null;
-            if ($ord === null || !is_numeric($ord)) continue;
-            if ($max === null || (int) $ord > $max) $max = (int) $ord;
+
+        $groups = [];
+        foreach (self::NOTIFICATION_EVENTS as $group => $events) {
+            $rows = [];
+            foreach ($events as $mark => $label) {
+                $row = is_array($saved[$mark] ?? null) ? $saved[$mark] : [];
+                $rows[] = [
+                    'mark'      => $mark,
+                    'label'     => $label,
+                    // Absent means ON: that is what every school did before this
+                    // screen existed, and the screen must not silently change it.
+                    'enabled'   => !array_key_exists('enabled', $row) || (bool) $row['enabled'],
+                    'updatedAt' => (string) ($row['updatedAt'] ?? ''),
+                    'updatedBy' => (string) ($row['updatedBy'] ?? ''),
+                ];
+            }
+            $groups[] = ['group' => $group, 'events' => $rows];
         }
-        return $max === null ? 12 : $max;
+
+        return $this->json_success(['groups' => $groups]);
     }
 
     /**
-     * Phase 17 (SEC-17) — canonical class transition for session rollover.
+     * POST — switch one event on or off for this school.
      *
-     * Extracted so the PRE-FLIGHT and the WRITE LOOP resolve a student's
-     * destination through ONE implementation. If the pre-flight computed a
-     * destination even slightly differently it would validate capacity and
-     * roll numbers for a section the write never touches — the validation
-     * would be worthless while looking correct.
-     *
-     * Returns:
-     *   ['kind' => 'alumni']                          Class 12 → Alumni (no destination section)
-     *   ['kind' => 'promote', 'label' => …, 'order' => …]
-     *   ['kind' => 'skip',   'reason' => …]           unknown / unmappable classOrder
-     *
-     * Pure: no reads, no writes, no side effects.
+     * One event per call, deliberately: a per-event write is a per-event audit
+     * row, which is what makes "who silenced the fee reminders, and when"
+     * answerable.
      */
-    private function _rolloverNextClass($order, $terminalOrder = 12): array
+    public function save_notification_setting()
     {
-        // ── LC-11 · COMPLETION HAPPENS AT THE SCHOOL'S LAST CLASS ────────
-        //
-        // This arm was hardcoded to classOrder 12. A school's classes are
-        // CONFIGURED, in `schools.classes`, and a school ending at Class 10 is
-        // an ordinary tenant — measured on live data, 2 of 3 tenanted schools
-        // terminate below Class 12, one of them with 12 active students in its
-        // terminal class.
-        //
-        // For those schools nobody ever completed schooling: the terminal
-        // cohort fell into the +1 arm below and was promoted into a class the
-        // school does not have.
-        //
-        // ── THIS IS NOT AN INVENTED POLICY ───────────────────────────────
-        // UDISE+, the Government of India system every one of these schools
-        // must already file into, records exactly three exits — "Left with
-        // TC", "Dropout", and "Passed Out" — and applies "Passed Out" at the
-        // school's OWN terminal class, naming Class 10 alongside Class 12. It
-        // does not hardcode a grade. The same separation appears in mature
-        // SIS products generally, where graduation is a distinct terminal exit
-        // code rather than a kind of withdrawal.
-        //
-        // So the model ZenX already has (status 'Alumni' + `graduatedFrom`) is
-        // correct; only the constant was wrong. `$terminalOrder` is the
-        // school's highest CONFIGURED classOrder — the school's own
-        // declaration of what it runs, which it must maintain anyway to have
-        // sections and capacities.
-        //
-        // Defaults to 12, so a caller that cannot determine the configuration
-        // behaves exactly as before rather than graduating an entire school.
-        //
-        // Strict equality on purpose. A student stamped ABOVE the terminal
-        // class is not silently graduated; they fall through to the promote
-        // arm and are refused by the unconfigured-destination guard, which
-        // reports the problem instead of hiding it behind a graduation.
-        $t = (is_numeric($terminalOrder) && (int) $terminalOrder !== 0) ? (int) $terminalOrder : 12;
-        if (is_numeric($order) && (int) $order === $t) {
-            return ['kind' => 'alumni'];
+        $this->_require_role(self::ADMIN_ROLES, 'school_config_save_notification_setting', 'Configuration', 'manage');
+
+        $mark    = trim((string) $this->input->post('mark'));
+        $enabled = $this->input->post('enabled');
+
+        $known = [];
+        foreach (self::NOTIFICATION_EVENTS as $events) {
+            $known = array_merge($known, array_keys($events));
+        }
+        if (!in_array($mark, $known, true)) {
+            return $this->json_error('Unknown notification event.');
+        }
+        if ($enabled === null) {
+            return $this->json_error('enabled is required.');
         }
 
-        if (is_numeric($order) && (int) $order >= 1 && (int) $order <= 11) {
-            $nextNum   = (int) $order + 1;
-            $nextLabel = 'Class ' . $nextNum
-                       . (in_array($nextNum, [11, 12], true) ? 'th' : $this->_ordinal($nextNum));
-            return ['kind' => 'promote', 'label' => $nextLabel, 'order' => $nextNum];
+        $on = filter_var($enabled, FILTER_VALIDATE_BOOLEAN);
+
+        try {
+            $this->fs->update('schools', $this->fs->docId('profile'), [
+                "notificationSettings.{$mark}" => [
+                    'enabled'   => $on,
+                    'updatedAt' => date('c'),
+                    'updatedBy' => (string) ($this->admin_name ?? $this->admin_id ?? ''),
+                ],
+            ]);
+        } catch (\Throwable $e) {
+            log_message('error', 'save_notification_setting write failed: ' . $e->getMessage());
+            return $this->json_error('Could not save. Please retry.', 500);
         }
 
-        $foundationalNext  = [-5 => -4, -4 => -3, -3 => -2, -2 => -1, -1 => 1];
-        $foundationalLabel = [-4 => 'Class Pre-Nursery', -3 => 'Class Nursery',
-                              -2 => 'Class LKG', -1 => 'Class UKG', 1 => 'Class 1st'];
-        if (is_numeric($order) && isset($foundationalNext[(int) $order])) {
-            $nextOrder = $foundationalNext[(int) $order];
-            $nextLabel = $foundationalLabel[$nextOrder] ?? '';
-            if ($nextLabel === '') return ['kind' => 'skip', 'reason' => 'no_foundational_label'];
-            return ['kind' => 'promote', 'label' => $nextLabel, 'order' => $nextOrder];
+        // Switching a school's alerts off is exactly the kind of change someone
+        // later needs explained, so it is audited rather than merely stored.
+        if (method_exists($this, '_log_config_change')) {
+            $this->_log_config_change('NOTIFICATION_SETTING', [
+                'mark'    => $mark,
+                'enabled' => $on ? 'true' : 'false',
+            ]);
+        } else {
+            log_message('info', 'NOTIFICATION_SETTING [' . $mark . '] set to '
+                . ($on ? 'on' : 'off') . ' by [' . ($this->admin_name ?? '') . ']'
+                . ' for [' . $this->school_id . ']');
         }
 
-        return ['kind' => 'skip', 'reason' => 'unknown_classOrder'];
+        return $this->json_success([
+            'message' => $on ? 'Notification switched on.' : 'Notification switched off.',
+            'mark'    => $mark,
+            'enabled' => $on,
+        ]);
+    }
+
+    /* ================================================================
+       ONBOARDING TASK LIST (per school)
+       ----------------------------------------------------------------
+       Staff::_onboarding_tasks() already reads
+       `schools/{schoolId}.onboardingTasks` and falls back to a shipped
+       default. Nothing wrote it, so the list was configurable only with
+       database access. These endpoints are the missing writer.
+
+       CRITICAL: the field lives on `schools/{schoolId}` — the bare
+       document the reader uses — NOT on `{schoolId}_profile`. Writing to
+       the wrong one would store a list the checklist never reads.
+       ================================================================ */
+
+    /** POST — this school's onboarding task list (empty = the shipped default is in use). */
+    public function get_onboarding_tasks()
+    {
+        $this->_require_role(self::ADMIN_ROLES, 'school_config_get_onboarding_tasks', 'Configuration', 'view');
+
+        $tasks = [];
+        try {
+            $doc = $this->fs->get('schools', $this->school_id);
+            $raw = is_array($doc) ? ($doc['onboardingTasks'] ?? null) : null;
+            if (is_array($raw)) {
+                $tasks = array_values(array_filter(array_map('strval', $raw), static fn($t) => trim($t) !== ''));
+            }
+        } catch (\Throwable $e) {
+            log_message('error', 'get_onboarding_tasks read failed: ' . $e->getMessage());
+            return $this->json_error('Could not read the onboarding task list.', 500);
+        }
+
+        return $this->json_success([
+            'tasks'      => $tasks,
+            // So the screen can say "you are using the built-in list" rather
+            // than showing an empty box that looks like a broken load.
+            'usingDefault' => empty($tasks),
+        ]);
+    }
+
+    /**
+     * POST — replace this school's onboarding task list.
+     *
+     * Whole-list replace rather than per-item edits: the list is short, order
+     * is meaningful to whoever reads the checklist, and a replace makes the
+     * audit row a single before/after rather than a stream of moves.
+     *
+     * An EMPTY list is legitimate and means "go back to the built-in default" —
+     * the reader already treats empty that way, so this preserves its contract
+     * instead of inventing a second meaning for empty.
+     */
+    public function save_onboarding_tasks()
+    {
+        $this->_require_role(self::ADMIN_ROLES, 'school_config_save_onboarding_tasks', 'Configuration', 'manage');
+
+        $raw = $this->input->post('tasks');
+        if (is_string($raw)) {
+            $decoded = json_decode($raw, true);
+            $raw = is_array($decoded) ? $decoded : null;
+        }
+        if (!is_array($raw)) {
+            return $this->json_error('Send the task list as an array.');
+        }
+        if (count($raw) > 30) {
+            return $this->json_error('An onboarding checklist may have at most 30 tasks.');
+        }
+
+        $tasks = [];
+        $seen  = [];
+        foreach ($raw as $t) {
+            $t = trim((string) $t);
+            if ($t === '') continue;                       // a blank row is a deletion
+            if (mb_strlen($t) > 120) {
+                return $this->json_error('A task name may be at most 120 characters.');
+            }
+            $k = mb_strtolower($t);
+            if (isset($seen[$k])) continue;                // duplicates collapse
+            $seen[$k] = true;
+            $tasks[] = $t;
+        }
+
+        try {
+            $this->fs->update('schools', $this->school_id, ['onboardingTasks' => $tasks]);
+        } catch (\Throwable $e) {
+            log_message('error', 'save_onboarding_tasks write failed: ' . $e->getMessage());
+            return $this->json_error('Could not save. Please retry.', 500);
+        }
+
+        log_message('info', 'ONBOARDING_TASKS updated for [' . $this->school_id . '] to '
+            . count($tasks) . ' task(s) by [' . ($this->admin_name ?? '') . ']');
+
+        return $this->json_success([
+            'message'      => empty($tasks)
+                ? 'Cleared — the built-in checklist will be used.'
+                : 'Onboarding checklist saved.',
+            'tasks'        => $tasks,
+            'usingDefault' => empty($tasks),
+            // Checklists ALREADY STARTED keep the tasks they were opened with;
+            // the operator must not be left thinking this rewrites history.
+            'note'         => 'Applies to checklists started from now on.',
+        ]);
     }
 }

@@ -38,6 +38,23 @@ class Superadmin_plans extends MY_Superadmin_Controller
         // Cross-system mobile access
         'parent_app'         => 'Parent App Access',
         'teacher_app'        => 'Teacher App Access',
+        // ── HRMS (W1.1) ──────────────────────────────────────────────────
+        // Cross-vertical engines + optional vertical packs. Registering a key
+        // here makes it selectable in the plan modals AND permits it through
+        // the create/update POST whitelist below — it grants nothing on its
+        // own: no existing plan contains these keys, and
+        // Tenant_capability_service is fail-closed, so all four are OFF for
+        // every tenant until deliberately granted.
+        //
+        // Per-tenant enablement does NOT require adding these to a shared
+        // plan: use the tenant-level override grant
+        // (Superadmin_schools::set_module_override → B2_registry_service::
+        // set_module_override), which is the canonical per-tenant axis and
+        // leaves other tenants on the same base plan untouched.
+        'hrms_core'          => 'HRMS Core (Workforce)',
+        'hrms_payroll'       => 'HRMS Payroll',
+        'hrms_corporate'     => 'HRMS Corporate Pack',
+        'hrms_retail'        => 'HRMS Retail Pack',
     ];
 
     public function __construct()

@@ -15,8 +15,12 @@ defined('BASEPATH') or exit('No direct script access allowed');
  *   Schools/{school}/{session}/Staff_Attendance/{month}  — attendance status
  *   Schools/{school}/HR/Leaves/Requests                  — pending leaves
  *   Schools/{school}/{session}/HR/Payroll/Runs           — payroll status
- *   Schools/{school}/HR/Recruitment/Applicants            — ATS pipeline
  *   System/Schools/{school_id}/subscription               — subscription expiry
+ *
+ * Firestore collections READ (from other modules):
+ *   hrApplicants  — ATS pipeline (W1.3: was the RTDB path
+ *                   Schools/{school}/HR/Recruitment/Applicants; the recruitment
+ *                   store is Firestore, shared by Hr.php and Ats.php)
  */
 class Notifications extends MY_Controller
 {
@@ -316,8 +320,15 @@ class Notifications extends MY_Controller
      */
     private function _check_applicants(string $school, array &$tasks, array &$alerts): void
     {
-        // Firestore-first: count applicants by status. We tolerate the legacy
-        // `stage` field via a two-pronged count so older docs still register.
+        // Count applicants by `status`.
+        //
+        // The comment here used to claim a "two-pronged count" that also
+        // tolerated the legacy `stage` field — but no second prong was ever
+        // implemented, and before W1.3 that mattered: Ats.php wrote `stage` to
+        // RTDB and these counters saw none of its pipeline. Ats.php now writes
+        // the same Firestore document and dual-emits `status` on every stage
+        // move, so a single status count is complete rather than merely
+        // convenient. See helpers/recruitment_helper.php for the mapping.
         $applied = 0;
         $interview = 0;
         $selected = 0;

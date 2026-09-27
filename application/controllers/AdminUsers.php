@@ -628,6 +628,14 @@ class AdminUsers extends MY_Controller
                     'Phone'  => $phone,
                     'Role'   => $role,
                     'Status' => 'Active',
+                    // P0-7 — payroll pro-rates on the employment window and reads
+                    // `Date Of Joining`. This path previously supplied none, so a
+                    // staff member onboarded here had no join date and was treated
+                    // as employed for the WHOLE month regardless of when they
+                    // actually started (no mid-month proration). Stamp the creation
+                    // date as the joining date; an operator can correct it in Edit
+                    // Staff. Same d-m-Y format Staff::new_staff() persists.
+                    'Date Of Joining' => date('d-m-Y'),
                 ]);
                 // saveStaff() writes fixed identity fields only — add the RBAC grant +
                 // onboarding metadata via a MERGE so nothing above is clobbered.

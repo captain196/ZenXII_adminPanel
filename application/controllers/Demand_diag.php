@@ -106,6 +106,13 @@ class Demand_diag extends CI_Controller
         $session = (string) $this->session->userdata('session');
         $actor   = (string) $this->session->userdata('admin_id');
         $this->load->library('firestore_service', null, 'fs');
+        // MY_Controller::__construct() calls fs->init(); this diagnostic extends
+        // CI_Controller, so without this line fs->schoolId() is '' and EVERY
+        // schoolWhere() filters on schoolId == '' and returns zero rows — which
+        // reads exactly like "this student has no demands". That artefact cost a
+        // false defect report; a harness must construct its dependencies the way
+        // the real caller does or it measures a different program.
+        $this->fs->init($school, $session, $school);
         $this->load->library('Fee_firestore_txn', null, 'fsTxn');
         $this->fsTxn->init($this->firebase, $this->fs, $school, $session);
         $this->load->library('Fee_lifecycle', null, 'feeLifecycle');
@@ -137,6 +144,13 @@ class Demand_diag extends CI_Controller
         // same arguments. A diagnostic that constructs its dependencies
         // differently from the real caller measures a different program.
         $this->load->library('firestore_service', null, 'fs');
+        // MY_Controller::__construct() calls fs->init(); this diagnostic extends
+        // CI_Controller, so without this line fs->schoolId() is '' and EVERY
+        // schoolWhere() filters on schoolId == '' and returns zero rows — which
+        // reads exactly like "this student has no demands". That artefact cost a
+        // false defect report; a harness must construct its dependencies the way
+        // the real caller does or it measures a different program.
+        $this->fs->init($school, $session, $school);
         $this->load->library('Fee_firestore_txn', null, 'fsTxn');
         $this->fsTxn->init($this->firebase, $this->fs, $school, $session);
         $this->load->library('Fee_lifecycle', null, 'feeLifecycle');
@@ -207,6 +221,35 @@ class Demand_diag extends CI_Controller
             ];
         }
 
+        // ── STAGE 3b: the FAIL-CLOSED reader (B-011) ───────────────────────
+        // demandsForStudent() ends in `catch (\Exception) { return []; }`, so a
+        // failing query is indistinguishable from "this student has no demands".
+        // demandsForStudentStrict() throws instead. Calling it turns a silent
+        // zero into the actual error, which is the whole question here.
+        $strictCount = null; $strictErr = '';
+        try {
+            $strictCount = count((array) $this->fsTxn->demandsForStudentStrict($studentId));
+        } catch (\Throwable $e) {
+            $strictErr = get_class($e) . ': ' . $e->getMessage();
+        }
+
+        // ── STAGE 3c: PROGRESSIVE PREDICATE NARROWING ──────────────────────
+        // Both readers return 0 while documents demonstrably exist, and the
+        // strict reader raises nothing — so no predicate is failing loudly.
+        // Add one condition at a time and watch where the row count collapses.
+        $narrow = [];
+        $sid = (string) $this->fs->schoolId();
+        $narrow['fs->schoolId()'] = $sid;
+        $narrow['fsTxn.session']  = $session;
+        try { $narrow['A schoolId only'] = count((array) $this->fs->where('feeDemands', [['schoolId','==',$sid]])); }
+        catch (\Throwable $e) { $narrow['A schoolId only'] = 'ERR: ' . $e->getMessage(); }
+        try { $narrow['B +session'] = count((array) $this->fs->where('feeDemands', [['schoolId','==',$sid],['session','==',$session]])); }
+        catch (\Throwable $e) { $narrow['B +session'] = 'ERR: ' . $e->getMessage(); }
+        try { $narrow['C +studentId'] = count((array) $this->fs->where('feeDemands', [['schoolId','==',$sid],['session','==',$session],['studentId','==',$studentId]])); }
+        catch (\Throwable $e) { $narrow['C +studentId'] = 'ERR: ' . $e->getMessage(); }
+        try { $narrow['D studentId only'] = count((array) $this->fs->where('feeDemands', [['studentId','==',$studentId]])); }
+        catch (\Throwable $e) { $narrow['D studentId only'] = 'ERR: ' . $e->getMessage(); }
+
         $chartTotal = array_sum($chartPairs);
         $specTotal  = array_sum(array_column($specRows, 'amount'));
         $persTotal  = array_sum(array_column($persisted, 'amount'));
@@ -226,6 +269,8 @@ class Demand_diag extends CI_Controller
                                  'error' => $routedErr],
             'routedKeys'     => array_map(fn($r) => $r['period'] . '|' . $r['head'], $routedRows),
             'stage3_persist' => ['count' => count($persisted), 'total' => $persTotal],
+            'stage3b_strict' => ['count' => $strictCount, 'error' => $strictErr],
+            'stage3c_narrow' => $narrow,
             'LOSS_chart_to_specs'   => count($chartPairs) - count($specRows),
             'LOSS_specs_to_persist' => count($specRows) - count($persisted),
             'chartPairs'     => array_keys($chartPairs),

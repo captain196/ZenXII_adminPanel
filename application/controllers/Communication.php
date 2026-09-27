@@ -1636,7 +1636,12 @@ class Communication extends MY_Controller
 
         if ($targetGroup === 'All Teachers' || $targetGroup === 'All School') {
             try {
-                $staffDocs = $this->fs->schoolWhere('staff', []);
+                // Staff Lifecycle audit finding: unlike the student query above,
+                // this had no status filter — a deactivated/separated staff
+                // member stayed in the recipient list at the query level (only
+                // masked downstream by userDevices cleanup suppressing actual
+                // push delivery). Mirrors the student-side Active filter.
+                $staffDocs = $this->fs->schoolWhere('staff', [['status', '==', 'Active']]);
                 $prefix = $this->school_id . '_';
                 foreach ($staffDocs as $doc) {
                     $d = $doc['data'] ?? $doc;

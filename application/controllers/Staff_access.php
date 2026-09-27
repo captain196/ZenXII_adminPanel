@@ -130,6 +130,15 @@ class Staff_access extends MY_Controller
         // admin/higher-tier role via the identity facet).
         if ($err = $this->_role_ceiling_block($staffRoles, $rid, $tier)) { $this->json_error($err, 403); return; }
 
+        // SEC-SCOPE-1: class/section authorization scope. 'section' = confined to
+        // the role's subjectAssignments (least-privilege default for custom roles);
+        // 'school' = operates across all sections. Blank = not submitted (leave
+        // as-is on edit; default 'section' on create).
+        $scope = strtolower(trim((string) ($this->input->post('access_scope', true) ?? '')));
+        if ($scope !== '' && !in_array($scope, ['school', 'section'], true)) {
+            $this->json_error('Invalid access scope.'); return;
+        }
+
         if ($rid === '') {
             // CREATE — derive a fresh ROLE_* id from the label.
             $rid = derive_role_id($label, $staffRoles);
@@ -144,6 +153,7 @@ class Staff_access extends MY_Controller
                 'sort_order'       => 100 + count($staffRoles),
                 'permissions'      => [],
                 'permissionLevels' => (object) [],
+                'accessScope'      => ($scope !== '' ? $scope : 'section'),  // least privilege
             ];
         } else {
             if (!isset($staffRoles[$rid]) || !is_array($staffRoles[$rid])) { $this->json_error('Role not found.'); return; }
@@ -155,6 +165,7 @@ class Staff_access extends MY_Controller
             $staffRoles[$rid]['description'] = $desc;
             $staffRoles[$rid]['department']  = $dept;
             $staffRoles[$rid]['tier']        = $tier;
+            if ($scope !== '') $staffRoles[$rid]['accessScope'] = $scope;
         }
 
         // Ensure a department exists for $dept + resync every department's role_ids.
@@ -627,7 +638,12 @@ class Staff_access extends MY_Controller
         $roles = array_values(array_unique(array_filter(['ROLE_BASELINE_APP', $rid])));
         $written = false;
         try {
-            $this->fs->saveStaff($sta, ['Name' => $name, 'Role' => $roleLabel, 'Department' => $dept, 'Status' => 'Active']);
+            // P0-7 — 'Date Of Joining' added: payroll pro-rates on the employment
+            // window and this onboarding path previously supplied none, so a staff
+            // member created here was treated as employed for the whole month with
+            // no mid-month proration. Same d-m-Y format Staff::new_staff() writes;
+            // correctable later in Edit Staff.
+            $this->fs->saveStaff($sta, ['Name' => $name, 'Role' => $roleLabel, 'Department' => $dept, 'Status' => 'Active', 'Date Of Joining' => date('d-m-Y')]);
             $written = $this->fs->set('staff', $this->fs->docId($sta), [
                 'staff_roles'        => $roles,
                 'primary_role'       => $rid,
@@ -1000,6 +1016,24 @@ class Staff_access extends MY_Controller
         $changed = false;
         foreach ($staffRoles as $rid => $r) {
             if (!is_array($r)) continue;
+
+            // SYSTEM ROLES ARE NOT STAFF DEPARTMENT MEMBERS (2026-08-21).
+            //
+            // `category` is the legacy staff-classification field this seed
+            // migrates into `department`, and its canonical vocabulary is the
+            // four values in ROLE_CATEGORIES. ROLE_BASELINE_APP — auto-assigned
+            // to every staff member — carries `category => 'System'`, which is
+            // NOT in that vocabulary; it is a system marker overloaded into a
+            // staff field, and the same role already carries the canonical
+            // marker `is_system => true`.
+            //
+            // Seeding from it created a department literally named "System",
+            // and because _is_system_dept_name('System') is false that phantom
+            // was created as an ordinary user department. Skipping system roles
+            // keeps them out of the department tree without altering any role's
+            // category, department or permissions.
+            if (!empty($r['is_system'])) continue;
+
             if (!isset($r['department']) || trim((string) $r['department']) === '') {
                 $staffRoles[$rid]['department'] = trim((string) ($r['category'] ?? '')) ?: 'Administrative';
                 $changed = true;
@@ -1070,7 +1104,16 @@ class Staff_access extends MY_Controller
                 $d = $doc['data'] ?? $doc; if (!is_array($d)) continue;
                 if (dept_key($d['department'] ?? $d['Department'] ?? '') === dept_key($oldName)) {
                     $id = (string) ($d['staffId'] ?? ($doc['id'] ?? ''));
-                    if ($id !== '') $this->fs->updateEntity('staff', $id, ['department' => $newName]);
+                    // DEPT-D1: staff docs are dual-emitted — Staff.php writes BOTH
+                        // 'Department' and 'department' on every create/update path.
+                        // Repointing only the camelCase mirror left 36 read sites that
+                        // resolve ['Department'] ?? ['department'] serving the OLD name
+                        // for ever. Both mirrors move in ONE patch so a partial write can
+                        // never leave the document self-inconsistent.
+                        if ($id !== '') $this->fs->updateEntity('staff', $id, [
+                            'department' => $newName,
+                            'Department' => $newName,
+                        ]);
                 }
             }
         } catch (\Throwable $e) { log_message('error', 'Staff_access dept rename cascade: ' . $e->getMessage()); }
@@ -1108,6 +1151,10 @@ class Staff_access extends MY_Controller
             'sort_order'       => (int) ($r['sort_order'] ?? 99),
             'permissions'      => array_values(array_filter((array) ($r['permissions'] ?? []))),
             'permissionLevels' => (object) (is_array($r['permissionLevels'] ?? null) ? $r['permissionLevels'] : []),
+            // SEC-SCOPE-1: resolved class/section scope ('school'|'section'),
+            // honouring an explicit accessScope, else the canonical system-role
+            // scope, else least-privilege 'section'.
+            'accessScope'      => rbac_role_scope($r, $rid),
         ];
     }
 }

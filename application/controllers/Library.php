@@ -513,27 +513,117 @@ class Library extends MY_Controller
         if ($status === 'paid') $this->json_error('Fine already paid.');
 
         $amount    = (float) ($fine['amount'] ?? $fine['fineAmount'] ?? 0);
-        $cashAcct  = ($paymentMode === 'Bank') ? '1020' : '1010';
+
+        // ── PM-1 · CASH IS THE EXCEPTION, NOT THE DEFAULT ──────────────────
+        //
+        // This read `($paymentMode === 'Bank') ? '1020' : '1010'` — an exact
+        // match on one literal, so UPI, cheque and card all debited CASH. The
+        // journal balanced either way, which is precisely why it survived: the
+        // only symptom is a cash box that cannot be reconciled against a
+        // physical count.
+        //
+        // Latent rather than live because the Library UI hard-codes
+        // `payment_mode: 'Cash'` — but this endpoint accepts whatever it is
+        // posted, and the UI is not the contract.
+        //
+        // Now the same polarity payroll already uses, via the shared helper,
+        // so Library can no longer drift from the rest of the estate.
+        $cashAcct  = Operations_accounting::is_non_cash_mode($paymentMode) ? '1020' : '1010';
         $studentNm = (string) ($fine['student_name'] ?? $fine['borrowerName'] ?? '');
         $bookTitle = (string) ($fine['book_title']   ?? $fine['bookTitle']    ?? '');
 
         $this->operations_accounting->validate_accounts([$cashAcct, '4060']);
 
+        // ── LIB-1 · TWO CLICKS COULD RECOGNISE THE REVENUE TWICE ───────────
+        //
+        // The `status === 'paid'` check above is a plain read, and what
+        // followed it was an unconditional journal write. Two concurrent
+        // requests — a double-clicked button, a retried request, two clerks on
+        // one fine — both read 'unpaid', both pass the check, and BOTH create a
+        // journal. The fine is paid once and Cr 4060 is credited twice: revenue
+        // recognised for money that was never received, in a ledger whose whole
+        // purpose is that it cannot be.
+        //
+        // Same shape as WAIVE-RACE-1 in Student_charge_service, and closed the
+        // same way: CLAIM FIRST, then do the work. The fine is marked paid
+        // under a `currentDocument.updateTime` precondition, so exactly one
+        // request can win, and only the winner writes a journal.
+        //
+        // ORDERING IS DELIBERATE. Claiming before journalling can leave a fine
+        // marked paid whose journal write then failed — under-recognised
+        // revenue, which is loud (no `journal_id` on the document) and
+        // repairable. Journalling first would leave a duplicate journal on a
+        // lost race — over-recognised revenue, silent, and far harder to
+        // unpick. Between an error you can find and an error you cannot, take
+        // the one you can find.
+        $fineUpdateTime = (string) ($fine['__updateTime'] ?? '');
+        if ($fineUpdateTime === '') {
+            // No precondition is possible, so the duplicate cannot be
+            // prevented. Refuse rather than write blind — restoring the race
+            // silently would be worse than refusing a payment the clerk can
+            // retry.
+            log_message('error', 'LIB_FINE_PAY_NO_CAS fine=[' . $fineId . '] school=['
+                . $this->school_name . '] — the fine document carried no __updateTime, so the '
+                . 'payment could not be made safe against a concurrent one. Refused.');
+            $this->json_error('This fine cannot be settled right now. Please reload and retry.');
+        }
+
+        $now   = date('c');
+        $claim = $this->firebase->firestoreCommitBatchStatus([[
+            'op'           => 'update',
+            'collection'   => self::COL_FINES,
+            'docId'        => $this->fs->docId($fineId),
+            'merge'        => true,
+            'precondition' => ['updateTime' => $fineUpdateTime],
+            'data'         => [
+                'paid'         => true,
+                'payment_mode' => $paymentMode,
+                'status'       => 'paid',
+                'paid_at'      => $now,
+                'paidAt'       => $now,
+                'paid_by'      => $this->admin_name,
+            ],
+        ]]);
+        $claimStatus = (string) ($claim['status'] ?? 'FAILURE');
+
+        if ($claimStatus === 'PRECONDITION_CONFLICT') {
+            // Another request settled (or otherwise changed) this fine between
+            // the read and the claim. Nothing was written here, and crucially
+            // no journal was created.
+            log_message('error', 'LIB_FINE_PAY_RACE fine=[' . $fineId . '] school=['
+                . $this->school_name . '] — the fine changed between the paid check and the '
+                . 'claim; refused so the revenue cannot be recognised twice.');
+            $this->json_error('This fine was just settled by someone else. Nothing has been '
+                . 'charged twice — please reload to see its current state.');
+        }
+        if ($claimStatus !== 'SUCCESS') {
+            $this->json_error('The fine could not be settled. Nothing has been changed.');
+        }
+
+        // Claim won — this request is the only one that may journal.
         $narration = "Library fine payment - {$studentNm} - {$bookTitle}";
         $journalId = $this->operations_accounting->create_journal($narration, [
             ['account_code' => $cashAcct, 'dr' => $amount, 'cr' => 0],
             ['account_code' => '4060',    'dr' => 0,       'cr' => $amount],
         ], 'Library', $fineId);
 
-        $this->fs->updateEntity(self::COL_FINES, $fineId, [
-            'paid'         => true,
-            'journal_id'   => $journalId,
-            'payment_mode' => $paymentMode,
-            'status'       => 'paid',
-            'paid_at'      => date('c'),
-            'paidAt'       => date('c'),
-            'paid_by'      => $this->admin_name,
-        ]);
+        if ($journalId === null || $journalId === '' || $journalId === false) {
+            // The fine is settled but the revenue is not recorded. Loud, and
+            // greppable by the absent journal_id — the recoverable direction
+            // this ordering was chosen for.
+            log_message('error', 'LIB_FINE_PAY_JOURNAL_MISSING fine=[' . $fineId . '] school=['
+                . $this->school_name . '] amount=[' . $amount . '] — the fine is marked PAID but '
+                . 'no journal was created. The money was received and is NOT in the ledger; '
+                . 'post it manually and stamp journal_id on the fine.');
+            $this->json_success([
+                'message'    => "Fine of Rs {$amount} recorded as paid, but the accounting entry "
+                              . "could not be created. Please inform accounts.",
+                'journal_id' => null,
+            ]);
+            return;
+        }
+
+        $this->fs->updateEntity(self::COL_FINES, $fineId, ['journal_id' => $journalId]);
 
         $this->json_success([
             'message'    => "Fine of Rs {$amount} paid. Journal: {$journalId}.",

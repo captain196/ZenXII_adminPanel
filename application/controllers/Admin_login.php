@@ -192,6 +192,32 @@ class Admin_login extends CI_Controller
         // ══════════════════════════════════════════════════════════════
         $this->_try_firebase_admin_login($adminId, $password, $ip, $now);
 
+        // ── The credential check never REACHED Firebase Auth ──────────────
+        // signInWithEmail() returns null for two unrelated things: Firebase
+        // judged the credential, or the request never left this machine. Both
+        // used to land below as "Invalid credentials" AND consume one of five
+        // lockout attempts — so a flaky link to oauth2.googleapis.com locked out
+        // an operator whose password was never wrong, and told them it was.
+        //
+        // This is NOT a weaker gate. Nothing is granted: the request still ends
+        // at the login form. Only the lie and the attempt-consumption are removed,
+        // and only when the transport signature is positively recognised — an
+        // unfamiliar error still falls through to the credential path below.
+        //
+        // Not attacker-reachable: the signature describes THIS server's outbound
+        // connection to Google, which a client cannot influence.
+        if ($this->firebase->lastSignInFailureWasTransport()) {
+            $this->sec_telem->emit('ADMIN_LOGIN_UNAVAILABLE', 'warning', [
+                'admin_id' => $adminId,
+                'ip'       => $ip,
+                'reason'   => 'auth_service_unreachable',
+            ], ['type' => 'school_admin', 'id' => $adminId]);
+            $this->session->set_flashdata('error',
+                'Could not reach the sign-in service. This is a connection problem, not your '
+                . 'password — no login attempt was counted. Please check the connection and retry.');
+            redirect('admin_login');
+        }
+
         // Reached here means Firebase Auth rejected (or claims/status check failed).
         // Record per-IP + per-account fails, emit telemetry, return to login form.
         $this->_record_admin_ip_fail($ip, $now);
@@ -279,6 +305,43 @@ class Admin_login extends CI_Controller
                 'status'   => $rawStatus,
             ], ['type' => 'school_admin', 'id' => $adminId]);
             $this->session->set_flashdata('error', 'Account deactivated. Contact admin.');
+            redirect('admin_login');
+        }
+
+        // Step 3b: LOGIN-SURFACE gate. Roles tagged surface='app' in the catalogue
+        // (Driver / Security / Peon, plus the auto-assigned App Baseline) are staff-app
+        // accounts and are refused the web panel. Union rule — holding ANY non-'app'
+        // role admits you, so a Driver who is also e.g. Transport Manager keeps the
+        // panel. Fails OPEN on a read error or empty catalogue: locking an entire
+        // school out of the panel is far worse than an app-only account reaching a
+        // dashboard on which RBAC already grants it nothing.
+        $this->load->helper('rbac');
+        try {
+            $schoolDoc  = $this->firebase->firestoreGet('schools', $schoolId);
+            $staffRoles = (is_array($schoolDoc) && is_array($schoolDoc['staffRoles'] ?? null))
+                ? $schoolDoc['staffRoles'] : [];
+        } catch (\Throwable $e) {
+            log_message('error', 'Login surface gate: staffRoles read failed for ' . $adminId . ': ' . $e->getMessage());
+            $staffRoles = [];
+        }
+        $roleRefs = [];
+        foreach (['staff_roles', 'staffRoles', 'roles', 'role_ids'] as $k) {
+            if (is_array($staffDoc[$k] ?? null)) { $roleRefs = array_map('strval', $staffDoc[$k]); break; }
+        }
+        foreach ([$staffDoc['primary_role'] ?? '', $roleLabel, $roleRaw] as $extraRef) {
+            if ((string) $extraRef !== '') { $roleRefs[] = (string) $extraRef; }
+        }
+        $roleRefs = array_values(array_unique(array_filter($roleRefs)));
+
+        if (!rbac_roles_allow_web($staffRoles, $roleRefs)) {
+            $this->sec_telem->emit('ADMIN_LOGIN_APP_ONLY_ROLE', 'warning', [
+                'admin_id' => $adminId,
+                'ip'       => $ip,
+                'schoolId' => $schoolId,
+                'roles'    => $roleRefs,
+            ], ['type' => 'school_admin', 'id' => $adminId]);
+            $this->session->set_flashdata('error',
+                'This account is for the ZenXii staff app. Please sign in from the app instead of the web panel.');
             redirect('admin_login');
         }
 

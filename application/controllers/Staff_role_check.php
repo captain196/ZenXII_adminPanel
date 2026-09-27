@@ -376,15 +376,51 @@ class Staff_role_check extends CI_Controller
                 if ($day >= 1 && $day <= $daysInMonth) $dayWise[$day - 1] = $mark;
             }
 
-            // Holiday/Sunday enforcement — SAME helpers production uses.
-            $holidayMap = [];
+            // Holiday/weekly enforcement — SAME authority production uses.
+            //
+            // CAL-D11 + Calendar Phase 5C. This block rebuilds STUDENT summaries
+            // and can write them, so it must agree with the student marking
+            // engine exactly. Two divergences were repaired here:
+            //
+            //   1. AUDIENCE. holidays_in_month() was called with no audience,
+            //      which defaults to 'staff' — so this tool rebuilt student
+            //      records against the STAFF calendar and would inherit, say, a
+            //      staff-only Teacher Training Day as a student holiday.
+            //
+            //   2. WEEKLY PATTERN. It called nw_days_from_holidays() directly,
+            //      which hardcodes Sunday. That agreed with production until the
+            //      Calendar programme made the school week configurable — after
+            //      which this tool would have rebuilt a five-day school's
+            //      summaries as a six-day week and written the result.
+            //      The divergence was introduced by that change, so it is
+            //      repaired as part of it rather than left as a trap.
+            $holidayMap = $swdMap = [];
             try {
                 $this->load->library('holiday_service');
                 $this->holiday_service->init($fs, (string)$schoolId, (string)$session);
-                $holidayMap = $this->holiday_service->holidays_in_month($year, $monthNum);
-            } catch (\Throwable $e) { /* no holidays resolvable → Sundays only */ }
-            $nonWorking = nw_days_from_holidays($holidayMap, $monthNum, $year);
-            $dayWise    = enforce_holidays_on_string($dayWise, $daysInMonth, $nonWorking);
+                $holidayMap = $this->holiday_service->holidays_in_month($year, $monthNum, 'students');
+                $swdMap     = $this->holiday_service->special_working_days_in_month($year, $monthNum, 'students');
+            } catch (\Throwable $e) { /* no exceptions resolvable → weekly pattern only */ }
+
+            $nonWorking = null;
+            try {
+                $this->load->library('student_calendar_reader');
+                $this->student_calendar_reader->init($fs, (string)$schoolId, (string)$session);
+                $nonWorking = $this->student_calendar_reader
+                    ->resolveMonth($year, $monthNum, $holidayMap, $swdMap)['nonWorking'];
+            } catch (\Throwable $e) {
+                echo "  [WARN] student calendar unreadable, falling back to the legacy "
+                   . "weekly rule: " . $e->getMessage() . "\n";
+            }
+            if ($nonWorking === null) {
+                $nonWorking = nw_days_from_holidays($holidayMap, $monthNum, $year);
+                foreach ($swdMap as $d_ => $_n) unset($nonWorking[(int) $d_]);
+            }
+
+            // preserveExplicitMarks: this is a REBUILD of historical months, so a
+            // real recorded mark must not be overwritten by a holiday declared
+            // after the fact.
+            $dayWise    = enforce_holidays_on_string($dayWise, $daysInMonth, $nonWorking, true);
 
             // Counts/percentage — reuse the shared parser (no new arithmetic).
             $counts = parse_attendance_string($dayWise, $daysInMonth, false);

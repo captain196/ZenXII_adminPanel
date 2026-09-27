@@ -161,7 +161,12 @@ class Admin extends MY_Controller
                     'icon'   => 'fa-user',
                     'title'  => ($s['name'] ?? '') !== '' ? $s['name'] : $id,
                     'detail' => trim(($cls !== '' ? $cls : '') . ($id !== '' ? ' · ' . $id : ''), " ·"),
-                    'url'    => 'sis/profile/' . rawurlencode($id),
+                    // Searching for a student is almost always "I need to deal
+                    // with this student", so the result opens the operational
+                    // workspace rather than the read-only profile. Same
+                    // capability gate (SIS:view), so no one gains access here.
+                    // The profile remains one click away from the SIS list.
+                    'url'    => 'student360/view/' . rawurlencode($id),
                 ];
             }
         } catch (\Throwable $e) {
@@ -1382,8 +1387,19 @@ class Admin extends MY_Controller
                         'Status'        => 'Active',
                         'status'        => 'Active',
                         'mustChangePassword' => true,
+                        // Pre-existing metadata (unchanged, kept as-is):
                         'created_by'    => (string) ($this->admin_id ?? ''),
                         'updatedAt'     => date('c'),
+                        // Pre-Phase-1 foundational metadata (NEW, additive):
+                        // this is the third live staff-creation entry point
+                        // (add-admin), given the same canonical createdAt/
+                        // createdBy pair the other two paths now write, so
+                        // Employment History has one consistent field to read
+                        // regardless of which flow created the record. The
+                        // pre-existing 'Created On'/'created_by' fields above
+                        // are left untouched — additive, not a rename.
+                        'createdAt'     => date('c'),
+                        'createdBy'     => (string) ($this->admin_id ?? ''),
                     ];
                     // Any exception or a returned `false` triggers an automatic
                     // releaseClaim on the STA id — no orphan claim-doc, no burnt number.
