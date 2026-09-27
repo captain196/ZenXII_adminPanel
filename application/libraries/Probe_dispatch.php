@@ -51,7 +51,7 @@ class Probe_dispatch
      *               json_success()/json_error(), which is why probes run one
      *               dispatch per process.
      */
-    public static function run(string $controller, string $method, array $post)
+    public static function run(string $controller, string $method, array $post, array $args = [])
     {
         $_POST = $post;
         $class = ucfirst($controller);
@@ -65,7 +65,8 @@ class Probe_dispatch
 
         try {
             $c = new $class();
-            return $c->$method();
+            // Some endpoints take URL segments as method arguments (edit_student).
+            return $args ? $c->$method(...$args) : $c->$method();
         } finally {
             // Restore even when the endpoint exits via json_success(); a
             // `finally` still runs on a normal return, and on exit() the

@@ -2,6 +2,7 @@
 defined('BASEPATH') or exit('No direct script access allowed');
 
 require_once APPPATH . 'libraries/Entity_firestore_sync.php';
+require_once APPPATH . 'libraries/Teaching_staff.php';
 
 /**
  * Subject_assignment_service — Single source of truth for teacher-subject-class assignments.
@@ -38,6 +39,29 @@ class Subject_assignment_service
 
     /** Firestore collection name */
     const COLLECTION = 'subjectAssignments';
+
+    /**
+     * One document per (school, session, class, section), holding nothing
+     * anybody reads.
+     *
+     * Saving a section's subjects is a REPLACE, and the delete set that
+     * decides what it replaces is read at the start of the request. CONC-D1
+     * made the delete and the writes one atomic commit, so a crash can no
+     * longer lose the rows — but it cannot notice that somebody else
+     * replaced the same section in between. Their rows are not in this
+     * request's delete set, so the replace quietly becomes an ADD and the
+     * section carries subjects nobody chose.
+     *
+     * That is the same revocation failure ACAD-D14 aborts the save to
+     * prevent: firestore.rules authorizes a marks write by reading these
+     * rows, so a row that survives a replace is a teacher who kept access to
+     * a class they were removed from.
+     *
+     * This document is read before the delete set and committed WITH the
+     * batch, conditional on not having moved. Different sections touch
+     * different documents and never block each other.
+     */
+    const COLLECTION_SECTION = 'subjectAssignmentSections';
 
     /**
      * Initialise the service. Supports both the new 3-arg signature and the
@@ -84,6 +108,18 @@ class Subject_assignment_service
         return "{$this->schoolId}_{$this->session}_{$cls}_{$secK}_{$sub}";
     }
 
+    /**
+     * The serialisation point for one section. Same substitution scheme as
+     * docId(), so the two are recognisably about the same thing.
+     */
+    public function sectionLedgerId(string $classKey, string $sectionKey): string
+    {
+        $sec  = ($sectionKey === '') ? '_ALL_' : $sectionKey;
+        $cls  = str_replace([' ', '/'], ['_', '_'], $classKey);
+        $secK = str_replace([' ', '/'], ['_', '_'], $sec);
+        return "{$this->schoolId}_{$this->session}_{$cls}_{$secK}";
+    }
+
     // ══════════════════════════════════════════════════════════════════
     //  VALIDATION
     // ══════════════════════════════════════════════════════════════════
@@ -96,24 +132,47 @@ class Subject_assignment_service
     {
         if ($teacherId === '') return true;
 
-        try {
-            $staff = $this->fs->getEntity('staff', $teacherId);
-            if (!is_array($staff)) return false;
+        // A staff record that could not be READ is not a teacher who lacks the
+        // subject. Both used to return false, and the caller's message told the
+        // operator to go and add the subject to that teacher's profile — advice
+        // that is simply wrong during an outage, about a colleague who is
+        // perfectly well qualified. The refusal was safe; the explanation was
+        // not. Callers catch the throw and say what actually happened.
+        $staff = $this->staffRecordOrFail($teacherId);
+        if (!is_array($staff)) return false;
 
-            $teachingSubjects = $staff['teaching_subjects'] ?? [];
-            if (!is_array($teachingSubjects) || empty($teachingSubjects)) return false;
+        $teachingSubjects = $staff['teaching_subjects'] ?? [];
+        if (!is_array($teachingSubjects) || empty($teachingSubjects)) return false;
 
-            $subjectName = $subjectName ?: $subjectCode;
-            foreach ($teachingSubjects as $ts) {
-                $ts = trim((string)$ts);
-                if ($ts === '') continue;
-                if (strcasecmp($ts, $subjectCode) === 0) return true;
-                if (strcasecmp($ts, $subjectName) === 0) return true;
-            }
-        } catch (\Exception $e) {
-            log_message('error', "Subject_assignment_service::teacherCanTeach failed: " . $e->getMessage());
+        $subjectName = $subjectName ?: $subjectCode;
+        foreach ($teachingSubjects as $ts) {
+            $ts = trim((string)$ts);
+            if ($ts === '') continue;
+            if (strcasecmp($ts, $subjectCode) === 0) return true;
+            if (strcasecmp($ts, $subjectName) === 0) return true;
         }
         return false;
+    }
+
+    /**
+     * One staff record, read fail-loud.
+     *
+     * null means the record is genuinely ABSENT; a read that FAILED throws.
+     * Addressed by document id, exactly as before — the raw client is the
+     * same one this service already uses to commit batches, so nothing new
+     * is wired and Firestore_service is left alone. A client that cannot do
+     * a fail-loud get keeps the previous behaviour rather than losing the
+     * check altogether.
+     *
+     * @throws \Throwable when the record cannot be read
+     */
+    public function staffRecordOrFail(string $teacherId): ?array
+    {
+        $raw = method_exists($this->fs, 'raw_client') ? $this->fs->raw_client() : null;
+        if ($raw !== null && method_exists($raw, 'getDocumentOrFail')) {
+            return $raw->getDocumentOrFail('staff', $this->fs->docId($teacherId));
+        }
+        return $this->fs->getEntity('staff', $teacherId);
     }
 
     /**
@@ -176,7 +235,46 @@ class Subject_assignment_service
             return $result;
         }
 
+        // ── ONE LABEL FOR ONE SECTION, DECIDED HERE ──────────────────────
+        //
+        // Three things are derived from these two strings: the delete set that
+        // decides which rows this save replaces, the document id, and the
+        // document body. The body was already being written with the canonical
+        // labels while the other two used whatever the caller passed, and each
+        // disagreement costs something real.
+        //
+        // The delete set is queried by className, so "8" finds nothing filed
+        // as "Class 8th": the old rows survive beside the new ones and every
+        // teacher who should have lost access keeps it. And the document id is
+        // what firestore.rules reconstructs to authorize a marks or homework
+        // write — the Teacher app builds that hint from the canonical class
+        // name, so a row filed as "8" is invisible to it and a properly
+        // assigned teacher is refused.
+        //
+        // Academic::save_subject_assignments normalises before calling in;
+        // Academic::copy_subject_assignments does not. The guard belongs here,
+        // where every caller gets it. normalizeClassSection() is idempotent, so
+        // a caller that already normalised loses nothing.
+        $canon      = Entity_firestore_sync::normalizeClassSection($classKey, $sectionKey);
+        $classKey   = $canon['className'] !== '' ? $canon['className'] : $classKey;
+        $sectionKey = $canon['section']   !== '' ? $canon['section']   : $sectionKey;
+
+        // The state this save is about to replace, captured BEFORE the delete
+        // set is read. A concurrent save for the same section moves it, and
+        // the commit below is refused rather than merging into a section it
+        // never saw. A failed read yields no token, which becomes an
+        // "expected to not exist" precondition — so an unreadable ledger
+        // refuses the save rather than waving it through.
+        $sectionLedgerId = $this->sectionLedgerId($classKey, $sectionKey);
+        $ledgerDoc = $this->fs->get(self::COLLECTION_SECTION, $sectionLedgerId);
+        $ledgerAt  = is_array($ledgerDoc)
+            ? (string) ($ledgerDoc['__updateTime'] ?? '') : '';
+
         // ── Validation pass ──────────────────────────────────────────
+        // The staff records fetched here are kept: the write below needs the
+        // same ones for the teacher's real name, and reading them twice would
+        // be two round trips for one answer.
+        $knownStaff = [];
         $classTeacherCount = 0;
         $classTeacherTeacher = '';
         foreach ($subjects as $sub) {
@@ -186,8 +284,23 @@ class Subject_assignment_service
             $teacherId    = trim($sub['teacher_id'] ?? '');
             $isClsTeacher = !empty($sub['is_class_teacher']);
 
-            if ($teacherId !== '' && !$this->teacherCanTeach($teacherId, $code, $name)) {
-                $result['errors'][] = "Teacher {$teacherId} is not authorized to teach {$name} ({$code}). Add this subject to their teaching_subjects in Staff profile first.";
+            if ($teacherId !== '') {
+                try {
+                    if (!array_key_exists($teacherId, $knownStaff)) {
+                        $knownStaff[$teacherId] = $this->staffRecordOrFail($teacherId);
+                    }
+                    $canTeach = $this->teacherCanTeach($teacherId, $code, $name);
+                } catch (\Throwable $e) {
+                    log_message('error', 'Subject_assignment_service: staff record '
+                        . 'unreadable for ' . $teacherId . ': ' . $e->getMessage());
+                    $result['errors'][] = 'The staff records could not be read, so who '
+                        . 'teaches what could not be checked and nothing was saved. '
+                        . 'Please try again in a moment.';
+                    return $result;
+                }
+                if (!$canTeach) {
+                    $result['errors'][] = "Teacher {$teacherId} is not authorized to teach {$name} ({$code}). Add this subject to their teaching_subjects in Staff profile first.";
+                }
             }
 
             if ($isClsTeacher && $teacherId !== '') {
@@ -212,7 +325,40 @@ class Subject_assignment_service
         }
 
         // Delete existing assignments for this class+section (so re-saving with fewer subjects removes stale ones)
-        $this->_deleteClassAssignments($classKey, $sectionKey);
+        // CONC-D1: collect the replace as ONE batch instead of deleting rows
+        // and then writing them back one at a time. Between those two steps the
+        // section had NO assignments, and a failure mid-loop left them deleted
+        // and never rewritten — permanent loss of the rows that attendance and
+        // marks authorization resolve through.
+        //
+        // NOTE: batchRemove() is a LOOP of single removes, not a transaction —
+        // only commitBatch() maps to the Firestore :commit endpoint.
+        $batchOps  = [];
+        $rawClient = method_exists($this->fs, 'raw_client') ? $this->fs->raw_client() : null;
+        $canBatch  = ($rawClient !== null && method_exists($rawClient, 'commitBatch'));
+
+        // ACAD-D14: if the delete set cannot be read we must NOT fall through to
+        // the writes below. Doing so saves the new rows while leaving every
+        // removed teacher's row in place — a silent failure to revoke access
+        // that firestore.rules then honours on marks writes.
+        try {
+            if ($canBatch) {
+                foreach ($this->_collectExistingDocIds($classKey, $sectionKey) as $staleId) {
+                    $batchOps[] = ['op' => 'delete', 'collection' => self::COLLECTION, 'docId' => $staleId];
+                }
+            } else {
+                // Fallback: a client that cannot batch must still save.
+                $this->_deleteClassAssignments($classKey, $sectionKey);
+            }
+        } catch (\Throwable $e) {
+            log_message('error', 'Subject_assignment_service: aborting save — existing '
+                . 'assignments unreadable (school=' . $this->schoolId . ' class=' . $classKey
+                . ' section=' . $sectionKey . '): ' . $e->getMessage());
+            $result['errors'][] = 'The assignments already saved for this class could not '
+                . 'be read, so nothing was changed. Saving now would have left teachers you '
+                . 'removed still assigned. Please try again in a moment.';
+            return $result;
+        }
 
         // Normalize class/section into canonical Phase 1 shape.
         $cs = Entity_firestore_sync::normalizeClassSection($classKey, $sectionKey);
@@ -227,10 +373,16 @@ class Subject_assignment_service
         // If saving per-section, remove any stale class-wide (_ALL_) docs for the same class.
         if ($sectionKey !== '') {
             try {
-                $allDocs = $this->fs->schoolWhere(self::COLLECTION, [
-                    ['session', '==', $this->session],
+                // ACAD-D14: stale class-wide (_ALL_) rows grant WHOLE-CLASS access.
+                // Two independent silent failures used to live here: the read
+                // returned [] when it failed, and remove() returns BOOL (it never
+                // throws), so the catch around it was inspecting nothing. Either
+                // one left the old class-wide assignment in place.
+                $allDocs = $this->fs->whereOrFail(self::COLLECTION, [
+                    ['schoolId',  '==', $this->schoolId],
+                    ['session',   '==', $this->session],
                     ['className', '==', $canonicalClass],
-                    ['section', '==', ''],
+                    ['section',   '==', ''],
                 ]);
                 foreach ($allDocs as $aDoc) {
                     $d = $aDoc['data'] ?? $aDoc;
@@ -239,12 +391,19 @@ class Subject_assignment_service
                     // no-op'd, leaving stale class-wide rows behind.
                     $aId = $aDoc['id'] ?? ($d['id'] ?? '');
                     if ($aId !== '') {
-                        try { $this->fs->remove(self::COLLECTION, $aId); }
-                        catch (\Exception $e) {}
+                        if (!$this->fs->remove(self::COLLECTION, $aId)) {
+                            throw new \RuntimeException('CLASSWIDE_CLEANUP_FAILED:' . $aId);
+                        }
                     }
                 }
-            } catch (\Exception $e) {
-                log_message('debug', 'Subject_assignment_service: class-wide cleanup skipped: ' . $e->getMessage());
+            } catch (\Throwable $e) {
+                log_message('error', 'Subject_assignment_service: aborting save — class-wide '
+                    . 'cleanup failed (school=' . $this->schoolId . ' class=' . $canonicalClass
+                    . '): ' . $e->getMessage());
+                $result['errors'][] = 'The existing class-wide assignments for this class '
+                    . 'could not be cleared, so nothing was changed. Saving now would have '
+                    . 'left a teacher assigned to the whole class. Please try again in a moment.';
+                return $result;
             }
         }
 
@@ -259,6 +418,19 @@ class Subject_assignment_service
             $teacherId    = trim($sub['teacher_id'] ?? '');
             $teacherName  = trim($sub['teacher_name'] ?? '');
             $isClsTeacher = !empty($sub['is_class_teacher']);
+
+            // The NAME is what everybody sees — the matrix, the Teacher app,
+            // the timetable cell, the marks screen. Taking it from the request
+            // lets it say anything at all about a real member of staff, and the
+            // school's own record is right there. A record carrying no name
+            // leaves the submitted one alone rather than blanking the row.
+            if ($teacherId !== '') {
+                $rec = $knownStaff[$teacherId] ?? null;
+                if (is_array($rec)) {
+                    $realName = \Teaching_staff::name($rec);
+                    if ($realName !== '') { $teacherName = $realName; }
+                }
+            }
 
             $docId = $this->docId($classKey, $sectionKey, $code);
 
@@ -280,12 +452,87 @@ class Subject_assignment_service
                 'updatedAt'       => date('c'),
             ];
 
+            if ($canBatch) {
+                $batchOps[] = ['op' => 'set', 'collection' => self::COLLECTION, 'docId' => $docId, 'data' => $doc];
+                $saved++;
+                continue;
+            }
+
             try {
                 $this->fs->set(self::COLLECTION, $docId, $doc, true);
                 $saved++;
             } catch (\Exception $e) {
                 $result['errors'][] = "Failed to save {$code}: " . $e->getMessage();
                 log_message('error', "Subject_assignment_service::saveClassAssignments [{$docId}] failed: " . $e->getMessage());
+            }
+        }
+
+        // CONC-D1: one commit for the whole replace. Either every stale row is
+        // removed AND every new row lands, or nothing changes at all.
+        if ($canBatch && !empty($batchOps)) {
+            // The serialisation point rides along, conditional on not having
+            // moved since it was read above.
+            $batchOps[] = [
+                'op'         => 'set',
+                'collection' => self::COLLECTION_SECTION,
+                'docId'      => $sectionLedgerId,
+                'data'       => [
+                    'schoolId'  => $this->schoolId,
+                    'session'   => $this->session,
+                    'className' => $canonicalClass,
+                    'section'   => $canonicalSection,
+                    'updatedAt' => date('c'),
+                ],
+                'merge'        => true,
+                'precondition' => $ledgerAt !== ''
+                    ? ['updateTime' => $ledgerAt]
+                    : ['exists' => false],
+            ];
+
+            if (method_exists($rawClient, 'commitBatchStatus')) {
+                try {
+                    $commit = $rawClient->commitBatchStatus($batchOps);
+                } catch (\Exception $e) {
+                    $result['errors'][] = 'Could not save the assignments. Nothing was changed.';
+                    log_message('error', 'Subject_assignment_service: commitBatchStatus failed: '
+                        . $e->getMessage());
+                    return $result;
+                }
+
+                $status = (string) ($commit['status'] ?? '');
+                if ($status === 'PRECONDITION_CONFLICT') {
+                    log_message('error', 'Subject_assignment_service: section CAS conflict ('
+                        . $sectionLedgerId . ')');
+                    $result['errors'][] = 'Somebody else changed the subjects for this '
+                        . 'class while you were editing them, so nothing was saved — '
+                        . 'saving now would have merged your list into theirs and left '
+                        . 'teachers assigned that neither of you chose. Reload the class '
+                        . 'and try again.';
+                    return $result;
+                }
+                if ($status !== 'SUCCESS') {
+                    $result['errors'][] = 'Could not save the assignments. Nothing was changed.';
+                    log_message('error', 'Subject_assignment_service: commit returned '
+                        . $status . ' for ' . $classKey . '/' . $sectionKey);
+                    return $result;
+                }
+            } else {
+                // A client that cannot report a status cannot be made
+                // conditional either; the batch is still atomic.
+                try {
+                    if (!$rawClient->commitBatch($batchOps)) {
+                        $result['errors'][] = 'Could not save the assignments. Nothing was changed.';
+                        $saved = 0;
+                        log_message('error', 'Subject_assignment_service: commitBatch returned false for '
+                            . $classKey . '/' . $sectionKey);
+                        return $result;
+                    }
+                } catch (\Exception $e) {
+                    $result['errors'][] = 'Could not save the assignments. Nothing was changed.';
+                    $saved = 0;
+                    log_message('error', 'Subject_assignment_service: commitBatch failed: ' . $e->getMessage());
+                    return $result;
+                }
             }
         }
 
@@ -321,13 +568,58 @@ class Subject_assignment_service
     /**
      * Delete all assignments for a class+section (used before re-saving).
      */
+    /**
+     * CONC-D1: doc ids of the rows this save replaces, scoped to exactly one
+     * session/class/section. Shared by the batch path and the fallback so the
+     * two can never disagree about WHICH rows are being replaced.
+     *
+     * @return string[]
+     */
+    private function _collectExistingDocIds(string $classKey, string $sectionKey): array
+    {
+        // ACAD-D14: this returns a DELETE SET. schoolWhere() -> firestoreQuery()
+        // returns [] for a FAILED read exactly as it does for "no existing
+        // assignments", and an empty delete set means the caller writes the new
+        // rows while every removed teacher's row SURVIVES.
+        //
+        // That is a revocation failure, not a cosmetic one: firestore.rules
+        // authorizes a marks write by reading
+        // subjectAssignments/{school}_{session}_{class}_{section}_{subjectCode}
+        // directly. docIds are deterministic per subject, so re-saved subjects
+        // overwrite cleanly and ONLY the removed ones survive — the failure
+        // lands precisely on the teachers who were supposed to lose access.
+        //
+        // Read fail-loud and let the caller abort before any write.
+        $ids = [];
+        try {
+            $existing = $this->fs->whereOrFail(self::COLLECTION, [
+                ['schoolId',  '==', $this->schoolId],
+                ['session',   '==', $this->session],
+                ['className', '==', $classKey],
+                ['section',   '==', $sectionKey],
+            ]);
+            foreach ($existing as $assignment) {
+                $d = $assignment['data'] ?? $assignment;
+                $docId = $assignment['id'] ?? ($d['id'] ?? '');
+                if ($docId !== '') $ids[] = (string) $docId;
+            }
+        } catch (\Throwable $e) {
+            log_message('error', 'Subject_assignment_service::_collectExistingDocIds failed: '
+                . $e->getMessage());
+            throw new \RuntimeException('ASSIGNMENT_DELETE_SET_UNREADABLE');
+        }
+        return $ids;
+    }
+
     private function _deleteClassAssignments(string $classKey, string $sectionKey): void
     {
+        // ACAD-D14 — same revocation hazard as _collectExistingDocIds above.
         try {
-            $existing = $this->fs->schoolWhere(self::COLLECTION, [
-                ['session', '==', $this->session],
+            $existing = $this->fs->whereOrFail(self::COLLECTION, [
+                ['schoolId',  '==', $this->schoolId],
+                ['session',   '==', $this->session],
                 ['className', '==', $classKey],
-                ['section', '==', $sectionKey],
+                ['section',   '==', $sectionKey],
             ]);
 
             foreach ($existing as $assignment) {
@@ -337,11 +629,20 @@ class Subject_assignment_service
                 // no-op'd, so "delete before re-save" never actually deleted.
                 $docId = $assignment['id'] ?? ($d['id'] ?? '');
                 if ($docId !== '') {
-                    $this->fs->remove(self::COLLECTION, $docId);
+                    // remove() returns BOOL and never throws — an ignored false
+                    // here is a row that was supposed to be revoked and was not.
+                    if (!$this->fs->remove(self::COLLECTION, $docId)) {
+                        throw new \RuntimeException('ASSIGNMENT_DELETE_FAILED:' . $docId);
+                    }
                 }
             }
-        } catch (\Exception $e) {
-            log_message('error', "Subject_assignment_service::_deleteClassAssignments failed: " . $e->getMessage());
+        } catch (\Throwable $e) {
+            // ACAD-D14: this used to log and return, so the caller carried on and
+            // wrote the new rows while the old ones survived. Rethrow so the save
+            // aborts — a revocation that did not happen must not report success.
+            log_message('error', 'Subject_assignment_service::_deleteClassAssignments failed: '
+                . $e->getMessage());
+            throw new \RuntimeException('ASSIGNMENT_DELETE_SET_UNREADABLE');
         }
     }
 
@@ -380,6 +681,14 @@ class Subject_assignment_service
     {
         if (!$this->ready) return [];
 
+        // Rows are STORED under the canonical labels, so a caller asking for
+        // "8" must be asking about "Class 8th" — otherwise the query matches
+        // nothing and the caller concludes the class has no subjects. The copy
+        // screen reads its source through here.
+        $canon      = Entity_firestore_sync::normalizeClassSection($classKey, $sectionKey);
+        $classKey   = $canon['className'] !== '' ? $canon['className'] : $classKey;
+        $sectionKey = $canon['section']   !== '' ? $canon['section']   : $sectionKey;
+
         try {
             $conditions = [
                 ['session', '==', $this->session],
@@ -401,6 +710,50 @@ class Subject_assignment_service
             log_message('error', "Subject_assignment_service::getAssignmentsForClass failed: " . $e->getMessage());
             return [];
         }
+    }
+
+    /**
+     * The same read, fail-loud, for callers that ACT on an empty result.
+     *
+     * getAssignmentsForClass() returns [] for a failed read exactly as it does
+     * for a class with no subjects, and it has sixteen callers across seven
+     * files — most of which only display what comes back. Converting the
+     * shared contract would reach into two modules already closed, for the
+     * benefit of a better message.
+     *
+     * So this follows the precedent the timetable module set at ACAD-D25 and
+     * that Firestore_service sets with where()/whereOrFail(): the tolerant
+     * read stays, and a caller that would do something irreversible on an
+     * empty answer asks the loud one instead. The copy screen is that caller —
+     * it reports "no assignments found in source class" and stops, which is
+     * simply untrue when the read failed.
+     *
+     * @throws \Throwable when the assignments cannot be read
+     */
+    public function getAssignmentsForClassOrFail(string $classKey, string $sectionKey = ''): array
+    {
+        if (!$this->ready) {
+            throw new \RuntimeException('SUBJECT_ASSIGNMENT_SERVICE_NOT_READY');
+        }
+
+        $canon      = Entity_firestore_sync::normalizeClassSection($classKey, $sectionKey);
+        $classKey   = $canon['className'] !== '' ? $canon['className'] : $classKey;
+        $sectionKey = $canon['section']   !== '' ? $canon['section']   : $sectionKey;
+
+        $conditions = [
+            ['schoolId',  '==', $this->schoolId],
+            ['session',   '==', $this->session],
+            ['className', '==', $classKey],
+        ];
+        if ($sectionKey !== '') { $conditions[] = ['section', '==', $sectionKey]; }
+
+        $out = [];
+        foreach ($this->fs->whereOrFail(self::COLLECTION, $conditions) as $r) {
+            $d = $r['data'] ?? [];
+            if (!empty($d['archived'])) { continue; }
+            $out[] = $d;
+        }
+        return $out;
     }
 
     /**

@@ -22,6 +22,112 @@ defined('BASEPATH') or exit('No direct script access allowed');
  */
 class Operations_accounting
 {
+    /**
+     * ── PM-1 · PAYMENT MODE → CASH OR BANK, IN ONE PLACE ───────────────────
+     *
+     * Money that did not arrive as physical notes must debit a BANK account.
+     * Getting this wrong balances perfectly and is still wrong: a UPI payment
+     * debited to Cash means the cash box can never be reconciled against a
+     * physical count, and the bank never against a statement. ACC-PM1 was
+     * exactly this defect on the fee path.
+     *
+     * Three different classifications had grown up independently:
+     *
+     *   fees     an inline allowlist  → the real bank account from the CoA
+     *   payroll  `$mode === 'Cash' ? '1010' : '1020'`     — cash is the exception
+     *   library  `$mode === 'Bank' ? '1020' : '1010'`     — INVERTED
+     *
+     * Library was the outlier: every mode except the literal string 'Bank'
+     * booked to Cash, so UPI, cheque and card all overstated the cash box. Its
+     * UI only ever posts 'Cash', which is why this stayed latent — but the
+     * endpoint accepts whatever it is given, and the UI is not the contract.
+     */
+    public const NON_CASH_MODES = ['bank', 'cheque', 'upi', 'neft', 'rtgs', 'online', 'bank_transfer'];
+
+    /**
+     * WHICH cash/bank ledger a payment debits. The single definition of that
+     * rule — deliberately, because two copies of it silently drift apart and
+     * the drift is invisible until a bank reconciliation fails.
+     *
+     * ── WHY THIS IS SHARED RATHER THAN INLINE ────────────────────────────
+     * AccountingReconciler's repair path states the invariant it depends on:
+     *
+     *   "CORE-1: repair path must debit the SAME bank ledger the primary
+     *    posting used."
+     *
+     * It tried to honour that by passing `receipt.bankLedgerCode` — but that
+     * field only ever held an OPERATOR's explicit choice. Online payments have
+     * no operator at the till, so it was '' on every one of them (receipt F1
+     * included), and the repair fell through to the fallback below: "the first
+     * active bank ledger in the chart of accounts".
+     *
+     * That reproduces the original posting ONLY while CoA iteration order is
+     * unchanged. Add a second bank ledger, or deactivate the current one, and
+     * a repair posts the debit to a DIFFERENT bank account than the entry it
+     * is repairing — while both entries claim to describe the same money.
+     *
+     * The fix is upstream: FeeCollectionService resolves through THIS function
+     * at collection time and stamps the result on the receipt, so the ledger is
+     * a recorded fact rather than a value re-derived later from a chart that
+     * may have moved. This function stays the only place the rule lives.
+     *
+     * @param array  $coa      chart of accounts, keyed by account code
+     * @param string $bankCode operator-selected ledger, '' when unset
+     * @param string $payMode  lowercase payment mode
+     * @return string the account code to debit; '1010' (Cash in Hand) when no
+     *         bank applies — cash genuinely belongs there, and it is also the
+     *         safe answer when a school has configured no active bank ledger.
+     */
+    public static function resolveCashBankCode(array $coa, string $bankCode, string $payMode): string
+    {
+        if ($bankCode !== '' && isset($coa[$bankCode])) {
+            return $bankCode;
+        }
+        if (in_array(strtolower($payMode), self::NON_CASH_MODES, true)) {
+            // DETERMINISTIC. This used to be "the first active bank ledger the
+            // foreach happens to reach", so the answer depended on the order
+            // Firestore returned the chart in — meaning the same payment could
+            // resolve to a different bank on a later run, and the reconciler's
+            // repair path could debit an account the original posting never
+            // touched. Sorted by code, the answer is a function of the data.
+            if (!class_exists('Payment_settlement_route', false)) {
+                $f = APPPATH . 'libraries/Payment_settlement_route.php';
+                if (is_file($f)) require_once $f;
+            }
+            if (class_exists('Payment_settlement_route', false)) {
+                $auto = Payment_settlement_route::firstActiveBankDeterministic($coa);
+                if ($auto !== null) return $auto;
+            }
+        }
+        return '1010';
+    }
+
+    /**
+     * True when a payment mode represents money that moved through a bank.
+     *
+     * CASH IS THE EXCEPTION, not the default — the polarity payroll already
+     * uses. An unrecognised mode is therefore treated as non-cash, which is
+     * deliberate: a school adding 'Paytm' or 'IMPS' gets the safe answer
+     * without editing this file, and the two failure directions are not
+     * symmetric. Money wrongly in Bank surfaces as one unmatched line on a
+     * statement; money wrongly in Cash inflates a physical count that nobody
+     * can ever reconcile, and cash is the side where a shortfall is
+     * unrecoverable.
+     *
+     * NOTE — `create_fee_payment_journal()` deliberately keeps ALLOWLIST
+     * semantics against NON_CASH_MODES rather than calling this. It resolves a
+     * specific bank account out of the Chart of Accounts, so an unknown mode
+     * there would have to pick a bank account on a guess. Converging the two
+     * is a behaviour change on the live fee-money path and belongs in its own
+     * change, not smuggled into a Library fix. The list is now shared, so at
+     * least the two can no longer drift.
+     */
+    public static function is_non_cash_mode(string $mode): bool
+    {
+        $m = strtolower(trim($mode));
+        return $m !== '' && $m !== 'cash';
+    }
+
     /** @var object Firebase library instance */
     private $firebase;
 
@@ -146,6 +252,10 @@ class Operations_accounting
                     'class'   => (string) ($s['className'] ?? ''),
                     'section' => (string) ($s['section'] ?? ''),
                     'user_id' => (string) ($s['studentId'] ?? $s['userId'] ?? ''),
+                    // Phase 11.3 — SR Number for the shared student picker used by
+                    // Library and Hostel. Built from the document already read
+                    // here: ZERO extra Firestore reads.
+                    'srNo'    => (string) ($s['srNo'] ?? ''),
                 ];
             }
             // Cache for 5 minutes (300 seconds)
@@ -158,7 +268,12 @@ class Operations_accounting
             $nameMatch = strpos(strtolower($s['name']), $q) !== false;
             $idMatch   = strpos(strtolower($s['id']), $q) !== false;
             $uidMatch  = strpos(strtolower($s['user_id'] ?? ''), $q) !== false;
-            if ($nameMatch || $idMatch || $uidMatch) {
+            // Phase 11.3 — exact SR Number match. Exact (not substring) so that
+            // searching "1" does not return every student whose register number
+            // merely contains a 1. `?? ''` tolerates pre-change cache entries
+            // until the existing 300s TTL refreshes them.
+            $srMatch   = ((string) ($s['srNo'] ?? '') !== '' && strtolower((string) $s['srNo']) === $q);
+            if ($nameMatch || $idMatch || $uidMatch || $srMatch) {
                 $results[] = $s;
                 if (count($results) >= $limit) break;
             }
@@ -862,16 +977,7 @@ class Operations_accounting
         });
         if (empty($coa)) { $CI->acctIdemp->markFailed($idempKey, 'CoA not set up'); return null; }
 
-        if ($bankCode !== '' && isset($coa[$bankCode])) {
-            $cashBankCode = $bankCode;
-        } elseif (in_array($payMode, ['bank','cheque','upi','neft','rtgs','online','bank_transfer'], true)) {
-            $cashBankCode = '1010';
-            foreach ($coa as $code => $acct) {
-                if (!empty($acct['is_bank']) && ($acct['status'] ?? '') === 'active') { $cashBankCode = $code; break; }
-            }
-        } else {
-            $cashBankCode = '1010';
-        }
+        $cashBankCode = self::resolveCashBankCode($coa, $bankCode, $payMode);
 
         $cashAcct = $coa[$cashBankCode] ?? null;
         if (!is_array($cashAcct) || ($cashAcct['status'] ?? '') !== 'active') {
@@ -1153,6 +1259,55 @@ class Operations_accounting
             '4040' => ['transport', 'bus', 'conveyance', 'vehicle'],
             '4050' => ['hostel', 'boarding', 'mess', 'accommodation'],
             '4060' => ['late', 'fine', 'penalty', 'overdue'],
+            // ── ID-ACCT-1 (Phase 19N) ────────────────────────────────────
+            // Without an entry here an ID-card replacement head matched no
+            // keyword and fell through to the default 4010 Tuition Fees,
+            // booking a consumable reimbursement as tuition revenue and
+            // inflating fee-collection analytics.
+            //
+            // Fee Head Registry phase (2026-08-17): the head used to be
+            // version-scoped ("ID Card Replacement (Card v2)", "… (Card v3)")
+            // because the version was what gave each replacement its own
+            // demand id. The version now travels as the demand's explicit
+            // `chargeInstance`, so the head is the stable "ID Card
+            // Replacement". This mapping is unaffected either way — it matches
+            // the "id card" substring, which is present in both the old
+            // version-scoped names and the new stable one.
+            //
+            // 4140 Miscellaneous Income (under 4100 Other Income), NOT a new
+            // 4070 under 4000 Fee Income: replacing a lost card is cost
+            // recovery for a consumable, not fee income, so booking it beside
+            // Tuition/Transport/Hostel would overstate Fee Income. 4140
+            // already exists in the seeded chart (Accounting.php), so this
+            // needs no new production accounting structure.
+            //
+            // The `isset($coa[$code]) && active` guard below still applies, so
+            // a school that has removed 4140 simply falls through as before.
+            // ── SC-ACCT-1 (Student Charges) ──────────────────────────────
+            // The SAME hole ID-ACCT-1 found, one charge type later. A one-off
+            // student charge — "Lost Book", "Property Damage", "Breakage" —
+            // matches none of the keywords above and falls through to the
+            // default 4010 Tuition Fees, booking a cost recovery as tuition
+            // revenue and inflating fee-collection analytics exactly as an ID
+            // card once did.
+            //
+            // Same reasoning, same account: recovering the cost of a lost book
+            // or a broken window is NOT fee income. Booking it beside
+            // Tuition/Transport/Hostel overstates Fee Income, and the money did
+            // not arise from the sale of education.
+            //
+            // ORDERING NOTE: this entry is last, so a head containing "fine" or
+            // "penalty" still resolves to 4060 above. That is deliberate — a
+            // library FINE is a penalty, whereas a lost-book REPLACEMENT is
+            // cost recovery, and the two belong in different accounts.
+            //
+            // Explicit mapping (step 1, `feeAccountMap`) remains the
+            // authoritative mechanism and overrides all of this: a school that
+            // treats a trip contribution as activity income can map that head
+            // directly. These keywords only decide what an UNMAPPED charge head
+            // does, and "misclassified as Miscellaneous Income" is recoverable
+            // whereas "silently counted as tuition" is not.
+            '4140' => ['id card', 'identity card', 'lost', 'damage', 'breakage', 'replacement'],
         ];
 
         foreach ($keywords as $code => $terms) {
@@ -1392,6 +1547,13 @@ class Operations_accounting
         }
 
         // ── Late fee / fine: separate credit to 4060 (or 4010 fallback) ──
+        //
+        // ACC-1 (2026-08-20): the fine amount is remembered separately because
+        // the discount apportionment below must EXCLUDE it. Remembering the
+        // account is not enough — when 4060 is inactive the fine falls back to
+        // 4010 and is commingled with tuition income, so only the AMOUNT can
+        // identify the non-fee portion of that account's credit.
+        $fineCode   = '';
         $fineAmount = round($fineAmount, 2);
         if ($fineAmount > 0) {
             $fineCode = '4060';
@@ -1505,9 +1667,71 @@ class Operations_accounting
 
         // Distribute discount proportionally across credit accounts so
         // gross income lines sum to gross fee value.
+        //
+        // ══ ACC-1 FIX (2026-08-20) — THE FINE IS NOT PART OF FEE VALUE ══════
+        //
+        // THE DEFECT. The apportionment base previously included EVERY credit,
+        // and the late-fee credit is already in that set by the time this runs.
+        // A tuition concession therefore grossed up late-fee income:
+        //
+        //     fee 540 + fine 50 = 590 · discount 60 distributed pro rata
+        //        Tuition  540/590 × 60 = 54.92 → 594.92
+        //        Late fee  50/590 × 60 =  5.08 →  55.08
+        //
+        // The journal balanced and total revenue was correct, so no
+        // reconciliation would ever surface it — but the SPLIT was wrong: the
+        // school's P&L overstated penalty income and understated tuition.
+        //
+        // WHY THE FIX IS UNAMBIGUOUS. The comment directly above states the
+        // intent — income lines should sum to *gross fee value*. A late fee is
+        // a penalty levied after the fact, not part of the fee being
+        // discounted, and a concession granted on tuition has no economic
+        // relationship to it. Apportioning a discount across the revenue it
+        // does NOT relate to misstates both accounts.
+        //
+        // HISTORICAL IMPACT: NONE. Measured 2026-08-20 — `accounting`,
+        // `accountingLedger`, `feeReceipts` and `feePayments` are all EMPTY
+        // estate-wide, so no posted journal is restated by this change. It is
+        // purely prospective.
+        //
+        // The fine AMOUNT (not its account) is excluded: when 4060 is inactive
+        // the fine lands on 4010 alongside tuition, so the account alone cannot
+        // identify the non-fee portion.
         $totalCredits = 0;
         foreach ($validCredits as $data) $totalCredits += $data['amount'];
-        if ($discountAmount > 0 && $totalCredits > 0) {
+
+        // The fee-only base. Guarded: a fine credited to an account that was
+        // then invalidated and folded into 4010 still nets out correctly here,
+        // because both the total and the subtraction use the same amount.
+        $feeBase = round($totalCredits - $fineAmount, 2);
+
+        if ($discountAmount > 0 && $feeBase > 0.005) {
+            foreach ($validCredits as $code => &$data) {
+                // Strip this account's share of the fine before weighting it.
+                //
+                // ⚠ (string) CAST IS LOAD-BEARING. Account codes are numeric
+                // strings, and PHP silently converts a numeric-string array key
+                // to an INT. Without the cast this compares int 4060 === string
+                // '4060', which is FALSE under strict comparison, the fine is
+                // never excluded, and the whole ACC-1 fix silently does nothing
+                // while still looking correct in the source.
+                $feePortion = $data['amount'] - (((string) $code === $fineCode) ? $fineAmount : 0);
+                if ($feePortion <= 0.005) continue;   // fine-only account
+                $proportion = $feePortion / $feeBase;
+                $data['amount'] = round($data['amount'] + ($discountAmount * $proportion), 2);
+            }
+            unset($data);
+            $totalCredits = 0;
+            foreach ($validCredits as $data) $totalCredits += $data['amount'];
+        } elseif ($discountAmount > 0 && $totalCredits > 0) {
+            // DEGENERATE: a discount with no fee income to apportion it across
+            // (fine-only receipt). Nonsensical as an input, but Dr=Cr must still
+            // hold, so fall back to the previous whole-credit distribution
+            // rather than leaving the journal unbalanced.
+            log_message('warning', 'ACC_DISCOUNT_NO_FEE_BASE student=[' . $student
+                . '] discount=' . $discountAmount . ' fine=' . $fineAmount
+                . ' — no fee income to apportion the discount across; '
+                . 'falling back to whole-credit distribution to preserve Dr=Cr.');
             foreach ($validCredits as $code => &$data) {
                 $proportion = $data['amount'] / $totalCredits;
                 $data['amount'] = round($data['amount'] + ($discountAmount * $proportion), 2);
@@ -1664,17 +1888,26 @@ class Operations_accounting
         if (empty($coa)) return null;
 
         // Pick cash/bank account based on refund mode.
-        if (in_array($refundMode, ['bank_transfer', 'cheque', 'online', 'upi', 'neft'], true)) {
-            $cashBankCode = '1010';
-            foreach ($coa as $code => $acct) {
-                if (!empty($acct['is_bank']) && ($acct['status'] ?? '') === 'active') {
-                    $cashBankCode = $code;
-                    break;
-                }
-            }
-        } else {
-            $cashBankCode = '1010';
-        }
+        // ── PM-2 · THE FOURTH COPY OF THE MODE LIST ────────────────────────
+        // This read ['bank_transfer','cheque','online','upi','neft'] — already
+        // DIVERGED from the canonical set: 'bank' and 'rtgs' were missing, so a
+        // refund in either mode credited CASH while a PAYMENT in the same mode
+        // debits the bank. Money in through the bank, out through the cash box:
+        // the cash count goes negative and neither side ever reconciles.
+        //
+        // The documented refund vocabulary (cash|bank_transfer|cheque|online) is
+        // fully covered either way, so this is latent rather than live — but it
+        // is the same shape PM-1 found in Library, and PM-1 consolidated three
+        // copies precisely because one of them had drifted. This was the fourth.
+        // Pointing it at the shared constant is what stops a fifth.
+        // Consolidated into resolveCashBankCode(). The comment above warned
+        // that pointing this at the shared CONSTANT is "what stops a fifth"
+        // copy — but only the constant was shared; the scan itself remained
+        // duplicated three ways (this refund path, its sibling below, and the
+        // fee posting). Sharing the constant while copying the logic still
+        // lets the copies drift, which is the failure PM-1 was about. Refunds
+        // carry no operator-selected ledger, so '' is passed explicitly.
+        $cashBankCode = self::resolveCashBankCode($coa, '', $refundMode);
 
         $feeIncomeCode = '4010';
         $cashAcct = $coa[$cashBankCode]  ?? null;
@@ -1756,17 +1989,26 @@ class Operations_accounting
         if (empty($coa)) return null;
 
         // Resolve cash/bank account
-        if (in_array($refundMode, ['bank_transfer', 'cheque', 'online', 'upi', 'neft'])) {
-            $cashBankCode = '1010';
-            foreach ($coa as $code => $acct) {
-                if (!empty($acct['is_bank']) && ($acct['status'] ?? '') === 'active') {
-                    $cashBankCode = $code;
-                    break;
-                }
-            }
-        } else {
-            $cashBankCode = '1010';
-        }
+        // ── PM-2 · THE FOURTH COPY OF THE MODE LIST ────────────────────────
+        // This read ['bank_transfer','cheque','online','upi','neft'] — already
+        // DIVERGED from the canonical set: 'bank' and 'rtgs' were missing, so a
+        // refund in either mode credited CASH while a PAYMENT in the same mode
+        // debits the bank. Money in through the bank, out through the cash box:
+        // the cash count goes negative and neither side ever reconciles.
+        //
+        // The documented refund vocabulary (cash|bank_transfer|cheque|online) is
+        // fully covered either way, so this is latent rather than live — but it
+        // is the same shape PM-1 found in Library, and PM-1 consolidated three
+        // copies precisely because one of them had drifted. This was the fourth.
+        // Pointing it at the shared constant is what stops a fifth.
+        // Consolidated into resolveCashBankCode(). The comment above warned
+        // that pointing this at the shared CONSTANT is "what stops a fifth"
+        // copy — but only the constant was shared; the scan itself remained
+        // duplicated three ways (this refund path, its sibling below, and the
+        // fee posting). Sharing the constant while copying the logic still
+        // lets the copies drift, which is the failure PM-1 was about. Refunds
+        // carry no operator-selected ledger, so '' is passed explicitly.
+        $cashBankCode = self::resolveCashBankCode($coa, '', $refundMode);
 
         $configMap = $this->get_fee_account_map($coa);
         $narration = "Fee refund: {$student} ({$stuId}) - {$class}"

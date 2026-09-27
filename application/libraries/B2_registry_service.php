@@ -304,6 +304,272 @@ class B2_registry_service
         ];
     }
 
+    // ═══════════════════════════════════════════════════════════════════
+    //  W1.1 — HRMS ENTITLEMENT REACHABILITY
+    //
+    //  Entitlements were previously derived by an inline `plan.modules only`
+    //  loop duplicated in assign_plan_to_school() and create_tenant(), which
+    //  meant the ONLY way to grant a capability was to edit a plan — and every
+    //  tenant sharing that plan received it. B2_derive already implemented the
+    //  correct model (plan ∪ addOns − revoke-overrides, with time-bounded
+    //  grants, plus moduleVisible's "flags gate, never grant") but nothing in
+    //  the live path called it.
+    //
+    //  These three methods connect that designed model to the live flow:
+    //    _derive_entitlements()   — the single derivation both writers now use
+    //    recompute_entitlements() — the missing refresh primitive
+    //    set_module_override()    — per-tenant grant/revoke (the canonical
+    //                               tenant-level axis; leaves plan-sharing
+    //                               tenants untouched)
+    //
+    //  NOTE ON SCOPE: this deliberately does NOT activate the deferred
+    //  `b2.addons` priced add-on CATALOG (a commercial/billing concern) or
+    //  `b2.flags_global`. Both remain false and unread. addOns are honoured if
+    //  present because B2_derive already reads them, but nothing here writes
+    //  one. The override axis carries no migration flag.
+    // ═══════════════════════════════════════════════════════════════════
+
+    /** Canonical override modes (mirrors $config['b2_override_modes']). */
+    private const OVERRIDE_MODES = ['grant', 'revoke'];
+
+    /**
+     * THE single entitlement derivation. Both writers and the recompute
+     * primitive route through here so they can never drift.
+     *
+     * @param array $plan    plans/{fam}__v1 document ({modules:{key:bool}})
+     * @param array $control schoolControl/{schoolId} document (may be empty)
+     * @return array{entitlements: array<string,bool>, activeModules: array<int,string>}
+     */
+    private function _derive_entitlements(array $plan, array $control): array
+    {
+        require_once APPPATH . 'libraries/B2_derive.php';
+
+        $sub      = is_array($control['subscription'] ?? null) ? $control['subscription'] : [];
+        $addOns   = is_array($sub['addOns'] ?? null)           ? $sub['addOns']           : [];
+        $ovr      = $control['overrides'] ?? [];
+        // b2_collections.php documents overrides as a module-keyed MAP while
+        // B2_derive (the unit-tested implementation, and the shape live data
+        // is compatible with) consumes a LIST of rows. Accept both so a
+        // hand-authored map cannot silently stop granting.
+        $overrides = $this->_normalize_overrides($ovr);
+
+        $flags    = is_array($control['featureFlags'] ?? null) ? $control['featureFlags'] : [];
+        $now      = time();
+
+        $entitlements = B2_derive::computeEntitlements($plan, $addOns, $overrides, $now);
+
+        // moduleVisible: a flag may VETO an entitled module, never grant one.
+        // Global flags stay empty — `b2.flags_global` is deferred.
+        $activeModules = [];
+        foreach (array_keys($entitlements) as $m) {
+            if (B2_derive::moduleVisible($m, $entitlements, [], $flags)) {
+                $activeModules[] = $m;
+            }
+        }
+
+        return ['entitlements' => $entitlements, 'activeModules' => $activeModules];
+    }
+
+    /** Accept either the list shape or the module-keyed map shape. */
+    private function _normalize_overrides($ovr): array
+    {
+        if (!is_array($ovr) || empty($ovr)) return [];
+        $out = [];
+        foreach ($ovr as $k => $row) {
+            if (!is_array($row)) continue;
+            if (isset($row['module'])) {          // list shape
+                $out[] = $row;
+            } elseif (is_string($k) && isset($row['mode'])) {   // map shape
+                $out[] = array_merge($row, ['module' => $k]);
+            }
+        }
+        return $out;
+    }
+
+    /**
+     * Re-derive and persist a tenant's entitlements from its CURRENT plan +
+     * add-ons + overrides + flags. Idempotent; safe to re-run at any time.
+     *
+     * This is the primitive the platform previously lacked: entitlements were
+     * written at exactly two moments (onboard, plan-assign) and never
+     * refreshed, so a plan edit or a time-bounded grant expiring had no effect
+     * until someone re-assigned the plan (which also churns billing).
+     *
+     * STRICTLY tenant-scoped: every read and write is keyed by $schoolId.
+     *
+     * @return array{ok:bool, activeModules:array, changed:bool, reason:string}
+     */
+    public function recompute_entitlements(string $schoolId, string $actor = ''): array
+    {
+        $fail = function (string $why) {
+            return ['ok' => false, 'activeModules' => [], 'changed' => false, 'reason' => $why];
+        };
+        if (!$this->ready || $schoolId === '') return $fail('service_not_ready');
+
+        try {
+            $control = (array) ($this->firebase->firestoreGet('schoolControl', $schoolId) ?? []);
+        } catch (\Throwable $e) {
+            log_message('error', "B2_registry_service::recompute_entitlements control read failed for {$schoolId}: " . $e->getMessage());
+            return $fail('control_read_failed');
+        }
+        if (empty($control)) return $fail('tenant_not_found');
+
+        $sub          = is_array($control['subscription'] ?? null) ? $control['subscription'] : [];
+        $planFamilyId = (string) ($sub['planId'] ?? '');
+        $plan         = $planFamilyId !== '' ? $this->get_plan($planFamilyId) : null;
+        if (!is_array($plan)) return $fail('plan_not_found');
+
+        $before  = is_array($control['entitlements'] ?? null) ? array_keys($control['entitlements']) : [];
+        $derived = $this->_derive_entitlements($plan, $control);
+        $after   = $derived['activeModules'];
+
+        sort($before); $afterSorted = $after; sort($afterSorted);
+        $changed = ($before !== $afterSorted);
+
+        $nowIso = date('c');
+        try {
+            $this->firebase->firestoreUpdate('schoolControl', $schoolId, [
+                'entitlements' => $derived['entitlements'],
+                'updatedAt'    => $nowIso,
+            ]);
+        } catch (\Throwable $e) {
+            log_message('error', "B2_registry_service::recompute_entitlements control write failed for {$schoolId}: " . $e->getMessage());
+            return $fail('control_write_failed');
+        }
+
+        // Client-readable mirror — the surface Tenant_capability_service reads.
+        try {
+            $this->firebase->firestoreUpdate('tenantPublic', $schoolId, [
+                'activeModules' => $after,
+                'computedAt'    => $nowIso,
+            ]);
+        } catch (\Throwable $e) {
+            log_message('error', "B2_registry_service::recompute_entitlements mirror write failed for {$schoolId}: " . $e->getMessage());
+            return $fail('mirror_write_failed');
+        }
+
+        // Reserved telemetry event — previously allow-listed but never emitted,
+        // so entitlement changes left no trace. Non-fatal.
+        if ($changed) {
+            try {
+                $ci = $this->ci ?? get_instance();
+                if ($ci) {
+                    $ci->load->library('security_telemetry');
+                    $ci->security_telemetry->emit('B2_ENTITLEMENT_RECOMPUTE', 'info', [
+                        'before' => $before,
+                        'after'  => $afterSorted,
+                        'actor'  => $actor,
+                    ], ['schoolId' => $schoolId]);
+                }
+            } catch (\Throwable $e) { /* telemetry must never block entitlement */ }
+        }
+
+        return ['ok' => true, 'activeModules' => $after, 'changed' => $changed, 'reason' => ''];
+    }
+
+    /**
+     * Grant or revoke ONE module for ONE tenant, then recompute.
+     *
+     * This is the per-tenant axis: it writes schoolControl.overrides for that
+     * tenant only and never touches the shared plan, so tenants on the same
+     * base plan are unaffected. Passing $mode='' CLEARS the override, letting
+     * the module fall back to whatever the plan says.
+     *
+     * @param string      $module    module key (e.g. 'hrms_core')
+     * @param string      $mode      'grant' | 'revoke' | '' (clear)
+     * @param string|null $expiresAt optional ISO-8601 / parseable expiry
+     * @return array{ok:bool, reason:string, activeModules:array}
+     */
+    public function set_module_override(
+        string $schoolId, string $module, string $mode,
+        string $actor = '', string $reason = '', ?string $expiresAt = null
+    ): array {
+        $fail = function (string $why) {
+            return ['ok' => false, 'reason' => $why, 'activeModules' => []];
+        };
+        if (!$this->ready || $schoolId === '' || $module === '') return $fail('bad_request');
+        if ($mode !== '' && !in_array($mode, self::OVERRIDE_MODES, true)) return $fail('bad_mode');
+
+        try {
+            $control = (array) ($this->firebase->firestoreGet('schoolControl', $schoolId) ?? []);
+        } catch (\Throwable $e) {
+            log_message('error', "B2_registry_service::set_module_override read failed for {$schoolId}: " . $e->getMessage());
+            return $fail('control_read_failed');
+        }
+        if (empty($control)) return $fail('tenant_not_found');
+
+        $overrides = $this->_normalize_overrides($control['overrides'] ?? []);
+
+        // Drop any existing row for this module, then re-add if granting/revoking.
+        $next = [];
+        foreach ($overrides as $row) {
+            if ((string) ($row['module'] ?? '') !== $module) $next[] = $row;
+        }
+
+        $expTs = null;
+        if ($expiresAt !== null && trim($expiresAt) !== '') {
+            $t = strtotime($expiresAt);
+            if ($t === false) return $fail('bad_expiry');
+            $expTs = $t;
+        }
+
+        if ($mode !== '') {
+            $row = [
+                'module'    => $module,
+                'mode'      => $mode,
+                'reason'    => $reason,
+                'grantedBy' => $actor,
+                'grantedAt' => date('c'),
+            ];
+            if ($expTs !== null) $row['expiresAt'] = $expTs;
+            $next[] = $row;
+        }
+
+        // HRMS dependency rule: the packs and Payroll extend Core, so granting
+        // one without Core would produce an unusable half-enabled state.
+        if ($mode === 'grant' && $module !== 'hrms_core'
+            && strpos($module, 'hrms_') === 0) {
+            $probe = $this->_derive_entitlements(
+                $this->get_plan((string) (($control['subscription'] ?? [])['planId'] ?? '')) ?: ['modules' => []],
+                array_merge($control, ['overrides' => $next])
+            );
+            if (!in_array('hrms_core', $probe['activeModules'], true)) {
+                return $fail('requires_hrms_core');
+            }
+        }
+
+        try {
+            $this->firebase->firestoreUpdate('schoolControl', $schoolId, [
+                'overrides' => array_values($next),
+                'updatedAt' => date('c'),
+            ]);
+        } catch (\Throwable $e) {
+            log_message('error', "B2_registry_service::set_module_override write failed for {$schoolId}: " . $e->getMessage());
+            return $fail('override_write_failed');
+        }
+
+        // Audit trail, mirroring assign_plan_to_school's tenantAudit row.
+        try {
+            $auditId = 'B2_MODULE_OVERRIDE_' . $schoolId . '_' . time() . '_' . substr(bin2hex(random_bytes(3)), 0, 6);
+            $this->firebase->firestoreSet('tenantAudit', $auditId, [
+                'eventId'   => $auditId,
+                'action'    => 'b2_module_override',
+                'schoolId'  => $schoolId,
+                'module'    => $module,
+                'mode'      => $mode !== '' ? $mode : 'cleared',
+                'reason'    => $reason,
+                'actor'     => $actor,
+                'expiresAt' => $expTs,
+                'createdAt' => date('c'),
+            ], false);
+        } catch (\Throwable $e) { /* audit is non-fatal */ }
+
+        $re = $this->recompute_entitlements($schoolId, $actor);
+        if (empty($re['ok'])) return $fail('recompute_failed:' . ($re['reason'] ?? ''));
+
+        return ['ok' => true, 'reason' => '', 'activeModules' => $re['activeModules']];
+    }
+
     /**
      * Request-scoped read of tenantPublic/{schoolId}. The same doc is fetched
      * up to 3× in one login (adminDisabled gates + activeModules); memoizing
@@ -1324,13 +1590,21 @@ class B2_registry_service
             return false;
         }
 
-        // Recompute entitlements from plan.modules.
-        $modules     = is_array($plan['modules'] ?? null) ? $plan['modules'] : [];
-        $entitlements = [];
-        foreach ($modules as $m => $enabled) {
-            if (!empty($enabled)) $entitlements[$m] = true;
+        // W1.1 — derive through the canonical B2_derive model (plan ∪ addOns −
+        // revoke-overrides, then moduleVisible flag filtering) instead of the
+        // former inline plan-only loop, so a tenant-level grant survives a plan
+        // assignment. Reads the CURRENT control doc for the tenant's existing
+        // add-ons / overrides / flags; a tenant with none derives exactly the
+        // former plan-only result.
+        $existingControl = [];
+        try {
+            $existingControl = (array) ($this->firebase->firestoreGet('schoolControl', $schoolId) ?? []);
+        } catch (\Throwable $e) {
+            log_message('error', 'B2_registry_service::assign_plan_to_school control read failed (deriving plan-only): ' . $e->getMessage());
         }
-        $activeModules = array_keys($entitlements);
+        $derived       = $this->_derive_entitlements($plan, $existingControl);
+        $entitlements  = $derived['entitlements'];
+        $activeModules = $derived['activeModules'];
 
         try {
             $this->firebase->firestoreUpdate('schoolControl', $schoolId, [
@@ -1456,11 +1730,14 @@ class B2_registry_service
         // for any caller that doesn't pass sessionYear yet).
         $sessionYear   = (string) ($args['sessionYear']       ?? '');
 
-        $entitlements  = [];
-        foreach ($planModules as $m => $enabled) {
-            if (!empty($enabled)) $entitlements[$m] = true;
-        }
-        $activeModules = array_keys($entitlements);
+        // W1.1 — derive through the same canonical path as assign_plan_to_school().
+        // A brand-new tenant has no add-ons/overrides/flags yet, so an empty
+        // control doc is passed and the result equals the former plan-only loop
+        // exactly; routing both writers through one derivation is what prevents
+        // them drifting as the model grows.
+        $derivedNew    = $this->_derive_entitlements(['modules' => $planModules], []);
+        $entitlements  = $derivedNew['entitlements'];
+        $activeModules = $derivedNew['activeModules'];
 
         // Deterministic subscription id for the initial-period row (mirrors
         // the BACKFILL_INITIAL_* deterministic pattern from sa_b2_backfill.js

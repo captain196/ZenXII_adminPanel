@@ -48,8 +48,28 @@ class Audit_log_service
 
     const COLLECTION    = 'academicAuditLog';
     const ACTIONS       = ['create', 'update', 'delete', 'status_change', 'rollover', 'generation', 'role_change'];
+    // 'substitutePolicy' added 2026-08-31: a school's cover limits are
+    // changed from the Academic screen like everything else here, and
+    // log() REJECTS an unlisted entityType silently — it returns false and
+    // no caller in the codebase looks. Every change to those limits was
+    // going unrecorded, so nobody could say who raised a ceiling or what it
+    // used to be.
+    // 'lessonPlan' added 2026-08-31: Lesson_plan_service has audited every
+    // save and delete since Phase 6 and NONE of it was ever written — the
+    // type was not on this list, log() returned false, and the return value
+    // is discarded here as everywhere. The Teacher app writes its own audit
+    // document directly, so the two clients silently disagreed about whether
+    // lesson-plan changes were being recorded at all.
+    // 'timetableVersion' added 2026-09-01 (TT-C8 option 6): Timetable_plan_store
+    // audits every version transition against this type and NONE of it was ever
+    // written — the type was not on this list, log() returned false, and the
+    // return value is discarded at the call site as it is everywhere else here.
+    // The SUPERSEDE transition closes a live timetable's future applicability,
+    // so it cannot ship without a real record of who did it and why.
     const ENTITY_TYPES  = ['curriculum', 'curriculumTopic', 'timetable', 'timetableSettings',
-                           'substitute', 'calendarEvent', 'subjectAssignment'];
+                           'timetableVersion',
+                           'substitute', 'substitutePolicy', 'calendarEvent',
+                           'subjectAssignment', 'lessonPlan'];
     const MAX_STR_LEN   = 500;
     const MAX_ARR_ITEMS = 50;
 

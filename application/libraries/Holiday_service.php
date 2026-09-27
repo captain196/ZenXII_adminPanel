@@ -46,8 +46,25 @@ class Holiday_service
     private int    $ttl      = 300;       // file-cache TTL seconds; <=0 disables file cache
     private bool   $ready    = false;
 
-    /** Per-request memo: [dateISO => holidayName]. null until first load. */
-    private $memo = null;
+    /** Cache format version — bump whenever the cached shape changes, so an
+     *  old-format file on disk is treated as a miss (safe, self-healing)
+     *  rather than misread. Phase D (2026-08-18) moved from a flat
+     *  [date=>name] map to per-day ENTRY LISTS carrying applicability, so
+     *  audience/department/exceptStaff filtering can happen per caller
+     *  instead of being baked into one shared map. */
+    private const CACHE_VERSION = 2;
+
+    /**
+     * Per-request memo, one array per calendarEvents type this service
+     * serves: [dateISO => [ {name, appliesTo, departments, exceptStaff}, ... ]].
+     * Multiple entries per date are possible (e.g. two department-scoped
+     * holidays landing on the same date) — filtering picks whichever
+     * entries match the caller's audience/department/staffId. null until
+     * first load.
+     */
+    private $memo = null;         // holiday entries
+    private $memoSwd = null;      // special_working_day entries
+    private $memoHalfDay = null;  // half_day entries
 
     /** Max calendarEvents updatedAt across holiday docs (ISO-8601). null until load. */
     private $_lastUpdated = null;
@@ -74,7 +91,9 @@ class Holiday_service
         $this->session  = $session;
         $this->ttl      = $ttl;
         $this->ready    = true;
-        $this->memo     = null;
+        $this->memo         = null;
+        $this->memoSwd      = null;
+        $this->memoHalfDay  = null;
         $this->_lastUpdated = null;
         $this->_loadedOk    = null;
         return $this;
@@ -86,17 +105,37 @@ class Holiday_service
     }
 
     /**
-     * Is the given ISO date (YYYY-MM-DD) a holiday for this school?
+     * Is the given ISO date (YYYY-MM-DD) a holiday for this school, for the
+     * given audience?
      *
+     * @param string $audience   'staff' (default, preserves every pre-Phase-D
+     *                           call site's behavior unchanged) or 'students'.
+     * @param string $department Staff-only. '' = ignore department scoping.
+     * @param string $staffId    Staff-only. '' = ignore individual exceptions.
      * @return bool false for malformed dates or when the service is uninitialised
      *              (fails OPEN — never fabricates a holiday).
      */
-    public function is_holiday(string $dateISO): bool
+    public function is_holiday(string $dateISO, string $audience = 'staff', string $department = '', string $staffId = ''): bool
     {
         if (!$this->ready) return false;
         if (!preg_match('/^\d{4}-\d{2}-\d{2}$/', $dateISO)) return false;
-        $map = $this->_load();
-        return isset($map[$dateISO]);
+        return $this->_matches_on($this->_load(), $dateISO, $audience, $department, $staffId) !== null;
+    }
+
+    /** Is the given ISO date a declared Special Working Day for this audience? Same filtering rules as is_holiday(). */
+    public function is_special_working_day(string $dateISO, string $audience = 'staff', string $department = '', string $staffId = ''): bool
+    {
+        if (!$this->ready) return false;
+        if (!preg_match('/^\d{4}-\d{2}-\d{2}$/', $dateISO)) return false;
+        return $this->_matches_on($this->_load_swd(), $dateISO, $audience, $department, $staffId) !== null;
+    }
+
+    /** Is the given ISO date a declared Half Day for this audience? Same filtering rules as is_holiday(). */
+    public function is_half_day(string $dateISO, string $audience = 'staff', string $department = '', string $staffId = ''): bool
+    {
+        if (!$this->ready) return false;
+        if (!preg_match('/^\d{4}-\d{2}-\d{2}$/', $dateISO)) return false;
+        return $this->_matches_on($this->_load_half_day(), $dateISO, $audience, $department, $staffId) !== null;
     }
 
     /**
@@ -113,57 +152,69 @@ class Holiday_service
     }
 
     /**
-     * All holidays between two ISO dates, inclusive.
+     * All holidays between two ISO dates, inclusive, filtered for one audience.
      * @return array [dateISO => name]
      */
-    public function holidays_in_range(string $fromISO, string $toISO): array
+    public function holidays_in_range(string $fromISO, string $toISO, string $audience = 'staff', string $department = '', string $staffId = ''): array
     {
-        if (!$this->ready) return [];
-        $map = $this->_load();
-        if (empty($map)) return [];
-        $out = [];
-        foreach ($map as $d => $name) {
-            if ($d >= $fromISO && $d <= $toISO) $out[$d] = $name;
-        }
-        ksort($out);
-        return $out;
+        return $this->_in_range($this->_load(), $fromISO, $toISO, $audience, $department, $staffId);
+    }
+
+    /** Special Working Days between two ISO dates, inclusive, filtered for one audience. @return array [dateISO => name] */
+    public function special_working_days_in_range(string $fromISO, string $toISO, string $audience = 'staff', string $department = '', string $staffId = ''): array
+    {
+        return $this->_in_range($this->_load_swd(), $fromISO, $toISO, $audience, $department, $staffId);
+    }
+
+    /** Half Days between two ISO dates, inclusive, filtered for one audience. @return array [dateISO => name] */
+    public function half_days_in_range(string $fromISO, string $toISO, string $audience = 'staff', string $department = '', string $staffId = ''): array
+    {
+        return $this->_in_range($this->_load_half_day(), $fromISO, $toISO, $audience, $department, $staffId);
     }
 
     /**
-     * Holidays in a given month, keyed by day-of-month (int) — the shape the
-     * attendance register grid consumes (replacement for the RTDB-backed
-     * attendance_helper::get_non_working_days()).
+     * Holidays in a given month, keyed by day-of-month (int), filtered for one
+     * audience — the shape the attendance register grid consumes (replacement
+     * for the RTDB-backed attendance_helper::get_non_working_days()).
      *
      * @return array [int dayOfMonth => string name]
      */
-    public function holidays_in_month(int $year, int $month): array
+    public function holidays_in_month(int $year, int $month, string $audience = 'staff', string $department = '', string $staffId = ''): array
     {
-        if (!$this->ready || $month < 1 || $month > 12) return [];
-        $prefix = sprintf('%04d-%02d-', $year, $month);
-        $out = [];
-        foreach ($this->_load() as $d => $name) {
-            if (strpos($d, $prefix) === 0) {
-                $out[(int) substr($d, 8, 2)] = $name;
-            }
-        }
-        return $out;
+        return $this->_in_month($this->_load(), $year, $month, $audience, $department, $staffId);
+    }
+
+    /** Special Working Days in a given month, keyed by day-of-month (int), filtered for one audience. */
+    public function special_working_days_in_month(int $year, int $month, string $audience = 'staff', string $department = '', string $staffId = ''): array
+    {
+        return $this->_in_month($this->_load_swd(), $year, $month, $audience, $department, $staffId);
+    }
+
+    /** Half Days in a given month, keyed by day-of-month (int), filtered for one audience. */
+    public function half_days_in_month(int $year, int $month, string $audience = 'staff', string $department = '', string $staffId = ''): array
+    {
+        return $this->_in_month($this->_load_half_day(), $year, $month, $audience, $department, $staffId);
     }
 
     /**
-     * The full cached holiday map for this school/session. [dateISO => name]
+     * The full cached holiday map for this school/session, filtered for one
+     * audience. [dateISO => name]
      */
-    public function all_holiday_dates(): array
+    public function all_holiday_dates(string $audience = 'staff', string $department = '', string $staffId = ''): array
     {
-        return $this->ready ? $this->_load() : [];
+        if (!$this->ready) return [];
+        return $this->_filter_map($this->_load(), $audience, $department, $staffId);
     }
 
     /**
-     * Invalidate caches (call after an admin adds/removes a holiday so the
-     * next read is fresh rather than waiting out the TTL).
+     * Invalidate caches (call after an admin adds/removes a calendar event so
+     * the next read is fresh rather than waiting out the TTL).
      */
     public function flush(): void
     {
-        $this->memo = null;
+        $this->memo        = null;
+        $this->memoSwd     = null;
+        $this->memoHalfDay = null;
         $file = $this->_cache_file();
         if ($file !== null && file_exists($file)) {
             @unlink($file);
@@ -185,88 +236,223 @@ class Holiday_service
     }
 
     /**
-     * Resolve the holiday map: memo → file cache → Firestore.
-     * @return array [dateISO => name]
+     * Does this date's entry list contain one matching the given audience/
+     * department/staffId? Returns the matching entry's name, or null.
+     *
+     * Filtering rules (Phase D):
+     *   - appliesTo empty/absent on the event → applies to every audience.
+     *   - departments/exceptStaff are STAFF-ONLY concepts — never consulted
+     *     for audience='students', so a students-scoped event is never
+     *     accidentally narrowed by a department filter that was never meant
+     *     to apply to it.
+     *   - departments empty/absent → applies to every department.
+     *   - exceptStaff containing this staffId → this event does NOT apply,
+     *     regardless of how well audience/department otherwise match. Same
+     *     field, same meaning, on every event type: "who this event does
+     *     NOT apply to" — an essential-staff opt-in on a Holiday, or a
+     *     stay-off exception on a Special Working Day, use the identical
+     *     mechanism.
      */
+    private function _matches_on(array $map, string $dateISO, string $audience, string $department, string $staffId): ?string
+    {
+        $entries = $map[$dateISO] ?? [];
+        foreach ($entries as $e) {
+            $appliesTo = (array) ($e['appliesTo'] ?? []);
+            if (!empty($appliesTo) && !in_array($audience, $appliesTo, true)) continue;
+
+            if ($audience === 'staff') {
+                $departments = (array) ($e['departments'] ?? []);
+                if (!empty($departments) && ($department === '' || !in_array($department, $departments, true))) continue;
+
+                $exceptStaff = (array) ($e['exceptStaff'] ?? []);
+                if ($staffId !== '' && in_array($staffId, $exceptStaff, true)) continue;
+            }
+
+            return (string) ($e['name'] ?? '');
+        }
+        return null;
+    }
+
+    /** Filter a whole [dateISO => entries] map down to [dateISO => name] for one audience. */
+    private function _filter_map(array $map, string $audience, string $department, string $staffId): array
+    {
+        $out = [];
+        foreach (array_keys($map) as $d) {
+            $name = $this->_matches_on($map, $d, $audience, $department, $staffId);
+            if ($name !== null) $out[$d] = $name;
+        }
+        ksort($out);
+        return $out;
+    }
+
+    private function _in_range(array $map, string $fromISO, string $toISO, string $audience, string $department, string $staffId): array
+    {
+        if (!$this->ready) return [];
+        $out = [];
+        foreach ($map as $d => $entries) {
+            if ($d < $fromISO || $d > $toISO) continue;
+            $name = $this->_matches_on($map, $d, $audience, $department, $staffId);
+            if ($name !== null) $out[$d] = $name;
+        }
+        ksort($out);
+        return $out;
+    }
+
+    private function _in_month(array $map, int $year, int $month, string $audience, string $department, string $staffId): array
+    {
+        if (!$this->ready || $month < 1 || $month > 12) return [];
+        $prefix = sprintf('%04d-%02d-', $year, $month);
+        $out = [];
+        foreach ($map as $d => $entries) {
+            if (strpos($d, $prefix) !== 0) continue;
+            $name = $this->_matches_on($map, $d, $audience, $department, $staffId);
+            if ($name !== null) $out[(int) substr($d, 8, 2)] = $name;
+        }
+        return $out;
+    }
+
+    /** Resolve the holiday entry map: memo → file cache → Firestore. */
     private function _load(): array
     {
-        if (is_array($this->memo)) {
-            return $this->memo;
-        }
+        if (is_array($this->memo)) return $this->memo;
+        $this->_load_all_types();
+        return $this->memo ?? [];
+    }
+
+    /** Resolve the special_working_day entry map: memo → file cache → Firestore. */
+    private function _load_swd(): array
+    {
+        if (is_array($this->memoSwd)) return $this->memoSwd;
+        $this->_load_all_types();
+        return $this->memoSwd ?? [];
+    }
+
+    /** Resolve the half_day entry map: memo → file cache → Firestore. */
+    private function _load_half_day(): array
+    {
+        if (is_array($this->memoHalfDay)) return $this->memoHalfDay;
+        $this->_load_all_types();
+        return $this->memoHalfDay ?? [];
+    }
+
+    /**
+     * Load all three calendar-fact types in ONE Firestore pass (they all
+     * live in the same `calendarEvents` collection) and populate all three
+     * memos together, so calling is_holiday() then is_special_working_day()
+     * for the same request never triggers a second query.
+     */
+    private function _load_all_types(): void
+    {
+        if (is_array($this->memo) && is_array($this->memoSwd) && is_array($this->memoHalfDay)) return;
 
         // Tier 2: file cache (cross-request), only when TTL > 0.
         $file = ($this->ttl > 0) ? $this->_cache_file() : null;
         if ($file !== null && file_exists($file)) {
             $cached = @json_decode(@file_get_contents($file), true);
-            if (is_array($cached) && isset($cached['exp'], $cached['holidays'])
-                && $cached['exp'] > time() && is_array($cached['holidays'])) {
-                $this->memo = $cached['holidays'];
+            if (is_array($cached) && ($cached['v'] ?? 0) === self::CACHE_VERSION
+                && isset($cached['exp'], $cached['holidays'], $cached['swd'], $cached['halfDay'])
+                && $cached['exp'] > time()
+                && is_array($cached['holidays']) && is_array($cached['swd']) && is_array($cached['halfDay'])) {
+                $this->memo        = $cached['holidays'];
+                $this->memoSwd     = $cached['swd'];
+                $this->memoHalfDay = $cached['halfDay'];
                 $this->_lastUpdated = $cached['lastUpdated'] ?? null;
-                // The file cache is written ONLY after a successful load (below),
-                // so a cache hit always represents a good resolve.
                 $this->_loadedOk = true;
-                return $this->memo;
+                return;
             }
-            @unlink($file); // expired/corrupt
+            @unlink($file); // expired/corrupt/stale-version
         }
 
         // Tier 3: Firestore — the ONE place that queries calendarEvents.
-        // _query_firestore sets $this->_loadedOk (true on success, false on read failure).
-        $map = $this->_query_firestore();
-        $this->memo = $map;
+        [$holidays, $swd, $halfDay] = $this->_query_firestore();
+        $this->memo        = $holidays;
+        $this->memoSwd      = $swd;
+        $this->memoHalfDay  = $halfDay;
 
-        // Persist to the file cache ONLY on a successful load. Caching a failed
-        // (empty) read would hide real holidays for the whole TTL window and make
-        // a transient blip look like "no holidays" to every reader for 5 minutes.
         if ($file !== null && $this->_loadedOk === true) {
             $dir = dirname($file);
             if (!is_dir($dir)) @mkdir($dir, 0700, true);
             @file_put_contents($file, json_encode([
+                'v'           => self::CACHE_VERSION,
                 'exp'         => time() + $this->ttl,
-                'holidays'    => $map,
+                'holidays'    => $holidays,
+                'swd'         => $swd,
+                'halfDay'     => $halfDay,
                 'lastUpdated' => $this->_lastUpdated,
             ]), LOCK_EX);
         }
-        return $map;
     }
 
     /**
-     * Read holiday events from Firestore and expand each into per-day entries,
+     * Read every relevant calendarEvents doc from Firestore ONCE and expand
+     * each into per-day entries carrying its applicability metadata,
      * normalising the type/category + startDate/start_date drift here so no
-     * consumer ever has to. Best-effort: any failure yields an empty map
-     * (fails open to "no holidays"), never throws into the caller's flow.
+     * consumer ever has to. Best-effort: any failure yields empty maps
+     * (fails open to "nothing declared"), never throws into the caller's flow.
      *
-     * @return array [dateISO => name]
+     * @return array{0: array, 1: array, 2: array} [holidayMap, swdMap, halfDayMap],
+     *         each [dateISO => [ {name, appliesTo, departments, exceptStaff}, ... ]]
      */
     private function _query_firestore(): array
     {
-        $out = [];
+        $holidays = []; $swd = []; $halfDay = [];
         $maxUpd = '';
         try {
             // schoolWhere auto-injects schoolId == this school. We pull all
-            // calendar events and filter holiday in PHP so that docs carrying
+            // calendar events and filter kind in PHP so that docs carrying
             // only the legacy `category` field (no `type`) are not missed.
-            $rows = $this->fs->schoolWhere('calendarEvents', []);
+            // ACAD-D17: this read decides whether a day is a HOLIDAY or a WORKING
+            // day, and it is read negatively — a date absent from the map is a
+            // working day. schoolWhere() returns [] for a missing index, a network
+            // failure, a 403 and a 429 alike, so every holiday silently vanished
+            // and the catch below never fired.
+            //
+            // That defeated $_loadedOk, and with it load_ok(), whose entire reason
+            // for existing is to let Staff_attendance_finaliser fail closed:
+            //
+            //     if (!$this->ci->holiday_service->load_ok()) { ...skip run... }
+            //
+            // load_ok() returned TRUE on a failed read, the finaliser proceeded
+            // against an empty calendar, and a real holiday was auto-marked Absent
+            // and — in that guard's own words — "baked into payroll as Absent and
+            // never self-correct".
+            //
+            // Reading fail-loud makes the catch reachable, which is all that is
+            // needed: the guard was already correct, it was simply never told.
+            $rows = $this->fs->schoolWhereOrFail('calendarEvents', []);
             foreach ((array) $rows as $row) {
                 $d = is_array($row['data'] ?? null) ? $row['data'] : (is_array($row) ? $row : []);
                 if (empty($d)) continue;
 
                 $kind = strtolower((string) ($d['type'] ?? $d['category'] ?? ''));
-                if ($kind !== 'holiday') continue;
+                if (!in_array($kind, ['holiday', 'special_working_day', 'half_day'], true)) continue;
                 if (strtolower((string) ($d['status'] ?? '')) === 'cancelled') continue;
 
                 $start = (string) ($d['startDate'] ?? $d['start_date'] ?? '');
                 if ($start === '') continue;
                 $end   = (string) ($d['endDate'] ?? $d['end_date'] ?? $start);
-                $name  = (string) ($d['title'] ?? $d['name'] ?? 'Holiday');
+                $name  = (string) ($d['title'] ?? $d['name'] ?? ucfirst(str_replace('_', ' ', $kind)));
 
                 $upd = (string) ($d['updatedAt'] ?? $d['updated_at'] ?? '');
                 if ($upd !== '' && $upd > $maxUpd) $maxUpd = $upd;
 
-                $this->_expand_range($start, $end, $name, $out);
+                $entry = [
+                    'name'        => $name,
+                    'appliesTo'   => is_array($d['appliesTo'] ?? null)   ? array_values($d['appliesTo'])   : [],
+                    'departments' => is_array($d['departments'] ?? null) ? array_values($d['departments']) : [],
+                    'exceptStaff' => is_array($d['exceptStaff'] ?? null) ? array_values($d['exceptStaff']) : [],
+                ];
+
+                if ($kind === 'holiday') {
+                    $this->_expand_range($start, $end, $entry, $holidays);
+                } elseif ($kind === 'special_working_day') {
+                    $this->_expand_range($start, $end, $entry, $swd);
+                } else {
+                    $this->_expand_range($start, $end, $entry, $halfDay);
+                }
             }
         } catch (\Throwable $e) {
-            // Fail open for punch flows — a holiday-read failure must never break a
+            // Fail open for punch flows — a calendar-read failure must never break a
             // punch. But record that the load FAILED so fail-closed callers (the
             // payroll finaliser) can tell this apart from a genuinely empty calendar.
             // Guard log_message so the fail-open path can't itself throw.
@@ -275,27 +461,27 @@ class Holiday_service
             }
             $this->_lastUpdated = null;
             $this->_loadedOk    = false;
-            return [];
+            return [[], [], []];
         }
         $this->_lastUpdated = ($maxUpd !== '') ? $maxUpd : null;
         $this->_loadedOk    = true;
-        return $out;
+        return [$holidays, $swd, $halfDay];
     }
 
-    /** Expand a [start..end] inclusive date range into $out[dateISO] = name. */
-    private function _expand_range(string $start, string $end, string $name, array &$out): void
+    /** Expand a [start..end] inclusive date range, appending $entry to $out[dateISO][]. */
+    private function _expand_range(string $start, string $end, array $entry, array &$out): void
     {
         try {
             $cur = new DateTime($start);
             $lim = new DateTime($end >= $start ? $end : $start);
             $guard = 0;
             while ($cur <= $lim && $guard++ < 370) {
-                $out[$cur->format('Y-m-d')] = $name;
+                $out[$cur->format('Y-m-d')][] = $entry;
                 $cur->modify('+1 day');
             }
         } catch (\Throwable $e) {
             // Unparseable date — record the raw start only, defensively.
-            $out[$start] = $name;
+            $out[$start][] = $entry;
         }
     }
 

@@ -35,9 +35,26 @@ class Lesson_plan_service
     /** @var string */ private $adminName  = '';
     /** @var string */ private $adminRole  = '';
     /** @var object|null */ private $audit = null;
+    /**
+     * The subject-assignment service the authority gate reads.
+     *
+     * Reached through the CI singleton when nothing is injected, which is how
+     * it has always worked in a request — and why the gate had never been run
+     * by a test: outside a request the locator hands back whatever happens to
+     * be registered, so every attempt to exercise the gate proved something
+     * about the locator instead.
+     */
+    /** @var object|null */ private $sas = null;
     /** @var bool   */ private $ready = false;
 
     const COLLECTION = 'lessonPlans';
+    const COLLECTION_AUDIT = 'academicAuditLog';
+    /** How far back one plan's history is read before it is truncated. */
+    const HISTORY_SCAN_LIMIT = 100;
+    /** One teacher, one day — far more than any timetable holds. */
+    const DAY_SCAN_LIMIT = 200;
+    /** One teacher, one session: six periods a day for a full year and more. */
+    const MONTH_SCAN_LIMIT = 2000;
     const VALID_STATUSES = ['planned', 'completed', 'skipped', 'rescheduled'];
     const ADMIN_ROLES = ['Super Admin', 'School Super Admin', 'Admin', 'Principal', 'Academic Coordinator'];
 
@@ -62,6 +79,13 @@ class Lesson_plan_service
 
     public function isReady(): bool { return $this->ready; }
 
+    /** Inject the assignment service the gate should ask. */
+    public function withAssignmentService($sas): self
+    {
+        $this->sas = $sas;
+        return $this;
+    }
+
     // ══════════════════════════════════════════════════════════════════
     //  PUBLIC API
     // ══════════════════════════════════════════════════════════════════
@@ -80,9 +104,17 @@ class Lesson_plan_service
         }
 
         $docId = $this->_planDocId($teacherId, $date, $periodIndex);
-        $doc   = null;
-        try { $doc = $this->firebase->firestoreGet(self::COLLECTION, $docId); }
-        catch (\Throwable $e) { log_message('error', 'getLessonPlan read failed: ' . $e->getMessage()); }
+        // null means "nothing planned in this period" to every caller, so it
+        // cannot also mean "the read failed": the two lead somewhere
+        // different, and only one of them invites writing a plan.
+        $doc = null;
+        try {
+            $doc = $this->firebase->firestoreGetOrFail(self::COLLECTION, $docId);
+        } catch (\Throwable $e) {
+            log_message('error', 'getLessonPlan read failed: ' . $e->getMessage());
+            throw new Service_exception(
+                'This period could not be read. Try again in a moment.', 'unavailable');
+        }
 
         return is_array($doc) ? $doc : null;
     }
@@ -105,13 +137,35 @@ class Lesson_plan_service
             throw new Service_exception('date must be YYYY-MM-DD', 'validation');
         }
 
+        // The day view is drawn from this list, and an empty list is drawn as
+        // a day nobody has planned. A failed query must therefore not produce
+        // one. (School, session and date are still filtered in PHP below —
+        // dropping another tenant's row is filtering, not failing.)
         $docs = [];
         try {
-            $docs = $this->firebase->firestoreQuery(self::COLLECTION, [
+            // Narrowed to this school, session, teacher and day. Asking for a
+            // teacher's ENTIRE history and filtering the rest here meant the
+            // cap applied to rows the server chose, not to rows that belong to
+            // this day — so another tenant's plans could fill it and leave a
+            // teacher looking at an empty day. Equality filters only: no
+            // ordering, so no composite index is required.
+            $docs = $this->firebase->firestoreQueryOrFail(self::COLLECTION, [
+                ['schoolId',  '==', $this->schoolId],
+                ['session',   '==', $this->session],
                 ['teacherId', '==', $teacherId],
-            ], null, 'ASC', 1000);
+                ['date',      '==', $date],
+            ], null, 'ASC', self::DAY_SCAN_LIMIT);
+            if (count($docs) >= self::DAY_SCAN_LIMIT) {
+                // A day cannot hold this many periods; something is wrong and
+                // the list is not the whole day.
+                log_message('error', 'getDailyPlan hit the scan limit for '
+                    . $teacherId . ' on ' . $date);
+            }
         } catch (\Throwable $e) {
             log_message('error', 'getDailyPlan query failed: ' . $e->getMessage());
+            throw new Service_exception(
+                'The plans for this day could not be read, so the day is not being '
+                . 'shown as empty. Try again in a moment.', 'unavailable');
         }
 
         $plans = [];
@@ -210,6 +264,10 @@ class Lesson_plan_service
         }
 
         // ── 2. Period existence + teacher/subject match ──
+        // _resolveTimetableCell throws when the timetable cannot be READ and
+        // returns null only when the day genuinely has no such period. The two
+        // used to arrive here identically, so an outage told the teacher to go
+        // and set a timetable cell that was already set.
         $cell = $this->_resolveTimetableCell($canonClass, $canonSection, $dayOfWeek, $periodIndex);
         if ($cell === null) {
             throw new Service_exception(
@@ -243,10 +301,17 @@ class Lesson_plan_service
         // if the topic is later renamed or deleted.
         $topicTitle = '';
         if ($topicId !== '') {
+            // _fetchTopic throws when the curriculum cannot be read; null means
+            // the topic is genuinely not there. A topic that is genuinely gone is
+            // the ordinary case after somebody edits the syllabus: the plan's
+            // form still shows the old topic selected, so the message has to say
+            // what to do rather than only that the id is invalid.
             $topic = $this->_fetchTopic($curriculumDocId, $topicId);
             if (!$topic) {
                 throw new Service_exception(
-                    "Invalid topic_id: topic not found in curriculum for {$classSection} / {$subject}.",
+                    "The topic this plan was written for is no longer in the curriculum " .
+                    "for {$classSection} / {$subject}. Choose another topic, or clear the " .
+                    "topic, and save again.",
                     'not_found'
                 );
             }
@@ -261,9 +326,22 @@ class Lesson_plan_service
 
         // ── 4. Optimistic concurrency ──
         $docId    = $this->_planDocId($teacherId, $date, $periodIndex);
+        // The version this edit is racing against comes from the stored plan, so
+        // a failed read here is not an empty slot — it is an unknown one. Read
+        // silently, the failure looked like a creation: the check compared
+        // against version 0, $isNew went true, and a colleague's plan was
+        // replaced wholesale, notes and status and all.
         $existing = null;
-        try { $existing = $this->firebase->firestoreGet(self::COLLECTION, $docId); }
-        catch (\Throwable $e) { log_message('error', 'saveLessonPlan existing read failed: ' . $e->getMessage()); }
+        try {
+            $existing = $this->firebase->firestoreGetOrFail(self::COLLECTION, $docId);
+        } catch (\Throwable $e) {
+            log_message('error', 'saveLessonPlan existing read failed: ' . $e->getMessage());
+            throw new Service_exception(
+                'The plan already in this period could not be read, so saving over it ' .
+                'is not safe. Try again in a moment.',
+                'unavailable'
+            );
+        }
 
         $currVersion = is_array($existing) ? (int)($existing['version'] ?? 0) : 0;
         if ($expectedVer !== null && $expectedVer !== '') {
@@ -313,10 +391,53 @@ class Lesson_plan_service
             $data['createdByName'] = $this->adminName;
         }
 
+        // The version compared above was read a while ago, and everything
+        // since is a window another save fits through: both requests read
+        // version 3, both pass the check, both write version 4, and the
+        // second silently replaces work the first person was told had been
+        // saved. The Teacher app does this same job inside a Firestore
+        // transaction, so the admin panel was the unguarded one — racing the
+        // app across the very same document.
+        //
+        // The condition travels with the write instead: the document must
+        // still be the one this save was decided from, or still be absent if
+        // this save is a creation.
+        $op = [
+            'collection' => self::COLLECTION,
+            'docId'      => $docId,
+            'data'       => $data,
+            'merge'      => true,
+        ];
+        $ut = is_array($existing) ? (string) ($existing['__updateTime'] ?? '') : '';
+        if ($isNew) {
+            $op['precondition'] = ['exists' => false];
+        } elseif ($ut !== '') {
+            $op['precondition'] = ['updateTime' => $ut];
+        } else {
+            log_message('error', 'saveLessonPlan: no __updateTime on ' . $docId
+                . ' — writing without a compare-and-set guard');
+        }
+
+        $commit = null;
         try {
-            $this->firebase->firestoreSet(self::COLLECTION, $docId, $data, true);
+            $commit = $this->firebase->firestoreCommitBatchStatus([$op]);
         } catch (\Throwable $e) {
             log_message('error', 'saveLessonPlan write failed: ' . $e->getMessage());
+            throw new Service_exception('Failed to save lesson plan.', 'internal');
+        }
+        $commitStatus = (string) ($commit['status'] ?? '');
+        if ($commitStatus === 'PRECONDITION_CONFLICT') {
+            log_message('error', 'saveLessonPlan refused: the plan moved between the '
+                . 'read and the write (doc=' . $docId . ' actor=' . $this->adminId . ')');
+            throw new Service_exception(
+                'Conflict: this plan was changed by another user while you were '
+                . 'working on it, so nothing was changed. Reload and try again.',
+                'conflict'
+            );
+        }
+        if ($commitStatus !== 'SUCCESS') {
+            log_message('error', 'saveLessonPlan commit returned ' . $commitStatus
+                . ': ' . (string) ($commit['message'] ?? ''));
             throw new Service_exception('Failed to save lesson plan.', 'internal');
         }
 
@@ -365,6 +486,7 @@ class Lesson_plan_service
             throw new Service_exception('year/month out of range', 'validation');
         }
 
+        $truncated = false;
         $first  = sprintf('%04d-%02d-01', $year, $month);
         $prefix = sprintf('%04d-%02d-',   $year, $month);
         $last   = sprintf('%04d-%02d-%02d', $year, $month, (int)date('t', strtotime($first)));
@@ -373,13 +495,30 @@ class Lesson_plan_service
         // required. Filter (schoolId, session, date-prefix) client-side. A
         // teacher's plan count per session is bounded, so the cap of 1000 is
         // ample headroom.
+        // A month of zeroes is what a teacher who has planned nothing looks
+        // like, and this is the view somebody uses to decide whether to raise
+        // that with them. A failed query must not be able to produce it.
         $docs = [];
         try {
-            $docs = $this->firebase->firestoreQuery(self::COLLECTION, [
+            // Six periods a day across a session is well past a thousand plans,
+            // so a teacher-only query capped at a thousand computed a month's
+            // totals from whichever rows came back. School and session narrow
+            // it; one more row than the cap is fetched so the caller can be
+            // told the totals are not everything.
+            $docs = $this->firebase->firestoreQueryOrFail(self::COLLECTION, [
+                ['schoolId',  '==', $this->schoolId],
+                ['session',   '==', $this->session],
                 ['teacherId', '==', $teacherId],
-            ], null, 'ASC', 1000);
+            ], null, 'ASC', self::MONTH_SCAN_LIMIT + 1);
+            if (count($docs) > self::MONTH_SCAN_LIMIT) {
+                $truncated = true;
+                $docs = array_slice($docs, 0, self::MONTH_SCAN_LIMIT);
+            }
         } catch (\Throwable $e) {
             log_message('error', 'getMonthlyPlan query failed: ' . $e->getMessage());
+            throw new Service_exception(
+                'The plans for this month could not be read, so no totals are being '
+                . 'shown. Try again in a moment.', 'unavailable');
         }
 
         $days = [];
@@ -409,7 +548,140 @@ class Lesson_plan_service
             'month'     => $month,
             'days'      => $days,
             'totals'    => $totals,
+            // Totals presented as a month are a claim about a teacher. When
+            // the read was capped they are not that claim, and the screen has
+            // to be able to say so.
+            'truncated' => $truncated,
+            'notice'    => $truncated
+                ? 'This teacher has more plans in the session than could be read '
+                . 'at once, so these totals may be incomplete.'
+                : '',
         ];
+    }
+
+    /**
+     * WHAT HAPPENED TO ONE LESSON PLAN, AND WHO DID IT.
+     *
+     * Both writers record every save to the platform's academicAuditLog —
+     * this service through Audit_log_service, the Teacher app directly, in
+     * the same shape. Until now nothing read any of it back, which is the
+     * same state the substitute module's log was found in: entries written
+     * faithfully for a year and retrievable by nobody.
+     *
+     * A plan is where a disagreement lands — a period marked completed that
+     * the teacher says they never taught, notes that changed after the fact —
+     * and answering that needs the actor and the before-state, not just the
+     * current document.
+     *
+     * Deliberately does NOT require the plan to still exist.
+     */
+    public function planHistory(string $teacherId, string $date, int $periodIndex): array
+    {
+        $teacherId = trim($teacherId);
+        if ($teacherId === '' || $date === '' || $periodIndex < 0) {
+            throw new Service_exception('teacher_id, date, period_index required', 'validation');
+        }
+        if (!$this->_isIsoDate($date)) {
+            throw new Service_exception('date must be YYYY-MM-DD', 'validation');
+        }
+
+        $docId = $this->_planDocId($teacherId, $date, $periodIndex);
+
+        try {
+            $docs = $this->firebase->firestoreQueryOrFail(
+                self::COLLECTION_AUDIT,
+                [
+                    ['schoolId', '==', $this->schoolId],
+                    ['entityId', '==', $docId],
+                ], 'ts', 'DESC', self::HISTORY_SCAN_LIMIT + 1);
+        } catch (\Throwable $e) {
+            log_message('error', 'planHistory read failed (plan=' . $docId . '): '
+                . $e->getMessage());
+            throw new Service_exception(
+                'The history of this plan could not be read. Try again in a moment — '
+                . 'this is not the same as nothing having happened to it.',
+                'unavailable'
+            );
+        }
+
+        $truncated = count($docs) > self::HISTORY_SCAN_LIMIT;
+        if ($truncated) { $docs = array_slice($docs, 0, self::HISTORY_SCAN_LIMIT); }
+
+        $rows = [];
+        foreach ($docs as $doc) {
+            $d = is_array($doc['data'] ?? null) ? $doc['data'] : $doc;
+            // The query is school-scoped; session is not a query field on this
+            // collection, so it is filtered here. Last year's plan is not this
+            // year's business even when the period repeats.
+            if ((string) ($d['session'] ?? '') !== (string) $this->session) { continue; }
+            if ((string) ($d['entityType'] ?? '') !== 'lessonPlan') { continue; }
+
+            $actor = is_array($d['actor'] ?? null) ? $d['actor'] : [];
+            $by    = trim((string) ($actor['name'] ?? ''));
+            $meta  = is_array($d['metadata'] ?? null) ? $d['metadata'] : [];
+
+            $rows[] = [
+                'at'     => (string) ($d['ts'] ?? ''),
+                // A user id is not a name. Where none was recorded the row says
+                // so rather than printing an identifier at somebody.
+                'by'     => $by !== '' ? $by : 'Someone whose name was not recorded',
+                'role'   => (string) ($actor['role'] ?? ''),
+                // Both clients write here. Which one was used is part of the
+                // answer when a teacher and an office disagree about a change.
+                'source' => ((string) ($meta['source'] ?? '')) === 'teacher_app'
+                                ? 'Teacher app' : 'Admin panel',
+                'action' => (string) ($d['action'] ?? ''),
+                'what'   => $this->_describePlanChange(
+                    (string) ($d['action'] ?? ''),
+                    is_array($d['before'] ?? null) ? $d['before'] : null,
+                    is_array($d['after']  ?? null) ? $d['after']  : null
+                ),
+            ];
+        }
+
+        return [
+            'planId'    => $docId,
+            'entries'   => $rows,
+            'truncated' => $truncated,
+            'notice'    => $truncated
+                ? 'Showing the ' . self::HISTORY_SCAN_LIMIT . ' most recent changes.'
+                : '',
+        ];
+    }
+
+    /**
+     * One line saying what actually changed, for somebody who was not there.
+     * Identifiers never appear: the person reading this cannot look one up.
+     */
+    private function _describePlanChange(string $action, ?array $before, ?array $after): string
+    {
+        $beforeStatus = trim((string) ($before['status'] ?? ''));
+        $afterStatus  = trim((string) ($after['status']  ?? ''));
+        $beforeTopic  = trim((string) ($before['topicId'] ?? ''));
+        $afterTopic   = trim((string) ($after['topicId']  ?? ''));
+
+        if ($action === 'create') {
+            return $afterStatus !== ''
+                ? 'Planned, as ' . $afterStatus
+                : 'Planned';
+        }
+        if ($action === 'delete') {
+            return 'Removed';
+        }
+
+        $parts = [];
+        if ($afterStatus !== '' && $afterStatus !== $beforeStatus) {
+            $parts[] = $beforeStatus !== ''
+                ? 'Marked ' . $afterStatus . ' (was ' . $beforeStatus . ')'
+                : 'Marked ' . $afterStatus;
+        }
+        if ($afterTopic !== $beforeTopic) {
+            if ($afterTopic === '')      { $parts[] = 'Topic link removed'; }
+            elseif ($beforeTopic === '') { $parts[] = 'Linked to a curriculum topic'; }
+            else                         { $parts[] = 'Linked to a different topic'; }
+        }
+        if (!$parts) { return 'Edited'; }
+        return implode('; ', $parts);
     }
 
     // ══════════════════════════════════════════════════════════════════
@@ -450,9 +722,19 @@ class Lesson_plan_service
             $subjectSlug = str_replace([' ', '/'], '_', (string)($data['subject']      ?? ''));
             $progId      = "{$this->schoolId}_{$this->session}_{$classSlug}_{$subjectSlug}";
 
+            // These counters are maintained by read-modify-write, so a failed
+            // read is not "no counters yet" — starting from zero and writing the
+            // result replaces a term's totals with a set reading 1. Skipping the
+            // write instead leaves the count one behind, which is precisely the
+            // drift rebuild_analytics_summaries.js exists to absorb.
             $existing = null;
-            try { $existing = $this->firebase->firestoreGet('subjectPlanProgress', $progId); }
-            catch (\Throwable $e) {}
+            $progReadable = true;
+            try { $existing = $this->firebase->firestoreGetOrFail('subjectPlanProgress', $progId); }
+            catch (\Throwable $e) {
+                $progReadable = false;
+                log_message('error', 'subjectPlanProgress read failed; counter left as it '
+                    . 'stands: ' . $e->getMessage());
+            }
 
             $totals = [
                 'totalPlans'       => (int)($existing['totalPlans']       ?? 0),
@@ -472,7 +754,7 @@ class Lesson_plan_service
                 ? round($totals['completedCount'] / $totals['totalPlans'] * 1000) / 10
                 : 0.0;
 
-            $this->firebase->firestoreSet('subjectPlanProgress', $progId, array_merge($totals, [
+            if ($progReadable) $this->firebase->firestoreSet('subjectPlanProgress', $progId, array_merge($totals, [
                 'schoolId'      => $this->schoolId,
                 'session'       => $this->session,
                 'className'     => $data['className']    ?? '',
@@ -490,8 +772,13 @@ class Lesson_plan_service
                 $monId   = "{$this->schoolId}_{$this->session}_{$date}_{$tidSlug}";
 
                 $existingMon = null;
-                try { $existingMon = $this->firebase->firestoreGet('dailyTeacherMonitoring', $monId); }
-                catch (\Throwable $e) {}
+                $monReadable = true;
+                try { $existingMon = $this->firebase->firestoreGetOrFail('dailyTeacherMonitoring', $monId); }
+                catch (\Throwable $e) {
+                    $monReadable = false;
+                    log_message('error', 'dailyTeacherMonitoring read failed; counter left '
+                        . 'as it stands: ' . $e->getMessage());
+                }
 
                 $monTotals = [
                     'plansSaved'       => (int)($existingMon['plansSaved']       ?? 0),
@@ -508,7 +795,7 @@ class Lesson_plan_service
                     if (isset($monTotals[$afterKey]))  $monTotals[$afterKey]++;
                 }
 
-                $this->firebase->firestoreSet('dailyTeacherMonitoring', $monId, array_merge($monTotals, [
+                if ($monReadable) $this->firebase->firestoreSet('dailyTeacherMonitoring', $monId, array_merge($monTotals, [
                     'schoolId'      => $this->schoolId,
                     'session'       => $this->session,
                     'date'          => $date,
@@ -559,8 +846,10 @@ class Lesson_plan_service
 
         try {
             $ci = function_exists('get_instance') ? get_instance() : null;
-            $sas = null;
-            if ($ci) {
+            $sas = $this->sas;
+            if ($sas !== null) {
+                // injected — nothing to look up
+            } elseif ($ci) {
                 $ci->load->library('subject_assignment_service', null, 'sas');
                 $sas = $ci->sas;
                 if (!$sas->isReady()) {
@@ -573,9 +862,14 @@ class Lesson_plan_service
                 $sas->init($this->fs, $this->firebase, $this->schoolId, $this->schoolName, $this->session);
             }
 
+            // getAssignmentsForClass() answers a failed query with [], which
+            // this gate cannot tell from "assigned to nothing" — and the
+            // difference decides between refusing a teacher and telling them
+            // the system could not check. The fail-loud sibling exists for
+            // exactly this.
             $merged = array_merge(
-                $sas->getAssignmentsForClass($className, $section),
-                $sas->getAssignmentsForClass($className, '')
+                $sas->getAssignmentsForClassOrFail($className, $section),
+                $sas->getAssignmentsForClassOrFail($className, '')
             );
             foreach ($merged as $a) {
                 if (($a['teacherId'] ?? '') !== $teacherId) continue;
@@ -586,8 +880,16 @@ class Lesson_plan_service
                 }
             }
         } catch (\Throwable $e) {
+            // NOT false. Returning false here denies a teacher who IS assigned,
+            // under a message that says lesson plans can only be saved for
+            // their own class — an accusation manufactured by a failed read,
+            // at the moment the assignment cannot be checked at all.
             log_message('error', 'lesson_plan _canEdit lookup failed: ' . $e->getMessage());
-            return false;
+            throw new Service_exception(
+                'Your class assignments could not be read, so this plan was not '
+                . 'saved. Try again in a moment.',
+                'unavailable'
+            );
         }
         return false;
     }
@@ -604,8 +906,16 @@ class Lesson_plan_service
         $docId      = "{$this->schoolId}_{$this->session}_{$safeKey}_{$day}";
 
         $doc = null;
-        try { $doc = $this->firebase->firestoreGet('timetables', $docId); }
-        catch (\Throwable $e) { log_message('error', 'lesson_plan timetable read failed: ' . $e->getMessage()); }
+        try {
+            $doc = $this->firebase->firestoreGetOrFail('timetables', $docId);
+        } catch (\Throwable $e) {
+            log_message('error', 'lesson_plan timetable read failed: ' . $e->getMessage());
+            throw new Service_exception(
+                'The timetable for this day could not be read, so the period cannot be ' .
+                'checked. Try again in a moment.',
+                'unavailable'
+            );
+        }
         if (!is_array($doc)) return null;
 
         foreach (($doc['periods'] ?? []) as $p) {
@@ -622,12 +932,16 @@ class Lesson_plan_service
     {
         $coll = "curriculum/{$parentDocId}/topics";
         try {
-            $doc = $this->firebase->firestoreGet($coll, $topicId);
-            return is_array($doc) ? $doc : null;
+            $doc = $this->firebase->firestoreGetOrFail($coll, $topicId);
         } catch (\Throwable $e) {
             log_message('error', 'lesson_plan _fetchTopic failed: ' . $e->getMessage());
-            return null;
+            throw new Service_exception(
+                'The curriculum topic could not be read, so this plan cannot be ' .
+                'checked against it. Try again in a moment.',
+                'unavailable'
+            );
         }
+        return is_array($doc) ? $doc : null;
     }
 
     private function _audit(string $action, string $entityType, string $entityId, ?array $before, ?array $after, array $metadata): void

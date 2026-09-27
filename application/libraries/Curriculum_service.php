@@ -31,6 +31,18 @@ class Curriculum_service
     /** @var string */ private $adminName  = '';
     /** @var string */ private $adminRole  = '';
     /** @var object|null */ private $audit = null;
+    /**
+     * Who may edit this subject's curriculum is decided from the subject
+     * assignments. That service was reached through get_instance() — the CI
+     * singleton — even though this class already holds the two dependencies
+     * it needs to build one. A service that reaches into a global to find its
+     * collaborator cannot be exercised outside a request, which is why the
+     * authority gate here had never been run by a test.
+     *
+     * Injected when given; the singleton remains the fallback so every
+     * existing caller keeps working untouched.
+     */
+    /** @var object|null */ private $sas = null;
     /** @var bool   */ private $ready = false;
 
     const COLLECTION = 'curriculum';
@@ -56,6 +68,16 @@ class Curriculum_service
 
     public function isReady(): bool { return $this->ready; }
 
+    /**
+     * Supply the subject-assignment service directly instead of letting this
+     * class fetch one from the CI singleton.
+     */
+    public function withAssignmentService($sas): self
+    {
+        $this->sas = $sas;
+        return $this;
+    }
+
     // ══════════════════════════════════════════════════════════════════
     //  PUBLIC API — these are called by Academic.php controller methods.
     //  Same logic that used to live inline; only difference is it now
@@ -71,11 +93,26 @@ class Curriculum_service
         $subject      = $this->_safePathSegment($subjectRaw);
 
         $fsDocId = $this->_currDocId($classSection, $subject);
-        $parent  = null;
-        try { $parent = $this->firebase->firestoreGet(self::COLLECTION, $fsDocId); }
-        catch (\Throwable $e) { log_message('error', 'getCurriculum read failed: ' . $e->getMessage()); }
+        // Everything below is derived from this document: the topic ids, the
+        // counters, the version the next write will be checked against. Read
+        // silently, a failure came back as null and the whole screen rendered
+        // as "No topics yet" — a brand-new class and a broken read looked
+        // exactly alike, and only one of them invites somebody to start typing
+        // a syllabus that already exists.
+        $parent = null;
+        try {
+            $parent = $this->firebase->firestoreGetOrFail(self::COLLECTION, $fsDocId);
+        } catch (\Throwable $e) {
+            log_message('error', 'getCurriculum read failed: ' . $e->getMessage());
+            throw new Service_exception(
+                'The curriculum for this class and subject could not be read. '
+                . 'Try again in a moment.',
+                'unavailable'
+            );
+        }
 
-        $topics      = $this->_loadTopics($fsDocId, $parent);
+        $expected = 0; $loaded = 0;
+        $topics   = $this->_loadTopics($fsDocId, $parent, $expected, $loaded);
         $version     = is_array($parent) ? (int)($parent['version'] ?? 0) : 0;
         $topicsModel = is_array($parent) ? (string)($parent['topicsModel'] ?? 'array') : 'array';
 
@@ -98,6 +135,11 @@ class Curriculum_service
             'totalTopics'     => $counters['totalTopics'],
             'completedTopics' => $counters['completedTopics'],
             'percentComplete' => $counters['percentComplete'],
+            // A topic that failed to load is a lesson missing from the course
+            // the teacher is looking at. Saying so is the difference between a
+            // short syllabus and a syllabus that is short TODAY.
+            'expectedTopics'  => $expected,
+            'incomplete'      => ($loaded < $expected),
         ];
     }
 
@@ -125,6 +167,13 @@ class Curriculum_service
         foreach ($topics as $i => $t) {
             if (!is_array($t) || empty(trim($t['title'] ?? ''))) continue;
             $clean[] = [
+                // The id the screen was given for this topic. It is what makes
+                // an edit an edit: without it the save matched topics by their
+                // position in the list, so removing one shifted every later
+                // topic's content into somebody else's document — and a lesson
+                // plan written for that document is then attached to the wrong
+                // lesson, with its snapshotted title still reading correctly.
+                'topicId'        => trim((string)($t['topicId'] ?? $t['topic_id'] ?? '')),
                 'title'          => trim($t['title']),
                 'chapter'        => trim($t['chapter'] ?? ''),
                 'est_periods'    => max(0, (int)($t['est_periods'] ?? 0)),
@@ -137,8 +186,21 @@ class Curriculum_service
 
         $fsDocId  = $this->_currDocId($classSection, $subject);
         $existing = null;
-        try { $existing = $this->firebase->firestoreGet(self::COLLECTION, $fsDocId); }
-        catch (\Throwable $e) {}
+            // ACAD-D17: this null decides CREATE vs UPDATE below. firestoreGet()
+        // returns null for a FAILED read exactly as it does for a genuine 404,
+        // so a transient failure made an existing record look new: version reset
+        // to 1, createdAt/createdBy overwritten, and an audit entry written that
+        // says 'create' for what was an update. Fail-loud: null now means ABSENT.
+        try { $existing = $this->firebase->firestoreGetOrFail(self::COLLECTION, $fsDocId); }
+        catch (\Throwable $e) {
+            log_message('error', 'Curriculum_service: existing-curriculum read failed (doc='
+                . $fsDocId . '): ' . $e->getMessage());
+            throw new Service_exception(
+                'Could not read the existing curriculum, so nothing was saved. '
+                . 'Please try again in a moment.',
+                'read'
+            );
+        }
 
         $currVersion = is_array($existing) ? (int)($existing['version'] ?? 0) : 0;
         if ($expectedVersion !== null && $expectedVersion !== '') {
@@ -161,12 +223,23 @@ class Curriculum_service
                 ? array_values($existing['topicIds']) : [];
             $topicColl = $this->_subcollPath($fsDocId);
 
+            // Ids this curriculum has actually issued. A request may only
+            // claim one of these: an id from anywhere else is not an edit of
+            // anything, and must not be allowed to name a document of its own
+            // choosing inside the subcollection.
+            $knownIds = array_flip($existingTopicIds);
+            $usedIds  = [];
+
             $newTopicIds = [];
             $ops = [];
 
             foreach ($clean as $i => $t) {
-                $isExisting = isset($existingTopicIds[$i]);
-                $tid = $isExisting ? $existingTopicIds[$i] : $this->_uuid();
+                $claimed = (string) ($t['topicId'] ?? '');
+                $isExisting = ($claimed !== ''
+                    && isset($knownIds[$claimed])
+                    && !isset($usedIds[$claimed]));
+                $tid = $isExisting ? $claimed : $this->_uuid();
+                $usedIds[$tid] = true;
                 $newTopicIds[] = $tid;
 
                 $topicData = [
@@ -192,12 +265,33 @@ class Curriculum_service
                 $ops[] = ['op' => 'set', 'collection' => $topicColl, 'docId' => $tid, 'merge' => true, 'data' => $topicData];
             }
 
-            for ($i = count($clean); $i < count($existingTopicIds); $i++) {
-                $ops[] = ['op' => 'delete', 'collection' => $topicColl, 'docId' => $existingTopicIds[$i], 'data' => []];
+            // A topic the request does not mention is NOT a deletion. In this
+            // product a topic is removed through delete_topic, which confirms
+            // with the user and records what it took out; saving is only ever
+            // used to add and to edit. So an omitted topic means the list was
+            // built without it — which is exactly what happens when a topic
+            // document fails to load, and what used to make the next save wipe
+            // every topic that had not loaded, taking the lesson plans' only
+            // link to them with it.
+            $omitted = [];
+            foreach ($existingTopicIds as $oldId) {
+                if (!isset($usedIds[$oldId])) { $omitted[] = $oldId; }
+            }
+            if ($omitted) {
+                $n = count($omitted);
+                log_message('error', 'saveCurriculum omitted ' . $n . ' stored topic(s) '
+                    . '— refused: ' . implode(',', $omitted));
+                throw new Service_exception(
+                    'This save left out ' . $n . ' topic' . ($n === 1 ? '' : 's') . ' that '
+                    . 'the syllabus still has, so it was not applied. Reload the '
+                    . 'curriculum and try again. To remove a topic, use its delete '
+                    . 'button.',
+                    'validation'
+                );
             }
 
             $newCounters = $this->_computeCounters($clean);
-            $ops[] = [
+            $parentOp = [
                 'op' => 'set', 'collection' => self::COLLECTION, 'docId' => $fsDocId, 'merge' => true,
                 'data' => [
                     'schoolId'        => $this->schoolId,
@@ -216,12 +310,11 @@ class Curriculum_service
                 ],
             ];
 
-            $ok = false;
-            try { $ok = $this->firebase->firestoreCommitBatch($ops); }
-            catch (\Throwable $e) { log_message('error', 'saveCurriculum batch failed: ' . $e->getMessage()); }
-            if (!$ok) {
-                throw new Service_exception('Failed to save curriculum (batch commit failed). No changes applied.', 'internal');
-            }
+            $pre = $this->_parentPrecondition($existing, $fsDocId);
+            if ($pre !== null) { $parentOp['precondition'] = $pre; }
+            $ops[] = $parentOp;
+
+            $this->_commitGuarded($ops, 'saveCurriculum');
 
             $resp = [];
             foreach ($newTopicIds as $i => $tid) {
@@ -253,13 +346,19 @@ class Curriculum_service
             ];
         }
 
-        // Legacy array path
+        // Legacy array path. Topics live inline here and are addressed by
+        // POSITION, so the id carried through the cleaning step means nothing
+        // in this model — it is dropped rather than stored, to leave the shape
+        // of these documents exactly as it was.
+        $legacyTopics = [];
+        foreach ($clean as $t) { unset($t['topicId']); $legacyTopics[] = $t; }
+
         $this->firebase->firestoreSet(self::COLLECTION, $fsDocId, [
             'schoolId'      => $this->schoolId,
             'session'       => $this->session,
             'classSection'  => $classSection,
             'subject'       => $subject,
-            'topics'        => $clean,
+            'topics'        => $legacyTopics,
             'updatedAt'     => $now,
             'updatedByUid'  => $this->adminId,
             'updatedByName' => $this->adminName,
@@ -274,7 +373,8 @@ class Curriculum_service
             ['version' => $newVersion, 'topics_count' => count($clean)],
             ['classSection' => $classSection, 'subject' => $subject, 'mode' => 'array']
         );
-        return ['topics' => $clean, 'version' => $newVersion];
+        // What was stored, not what was submitted.
+        return ['topics' => $legacyTopics, 'version' => $newVersion];
     }
 
     public function updateTopicStatus(
@@ -300,9 +400,18 @@ class Curriculum_service
         $subject      = $this->_safePathSegment($subjectRaw);
 
         $fsDocId = $this->_currDocId($classSection, $subject);
-        $parent  = null;
-        try { $parent = $this->firebase->firestoreGet(self::COLLECTION, $fsDocId); }
-        catch (\Throwable $e) { log_message('error', 'updateTopicStatus parent read failed: ' . $e->getMessage()); }
+        // Fail-loud: the counters below are adjusted by delta from this
+        // document, and read silently a failure came back as "Curriculum not
+        // found for this class+subject" — which is a statement about the
+        // school's syllabus, not about the read.
+        $parent = null;
+        try { $parent = $this->firebase->firestoreGetOrFail(self::COLLECTION, $fsDocId); }
+        catch (\Throwable $e) {
+            log_message('error', 'updateTopicStatus parent read failed: ' . $e->getMessage());
+            throw new Service_exception(
+                'The curriculum could not be read, so nothing was changed. '
+                . 'Try again in a moment.', 'unavailable');
+        }
         if (!is_array($parent)) {
             throw new Service_exception('Curriculum not found for this class+subject', 'not_found');
         }
@@ -333,9 +442,16 @@ class Curriculum_service
                 throw new Service_exception('Topic not found (could not resolve topicId)', 'not_found');
             }
             $topicColl = $this->_subcollPath($fsDocId);
-            $topicDoc  = null;
-            try { $topicDoc = $this->firebase->firestoreGet($topicColl, $topicId); }
-            catch (\Throwable $e) { log_message('error', 'updateTopicStatus topic read failed: ' . $e->getMessage()); }
+            // The old status is what the completed-topics delta is computed
+            // from, so this read has to be believed or refused — never guessed.
+            $topicDoc = null;
+            try { $topicDoc = $this->firebase->firestoreGetOrFail($topicColl, $topicId); }
+            catch (\Throwable $e) {
+                log_message('error', 'updateTopicStatus topic read failed: ' . $e->getMessage());
+                throw new Service_exception(
+                    'This topic could not be read, so its progress was not changed. '
+                    . 'Try again in a moment.', 'unavailable');
+            }
             if (!is_array($topicDoc)) {
                 throw new Service_exception('Topic not found in subcollection', 'not_found');
             }
@@ -363,7 +479,7 @@ class Curriculum_service
                         'version'       => $topicVer,
                     ],
                 ],
-                [
+                array_filter([
                     'op' => 'set', 'collection' => self::COLLECTION, 'docId' => $fsDocId, 'merge' => true,
                     'data' => [
                         'completedTopics' => $newCompleted,
@@ -373,14 +489,10 @@ class Curriculum_service
                         'updatedByName'   => $this->adminName,
                         'version'         => $newVersion,
                     ],
-                ],
+                    'precondition' => $this->_parentPrecondition($parent, $fsDocId),
+                ], fn($v) => $v !== null),
             ];
-            $ok = false;
-            try { $ok = $this->firebase->firestoreCommitBatch($ops); }
-            catch (\Throwable $e) { log_message('error', 'updateTopicStatus batch failed: ' . $e->getMessage()); }
-            if (!$ok) {
-                throw new Service_exception('Failed to update topic status (batch commit failed)', 'internal');
-            }
+            $this->_commitGuarded($ops, 'updateTopicStatus');
 
             $this->_audit(
                 'status_change', 'curriculumTopic', $topicId,
@@ -449,9 +561,17 @@ class Curriculum_service
         $subject      = $this->_safePathSegment($subjectRaw);
 
         $fsDocId = $this->_currDocId($classSection, $subject);
-        $parent  = null;
-        try { $parent = $this->firebase->firestoreGet(self::COLLECTION, $fsDocId); }
-        catch (\Throwable $e) { log_message('error', 'deleteTopic parent read failed: ' . $e->getMessage()); }
+        // Fail-loud, for the same reason as the progress path: this document
+        // supplies the topic list, the counters and the guard token the write
+        // is conditioned on. "Curriculum not found" is only true when it is.
+        $parent = null;
+        try { $parent = $this->firebase->firestoreGetOrFail(self::COLLECTION, $fsDocId); }
+        catch (\Throwable $e) {
+            log_message('error', 'deleteTopic parent read failed: ' . $e->getMessage());
+            throw new Service_exception(
+                'The curriculum could not be read, so nothing was deleted. '
+                . 'Try again in a moment.', 'unavailable');
+        }
         if (!is_array($parent)) {
             throw new Service_exception('Curriculum not found for this class+subject', 'not_found');
         }
@@ -482,9 +602,23 @@ class Curriculum_service
                 throw new Service_exception('Topic not found (could not resolve topicId)', 'not_found');
             }
             $topicColl = $this->_subcollPath($fsDocId);
-            $topicDoc  = null;
-            try { $topicDoc = $this->firebase->firestoreGet($topicColl, $topicId); }
-            catch (\Throwable $e) {}
+            // Whether this topic was FINISHED decides the completed count that
+            // gets written below. A silent read made a failure look like "not
+            // finished", so deleting a finished topic left the count one too
+            // high — permanently, and compounding with every further deletion.
+            // null still means genuinely absent, which is a no-op deletion.
+            $topicDoc = null;
+            try { $topicDoc = $this->firebase->firestoreGetOrFail($topicColl, $topicId); }
+            catch (\Throwable $e) {
+                log_message('error', 'deleteTopic: topic read failed (' . $topicId
+                    . '): ' . $e->getMessage());
+                throw new Service_exception(
+                    'This topic could not be read, so the syllabus progress could '
+                    . 'not be adjusted and nothing was deleted. Please try again in '
+                    . 'a moment.',
+                    'read'
+                );
+            }
             $wasCompleted = is_array($topicDoc) && (($topicDoc['status'] ?? '') === 'completed');
 
             $newTopicIds = array_values(array_filter(
@@ -496,7 +630,7 @@ class Curriculum_service
 
             $ops = [
                 ['op' => 'delete', 'collection' => $topicColl, 'docId' => $topicId, 'data' => []],
-                [
+                array_filter([
                     'op' => 'set', 'collection' => self::COLLECTION, 'docId' => $fsDocId, 'merge' => true,
                     'data' => [
                         'topicIds'        => $newTopicIds,
@@ -508,14 +642,10 @@ class Curriculum_service
                         'updatedByName'   => $this->adminName,
                         'version'         => $newVersion,
                     ],
-                ],
+                    'precondition' => $this->_parentPrecondition($parent, $fsDocId),
+                ], fn($v) => $v !== null),
             ];
-            $ok = false;
-            try { $ok = $this->firebase->firestoreCommitBatch($ops); }
-            catch (\Throwable $e) { log_message('error', 'deleteTopic batch failed: ' . $e->getMessage()); }
-            if (!$ok) {
-                throw new Service_exception('Failed to delete topic (batch commit failed). No changes applied.', 'internal');
-            }
+            $this->_commitGuarded($ops, 'deleteTopic');
 
             $mockParent = $parent;
             $mockParent['topicIds'] = $newTopicIds;
@@ -607,16 +737,29 @@ class Curriculum_service
         }
 
         try {
-            $ci = function_exists('get_instance') ? get_instance() : null;
-            if (!$ci) return false;
-            $ci->load->library('subject_assignment_service', null, 'sas');
-            if (!$ci->sas->isReady()) {
-                $ci->sas->init($this->fs, $this->firebase, $this->schoolId, $this->schoolName, $this->session);
+            $sas = $this->sas;
+            if ($sas === null) {
+                $ci = function_exists('get_instance') ? get_instance() : null;
+                if (!$ci) { return false; }
+                $ci->load->library('subject_assignment_service', null, 'sas');
+                if (!$ci->sas->isReady()) {
+                    $ci->sas->init($this->fs, $this->firebase, $this->schoolId, $this->schoolName, $this->session);
+                }
+                $sas = $ci->sas;
             }
-            $assignments = $ci->sas->getAssignmentsForClass($className, $section);
+            $assignments = $sas->getAssignmentsForClass($className, $section);
         } catch (\Throwable $e) {
+            // A lookup that FAILED is not a teacher without an assignment. Both
+            // refuse — which is the safe direction — but the caller's message
+            // says "no matching subject assignment", which is a statement about
+            // this person's timetable and is simply untrue during an outage.
             log_message('error', 'curriculum _canEdit SAS lookup failed: ' . $e->getMessage());
-            return false;
+            throw new Service_exception(
+                'Your subject assignments could not be read, so it could not be '
+                . 'checked whether you teach this subject. Nothing was changed — '
+                . 'please try again in a moment.',
+                'read'
+            );
         }
 
         if ($this->adminId === '') return false;
@@ -662,13 +805,24 @@ class Curriculum_service
         ];
     }
 
-    private function _loadTopics(string $parentDocId, ?array $parent): array
+    /**
+     * The topics of one curriculum.
+     *
+     * $expected and $loaded are reported back, because one topic document
+     * failing to read used to drop that topic out of the list with nothing to
+     * show for it: a shorter course than the one the teacher is meant to
+     * teach, and no sign on the screen that anything was missing.
+     */
+    private function _loadTopics(string $parentDocId, ?array $parent,
+                                 ?int &$expected = null, ?int &$loaded = null): array
     {
+        $expected = 0; $loaded = 0;
         if (!is_array($parent)) return [];
         $mode = $parent['topicsModel'] ?? '';
 
         if ($mode === 'subcollection' && is_array($parent['topicIds'] ?? null)) {
             $topicIds = array_values($parent['topicIds']);
+            $expected = count($topicIds);
             if (empty($topicIds)) return [];
             $coll = $this->_subcollPath($parentDocId);
             $reqs = [];
@@ -687,25 +841,32 @@ class Curriculum_service
                     }
                 }
             } catch (\Throwable $e) {
+                // $expected stays at the parent's own count, so the caller can
+                // tell "none loaded" from "there are none".
                 log_message('error', '_loadTopics subcoll fetch failed: ' . $e->getMessage());
                 return [];
             }
             $topics = [];
             foreach ($topicIds as $tid) {
                 $d = $results[$tid] ?? null;
-                if (!is_array($d)) continue;
+                if (!is_array($d)) { continue; }   // counted by $loaded below
                 $topics[] = $this->_topicToLegacy($d, $tid);
+                $loaded++;
             }
             return $topics;
         }
 
         if (is_array($parent['topics'] ?? null)) {
+            // The legacy model keeps its topics inside the parent, so if the
+            // parent read at all, the list is whole.
             $topics = [];
             foreach ($parent['topics'] as $i => $t) {
                 if (!is_array($t)) continue;
                 $t['sort_order'] = $t['sort_order'] ?? $i;
                 $topics[] = $this->_topicToLegacy($t);
             }
+            $expected = count($topics);
+            $loaded   = count($topics);
             return $topics;
         }
         return [];
@@ -720,6 +881,65 @@ class Curriculum_service
         }
         $pct = $total > 0 ? round(($completed / $total) * 1000) / 10 : 0;
         return ['totalTopics' => $total, 'completedTopics' => $completed, 'percentComplete' => $pct];
+    }
+
+    /**
+     * The condition under which this write is still the write we decided on.
+     *
+     * Comparing expected_version against the stored version is a check made
+     * in PHP, and everything between that comparison and the commit is a
+     * window another editor's save fits through: both requests read version
+     * 1, both pass, both write version 2, and the second silently replaces
+     * work the first person was just told had been saved. Carrying the
+     * condition WITH the write closes the window — the server refuses a
+     * batch built from a document that has since moved.
+     *
+     * A parent with no update token cannot be guarded this way. That should
+     * not happen through the live client, so it is logged rather than
+     * ignored, and the write proceeds as it always did.
+     */
+    private function _parentPrecondition(?array $parent, string $fsDocId): ?array
+    {
+        if (!is_array($parent)) { return ['exists' => false]; }
+        $ut = (string) ($parent['__updateTime'] ?? '');
+        if ($ut === '') {
+            log_message('error', 'Curriculum_service: no __updateTime on ' . $fsDocId
+                . ' — writing without a compare-and-set guard');
+            return null;
+        }
+        return ['updateTime' => $ut];
+    }
+
+    /**
+     * Commit a batch whose parent op carries the precondition above, turning
+     * a server refusal into the same conflict the version check reports — the
+     * person is asked to reload either way, and nothing was written either way.
+     */
+    private function _commitGuarded(array $ops, string $what): void
+    {
+        $res = null;
+        try { $res = $this->firebase->firestoreCommitBatchStatus($ops); }
+        catch (\Throwable $e) {
+            log_message('error', $what . ' batch failed: ' . $e->getMessage());
+            throw new Service_exception(
+                'Failed to save the curriculum. No changes were applied.', 'internal');
+        }
+        $status = (string) ($res['status'] ?? '');
+        if ($status === 'PRECONDITION_CONFLICT') {
+            log_message('error', $what . ' refused: the curriculum moved between the '
+                . 'read and the write (actor=' . $this->adminId . ')');
+            throw new Service_exception(
+                'Conflict: this curriculum was changed by another user while you were '
+                . 'working on it, so nothing was changed. Reload and try again.',
+                'conflict'
+            );
+        }
+        if ($status !== 'SUCCESS') {
+            log_message('error', $what . ' commit returned ' . $status . ': '
+                . (string) ($res['message'] ?? ''));
+            throw new Service_exception(
+                'Failed to save the curriculum. No changes were applied.', 'internal');
+        }
     }
 
     private function _audit(string $action, string $entityType, string $entityId, ?array $before, ?array $after, array $metadata): void

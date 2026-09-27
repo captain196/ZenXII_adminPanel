@@ -78,8 +78,12 @@ class Security_telemetry
         // ADMIN_LOGIN_LOCKED       — per-account lockout threshold reached (Firestore adminAuthState)
         // ADMIN_LOGIN_AUTHZ_MISSING — signed in but customClaims missing schoolId/role OR staff doc absent
         // ADMIN_LOGIN_AUTHZ_INACTIVE — signed in + claims present but staff.status != Active
+        // ADMIN_LOGIN_UNAVAILABLE  — the credential check never REACHED Firebase Auth
+        //                            (DNS/TLS/connect failure). NOT a credential judgement:
+        //                            it consumes no lockout attempt and must never be read
+        //                            as a failed password in any dashboard or alert.
         'ADMIN_LOGIN_SUCCESS', 'ADMIN_LOGIN_FAILED', 'ADMIN_LOGIN_LOCKED',
-        'ADMIN_LOGIN_AUTHZ_MISSING', 'ADMIN_LOGIN_AUTHZ_INACTIVE',
+        'ADMIN_LOGIN_AUTHZ_MISSING', 'ADMIN_LOGIN_AUTHZ_INACTIVE', 'ADMIN_LOGIN_UNAVAILABLE',
         // ── Wave A A2.1 (2026-05-28): SA-login authorization dual-read telemetry ──
         // Emitted by Superadmin_login authz resolution (Firestore-first, RTDB fallback).
         // SA_AUTHZ_PATH      — which store authorized (path=firestore|rtdb_fallback, +reason)

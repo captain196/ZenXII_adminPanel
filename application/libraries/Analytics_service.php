@@ -34,6 +34,9 @@ class Analytics_service
     const COLL_LESSON_PLANS        = 'lessonPlans';
     const COLL_TIMETABLES          = 'timetables';
 
+    /** One school, one session: a term of skipped and overdue lessons. */
+    const DELAY_SCAN_LIMIT = 1000;
+
     public function init($firebase, $fs, string $schoolId, string $session): self
     {
         $this->firebase = $firebase;
@@ -61,7 +64,13 @@ class Analytics_service
     {
         $out = [];
         try {
-            $docs = $this->fs->sessionWhere(self::COLL_CURRICULUM, []);
+            // schoolWhereOrFail + an explicit session filter is sessionWhere
+            // with the failure kept: the helper has no fail-loud session
+            // variant, and adding one would touch a file three programmes
+            // are editing.
+            $docs = $this->fs->schoolWhereOrFail(self::COLL_CURRICULUM, [
+                ['session', '==', $this->session],
+            ]);
             foreach ($docs as $doc) {
                 $d = $doc['data'] ?? $doc;
                 $out[] = [
@@ -74,6 +83,9 @@ class Analytics_service
             }
         } catch (\Throwable $e) {
             log_message('error', 'Analytics::getSyllabusProgress failed: ' . $e->getMessage());
+            throw new Service_exception(
+                'Syllabus progress could not be read, so none is being shown. '
+                . 'Try again in a moment.', 'unavailable');
         }
         usort($out, fn($a, $b) => strcmp($a['classSection'].$a['subject'], $b['classSection'].$b['subject']));
         return $out;
@@ -99,7 +111,7 @@ class Analytics_service
         // 1. counters per teacher for this date
         $rows = [];
         try {
-            $docs = $this->firebase->firestoreQuery(self::COLL_DAILY_MONITORING, [
+            $docs = $this->firebase->firestoreQueryOrFail(self::COLL_DAILY_MONITORING, [
                 ['schoolId', '==', $this->schoolId],
                 ['session',  '==', $this->session],
                 ['date',     '==', $date],
@@ -120,6 +132,12 @@ class Analytics_service
             }
         } catch (\Throwable $e) {
             log_message('error', 'Analytics::getDailyMonitoring counters failed: ' . $e->getMessage());
+            // Every teacher would otherwise be listed with nothing planned
+            // against their scheduled periods, sorted worst first. A failed
+            // read must not be able to manufacture that.
+            throw new Service_exception(
+                "Today's planning counts could not be read, so no monitoring is "
+                . 'being shown. Try again in a moment.', 'unavailable');
         }
 
         // 2. expected slots from timetable for that day-of-week
@@ -127,7 +145,7 @@ class Analytics_service
         $expectedByTeacher = [];
         if ($dayName !== '') {
             try {
-                $ttDocs = $this->firebase->firestoreQuery(self::COLL_TIMETABLES, [
+                $ttDocs = $this->firebase->firestoreQueryOrFail(self::COLL_TIMETABLES, [
                     ['schoolId', '==', $this->schoolId],
                     ['session',  '==', $this->session],
                     ['day',      '==', $dayName],
@@ -144,6 +162,11 @@ class Analytics_service
                 }
             } catch (\Throwable $e) {
                 log_message('error', 'Analytics::getDailyMonitoring timetable read failed: ' . $e->getMessage());
+                // The mirror image of the counters failure: nothing expected
+                // of anybody, so everybody looks fine.
+                throw new Service_exception(
+                    "The day's timetable could not be read, so planning cannot be "
+                    . 'compared against it. Try again in a moment.', 'unavailable');
             }
         }
 
@@ -181,13 +204,27 @@ class Analytics_service
     {
         $today = date('Y-m-d');
 
-        $skipped   = [];
+        $skipped    = [];
         $unfinished = [];
+        $truncated  = false;
         try {
             // Skipped — single equality query, indexed on status auto
-            $skippedDocs = $this->firebase->firestoreQuery(self::COLL_LESSON_PLANS, [
-                ['status', '==', 'skipped'],
-            ], 'date', 'DESC', 500);
+            // schoolId and session belong IN the query. Asking the whole
+            // database for status == 'skipped' and dropping other schools'
+            // rows afterwards meant the cap was spent on them: a larger
+            // neighbour could fill it and this school was shown a clean sheet
+            // it had not earned. The ordering is dropped with them — three
+            // equality filters need no composite index, and the rows are
+            // sorted below anyway.
+            $skippedDocs = $this->firebase->firestoreQueryOrFail(self::COLL_LESSON_PLANS, [
+                ['schoolId', '==', $this->schoolId],
+                ['session',  '==', $this->session],
+                ['status',   '==', 'skipped'],
+            ], null, 'ASC', self::DELAY_SCAN_LIMIT + 1);
+            if (count($skippedDocs) > self::DELAY_SCAN_LIMIT) {
+                $truncated = true;
+                $skippedDocs = array_slice($skippedDocs, 0, self::DELAY_SCAN_LIMIT);
+            }
             foreach ($skippedDocs as $doc) {
                 $d = $doc['data'] ?? $doc;
                 if (($d['schoolId'] ?? '') !== $this->schoolId) continue;
@@ -196,12 +233,21 @@ class Analytics_service
             }
         } catch (\Throwable $e) {
             log_message('error', 'Analytics::getDelays skipped query failed: ' . $e->getMessage());
+            throw new Service_exception(
+                'Skipped lessons could not be read, so no delays are being shown. '
+                . 'Try again in a moment.', 'unavailable');
         }
 
         try {
-            $plannedDocs = $this->firebase->firestoreQuery(self::COLL_LESSON_PLANS, [
-                ['status', '==', 'planned'],
-            ], 'date', 'DESC', 500);
+            $plannedDocs = $this->firebase->firestoreQueryOrFail(self::COLL_LESSON_PLANS, [
+                ['schoolId', '==', $this->schoolId],
+                ['session',  '==', $this->session],
+                ['status',   '==', 'planned'],
+            ], null, 'ASC', self::DELAY_SCAN_LIMIT + 1);
+            if (count($plannedDocs) > self::DELAY_SCAN_LIMIT) {
+                $truncated = true;
+                $plannedDocs = array_slice($plannedDocs, 0, self::DELAY_SCAN_LIMIT);
+            }
             foreach ($plannedDocs as $doc) {
                 $d = $doc['data'] ?? $doc;
                 if (($d['schoolId'] ?? '') !== $this->schoolId) continue;
@@ -212,12 +258,28 @@ class Analytics_service
             }
         } catch (\Throwable $e) {
             log_message('error', 'Analytics::getDelays planned query failed: ' . $e->getMessage());
+            throw new Service_exception(
+                'Overdue lessons could not be read, so no delays are being shown. '
+                . 'Try again in a moment.', 'unavailable');
         }
+
+        // Most recent first, sorted here now that the query no longer orders.
+        $byDateDesc = static fn($a, $b) => strcmp((string) ($b['date'] ?? ''),
+                                                  (string) ($a['date'] ?? ''));
+        usort($skipped,    $byDateDesc);
+        usort($unfinished, $byDateDesc);
+
+        // A capped list presented as "the delays" is a claim about the school.
+        if (count($skipped) > 200 || count($unfinished) > 200) { $truncated = true; }
 
         return [
             'skipped'    => array_slice($skipped,    0, 200),
             'unfinished' => array_slice($unfinished, 0, 200),
             'asOf'       => $today,
+            'truncated'  => $truncated,
+            'notice'     => $truncated
+                ? 'Showing the most recent 200 of each. There are more.'
+                : '',
         ];
     }
 
@@ -233,7 +295,7 @@ class Analytics_service
                 ['session',  '==', $this->session],
             ];
             if ($classSection !== '') $cond[] = ['classSection', '==', $classSection];
-            $docs = $this->firebase->firestoreQuery(self::COLL_SUBJECT_PROGRESS, $cond, null, 'ASC', 500);
+            $docs = $this->firebase->firestoreQueryOrFail(self::COLL_SUBJECT_PROGRESS, $cond, null, 'ASC', 500);
             foreach ($docs as $doc) {
                 $d = $doc['data'] ?? $doc;
                 $out[] = [
@@ -249,6 +311,11 @@ class Analytics_service
             }
         } catch (\Throwable $e) {
             log_message('error', 'Analytics::getSubjectProgress failed: ' . $e->getMessage());
+            // This one reaches a parent, where an empty strip reads as a
+            // class that has covered nothing.
+            throw new Service_exception(
+                'Subject progress could not be read, so none is being shown. '
+                . 'Try again in a moment.', 'unavailable');
         }
         usort($out, fn($a, $b) => strcmp($a['classSection'].$a['subject'], $b['classSection'].$b['subject']));
         return $out;
@@ -275,7 +342,7 @@ class Analytics_service
 
         $out = [];
         try {
-            $docs = $this->firebase->firestoreQuery(self::COLL_LESSON_PLANS, [
+            $docs = $this->firebase->firestoreQueryOrFail(self::COLL_LESSON_PLANS, [
                 ['schoolId',     '==', $this->schoolId],
                 ['session',      '==', $this->session],
                 ['classSection', '==', $classSection],
@@ -294,6 +361,9 @@ class Analytics_service
             }
         } catch (\Throwable $e) {
             log_message('error', 'Analytics::getParentDailyLessons failed: ' . $e->getMessage());
+            throw new Service_exception(
+                "Today's lessons could not be read, so none are being shown. "
+                . 'Try again in a moment.', 'unavailable');
         }
         return [
             'classSection' => $classSection,

@@ -1,6 +1,17 @@
 <?php
 defined('BASEPATH') or exit('No direct script access allowed');
 
+// Phase 9.2 (2026-08-13) — required so the SAME canonical format rules
+// Sr_no_service::normalize()/Apaar_service::normalize() already enforce
+// (digits-only SRNO, exactly-12-digit APAAR) are reused here rather than
+// re-implemented — this schema must never invent a second definition of
+// "valid" for either identifier. Explicit require_once (not relying on
+// load order) because Import_schema can be loaded before either service
+// is, and only their static normalize() methods are needed here — no
+// Firestore/controller context required for pure format validation.
+require_once APPPATH . 'libraries/Sr_no_service.php';
+require_once APPPATH . 'libraries/Apaar_service.php';
+
 /**
  * Import_schema — single source of truth for the bulk student import.
  *
@@ -76,6 +87,25 @@ class Import_schema
                 'synonyms' => ['previous class', 'prev class', 'last class', 'class passed', 'pre class']],
             'Pre Marks'         => ['label' => 'Previous Marks', 'required' => false, 'norm' => 'text',
                 'synonyms' => ['previous marks', 'last marks', 'marks', 'grade obtained', 'percentage', 'result', 'pre marks']],
+
+            // Phase 9.2 (2026-08-13) — identity fields. `required` is
+            // deliberately FALSE for all three here even though SR Number
+            // becomes conditionally mandatory under "Historical" import
+            // mode — that conditional requirement depends on the operator's
+            // explicit mode selection (a value this pure schema definition
+            // has no knowledge of), so it is enforced separately in
+            // Sis::import_commit()/_runStudentImport(), never here. Roll
+            // Number is deliberately 'text', not a numeric norm — ZenX's
+            // existing Roll No field (save_admission(), student profile) is
+            // plain free text with no forced numeric conversion anywhere in
+            // the current architecture (confirmed by audit), so import must
+            // not invent stricter handling than normal admission already has.
+            'SR Number'         => ['label' => 'SR Number', 'required' => false, 'norm' => 'sr_number',
+                'synonyms' => ['sr no', 'sr number', 'srno', 'sr. no', 'register number', 'register no', 'reg no', 'admission number', 'admission no']],
+            'APAAR ID'          => ['label' => 'APAAR ID', 'required' => false, 'norm' => 'apaar',
+                'synonyms' => ['apaar', 'apaar id', 'apaar no', 'abc id', 'abc no']],
+            'Roll No'           => ['label' => 'Roll Number', 'required' => false, 'norm' => 'text',
+                'synonyms' => ['roll no', 'roll number', 'rollno', 'class roll no']],
         ];
     }
 
@@ -103,6 +133,14 @@ class Import_schema
             'Rohit Sharma', 'Businessman', 'Priya Sharma', 'Homemaker', '9876500011', 'Father', '9876500011',
             'aarav.sharma@example.com', '12 Gandhi Road', 'Jaipur', 'Rajasthan', '302001',
             'Little Angels Playschool', 'Nursery', 'A',
+            // 2026-09-13 — the example row stopped at 25 values while
+            // templateHeaders() emits 28, so the downloaded CSV carried a ragged
+            // row and the three identifier columns had no worked example. A school
+            // choosing "Historical / Existing Register Data" — where SR Number is
+            // REQUIRED on every row — was shown a blank cell for the one field it
+            // had to supply. Formats follow Sr_no_service (digits only) and
+            // Apaar_service (exactly 12 digits), the same rules validation applies.
+            '1047', '123456789012', '12',
         ];
     }
 
@@ -221,6 +259,8 @@ class Import_schema
             case 'phone':   return $this->normalizePhone($raw);
             case 'blood':   return $this->normalizeBlood($raw);
             case 'email':   return $this->normalizeEmail($raw);
+            case 'sr_number': return $this->normalizeSrNumber($raw);
+            case 'apaar':     return $this->normalizeApaar($raw);
             case 'india_state':
                 // Canonicalize an India state/UT spelling; keep as typed if unknown.
                 if (function_exists('india_geo_match_state')) {
@@ -362,6 +402,35 @@ class Import_schema
         return strtolower(trim((string) $raw));
     }
 
+    /**
+     * Phase 9.2 — SR Number format only (digits-only, matches
+     * Sr_no_service::FORMAT_RE exactly, delegated via normalize() rather
+     * than re-implemented). Returns the DISPLAY value (padding preserved,
+     * e.g. "0501" stays "0501") when valid, '' when not — validateRow()
+     * turns a non-blank-but-unparseable input into an error, mirroring the
+     * existing DOB/date pattern in this same class.
+     */
+    public function normalizeSrNumber($raw): string
+    {
+        $s = trim((string) $raw);
+        if ($s === '') return '';
+        $n = \Sr_no_service::normalize($s);
+        return $n['display'] ?? '';
+    }
+
+    /**
+     * Phase 9.2 — APAAR format only (exactly 12 digits after stripping
+     * spaces/hyphens, matches Apaar_service::FORMAT_RE exactly, delegated
+     * via normalize() rather than re-implemented). Returns the normalized
+     * 12-digit value when valid, '' when not.
+     */
+    public function normalizeApaar($raw): string
+    {
+        $s = trim((string) $raw);
+        if ($s === '') return '';
+        return \Apaar_service::normalize($s) ?? '';
+    }
+
     // ═══════════════════════════════════════════════════════════════════
     //  VALIDATION (dry-run)
     // ═══════════════════════════════════════════════════════════════════
@@ -371,7 +440,15 @@ class Import_schema
      * Input: assoc [canonicalKey => raw value] (unmapped keys may be absent).
      * Output: ['data' => normalized-all-fields, 'errors' => [], 'warnings' => [], 'status' => ok|warning|error]
      */
-    public function validateRow(array $mapped): array
+    /**
+     * @param string $importMode Phase 9.2 — '' (unspecified, e.g. the dead
+     *        legacy exact-template caller), 'historical', or 'new'. Only
+     *        affects SR Number's required-ness and the New-mode ignore-
+     *        with-warning behavior — every other field's validation is
+     *        unaffected. Backward compatible: omitting this parameter
+     *        preserves the exact pre-Phase-9.2 validation behavior.
+     */
+    public function validateRow(array $mapped, string $importMode = ''): array
     {
         $data = [];
         foreach ($this->defs() as $key => $_) {
@@ -387,6 +464,32 @@ class Import_schema
             $errors[] = "Class \"" . ($mapped['Class'] ?? '') . "\" is not a supported numeric class (1–12)";
         }
         if ($data['Section'] === '') $errors[] = 'Section is required';
+
+        // Phase 9.2 — SR Number / APAAR ID. Format-only here (no Firestore
+        // access in this pure function — school-scoped duplicate/ownership
+        // conflicts are checked separately, server-side, in
+        // Sis::import_dedupe_check()/import_commit()).
+        $srRaw = trim((string) ($mapped['SR Number'] ?? ''));
+        if ($srRaw !== '' && $data['SR Number'] === '') {
+            $errors[] = "SR Number \"{$srRaw}\" is not a valid format (digits only)";
+        }
+        if ($importMode === 'historical' && $data['SR Number'] === '') {
+            $errors[] = 'SR Number is required in Historical / Existing Register Data mode';
+        }
+        if ($importMode === 'new' && $data['SR Number'] !== '') {
+            // Not an error — the operator cannot manually assign SRNO in
+            // this mode by design, so the value is simply never read at
+            // commit time (Sis::_runStudentImport() ignores it entirely
+            // when mode='new'). Warn so the operator isn't confused about
+            // why a supplied number didn't take effect.
+            $warnings[] = "SR Number \"{$srRaw}\" will be IGNORED — New Admissions mode assigns SR Number automatically";
+            $data['SR Number'] = '';
+        }
+
+        $apaarRaw = trim((string) ($mapped['APAAR ID'] ?? ''));
+        if ($apaarRaw !== '' && $data['APAAR ID'] === '') {
+            $errors[] = 'APAAR ID must be exactly 12 digits';
+        }
 
         if (trim((string) ($mapped['DOB'] ?? '')) !== '' && $data['DOB'] === '') {
             $warnings[] = 'Date of Birth could not be read — left blank';

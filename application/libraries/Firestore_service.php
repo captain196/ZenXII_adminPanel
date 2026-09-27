@@ -323,6 +323,38 @@ class Firestore_service
     }
 
     /**
+     * Fail-loud sibling of get(). A failed read THROWS instead of returning null.
+     *
+     * get() cannot tell "document absent" (null) from "read failed" (also null),
+     * so a caller that must NOT fail open on a read error — an attendance lock
+     * gate deciding whether a finalized day may be overwritten — cannot use it.
+     * Mirrors whereOrFail(). NOTE: still returns null for a genuinely absent doc;
+     * it only distinguishes the ERROR path by throwing.
+     */
+    public function getOrFail(string $collection, string $docId): ?array
+    {
+        if ($this->client === null) {
+            throw new \RuntimeException('GET_FAILED:' . $collection . ':NOT_INITIALIZED');
+        }
+        $t = microtime(true);
+        try {
+            // getDocumentOrFail returns null for a genuine 404 and THROWS on a
+            // transient/non-404 failure. The plain getDocument() swallows the
+            // error to null, which would silently defeat this method's whole
+            // contract (see the docblock) — a fail-closed caller such as the
+            // attendance lock gate (_get_lock $failClosed=true) would then read a
+            // transient error as "document absent" ⇒ "not locked" and fail OPEN.
+            $result = $this->client->getDocumentOrFail($collection, $docId);
+            $this->_track(microtime(true) - $t, false);
+            return $result;
+        } catch (\Throwable $e) {
+            $this->_track(microtime(true) - $t, true);
+            log_message('error', "Firestore_service::getOrFail({$collection}/{$docId}) failed: " . $e->getMessage());
+            throw $e;
+        }
+    }
+
+    /**
      * Create or overwrite a document.
      *
      * @param bool $merge  If true, merge fields (like update). If false, overwrite entire document.
@@ -387,9 +419,24 @@ class Firestore_service
             // Also drop the cached list snapshot for the matching module so the
             // Student List / Staff List page reflects admissions, deletions and
             // status changes on the very next load instead of waiting out its
-            // TTL. Every write that touches these collections routes through
-            // set/update/remove (incl. the *Entity wrappers) → here, so all of
-            // their mutation endpoints are covered with no per-endpoint edits.
+            // TTL.
+            //
+            // ⚠ COVERAGE IS NOT UNIVERSAL — corrected 2026-08-15, Phase 15.5.
+            // This comment previously claimed that "every write that touches
+            // these collections routes through set/update/remove (incl. the
+            // *Entity wrappers) → here". THAT WAS FALSE, and believing it is
+            // how defect L-1 survived unnoticed.
+            //
+            // _bustDashboard() is reachable ONLY from Firestore_service's own
+            // set/update/remove/batch. Entity_firestore_sync::_write() calls
+            // $this->firebase->firestoreSet() DIRECTLY and therefore never
+            // reaches this hook. Any flow whose only student write goes
+            // through Entity_firestore_sync::syncStudent() must bust these
+            // keys itself — Sis::execute_promotion() now does exactly that.
+            //
+            // Before assuming a new flow is covered, check whether it writes
+            // via $this->fs->…  (covered) or via $this->firebase->…  (NOT
+            // covered).
             if ($collection === 'students' || $collection === 'staff') {
                 $CI->load->driver('cache', ['adapter' => 'file']);
                 $CI->cache->delete($this->listCacheKey($collection));
@@ -455,6 +502,54 @@ class Firestore_service
             log_message('error', "Firestore_service::where({$collection}) failed: " . $e->getMessage());
             return [];
         }
+    }
+
+    /**
+     * Fail-loud sibling of where(). A failed read THROWS instead of returning [].
+     *
+     * where() cannot be changed: its [] means "no rows" to hundreds of callers.
+     * But a caller that must tell "nothing is declared" apart from "I could not
+     * read" — a holiday calendar deciding whether today is a working day, a
+     * delete set deciding what to revoke — cannot use where() at all, because
+     * a missing index, a network failure, a 403 and a 429 all arrive as [].
+     *
+     * Mirrors Firebase::firestoreQueryOrFail() and the queryCursor() precedent.
+     */
+    public function whereOrFail(
+        string $collection,
+        array $conditions = [],
+        ?string $orderBy = null,
+        string $direction = 'ASC',
+        ?int $limit = null
+    ): array {
+        if ($this->client === null) {
+            throw new \RuntimeException('QUERY_FAILED:' . $collection . ':NOT_INITIALIZED');
+        }
+        $t = microtime(true);
+        try {
+            $results = $this->client->queryOrFail($collection, $conditions, $orderBy, $direction, $limit);
+            $this->_track(microtime(true) - $t, false);
+            return $results;
+        } catch (\Throwable $e) {
+            $this->_track(microtime(true) - $t, true);
+            log_message('error', "Firestore_service::whereOrFail({$collection}) failed: " . $e->getMessage());
+            throw $e;
+        }
+    }
+
+    /** Fail-loud sibling of schoolWhere(). See whereOrFail(). */
+    public function schoolWhereOrFail(
+        string $collection,
+        array $extraConditions = [],
+        ?string $orderBy = null,
+        string $direction = 'ASC',
+        ?int $limit = null
+    ): array {
+        $conditions = array_merge(
+            [['schoolId', '==', $this->schoolId]],
+            $extraConditions
+        );
+        return $this->whereOrFail($collection, $conditions, $orderBy, $direction, $limit);
     }
 
     /**
@@ -862,6 +957,34 @@ class Firestore_service
      *
      * @return array ['ok'=>bool,'applied'=>bool,'reason'=>string,'retries'=>int]
      */
+    /**
+     * SRNO-1 — Thin passthrough to the client's atomic multi-document batch
+     * commit, for the one caller in this codebase that genuinely needs a
+     * single Firestore commit spanning TWO documents (Sr_no_service::relink,
+     * srNoIndex ownership move + the new student's previousStudentId, in one
+     * atomic write). Mirrors casAppendBounded/casUpdateEntity's exact
+     * delegate-to-client shape — NO new concurrency framework, same
+     * commitBatch+precondition primitive already used throughout this file.
+     * Callers are responsible for their own CAS retry loop around this call
+     * (see Sr_no_service::relink for the reference implementation) — this
+     * method performs exactly one commit attempt, success or failure.
+     *
+     * @param array $ops Each op: ['op'=>'update'|'set'|'delete','collection'=>string,
+     *   'docId'=>string,'data'=>array,'merge'=>bool,'precondition'=>['updateTime'=>string]]
+     *   `docId` here is the FULL doc id (already schoolId-prefixed by the caller) —
+     *   this passthrough does not apply docId()/entityId prefixing, unlike every
+     *   other method on this class, because a batch spans documents in
+     *   different logical entities that each computed their own full id.
+     */
+    public function commitBatch(array $ops): bool
+    {
+        if ($this->client === null || !method_exists($this->client, 'commitBatch')) return false;
+        $t = microtime(true);
+        $ok = (bool) $this->client->commitBatch($ops);
+        $this->_track(microtime(true) - $t, !$ok);
+        return $ok;
+    }
+
     public function casUpdateEntity(string $collection, string $entityId, callable $mutator, int $maxRetries = 5): array
     {
         if ($this->client === null || !method_exists($this->client, 'casUpdateEntity')) {
@@ -1033,17 +1156,25 @@ class Firestore_service
         ];
         // Preserve raw RTDB field names that admin panel views depend on
         // (views read $profile['Name'], $profile['Phone Number'], etc.)
-        // `Password` is in the whitelist so the auto-generated password
-        // produced at enroll-time is preserved on the doc. Without this
-        // the password silently dropped → admin had no record of what
-        // was set and couldn't share it with the parent. `application_id`
-        // and `mustChangePassword` are kept for the same audit reason.
+        // CRED-PLAIN-1 (2026-09-19) — `Password` USED to be whitelisted here so the
+        // enrol-time password stayed on the doc for the admin to read back. That
+        // made it readable by EVERY principal the students rule admits: `allow read:
+        // if isSameSchool()` is any authenticated user carrying this school_id, which
+        // includes every student and parent. One parent could list `students` and
+        // harvest the whole school's credentials. saveStaff() has refused to store a
+        // password since it was written; students were simply never brought in line.
+        //
+        // The operational need it served is already met properly: the roster's Reset
+        // Password action (Sis::reset_password) sets a new credential on Firebase Auth
+        // and shows it once, WITHOUT persisting it. A password you can read back later
+        // is a password an attacker can read back too. `application_id` and
+        // `mustChangePassword` stay — neither is a secret.
         $rawFields = [
             'Name', 'Father Name', 'Mother Name', 'Class', 'Section',
             'Roll No', 'Phone Number', 'Phone', 'Email', 'Parent_email',
             'Gender', 'DOB', 'Address', 'Status', 'Occupation',
             'Profile Pic', 'User ID', 'Last_result',
-            'Password', 'application_id', 'mustChangePassword',
+            'application_id', 'mustChangePassword',
             'Admission Date', 'Blood Group', 'Category', 'Religion',
             'Nationality', 'Father Occupation', 'Mother Occupation',
             'Guard Contact', 'Guard Relation', 'Pre School', 'Pre Class',
@@ -1056,6 +1187,11 @@ class Firestore_service
         }
         // Ensure User ID is always present (used by views for ID resolution)
         if (empty($doc['User ID'])) $doc['User ID'] = $studentId;
+
+        // Never store passwords in Firestore — identical to saveStaff(). The
+        // allowlist above already omits them; this makes a future addition to that
+        // list, or a caller-supplied key, unable to reintroduce the leak.
+        unset($doc['Password'], $doc['Credentials']);
 
         return $this->set(self::STUDENTS, $this->docId($studentId), $doc, true);
     }
@@ -1087,6 +1223,16 @@ class Firestore_service
             'sessions'    => array_values(array_unique($existingSessions)),
             'updatedAt'   => date('c'),
         ];
+        // Phase 1 ZenX HRMS — additive, optional. Only set when the caller
+        // actually supplied one; a school with the HRMS capability disabled
+        // (or a staff save that predates this field) simply never sends it,
+        // and every reader of staff.locationId already treats missing/null
+        // as "the default location" — no backfill of existing docs.
+        if (isset($data['locationId']) && $data['locationId'] !== '') {
+            $doc['locationId'] = (string) $data['locationId'];
+        } elseif (isset($data['location_id']) && $data['location_id'] !== '') {
+            $doc['locationId'] = (string) $data['location_id'];
+        }
         // Preserve raw RTDB field names that admin panel views depend on
         $rawFields = [
             'Name', 'Phone Number', 'Email', 'Role', 'Designation',
@@ -1127,6 +1273,9 @@ class Firestore_service
             'establishedYear'   => $data['established_year'] ?? $data['establishedYear'] ?? null,
             'affiliationBoard'  => $data['affiliation_board'] ?? $data['affiliationBoard'] ?? null,
             'affiliationNo'     => $data['affiliation_no'] ?? $data['affiliationNo'] ?? null,
+            // Phase 1 ZenX HRMS — additive only; caller (School_config::save_profile)
+            // already capability-gates this before it ever reaches here.
+            'orgType'           => $data['org_type'] ?? $data['orgType'] ?? null,
         ];
 
         // Only include non-empty values to avoid overwriting existing data

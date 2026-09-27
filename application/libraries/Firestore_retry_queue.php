@@ -85,7 +85,7 @@ class Firestore_retry_queue
     }
 
     // ══════════════════════════════════════════════════════════════════
-    //  PUSH — Called by Dual_write on failure
+    //  PUSH — Called by Student_write_service on failure (formerly Dual_write)
     // ══════════════════════════════════════════════════════════════════
 
     public function push(

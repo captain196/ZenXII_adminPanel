@@ -234,6 +234,24 @@ class Institution_readiness
         return $out;
     }
 
+    /**
+     * Charted-but-unregistered fee heads, or NULL when it cannot be determined.
+     *
+     * Kept as a thin delegation so this scorer keeps its own rule: it owns no
+     * domain data and computes nothing a module already owns. The comparison
+     * lives with the fee-head domain, which is also what the operator's screen
+     * and the rollout grant precondition consult — one answer, three readers.
+     */
+    private function _unregisteredHeads(string $schoolId): ?array
+    {
+        if (!class_exists('Fee_head_readiness')) {
+            $f = APPPATH . 'libraries/Fee_head_readiness.php';
+            if (!is_file($f)) return null;
+            require_once $f;
+        }
+        return (new Fee_head_readiness())->missingForSchool($this->firebase, $schoolId);
+    }
+
     private function _financeChecks(string $schoolId, string $session, array $modules): array
     {
         $out = [];
@@ -258,6 +276,48 @@ class Institution_readiness
                 'Fee structures decide what each class is charged; with none, no demand can be generated.',
                 'Create a fee structure in Fee Management → Structures.',
                 'fee_management');
+
+            // ── DAY-ONE-2 · EVERY CHARTED HEAD MUST BE REGISTERED ───────────
+            //
+            // Having fee structures is not the same as being able to bill from
+            // them. Once the fee head registry is the pricing authority, a head
+            // the registry cannot resolve fails CLOSED and aborts that
+            // student's ENTIRE billing — not just that line.
+            //
+            // Measured on a clean fixture with the registry authority on and
+            // the registry empty: ACC_FEEHEAD_UNRESOLVED, demands=0, and the
+            // admission still reporting success. A new tenant's registry is
+            // empty by construction, so this is the default outcome of going
+            // live early, not an edge case.
+            //
+            // Delegates to Fee_head_readiness — the single implementation of
+            // this comparison, shared with the operator's Fee Heads screen and
+            // with the rollout grant precondition. A second copy here would
+            // eventually disagree with the screen the operator is looking at.
+            $missing = $this->_unregisteredHeads($schoolId);
+            if ($missing === null) {
+                $out[] = $this->_check('finance.fee_heads', 'Fees', 'Fee head registry',
+                    self::WARNING, 'Registry state unavailable.',
+                    'Whether every charged fee head is registered could not be determined.',
+                    'Open Fee Management → Fee Heads to check.', 'fee_management');
+            } elseif ($missing === []) {
+                $out[] = $this->_check('finance.fee_heads', 'Fees', 'Fee head registry',
+                    self::PASS, 'Every charged fee head is registered.',
+                    'A registered head can be resolved and priced.',
+                    'Nothing to do. Register any new head in Fee Management → Fee Heads before '
+                    . 'adding it to a fee structure.',
+                    'fee_management');
+            } else {
+                $names = implode(', ', array_slice($missing, 0, 6))
+                       . (count($missing) > 6 ? ', …' : '');
+                $out[] = $this->_check('finance.fee_heads', 'Fees', 'Fee head registry',
+                    self::BLOCKING,
+                    count($missing) . ' charged fee head(s) are not registered: ' . $names . '.',
+                    'An unregistered head cannot be resolved, and one unresolvable head stops '
+                    . 'the whole student being billed — they are admitted owing nothing.',
+                    'Register them in Fee Management → Fee Heads, each with its charge kind.',
+                    'fee_management');
+            }
         }
 
         if (!$this->_enabled($modules, self::MODULE_ACCOUNTING)) {

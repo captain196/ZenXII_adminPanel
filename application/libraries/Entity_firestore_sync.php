@@ -40,6 +40,13 @@ class Entity_firestore_sync
     private $ready = false;
 
     /**
+     * P20.3c — payload-capture slot for buildStudentDoc(). null = disarmed
+     * (syncStudent writes normally); array = armed (syncStudent returns the
+     * payload instead of writing). Single-threaded request scope only.
+     */
+    private $_captureStudentDoc = null;
+
+    /**
      * Initialize with school context.
      */
     public function init($firebase, string $schoolId, string $session, string $schoolCode = ''): self
@@ -379,6 +386,39 @@ class Entity_firestore_sync
     }
 
     /**
+     * ── PHASE 20.3c (P20.2-RACE-1) — PAYLOAD CAPTURE ────────────────────────
+     *
+     * Returns the EXACT document syncStudent() would write, WITHOUT writing it,
+     * so a placement path can commit it atomically alongside the destination
+     * section's CAS marker (Option B).
+     *
+     * WHY A CAPTURE HOOK RATHER THAN A SEPARATE BUILDER: syncStudent() is ~110
+     * lines of field-shape normalisation that 12 call sites depend on. Copying
+     * it into a builder would create a second student-document contract that
+     * could silently drift — the same class of defect as SEC-11. Re-entering
+     * the real method and intercepting its single write point guarantees the
+     * batched payload and the direct-write payload can never differ, because
+     * they are produced by the same code.
+     *
+     * NOT re-entrant and NOT concurrent — CI3 request handling is single
+     * threaded; the flag is cleared in a finally block regardless of outcome.
+     *
+     * @return array|null ['docId' => string, 'doc' => array] or null on failure
+     */
+    public function buildStudentDoc(string $studentId, array $data): ?array
+    {
+        $this->_captureStudentDoc = [];          // arm
+        try {
+            $ok = $this->syncStudent($studentId, $data);
+            $captured = $this->_captureStudentDoc;
+        } finally {
+            $this->_captureStudentDoc = null;    // disarm, always
+        }
+        if (!$ok || !is_array($captured) || empty($captured['docId'])) return null;
+        return $captured;
+    }
+
+    /**
      * Delete student from Firestore.
      * Call after: Sis::delete_student()
      *
@@ -588,7 +628,7 @@ class Entity_firestore_sync
             'maritalStatus' => $data['maritalStatus']  ?? '',
             // SECURITY (audit C1): panNumber / aadharNumber / pfNumber / esiNumber
             // are NO LONGER written to the same-school-readable `staff` doc here.
-            // This Dual_write mirror path (Dual_write::syncStaff) would otherwise
+            // This Student_write_service mirror path (Student_write_service::syncStaff, formerly Dual_write) would otherwise
             // re-introduce the exact PII leak C1 closed. Those fields live only in
             // the owner-readable/server-written `staffPrivate` doc now; the canonical
             // writer is Staff.php (_split_staff_private).
@@ -1065,38 +1105,5 @@ class Entity_firestore_sync
             log_message('error', "Entity_firestore_sync::_delete({$collection}/{$docId}) failed: " . $e->getMessage());
             return false;
         }
-    }
-
-    /**
-     * ── PHASE 20.3c (P20.2-RACE-1) — PAYLOAD CAPTURE ────────────────────────
-     *
-     * Returns the EXACT document syncStudent() would write, WITHOUT writing it,
-     * so a placement path can commit it atomically alongside the destination
-     * section's CAS marker (Option B).
-     *
-     * WHY A CAPTURE HOOK RATHER THAN A SEPARATE BUILDER: syncStudent() is ~110
-     * lines of field-shape normalisation that 12 call sites depend on. Copying
-     * it into a builder would create a second student-document contract that
-     * could silently drift — the same class of defect as SEC-11. Re-entering
-     * the real method and intercepting its single write point guarantees the
-     * batched payload and the direct-write payload can never differ, because
-     * they are produced by the same code.
-     *
-     * NOT re-entrant and NOT concurrent — CI3 request handling is single
-     * threaded; the flag is cleared in a finally block regardless of outcome.
-     *
-     * @return array|null ['docId' => string, 'doc' => array] or null on failure
-     */
-    public function buildStudentDoc(string $studentId, array $data): ?array
-    {
-        $this->_captureStudentDoc = [];          // arm
-        try {
-            $ok = $this->syncStudent($studentId, $data);
-            $captured = $this->_captureStudentDoc;
-        } finally {
-            $this->_captureStudentDoc = null;    // disarm, always
-        }
-        if (!$ok || !is_array($captured) || empty($captured['docId'])) return null;
-        return $captured;
     }
 }

@@ -22,6 +22,9 @@ require_once __DIR__ . '/Firestore_rest_client.php';
  */
 class Firebase
 {
+    /** '' | 'credentials' | 'transport' — see lastSignInFailureWasTransport(). */
+    private $lastSignInFailure = '';
+
     protected $database;
     protected $auth;
     protected $storageBucket;      // lazily built on first getStorageBucket() call
@@ -716,12 +719,65 @@ class Firebase
      */
     public function signInWithEmail(string $email, string $password)
     {
+        $this->lastSignInFailure = '';
         try {
             return $this->auth->signInWithEmailAndPassword($email, $password);
         } catch (\Exception $e) {
-            log_message('error', 'Firebase::signInWithEmail() failed [' . $email . ']: ' . $e->getMessage());
+            $msg = $e->getMessage();
+            $this->lastSignInFailure = self::_classifySignInFailure($msg);
+            log_message('error', 'Firebase::signInWithEmail() failed [' . $email
+                . '] kind=' . $this->lastSignInFailure . ': ' . $msg);
             return null;
         }
+    }
+
+    /**
+     * Why the LAST signInWithEmail() returned null: '' (it did not fail),
+     * 'credentials' (Firebase judged the credential), or 'transport' (the request
+     * never reached Firebase at all).
+     *
+     * WHY THIS EXISTS — a null return meant both "wrong password" and "we could
+     * not reach Google", so a network outage was reported to the operator as bad
+     * credentials AND consumed one of their five lockout attempts. Four cURL
+     * timeouts to oauth2.googleapis.com on 2026-09-01 presented as a password
+     * problem and sent the operator hunting for the wrong fault.
+     *
+     * Kept OUT of the return value on purpose: signInWithEmail() has three
+     * callers, and changing its contract would touch every one of them.
+     */
+    public function lastSignInFailureWasTransport(): bool
+    {
+        return $this->lastSignInFailure === 'transport';
+    }
+
+    /**
+     * POSITIVE RECOGNITION ONLY. Anything unrecognised classifies as
+     * 'credentials', which preserves today's behaviour exactly: the attempt is
+     * counted and the account can still lock. The lockout is only relaxed when we
+     * can SEE that the request never left this machine — never on a guess.
+     *
+     * Not reachable by an attacker: these signatures describe THIS server's
+     * outbound connection to Google, which a client cannot influence.
+     */
+    private static function _classifySignInFailure(string $message): string
+    {
+        $t = strtolower($message);
+        $transportSignatures = [
+            'curl error',            // Guzzle/cURL transport layer, any code
+            'could not resolve host', // DNS
+            'resolving timed out',
+            'timeout was reached',
+            'ssl connection timeout',
+            'failed to connect',
+            'could not connect',
+            'connection refused',
+            'operation timed out',
+            'network is unreachable',
+        ];
+        foreach ($transportSignatures as $sig) {
+            if (strpos($t, $sig) !== false) return 'transport';
+        }
+        return 'credentials';
     }
 
     /**
@@ -1190,6 +1246,23 @@ class Firebase
         return $this->firestoreDb;
     }
 
+    /**
+     * Fail-loud single-doc read. null means the document is genuinely ABSENT
+     * (404); a failed read throws instead of masquerading as absence.
+     *
+     * firestoreGet() cannot be changed — callers everywhere treat null as
+     * "not found". But a caller that decides CREATE-vs-UPDATE, resets a
+     * version, stamps createdAt, or picks an audit action from that null must
+     * use this one.
+     */
+    public function firestoreGetOrFail(string $collection, string $docId): ?array
+    {
+        if ($this->firestoreDb === null) {
+            throw new \RuntimeException('GET_FAILED:' . $collection . ':NOT_INITIALIZED');
+        }
+        return $this->firestoreDb->getDocumentOrFail($collection, $docId);
+    }
+
     public function firestoreGet(string $collection, string $docId): ?array
     {
         if ($this->firestoreDb === null) { log_message('error', 'Firebase::firestoreGet() — Firestore not initialized'); return null; }
@@ -1289,6 +1362,31 @@ class Firebase
     }
 
     /**
+     * ── PHASE 20.3b (P20.3-CLAIM-1) ─────────────────────────────────────────
+     * Status-aware create-if-not-exists. Distinguishes a definitive 409
+     * collision from an infrastructure failure, which firestoreCreate()'s
+     * boolean cannot: `false` there means BOTH.
+     *
+     * Use this wherever the result drives a safety decision — a claim loop
+     * that treats a timeout as "already taken" will skip past keys nobody
+     * owns. See Firestore_rest_client::createDocumentStatus() for the full
+     * rationale and the classification table.
+     *
+     * An uninitialised client is FAILURE, never COLLISION.
+     *
+     * @return array{status:string, code:int, message:string}
+     *         status ∈ SUCCESS | COLLISION | FAILURE
+     */
+    public function firestoreCreateStatus(string $collection, string $docId, array $data): array
+    {
+        if ($this->firestoreDb === null) {
+            log_message('error', 'Firebase::firestoreCreateStatus() — Firestore not initialized');
+            return ['status' => 'FAILURE', 'code' => 0, 'message' => 'Firestore not initialized'];
+        }
+        return $this->firestoreDb->createDocumentStatus($collection, $docId, $data);
+    }
+
+    /**
      * Atomic batch commit. `$ops` is a list of
      *   ['op' => 'set'|'update'|'delete', 'collection' => 'x',
      *    'docId' => 'y', 'data' => [...], 'merge' => bool]
@@ -1302,10 +1400,6 @@ class Firebase
         return $this->firestoreDb->commitBatch($ops);
     }
 
-    /**
-     * Atomic merge-write + field-delete in a single PATCH. Used by
-     * shape-migration scripts (Phase 1 class/section cleanup, etc.).
-     */
     /**
      * ── PHASE 20.3c ─────────────────────────────────────────────────────────
      * Status-aware atomic commit. Distinguishes a CAS precondition conflict
@@ -1361,6 +1455,29 @@ class Firebase
     {
         if ($this->firestoreDb === null) { log_message('error', 'Firebase::firestoreListSubcollection() — Firestore not initialized'); return []; }
         return $this->firestoreDb->listSubcollection($collection, $docId, $subcollection);
+    }
+
+    /**
+     * Fail-loud read for guards that reason NEGATIVELY over the result.
+     *
+     * firestoreQuery() returns [] for "no rows", for a missing composite
+     * index, for a network failure, for 403/429, and for an uninitialised
+     * client. A conflict guard reading "teacher absent from the busy map,
+     * therefore free" treats every one of those as PROOF OF NO CONFLICT and
+     * permits the write. This surfaces the difference so the guard can deny.
+     */
+    public function firestoreQueryOrFail(
+        string $collection,
+        array $conditions = [],
+        ?string $orderBy = null,
+        string $direction = 'ASC',
+        ?int $limit = null,
+        $startAfter = null
+    ): array {
+        if ($this->firestoreDb === null) {
+            throw new \RuntimeException('QUERY_FAILED:' . $collection . ':NOT_INITIALIZED');
+        }
+        return $this->firestoreDb->queryOrFail($collection, $conditions, $orderBy, $direction, $limit, $startAfter);
     }
 
     public function firestoreQuery(
