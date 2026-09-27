@@ -15,7 +15,10 @@ function tic_date(string $raw): string {
         $dt = DateTime::createFromFormat($fmt, $raw);
         if ($dt) return $dt->format('d M Y');
     }
-    return $raw;
+    // A value that matches no known date format is echoed as-is on the card, so
+    // escape it — DOB / joining are staff-entered fields; an un-parseable
+    // (e.g. hostile) value must never reach the page unescaped.
+    return htmlspecialchars($raw, ENT_QUOTES, 'UTF-8');
 }
 
 $staff        = $staff        ?? [];
@@ -109,7 +112,7 @@ ksort($filterPosns);
     $dob     = tic_date($t['DOB'] ?? $t['Date of Birth'] ?? '');
     $gender  = htmlspecialchars($t['Gender']          ?? '',  ENT_QUOTES, 'UTF-8');
     $joining = tic_date($t['Date Of Joining']         ?? '');
-    $initial = mb_strtoupper(mb_substr($t['Name'] ?? 'T', 0, 1));
+    $initial = htmlspecialchars(mb_strtoupper(mb_substr($t['Name'] ?? 'T', 0, 1)), ENT_QUOTES, 'UTF-8');
     $safeUid = preg_replace('/[^a-z0-9]/i', '_', $t['User ID'] ?? 'x');
     $logoUrl = htmlspecialchars($school_logo, ENT_QUOTES, 'UTF-8');
   ?>

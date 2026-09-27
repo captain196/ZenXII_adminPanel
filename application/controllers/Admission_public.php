@@ -417,8 +417,40 @@ class Admission_public extends CI_Controller
         // Schema mirrors what admin's `convert_to_application` writes to
         // `crmApplications` so the same Pipeline / Inquiries / Applications
         // grids show public submissions without any normalization.
+        // Phase E — entitlement DECLARATIONS captured by the shared
+        // _entitlement_declarations.php partial. These are requests, not
+        // grants: this controller is unauthenticated, so it can never create a
+        // studentEntitlements record, and nothing here reduces any fee. They
+        // are read back to pre-fill the staff capture component at admission,
+        // where the canonical Entitlement_service creates the real entitlement
+        // under maker-checker. Booleans are coerced server-side — a posted
+        // string is never trusted as a flag.
+        $declarations = [
+            'sibling'        => (string) $this->input->post('decl_sibling')    === '1',
+            // SR Number, which staff resolve against THIS school at enrolment.
+            // `siblingName` was free text that nothing ever read; it is kept
+            // only so an application submitted by an older cached copy of the
+            // form still records what the family typed.
+            'siblingSrNo'    => substr(trim((string) $this->input->post('decl_sibling_srno')), 0, 32),
+            'siblingName'    => substr(trim((string) $this->input->post('decl_sibling_name')), 0, 120),
+            // A parent CANNOT verify their own employment claim — this is an
+            // unauthenticated form. The id is carried and resolved by staff at
+            // enrolment; an unresolvable one becomes a visible warning there.
+            'staffWardId'    => substr(trim((string) $this->input->post('decl_staff_ward_id')), 0, 64),
+            'rte'            => (string) $this->input->post('decl_rte')        === '1',
+            'rteRef'         => substr(trim((string) $this->input->post('decl_rte_ref')), 0, 120),
+            'staffWard'      => (string) $this->input->post('decl_staff_ward') === '1',
+            'transport'      => (string) $this->input->post('decl_transport')  === '1',
+            'transportArea'  => substr(trim((string) $this->input->post('decl_transport_area')), 0, 120),
+            'hostel'         => (string) $this->input->post('decl_hostel')     === '1',
+            'declaredAt'     => date('c'),
+            'source'         => 'public_form',
+        ];
+
         $applicationData = [
             'id'                => $appId,
+            // Phase E — family-declared concession/service requests (see above).
+            'entitlementDeclarations' => $declarations,
             // Student profile
             'student_name'      => $data['student_name'],
             'class'             => $data['class'],
@@ -885,7 +917,30 @@ class Admission_public extends CI_Controller
         $existingPid = (string) ($app['payment_id'] ?? '');
         if ($existingPid !== '') {
             $existing = $this->fs->get('admissionPayments', $this->fs->docId($existingPid));
+            // GW-ORD-1 (admission variant) — an order id is only meaningful to
+            // the gateway that issued it. Reusing one minted by a different
+            // adapter hands the checkout an id the gateway never issued, which
+            // it refuses the instant the sheet renders — indistinguishable, to
+            // an applicant, from a declined card.
+            //
+            // Materially safer here than in the fees path: the 15-minute window
+            // below means a mismatched order expires on its own rather than
+            // permanently poisoning the combination. Guarded anyway, because
+            // "wrong for at most 15 minutes" is still wrong, and the check costs
+            // one comparison. An order with no recorded gateway cannot be shown
+            // to belong to the active one, so it is not reused either.
+            // One shared definition with the fees path — see
+            // Payment_order_provenance. Two separately-written predicates is how
+            // the same defect came to exist in both places.
+            $this->load->library('Payment_order_provenance');
+            $sameGateway = is_array($existing)
+                && Payment_order_provenance::matchesActiveGateway(
+                       $existing['gateway'] ?? '',
+                       (string) ($gw['name'] ?? '')
+                   );
+
             if (is_array($existing)
+                && $sameGateway
                 && ($existing['status'] ?? '') === 'created'
                 && abs((float) ($existing['amount'] ?? 0) - $amount) < 0.01
                 && (strtotime((string) ($existing['created_at'] ?? '')) ?: 0) >= time() - 900) {
@@ -1009,12 +1064,27 @@ class Admission_public extends CI_Controller
      */
     private function _assert_captured_amount(array $gw, string $gatewayPid, string $expectedOrderId, float $expectedAmount): array
     {
-        if (($gw['name'] ?? '') === 'mock') {
-            return ['ok' => true, 'reason' => 'mock', 'gateway_amount' => null];
-        }
         $adapter = $gw['adapter'] ?? null;
-        if (!is_object($adapter) || !method_exists($adapter, 'fetch_payment')) {
-            log_message('error', "ADM_CAPTURE_UNVERIFIED no_fetch_capability payment={$gatewayPid}");
+
+        // ── CAPABILITY, NOT PROVIDER NAME (2026-08-24) ─────────────────────
+        // This began `if ($gw['name'] === 'mock')` — a provider-NAME gate, the
+        // same shape as the allowlist-of-one that disabled verification for
+        // every non-Razorpay provider in payment_callback. It also duplicated
+        // the `method_exists(fetch_payment)` probe below, so two conditions
+        // answered one question and could disagree.
+        //
+        // `reports_captured_amount` subsumes both: an adapter that cannot
+        // report what the provider captured has nothing to compare, whatever
+        // it is called. A second simulator, or any future adapter without a
+        // fetch API, is handled correctly without being named here.
+        $caps = (is_object($adapter) && method_exists($adapter, 'capabilities'))
+            ? $adapter->capabilities()
+            : [];
+        $reportsAmount = !empty($caps['reports_captured_amount']);
+
+        if (!$reportsAmount || !is_object($adapter) || !method_exists($adapter, 'fetch_payment')) {
+            log_message('error', 'ADM_CAPTURE_UNVERIFIED no_fetch_capability payment=' . $gatewayPid
+                . ' adapter=[' . (string) ($gw['name'] ?? 'unknown') . ']');
             return ['ok' => true, 'reason' => 'no_fetch_capability', 'gateway_amount' => null];
         }
         try {
@@ -1033,7 +1103,37 @@ class Admission_public extends CI_Controller
         if ($expectedOrderId !== '' && $gwOrder !== '' && $gwOrder !== $expectedOrderId) {
             return ['ok' => false, 'reason' => 'order_mismatch', 'gateway_amount' => $gwAmount];
         }
-        if (abs($expectedAmount - $gwAmount) > 0.50) {
+        // ── MONEY-1 ON THE ADMISSION SURFACE (2026-08-24) ──────────────────
+        // This was `abs($expectedAmount - $gwAmount) > 0.50` — a ±₹0.50 FLOAT
+        // tolerance. Fee_management fixed exactly this (MONEY-1) and Admission
+        // never received the fix, on the surface that is PUBLIC and
+        // unauthenticated.
+        //
+        // The money never was a float: providers settle in PAISE and return an
+        // integer, which the adapters already carry as `amount_paise`. The old
+        // window was ~50x wider than the ≤₹0.01 error rounding can introduce,
+        // so a genuine capture shortfall of up to fifty paise counted as a
+        // match — a blind spot created solely by discarding an exact integer
+        // that was already in hand.
+        //
+        // Compare exactly when the provider gave us minor units; fall back to
+        // the historical tolerance only when it did not, rather than failing a
+        // real payment over a precision the provider does not expose.
+        $gwMinor = (isset($fp['amount_paise']) && is_numeric($fp['amount_paise']))
+            ? (int) $fp['amount_paise']
+            : null;
+
+        if ($gwMinor !== null) {
+            // round() before the cast: (int)(6000 * 100) can be 599999 for
+            // values a float cannot represent precisely.
+            $expectedMinor = (int) round($expectedAmount * 100);
+            if ($expectedMinor !== $gwMinor) {
+                return ['ok' => false, 'reason' => 'amount_mismatch', 'gateway_amount' => $gwAmount];
+            }
+        } elseif (abs($expectedAmount - $gwAmount) > 0.50) {
+            log_message('error', 'ADM_CAPTURE_TOLERANT_COMPARE payment=' . $gatewayPid
+                . ' — adapter did not supply amount_paise, so the exact comparison was not '
+                . 'possible and the ±0.50 fallback was used.');
             return ['ok' => false, 'reason' => 'amount_mismatch', 'gateway_amount' => $gwAmount];
         }
         return ['ok' => true, 'reason' => 'verified', 'gateway_amount' => $gwAmount];
@@ -1122,7 +1222,33 @@ class Admission_public extends CI_Controller
         // the payment server-side and confirm it is CAPTURED for the exact
         // order amount before trusting it. Defends against a signed-but-
         // uncaptured / wrong-amount payment.
-        if ($verified && $gw['name'] === 'razorpay') {
+        // ── GATE ON CAPABILITY, NOT PROVIDER NAME (2026-08-24) ─────────────
+        // This read `$gw['name'] === 'razorpay'` — an ALLOWLIST OF ONE. The
+        // moment a second provider is enabled, that check is false and this
+        // entire amount/capture re-verification is SKIPPED, on a public,
+        // unauthenticated admission form.
+        //
+        // Fee_management hit exactly this defect and fixed it (GW-2, see the
+        // AMOUNTLESS_GATEWAYS note there); Admission never got the same fix.
+        // The correct question was never "is this Razorpay?" but "can this
+        // adapter tell me what was actually captured?" — which the adapter
+        // itself now answers via capabilities(). An adapter that cannot
+        // report a captured amount (a simulator, the refusal sentinel) has
+        // nothing to compare, and that is a different thing from skipping the
+        // comparison.
+        $__caps = method_exists($gw['adapter'], 'capabilities')
+            ? $gw['adapter']->capabilities() : [];
+        $__canReportAmount = !empty($__caps['reports_captured_amount']);
+
+        if ($verified && !$__canReportAmount) {
+            // Loud, not silent. A provider that cannot support defence-in-depth
+            // amount verification is a real operational fact, not a non-event.
+            log_message('error', 'Admission_public::payment_callback PAYMENT_AMOUNT_UNVERIFIED '
+                . '(fail-open) — adapter [' . (string) ($gw['name'] ?? 'unknown') . '] does not '
+                . 'report a captured amount, so capture/amount re-verification was not possible.');
+        }
+
+        if ($verified && $__canReportAmount) {
             try {
                 $remote   = $gw['adapter']->fetch_payment($gatewayPid);
                 $expected = (float) ($payment['amount'] ?? 0);
@@ -1488,21 +1614,38 @@ class Admission_public extends CI_Controller
         // ── Webhook HMAC (webhook_secret; live-mode enforced) ──
         $webhookSecret = is_array($gwConfig) ? (string) ($gwConfig['webhook_secret'] ?? '') : '';
         $webhookSig    = $_SERVER['HTTP_X_RAZORPAY_SIGNATURE'] ?? $_SERVER['HTTP_X_WEBHOOK_SIGNATURE'] ?? ($payload['webhook_signature'] ?? '');
-        if ($gwMode === 'live' && $webhookSecret === '') {
-            log_message('error', "Admission_public::payment_webhook LIVE but webhook_secret missing school={$school_id}");
+        // ── GW-SEC2 · KEYED ON THE PROVIDER, NOT THE MODE ────────────────────
+        // Identical to the fee webhook's defect. These guards keyed on
+        // `$gwMode === 'live'`, but mode is not what makes a webhook worth
+        // authenticating — a real payment provider is. An unconfigured tenant
+        // resolves $gwMode to '', so neither guard fired and the HMAC check
+        // below was skipped: an unsigned POST was accepted.
+        //
+        // This endpoint is PUBLIC and unauthenticated, which makes it the more
+        // exposed of the two. Any real provider must present a secret AND a
+        // signature, in test mode as much as live; only a simulator may skip,
+        // and GW-1b already confines that to development/testing.
+        $gwProvider   = is_array($gwConfig) ? (string) ($gwConfig['provider'] ?? '') : '';
+        $realProvider = ($gwProvider !== '' && $gwProvider !== 'mock');
+
+        if ($realProvider && $webhookSecret === '') {
+            log_message('error', "Admission_public::payment_webhook provider={$gwProvider} but webhook_secret missing school={$school_id} mode={$gwMode}");
             http_response_code(500);
             echo json_encode(['status' => 'error', 'message' => 'Webhook secret not configured for this school.']);
             return;
         }
-        if ($gwMode === 'live' && $webhookSig === '') {
-            log_message('error', "Admission_public::payment_webhook LIVE but no signature ip={$ip}");
+        if ($realProvider && $webhookSig === '') {
+            log_message('error', "Admission_public::payment_webhook provider={$gwProvider} but no signature ip={$ip}");
             http_response_code(401);
             echo json_encode(['status' => 'error', 'message' => 'Missing webhook signature.']);
             return;
         }
         if ($webhookSecret !== '' && $webhookSig !== '') {
-            $expected = hash_hmac('sha256', $rawBody, $webhookSecret);
-            if (!hash_equals($expected, $webhookSig)) {
+            // GW-SEC4: current secret, or a rotated-out one inside a bounded
+            // grace window. See webhook_signature_helper for why rotation must
+            // be handled here rather than by widening any retry path.
+            $this->load->helper('webhook_signature');
+            if (!webhook_signature_valid($rawBody, $webhookSig, is_array($gwConfig) ? $gwConfig : [])) {
                 log_message('error', "Admission_public::payment_webhook HMAC FAILED school={$school_id} ip={$ip}");
                 http_response_code(401);
                 echo json_encode(['status' => 'error', 'message' => 'Invalid webhook signature.']);
@@ -1701,24 +1844,82 @@ class Admission_public extends CI_Controller
             log_message('error', 'Admission_public::_load_payment_gateway feeSettings read failed: ' . $e->getMessage());
         }
 
-        // Honor an explicit `active: false` flag; otherwise treat the
-        // configured provider as truth.
-        $isActive = is_array($gwConfig) ? !isset($gwConfig['active']) || !empty($gwConfig['active']) : false;
-        $provider = (is_array($gwConfig) && $isActive) ? (string) ($gwConfig['provider'] ?? 'mock') : 'mock';
+        // ── PA-DUP-1 (2026-08-24) · ONE PROVIDER-SELECTION AUTHORITY ────────
+        // This used to reimplement the active-flag check and the provider
+        // decision inline, independently of Fees' Payment_gateway_selector —
+        // and it had ALREADY drifted once: Admission honoured `active: false`
+        // while Fees ignored the field entirely until GW-SEL-1. Two
+        // implementations of one money-safety rule is exactly the shape that
+        // drifts, so both callers now consume the same decision.
+        //
+        // What stays admission-specific, deliberately NOT moved into the
+        // selector: the two-stage config lookup above (doc-id guess, then a
+        // field query — tenants store the gateway doc under different id
+        // shapes) and the {adapter, name, public_key} return shape below.
+        // Those are admission's own concerns; provider SELECTION is not.
+        $this->load->library('Payment_gateway_selector');
+        $selection = Payment_gateway_selector::select(
+            $gwConfig,
+            Payment_gateway_selector::effective_environment()
+        );
 
-        if ($provider === 'razorpay') {
+        // ── ANY ENABLED PROVIDER, NOT JUST RAZORPAY (2026-08-24) ───────────
+        // This branch was `if ($selection === ::RAZORPAY)` and returned a
+        // hardcoded `'name' => 'razorpay'`. Two defects in one block:
+        //
+        //  1. Admission could serve ONLY Razorpay. Fees already resolves any
+        //     enabled provider through the registry, so a school that switched
+        //     to a second enabled provider would keep collecting fees fine and
+        //     silently lose admission payments — a split-brain between two
+        //     surfaces reading the SAME configuration.
+        //  2. The returned `name` was a LITERAL, not the adapter's own
+        //     get_name(). That is the PA-CORE-1 fabricated-provenance defect:
+        //     the value flows into money records and GW-ORD-1 comparisons, so
+        //     it must be observed from the adapter, never asserted here.
+        //
+        // The mock keeps its own branch below — it is deliberately NOT
+        // credential-driven and its environment gate is the whole point.
+        if ($selection !== Payment_gateway_selector::UNAVAILABLE
+            && $selection !== Payment_gateway_selector::MOCK) {
+
+            $adapterClass = Payment_gateway_selector::adapter_class($selection);
+            if ($adapterClass === null) {
+                // The selector said yes and the registry says no adapter. That
+                // is a contradiction, not a configuration problem — refuse
+                // rather than guess which half is right.
+                throw new \RuntimeException(
+                    'Provider "' . $selection . '" was selected but resolves to no adapter.');
+            }
+
             $apiKey    = (string) ($gwConfig['api_key']    ?? '');
             $apiSecret = (string) ($gwConfig['api_secret'] ?? '');
             if ($apiKey === '' || $apiSecret === '') {
-                throw new \RuntimeException('Razorpay credentials missing in feeSettings.');
+                throw new \RuntimeException(
+                    'Payment credentials missing in the gateway configuration.');
             }
-            $this->load->library('Payment_gateway_razorpay', [
+
+            // Explicit object name rather than relying on CI's
+            // strtolower($class) derivation: the alias is deterministic, it
+            // cannot collide with the Fees path's own instance of the same
+            // adapter, and it means this code does not silently break if the
+            // loader's naming rule ever changes.
+            $this->load->library($adapterClass, [
                 'api_key'    => $apiKey,
                 'api_secret' => $apiSecret,
-            ]);
+            ], 'admission_gw_adapter');
+            $adapter = $this->admission_gw_adapter;
+
             return [
-                'adapter'    => $this->payment_gateway_razorpay,
-                'name'       => 'razorpay',
+                'adapter' => $adapter,
+                // OBSERVED from the adapter, never asserted. Falls back to the
+                // selector's own verdict — still a real resolved provider id,
+                // never a fabricated default.
+                'name'    => method_exists($adapter, 'get_name')
+                    ? $adapter->get_name()
+                    : $selection,
+                // The PUBLIC key only. Every currently enabled provider uses
+                // api_key as its client-safe identifier; api_secret is never
+                // returned here and never reaches a client.
                 'public_key' => $apiKey,
             ];
         }
@@ -1730,19 +1931,32 @@ class Admission_public extends CI_Controller
         // Both callers (initiate_payment / payment_callback) catch this and
         // surface "Payment gateway is not configured — contact the school
         // office." Mirrors Fees::_reject_in_production's ENVIRONMENT guard.
-        if (defined('ENVIRONMENT') && ENVIRONMENT === 'production') {
-            log_message('error', "Admission_public::_load_payment_gateway refused mock gateway in production for school={$school_id} (Razorpay not configured)");
-            throw new \RuntimeException('Payment gateway (Razorpay) is not configured for this school; mock gateway is disabled in production (fail-closed).');
+        //
+        // PA-DUP-1 (2026-08-24): the environment gate this comment used to
+        // describe (GW-1b: inverted from `ENVIRONMENT === 'production'` to
+        // `!in_array(ENVIRONMENT, ['development','testing'])`, so an unset or
+        // mistyped value denies) now lives ONCE, in
+        // Payment_gateway_selector::SIMULATOR_ENVIRONMENTS — the exact same
+        // list, applied identically to Fees. $selection can only be MOCK when
+        // that gate already passed; this branch just translates the verdict
+        // into admission's own {adapter, name, public_key} return shape. This
+        // path remains worse-exposed than the fees equivalent (GW-1): it lives
+        // in Admission_public, reachable from the PUBLIC admission form with
+        // no authentication at all — one more reason the two must not drift.
+        if ($selection === Payment_gateway_selector::MOCK) {
+            $this->load->library('Payment_gateway_mock');
+            return [
+                'adapter'    => $this->payment_gateway_mock,
+                'name'       => 'mock',
+                'public_key' => '',
+            ];
         }
 
-        // Non-production only (development / testing): mock adapter for local
-        // dev + QA, so the admission flow is exercisable without real credentials.
-        $this->load->library('Payment_gateway_mock');
-        return [
-            'adapter'    => $this->payment_gateway_mock,
-            'name'       => 'mock',
-            'public_key' => '',
-        ];
+        // UNAVAILABLE — malformed config, inactive gateway, unknown provider,
+        // or a real provider outside a simulator environment. Every one of
+        // those paths refuses rather than silently mock-succeeding.
+        log_message('error', "Admission_public::_load_payment_gateway refused: selector returned UNAVAILABLE for school={$school_id} (Razorpay not configured or inactive)");
+        throw new \RuntimeException('Payment gateway (Razorpay) is not configured for this school; mock gateway is disabled outside development (fail-closed).');
     }
 
     // ─── Audit logging for public context (no session) ─────────────────

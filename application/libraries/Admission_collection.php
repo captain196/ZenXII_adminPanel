@@ -114,9 +114,34 @@ class Admission_collection
         // journal already uses (create-if-not-exists is atomic) — no parallel
         // idempotency store. The slot's entryId holds the minted ADM key so a
         // deduped retry returns the ORIGINAL receipt instead of minting a second.
-        $idempKey = 'ADM_COLLECT_' . ($appId !== ''
-            ? $appId
-            : (string) ($p['payment_id'] ?? ('R' . bin2hex(random_bytes(6)))));
+        // ── ADM-IDEM-1 · NO IDENTITY MEANS NO DEDUP — SO REFUSE ────────────
+        //
+        // The last resort here was `'R' . bin2hex(random_bytes(6))`. A random
+        // key is unique by construction, so the claim ALWAYS succeeds and this
+        // gate — the one closing the callback-vs-webhook double-reconcile (C1)
+        // and the double offline-collect (M2) — silently stops existing. Two
+        // concurrent calls would each mint a receipt and a journal.
+        //
+        // Not reachable from either production caller today: Sis passes
+        // `app_id = leadId ?: userId` (never empty) and Admission_public passes
+        // both `app_id` and `payment_id`. Verified by tracing both call sites,
+        // not assumed.
+        //
+        // Fixed anyway, because the failure mode is a fail-OPEN default on the
+        // identity an entire money guard keys on: a third caller, or one
+        // payload field quietly going missing, removes the protection with no
+        // error and no log. Everything else on this path already fails closed
+        // when it cannot obtain its guard — Fee_payment_claim, the Student
+        // Charge waiver, the library fine — and this is the same decision.
+        //
+        // Refusing costs a retry. Minting twice costs a duplicate receipt AND a
+        // duplicate journal, which is not recoverable without a manual reversal.
+        $idempSource = $appId !== '' ? $appId : (string) ($p['payment_id'] ?? '');
+        if ($idempSource === '') {
+            log_message('error', 'Admission_collection: REFUSED — neither app_id nor payment_id was supplied, so the idempotency claim would have no stable identity and could not prevent a second receipt/journal for the same payment. school=[' . $this->schoolId . ']');
+            return null;
+        }
+        $idempKey = 'ADM_COLLECT_' . $idempSource;
         $this->CI->load->library('Accounting_idempotency', null, 'admIdemp');
         $this->CI->admIdemp->init($this->firebase, $this->schoolId, $this->session);
         $claim = $this->CI->admIdemp->claim($idempKey, 'admission_' . $source);
