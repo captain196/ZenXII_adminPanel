@@ -74,7 +74,7 @@ $can_manage = function_exists('has_permission') ? has_permission('Transport','ma
 .trn-form-group input:focus,.trn-form-group select:focus{border-color:var(--gold);outline:none}
 .trn-form-row{display:grid;grid-template-columns:1fr 1fr;gap:14px}
 .trn-modal-bg{position:fixed;top:0;left:0;right:0;bottom:0;background:rgba(0,0,0,.55);z-index:9999;display:none;align-items:center;justify-content:center}
-.trn-modal-bg.show{display:flex}
+.trn-modal-bg.show{display:flex !important}
 .trn-modal{background:var(--bg2);border:1px solid var(--border);border-radius:var(--r);width:560px;max-width:95vw;max-height:85vh;overflow-y:auto;padding:24px}
 .trn-modal-title{font-family:var(--font-b);font-size:16px;font-weight:700;color:var(--t1);margin-bottom:18px;display:flex;align-items:center;justify-content:space-between}
 .trn-modal-close{cursor:pointer;color:var(--t3);font-size:1.2rem;background:none;border:none}
@@ -413,8 +413,34 @@ $can_manage = function_exists('has_permission') ? has_permission('Transport','ma
       </select></div>
     <div class="trn-field"><label>Effective From</label><input type="date" id="raFrom" class="trn-input"></div>
     <div class="trn-field"><label>Effective To</label><input type="date" id="raTo" class="trn-input"></div>
-    <div class="trn-field"><label>Monthly Fee</label>
-      <input type="number" step="0.01" min="0" id="raFee" class="trn-input" placeholder="Leave blank to use the route fee"></div>
+    <?php /* ── TRN-FARE-OVERRIDE-1 · FIELD REMOVED 2026-08-30 ──────────────
+         Was: a number input, raFee, labelled "Monthly Fee", placeholdered
+         "Leave blank to use the route fee" — which promises that a value
+         entered here overrides the route fare.
+
+         It never did. assignStudent() computes the fare with
+         _computeAssignmentFee($route, …), which reads $route['monthly_fee']
+         and never looks at the posted monthly_fee. Proven at runtime: an
+         override of 5,000 on a Rs 1,000 route billed the 1,000 fare and
+         stored 1,000 on the assignment. No error, no warning.
+
+         REMOVED RATHER THAN IMPLEMENTED, on the architecture:
+           • The canonical assignment endpoint (save_assignment) does not
+             accept monthly_fee at all — it accepts fee_category. This modal
+             was the ONLY surface offering a free-form fare.
+           • A bare fare override is an undocumented discount: no reason, no
+             approver, no expiry, and no allocation. Invariant I2 requires
+             SUM(active allocations) == discountAmount, so a silent override
+             is exactly the kind of untracked money the ledger exists to stop.
+           • ZenX already has two sanctioned per-student levers, both audited:
+             fee_category (Standard/Concession/Scholarship/Staff_Ward/Hostel/
+             Waived) on the assignment, and a service-scoped concession
+             entitlement, which carries a reason and an approver and lands in
+             the allocation ledger.
+
+         A financial input must never look editable while doing nothing. If a
+         per-student fare is ever wanted, it belongs on the canonical
+         assignment path with an audit trail — not as a free number here. */ ?>
     <div class="trn-field trn-field-full"><label>Notes</label><input type="text" id="raNotes" class="trn-input"></div>
   </div>
   <div class="trn-modal-actions">
@@ -2848,7 +2874,7 @@ document.addEventListener('DOMContentLoaded', function(){
     // Carry the request's own subscription choice across, so approving does not
     // silently change what the family asked for.
     $('#raType').val(q.requested_type || 'both');
-    $('#raFrom').val(''); $('#raTo').val(''); $('#raFee').val(''); $('#raNotes').val('');
+    $('#raFrom').val(''); $('#raTo').val(''); $('#raNotes').val('');
     // routes[] is already loaded by loadRoutes(); reuse it rather than refetch.
     var opts = '<option value="">-- Select route --</option>';
     (routes || []).forEach(function(rt){ opts += '<option value="' + rt.id + '">' + escH(rt.name || rt.id) + '</option>'; });
@@ -2877,7 +2903,7 @@ document.addEventListener('DOMContentLoaded', function(){
     post('transport/approve_transport_request', {
       request_id: $('#raReqId').val(), route_id: rid, stop_id: sid,
       type: $('#raType').val(), effective_from: $('#raFrom').val(),
-      effective_to: $('#raTo').val(), monthly_fee: $('#raFee').val(), notes: $('#raNotes').val()
+      effective_to: $('#raTo').val(), notes: $('#raNotes').val()
     }).done(function(r){
       r = typeof r === 'string' ? JSON.parse(r) : r;
       if(r.status === 'success'){

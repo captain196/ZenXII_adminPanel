@@ -481,7 +481,27 @@ class Transport extends MY_Controller
             'landmark'    => trim($this->input->post('landmark') ?? ''),
             'latitude'    => (float) ($this->input->post('latitude') ?? 0),
             'longitude'   => (float) ($this->input->post('longitude') ?? 0),
-            'status'      => trim($this->input->post('status') ?? ''),
+            // ── TRN-STOP-STATUS-1 ────────────────────────────────────────────
+            // Was: trim($this->input->post('status') ?? '').
+            //
+            // The Stop modal does not post a status — it sends id, route_id,
+            // name, times, order, address and coordinates. That made this ''
+            // rather than null, and '' is NOT null, so saveStop()'s documented
+            // default — $input['status'] ?? $existing['status'] ?? 'Active' —
+            // never fired. Every stop created through the real UI was stored
+            // with status='' .
+            //
+            // The consequence sat on the canonical transport lifecycle:
+            // approveTransportRequest() refuses a non-Active stop, so a school
+            // could create a route and a stop, a family could request transport,
+            // and the request could never be approved —
+            // "Stop STP0001 is not Active (status='')". Reproduced end to end.
+            //
+            // NULL when absent, so "not supplied" reaches the service as absent
+            // and its default applies. An explicitly posted status still wins,
+            // and an edit still inherits the stored value.
+            'status'      => (($__st = trim((string) ($this->input->post('status') ?? ''))) !== ''
+                              ? $__st : null),
         ];
         try {
             $result = $this->transport->saveStop($input);
